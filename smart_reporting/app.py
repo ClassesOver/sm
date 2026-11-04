@@ -1,4 +1,5 @@
 from os import getenv
+from pathlib import Path
 
 from agno.os.config import MCPConfig
 from fastapi import APIRouter, FastAPI, Request
@@ -30,14 +31,20 @@ from .report_editor import (
     ReportEditorGrantService,
     ReportEditorService,
     ReportSlidesEditorService,
+    ReportSlidesImageService,
+    ReportWorkbookEditorService,
     SqlAlchemyReportEditorRepository,
     create_report_editor_ai_service,
     create_report_editor_chart_ai_service,
     create_report_editor_router,
     create_report_editor_table_ai_service,
+    create_report_slides_ai_service,
     create_report_slides_editor_router,
+    create_report_workbook_ai_service,
+    create_report_workbook_editor_router,
 )
 from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
+from .report_editor.slides_chart_ai import ReportSlidesChartAIService
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
 from .reporting.code_agent.lsp_process import ReportingLspProcessManager
@@ -111,6 +118,7 @@ report_artifact_persistence = ReportArtifactPersistenceService(
 report_downloads = ReportDownloadHttpService(
     report_download_grants,
     report_artifact_repository,
+    workspace_service=ReportingWorkspaceRouter(reporting_workspace_registry),
 )
 router = APIRouter()
 
@@ -249,7 +257,7 @@ report_editor = ReportEditorService(
     workspace_registry=reporting_workspace_registry,
     workspace=report_runtime.workspace_service,
     report_tools=report_runtime.report_tools,
-    artifact_persistence=report_runtime.artifact_persistence,
+    artifact_persistence=report_artifact_persistence,
     download_grants=report_download_grants,
     editor_grants=report_editor_grants,
     public_base_url=settings.report_public_base_url,
@@ -263,9 +271,31 @@ report_slides_editor = ReportSlidesEditorService(
     state_repository=report_runtime.state_repository,
     workspace_registry=reporting_workspace_registry,
     workspace=report_runtime.workspace_service,
-    artifact_persistence=report_runtime.artifact_persistence,
+    editor_grants=report_editor_grants,
+    artifact_persistence=report_artifact_persistence,
     download_grants=report_download_grants,
-    draft_lock=report_editor._draft_lock,
+    public_base_url=settings.report_public_base_url,
+)
+report_workbook_editor = ReportWorkbookEditorService(
+    state_repository=report_runtime.state_repository,
+    workspace_registry=reporting_workspace_registry,
+    workspace=report_runtime.workspace_service,
+    editor_grants=report_editor_grants,
+    artifact_persistence=report_artifact_persistence,
+    download_grants=report_download_grants,
+    public_base_url=settings.report_public_base_url,
+)
+report_workbook_ai = create_report_workbook_ai_service(
+    reporting_agent_template.model, report_workbook_editor
+)
+report_slides_ai = create_report_slides_ai_service(
+    reporting_agent_template.model, report_slides_editor
+)
+report_slides_image_ai = ReportSlidesImageService(
+    report_slides_editor,
+    api_key=settings.openai_api_key,
+    base_url=settings.openai_base_url,
+    model=settings.report_slides_image_model,
 )
 report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
 # 编辑器 AI 改图（AGENT_REPORT_EDITOR_CHART_AI_ENABLED，默认开启）：与可视化章节复用
@@ -289,6 +319,10 @@ if settings.report_editor_chart_ai_enabled:
         hourly_limit=settings.report_editor_chart_ai_hourly_limit,
         timeout_seconds=float(settings.report_editor_chart_ai_timeout_seconds),
     )
+report_slides_chart_ai = (
+    ReportSlidesChartAIService(report_slides_editor, chart_ai=report_editor_chart_ai)
+    if report_editor_chart_ai is not None else None
+)
 report_editor_table_ai = None
 if settings.report_editor_table_ai_enabled:
     report_editor_table_ai = create_report_editor_table_ai_service(
@@ -342,12 +376,30 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             static_dir=settings.report_editor_static_dir,
         )
     )
+    static_root = Path(
+        settings.report_editor_static_dir
+        or Path(__file__).with_name("report_editor") / "static"
+    )
     application.include_router(
         create_report_slides_editor_router(
             report_editor_grants,
             slides=report_slides_editor,
-            static_dir=report_runtime.slides_editor_static_dir,
-            allowed_origin=settings.report_public_base_url,
+            slides_ai=report_slides_ai,
+            slides_images=report_slides_image_ai,
+            slides_charts=report_slides_chart_ai,
+            static_dir=static_root / "slides",
+            cookie_secure=bool(
+                settings.report_public_base_url
+                and settings.report_public_base_url.startswith("https://")
+            ),
+        )
+    )
+    application.include_router(
+        create_report_workbook_editor_router(
+            report_editor_grants,
+            workbooks=report_workbook_editor,
+            workbook_ai=report_workbook_ai,
+            static_dir=static_root,
             cookie_secure=bool(
                 settings.report_public_base_url
                 and settings.report_public_base_url.startswith("https://")

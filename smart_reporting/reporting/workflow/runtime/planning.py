@@ -6,7 +6,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime, timedelta
 from hashlib import sha256
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import ConfigDict, Field
@@ -171,6 +171,8 @@ class RuntimePlanningMixin:
         )
         request = workflow_input.request()
         feedback = self._feedback(step_input)
+        reference_materials = state.get("report_reference_materials", [])
+        reference_issues = state.get("report_reference_issues", [])
         if isinstance(request, ReportRequestEnvelope):
             self._record_request_context(
                 state,
@@ -187,18 +189,37 @@ class RuntimePlanningMixin:
             )
 
         assert isinstance(request, ReportPromptInput)
-        self._record_request_context(
-            state,
-            request.prompt,
-            feedback,
-            infer_delivery_format(request.prompt),
-        )
-        delivery_format = state[REPORT_REQUEST_CONTEXT_STATE_KEY]["deliveryFormat"]
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
+        if reference_materials or reference_issues:
+            prompt_payload["referenceMaterials"] = [
+                {
+                    "filename": item.get("filename"),
+                    "content": item.get("content", "")[:20_000],
+                    "layout": item.get("layout", {}),
+                    "visualLayout": item.get("visualLayout"),
+                }
+                for item in reference_materials
+            ]
+            prompt_payload["referenceIssues"] = reference_issues
         if feedback:
             prompt_payload["supplement"] = feedback
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
+        # 恢复时沿用已冻结的交付格式，不重新解释原始需求。
+        frozen = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
+        frozen_format = (
+            frozen.get("deliveryFormat")
+            if isinstance(frozen, dict) and request.delivery_format is None
+            else None
+        )
+        if request.delivery_format is None and frozen_format is None and normalized.delivery_format_ambiguous:
+            return StepOutput(content={"clarificationQuestion": normalized.clarification_question
+                or "请选择本次交付形式：PDF/Word、演示文稿或 Excel 工作簿。"})
+        delivery_format = (
+            request.delivery_format or frozen_format or normalized.delivery_format
+            or infer_delivery_format(request.prompt)
+        )
+        self._record_request_context(state, request.prompt, feedback, delivery_format)
         period = normalized.period or _single_explicit_period(request.prompt, feedback)
         missing: list[str] = []
         if period is None:
@@ -372,8 +393,9 @@ class RuntimePlanningMixin:
         if report_public_base_url is None:
             raise RuntimeError("HTTP 报表发布缺少公开下载基址")
         content = self._publication_content(output)
-        if content.get("deliveryFormat") == "pptx":
-            return await self._issue_http_pptx_publication(
+        if content.get("deliveryFormat") in {"pptx", "xlsx"}:
+            return await self._issue_http_office_publication(
+                delivery_format=content["deliveryFormat"],
                 thread_id=thread_id,
                 caller_thread_id=caller_thread_id,
                 user_id=user_id,
@@ -764,9 +786,16 @@ class RuntimePlanningMixin:
             result["publicationIssues"] = publication_issues
         return result
 
-    async def _issue_http_pptx_publication(
+    async def _issue_http_pptx_publication(self, **values: Any) -> dict[str, Any]:
+        return await self._issue_http_office_publication(delivery_format="pptx", **values)
+
+    async def _issue_http_xlsx_publication(self, **values: Any) -> dict[str, Any]:
+        return await self._issue_http_office_publication(delivery_format="xlsx", **values)
+
+    async def _issue_http_office_publication(
         self,
         *,
+        delivery_format: Literal["pptx", "xlsx"],
         thread_id: str,
         caller_thread_id: str,
         user_id: str,
@@ -776,179 +805,147 @@ class RuntimePlanningMixin:
         content: dict[str, Any],
         base_url: str,
     ) -> dict[str, Any]:
-        """PPTX download and edit grants are independent, format-scoped deliveries."""
-        issues = list(content.get("publicationGate", {}).get("issues", []))
-        path = content.get("pptxPath")
-        size = content.get("pptxSize")
-        digest = content.get("pptxSha256")
+        """签发共享工作流的演示文稿/工作簿；编辑和验收故障不丢失可读产物。"""
+        label = delivery_format.upper()
+        editor_kind = "slides" if delivery_format == "pptx" else "workbooks"
+        gate = content.get("publicationGate")
+        if not isinstance(gate, dict):
+            gate = {"formalReleaseAllowed": False, "issues": []}
+        issues: list[dict[str, Any]] = []
+        path = content.get(f"{delivery_format}Path")
+        size = content.get(f"{delivery_format}Size")
+        digest = content.get(f"{delivery_format}Sha256")
+        selected: tuple[ReportArtifactSpec, ...] = ()
         if isinstance(path, str) and path:
             try:
                 actual = await self.workspace_service.ahash_file(thread_id, path)
                 if actual.get("missing") or actual.get("size") != size or actual.get("sha256") != digest:
-                    raise ReportingError("report_pptx_identity_changed", "PPTX 文件身份发生变化。")
+                    raise ReportingError(f"report_{delivery_format}_identity_changed", f"{label} 文件身份发生变化。")
+                selected = (ReportArtifactSpec(artifact=delivery_format, path=path, size=size, sha256=digest),)
             except Exception as error:
-                content.pop("pptxPath", None)
-                content.pop("pptxSize", None)
-                content.pop("pptxSha256", None)
                 issues.append({
-                    "code": error.code if isinstance(error, ReportingError) else "report_pptx_unavailable",
-                    "message": "PPTX 身份无法核验，未签发下载链接。",
+                    "code": error.code if isinstance(error, ReportingError) else f"report_{delivery_format}_unavailable",
+                    "message": f"{label} 身份无法核验，未签发下载链接。",
                 })
-        selected: tuple[ReportArtifactSpec, ...] = ()
-        if content.get("pptxPath"):
-            selected = (ReportArtifactSpec(
-                artifact="pptx", path=content["pptxPath"], size=content["pptxSize"], sha256=content["pptxSha256"],
-            ),)
         scope = resolve_reporting_workflow_scope(
-            run_id=workflow_run_id,
-            session_id=workflow_session_id,
-            user_id=user_id,
-            dependencies=dependencies,
+            run_id=workflow_run_id, session_id=workflow_session_id,
+            user_id=user_id, dependencies=dependencies,
         )
-        if scope.caller_thread_id != caller_thread_id:
-            issues.append({
-                "code": "report_pptx_scope_mismatch",
-                "message": "PPTX 编辑上下文作用域与请求不一致；已核验的文件下载仍继续签发。",
-            })
+        scope_matches = scope.caller_thread_id == caller_thread_id
+        if not scope_matches:
+            issues.append({"code": f"report_{delivery_format}_scope_mismatch",
+                "message": f"{label} 编辑上下文作用域与请求不一致；已核验的文件下载仍继续签发。"})
         download_scope = ReportDownloadScope(
-            database=scope.database,
-            user_id=user_id,
-            company_id=scope.company_id,
-            session_id=workflow_session_id,
-            thread_id=thread_id,
-            workflow_run_id=workflow_run_id,
+            database=scope.database, user_id=user_id, company_id=scope.company_id,
+            session_id=workflow_session_id, thread_id=thread_id, workflow_run_id=workflow_run_id,
         )
         saved = ()
         if selected:
             try:
                 saved = await self.artifact_persistence.persist_available(
-                    scope=download_scope,
-                    report_id=content["reportId"],
-                    revision=content["revision"],
-                    artifacts=selected,
+                    scope=download_scope, report_id=content["reportId"],
+                    revision=content["revision"], artifacts=selected,
                 )
+                if not any(item.artifact == delivery_format for item in saved):
+                    saved = ()
+                    issues.append({"code": f"report_{delivery_format}_persistence_failed",
+                        "message": f"{label} 未完成持久化，使用已核验的工作区文件继续签发下载。"})
             except Exception as error:
-                issues.append({
-                    "code": "report_pptx_persistence_failed",
-                    "message": "PPTX 持久化失败，无法签发可靠下载链接。",
-                    "details": {"errorType": type(error).__name__},
-                })
+                saved = ()
+                issues.append({"code": f"report_{delivery_format}_persistence_failed",
+                    "message": f"{label} 持久化失败，使用已核验的工作区文件继续签发下载。",
+                    "details": {"errorType": type(error).__name__}})
+        editor_context: ReportEditorContext | None = None
+        editor_context_persisted = False
         editor_raw: str | None = None
         editor_expires_at: datetime | None = None
-        if saved and self.editor_grants is not None and scope.caller_thread_id == caller_thread_id:
+        if selected and self.editor_grants is not None and scope_matches:
             try:
-                static_dir = getattr(self, "slides_editor_static_dir", None)
-                if static_dir is None or not (Path(static_dir) / "index.html").is_file():
-                    raise ReportingError("report_slides_editor_unavailable", "幻灯片编辑页面尚未部署。")
                 editor_context = ReportEditorContext(
-                    reportId=content["reportId"],
-                    revision=content["revision"],
-                    jobId=content["jobId"],
-                    workflowRunId=workflow_run_id,
-                    markdownPath=content["markdownPath"],
-                    job={
-                        **content["editorJob"],
-                        "validation": deepcopy(content.get("validation", {"ok": False, "issues": []})),
-                        "publicationGate": deepcopy(content.get("publicationGate", {"formalReleaseAllowed": False, "issues": []})),
-                    },
-                    scope=scope.as_state(),
-                    deliveryFormat="pptx",
-                    pptxPath=content["pptxPath"],
-                    pptxSize=content["pptxSize"],
-                    pptxSha256=content["pptxSha256"],
+                    reportId=content["reportId"], revision=content["revision"],
+                    jobId=content["jobId"], workflowRunId=workflow_run_id,
+                    markdownPath=content["markdownPath"], job=content["editorJob"],
+                    scope=scope.as_state(), deliveryFormat=delivery_format,
+                    artifactManifest=content.get("artifactManifest"),
+                    **{f"{delivery_format}Path": path, f"{delivery_format}Size": size,
+                       f"{delivery_format}Sha256": digest},
                 )
                 durable = await self.state_repository.get(workflow_run_id)
                 if durable is None:
-                    raise ReportingError(
-                        "report_editor_context_missing", "报告编辑上下文不存在。"
-                    )
+                    raise ReportingError("report_editor_context_missing", "报告编辑上下文不存在。")
                 await self.state_repository.apply(
                     workflow_run_id,
-                    ReportingCommand(
-                        name="set_report_editor_context",
-                        payload={
-                            "context": editor_context.model_dump(mode="json", by_alias=True)
-                        },
-                        commandId=f"editor-context:{content['revision']}:{editor_context.digest()}",
-                    ),
+                    ReportingCommand(name="set_report_editor_context",
+                        payload={"context": editor_context.model_dump(mode="json", by_alias=True)},
+                        commandId=f"editor-context:{content['revision']}:{editor_context.digest()}"),
                     expected_version=durable.state_version,
                 )
+                editor_context_persisted = True
                 editor_raw, editor_expires_at = await self.editor_grants.issue(
-                    editor_context,
-                    capabilities={"pptx_editor": True},
+                    editor_context, capabilities={f"{delivery_format}_editor": True},
                 )
             except Exception as error:
-                loguru_logger.warning(
-                    "report_slides_editor_grant_failed report_id={} revision={} error_type={}",
-                    content["reportId"],
-                    content["revision"],
-                    type(error).__name__,
-                )
-                issues.append({
-                    "code": "report_slides_editor_unavailable",
-                    "message": "幻灯片编辑入口暂不可用，PPTX 下载链接仍已签发。",
-                })
-        elif saved and scope.caller_thread_id != caller_thread_id:
-            issues.append({
-                "code": "report_slides_editor_scope_mismatch",
-                "message": "幻灯片编辑作用域与请求不一致，PPTX 下载链接仍已签发。",
-            })
-        elif saved and self.editor_grants is None:
-            issues.append({
-                "code": "report_slides_editor_unavailable",
-                "message": "幻灯片编辑授权服务不可用，PPTX 下载链接仍已签发。",
-            })
+                loguru_logger.warning("report_office_editor_grant_failed format={} error_type={}", delivery_format, type(error).__name__)
+                issues.append({"code": f"report_{'slides' if delivery_format == 'pptx' else 'workbook'}_editor_unavailable",
+                    "message": f"{label} 编辑入口暂不可用，已核验文件继续签发下载。"})
+        elif selected:
+            issues.append({"code": f"report_{'slides' if delivery_format == 'pptx' else 'workbook'}_editor_{'scope_mismatch' if not scope_matches else 'unavailable'}",
+                "message": f"{label} 编辑授权不可用，已核验文件继续签发下载。"})
         raw = None
         grant = None
-        if saved:
-            self._release_workspace(thread_id)
-            raw, grant = await self.download_grants.issue(
-                scope=download_scope,
-                report_id=content["reportId"],
-                revision=content["revision"],
-                pptx_path=content["pptxPath"],
-                pptx_size=content["pptxSize"],
-                pptx_sha256=content["pptxSha256"],
-            )
+        if selected:
+            # 持久化失败时保留工作区绑定，HTTP 下载按 grant 身份读取并复核原文件。
+            try:
+                raw, grant = await self.download_grants.issue(
+                    scope=download_scope, report_id=content["reportId"], revision=content["revision"],
+                    **{f"{delivery_format}_path": path, f"{delivery_format}_size": size,
+                       f"{delivery_format}_sha256": digest},
+                )
+            except Exception as error:  # noqa: BLE001 - use the verified editor download fallback
+                issues.append({"code": f"report_{delivery_format}_download_grant_failed",
+                    "message": f"{label} 下载授权签发失败，将尝试使用编辑会话下载。",
+                    "details": {"errorType": type(error).__name__}})
+            else:
+                if saved:
+                    self._release_workspace(thread_id)
+        fallback_raw: str | None = None
+        fallback_expires_at: datetime | None = None
+        if (grant is None or raw is None) and editor_context_persisted and editor_context is not None and self.editor_grants is not None and scope_matches:
+            try:
+                fallback_raw, fallback_expires_at = await self.editor_grants.issue(
+                    editor_context, capabilities={f"{delivery_format}_download": True},
+                )
+            except Exception as error:  # noqa: BLE001 - retain the validation issue without blocking publication
+                issues.append({"code": f"report_{delivery_format}_download_grant_failed",
+                    "message": f"{label} 下载授权签发失败，已核验文件暂不可通过 HTTP 下载。",
+                    "details": {"errorType": type(error).__name__}})
         if grant is None or raw is None:
-            reasons = [
-                str(issue.get("message") or issue.get("code"))
-                for issue in [*issues, *content.get("validationIssues", [])]
-                if isinstance(issue, dict) and (issue.get("message") or issue.get("code"))
-            ]
-            reason = "；".join(dict.fromkeys(reasons)) or "未生成可下载的 PPTX 文件。"
-            raise ReportingError(
-                "report_pptx_unavailable", f"PPTX 未能交付：{reason[:800]}",
+            result: dict[str, Any] = {
+                "reportId": content["reportId"], "revision": content["revision"],
+                "sourceWarnings": list(content.get("sourceWarnings", ())),
+                "codingReceipts": list(content.get("codingReceipts", ())),
+            }
+            if fallback_raw is not None and selected:
+                result[delivery_format] = {
+                    "downloadUrl": f"{base_url.rstrip('/')}/reports/v1/{editor_kind}/download/{fallback_raw}",
+                    "path": path, "size": size, "sha256": digest,
+                    "expiresAt": fallback_expires_at.isoformat() if fallback_expires_at else None,
+                }
+        else:
+            result = publication_result(
+                report_id=content["reportId"], revision=content["revision"],
+                raw_grant=raw, grant=grant, base_url=base_url,
+                editor_raw_grant=None, editor_expires_at=editor_expires_at,
+                source_warnings=content.get("sourceWarnings"), task_receipts=content.get("codingReceipts"),
             )
-        result = publication_result(
-            report_id=content["reportId"],
-            revision=content["revision"],
-            raw_grant=raw,
-            grant=grant,
-            base_url=base_url,
-            editor_raw_grant=None,
-            editor_expires_at=editor_expires_at,
-            source_warnings=content.get("sourceWarnings"),
-            task_receipts=content.get("codingReceipts"),
-        )
         if editor_raw is not None and editor_expires_at is not None:
-            result["editor"] = {
-                "openUrl": f"{base_url.rstrip('/')}/reports/v1/slides/open/{editor_raw}",
-                "expiresAt": editor_expires_at.isoformat(),
-            }
-        gate = content.get("publicationGate", {"formalReleaseAllowed": False, "issues": []})
+            result["editor"] = {"openUrl": f"{base_url.rstrip('/')}/reports/v1/{editor_kind}/open/{editor_raw}",
+                "expiresAt": editor_expires_at.isoformat()}
         if issues:
-            gate = {
-                **gate,
-                "formalReleaseAllowed": False,
-                "issues": [*gate.get("issues", []), *issues],
-            }
-        result.update({
-            "deliveryFormat": "pptx",
-            "validation": content.get("validation", {"ok": False, "issues": []}),
-            "validationIssues": content.get("validationIssues", []),
-            "publicationGate": gate,
-        })
+            gate = {**gate, "formalReleaseAllowed": False, "issues": [*gate.get("issues", []), *issues]}
+        result.update({"deliveryFormat": delivery_format,
+            "validation": content.get("validation") or {"ok": False, "issues": []},
+            "validationIssues": content.get("validationIssues", []), "publicationGate": gate})
         if issues:
             result["publicationIssues"] = issues
         return result
@@ -960,23 +957,21 @@ class RuntimePlanningMixin:
         output: Any,
     ) -> dict[str, Any]:
         content = self._publication_content(output)
-        if content.get("deliveryFormat") == "pptx":
-            if content.get("pptxPath"):
-                current = await self.workspace_service.ahash_file(thread_id, content["pptxPath"])
-                self._require_artifact_identity(content, current, artifact="pptx")
+        if content.get("deliveryFormat") in {"pptx", "xlsx"}:
+            delivery_format = content["deliveryFormat"]
+            if content.get(f"{delivery_format}Path"):
+                current = await self.workspace_service.ahash_file(thread_id, content[f"{delivery_format}Path"])
+                self._require_artifact_identity(content, current, artifact=delivery_format)
             result = cli_result(
-                pptx_path=content.get("pptxPath"),
-                pptx_size=content.get("pptxSize"),
-                pptx_sha256=content.get("pptxSha256"),
-                source_warnings=content.get("sourceWarnings"),
-                task_receipts=content.get("codingReceipts"),
+                **{f"{delivery_format}_path": content.get(f"{delivery_format}Path"),
+                   f"{delivery_format}_size": content.get(f"{delivery_format}Size"),
+                   f"{delivery_format}_sha256": content.get(f"{delivery_format}Sha256")},
+                source_warnings=content.get("sourceWarnings"), task_receipts=content.get("codingReceipts"),
             )
-            result.update({
-                "deliveryFormat": "pptx",
-                "validation": content.get("validation", {"ok": False, "issues": []}),
+            result.update({"deliveryFormat": delivery_format,
+                "validation": content.get("validation") or {"ok": False, "issues": []},
                 "validationIssues": content.get("validationIssues", []),
-                "publicationGate": content.get("publicationGate", {"formalReleaseAllowed": False, "issues": []}),
-            })
+                "publicationGate": content.get("publicationGate") or {"formalReleaseAllowed": False, "issues": []}})
             return result
         for label in ("pdf", "word"):
             if content.get(f"{label}Path"):
@@ -1507,12 +1502,23 @@ class RuntimePlanningMixin:
             "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),
             "warnings": list(detailed_plan.warnings),
             "requestContext": request_context,
+            "referenceMaterials": [
+                {
+                    "filename": item.get("filename"),
+                    "content": item.get("content", "")[:20_000],
+                    "layout": item.get("layout", {}),
+                    "visualLayout": item.get("visualLayout"),
+                }
+                for item in state.get("report_reference_materials", [])
+            ],
+            "referenceIssues": list(state.get("report_reference_issues", [])),
         }
         base_payload = {
             "reportGoal": envelope.report_goal,
             "reportType": envelope.report_type,
             "period": envelope.period.model_dump(mode="json"),
             "outlineContext": outline_context,
+            "deliveryFormat": envelope.delivery_format,
             "feedback": feedback,
         }
         validation_feedback: dict[str, Any] | None = None
@@ -1691,6 +1697,7 @@ class RuntimePlanningMixin:
         )
         base_payload = {
             "reportGoal": self._envelope(run_context).report_goal,
+            "deliveryFormat": self._envelope(run_context).delivery_format,
             "domains": list(self._envelope(run_context).domains or ()),
             "periodWindows": self._envelope(run_context).period_windows().public_dict(),
             "analysisSequence": [

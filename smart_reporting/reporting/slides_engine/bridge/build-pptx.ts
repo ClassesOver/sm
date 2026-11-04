@@ -3,6 +3,7 @@ import { buildDeckPptx, type DeckSpec } from '../packages/pipelines/src/slides/d
 import { SPEC_CANVAS_H } from '../packages/pipelines/src/slides/page-spec.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 import { openPptx, savePptx, setSlideNotes } from '@genoffice/pptx-engine'
+import { HeuristicMetrics, layoutText } from '@genoffice/pptx-render'
 
 type Input = {
   output: string
@@ -22,6 +23,18 @@ function text(x: number, y: number, w: number, h: number, value: string, size: n
   return { type: 'text' as const, x, y, w, h, paragraphs: [{ runs: [{ text: value, sizePt: size, color, bold }] }] }
 }
 
+function chartBulletHeight(value: string) {
+  const layout = layoutText({
+    body: {
+      paragraphs: [{ runs: [{ text: value, fontSize: 17 }] }],
+      wrap: true, anchor: 'top', insets: { l: 0, t: 0, r: 0, b: 0 },
+    },
+    boxWidthPx: 520, boxHeightPx: SPEC_CANVAS_H, metrics: new HeuristicMetrics(),
+    vp: { widthPx: 1280, heightPx: SPEC_CANVAS_H, scale: 1 },
+  })
+  return Math.max(54, Math.ceil(Math.max(layout.contentHeight, layout.inkBottom ?? 0)) + 4)
+}
+
 const inputPath = process.argv[2]
 if (!inputPath) throw new Error('input JSON path required')
 const input = JSON.parse(await readFile(inputPath, 'utf8')) as Input
@@ -37,17 +50,25 @@ const pages: DeckSpec['pages'] = [
     ],
   },
   ...input.slides.map((slide, index) => {
-    const bulletWidth = slide.chartPath ? 530 : 1020
-    const bulletStep = slide.chartPath ? 86 : 72
-    const bulletHeight = slide.chartPath ? 72 : 54
+    const bullets = slide.chartPath ? slide.bullets : slide.bullets.slice(0, 5)
+    const heights = bullets.map((bullet) => slide.chartPath ? chartBulletHeight(bullet) : 54)
+    const gap = slide.chartPath && bullets.length > 1
+      ? Math.max(8, Math.min(18, (466 - heights.reduce((sum, height) => sum + height, 0)) / (bullets.length - 1)))
+      : 18
+    let bulletY = 174
     const elements: DeckSpec['pages'][number]['elements'] = [
       { type: 'shape' as const, shape: 'rect', x: 72, y: 76, w: 8, h: 50, fill: colors.accent },
       text(100, 76, 1080, 52, slide.title, 25, colors.ink, true),
       { type: 'shape' as const, shape: 'line', x: 100, y: 148, w: 1080, h: 1, stroke: { color: '#D5DEDF', widthPt: 1 } },
-      ...slide.bullets.slice(0, 5).map((bullet, bulletIndex) => [
-        { type: 'shape' as const, shape: 'ellipse', x: 112, y: 190 + bulletIndex * bulletStep, w: 10, h: 10, fill: colors.accent },
-        text(140, 174 + bulletIndex * bulletStep, bulletWidth, bulletHeight, bullet, 17, colors.ink),
-      ]).flat(),
+      ...bullets.flatMap((bullet, bulletIndex) => {
+        const y = bulletY
+        const height = heights[bulletIndex]!
+        bulletY += height + gap
+        return [
+          { type: 'shape' as const, shape: 'ellipse', x: 112, y: y + 16, w: 10, h: 10, fill: colors.accent },
+          text(140, y, slide.chartPath ? 520 : 1020, height, bullet, 17, colors.ink),
+        ]
+      }),
       text(1090, 660, 100, 24, `${index + 2}`, 10, colors.muted),
     ]
     if (slide.chartPath) {
@@ -72,6 +93,12 @@ for (const [index, slide] of input.slides.entries()) {
   setSlideNotes(opened, index + 1, `分析证据：${(slide.evidenceIds ?? []).join(', ') || '未登记'}`)
 }
 const bytes = await savePptx(opened)
-const issues = await auditDeck(bytes)
 await writeFile(input.output, bytes)
-process.stdout.write(JSON.stringify({ slideCount: pages.length, issues: issues.flatMap((page) => page.issues.map((message) => ({ page: page.slide + 1, message }))) }))
+let issues: { page: number; message: string }[]
+try {
+  const audited = await auditDeck(bytes)
+  issues = audited.flatMap((page) => page.issues.map((message) => ({ page: page.slide + 1, message })))
+} catch (error) {
+  issues = [{ page: 0, message: `PPTX layout audit failed: ${error instanceof Error ? error.message : String(error)}` }]
+}
+process.stdout.write(JSON.stringify({ slideCount: pages.length, issues }))

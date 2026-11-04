@@ -25,6 +25,8 @@ class _StrictModel(StrictModel):
 
 
 class NormalizedReportPrompt(_StrictModel):
+    delivery_format: Literal["document", "pptx", "xlsx"] | None = Field(default=None, alias="deliveryFormat")
+    delivery_format_ambiguous: bool = Field(default=False, alias="deliveryFormatAmbiguous")
     period: ReportPeriod | None = None
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
     section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)

@@ -19,6 +19,7 @@ _DEFAULT_ACTION_TEMPLATES = {
     "pdf": "[下载 PDF]({url})",
     "word": "[下载 Word]({url})",
     "pptx": "[下载 PPTX]({url})",
+    "xlsx": "[下载 Excel]({url})",
 }
 _DEFAULT_ACTION_SEPARATOR = " · "
 
@@ -65,7 +66,7 @@ def _format_completion_actions(
     templates = templates or _DEFAULT_ACTION_TEMPLATES
     separator = separator if separator is not None else _DEFAULT_ACTION_SEPARATOR
     actions: list[str] = []
-    for key in ("editor", "pdf", "word", "pptx"):
+    for key in ("editor", "pdf", "word", "pptx", "xlsx"):
         url = urls.get(key)
         if not _is_valid_delivery_url(url):
             continue
@@ -88,10 +89,12 @@ def completed_report_content(
     word = report.get("word")
     editor = report.get("editor")
     pptx = report.get("pptx")
+    xlsx = report.get("xlsx")
     pdf_url = pdf.get("downloadUrl") if isinstance(pdf, dict) else None
     word_url = word.get("downloadUrl") if isinstance(word, dict) else None
     editor_url = editor.get("openUrl") if isinstance(editor, dict) else None
     pptx_url = pptx.get("downloadUrl") if isinstance(pptx, dict) else None
+    xlsx_url = xlsx.get("downloadUrl") if isinstance(xlsx, dict) else None
 
     report_title = _normalize_report_title(report)
     if report_title is None:
@@ -103,10 +106,11 @@ def completed_report_content(
             "pdf": pdf_url,
             "word": word_url,
             "pptx": pptx_url,
+            "xlsx": xlsx_url,
         }
     )
     if not actions:
-        return "## 报告发布未完成\n\n未生成有效的编辑、PDF、Word 或 PPTX 交付链接，请重试报表发布。"
+        return "## 报告发布未完成\n\n未生成有效的编辑、PDF、Word、PPTX 或 Excel 交付链接，请重试报表发布。"
 
     template = template if template is not None else _DEFAULT_COMPLETION_TEMPLATE
     try:
@@ -116,6 +120,7 @@ def completed_report_content(
             pdf_url=pdf_url or "",
             word_url=word_url or "",
             pptx_url=pptx_url or "",
+            xlsx_url=xlsx_url or "",
             actions=actions,
         ).strip()
     except (KeyError, ValueError, IndexError, AttributeError, TypeError) as error:
@@ -126,6 +131,7 @@ def completed_report_content(
             pdf_url=pdf_url or "",
             word_url=word_url or "",
             pptx_url=pptx_url or "",
+            xlsx_url=xlsx_url or "",
             actions=actions,
         ).strip()
     gate = report.get("publicationGate")

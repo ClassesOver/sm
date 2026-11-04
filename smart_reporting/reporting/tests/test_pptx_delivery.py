@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-import asyncio
-import threading
 from hashlib import sha256
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from pathlib import Path
 
 import pytest
+from PIL import Image
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-from smart_reporting.reporting.delivery.pptx import PptxBuildResult, build_editable_pptx
+from smart_reporting.reporting.delivery.pptx import build_editable_pptx
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.workflow.runtime import ReportWorkflowRuntime
-
-from .test_trace_claim_gate import _checkpoint
 
 
 def test_pptx_generation_failure_can_return_without_downloadable_artifact() -> None:
@@ -97,115 +94,79 @@ def test_pptx_generation_accepts_each_business_theme(tmp_path) -> None:
         assert result.slide_count == 2
 
 
-def test_pptx_chart_does_not_cover_editable_conclusions(tmp_path) -> None:
-    from PIL import Image
-
+def test_pptx_chart_slide_uses_separate_columns_and_fits_long_bullets(tmp_path) -> None:
     chart = tmp_path / "chart.png"
-    Image.new("RGB", (460, 320), "#b8d8da").save(chart)
-    bullets = [f"第{number}条经营结论：收入结构需要持续关注。" for number in range(1, 6)]
+    Image.new("RGB", (460, 320), "white").save(chart)
+    bullets = [
+        f"结论{index}：医疗服务收入保持增长，需要结合门诊量、住院量与次均费用的变化持续观察经营质量，并跟踪重点科室的服务结构。"
+        for index in range(1, 5)
+    ] + ["最后一项结论完整保留"]
+    destination = tmp_path / "columns.pptx"
     result = build_editable_pptx(
-        output_path=tmp_path / "chart-report.pptx", title="运营分析", period="2025年",
-        theme="executive", slides=({
-            "title": "经营结论", "bullets": bullets, "chartPath": str(chart),
-            "evidenceIds": ["analysis_001"],
-        },),
+        output_path=destination, title="经营分析", period="2025年", theme="executive",
+        slides=(
+            {"title": "图文分析", "bullets": bullets, "chartPath": str(chart)},
+            {"title": "普通结论", "bullets": ["非图表页保持原布局"]},
+        ),
     )
-    slide = Presentation(result.path).slides[1]
-    picture = next(shape for shape in slide.shapes if shape.shape_type == 13)
-    texts = {shape.text: shape for shape in slide.shapes if getattr(shape, "has_text_frame", False)}
-    for bullet in bullets:
-        shape = texts[bullet]
-        assert (shape.left + shape.width <= picture.left
-                or shape.left >= picture.left + picture.width
-                or shape.top + shape.height <= picture.top
-                or shape.top >= picture.top + picture.height)
-    assert "analysis_001" in slide.notes_slide.notes_text_frame.text
-    assert not any("Overlap:" in str(issue) for issue in result.issues)
+    presentation = Presentation(destination)
+    slide = presentation.slides[1]
+    picture = next(shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
+    text_boxes = [next(shape for shape in slide.shapes if getattr(shape, "text", None) == bullet) for bullet in bullets]
+
+    for shape in text_boxes:
+        assert shape.left + shape.width <= picture.left
+        assert shape.top + shape.height < presentation.slide_height * 660 / 720
+        assert shape.text_frame.paragraphs[0].runs[0].font.size.pt == 17
+    for previous, following in zip(text_boxes, text_boxes[1:]):
+        assert previous.top + previous.height <= following.top
+    plain = next(shape for shape in presentation.slides[2].shapes if getattr(shape, "text", None) == "非图表页保持原布局")
+    assert plain.left == round(presentation.slide_width * 140 / 1280)
+    assert plain.width == round(presentation.slide_width * 1020 / 1280)
+    assert plain.top == round(presentation.slide_height * 174 / 720)
+    assert plain.height == round(presentation.slide_height * 54 / 720)
+    assert result.issues == ()
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_pptx_render_keeps_loop_responsive_and_worker_owns_temp_files(monkeypatch, cancel):
-    from smart_reporting.reporting.workflow.runtime import publication
-
-    checkpoint = _checkpoint({}).model_dump(mode="json", by_alias=True)
-    checkpoint["evidenceManifest"] = {
-        "evidence": [{
-            "analysisId": "analysis_001", "summary": "收入保持增长。", "datasetIds": ["d1"],
-            "evidenceFiles": [{"path": "facts.json", "size": 1, "sha256": "a" * 64}],
-            "citationIds": ["citation_001"],
-        }],
-        "datasetSemantics": [{"datasetId": "d1", "rowGrain": "row", "duplicateResolution": "resolved"}],
-    }
-    state = {
-        publication.REPORT_ANALYSIS_PLAN_STATE_KEY: [],
-        publication.REPORT_ARTIFACTS_STATE_KEY: {"draft": {
-            "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
-            "datasetSnapshotHash": "a" * 64, "effectiveProfileHash": "b" * 64,
-            "markdown": {"path": "report.md", "mediaType": "text/markdown", "size": 1, "sha256": "a" * 64},
-            "citations": [{"citationId": "citation_001", "datasetId": "d1", "requirementId": "r1", "snapshotHash": "a" * 64}],
-            "sections": ["section_001"], "sectionNumbers": ["1"],
-            "headingNumbers": [{"level": 2, "number": "1", "title": "经营", "sectionCode": "section_001", "anchor": "report-section-section_001"}],
-        }},
-    }
-    publication.ReportingCheckpoint.model_validate(checkpoint)
-    publication.ReportArtifactManifest.model_validate(state[publication.REPORT_ARTIFACTS_STATE_KEY]["draft"])
-    files, local = {}, {}
-    started, release, finished = threading.Event(), threading.Event(), threading.Event()
-
-    def build(*, output_path, **_kwargs):
-        local["path"] = output_path
-        started.set()
-        try:
-            assert release.wait(2)
-            output_path.write_bytes(b"pptx")
-            return PptxBuildResult(str(output_path), 4, sha256(b"pptx").hexdigest(), 2, ())
-        finally:
-            finished.set()
-
-    async def write(_thread, path, content):
-        files[path] = content
-
-    async def identity(_thread, path):
-        content = files.get(path)
-        return {"missing": True} if content is None else {"size": len(content), "sha256": sha256(content).hexdigest()}
-
-    runtime = SimpleNamespace(
-        _state=lambda _context: state,
-        _envelope=lambda _context: SimpleNamespace(period=publication.ReportPeriod(start="2025-01-01", end="2025-12-31")),
-        _scope=lambda _context: {"threadId": "thread", "externalRunId": "run"},
-        state_repository=SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(payload={"workflowCheckpoint": checkpoint}))),
-        workspace_service=SimpleNamespace(awrite_bytes=write, ahash_file=identity),
-        _apply_durable_command=AsyncMock(),
+def test_pptx_audit_exception_keeps_generated_artifact_and_returns_warning(tmp_path, monkeypatch) -> None:
+    engine = Path(__file__).parents[1] / "slides_engine"
+    isolated = tmp_path / "engine"
+    (isolated / "bridge").mkdir(parents=True)
+    for name in ("node_modules", "packages", "package.json"):
+        (isolated / name).symlink_to(engine / name, target_is_directory=(engine / name).is_dir())
+    source = (engine / "bridge/build-pptx.ts").read_text(encoding="utf-8")
+    source = source.replace(
+        "import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'",
+        "const auditDeck = async (_bytes: Uint8Array): Promise<never> => { await readFile(input.output); throw new Error('injected audit failure') }",
     )
-    monkeypatch.setattr(publication, "build_editable_pptx", build)
-    # 看门狗只避免旧同步实现卡住；通过条件是构建尚未结束时协程已获得执行机会。
-    watchdog = threading.Timer(1, release.set)
-    watchdog.start()
-    task = asyncio.create_task(publication.RuntimePublicationMixin._render_pptx(
-        runtime, SimpleNamespace(run_id="run"), {}, SimpleNamespace(title="经营报告"),
-    ))
-    try:
-        did_start = await asyncio.to_thread(started.wait, 3)
-        assert did_start, task.result() if task.done() else "构建未启动"
-        assert not task.done()
-        path = local["path"]
-        assert path.parent.is_dir()
-        if cancel:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            assert path.parent.is_dir()
-        release.set()
-        if not cancel:
-            result = await task
-            assert result["status"] == "validated"
-            assert files[result["pptxPath"]] == b"pptx"
-        assert await asyncio.to_thread(finished.wait, 3)
-        async with asyncio.timeout(3):
-            while path.parent.exists():
-                await asyncio.sleep(0)
-    finally:
-        release.set()
-        watchdog.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+    (isolated / "bridge/build-pptx.ts").write_text(source, encoding="utf-8")
+    monkeypatch.setenv("AGENT_REPORTING_SLIDES_ENGINE_DIR", str(isolated))
+    destination = tmp_path / "audited.pptx"
+
+    result = build_editable_pptx(
+        output_path=destination, title="经营分析", period="2025年", theme="executive",
+        slides=({"title": "结论", "bullets": ["内容仍然可下载"]},),
+    )
+
+    assert len(Presentation(destination).slides) == 2
+    assert result.sha256 == sha256(destination.read_bytes()).hexdigest()
+    assert result.issues == ({"page": 0, "message": "PPTX layout audit failed: injected audit failure"},)
+
+
+def test_pptx_chart_slide_retains_excess_content_and_reports_layout_warning(tmp_path) -> None:
+    chart = tmp_path / "chart.png"
+    Image.new("RGB", (460, 320), "white").save(chart)
+    bullets = [f"结论{index}：" + "需要结合门诊量与住院量持续观察经营质量。" * 6 for index in range(7)]
+    destination = tmp_path / "excess-content.pptx"
+
+    result = build_editable_pptx(
+        output_path=destination, title="经营分析", period="2025年", theme="executive",
+        slides=({"title": "完整内容", "bullets": bullets, "chartPath": str(chart)},),
+    )
+
+    slide = Presentation(destination).slides[1]
+    texts = [shape.text for shape in slide.shapes if getattr(shape, "has_text_frame", False)]
+    assert all(bullet in texts for bullet in bullets)
+    assert result.issues
+    assert all(issue["page"] == 2 for issue in result.issues)
+    assert result.size == destination.stat().st_size

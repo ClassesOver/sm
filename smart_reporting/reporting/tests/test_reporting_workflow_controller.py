@@ -336,6 +336,28 @@ def test_completed_external_result_preserves_editor_link() -> None:
     assert result["report"]["reportTitle"] == "年度运营分析报告"
 
 
+@pytest.mark.parametrize("delivery_format", ["pptx", "xlsx"])
+def test_completed_external_result_preserves_office_download_link(delivery_format: str) -> None:
+    link = {"downloadUrl": f"https://reports.example.com/report.{delivery_format}"}
+    output = SimpleNamespace(content={
+        "reportId": "report-1", "revision": 1, delivery_format: link,
+        "editor": {"openUrl": "https://reports.example.com/editor/report"},
+    })
+    control = ReportWorkflowControl(
+        workflowId="enterprise-reporting-workflow-v1",
+        workflowRunId="workflow-run-1",
+        workflowSessionId="workflow-session-1",
+        externalRunId="operation-1",
+        threadId="thread-1",
+        userId="7",
+        status="completed",
+    )
+
+    result = ReportWorkflowController._result(control, output)
+
+    assert result["report"][delivery_format] == link
+
+
 @pytest.mark.anyio
 async def test_external_background_keeps_preclaimed_owner_without_early_cleanup() -> None:
     started = asyncio.Event()

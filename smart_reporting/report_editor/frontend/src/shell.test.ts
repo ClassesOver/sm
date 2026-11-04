@@ -105,4 +105,32 @@ describe('createEditorShell', () => {
     ])
     expect(root.querySelector('[data-action="save"]')?.classList.contains('is-primary')).toBe(true)
   })
+
+  it('loads PPTX output actions in the shared shell and omits document exports', () => {
+    const root = document.querySelector<HTMLElement>('#app')!
+    const shell = createEditorShell(root, 'full', 'pptx')
+
+    expect(root.classList.contains('editor-format-pptx')).toBe(true)
+    expect(shell.exportPptx.isConnected).toBe(true)
+    expect(shell.exportPdf.hidden).toBe(true)
+    expect(shell.exportWord.hidden).toBe(true)
+    expect(shell.search.hidden).toBe(true)
+    expect(shell.history.hidden).toBe(true)
+    expect(shell.sources.hidden).toBe(true)
+    expect(shell.outlineToggle.hidden).toBe(true)
+    expect(shell.more.hidden).toBe(true)
+  })
+})
+
+describe('workbook shell', () => {
+  it('shares the shell and exposes workbook download and save', () => {
+    document.body.innerHTML = '<main id="app"></main>'
+    const root = document.querySelector<HTMLElement>('#app')!
+    const shell = createEditorShell(root, 'full', 'xlsx')
+    expect(root.classList.contains('editor-format-xlsx')).toBe(true)
+    expect(shell.save.isConnected).toBe(true)
+    expect(shell.exportXlsx.getAttribute('aria-label')).toBe('下载 XLSX')
+    expect(shell.exportPdf.hidden).toBe(true)
+    expect(shell.exportWord.hidden).toBe(true)
+  })
 })

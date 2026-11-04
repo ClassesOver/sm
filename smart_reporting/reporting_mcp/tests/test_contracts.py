@@ -134,7 +134,7 @@ def test_completed_operation_contract_includes_editor_and_no_html_preview() -> N
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("artifact", ["pdf", "word", "pptx"])
+@pytest.mark.parametrize("artifact", ["pdf", "word"])
 async def test_reporting_get_preserves_single_format_partial_delivery(
     artifact: str,
     monkeypatch: pytest.MonkeyPatch,

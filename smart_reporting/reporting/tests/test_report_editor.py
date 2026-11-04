@@ -408,7 +408,11 @@ async def test_sql_editor_schema_adds_nullable_capabilities_column() -> None:
 def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> None:
     context = _context()
     legacy_payload = context.model_dump(mode="json", by_alias=True)
-    for field in ("source", "createdAt", "note", "artifactManifest", "deliveryFormat", "pptxPath", "pptxSize", "pptxSha256"):
+    # 旧上下文没有这些字段；默认值不得改变既有摘要。
+    for field in (
+        "source", "createdAt", "note", "artifactManifest", "deliveryFormat",
+        "pptxPath", "pptxSize", "pptxSha256", "xlsxPath", "xlsxSize", "xlsxSha256",
+    ):
         legacy_payload.pop(field)
     legacy_digest = hashlib.sha256(
         json.dumps(
@@ -423,13 +427,16 @@ def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> Non
     assert context.model_copy(update={"source": "manual"}).digest() != legacy_digest
 
 
-def test_access_log_filter_redacts_editor_open_grant() -> None:
+@pytest.mark.parametrize('path', [
+    '/reports/v1/editor/open', '/reports/v1/slides/open', '/reports/v1/slides/download',
+])
+def test_access_log_filter_redacts_editor_open_grant(path) -> None:
     record = logging.LogRecord(
         "uvicorn.access",
         logging.INFO,
         __file__,
         1,
-        "GET /reports/v1/editor/open/secret-grant HTTP/1.1",
+        f"GET {path}/secret-grant HTTP/1.1",
         (),
         None,
     )
@@ -437,7 +444,7 @@ def test_access_log_filter_redacts_editor_open_grant() -> None:
     ReportDownloadAccessLogFilter().filter(record)
 
     assert "secret-grant" not in str(record.msg)
-    assert "/reports/v1/editor/open/<redacted>" in str(record.msg)
+    assert f"{path}/<redacted>" in str(record.msg)
 
 
 def _scope() -> ReportingWorkflowScope:

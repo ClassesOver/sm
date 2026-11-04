@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from io import BytesIO
 from time import perf_counter
 from typing import Any, NoReturn, cast
 from uuid import uuid4
@@ -3768,8 +3769,16 @@ class ReportingCodeModeToolkit(Toolkit):
             "ok": True,
             "executionReceipt": receipt.model_dump(mode="json", by_alias=True),
         }
+        if self.context.task_kind == "workbook":
+            diagnostic = await self._workbook_output_preflight(receipt)
+            if diagnostic is not None:
+                self._set_output_validation("failed", diagnostic=diagnostic)
+                result["ok"] = False
+                result["outputValidation"] = self.pending_output_validation
+                result["nextTools"] = ["read_script", "edit_script", "run_script"]
+                return result
         if self.output_preflight is None:
-            self._set_output_validation("not_required")
+            self._set_output_validation("passed" if self.context.task_kind == "workbook" else "not_required")
         else:
             # 预检本身失败时不能默认放行：未获得结论等于未通过，必须阻塞提交。
             self._set_output_validation("checking")
@@ -3820,6 +3829,32 @@ class ReportingCodeModeToolkit(Toolkit):
             else:
                 self._set_output_validation("passed")
         return result
+
+    async def _workbook_output_preflight(self, receipt: ExecutionReceipt) -> dict[str, Any] | None:
+        """只核对当前回执的工作簿可读性；业务验收留给非阻断发布阶段。"""
+        from openpyxl import load_workbook
+
+        workbooks = [item for item in receipt.output_files if item.path.lower().endswith(".xlsx")]
+        if not workbooks:
+            return _failure("report_workbook_output_invalid", "工作簿任务没有声明 XLSX 产物。")
+        for identity in workbooks:
+            try:
+                content = await self.workspace.read_limited_regular_file(
+                    self.context.task_id, identity.path, max_bytes=128 * 1024 * 1024,
+                )
+                def inspect() -> bool:
+                    workbook = load_workbook(BytesIO(content), read_only=True, data_only=False)
+                    try:
+                        return bool(workbook.sheetnames)
+                    finally:
+                        workbook.close()
+                readable = await asyncio.to_thread(inspect)
+                if not readable:
+                    return _failure("report_workbook_output_invalid", "工作簿没有可读取的工作表。", {"path": identity.path})
+            except Exception as error:
+                return _failure("report_workbook_output_invalid", "工作簿无法读取。", {"path": identity.path, "errorType": type(error).__name__})
+        await self.require_current_receipt(receipt)
+        return None
 
     async def _workspace_failure(self, error: WorkspaceError) -> dict[str, Any]:
         """脚本确实不存在时才引导 write_script；其他工作区错误（产物路径是符号链接、

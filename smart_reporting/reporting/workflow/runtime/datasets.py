@@ -428,6 +428,7 @@ class RuntimeDatasetsMixin:
             "profileCoverageManifest": profile_coverage.model_dump(mode="json", by_alias=True),
             "initialRequirements": state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, []),
             "reportGoal": envelope.report_goal,
+            "deliveryFormat": envelope.delivery_format,
             "analysisGoal": envelope.report_goal,
             "allowedDomains": list(domains),
             "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),

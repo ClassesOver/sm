@@ -1,5 +1,7 @@
 import type { ToolbarMode } from './viewport'
 
+export type EditorFormat = 'document' | 'pptx' | 'xlsx'
+
 export interface EditorShell {
   editor: HTMLElement
   outline: HTMLElement
@@ -19,6 +21,8 @@ export interface EditorShell {
   save: HTMLButtonElement
   exportPdf: HTMLButtonElement
   exportWord: HTMLButtonElement
+  exportPptx: HTMLAnchorElement
+  exportXlsx: HTMLAnchorElement
 }
 
 export function applyLineageFeatureVisibility(
@@ -28,8 +32,14 @@ export function applyLineageFeatureVisibility(
   shell.sources.hidden = features?.panel === false
 }
 
-export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorShell {
-  root.className = `report-app view-wide toolbar-${mode}`
+export function createEditorShell(
+  root: HTMLElement,
+  mode: ToolbarMode,
+  format: EditorFormat = 'document',
+): EditorShell {
+  const isPptx = format === 'pptx'
+  const isBinary = format !== 'document'
+  root.className = `report-app view-wide toolbar-${mode} editor-format-${format}`
   root.innerHTML = `
     <header class="app-bar">
       <div class="report-identity">
@@ -44,33 +54,41 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
         <button type="button" class="save-retry" hidden>重试</button>
       </div>
       <nav class="report-actions" aria-label="报告操作">
-        <div class="toolbar-group toolbar-group-navigation"><button type="button" data-action="outline" aria-label="显示或隐藏目录"
+        <div class="toolbar-group toolbar-group-navigation"><button type="button" data-action="outline" aria-label="显示或隐藏目录"${isBinary ? ' hidden' : ''}
           aria-controls="report-outline" aria-expanded="${mode === 'full'}" title="目录">
           <i data-lucide="panel-left" aria-hidden="true"></i>
           <span>目录</span>
         </button></div>
         <div id="report-secondary-actions" class="secondary-actions toolbar-group toolbar-group-edit-view" aria-label="编辑与视图">
+          ${isBinary ? `<button type="button" data-action="search" aria-label="搜索和替换" hidden></button>
+          <button type="button" data-action="history" aria-label="版本历史" hidden></button>
+          <button type="button" data-action="sources" aria-label="数据来源" hidden></button>
+          <button type="button" data-action="share" aria-label="分享编辑链接" hidden></button>
+          <button type="button" data-action="focus" aria-label="进入专注模式" hidden></button>` : `
           <button type="button" data-action="search" aria-label="搜索和替换" title="搜索和替换"><i data-lucide="search" aria-hidden="true"></i><span>搜索</span></button>
           <button type="button" data-action="history" aria-label="版本历史" title="版本历史"><i data-lucide="history" aria-hidden="true"></i><span>历史</span></button>
           <button type="button" data-action="sources" aria-label="数据来源" title="数据来源"><i data-lucide="database" aria-hidden="true"></i><span>来源</span></button>
           <button type="button" data-action="share" aria-label="分享编辑链接" title="分享编辑链接"><i data-lucide="share-2" aria-hidden="true"></i><span>分享</span></button>
-          <button type="button" data-action="focus" aria-label="进入专注模式" aria-pressed="false" title="专注模式"><i data-lucide="focus" aria-hidden="true"></i><span>专注</span></button>
+          <button type="button" data-action="focus" aria-label="进入专注模式" aria-pressed="false" title="专注模式"><i data-lucide="focus" aria-hidden="true"></i><span>专注</span></button>`}
         </div>
         <button type="button" data-action="more" aria-label="更多操作"
-          aria-controls="report-secondary-actions" aria-expanded="false" title="更多操作">
+          aria-controls="report-secondary-actions" aria-expanded="false" title="更多操作"${isBinary ? ' hidden' : ''}>
           <i data-lucide="more-horizontal" aria-hidden="true"></i>
           <span>更多</span>
         </button>
         <div class="toolbar-group toolbar-group-output"><button type="button" class="is-primary" data-action="save" aria-label="保存" title="保存">
           <i data-lucide="save" aria-hidden="true"></i><span>保存</span>
         </button>
-        <button type="button" data-action="pdf" aria-label="导出 PDF" title="导出 PDF">
+        <button type="button" data-action="pdf" aria-label="导出 PDF" title="导出 PDF"${isBinary ? ' hidden' : ''}>
           <i data-lucide="file-down" aria-hidden="true"></i><span>PDF</span>
         </button>
-        <button type="button" data-action="word" aria-label="导出 Word" title="导出 Word">
+        <button type="button" data-action="word" aria-label="导出 Word" title="导出 Word"${isBinary ? ' hidden' : ''}>
           <i data-lucide="file-text" aria-hidden="true"></i><span>Word</span>
-        </button></div>
-        <button type="button" class="is-subtle toolbar-settings" data-action="export-settings" aria-label="导出设置" title="导出设置"><i data-lucide="settings-2" aria-hidden="true"></i><span>设置</span></button>
+        </button>
+        ${isBinary ? `<a class="is-primary ${format}-download" data-action="${format}-download" aria-label="下载 ${format.toUpperCase()}" title="下载 ${format.toUpperCase()}" hidden>
+          <i data-lucide="download" aria-hidden="true"></i><span>${format.toUpperCase()}</span>
+        </a>` : ''}</div>
+        <button type="button" class="is-subtle toolbar-settings" data-action="export-settings" aria-label="导出设置" title="导出设置"${isBinary ? ' hidden' : ''}><i data-lucide="settings-2" aria-hidden="true"></i><span>设置</span></button>
         <button type="button" class="is-subtle toolbar-shortcuts" data-action="shortcuts" aria-label="快捷键帮助" title="快捷键帮助"><i data-lucide="keyboard" aria-hidden="true"></i><span>快捷键</span></button>
       </nav>
       <span class="reading-progress" role="progressbar" aria-label="报告阅读进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></span>
@@ -95,7 +113,7 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
         </div>
         <nav class="outline-list" aria-label="章节导航"></nav>
       </aside>
-      <section class="editor-surface" aria-label="报告正文">
+      <section class="editor-surface" aria-label="${isPptx ? '报告幻灯片' : format === 'xlsx' ? '报告工作簿' : '报告正文'}">
         <div id="report-editor" aria-busy="true"></div>
       </section>
     </div>
@@ -126,5 +144,7 @@ export function createEditorShell(root: HTMLElement, mode: ToolbarMode): EditorS
     save: required<HTMLButtonElement>('[data-action="save"]'),
     exportPdf: required<HTMLButtonElement>('[data-action="pdf"]'),
     exportWord: required<HTMLButtonElement>('[data-action="word"]'),
+    exportPptx: root.querySelector<HTMLAnchorElement>('[data-action="pptx-download"]') ?? document.createElement('a'),
+    exportXlsx: root.querySelector<HTMLAnchorElement>('[data-action="xlsx-download"]') ?? document.createElement('a'),
   }
 }

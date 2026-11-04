@@ -1,218 +1,291 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import {
-  addElement, deleteElement, openPptx, savePptx, setElementFill,
-  setElementFont, setElementParagraphFormat, setSlideBackground, strokePatchToModel,
-  type OpenedPptx, type SlideElement, type TextElement, type Paragraph,
-} from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
-type Operation = Record<string, unknown> & { op: string; slide: number }
-type Issue = { code: string; message: string; details?: unknown }
-const editableShapes = new Set(['rect', 'roundRect', 'ellipse', 'line'])
-const geometryFields = ['x', 'y', 'width', 'height', 'rotation']
-const textFields = ['text', 'fontSize', 'fontFamily', 'color', 'bold', 'lineSpacing']
-const updateFields = [...geometryFields, ...textFields, 'fill']
-const imageMime: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-  gif: 'image/gif', webp: 'image/webp' }
+type TextEdit = {
+  slideIndex: number
+  elementId: string
+  text?: string
+  geometry?: { x: number; y: number; width: number; height: number }
+}
+type Geometry = { x: number; y: number; width: number; height: number }
+type TextBox = {
+  slideIndex: number
+  text: string
+  geometry: Geometry
+  fontSize?: number
+  fontFamily?: string
+  color?: string
+  bold?: boolean
+  rotation?: number
+}
+type Input = {
+  action: 'inspect' | 'edit'
+  input: string
+  output?: string
+  edits?: TextEdit[]
+  order?: number[]
+  theme?: 'executive' | 'clinical' | 'modern'
+  images?: {
+    slideIndex: number
+    bytesBase64: string
+    extension: 'png' | 'jpg'
+    geometry: { x: number; y: number; width: number; height: number }
+    descr?: string
+  }[]
+  transitions?: { slideIndex: number; kind: SlideTransitionKind }[]
+  animations?: {
+    slideIndex: number
+    elementId: string
+    effect: SlideAnimation['effect']
+    trigger: SlideAnimation['trigger']
+    durationMs?: number
+    delayMs?: number
+  }[]
+  slideLayouts?: { slideIndex: number; layoutPath: string }[]
+  backgrounds?: { slideIndex: number; color: string }[]
+  textBoxes?: TextBox[]
+  deletions?: { slideIndex: number; elementId: string }[]
+}
 
-function fail(code: string): never { throw new Error(code) }
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value)
-}
-function isEditable(element: SlideElement): boolean {
-  return element.type === 'picture'
-    ? !element.media && !element.model3d && !!imageMime[element.mediaRef.split('.').pop()?.toLowerCase() ?? '']
-    : (element.type === 'text' || element.type === 'shape') && !element.customGeometry &&
-      (!element.presetGeometry || editableShapes.has(element.presetGeometry))
-}
-function plainText(element: TextElement): string {
-  return element.text?.paragraphs.map((paragraph) => paragraph.runs.map((run) => run.text).join('')).join('\n') ?? ''
+const colorPattern = /^#[0-9a-fA-F]{6}$/
+const deletableTypes = new Set(['text', 'shape', 'picture'])
+const validSlideIndex = (value: unknown, count: number): value is number =>
+  Number.isInteger(value) && (value as number) >= 0 && (value as number) < count
+const validGeometry = (value: Geometry | undefined) => !!value &&
+  [value.x, value.y, value.width, value.height].every((item) => Number.isFinite(item) && item >= 0 && item <= 100000) &&
+  value.width > 0 && value.height > 0
+
+const themes: Record<NonNullable<Input['theme']>, ThemeSpec> = {
+  executive: { name: 'Executive', colors: { dk1: '#183247', lt1: '#F4F6F8', dk2: '#566773', lt2: '#D5DEDF', accent1: '#147D75', accent2: '#307C8A', accent3: '#718B49', accent4: '#C45A3C', accent5: '#6C7180', accent6: '#8A6D3B', hlink: '#0563C1', folHlink: '#954F72' } },
+  clinical: { name: 'Clinical', colors: { dk1: '#173B36', lt1: '#F5F8F7', dk2: '#5B706A', lt2: '#D9E5E1', accent1: '#287F70', accent2: '#4D8B78', accent3: '#6E9B88', accent4: '#B47A46', accent5: '#66818A', accent6: '#8E9B63', hlink: '#0563C1', folHlink: '#954F72' } },
+  modern: { name: 'Modern', colors: { dk1: '#293846', lt1: '#F7F7F4', dk2: '#5F6B70', lt2: '#E1E3DF', accent1: '#C45A3C', accent2: '#3B8490', accent3: '#79864A', accent4: '#A66A87', accent5: '#4F6E87', accent6: '#AD8848', hlink: '#0563C1', folHlink: '#954F72' } },
 }
 
-function inspect(opened: OpenedPptx) {
-  const scale = 1280 / opened.deck.size.cx
-  return {
-    width: 1280,
-    height: opened.deck.size.cy * scale,
-    fontScale: 12700 * scale,
-    slides: opened.deck.slides.map((slide, index) => ({
-      index,
-      title: slide.elements.filter((element): element is TextElement =>
-        element.type === 'text' || element.type === 'shape').map(plainText).find((value) => value.trim()) ?? `第 ${index + 1} 页`,
-      background: slide.background?.type === 'solid' ? slide.background.color : '#FFFFFF',
-      elements: [...(slide.decorations ?? []).map((element) => ({ element, decoration: true })),
-        ...slide.elements.map((element) => ({ element, decoration: false }))].map(({ element, decoration }, elementIndex): Record<string, unknown> => {
-        const { x, y, cx, cy } = element.transform.offset
-        const base = {
-          id: decoration ? `decoration:${elementIndex}:${element.id}` : element.id,
-          x: x * scale, y: y * scale, width: cx * scale,
-          height: cy * scale, rotation: element.transform.rot / 60000,
-          editable: !decoration && isEditable(element),
-        }
-        if (element.type === 'picture') {
-          const bytes = opened.archive.readBytes(element.mediaRef)
-          const extension = element.mediaRef.split('.').pop()?.toLowerCase()
-          const mime = imageMime[extension ?? '']
-          if (bytes && mime) return { ...base, kind: 'image', imageDataUrl: `data:${mime};base64,${Buffer.from(bytes).toString('base64')}` }
-        }
-        if ((element.type !== 'text' && element.type !== 'shape') || !isEditable(element)) {
-          return { ...base, editable: false, kind: 'shape', shape: 'unsupported',
-            text: `${element.name || element.type}（只读保留）`, fill: '#EDF0F3', color: '#566773' }
-        }
-        const paragraph = element.text?.paragraphs[0]
-        const run = paragraph?.runs.find((item) => item.text) ?? paragraph?.runs[0]
-        const text = plainText(element)
-        const fill = element.presetGeometry === 'line' ? element.stroke?.fill : element.fill
-        return { ...base, kind: text || element.type === 'text' ? 'text' : 'shape',
-          shape: element.presetGeometry ?? 'rect', text,
-          ...(run?.fontSize !== undefined ? { fontSize: run.fontSize } : {}),
-          ...(run?.fontFamily ? { fontFamily: run.fontFamily } : {}),
-          color: element.presetGeometry === 'line' && fill?.type === 'solid' ? fill.color : run?.color ?? '#000000',
-          bold: run?.bold ?? false,
-          ...(fill?.type === 'solid' ? { fill: fill.color } : {}),
-          lineSpacing: paragraph?.lineHeight !== undefined ? paragraph.lineHeight / 100 : 1,
-        }
-      }),
+const requestPath = process.argv[2]
+if (!requestPath) throw new Error('input JSON path required')
+const request = JSON.parse(await readFile(requestPath, 'utf8')) as Input
+const opened = await openPptx(new Uint8Array(await readFile(request.input)))
+const layouts = listSlideLayouts(opened.archive)
+
+const textOf = (element: (typeof opened.deck.slides)[number]['elements'][number]) => {
+  if (element.type !== 'text' && element.type !== 'shape') return ''
+  return (element.text?.paragraphs ?? []).map((paragraph) =>
+    paragraph.runs.map((run) => run.text).join(''),
+  ).join('\n')
+}
+
+if (request.action === 'inspect') {
+  process.stdout.write(JSON.stringify({
+    size: opened.deck.size,
+    masterParts: listMasterParts(opened.archive),
+    layouts,
+    slides: opened.deck.slides.map((slide, slideIndex) => ({
+      slideIndex,
+      background: slide.background?.type === 'solid' ? slide.background.color : null,
+      ...opened.archive.resolveSlideChain(slide.path),
+      transition: getSlideTransition(slide),
+      animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, presetXml, preset }) => ({
+        spid,
+        elementId: slide.elements.find((element) => elementSpid(element) === spid)?.id ?? '',
+        effect,
+        trigger,
+        durationMs,
+        delayMs,
+        ...(presetXml ? { presetXml } : {}),
+        ...(preset ? { preset } : {}),
+      })),
+      elements: slide.elements.map((element) => ({
+        id: element.id,
+        type: element.type,
+        name: element.name ?? '',
+        text: textOf(element),
+        editable: element.type === 'text' || element.type === 'shape',
+        deletable: deletableTypes.has(element.type),
+        geometry: {
+          x: element.transform.offset.x / 9525,
+          y: element.transform.offset.y / 9525,
+          width: element.transform.offset.cx / 9525,
+          height: element.transform.offset.cy / 9525,
+        },
+      })),
     })),
+  }))
+} else {
+  if (request.theme && !Object.hasOwn(themes, request.theme)) throw new Error('theme_invalid')
+  // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
+  const originalSlides = [...opened.deck.slides]
+  const slideCount = originalSlides.length
+  const deletions = request.deletions ?? []
+  const deleted = new Set<string>()
+  for (const deletion of deletions) {
+    if (!validSlideIndex(deletion.slideIndex, slideCount)) throw new Error('delete_slide_index_invalid')
+    const element = originalSlides[deletion.slideIndex]!.elements.find((candidate) => candidate.id === deletion.elementId)
+    if (!element || !deletableTypes.has(element.type)) throw new Error('delete_target_invalid')
+    const key = `${deletion.slideIndex}:${deletion.elementId}`
+    if (deleted.has(key)) throw new Error('delete_target_duplicated')
+    deleted.add(key)
   }
-}
-
-function validate(operation: unknown, opened: OpenedPptx): asserts operation is Operation {
-  if (!operation || typeof operation !== 'object' || Array.isArray(operation)) fail('pptx_operation_invalid')
-  const item = operation as Operation
-  const allowed: Record<string, string[]> = {
-    update: ['op', 'slide', 'id', ...updateFields],
-    addText: ['op', 'slide', ...geometryFields, ...textFields],
-    delete: ['op', 'slide', 'id'], background: ['op', 'slide', 'color'],
+  const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
+  if ((request.edits ?? []).some((edit) => touchesDeleted(edit.slideIndex, edit.elementId)) ||
+    (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
+    throw new Error('delete_target_has_pending_edits')
   }
-  if (!Object.hasOwn(allowed, item.op)) fail('pptx_operation_unknown')
-  if (Object.keys(item).some((key) => !allowed[item.op]!.includes(key))) fail('pptx_operation_field_unknown')
-  if (!Number.isInteger(item.slide) || item.slide < 0 || item.slide >= opened.deck.slides.length) fail('pptx_slide_invalid')
-  if (item.op === 'update' || item.op === 'delete') {
-    if (typeof item.id !== 'string' || !item.id) fail('pptx_element_invalid')
-    const element = opened.deck.slides[item.slide]!.elements.find((value) => value.id === item.id)
-    if (!element || !isEditable(element)) fail('pptx_element_invalid')
-    if (item.op === 'update' && element.type === 'picture' &&
-      [...textFields, 'fill'].some((key) => Object.hasOwn(item, key))) fail('pptx_element_field_invalid')
+  for (const background of request.backgrounds ?? []) {
+    if (!validSlideIndex(background.slideIndex, slideCount)) throw new Error('background_slide_index_invalid')
+    if (typeof background.color !== 'string' || !colorPattern.test(background.color)) throw new Error('background_color_invalid')
   }
-  const required = item.op === 'addText' ? ['text', 'x', 'y', 'width', 'height']
-    : item.op === 'background' ? ['color'] : []
-  if (required.some((key) => !Object.hasOwn(item, key))) fail('pptx_operation_field_missing')
-  for (const key of geometryFields) {
-    if (!Object.hasOwn(item, key)) continue
-    const value = item[key]
-    if (!isNumber(value) || Math.abs(value) > 100000 ||
-      ((key === 'width' || key === 'height') && value <= 0)) fail('pptx_geometry_invalid')
+  for (const box of request.textBoxes ?? []) {
+    if (!validSlideIndex(box.slideIndex, slideCount)) throw new Error('textbox_slide_index_invalid')
+    if (typeof box.text !== 'string' || box.text.length > 20000) throw new Error('textbox_text_invalid')
+    if (!validGeometry(box.geometry)) throw new Error('textbox_geometry_invalid')
+    if (box.fontSize !== undefined && (!Number.isFinite(box.fontSize) || box.fontSize < 1 || box.fontSize > 400)) throw new Error('textbox_font_invalid')
+    if (box.fontFamily !== undefined && (typeof box.fontFamily !== 'string' || !box.fontFamily.trim() || box.fontFamily.length > 200)) throw new Error('textbox_font_invalid')
+    if (box.color !== undefined && (typeof box.color !== 'string' || !colorPattern.test(box.color))) throw new Error('textbox_color_invalid')
+    if (box.bold !== undefined && typeof box.bold !== 'boolean') throw new Error('textbox_font_invalid')
+    if (box.rotation !== undefined && (!Number.isFinite(box.rotation) || Math.abs(box.rotation) > 360)) throw new Error('textbox_rotation_invalid')
   }
-  for (const key of ['color', 'fill']) {
-    if (Object.hasOwn(item, key) && (typeof item[key] !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(item[key] as string))) fail('pptx_color_invalid')
-  }
-  if (Object.hasOwn(item, 'text') && (typeof item.text !== 'string' || item.text.length > 100000)) fail('pptx_text_invalid')
-  if (Object.hasOwn(item, 'fontFamily') && (typeof item.fontFamily !== 'string' || !item.fontFamily.trim() || item.fontFamily.length > 200)) fail('pptx_font_invalid')
-  if (Object.hasOwn(item, 'fontSize') && (!isNumber(item.fontSize) || item.fontSize < 1 || item.fontSize > 400)) fail('pptx_font_invalid')
-  if (Object.hasOwn(item, 'bold') && typeof item.bold !== 'boolean') fail('pptx_font_invalid')
-  if (Object.hasOwn(item, 'lineSpacing') && (!isNumber(item.lineSpacing) || item.lineSpacing < 1 || item.lineSpacing > 3)) fail('pptx_line_spacing_invalid')
-}
-
-function updateText(element: TextElement, value: string) {
-  const previous = element.text?.paragraphs ?? []
-  // 替换文本沿用对应段落的首个 run 样式；未改文本时保留原来的富文本。
-  const paragraphs: Paragraph[] = value.split('\n').map((line, index) => {
-    const original = previous[index] ?? previous[0]
-    const run = { ...(original?.runs[0] ?? {}), text: line }
-    delete run.rawXml
-    delete run.paraMark
-    return { ...original, runs: [run] }
-  })
-  element.text = { ...element.text, paragraphs }
-  element.textMoved = true
-  element.dirty = true
-}
-
-function apply(opened: OpenedPptx, item: Operation) {
-  const slide = opened.deck.slides[item.slide]!
-  const emu = opened.deck.size.cx / 1280
-  if (item.op === 'background') {
-    setSlideBackground(opened, slide, item.color as string)
-    return
-  }
-  if (item.op === 'delete') {
-    if (!deleteElement(opened, slide, item.id as string)) fail('pptx_element_invalid')
-    return
-  }
-  const element = item.op === 'addText'
-    ? addElement(slide, { kind: 'textbox',
-      offset: { x: Math.round((item.x as number) * emu), y: Math.round((item.y as number) * emu),
-        cx: Math.round((item.width as number) * emu), cy: Math.round((item.height as number) * emu) },
-      paragraphs: [{ runs: [{ text: '', fontSize: 18, fontFamily: 'Arial', color: '#000000' }] }],
-      bodyPr: { autoFit: 'shrink', insetsEmu: { l: 0, t: 0, r: 0, b: 0 } },
-    })
-    : slide.elements.find((value) => value.id === item.id)!
-  const offset = element.transform.offset
-  for (const [key, target] of [['x', 'x'], ['y', 'y'], ['width', 'cx'], ['height', 'cy']] as const) {
-    if (Object.hasOwn(item, key)) {
-      offset[target] = Math.round((item[key] as number) * emu)
+  for (const edit of request.edits ?? []) {
+    if (!Number.isInteger(edit.slideIndex) || edit.slideIndex < 0 || edit.slideIndex >= opened.deck.slides.length) {
+      throw new Error('slide_index_invalid')
+    }
+    const element = opened.deck.slides[edit.slideIndex]!.elements.find((candidate) => candidate.id === edit.elementId)
+    if (!element || (element.type !== 'text' && element.type !== 'shape')) throw new Error('element_not_editable')
+    if (edit.text !== undefined) {
+      if (!element.text?.paragraphs.length) throw new Error('element_text_missing')
+      element.text.paragraphs = applyEditParagraphs(
+        element.text.paragraphs,
+        edit.text.split(/\r?\n/).map((text) => ({ runs: [{ text }] })),
+      )
+      element.dirty = true
+    }
+    if (edit.geometry) {
+      const { x, y, width, height } = edit.geometry
+      element.transform.offset = {
+        x: Math.round(x * 9525),
+        y: Math.round(y * 9525),
+        cx: Math.round(width * 9525),
+        cy: Math.round(height * 9525),
+      }
       element.dirtyTransform = true
     }
   }
-  if (Object.hasOwn(item, 'rotation')) {
-    element.transform.rot = Math.round((item.rotation as number) * 60000)
-    element.dirtyTransform = true
+  for (const image of request.images ?? []) {
+    if (!Number.isInteger(image.slideIndex) || image.slideIndex < 0 || image.slideIndex >= opened.deck.slides.length) {
+      throw new Error('image_slide_index_invalid')
+    }
+    const slide = opened.deck.slides[image.slideIndex]!
+    const content = Buffer.from(image.bytesBase64, 'base64')
+    if (content.toString('base64') !== image.bytesBase64 || !['png', 'jpg'].includes(image.extension)) {
+      throw new Error('image_asset_invalid')
+    }
+    const { x, y, width, height } = image.geometry
+    const added = addPicture(opened, slide, {
+      bytes: new Uint8Array(content),
+      ext: image.extension,
+      offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
+      name: 'AI 生成配图',
+      descr: image.descr,
+    })
+    if (!added) throw new Error('image_format_unsupported')
   }
-  if (element.type === 'text' || element.type === 'shape') {
-    if (Object.hasOwn(item, 'text')) updateText(element, item.text as string)
-    if (['fontSize', 'fontFamily', 'color', 'bold', 'lineSpacing'].some((key) => Object.hasOwn(item, key)) && !element.text?.paragraphs.length) {
-      updateText(element, '')
+  for (const transition of request.transitions ?? []) {
+    if (!Number.isInteger(transition.slideIndex) || transition.slideIndex < 0 || transition.slideIndex >= opened.deck.slides.length) {
+      throw new Error('transition_slide_index_invalid')
     }
-    const font = {
-      ...(Object.hasOwn(item, 'fontSize') ? { fontSizePt: item.fontSize as number } : {}),
-      ...(Object.hasOwn(item, 'fontFamily') ? { fontFamily: item.fontFamily as string } : {}),
-      ...(Object.hasOwn(item, 'color') ? { color: item.color as string } : {}),
-      ...(Object.hasOwn(item, 'bold') ? { bold: item.bold as boolean } : {}),
+    setSlideTransition(opened.deck.slides[transition.slideIndex]!, transition.kind)
+  }
+  for (const animation of request.animations ?? []) {
+    const durationMs = animation.durationMs ?? 500
+    const delayMs = animation.delayMs ?? 0
+    if (!Number.isFinite(durationMs) || durationMs < 0 || !Number.isFinite(delayMs) || delayMs < 0) {
+      throw new Error('animation_timing_invalid')
     }
-    if (Object.keys(font).length) setElementFont(slide, element.id, font)
-    if (Object.hasOwn(item, 'lineSpacing')) setElementParagraphFormat(slide, element.id, { lineSpacingPct: (item.lineSpacing as number) * 100 })
-    if (Object.hasOwn(item, 'fill')) {
-      if (element.presetGeometry === 'line') {
-        element.stroke = { ...element.stroke, ...strokePatchToModel({
-          color: item.fill as string, widthEmu: element.stroke?.width ?? 12700,
-        }) }
-        element.dirtyStroke = true
-      } else setElementFill(opened, slide, element.id, item.fill as string)
+    const slide = opened.deck.slides[animation.slideIndex]
+    const element = slide?.elements.find((candidate) => candidate.id === animation.elementId)
+    const spid = element ? elementSpid(element) : null
+    if (!slide || spid === null || (element!.type !== 'text' && element!.type !== 'shape')) {
+      throw new Error('animation_target_invalid')
+    }
+    const existing = getSlideAnimations(slide)
+    const index = existing.findIndex((item) => item.spid === spid && item.effect === animation.effect)
+    const updated: SlideAnimation = {
+      ...(index >= 0 ? existing[index] : {}),
+      spid,
+      effect: animation.effect,
+      trigger: animation.trigger,
+      durationMs,
+      delayMs,
+    }
+    if (index >= 0) existing[index] = updated
+    else existing.push(updated)
+    setSlideAnimations(slide, existing)
+  }
+  for (const deletion of deletions) {
+    if (!deleteElement(opened, originalSlides[deletion.slideIndex]!, deletion.elementId)) throw new Error('delete_target_invalid')
+  }
+  for (const selection of request.slideLayouts ?? []) {
+    if (!Number.isInteger(selection.slideIndex) || selection.slideIndex < 0 || selection.slideIndex >= opened.deck.slides.length) {
+      throw new Error('layout_slide_index_invalid')
+    }
+    if (!layouts.some((layout) => layout.path === selection.layoutPath)) {
+      throw new Error('layout_path_invalid')
+    }
+    if (!setSlideLayout(opened, selection.slideIndex, selection.layoutPath)) {
+      throw new Error('layout_apply_failed')
     }
   }
-}
-
-const inputPath = process.argv[2]
-if (!inputPath) throw new Error('input JSON path required')
-const input = JSON.parse(await readFile(inputPath, 'utf8'))
-try {
-  let opened: OpenedPptx
-  try { opened = await openPptx(new Uint8Array(await readFile(input.input))) }
-  catch { fail('pptx_input_invalid') }
-  if (input.mode === 'inspect') {
-    await writeFile(input.receipt, JSON.stringify(inspect(opened)))
-  } else {
-    if (input.mode !== 'edit' || !Array.isArray(input.operations) || input.operations.length > 1000) fail('pptx_operations_invalid')
-    // 在临时内存中依序校验和修改；任何无效操作都不会生成新文件。
-    for (const operation of input.operations) {
-      validate(operation, opened)
-      apply(opened, operation)
+  if (request.order) {
+    if (request.order.length !== opened.deck.slides.length || new Set(request.order).size !== request.order.length || request.order.some((n) => !Number.isInteger(n) || n < 0 || n >= request.order!.length)) {
+      throw new Error('slide_order_invalid')
     }
-    const bytes = await savePptx(opened)
-    await writeFile(input.output, bytes)
-    let issues: Issue[] = []
-    try {
-      issues = (await auditDeck(bytes)).flatMap((page) => page.issues.map((message) => ({
-        code: 'pptx_layout_warning', message, details: { slide: page.slide },
-      })))
-    } catch {
-      issues.push({ code: 'pptx_audit_failed', message: '幻灯片验收未完成，已保留可下载的 PPTX。' })
+    const originalPaths = [...opened.deck.slides]
+    const desired = request.order.map((index) => originalPaths[index]!.path)
+    for (let target = 0; target < desired.length; target++) {
+      const current = opened.deck.slides.findIndex((slide) => slide.path === desired[target])
+      if (current !== target) moveSlide(opened, current, target)
     }
-    await writeFile(input.receipt, JSON.stringify({ ok: issues.length === 0, issues }))
   }
-} catch (error) {
-  const message = error instanceof Error ? error.message : ''
-  if (!/^pptx_[a-z_]+$/.test(message)) throw error
-  await writeFile(input.receipt, JSON.stringify({ error: message }))
+  if (request.theme) {
+    const spec = themes[request.theme]
+    applyThemeToArchive(opened, spec)
+    remapDeckColors(opened, spec)
+  }
+  for (const background of request.backgrounds ?? []) {
+    setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
+  }
+  for (const box of request.textBoxes ?? []) {
+    const { x, y, width, height } = box.geometry
+    const element = addElement(originalSlides[box.slideIndex]!, {
+      kind: 'textbox',
+      offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
+      paragraphs: box.text.split(/\r?\n/).map((text) => ({ runs: [{
+        text,
+        fontSize: box.fontSize ?? 18,
+        ...(box.fontFamily ? { fontFamily: box.fontFamily } : {}),
+        color: (box.color ?? '#000000').toUpperCase(),
+        ...(box.bold ? { bold: true } : {}),
+      }] })),
+      bodyPr: { autoFit: 'shrink' },
+    })
+    if (box.rotation) {
+      element.transform.rot = Math.round(box.rotation * 60000)
+      element.dirtyTransform = true
+    }
+  }
+  if (!request.output) throw new Error('output_path_required')
+  const bytes = await savePptx(opened)
+  await writeFile(request.output, bytes)
+  let issues: { page: number; message: string }[]
+  try {
+    const audit = await auditDeck(bytes)
+    issues = audit.flatMap((page) => page.issues.map((message) => ({ page: page.slide + 1, message })))
+  } catch (error) {
+    issues = [{ page: 0, message: `PPTX layout audit failed: ${error instanceof Error ? error.message : String(error)}` }]
+  }
+  process.stdout.write(JSON.stringify({
+    slideCount: opened.deck.slides.length,
+    issues,
+  }))
 }

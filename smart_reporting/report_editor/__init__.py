@@ -11,7 +11,9 @@ from .service import (
     ReportEditorSession,
 )
 from .slides import ReportSlidesEditorService
+from .slides_ai import ReportSlidesAIService, create_report_slides_ai_service
 from .slides_api import create_report_slides_editor_router
+from .slides_image_ai import ReportSlidesImageService
 from .table_ai import (
     TableAIEditRequest,
     TableAIEditService,
@@ -29,6 +31,8 @@ __all__ = [
     "ReportEditorGrantService",
     "ReportEditorService",
     "ReportSlidesEditorService",
+    "ReportSlidesAIService",
+    "ReportSlidesImageService",
     "ReportEditorSession",
     "SqlAlchemyReportEditorRepository",
     "TableAIEditRequest",
@@ -39,4 +43,11 @@ __all__ = [
     "create_report_editor_table_ai_service",
     "create_report_editor_router",
     "create_report_slides_editor_router",
+    "create_report_slides_ai_service",
 ]
+
+from .workbook import ReportWorkbookEditorService
+from .workbook_ai import ReportWorkbookAIService, create_report_workbook_ai_service
+from .workbook_api import create_report_workbook_editor_router
+
+__all__ += ["ReportWorkbookEditorService", "ReportWorkbookAIService", "create_report_workbook_ai_service", "create_report_workbook_editor_router"]

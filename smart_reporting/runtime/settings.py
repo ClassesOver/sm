@@ -227,6 +227,7 @@ class AgentSettings:
     report_editor_chart_ai_timeout_seconds: int = 180
     # 编辑器 AI 改表与预制表模板；默认开启，可按环境显式关闭。
     report_editor_table_ai_enabled: bool = True
+    report_slides_image_model: str = "qwen-image-plus"
     report_editor_table_ai_hourly_limit: int = 20
     report_editor_table_ai_timeout_seconds: int = 120
     # 报表完成时返回给调用方的 markdown 模板；未设置时使用默认紧凑格式。
@@ -436,6 +437,10 @@ class AgentSettings:
             ),
             report_editor_table_ai_enabled=_flag(
                 values.get("AGENT_REPORT_EDITOR_TABLE_AI_ENABLED"), default=True
+            ),
+            report_slides_image_model=(
+                values.get("AGENT_REPORT_SLIDES_IMAGE_MODEL", "qwen-image-plus").strip()
+                or "qwen-image-plus"
             ),
             report_editor_table_ai_hourly_limit=_positive_int(
                 values,

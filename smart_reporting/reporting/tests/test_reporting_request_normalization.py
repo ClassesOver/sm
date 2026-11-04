@@ -62,6 +62,34 @@ async def test_normalization_prefers_model_period_and_only_falls_back_when_missi
 
 
 @pytest.mark.anyio
+async def test_normalization_passes_reference_content_and_layout_to_planner() -> None:
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(
+        return_value=NormalizedReportPrompt(reportType="topic", domains=("income",))
+    )
+    references = [{
+        "filename": "sample.pdf",
+        "content": "参考正文组织顺序",
+        "layout": {"pageCount": 2},
+        "visualLayout": {"style": "简洁双栏", "palette": ["深蓝"]},
+    }]
+    run_context = SimpleNamespace(session_state={
+        "report_reference_materials": references,
+        "report_reference_issues": [{"code": "visual_warning"}],
+    })
+
+    await runtime.normalize_report_request(
+        SimpleNamespace(input="分析2025年医院收入趋势", additional_data=None),
+        run_context,
+    )
+
+    planner_payload = runtime._run_planner.await_args.args[1]
+    assert planner_payload["referenceMaterials"] == references
+    assert planner_payload["referenceIssues"] == [{"code": "visual_warning"}]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("prompt", "delivery_format"),
     [

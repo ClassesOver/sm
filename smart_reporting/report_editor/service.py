@@ -433,12 +433,16 @@ class ReportEditorContext(BaseModel):
     source: str = Field(default="published", pattern=r"^(published|manual)$")
     created_at: datetime | None = Field(default=None, alias="createdAt")
     note: str = Field(default="", max_length=200)
-    delivery_format: Literal["document", "pptx"] = Field(
+    delivery_format: Literal["document", "pptx", "xlsx"] = Field(
         default="document", alias="deliveryFormat"
     )
     pptx_path: str | None = Field(default=None, alias="pptxPath", max_length=1024)
     pptx_size: int | None = Field(default=None, alias="pptxSize", gt=0)
     pptx_sha256: str | None = Field(default=None, alias="pptxSha256", pattern=SHA256_PATTERN)
+
+    xlsx_path: str | None = Field(default=None, alias="xlsxPath", max_length=1024)
+    xlsx_size: int | None = Field(default=None, alias="xlsxSize", gt=0)
+    xlsx_sha256: str | None = Field(default=None, alias="xlsxSha256", pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def validate_job_identity(self) -> ReportEditorContext:
@@ -450,6 +454,12 @@ class ReportEditorContext(BaseModel):
                 raise ValueError("PPTX 编辑上下文必须绑定完整文件身份")
         elif any(item is not None for item in pptx_identity):
             raise ValueError("文档编辑上下文不能携带 PPTX 文件身份")
+        xlsx_identity = (self.xlsx_path, self.xlsx_size, self.xlsx_sha256)
+        if self.delivery_format == "xlsx":
+            if any(item is None for item in xlsx_identity):
+                raise ValueError("XLSX 编辑上下文必须绑定完整文件身份")
+        elif any(item is not None for item in xlsx_identity):
+            raise ValueError("其他编辑上下文不能携带 XLSX 文件身份")
         return self
 
     def digest(self) -> str:

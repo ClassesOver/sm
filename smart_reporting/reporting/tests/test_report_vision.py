@@ -66,6 +66,37 @@ async def test_vision_reviewer_reads_image_through_async_workspace_api() -> None
 
 
 @pytest.mark.anyio
+async def test_vision_reviewer_analyzes_reference_page_layouts() -> None:
+    received: list[Image] = []
+
+    class Agent:
+        async def arun(self, _prompt: str, *, images: list[Image]):
+            received.extend(images)
+            return SimpleNamespace(content={
+                "summary": "整套页面采用统一的深色标题带。",
+                "style": "简洁商务风格",
+                "palette": ["深蓝", "白色"],
+                "typography": "一级标题加粗，正文使用常规字重",
+                "composition": "标题置顶，正文双栏，页脚统一",
+                "confidence": 0.94,
+            })
+
+    reviewer = ReportVisionReviewer(
+        SimpleNamespace(report_vision_model="vision-model", debug=False),
+        None,
+        agent_factory=Agent,
+    )
+
+    result = await reviewer.analyze_reference_layout(
+        {"filename": "sample.pptx"}, [b"page-one", b"page-two"]
+    )
+
+    assert result["style"] == "简洁商务风格"
+    assert result["palette"] == ["深蓝", "白色"]
+    assert [image.content for image in received] == [b"page-one", b"page-two"]
+
+
+@pytest.mark.anyio
 async def test_vision_metric_mismatch_has_expected_context_and_remains_warning():
     class Workspace:
         async def aview_image(self, *_args):

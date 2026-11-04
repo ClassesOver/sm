@@ -3,53 +3,27 @@ from __future__ import annotations
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NoReturn
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from ..reporting.models import ReportingError
-from .api import _editor_error_status, _origin
 from .service import ReportEditorGrantService
 
 SLIDES_SESSION_COOKIE = "report_slides_session"
-
-
-class SlidesExportPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-
-    expected_sha256: str = Field(alias="expectedSha256", pattern=r"^[0-9a-f]{64}$")
-
-
-class SlidesWritePayload(SlidesExportPayload):
-    operations: list[dict[str, Any]] = Field(min_length=1, max_length=500)
-
-
-def _slides_http_error(error: ReportingError) -> NoReturn:
-    if error.code == "report_slides_conflict":
-        status = 409
-    elif error.code in {"report_slides_dependency_missing", "report_artifact_persistence_failed"}:
-        status = 503
-    elif error.code == "report_slides_engine_unavailable":
-        status = 502
-    elif error.code == "report_slides_operation_invalid":
-        status = 422
-    elif "permission_denied" in error.code:
-        status = 403
-    else:
-        status = _editor_error_status(error.code)
-    raise HTTPException(status_code=status, detail={"code": error.code, "message": error.message})
+SLIDES_CSRF_COOKIE = "report_slides_csrf"
 
 
 def create_report_slides_editor_router(
     grants: ReportEditorGrantService,
     *,
     slides: object,
+    slides_ai: object | None = None,
+    slides_images: object | None = None,
+    slides_charts: object | None = None,
     static_dir: str | Path,
     cookie_secure: bool = True,
-    allowed_origin: str | None = None,
 ) -> APIRouter:
     router = APIRouter()
     root = Path(static_dir).resolve()
@@ -65,24 +39,41 @@ def create_report_slides_editor_router(
                 )
             return session, await slides.context_for_session(session)
         except ReportingError as error:
-            _slides_http_error(error)
+            status = 403 if "permission_denied" in error.code else 404
+            raise HTTPException(
+                status_code=status,
+                detail={"code": error.code, "message": error.message},
+            ) from None
 
-    async def require_write_context(request: Request, report_id: str, revision: int):
+    def require_csrf(request: Request) -> None:
         raw_session = request.cookies.get(SLIDES_SESSION_COOKIE, "")
-        origins = {_origin(str(request.base_url))}
-        if allowed_origin:
-            origins.add(_origin(allowed_origin))
-        if request.headers.get("origin", "") not in origins or not secrets.compare_digest(
-            request.headers.get("x-csrf-token", ""), grants.csrf_token(raw_session),
+        expected_csrf = grants.csrf_token(raw_session)
+        if not secrets.compare_digest(
+            request.headers.get("X-CSRF-Token", ""), expected_csrf
+        ) or not secrets.compare_digest(
+            request.cookies.get(SLIDES_CSRF_COOKIE, ""), expected_csrf
         ):
-            raise HTTPException(status_code=403, detail={"code": "report_editor_csrf_invalid"})
-        return await require_context(request, report_id, revision)
+            raise HTTPException(status_code=403, detail={"code": "report_slides_csrf_invalid"})
 
-    def document_response(request: Request, document: dict[str, Any]) -> JSONResponse:
-        return JSONResponse(
-            {**document, "csrfToken": grants.csrf_token(request.cookies.get(SLIDES_SESSION_COOKIE, ""))},
-            headers={"Cache-Control": "no-store"},
-        )
+    def require_ai_service():
+        if slides_ai is None:
+            raise HTTPException(status_code=503, detail={"code": "report_slides_ai_unavailable"})
+        return slides_ai
+
+    def require_image_service():
+        if slides_images is None:
+            raise HTTPException(status_code=503, detail={"code": "report_slides_image_unavailable"})
+        return slides_images
+
+    def require_chart_service():
+        if slides_charts is None:
+            raise HTTPException(status_code=503, detail={"code": "report_slides_chart_unavailable", "message": "图表 AI 编辑暂不可用。",
+            })
+        return slides_charts
+
+    def report_ai_error(error: ReportingError) -> HTTPException:
+        status = 403 if "permission_denied" in error.code else 409
+        return HTTPException(status_code=status, detail={"code": error.code, "message": error.message})
 
     @router.get("/reports/v1/slides/open/{raw_grant}", include_in_schema=False)
     async def open_slides_editor(raw_grant: str) -> RedirectResponse:
@@ -112,19 +103,58 @@ def create_report_slides_editor_router(
             max_age=max(0, int((session.expires_at - datetime.now(UTC)).total_seconds())),
             path=path,
         )
+        response.set_cookie(
+            SLIDES_CSRF_COOKIE,
+            grants.csrf_token(raw_session),
+            httponly=False,
+            secure=cookie_secure,
+            samesite="lax",
+            max_age=max(0, int((session.expires_at - datetime.now(UTC)).total_seconds())),
+            path=path,
+        )
         return response
 
-    @router.get("/reports/v1/slides/{report_id}/{revision:int}", include_in_schema=False)
+    @router.get("/reports/v1/slides/download/{raw_grant}", include_in_schema=False)
+    async def download_slides(raw_grant: str) -> Response:
+        try:
+            _raw_session, session = await grants.exchange(raw_grant)
+            context, content = await slides.download_for_session(session)
+        except ReportingError as error:
+            status = 403 if "permission_denied" in error.code else 404
+            raise HTTPException(
+                status_code=status,
+                detail={"code": error.code, "message": error.message},
+            ) from None
+        filename = Path(context.pptx_path or "report.pptx").name
+        return Response(
+            content,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.get("/reports/v1/slides/assets/{asset_path:path}", include_in_schema=False)
+    async def read_slides_static(asset_path: str) -> FileResponse:
+        assets_root = (root / "assets").resolve()
+        target = (assets_root / asset_path).resolve()
+        if not target.is_relative_to(assets_root) or not target.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(target)
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}", include_in_schema=False)
     async def read_slides_editor_page(
         report_id: str, revision: int, request: Request
     ) -> FileResponse:
         await require_context(request, report_id, revision)
-        index = root / "index.html"
+        index = root / "slides.html"
         if not index.is_file():
             raise HTTPException(status_code=503, detail={"code": "slides_editor_unbuilt"})
         response = FileResponse(index, media_type="text/html")
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; "
             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
         )
@@ -133,46 +163,186 @@ def create_report_slides_editor_router(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    @router.get("/reports/v1/slides/{report_id}/{revision:int}/document", include_in_schema=False)
-    async def read_slides_document(report_id: str, revision: int, request: Request) -> JSONResponse:
-        session, _ = await require_context(request, report_id, revision)
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/deck", include_in_schema=False)
+    async def read_slides_deck(report_id: str, revision: int, request: Request):
+        _session, _context = await require_context(request, report_id, revision)
         try:
-            return document_response(request, await slides.document_for_session(session))
+            return await slides.deck_for_session(_session)
         except ReportingError as error:
-            _slides_http_error(error)
+            raise HTTPException(status_code=409, detail={"code": error.code, "message": error.message}) from None
 
-    @router.put("/reports/v1/slides/{report_id}/{revision:int}/draft", include_in_schema=False)
-    async def save_slides_draft(
-        report_id: str, revision: int, payload: SlidesWritePayload, request: Request,
-    ) -> JSONResponse:
-        session, _ = await require_write_context(request, report_id, revision)
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/render-tree", include_in_schema=False)
+    async def read_slides_render_tree(report_id: str, revision: int, request: Request):
+        session, _context = await require_context(request, report_id, revision)
         try:
-            document = await slides.save_draft_for_session(
-                session, expected_sha256=payload.expected_sha256, operations=payload.operations,
+            return await slides.render_tree_for_session(session)
+        except ReportingError as error:
+            raise HTTPException(status_code=409, detail={"code": error.code, "message": error.message}) from None
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/render-tree", include_in_schema=False)
+    async def preview_slides_render_tree(report_id: str, revision: int, request: Request):
+        session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        try:
+            return await slides.render_tree_for_session(session, await request.json())
+        except ReportingError as error:
+            raise HTTPException(status_code=409, detail={"code": error.code, "message": error.message}) from None
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/preview.pdf", include_in_schema=False)
+    async def preview_slides_pdf(report_id: str, revision: int, request: Request) -> Response:
+        _session, _context = await require_context(request, report_id, revision)
+        try:
+            content = await slides.preview_pdf(_session)
+        except ReportingError as error:
+            raise HTTPException(status_code=503, detail={"code": error.code, "message": error.message}) from None
+        return Response(
+            content,
+            media_type="application/pdf",
+            headers={"Cache-Control": "no-store", "Content-Disposition": "inline; filename=slides-preview.pdf"},
+        )
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/save", include_in_schema=False)
+    async def save_slides_revision(report_id: str, revision: int, request: Request):
+        _session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
+            image_edits = payload.pop("imageEdits", [])
+            chart_edits = payload.pop("chartEdits", [])
+            replacements = []
+            if chart_edits:
+                chart_service = require_chart_service()
+                replacements = await chart_service.resolve_for_session(_session, chart_edits)
+            image_records = []
+            if image_edits:
+                image_service = require_image_service()
+                image_records = await image_service.resolve_for_session(_session, image_edits)
+            result = await slides.save_revision(
+                _session, payload, **({"images": image_records} if image_records else {}),
+                **({"chart_replacements": replacements} if replacements else {}),
             )
-            return document_response(request, document)
+            if replacements:
+                try:
+                    await chart_service.discard_candidates(
+                        _session, [item['candidateId'] for item in replacements]
+                    )
+                except Exception:  # noqa: BLE001 - 清理失败不影响已保存修订
+                    pass
+            if image_records:
+                try:
+                    await image_service.discard_candidates(
+                        _session, [image["candidateId"] for image in image_records]
+                    )
+                except Exception:  # noqa: BLE001 - saved PPTX must not be failed by cache cleanup
+                    pass
+            return result
         except ReportingError as error:
-            _slides_http_error(error)
+            raise HTTPException(
+                status_code=409,
+                detail={"code": error.code, "message": error.message},
+            ) from None
 
-    @router.post("/reports/v1/slides/{report_id}/{revision:int}/export", include_in_schema=False)
-    async def export_slides(
-        report_id: str, revision: int, payload: SlidesExportPayload, request: Request,
-    ) -> JSONResponse:
-        session, _ = await require_write_context(request, report_id, revision)
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/charts", include_in_schema=False)
+    async def list_slide_charts(report_id: str, revision: int, request: Request):
+        session, _context = await require_context(request, report_id, revision)
         try:
-            result = await slides.export_for_session(
-                session, expected_sha256=payload.expected_sha256,
-                base_url=str(request.base_url).rstrip("/"),
-            )
-            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+            return await require_chart_service().list_charts(session)
         except ReportingError as error:
-            _slides_http_error(error)
+            raise report_ai_error(error) from None
 
-    @router.get("/reports/v1/slides/assets/{asset_path:path}", include_in_schema=False)
-    async def read_slides_static(asset_path: str) -> FileResponse:
-        target = (root / asset_path).resolve()
-        if not target.is_relative_to(root) or not target.is_file():
-            raise HTTPException(status_code=404)
-        return FileResponse(target)
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/charts/start", include_in_schema=False)
+    async def start_slide_chart(report_id: str, revision: int, request: Request):
+        session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ReportingError('report_slides_chart_edit_invalid', '图表编辑请求无效。')
+            return await require_chart_service().start_edit(
+                session, payload.get('slideIndex'), payload.get('elementId'), payload.get('instruction'),
+            )
+        except ReportingError as error:
+            raise report_ai_error(error) from None
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/charts/{candidate_id}", include_in_schema=False)
+    async def read_slide_chart(
+        report_id: str, revision: int, candidate_id: str, request: Request,
+        wait_ms: int = Query(default=0, ge=0, le=1500),
+    ):
+        session, _context = await require_context(request, report_id, revision)
+        try:
+            return await require_chart_service().edit_status(session, candidate_id, wait_ms=wait_ms)
+        except ReportingError as error:
+            raise report_ai_error(error) from None
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/charts/{candidate_id}/cancel", include_in_schema=False)
+    async def cancel_slide_chart(report_id: str, revision: int, candidate_id: str, request: Request):
+        session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        try:
+            return await require_chart_service().cancel_edit(session, candidate_id)
+        except ReportingError as error:
+            raise report_ai_error(error) from None
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/start", include_in_schema=False)
+    async def start_slides_ai_edit(report_id: str, revision: int, request: Request):
+        session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        service = require_ai_service()
+        try:
+            payload = await request.json()
+            instruction = payload.get("instruction") if isinstance(payload, dict) else None
+            return await service.start_edit(session, instruction)
+        except ReportingError as error:
+            raise report_ai_error(error) from None
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/ai/{edit_id}", include_in_schema=False)
+    async def read_slides_ai_status(
+        report_id: str,
+        revision: int,
+        edit_id: str,
+        request: Request,
+        wait_ms: int = Query(default=0, ge=0, le=20_000),
+    ):
+        session, _context = await require_context(request, report_id, revision)
+        service = require_ai_service()
+        try:
+            return await service.wait_edit_status(session, edit_id, wait_ms=wait_ms)
+        except ReportingError as error:
+            raise report_ai_error(error) from None
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/{edit_id}/cancel", include_in_schema=False)
+    async def cancel_slides_ai_edit(report_id: str, revision: int, edit_id: str, request: Request):
+        session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        service = require_ai_service()
+        try:
+            return await service.cancel_edit(session, edit_id)
+        except ReportingError as error:
+            raise report_ai_error(error) from None
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/{edit_id}/accept", include_in_schema=False)
+    async def accept_slides_ai_edit(report_id: str, revision: int, edit_id: str, request: Request):
+        session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        service = require_ai_service()
+        try:
+            return await service.mark_accepted(session, edit_id)
+        except ReportingError as error:
+            raise report_ai_error(error) from None
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/image", include_in_schema=False)
+    async def generate_slides_image(report_id: str, revision: int, request: Request):
+        session, _context = await require_context(request, report_id, revision)
+        require_csrf(request)
+        service = require_image_service()
+        try:
+            payload = await request.json()
+            prompt = payload.get("prompt") if isinstance(payload, dict) else None
+            return await service.generate_candidate(session, prompt)
+        except ReportingError as error:
+            raise report_ai_error(error) from None
 
     return router

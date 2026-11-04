@@ -27,7 +27,7 @@ def _normalized_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
 @dataclass(frozen=True, slots=True)
 class ReportingCodingTaskContext:
     task_id: str
-    task_kind: Literal["analysis", "visualization"]
+    task_kind: Literal["analysis", "visualization", "workbook"]
     code_mode_session_id: str
     workspace_key: str
     workspace_root: Path

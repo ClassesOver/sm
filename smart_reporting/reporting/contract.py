@@ -59,13 +59,29 @@ _PRESENTATION_NEGATION_PATTERN = re.compile(
 )
 
 
-def infer_delivery_format(prompt: str) -> Literal["document", "pptx"]:
-    """Resolve explicit presentation requests while keeping ordinary reports as documents."""
-    for match in _PRESENTATION_REQUEST_PATTERN.finditer(prompt):
-        prefix = prompt[max(0, match.start() - 12):match.start()]
-        if _PRESENTATION_NEGATION_PATTERN.search(prefix):
-            continue
+_WORKBOOK_REQUEST_PATTERN = re.compile(
+    r"(?:(?<![A-Za-z0-9])xlsx?(?![A-Za-z0-9])|excel|spreadsheet|workbook|工作簿|电子表格)",
+    re.IGNORECASE,
+)
+
+
+# 冻结交付格式的唯一取值集合；xlsx 复用 document 编排分支，仅在渲染/发布阶段分流。
+REPORT_DELIVERY_FORMATS: frozenset[str] = frozenset(("document", "pptx", "xlsx"))
+
+
+def infer_delivery_format(prompt: str) -> Literal["document", "pptx", "xlsx"]:
+    """旧调用的确定性回退；自然语言主路径使用语义规范化结果。"""
+    formats = set()
+    for pattern, format_name in ((_PRESENTATION_REQUEST_PATTERN, "pptx"),
+                                 (_WORKBOOK_REQUEST_PATTERN, "xlsx")):
+        for match in pattern.finditer(prompt):
+            prefix = prompt[max(0, match.start() - 12):match.start()]
+            if not _PRESENTATION_NEGATION_PATTERN.search(prefix):
+                formats.add(format_name)
+    if formats == {"pptx"}:
         return "pptx"
+    if formats == {"xlsx"}:
+        return "xlsx"
     return "document"
 
 
@@ -144,7 +160,7 @@ class ReportRequestEnvelope(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
-    delivery_format: Literal["document", "pptx"] = Field(
+    delivery_format: Literal["document", "pptx", "xlsx"] = Field(
         default="document", alias="deliveryFormat"
     )
     section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
@@ -260,6 +276,9 @@ class ReportRequestEnvelope(StrictModel):
 class ReportPromptInput(StrictModel):
     version: Literal["1"] = "1"
     prompt: str = Field(min_length=1, max_length=20_000)
+    delivery_format: Literal["document", "pptx", "xlsx"] | None = Field(
+        default=None, alias="deliveryFormat"
+    )
 
     @field_validator("prompt")
     @classmethod
@@ -276,7 +295,7 @@ class ReportingWorkflowInput(StrictModel):
         default=None, alias="reportGoal", min_length=1, max_length=20_000
     )
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
-    delivery_format: Literal["document", "pptx"] | None = Field(
+    delivery_format: Literal["document", "pptx", "xlsx"] | None = Field(
         default=None, alias="deliveryFormat"
     )
     section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
@@ -299,7 +318,6 @@ class ReportingWorkflowInput(StrictModel):
                 for value in (
                     self.report_goal,
                     self.report_type,
-                    self.delivery_format,
                     self.section_count,
                     self.domains,
                     self.period,
