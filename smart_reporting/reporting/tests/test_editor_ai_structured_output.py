@@ -19,7 +19,9 @@ from smart_reporting.report_editor.workbook_ai import (
     create_report_workbook_ai_service,
 )
 from smart_reporting.reporting.structured_output.agno_compat import _parse_reporting_response_model
-from smart_reporting.reporting.structured_output.wire_schema import StructuredOutputWireSchemaResolver
+from smart_reporting.reporting.structured_output.wire_schema import (
+    StructuredOutputWireSchemaResolver,
+)
 
 
 def _model() -> OpenAIChat:

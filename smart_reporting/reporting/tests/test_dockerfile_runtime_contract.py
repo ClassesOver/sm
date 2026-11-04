@@ -26,4 +26,3 @@ def test_dockerfile_prebundles_office_engine_bridges():
     dockerfile = (Path(__file__).resolve().parents[3] / "Dockerfile").read_text(encoding="utf-8")
 
     assert dockerfile.count("npm run bundle:bridges") == 2
-
