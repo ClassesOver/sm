@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from copy import deepcopy
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from ..reporting.delivery.office_engine import (
@@ -22,6 +22,7 @@ from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadSc
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
+from .revisions import next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorGrantService, ReportEditorSession
 
 _SLIDE_ANIMATION_EFFECTS = {
@@ -347,9 +348,9 @@ class ReportSlidesEditorService:
             from .slides_chart_ai import replace_pptx_pictures
 
             revised = await run_office_engine(replace_pptx_pictures, revised, chart_replacements)
-        next_revision = context.revision + 1
-        source_path = PurePosixPath(context.pptx_path or "report.pptx")
-        revision_path = (source_path.parent / f"{source_path.stem}-r{next_revision}.pptx").as_posix()
+        # 从旧修订或多个标签页保存时，不能复用“当前修订 + 1”的固定文件名。
+        next_revision, revision_issues = await next_manual_revision(self.state_repository, context)
+        revision_path = revision_file_path(context.pptx_path or "report.pptx", next_revision, suffix=".pptx")
         thread_id = context.scope["threadId"]
         await self.workspace.awrite_bytes(thread_id, revision_path, revised, overwrite=False)
         identity = await self.workspace.ahash_file(thread_id, revision_path)
@@ -364,7 +365,7 @@ class ReportSlidesEditorService:
         next_job["pptxPath"] = revision_path
         next_job["pptxSize"] = len(revised)
         next_job["pptxSha256"] = digest
-        validation_issues = []
+        validation_issues = list(revision_issues)
         if chart_replacements:
             previous_bindings = next_job.get("pptxChartEdits", [])
             invalid_bindings = not isinstance(previous_bindings, list)

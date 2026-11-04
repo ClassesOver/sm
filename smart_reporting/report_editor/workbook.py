@@ -6,9 +6,7 @@ import secrets
 from copy import deepcopy
 from datetime import UTC, datetime
 from io import BytesIO
-from pathlib import PurePosixPath
 from typing import Any
-from uuid import uuid4
 from zipfile import ZipFile
 
 from loguru import logger
@@ -19,6 +17,7 @@ from ..reporting.delivery.xlsx import inspect_workbook, patch_workbook
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
+from .revisions import next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorSession
 
 
@@ -126,16 +125,9 @@ class ReportWorkbookEditorService:
                 revised = self._mark_sources_unverified(revised, {"sources": {}}, context.xlsx_sha256)
             except Exception:
                 pass
-        try:
-            durable = await self.state_repository.get(context.workflow_run_id)
-            contexts = durable.payload.get("reportEditorContexts", {}) if durable is not None else {}
-        except Exception:
-            contexts = {}
-            lineage_issues.append({"code": "report_workbook_revision_lookup_failed", "message": "修订记录暂不可读取，已为新文件保留独立身份。"})
-        revision = max([context.revision, *[int(key) for key in contexts if str(key).isdigit()]]) + 1
-        path = PurePosixPath(context.xlsx_path or "report.xlsx")
-        # Distinct files also prevent concurrent saves from overwriting an existing revision.
-        revised_path = (path.parent / f"{path.stem}-r{revision}-{uuid4().hex[:12]}.xlsx").as_posix()
+        revision, revision_issues = await next_manual_revision(self.state_repository, context)
+        lineage_issues.extend(revision_issues)
+        revised_path = revision_file_path(context.xlsx_path or "report.xlsx", revision, suffix=".xlsx")
         await self.workspace.awrite_bytes(context.scope["threadId"], revised_path, revised, overwrite=False)
         actual = await self.workspace.ahash_file(context.scope["threadId"], revised_path)
         digest = hashlib.sha256(revised).hexdigest()

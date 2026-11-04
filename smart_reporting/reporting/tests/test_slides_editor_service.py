@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 from smart_reporting.report_editor.service import ReportEditorContext, ReportEditorSession
 from smart_reporting.report_editor.slides import ReportSlidesEditorService
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.workspace import WorkspacePathConflict
 
 
 def _context() -> ReportEditorContext:
@@ -165,7 +167,7 @@ async def test_slides_save_rejects_invalid_animation_parameters(animation):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    'fault', ['persistence', 'context', 'download_grant', 'editor_grant', 'preview'],
+    'fault', ['persistence', 'context', 'download_grant', 'editor_grant', 'preview', 'stale_revision'],
 )
 async def test_slides_save_commits_revision_and_keeps_download_when_persistence_fails(monkeypatch, fault):
     from smart_reporting.report_editor import slides
@@ -182,6 +184,15 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         "pptx_sha256": hashlib.sha256(source_bytes).hexdigest(),
     })
     files = {context.pptx_path: source_bytes}
+    contexts = {"1": context.model_dump(mode="json", by_alias=True)}
+    if fault == 'stale_revision':
+        # 修订 2 已存在（例如从首个编辑入口重新打开后再次保存）；新修订必须是 3 且不覆盖 r2。
+        files["reports/report-r2.pptx"] = b"existing-revision-2"
+        contexts["2"] = context.model_copy(update={"revision": 2, "pptx_path": "reports/report-r2.pptx"}).model_dump(
+            mode="json", by_alias=True,
+        )
+    expected_revision = 3 if fault == 'stale_revision' else 2
+    revision_path = re.compile(rf"reports/report-r{expected_revision}-[0-9a-f]{{12}}\.pptx")
 
     class Workspace:
         async def ahash_file(self, _thread, path):
@@ -191,11 +202,13 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         async def afile_bytes(self, _thread, path):
             return files[path], "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
-        async def awrite_bytes(self, _thread, path, content, **_kwargs):
+        async def awrite_bytes(self, _thread, path, content, *, overwrite=False, **_kwargs):
+            if path in files and not overwrite:
+                raise WorkspacePathConflict("目标文件已经存在，请重新读取后再覆盖。")
             files[path] = content
 
     state = SimpleNamespace(
-        payload={"reportEditorContexts": {"1": context.model_dump(mode="json", by_alias=True)}},
+        payload={"reportEditorContexts": contexts},
         state_version=8,
     )
     applied = []
@@ -224,7 +237,7 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
 
     class DownloadGrants:
         async def issue(self, **kwargs):
-            assert kwargs['pptx_path'] == 'reports/report-r2.pptx'
+            assert revision_path.fullmatch(kwargs['pptx_path'])
             assert kwargs['pptx_size'] == len(b'verified-revision')
             assert kwargs['pptx_sha256'] == hashlib.sha256(b'verified-revision').hexdigest()
             return 'artifact-download-token', SimpleNamespace(expires_at=datetime.now(UTC))
@@ -251,7 +264,12 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         _session(context), {"expectedSha256": context.pptx_sha256, "edits": [], "order": [0]}
     )
 
-    assert result["revision"] == 2
+    assert result["revision"] == expected_revision
+    assert revision_path.fullmatch(result["pptx"]["path"])
+    if fault == 'stale_revision':
+        assert files["reports/report-r2.pptx"] == b"existing-revision-2"
+        assert result["validation"]["ok"] is True
+        return
     if fault in {'context', 'download_grant'}:
         assert result['pptx']['downloadUrl'].endswith('/reports/v1/download/artifact-download-token/pptx')
     else:
@@ -273,7 +291,7 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         assert len(applied) == 1
         assert applied[0][1] == 8
         saved_context = applied[0][0].payload["context"]
-        assert saved_context["pptxPath"] == "reports/report-r2.pptx"
+        assert revision_path.fullmatch(saved_context["pptxPath"])
 
 
 def _validating_service(context: ReportEditorContext) -> ReportSlidesEditorService:
