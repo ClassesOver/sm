@@ -2,7 +2,6 @@
 # 运行时由 facade 末尾组合的多重继承提供跨阶段成员；静态检查无法解析该延迟装配。
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,6 +15,7 @@ from ....quality_warnings import (
     TenantScope,
     WarningAdapter,
 )
+from ...delivery.office_engine import run_office_engine
 from ...delivery.pptx import build_editable_pptx
 from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import (
@@ -722,7 +722,7 @@ class RuntimePublicationMixin:
                     )
                     return built, local_pptx.read_bytes()
 
-            built, content = await asyncio.to_thread(build)
+            built, content = await run_office_engine(build)
             if built.issues:
                 validation["issues"].extend(
                     {"code": "pptx_layout_audit", "message": str(item.get("message", "版式需要复核。")), "details": {"page": item.get("page")}}
@@ -870,7 +870,7 @@ class RuntimePublicationMixin:
             if actual.get("missing") or actual.get("sha256") != output.sha256 or actual.get("size") != output.size:
                 raise ValueError("generated workbook identity mismatch")
             content = await self.workspace_service.read_limited_regular_file(thread_id, path, max_bytes=output.size)
-            inspected = await asyncio.to_thread(inspect_workbook, content)
+            inspected = await run_office_engine(inspect_workbook, content)
             validation["issues"].extend(validate_workbook_snapshot(inspected, sheets, sources, content))
             actual_sheets = inspected.get("sheets", inspected.get("worksheets", []))
             if len(actual_sheets) != len(sheets):

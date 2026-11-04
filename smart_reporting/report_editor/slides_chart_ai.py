@@ -6,7 +6,6 @@ ChartAIEditService 执行，其冻结事实、L1/L2、Matplotlib 和侧车登记
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -21,6 +20,7 @@ from typing import Any
 
 from loguru import logger
 
+from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.models import ReportingError
 from .chart_ai import ChartAIEditRequest, _chart_artifact_for_trace
 from .chart_edits import ChartEditRecord, load_chart_edit_records
@@ -164,7 +164,7 @@ class ReportSlidesChartAIService:
     ) -> tuple[ReportEditorContext, ReportEditorContext, list[dict[str, Any]]]:
         context = await self.slides.context_for_session(session)
         content = await self.slides._read_verified_pptx(context)
-        pictures = await asyncio.to_thread(inspect_pptx_pictures, content)
+        pictures = await run_office_engine(inspect_pptx_pictures, content)
         try:
             source = await self._frozen_source(context)
             source, charts = await self._registered_charts(source)

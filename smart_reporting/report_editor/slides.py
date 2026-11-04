@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
@@ -14,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadScope
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
@@ -186,7 +186,7 @@ class ReportSlidesEditorService:
     async def deck_for_session(self, session: ReportEditorSession) -> dict[str, Any]:
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
-        deck = await asyncio.to_thread(self._run_engine, pptx, "inspect")
+        deck = await run_office_engine(self._run_engine, pptx, "inspect")
         return {
             **deck,
             "reportId": context.report_id,
@@ -203,15 +203,15 @@ class ReportSlidesEditorService:
         pptx = await self._read_verified_pptx(context)
         if preview is not None:
             edits = validate_preview_edits(preview, context.pptx_sha256)
-            revised = await asyncio.to_thread(self._run_engine, pptx, "edit", edits=edits)
+            revised = await run_office_engine(self._run_engine, pptx, "edit", edits=edits)
             pptx = revised["bytes"]
-        tree = await asyncio.to_thread(render_pptx_tree, pptx)
+        tree = await run_office_engine(render_pptx_tree, pptx)
         return {**tree, "revision": context.revision, "sha256": context.pptx_sha256}
 
     async def preview_pdf(self, session: ReportEditorSession) -> bytes:
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
-        return await asyncio.to_thread(self._render_pdf, pptx)
+        return await run_office_engine(self._render_pdf, pptx)
 
     async def save_revision(
         self,
@@ -323,7 +323,7 @@ class ReportSlidesEditorService:
         backgrounds, text_boxes, deletions = _validate_structure_edits(payload)
 
         source = await self._read_verified_pptx(context)
-        engine_result = await asyncio.to_thread(
+        engine_result = await run_office_engine(
             self._run_engine,
             source,
             "edit",
@@ -342,7 +342,7 @@ class ReportSlidesEditorService:
         if chart_replacements:
             from .slides_chart_ai import replace_pptx_pictures
 
-            revised = await asyncio.to_thread(replace_pptx_pictures, revised, chart_replacements)
+            revised = await run_office_engine(replace_pptx_pictures, revised, chart_replacements)
         next_revision = context.revision + 1
         source_path = PurePosixPath(context.pptx_path or "report.pptx")
         revision_path = (source_path.parent / f"{source_path.stem}-r{next_revision}.pptx").as_posix()
@@ -395,7 +395,7 @@ class ReportSlidesEditorService:
             for item in engine_result.get("issues", [])
         )
         try:
-            await asyncio.to_thread(self._render_pdf, revised)
+            await run_office_engine(self._render_pdf, revised)
         except Exception:  # noqa: BLE001 - rendered file identity still gets published
             validation_issues.append({
                 "code": "pptx_preview_render_failed",

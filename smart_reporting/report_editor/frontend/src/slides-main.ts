@@ -169,23 +169,35 @@ let renderTree: { slides: (RenderSlide & { slideIndex: number })[] } | undefined
 let canvas: { update: (state: SlidesCanvasState) => void } | undefined
 let previewSequence = 0
 let previewTimer: ReturnType<typeof setTimeout> | undefined
+// 每个页面最多一个预览请求在途：服务端每次预览要启动两个引擎进程，连续输入时
+// 只在上一请求结束后用最新修改补发一次，过期结果直接丢弃。
+let previewInFlight = false
+let previewQueued = false
 function refreshCanvasPreview() {
   if (!canvas || locked()) return
-  const sequence = ++previewSequence
+  ++previewSequence
   clearTimeout(previewTimer)
   canvasStatus.textContent = '正在更新文字与版式预览…'
-  previewTimer = setTimeout(() => {
-    void request<{ slides: (RenderSlide & { slideIndex: number })[] }>('render-tree', {
-      method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, edits: [...edits.values()] }),
-    }).then(tree => {
-      if (sequence !== previewSequence || locked()) return
-      renderTree = tree
-      renderCanvas()
-      canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
-    }).catch(() => {
-      if (sequence === previewSequence) canvasStatus.textContent = '文字修改已保留；即时预览暂不可用，保存并打开新修订后更新。'
-    })
-  }, 450)
+  previewTimer = setTimeout(sendCanvasPreview, 450)
+}
+function sendCanvasPreview() {
+  if (!canvas || locked()) return
+  if (previewInFlight) { previewQueued = true; return }
+  previewInFlight = true
+  const sequence = previewSequence
+  void request<{ slides: (RenderSlide & { slideIndex: number })[] }>('render-tree', {
+    method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, edits: [...edits.values()] }),
+  }).then(tree => {
+    if (sequence !== previewSequence || locked()) return
+    renderTree = tree
+    renderCanvas()
+    canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
+  }).catch(() => {
+    if (sequence === previewSequence) canvasStatus.textContent = '文字修改已保留；即时预览暂不可用，保存并打开新修订后更新。'
+  }).finally(() => {
+    previewInFlight = false
+    if (previewQueued) { previewQueued = false; sendCanvasPreview() }
+  })
 }
 
 const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!

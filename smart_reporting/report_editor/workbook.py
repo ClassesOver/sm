@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import secrets
@@ -14,6 +13,7 @@ from zipfile import ZipFile
 
 from loguru import logger
 
+from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadScope
 from ..reporting.delivery.xlsx import inspect_workbook, patch_workbook
 from ..reporting.models import ReportingError
@@ -88,8 +88,8 @@ class ReportWorkbookEditorService:
         source = await self._read_verified(context)
         ops = self._operations(operations if operations is not None else [])
         try:
-            snapshot = await asyncio.to_thread(patch_workbook, source, ops) if ops else source
-            model = await asyncio.to_thread(inspect_workbook, snapshot)
+            snapshot = await run_office_engine(patch_workbook, source, ops) if ops else source
+            model = await run_office_engine(inspect_workbook, snapshot)
         except Exception as error:
             raise ReportingError("report_workbook_edit_invalid", "工作簿修改无法应用，未保存草稿已保留。") from error
         return {"reportId": context.report_id, "revision": context.revision,
@@ -111,7 +111,7 @@ class ReportWorkbookEditorService:
         operations = self._operations(payload.get("operations", []))
         source = await self._read_verified(context)
         try:
-            revised = await asyncio.to_thread(patch_workbook, source, operations)
+            revised = await run_office_engine(patch_workbook, source, operations)
         except Exception as error:
             raise ReportingError("report_workbook_edit_invalid", "工作簿修改无法应用，未保存草稿已保留。") from error
         lineage_issues: list[dict[str, str]] = []
@@ -146,7 +146,7 @@ class ReportWorkbookEditorService:
             {"code": "workbook_semantic_verification_pending", "message": "新修订尚未重新进行业务语义验收，不继承旧版本验收结论。"},
         ]
         try:
-            model = await asyncio.to_thread(inspect_workbook, revised)
+            model = await run_office_engine(inspect_workbook, revised)
             if not model.get("sheets"):
                 raise ValueError("no_sheets")
         except Exception as error:
