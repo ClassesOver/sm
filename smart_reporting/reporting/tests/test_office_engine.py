@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import shutil
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -102,3 +104,30 @@ async def test_engine_call_keeps_caller_context(anyio_backend, fresh_executor):
     request_id.set("req-1")
 
     assert await office_engine.run_office_engine(request_id.get) == "req-1"
+
+
+_PPTX_FIXTURE = Path(__file__).parents[1] / "slides_engine/packages/pptx-engine/tests/fixtures/01_standard_business.pptx"
+
+
+@pytest.mark.skipif(
+    shutil.which("libreoffice") is None and shutil.which("soffice") is None,
+    reason="LibreOffice 未安装",
+)
+def test_concurrent_libreoffice_conversions_use_isolated_profiles():
+    """共享默认配置目录时，并发转换会有进程直接退出且不产出 PDF。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    content = _PPTX_FIXTURE.read_bytes()
+    with ThreadPoolExecutor(4) as executor:
+        results = list(executor.map(
+            lambda _index: office_engine.libreoffice_to_pdf(content, suffix=".pptx", timeout=90), range(4),
+        ))
+
+    assert all(result.startswith(b"%PDF") for result in results)
+
+
+def test_libreoffice_conversion_reports_missing_converter(monkeypatch):
+    monkeypatch.setattr(office_engine.shutil, "which", lambda _name: None)
+
+    with pytest.raises(office_engine.OfficeConversionError, match="未安装"):
+        office_engine.libreoffice_to_pdf(b"x", suffix=".docx", timeout=5)

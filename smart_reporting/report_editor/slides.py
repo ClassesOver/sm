@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..reporting.delivery.office_engine import run_office_engine
+from ..reporting.delivery.office_engine import (
+    OfficeConversionError,
+    libreoffice_to_pdf,
+    run_office_engine,
+)
 from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadScope
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
@@ -616,17 +620,7 @@ class ReportSlidesEditorService:
 
     @staticmethod
     def _render_pdf(content: bytes) -> bytes:
-        with tempfile.TemporaryDirectory(prefix="report-slides-preview-") as directory:
-            root = Path(directory)
-            source = root / "preview.pptx"
-            source.write_bytes(content)
-            process = subprocess.run(
-                ["libreoffice", "--headless", "--convert-to", "pdf", "--outdir", str(root), str(source)],
-                check=False,
-                capture_output=True,
-                timeout=90,
-            )
-            target = root / "preview.pdf"
-            if process.returncode or not target.is_file():
-                raise ReportingError("report_slides_preview_failed", "幻灯片预览暂不可用。")
-            return target.read_bytes()
+        try:
+            return libreoffice_to_pdf(content, suffix=".pptx", timeout=90)
+        except (OfficeConversionError, subprocess.TimeoutExpired) as error:
+            raise ReportingError("report_slides_preview_failed", "幻灯片预览暂不可用。") from error

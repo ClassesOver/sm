@@ -11,10 +11,14 @@ import asyncio
 import contextvars
 import functools
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -66,3 +70,46 @@ async def run_office_engine[T](func: Callable[..., T], /, *args: Any, **kwargs: 
     context = contextvars.copy_context()
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_engine_executor(), functools.partial(context.run, call))
+
+
+class OfficeConversionError(RuntimeError):
+    """LibreOffice 转换失败；消息可直接作为软告警展示。"""
+
+
+def libreoffice_to_pdf(content: bytes, *, suffix: str, timeout: float) -> bytes:
+    """用独立配置目录把 Office 文件转换为 PDF。
+
+    LibreOffice 的默认用户配置目录不能被多个进程同时使用：并发转换时后启动的进程会直接
+    退出且不产出文件。每次调用都使用临时配置目录，结束后随临时目录一起删除。
+    """
+    converter = shutil.which("libreoffice") or shutil.which("soffice")
+    if converter is None:
+        raise OfficeConversionError("未安装 Office 页面渲染器")
+    with tempfile.TemporaryDirectory(prefix="report-libreoffice-") as directory:
+        root = Path(directory)
+        source = root / f"source{suffix}"
+        source.write_bytes(content)
+        output = root / "output"
+        output.mkdir()
+        result = subprocess.run(
+            [
+                converter,
+                "--headless",
+                f"-env:UserInstallation={(root / 'profile').as_uri()}",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(output),
+                str(source),
+            ],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        target = output / "source.pdf"
+        if result.returncode != 0 or not target.is_file():
+            logger.warning(
+                "libreoffice_pdf_conversion_failed suffix={} returncode={}", suffix, result.returncode
+            )
+            raise OfficeConversionError("Office 页面转换失败")
+        return target.read_bytes()
