@@ -8,6 +8,7 @@ from datetime import date
 from fractions import Fraction
 from statistics import mean
 
+from .standard_chart_numeric import is_finite_number
 from .standard_chart_presentation import valid_standard_metadata
 
 
@@ -25,10 +26,6 @@ def month_label(label):
     if parsed.isoformat() != (label + "-01" if len(label) == 7 else label):
         raise ValueError("Noncanonical date")
     return parsed.strftime("%Y-%m")
-
-
-def _finite(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _measure(metadata, field):
@@ -92,7 +89,7 @@ def _view(document, view):
         raise ValueError("Group cannot select pivot series")
     if view.aggregation == "sum" and any(_percentage(meta) for meta in metas):
         raise ValueError("Percentages are not additive")
-    if any(not _finite(row[index]) for row in rows for index in indexes):
+    if any(not is_finite_number(row[index]) for row in rows for index in indexes):
         raise ValueError("Cannot aggregate missing or nonfinite values")
     groups = _groups(rows, [columns.index(field) for field in dimensions])
     totals = []
@@ -124,7 +121,7 @@ def _view(document, view):
         weight_index = columns.index(view.weight_field)
         _measure(metadata, view.weight_field)
         if view.weight_field in dimensions or any(
-            not _finite(row[weight_index]) or row[weight_index] < 0 for row in rows
+            not is_finite_number(row[weight_index]) or row[weight_index] < 0 for row in rows
         ):
             raise ValueError("Weights must be finite, nonnegative registered measures")
     result = []
@@ -154,7 +151,7 @@ def _view(document, view):
                 else None
                 for index in indexes
             ]
-        if any(value is not None and not _finite(value) for value in values):
+        if any(value is not None and not is_finite_number(value) for value in values):
             raise ValueError("Nonfinite group result")
         result.append([*key, *values])
     return {
@@ -182,7 +179,7 @@ def _temporal_values(rows, columns, specification, ni):
         ):
             raise ValueError("Monthly operation cannot span missing months")
         measures = [rows[index][ni] for index in ordered]
-        if any(value is not None and not _finite(value) for value in measures):
+        if any(value is not None and not is_finite_number(value) for value in measures):
             raise ValueError("Nonfinite monthly measure")
         lookup = dict(zip(serials, measures, strict=True))
         accumulated: list[float] = []
@@ -280,7 +277,7 @@ def transform_chart_document(document, view, derivations):
             ):
                 raise ValueError("Incompatible derivation units")
             if any(
-                row[index] is not None and not _finite(row[index])
+                row[index] is not None and not is_finite_number(row[index])
                 for row in rows
                 for index in (ni, di)
             ):
@@ -299,7 +296,7 @@ def transform_chart_document(document, view, derivations):
                 if specification.kind == "ratio_percent"
                 else dict(left)
             )
-        if any(value is not None and not _finite(value) for value in values):
+        if any(value is not None and not is_finite_number(value) for value in values):
             raise ValueError("Nonfinite derived result")
         for row, value in zip(rows, values, strict=True):
             row.append(value)

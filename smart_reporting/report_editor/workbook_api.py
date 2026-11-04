@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -10,6 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from ..reporting.delivery.publishing import content_disposition
 from ..reporting.models import ReportingError
+from ._api_helpers import read_editor_json, reporting_http_error, require_editor_csrf
 from .service import ReportEditorGrantService
 
 WORKBOOK_SESSION_COOKIE = "report_workbook_session"
@@ -25,8 +25,7 @@ def create_report_workbook_editor_router(
     root = Path(static_dir).resolve()
 
     def fail(error: ReportingError) -> HTTPException:
-        return HTTPException(status_code=403 if "permission_denied" in error.code else 409,
-                             detail={"code": error.code, "message": error.message})
+        return reporting_http_error(error, status_code=403 if "permission_denied" in error.code else 409)
 
     async def require_session(request: Request, report_id: str, revision: int):
         try:
@@ -39,9 +38,10 @@ def create_report_workbook_editor_router(
             raise fail(error) from None
 
     def require_csrf(request: Request) -> None:
-        token = grants.csrf_token(request.cookies.get(WORKBOOK_SESSION_COOKIE, ""))
-        if not secrets.compare_digest(request.headers.get("X-CSRF-Token", ""), token) or not secrets.compare_digest(request.cookies.get(WORKBOOK_CSRF_COOKIE, ""), token):
-            raise HTTPException(status_code=403, detail={"code": "report_workbook_csrf_invalid"})
+        require_editor_csrf(
+            request, grants, session_cookie=WORKBOOK_SESSION_COOKIE,
+            csrf_cookie=WORKBOOK_CSRF_COOKIE, error_code="report_workbook_csrf_invalid",
+        )
 
     def ai_service():
         if workbook_ai is None:
@@ -49,10 +49,7 @@ def create_report_workbook_editor_router(
         return workbook_ai
 
     async def payload_for(request: Request):
-        try:
-            payload = await request.json()
-        except ValueError:
-            raise HTTPException(status_code=400, detail={"code": "report_workbook_payload_invalid"}) from None
+        payload = await read_editor_json(request, error_code="report_workbook_payload_invalid")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail={"code": "report_workbook_payload_invalid"})
         return payload

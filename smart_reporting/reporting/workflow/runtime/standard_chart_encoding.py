@@ -4,6 +4,7 @@ import math
 from typing import NoReturn
 
 from ...units import unit_conversion_scale
+from .standard_chart_numeric import is_finite_number
 from .standard_chart_presentation import (
     format_standard_number,
     prepare_standard_presentation,
@@ -19,10 +20,6 @@ class StandardChartEncodingError(ValueError):
 
 def fail(code, parameter, message) -> NoReturn:
     raise StandardChartEncodingError(code, parameter, message)
-
-
-def _finite(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def scaled_column(document, field, display_unit, allow_nulls):
@@ -51,7 +48,7 @@ def scaled_column(document, field, display_unit, allow_nulls):
         if raw is None and allow_nulls:
             values.append(None)
             continue
-        if not _finite(raw):
+        if not is_finite_number(raw):
             fail("standard_encoding_values_invalid", field, "编码字段含缺失、布尔或非有限值。")
         value = raw * factor
         if not math.isfinite(value) or raw != 0 and value == 0:
@@ -568,7 +565,7 @@ def prepare_bands(chart, document, names, form, category, factors, unit_policy):
             value, lower, upper = row[ci], row[li], row[ui]
             if lower is None and upper is None and unit_policy.allow_nulls:
                 continue
-            if not all(_finite(v) for v in (value, lower, upper)):
+            if not all(is_finite_number(v) for v in (value, lower, upper)):
                 fail(
                     "standard_band_bounds_invalid",
                     "standardBands",

@@ -13,6 +13,7 @@ import { WorkbookDraft, workbookSaveOutcome, type WorkbookOperation, type Workbo
 import type { EditorShell } from './shell'
 import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot } from './workbook-grid-operations'
 import { withWorkbookLocked } from './workbook-grid-guards'
+import { requestJson } from './api-request'
 import './workbook.css'
 
 type AIStatus = { editId: string; status: string; snapshotSha256: string; proposal?: WorkbookProposal; error?: { message: string } }
@@ -20,19 +21,11 @@ type AIStatus = { editId: string; status: string; snapshotSha256: string; propos
 export async function createWorkbookEditorView(shell: EditorShell) {
   const base = location.pathname.replace(/\/$/, '')
   const draft = new WorkbookDraft()
-  const request = async <T>(path: string, payload?: unknown): Promise<T> => {
-    const csrf = document.cookie.split('; ').find(value => value.startsWith('report_workbook_csrf='))?.split('=', 2)[1] ?? ''
-    const response = await fetch(`${base}/api/${path}`, {
-      credentials: 'same-origin', method: payload === undefined ? 'GET' : 'POST',
-      headers: { 'Content-Type': 'application/json', ...(payload === undefined ? {} : { 'X-CSRF-Token': decodeURIComponent(csrf) }) },
-      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
-    })
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}))
-      throw new Error(body.detail?.message ?? `请求失败 (${response.status})`)
-    }
-    return response.json() as Promise<T>
-  }
+  const request = <T>(path: string, payload?: unknown): Promise<T> => requestJson(
+    `${base}/api/${path}`,
+    payload === undefined ? {} : { method: 'POST', body: JSON.stringify(payload) },
+    'report_workbook_csrf',
+  )
   shell.editor.innerHTML = `
     <section class="workbook-ai" aria-label="工作簿 AI 编辑"><form><label for="workbook-instruction">Ask AI</label><textarea id="workbook-instruction" maxlength="2000" rows="2" placeholder="描述要调整的单元格、公式或样式"></textarea><button type="submit">生成候选</button><button type="button" class="workbook-undo" disabled>撤销 AI 采纳</button></form><div class="workbook-feedback" role="status" aria-live="polite"></div><div class="workbook-candidate" hidden><strong></strong><pre></pre><button type="button" class="workbook-accept">采纳到草稿</button><button type="button" class="workbook-reject">拒绝</button></div><div class="workbook-actions" role="toolbar" aria-label="单元格布局"><button type="button" data-workbook-command="sheet.command.add-worksheet-merge-all">合并单元格</button><button type="button" data-workbook-command="sheet.command.remove-worksheet-merge">取消合并</button></div></section>
     <div id="workbook-grid" class="workbook-grid" aria-label="报告工作簿"></div>`

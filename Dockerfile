@@ -19,8 +19,11 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 # 保持与源码相同的相对层级，让浏览器和 Node 桥接使用同一固定版本引擎。
 WORKDIR /build/smart_reporting/reporting/workbook_engine
 COPY smart_reporting/reporting/workbook_engine ./
+COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
 # 桥接脚本预先打包，运行时不再逐次转译 TypeScript。
-RUN npm ci --registry="${NPM_REGISTRY}" && npm run bundle:bridges
+RUN npm ci --registry="${NPM_REGISTRY}" \
+    && npm run bundle:bridges -- --metafile=dist/metafile.json \
+    && node /build/package-office-engine.mjs . /runtime/reporting-workbook-engine
 
 WORKDIR /build/smart_reporting/reporting/slides_engine
 COPY smart_reporting/reporting/slides_engine/package.json \
@@ -34,7 +37,8 @@ COPY smart_reporting/reporting/slides_engine/bridge ./bridge
 RUN npm ci --registry="${NPM_REGISTRY}" \
     && npm run test --workspace @genoffice/pipelines \
     && npm run typecheck --workspace @genoffice/pipelines \
-    && npm run bundle:bridges
+    && npm run bundle:bridges -- --metafile=dist/metafile.json \
+    && node /build/package-office-engine.mjs . /runtime/reporting-slides-engine
 
 # 前端按源码相对路径复用冻结的 GenOffice 类型和浏览器渲染模块。
 WORKDIR /build/smart_reporting/report_editor/frontend
@@ -43,6 +47,15 @@ COPY smart_reporting/report_editor/frontend/package.json \
 RUN npm ci --registry="${NPM_REGISTRY}"
 COPY smart_reporting/report_editor/frontend ./
 RUN npm run build && npm run build:slides
+
+# COPY smart_reporting 会再次带入引擎源码；在独立构建层裁剪，避免镜像层仍保存副本。
+FROM base AS app-source
+COPY smart_reporting /app/smart_reporting
+RUN find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine \
+        -type f ! -iname '*license*' ! -iname '*notice*' ! -iname '*copying*' ! -iname '*copyright*' \
+        ! -name 'SOURCE*' ! -name 'UPSTREAM*' -delete \
+    && find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine \
+        -depth -type d -empty -delete
 
 FROM base AS env-init
 
@@ -59,8 +72,8 @@ ARG PYPI_FILES_MIRROR=https://mirrors.aliyun.com/pypi
 
 COPY --from=uv-source /uv /uvx /bin/
 COPY --from=report-editor-frontend /usr/local /usr/local
-COPY --from=report-editor-frontend /build/smart_reporting/reporting/slides_engine /opt/reporting-slides-engine
-COPY --from=report-editor-frontend /build/smart_reporting/reporting/workbook_engine /opt/reporting-workbook-engine
+COPY --from=report-editor-frontend /runtime/reporting-slides-engine /opt/reporting-slides-engine
+COPY --from=report-editor-frontend /runtime/reporting-workbook-engine /opt/reporting-workbook-engine
 
 WORKDIR /app
 
@@ -87,7 +100,7 @@ RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do comman
     && /app/.venv/bin/python -c "import docx, matplotlib, pypandoc, pypdf, scipy, seaborn, statsmodels, sympy, tabulate, adjustText, altair, bokeh, plotnine, pygal, graphviz, PIL, xlsxwriter, odf, pptx, reportlab, pdfplumber, pymupdf, pikepdf, cairosvg, bs4, jinja2, pyarrow, duckdb; from weasyprint import HTML" \
     && /app/.venv/bin/python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; figure = plt.figure(); figure.add_subplot(111).plot([1], [1]); figure.savefig('/tmp/matplotlib-smoke.png'); plt.close(figure)"
 
-COPY smart_reporting ./smart_reporting
+COPY --from=app-source /app/smart_reporting ./smart_reporting
 COPY docker/matplotlibrc /etc/reporting/matplotlibrc
 # 前端产物放在源码目录之外：Compose 以只读 bind mount 覆盖 /app/smart_reporting，
 # 若放在源码树内会被宿主空目录遮蔽；命名卷又只在首次创建时播种，升级镜像后仍是旧前端。

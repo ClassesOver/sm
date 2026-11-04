@@ -17,6 +17,7 @@ from ..reporting.delivery.xlsx import inspect_workbook, patch_workbook
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
+from ._file_identity import read_verified_file
 from .revisions import next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorSession
 
@@ -68,13 +69,11 @@ class ReportWorkbookEditorService:
         return context
 
     async def _read_verified(self, context: ReportEditorContext) -> bytes:
-        try:
-            content, _ = await self.workspace.afile_bytes(context.scope["threadId"], context.xlsx_path or "")
-        except Exception as error:
-            raise ReportingError("report_workbook_identity_changed", "XLSX 文件无法读取。") from error
-        if len(content) != context.xlsx_size or hashlib.sha256(content).hexdigest() != context.xlsx_sha256:
-            raise ReportingError("report_workbook_identity_changed", "XLSX 文件身份已变化。")
-        return content
+        return await read_verified_file(
+            self.workspace, context.scope, context.xlsx_path or "",
+            size=context.xlsx_size, sha256=context.xlsx_sha256,
+            error_code="report_workbook_identity_changed", format_name="XLSX",
+        )
 
     @staticmethod
     def _operations(value: Any) -> list[dict[str, Any]]:

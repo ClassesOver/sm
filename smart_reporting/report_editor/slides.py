@@ -23,6 +23,7 @@ from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadSc
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
+from ._file_identity import read_verified_file
 from .revisions import next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorGrantService, ReportEditorSession
 from .slides_render import render_pptx_tree, validate_preview_edits, validate_slide_edits
@@ -498,18 +499,11 @@ class ReportSlidesEditorService:
         }
 
     async def _read_verified_pptx(self, context: ReportEditorContext) -> bytes:
-        try:
-            content, _media_type = await self.workspace.afile_bytes(
-                context.scope["threadId"], context.pptx_path or ""
-            )
-        except Exception as error:
-            raise ReportingError("report_slides_identity_changed", "PPTX 文件无法读取。") from error
-        if (
-            len(content) != context.pptx_size
-            or hashlib.sha256(content).hexdigest() != context.pptx_sha256
-        ):
-            raise ReportingError("report_slides_identity_changed", "PPTX 文件身份已变化。")
-        return content
+        return await read_verified_file(
+            self.workspace, context.scope, context.pptx_path or "",
+            size=context.pptx_size, sha256=context.pptx_sha256,
+            error_code="report_slides_identity_changed", format_name="PPTX",
+        )
 
     @staticmethod
     def _download_scope(context: ReportEditorContext) -> ReportDownloadScope:

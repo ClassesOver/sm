@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -10,6 +9,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from ..reporting.delivery.publishing import content_disposition
 from ..reporting.models import ReportingError
+from ._api_helpers import read_editor_json, reporting_http_error, require_editor_csrf
 from .service import ReportEditorGrantService
 
 SLIDES_SESSION_COOKIE = "report_slides_session"
@@ -41,29 +41,19 @@ def create_report_slides_editor_router(
             return session, await slides.context_for_session(session)
         except ReportingError as error:
             status = 403 if "permission_denied" in error.code else 404
-            raise HTTPException(
-                status_code=status,
-                detail={"code": error.code, "message": error.message},
-            ) from None
+            raise reporting_http_error(error, status_code=status) from None
 
     def require_csrf(request: Request) -> None:
-        raw_session = request.cookies.get(SLIDES_SESSION_COOKIE, "")
-        expected_csrf = grants.csrf_token(raw_session)
-        if not secrets.compare_digest(
-            request.headers.get("X-CSRF-Token", ""), expected_csrf
-        ) or not secrets.compare_digest(
-            request.cookies.get(SLIDES_CSRF_COOKIE, ""), expected_csrf
-        ):
-            raise HTTPException(status_code=403, detail={"code": "report_slides_csrf_invalid"})
+        require_editor_csrf(
+            request, grants, session_cookie=SLIDES_SESSION_COOKIE,
+            csrf_cookie=SLIDES_CSRF_COOKIE, error_code="report_slides_csrf_invalid",
+        )
 
     async def read_json(request: Request) -> object:
-        try:
-            return await request.json()
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "report_slides_payload_invalid", "message": "请求内容不是有效的 JSON。"},
-            ) from None
+        return await read_editor_json(
+            request, error_code="report_slides_payload_invalid",
+            message="请求内容不是有效的 JSON。",
+        )
 
     def require_ai_service():
         if slides_ai is None:
@@ -83,7 +73,7 @@ def create_report_slides_editor_router(
 
     def report_ai_error(error: ReportingError) -> HTTPException:
         status = 403 if "permission_denied" in error.code else 409
-        return HTTPException(status_code=status, detail={"code": error.code, "message": error.message})
+        return reporting_http_error(error, status_code=status)
 
     @router.get("/reports/v1/slides/open/{raw_grant}", include_in_schema=False)
     async def open_slides_editor(raw_grant: str) -> RedirectResponse:
@@ -96,10 +86,7 @@ def create_report_slides_editor_router(
                 if "permission_denied" in error.code
                 else 410 if error.code == "report_editor_grant_expired" else 404
             )
-            raise HTTPException(
-                status_code=status,
-                detail={"code": error.code, "message": error.message},
-            ) from None
+            raise reporting_http_error(error, status_code=status) from None
         path = f"/reports/v1/slides/{quote(context.report_id, safe='')}/{context.revision}"
         response = RedirectResponse(path, status_code=303)
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -131,10 +118,7 @@ def create_report_slides_editor_router(
             context, content = await slides.download_for_session(session)
         except ReportingError as error:
             status = 403 if "permission_denied" in error.code else 404
-            raise HTTPException(
-                status_code=status,
-                detail={"code": error.code, "message": error.message},
-            ) from None
+            raise reporting_http_error(error, status_code=status) from None
         return Response(
             content,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -179,7 +163,7 @@ def create_report_slides_editor_router(
         try:
             return await slides.deck_for_session(_session)
         except ReportingError as error:
-            raise HTTPException(status_code=409, detail={"code": error.code, "message": error.message}) from None
+            raise reporting_http_error(error, status_code=409) from None
 
     @router.get("/reports/v1/slides/{report_id}/{revision}/api/render-tree", include_in_schema=False)
     async def read_slides_render_tree(report_id: str, revision: int, request: Request):
@@ -187,7 +171,7 @@ def create_report_slides_editor_router(
         try:
             return await slides.render_tree_for_session(session)
         except ReportingError as error:
-            raise HTTPException(status_code=409, detail={"code": error.code, "message": error.message}) from None
+            raise reporting_http_error(error, status_code=409) from None
 
     @router.post("/reports/v1/slides/{report_id}/{revision}/api/render-tree", include_in_schema=False)
     async def preview_slides_render_tree(report_id: str, revision: int, request: Request):
@@ -196,7 +180,7 @@ def create_report_slides_editor_router(
         try:
             return await slides.render_tree_for_session(session, await read_json(request))
         except ReportingError as error:
-            raise HTTPException(status_code=409, detail={"code": error.code, "message": error.message}) from None
+            raise reporting_http_error(error, status_code=409) from None
 
     @router.get("/reports/v1/slides/{report_id}/{revision}/api/preview.pdf", include_in_schema=False)
     async def preview_slides_pdf(report_id: str, revision: int, request: Request) -> Response:
@@ -204,7 +188,7 @@ def create_report_slides_editor_router(
         try:
             content = await slides.preview_pdf(_session)
         except ReportingError as error:
-            raise HTTPException(status_code=503, detail={"code": error.code, "message": error.message}) from None
+            raise reporting_http_error(error, status_code=503) from None
         return Response(
             content,
             media_type="application/pdf",
@@ -249,10 +233,7 @@ def create_report_slides_editor_router(
                     pass
             return result
         except ReportingError as error:
-            raise HTTPException(
-                status_code=409,
-                detail={"code": error.code, "message": error.message},
-            ) from None
+            raise reporting_http_error(error, status_code=409) from None
 
     @router.get("/reports/v1/slides/{report_id}/{revision}/api/charts", include_in_schema=False)
     async def list_slide_charts(report_id: str, revision: int, request: Request):

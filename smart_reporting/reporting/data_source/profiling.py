@@ -8,6 +8,7 @@ from typing import Any
 import anyio
 
 from ..models import ReportingError
+from ..type_normalization import normalize_data_type
 from .models import (
     CatalogColumn,
     CatalogTable,
@@ -518,8 +519,8 @@ def _catalog_scope(
             if (
                 current_column is None
                 or name in selected_names
-                or _normalized_type(current_column.data_type)
-                != _normalized_type(expected_column.data_type)
+                or normalize_data_type(current_column.data_type)
+                != normalize_data_type(expected_column.data_type)
                 or current_column.nullable != expected_column.nullable
                 or (
                     current_column.description
@@ -549,10 +550,6 @@ def _catalog_scope(
     if not scoped:
         raise ReportingError("report_catalog_drift", "结构快照范围不能为空。")
     return tuple(scoped)
-
-
-def _normalized_type(value: str) -> str:
-    return re.sub(r"\s+", "", value).upper()
 
 
 def _expected_months(period_start: date, period_end: date) -> tuple[str, ...]:

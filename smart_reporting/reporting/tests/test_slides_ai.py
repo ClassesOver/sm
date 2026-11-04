@@ -118,6 +118,6 @@ async def test_slides_ai_cancel_stops_an_unfinished_task():
     started = await service.start_edit(session, "调整布局")
     await entered.wait()
     await service.cancel_edit(session, started["editId"])
-    result = await service.edit_status(session, started["editId"])
+    result = await service.wait_edit_status(session, started["editId"], wait_ms=0)
 
     assert result["status"] == "cancelled"
