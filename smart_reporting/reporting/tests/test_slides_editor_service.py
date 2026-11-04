@@ -360,3 +360,35 @@ async def test_slides_save_passes_structure_edits_to_engine(monkeypatch):
     assert captured["backgrounds"] == payload["backgrounds"]
     assert captured["text_boxes"] == payload["textBoxes"]
     assert captured["deletions"] == payload["deletions"]
+
+
+_INVALID_EDITS = [
+    {"slideIndex": 0, "elementId": "s1", "text": "x" * 20_001},
+    {"slideIndex": 0, "elementId": "s1"},
+    {"slideIndex": -1, "elementId": "s1", "text": "x"},
+    {"slideIndex": 0, "elementId": "s1", "text": "x", "script": "y"},
+    {"slideIndex": 0, "elementId": "s1", "geometry": {"x": 0, "y": 0, "width": 10, "height": 10, "z": 1}},
+]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("edit", _INVALID_EDITS)
+async def test_preview_and_save_reject_the_same_invalid_edits(edit):
+    """即时预览与保存共用校验：预览接受、保存拒绝会让用户看到成功预览却无法保存。"""
+    from smart_reporting.report_editor.slides_render import validate_preview_edits
+
+    context = _context()
+    with pytest.raises(ReportingError, match="幻灯片"):
+        validate_preview_edits({"expectedSha256": context.pptx_sha256, "edits": [edit]}, context.pptx_sha256)
+    with pytest.raises(ReportingError, match="幻灯片"):
+        await _validating_service(context).save_revision(
+            _session(context), {"expectedSha256": context.pptx_sha256, "edits": [edit]},
+        )
+
+
+def test_preview_accepts_maximum_text_that_save_also_accepts():
+    from smart_reporting.report_editor.slides_render import validate_preview_edits, validate_slide_edits
+
+    edit = {"slideIndex": 0, "elementId": "s1", "text": "x" * 20_000}
+    assert validate_preview_edits({"expectedSha256": "a" * 64, "edits": [edit]}, "a" * 64) == [edit]
+    assert validate_slide_edits([edit]) == [edit]

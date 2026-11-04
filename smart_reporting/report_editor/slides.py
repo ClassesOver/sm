@@ -24,6 +24,7 @@ from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from .revisions import next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorGrantService, ReportEditorSession
+from .slides_render import render_pptx_tree, validate_preview_edits, validate_slide_edits
 
 _SLIDE_ANIMATION_EFFECTS = {
     "appear", "fade", "flyIn", "wipe", "wipeDown", "splitIn", "bounce", "flipIn", "zoom",
@@ -202,8 +203,6 @@ class ReportSlidesEditorService:
     async def render_tree_for_session(
         self, session: ReportEditorSession, preview: Any = None
     ) -> dict[str, Any]:
-        from .slides_render import render_pptx_tree, validate_preview_edits
-
         context = await self.context_for_session(session)
         pptx = await self._read_verified_pptx(context)
         if preview is not None:
@@ -297,28 +296,7 @@ class ReportSlidesEditorService:
             for item in slide_layouts
         ):
             raise ReportingError("report_slides_edit_invalid", "幻灯片版式内容无效。")
-        if not isinstance(edits, list) or len(edits) > 500:
-            raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
-        if any(
-            not isinstance(item, dict)
-            or not isinstance(item.get("slideIndex"), int)
-            or isinstance(item.get("slideIndex"), bool)
-            or not isinstance(item.get("elementId"), str)
-            or not (
-                isinstance(item.get("text"), str)
-                and len(item["text"]) <= 20_000
-                or isinstance(item.get("geometry"), dict)
-                and all(
-                    isinstance(item["geometry"].get(key), (int, float))
-                    and not isinstance(item["geometry"].get(key), bool)
-                    and (0 < item["geometry"][key] <= 100_000 if key in {"width", "height"}
-                         else 0 <= item["geometry"][key] <= 100_000)
-                    for key in ("x", "y", "width", "height")
-                )
-            )
-            for item in edits
-        ):
-            raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
+        validate_slide_edits(edits)
         if order is not None and (
             not isinstance(order, list)
             or any(not isinstance(item, int) or isinstance(item, bool) for item in order)
