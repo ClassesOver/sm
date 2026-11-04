@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from smart_reporting.report_editor.revisions import next_manual_revision, revision_file_path
+from smart_reporting.reporting.workflow.state import ReportingRunState, ReportingStateReducer
 
 _TITLE_PATH = "报表/智能分析/run-1/revision-1/2025年度某某市第一人民医院门急诊及住院医疗服务运营效率与成本结构综合分析报告_2025-01-01_2025-12-31"
 
@@ -44,11 +45,18 @@ def test_revision_file_names_are_distinct_for_concurrent_saves():
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 async def test_next_revision_skips_revisions_created_from_other_sessions(anyio_backend):
+    state = ReportingRunState.initial(
+        report_run_id="run-1", external_run_id="run-1", thread_id="thread", owner_user_id="user",
+        payload={"reportEditorContexts": {"1": {}, "2": {}, "4": {}, "draft": {}}},
+    )
     async def get(_run_id):
-        return SimpleNamespace(payload={"reportEditorContexts": {"1": {}, "2": {}, "4": {}, "draft": {}}})
+        return state
+
+    async def apply(_run_id, command, *, expected_version):
+        return ReportingStateReducer.apply(state, command, expected_version)
 
     revision, issues = await next_manual_revision(
-        SimpleNamespace(get=get), SimpleNamespace(workflow_run_id="run-1", report_id="r", revision=1),
+        SimpleNamespace(get=get, apply=apply), SimpleNamespace(workflow_run_id="run-1", report_id="r", revision=1),
     )
 
     assert (revision, issues) == (5, [])

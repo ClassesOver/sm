@@ -18,7 +18,7 @@ from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from ._file_identity import read_verified_file
-from .revisions import next_manual_revision, revision_file_path
+from .revisions import apply_editor_command, next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorSession
 
 
@@ -42,10 +42,16 @@ class ReportWorkbookEditorService:
         return await self._context_for_capability(session, "xlsx_editor")
 
     async def download_for_session(self, session: ReportEditorSession) -> tuple[ReportEditorContext, bytes]:
-        context = await self._context_for_capability(session, "xlsx_download")
+        context = await self._context_for_capability(session, "xlsx_download", verify_file=False)
         return context, await self._read_verified(context)
 
-    async def _context_for_capability(self, session: ReportEditorSession, capability: str) -> ReportEditorContext:
+    async def file_for_session(self, session: ReportEditorSession) -> tuple[ReportEditorContext, bytes]:
+        context = await self._context_for_capability(session, "xlsx_editor", verify_file=False)
+        return context, await self._read_verified(context)
+
+    async def _context_for_capability(
+        self, session: ReportEditorSession, capability: str, *, verify_file: bool = True,
+    ) -> ReportEditorContext:
         if not isinstance(session.capabilities, dict) or session.capabilities.get(capability) is not True:
             raise ReportingError("report_workbook_permission_denied", "该会话没有工作簿编辑权限。")
         state = await self.state_repository.get(session.workflow_run_id)
@@ -65,7 +71,8 @@ class ReportWorkbookEditorService:
         if scope.workspace_key != context.scope.get("threadId"):
             raise ReportingError("report_workbook_scope_mismatch", "工作簿工作区作用域不一致。")
         self.workspace_registry.resolve(scope)
-        await self._read_verified(context)
+        if verify_file:
+            await self._read_verified(context)
         return context
 
     async def _read_verified(self, context: ReportEditorContext) -> bytes:
@@ -190,11 +197,10 @@ class ReportWorkbookEditorService:
         )
         context_registered = False
         try:
-            state = await self.state_repository.get(context.workflow_run_id)
-            await self.state_repository.apply(context.workflow_run_id, ReportingCommand(
+            await apply_editor_command(self.state_repository, context.workflow_run_id, ReportingCommand(
                 name="set_report_editor_context", payload={"context": next_context.model_dump(mode="json", by_alias=True)},
                 commandId=f"workbook-context:{revision}:{digest}",
-            ), expected_version=state.state_version)
+            ))
             context_registered = True
         except Exception:
             issues.append({"code": "report_workbook_context_failed", "message": "XLSX 已保存，新修订编辑上下文登记失败。"})

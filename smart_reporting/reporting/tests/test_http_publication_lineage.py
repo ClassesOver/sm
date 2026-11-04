@@ -59,7 +59,7 @@ from .lineage_fixtures.manifest import register_trace_manifest
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('fault', ['context_read', 'context_write', 'download_grant', 'artifact_grant', 'chart_bindings', 'chart_binding_item', 'layout_audit'])
+@pytest.mark.parametrize('fault', ['context_read', 'context_write', 'revision_reservation', 'download_grant', 'artifact_grant', 'chart_bindings', 'chart_binding_item', 'layout_audit'])
 async def test_pptx_editor_http_download_survives_delivery_faults(tmp_path, monkeypatch, fault):
     from smart_reporting.report_editor.service import ReportEditorSession
     from smart_reporting.report_editor.slides import ReportSlidesEditorService
@@ -104,6 +104,13 @@ async def test_pptx_editor_http_download_survives_delivery_faults(tmp_path, monk
     async def apply_unavailable(*args, **kwargs):
         raise OSError('context write failed')
 
+    original_apply = service.state_repository.apply
+
+    async def reserve_unavailable(run_id, command, **kwargs):
+        if command.name == 'reserve_report_editor_revision':
+            raise OSError('revision reservation unavailable')
+        return await original_apply(run_id, command, **kwargs)
+
     original_issue = runtime.editor_grants.issue
 
     async def issue(saved_context, **kwargs):
@@ -117,6 +124,8 @@ async def test_pptx_editor_http_download_survives_delivery_faults(tmp_path, monk
     monkeypatch.setattr(service.state_repository, 'get', get)
     if fault == 'context_write':
         monkeypatch.setattr(service.state_repository, 'apply', apply_unavailable)
+    elif fault == 'revision_reservation':
+        monkeypatch.setattr(service.state_repository, 'apply', reserve_unavailable)
     monkeypatch.setattr(runtime.editor_grants, 'issue', issue)
     if fault == 'artifact_grant':
         monkeypatch.setattr(runtime.download_grants, 'issue', artifact_issue_unavailable)
@@ -134,6 +143,8 @@ async def test_pptx_editor_http_download_survives_delivery_faults(tmp_path, monk
         if chart_fault else None,
     )
     assert result['pptx']['sha256'] == hashlib.sha256(revised).hexdigest()
+    if fault == 'revision_reservation':
+        assert any(issue['code'] == 'report_editor_revision_lookup_failed' for issue in result['validation']['issues'])
     if fault != 'artifact_grant':
         assert result['validation']['ok'] is False
         assert result['validation']['issues']
@@ -450,6 +461,13 @@ async def _publication_fixture(
 
         async def apply(self, run_id, command, *, expected_version):
             assert run_id == "workflow-run" and expected_version == durable.state_version
+            if command.name == "reserve_report_editor_revision":
+                known = [int(key) for key in durable.payload.get("reportEditorContexts", {}) if str(key).isdigit()]
+                durable.payload["reportEditorRevisionCounter"] = max([
+                    command.payload["minimumRevision"], durable.payload.get("reportEditorRevisionCounter", 0), *known,
+                ]) + 1
+                durable.state_version += 1
+                return SimpleNamespace(state=durable)
             assert command.name == "set_report_editor_context"
             context = ReportEditorContext.model_validate(command.payload["context"])
             contexts = durable.payload.setdefault("reportEditorContexts", {})
@@ -1619,7 +1637,7 @@ async def test_office_publication_faults_retain_verified_downloads(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["source_mapping", "source_marking", "inspection", "revision_lookup", "persistence", "context_write", "editor_grant"])
+@pytest.mark.parametrize("fault", ["source_mapping", "source_marking", "inspection", "revision_lookup", "revision_reservation", "persistence", "context_write", "editor_grant"])
 async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, monkeypatch, fault):
     from smart_reporting.report_editor import workbook as workbook_module
     from smart_reporting.reporting.tests.test_workbook_editor import _bytes
@@ -1652,6 +1670,15 @@ async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, mon
         monkeypatch.setattr(workbook_module, "inspect_workbook", lambda *_: (_ for _ in ()).throw(ValueError("inspection unavailable")))
     elif fault == "revision_lookup":
         monkeypatch.setattr(runtime.state_repository, "get", failed())
+    elif fault == "revision_reservation":
+        original_apply = runtime.state_repository.apply
+
+        async def reserve_unavailable(run_id, command, **kwargs):
+            if command.name == "reserve_report_editor_revision":
+                raise OSError("revision reservation unavailable")
+            return await original_apply(run_id, command, **kwargs)
+
+        monkeypatch.setattr(runtime.state_repository, "apply", reserve_unavailable)
     elif fault == "persistence":
         monkeypatch.setattr(runtime.artifact_persistence, "persist_available", failed())
     elif fault == "context_write":
@@ -1664,6 +1691,8 @@ async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, mon
             "column": 0, "writeValue": True, "cell": {"value": 99}}]}]})
 
     assert result["xlsx"]["downloadUrl"]
+    if fault == "revision_reservation":
+        assert any(issue["code"] == "report_editor_revision_lookup_failed" for issue in result["validation"]["issues"])
     assert result["validation"]["ok"] is False
     assert result["validation"]["issues"]
     assert (await runtime.workspace_service.afile_bytes(scope.workspace_key, source_path))[0] == source

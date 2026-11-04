@@ -220,6 +220,8 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
     async def apply(_run, command, *, expected_version):
         if fault in {'context', 'persistence_and_context'}:
             raise OSError('context unavailable')
+        if command.name == 'reserve_report_editor_revision':
+            return SimpleNamespace(state=SimpleNamespace(payload={'reportEditorRevisionCounter': expected_revision}))
         applied.append((command, expected_version))
 
     class EditorGrants:
@@ -269,7 +271,8 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
     assert revision_path.fullmatch(result["pptx"]["path"])
     if fault == 'stale_revision':
         assert files["reports/report-r2.pptx"] == b"existing-revision-2"
-        assert result["validation"]["ok"] is True
+        assert result["validation"]["ok"] is False
+        assert any(issue['code'] == 'pptx_semantic_verification_pending' for issue in result['validation']['issues'])
         return
     # 编辑会话下载不可用时，即使持久化失败也要用产物授权签发已核验文件的下载。
     if fault in {'context', 'download_grant', 'persistence_and_context'}:
