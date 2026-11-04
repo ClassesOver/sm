@@ -318,3 +318,76 @@ def test_slides_bridge_audit_exception_retains_edited_pptx(tmp_path: Path):
     assert json.loads(result.stdout)['issues'] == [
         {'page': 0, 'message': 'PPTX layout audit failed: injected edit audit failure'},
     ]
+
+
+def test_slides_bridge_sets_background_adds_watermark_and_deletes_object(tmp_path: Path):
+    """移植 #182：页面背景、新增文本框/水印与删除对象；重排和主题后仍落在原指定页面。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "structured.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    slides = inspected["slides"]
+    assert len(slides) >= 2
+    target = slides[1]
+    victim = next(item for item in target["elements"] if item["deletable"] and item["text"].strip())
+    order = [1, 0, *range(2, len(slides))]
+
+    _invoke({
+        "action": "edit",
+        "input": str(source),
+        "output": str(output),
+        "edits": [],
+        "order": order,
+        "theme": "modern",
+        "backgrounds": [{"slideIndex": 1, "color": "#12ab34"}],
+        "textBoxes": [
+            {"slideIndex": 1, "text": "内部资料", "geometry": {"x": 200, "y": 240, "width": 560, "height": 120},
+             "fontSize": 64, "fontFamily": "Microsoft YaHei", "color": "#DCE3EB", "rotation": -25},
+            {"slideIndex": 1, "text": "第一行\n第二行", "geometry": {"x": 40, "y": 40, "width": 300, "height": 80},
+             "bold": True},
+        ],
+        "deletions": [{"slideIndex": 1, "elementId": victim["id"]}],
+    }, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)
+    moved = reopened["slides"][0]
+
+    assert moved["background"] == "#12AB34"
+    texts = [item["text"] for item in moved["elements"]]
+    assert "内部资料" in texts and "第一行\n第二行" in texts
+    assert victim["text"] not in texts
+    presentation = Presentation(str(output))
+    watermark = next(shape for shape in presentation.slides[0].shapes if shape.has_text_frame and shape.text_frame.text == "内部资料")
+    assert round(watermark.rotation) == 335
+    run = watermark.text_frame.paragraphs[0].runs[0]
+    assert run.font.size == Pt(64)
+    assert str(run.font.color.rgb) == "DCE3EB"
+    assert len(presentation.slides) == len(slides)
+
+
+def test_slides_bridge_rejects_deleting_object_with_pending_edit_without_output(tmp_path: Path):
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "rejected.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    slide_index, element = next(
+        (slide["slideIndex"], element)
+        for slide in inspected["slides"]
+        for element in slide["elements"]
+        if element["editable"] and element["text"].strip()
+    )
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps({
+        "action": "edit",
+        "input": str(source),
+        "output": str(output),
+        "edits": [{"slideIndex": slide_index, "elementId": element["id"], "text": "改写"}],
+        "deletions": [{"slideIndex": slide_index, "elementId": element["id"]}],
+    }, ensure_ascii=False), encoding="utf-8")
+    result = subprocess.run(
+        ["node_modules/.bin/tsx", "bridge/edit-pptx.ts", str(request_path)],
+        cwd=ENGINE, check=False, capture_output=True, text=True, timeout=120,
+    )
+
+    assert result.returncode != 0
+    assert "delete_target_has_pending_edits" in result.stderr
+    assert not output.exists()

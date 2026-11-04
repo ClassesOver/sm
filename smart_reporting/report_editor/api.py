@@ -66,6 +66,7 @@ class EditorWritePayload(BaseModel):
 class EditorRestorePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    expected_design_sha256: str | None = Field(default=None, alias="expectedDesignSha256", pattern=SHA256_PATTERN)
     markdown: str | None = Field(default=None, max_length=10 * 1024 * 1024)
     expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
 
@@ -85,6 +86,7 @@ class EditorExportPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
+    expected_design_sha256: str | None = Field(default=None, alias="expectedDesignSha256", pattern=SHA256_PATTERN)
     settings: EditorExportSettings | None = None
     note: str | None = Field(default=None, max_length=200)
 
@@ -267,6 +269,10 @@ def create_report_editor_router(
                 # 交互图表与 PDF/Word、静态图共用同一份报表视觉主题。
                 "visualTheme": REPORT_VISUAL_THEME,
             }
+            if hasattr(editor, "design"):
+                result.update(await editor.design.read(context))
+                session = await grants.lookup_session(request.cookies.get(EDITOR_SESSION_COOKIE, ""))
+                result["designEditable"] = session.capabilities is None
             feature_reader = getattr(editor, "lineage_features", None)
             if callable(feature_reader):
                 result["lineageFeatures"] = feature_reader()
@@ -367,7 +373,8 @@ def create_report_editor_router(
             try:
                 document = await editor.restore_history(
                     context, history_revision, expected_sha256=payload.expected_sha256,
-                    markdown=payload.markdown
+                    markdown=payload.markdown,
+                    **({"expected_design_sha256": payload.expected_design_sha256} if payload.expected_design_sha256 is not None else {}),
                 )
             except ReportingError as error:
                 _editor_http_error(error)
@@ -379,6 +386,10 @@ def create_report_editor_router(
                 "csrfToken": grants.csrf_token(request.cookies.get(EDITOR_SESSION_COOKIE, "")),
                 "visualTheme": REPORT_VISUAL_THEME,
             }
+            if hasattr(editor, "design"):
+                result.update(await editor.design.read(context))
+                session = await grants.lookup_session(request.cookies.get(EDITOR_SESSION_COOKIE, ""))
+                result["designEditable"] = session.capabilities is None
             feature_reader = getattr(editor, "lineage_features", None)
             if callable(feature_reader):
                 result["lineageFeatures"] = feature_reader()
@@ -907,6 +918,8 @@ def create_report_editor_router(
                 }
                 if session.capabilities is not None:
                     export_options["session_capabilities"] = session.capabilities
+                if payload.expected_design_sha256 is not None:
+                    export_options["expected_design_sha256"] = payload.expected_design_sha256
                 if payload.settings is not None:
                     export_options["settings"] = payload.settings.model_dump(by_alias=True)
                 if payload.note is not None:
@@ -1324,6 +1337,9 @@ def create_report_editor_router(
                 except ReportingError as error:
                     _editor_http_error(error)
 
+    if editor is not None and hasattr(editor, "design"):
+        from .design_api import register_design_routes
+        register_design_routes(router, grants=grants, editor=editor, allowed_origin=allowed_origin)
     return router
 
 
@@ -1428,6 +1444,7 @@ def _request_id(value: str | None) -> str:
 def _editor_error_status(code: str) -> int:
     if code in {
         "report_editor_conflict",
+        "report_editor_design_conflict",
         "report_editor_revision_conflict",
         "report_editor_revision_stale",
         "report_editor_export_running",

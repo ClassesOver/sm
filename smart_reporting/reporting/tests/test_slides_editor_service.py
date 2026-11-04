@@ -274,3 +274,71 @@ async def test_slides_save_commits_revision_and_keeps_download_when_persistence_
         assert applied[0][1] == 8
         saved_context = applied[0][0].payload["context"]
         assert saved_context["pptxPath"] == "reports/report-r2.pptx"
+
+
+def _validating_service(context: ReportEditorContext) -> ReportSlidesEditorService:
+    service = ReportSlidesEditorService(state_repository=None, workspace_registry=None, workspace=None)
+
+    async def current_context(_session):
+        return context
+
+    service.context_for_session = current_context
+    return service
+
+
+_BOX = {"slideIndex": 0, "text": "内部资料", "geometry": {"x": 10, "y": 10, "width": 200, "height": 80}}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        ({"backgrounds": [{"slideIndex": 0, "color": "red"}]}, "页面背景内容无效"),
+        ({"backgrounds": [{"slideIndex": 0, "color": "#FFFFFF"}, {"slideIndex": 0, "color": "#000000"}]}, "只能设置一次背景"),
+        ({"textBoxes": [{**_BOX, "geometry": {"x": 0, "y": 0, "width": 0, "height": 10}}]}, "新增文本框内容无效"),
+        ({"textBoxes": [{**_BOX, "rotation": float("nan")}]}, "新增文本框内容无效"),
+        ({"textBoxes": [{**_BOX, "script": "x"}]}, "新增文本框内容无效"),
+        ({"deletions": [{"slideIndex": 0, "elementId": "s1"}, {"slideIndex": 0, "elementId": "s1"}]}, "删除对象重复"),
+        ({"deletions": [{"slideIndex": 0, "elementId": "s1"}],
+          "edits": [{"slideIndex": 0, "elementId": "s1", "text": "x"}]}, "不能同时修改"),
+    ],
+)
+async def test_slides_save_rejects_invalid_structure_edits(extra, message):
+    context = _context()
+    with pytest.raises(ReportingError, match=message):
+        await _validating_service(context).save_revision(
+            _session(context), {"expectedSha256": context.pptx_sha256, "edits": [], **extra},
+        )
+
+
+@pytest.mark.anyio
+async def test_slides_save_passes_structure_edits_to_engine(monkeypatch):
+    from smart_reporting.report_editor import slides
+
+    context = _context()
+    service = _validating_service(context)
+    captured: dict[str, object] = {}
+
+    async def read_verified(_context):
+        return b"source"
+
+    def run_engine(_content, action, **kwargs):
+        captured.update(kwargs, action=action)
+        raise ReportingError("report_slides_engine_failed", "stop after engine")
+
+    service._read_verified_pptx = read_verified
+    monkeypatch.setattr(slides.ReportSlidesEditorService, "_run_engine", staticmethod(run_engine))
+    payload = {
+        "expectedSha256": context.pptx_sha256,
+        "edits": [],
+        "backgrounds": [{"slideIndex": 0, "color": "#F4F6F8"}],
+        "textBoxes": [{**_BOX, "fontSize": 64, "color": "#DCE3EB", "rotation": -25}],
+        "deletions": [{"slideIndex": 0, "elementId": "s2"}],
+    }
+    with pytest.raises(ReportingError, match="stop after engine"):
+        await service.save_revision(_session(context), payload)
+
+    assert captured["action"] == "edit"
+    assert captured["backgrounds"] == payload["backgrounds"]
+    assert captured["text_boxes"] == payload["textBoxes"]
+    assert captured["deletions"] == payload["deletions"]

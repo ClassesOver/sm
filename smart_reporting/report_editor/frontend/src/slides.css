@@ -145,3 +145,14 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .slides-image-tools .image-form select { grid-column: 1; }
   .slides-image-tools .image-form button { grid-column: 2; }
 }
+.structure-controls { margin-top: 8px; padding-top: 2px; border-top: 1px solid #e4e9e8; }
+.structure-controls .field-label { margin-top: 10px; }
+.structure-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 14px; }
+.structure-row input[type="color"] { width: 36px; height: 28px; padding: 1px; border: 1px solid #d2dbd9; border-radius: 4px; background: #fff; }
+.structure-row button { min-height: 30px; display: inline-flex; align-items: center; gap: 4px; padding: 0 9px; border: 1px solid #607e78; border-radius: 4px; background: #fff; color: #315d55; font-size: 11px; cursor: pointer; }
+.structure-row button:disabled { opacity: .5; cursor: default; }
+.structure-row .object-delete { border-color: #b77a6c; color: #9c4a38; }
+.structure-pending { display: grid; gap: 4px; margin: 8px 14px 0; padding: 0; list-style: none; color: #3f5c55; font-size: 11px; }
+.structure-pending li { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.structure-pending input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 6px; border: 1px solid #d2dbd9; border-radius: 4px; }
+.structure-pending button { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #64716f; cursor: pointer; }

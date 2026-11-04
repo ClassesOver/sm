@@ -1,14 +1,14 @@
-import { createElement, ArrowDown, ArrowUp, Download, Save, Sparkles, Undo2, X } from 'lucide'
+import { createElement, ArrowDown, ArrowUp, Download, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import type { SlidesCanvasState } from './slides-canvas'
 import { createSlidesChartTools } from './slides-chart-tools'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; geometry?: { x: number; y: number; width: number; height: number } }
+type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number } }
 type SlideTransition = 'none' | 'morph' | 'fade' | 'push' | 'wipe' | 'split' | 'circle' | 'cover' | 'pull' | 'dissolve' | 'zoom' | 'random'
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
-type DeckSlide = { slideIndex: number; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; animations?: Animation[]; elements: DeckElement[] }
+type DeckSlide = { slideIndex: number; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; animations?: Animation[]; elements: DeckElement[] }
 type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
 type Edit = {
   slideIndex: number
@@ -23,6 +23,7 @@ type GeneratedImage = { candidateId: string; mediaType: string; previewDataUrl: 
 type ImageEdit = { candidateId: string; slideIndex: number; geometry: { x: number; y: number; width: number; height: number } }
 type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
 type AnimationTrigger = 'onClick' | 'withPrev' | 'afterPrev'
+type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; watermark: boolean }
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: string }
 
 export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
@@ -71,7 +72,7 @@ root.innerHTML = `${embedded ? '' : `
   <div class="slides-workspace">
     <aside class="slides-sidebar" aria-label="幻灯片列表"><div class="sidebar-heading">页面 <span class="slide-count"></span></div><ol class="slide-list"></ol></aside>
     <section class="slides-stage" aria-label="幻灯片预览"><div class="slides-canvas" role="group" aria-label="可编辑幻灯片画布" hidden></div><p class="canvas-status" role="status">画布载入中</p><iframe class="preview-frame" title="幻灯片预览"></iframe></section>
-    <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><div class="slide-lineage"><span class="lineage-label">母版</span><span class="slide-master"></span><span class="lineage-label">版式</span><select id="layout-select" aria-label="当前页版式"></select></div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><div class="animation-controls"><label class="field-label" for="animation-effect">动画效果</label><select id="animation-effect"><option value="fade">淡化</option><option value="appear">出现</option><option value="flyIn">飞入</option><option value="wipe">擦除</option><option value="wipeDown">向下擦除</option><option value="splitIn">分割进入</option><option value="bounce">弹跳</option><option value="flipIn">翻转进入</option><option value="zoom">缩放进入</option><option value="pulse">脉冲</option><option value="spin">旋转</option><option value="grow">放大</option><option value="teeter">摇摆</option><option value="disappear">消失</option><option value="fadeOut">淡出</option><option value="flyOut">飞出</option><option value="wipeOut">擦除退出</option><option value="shrink">缩小退出</option><option value="zoomOut">缩小退出</option><option value="motionPath">路径</option></select><label class="field-label" for="animation-trigger">触发方式</label><select id="animation-trigger"><option value="onClick">点击时</option><option value="withPrev">与上一动画同时</option><option value="afterPrev">上一动画后</option></select><div class="animation-timing"><label>持续 <input id="animation-duration" type="number" min="1" max="120000" step="50" value="500"> ms</label><label>延迟 <input id="animation-delay" type="number" min="0" max="120000" step="50" value="0"> ms</label></div><button class="animation-add" type="button">添加对象动画</button></div><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
+    <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><div class="slide-lineage"><span class="lineage-label">母版</span><span class="slide-master"></span><span class="lineage-label">版式</span><select id="layout-select" aria-label="当前页版式"></select></div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><div class="structure-controls"><label class="field-label" for="background-color">页面背景</label><div class="structure-row"><input id="background-color" type="color" value="#ffffff" aria-label="当前页背景颜色"><button class="background-reset" type="button">恢复原背景</button></div><div class="field-label">页面对象</div><div class="structure-row"><button class="text-add" type="button">新增文本</button><button class="watermark-add" type="button">新增水印</button><button class="object-delete" type="button">删除对象</button></div><ul class="structure-pending" aria-label="待保存的页面结构修改"></ul></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><div class="animation-controls"><label class="field-label" for="animation-effect">动画效果</label><select id="animation-effect"><option value="fade">淡化</option><option value="appear">出现</option><option value="flyIn">飞入</option><option value="wipe">擦除</option><option value="wipeDown">向下擦除</option><option value="splitIn">分割进入</option><option value="bounce">弹跳</option><option value="flipIn">翻转进入</option><option value="zoom">缩放进入</option><option value="pulse">脉冲</option><option value="spin">旋转</option><option value="grow">放大</option><option value="teeter">摇摆</option><option value="disappear">消失</option><option value="fadeOut">淡出</option><option value="flyOut">飞出</option><option value="wipeOut">擦除退出</option><option value="shrink">缩小退出</option><option value="zoomOut">缩小退出</option><option value="motionPath">路径</option></select><label class="field-label" for="animation-trigger">触发方式</label><select id="animation-trigger"><option value="onClick">点击时</option><option value="withPrev">与上一动画同时</option><option value="afterPrev">上一动画后</option></select><div class="animation-timing"><label>持续 <input id="animation-duration" type="number" min="1" max="120000" step="50" value="500"> ms</label><label>延迟 <input id="animation-delay" type="number" min="0" max="120000" step="50" value="0"> ms</label></div><button class="animation-add" type="button">添加对象动画</button></div><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
   </div>
   <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><span>编辑器</span></footer>
 `
@@ -120,7 +121,17 @@ const imagePreview = root.querySelector<HTMLImageElement>('.image-preview')!
 const imageGenerate = root.querySelector<HTMLButtonElement>('.image-generate')!
 const imageAdd = root.querySelector<HTMLButtonElement>('.image-add')!
 const imagePending = root.querySelector<HTMLUListElement>('.image-pending')!
+const backgroundColor = root.querySelector<HTMLInputElement>('#background-color')!
+const backgroundReset = root.querySelector<HTMLButtonElement>('.background-reset')!
+const textAdd = root.querySelector<HTMLButtonElement>('.text-add')!
+const watermarkAdd = root.querySelector<HTMLButtonElement>('.watermark-add')!
+const objectDelete = root.querySelector<HTMLButtonElement>('.object-delete')!
+const structurePending = root.querySelector<HTMLUListElement>('.structure-pending')!
+objectDelete.prepend(createElement(Trash2, { width: 15, height: 15, 'aria-hidden': 'true' }))
 const order: number[] = []
+const backgroundEdits = new Map<number, string>()
+const textBoxEdits: TextBoxEdit[] = []
+const deletions = new Map<string, { slideIndex: number; elementId: string; label: string }>()
 const edits = new Map<string, Edit>()
 const imageEdits: ImageEdit[] = []
 const animationEdits: AnimationEdit[] = []
@@ -185,7 +196,7 @@ function renderCanvas() {
   if (!canvas || !slide || !deck) return
   canvas.update({
     slide, selectedId: selectedElement,
-    editableIds: new Set(locked() ? [] : deck.slides[selectedSlide]!.elements.filter(item => item.editable).map(item => item.id)),
+    editableIds: new Set(locked() ? [] : deck.slides[selectedSlide]!.elements.filter(item => item.editable && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
     edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
     onSelect: id => { selectedElement = id; renderInspector() },
     onGeometry: (id, geometry) => {
@@ -272,7 +283,7 @@ function move(position: number, direction: -1 | 1) {
 
 function renderInspector() {
   renderCanvas()
-  const elements = deck.slides[selectedSlide]!.elements.filter(item => item.editable)
+  const elements = deck.slides[selectedSlide]!.elements.filter(item => (item.editable || item.deletable) && !deletions.has(editKey(selectedSlide, item.id)))
   select.replaceChildren(...elements.map(item => {
     const option = document.createElement('option')
     option.value = item.id
@@ -286,7 +297,14 @@ function renderInspector() {
   textArea.value = element ? edits.get(editKey(selectedSlide, element.id))?.text ?? element.text : ''
   const box = element && (edits.get(editKey(selectedSlide, element.id))?.geometry ?? element.geometry)
   const geometry = box ?? { x: 0, y: 0, width: 0, height: 0 }
-  for (const input of currentGeometryInputs()) input.value = String(geometry[input.name as keyof typeof geometry] ?? 0)
+  for (const input of currentGeometryInputs()) {
+    input.value = String(geometry[input.name as keyof typeof geometry] ?? 0)
+    input.disabled = savedRevision || !element?.editable
+  }
+  backgroundColor.value = (backgroundEdits.get(selectedSlide) ?? deck.slides[selectedSlide]!.background ?? '#FFFFFF').toLowerCase()
+  backgroundReset.disabled = !backgroundEdits.has(selectedSlide)
+  objectDelete.disabled = !element?.deletable || chartTools.hasPending(selectedSlide, element.id)
+  objectDelete.title = element && chartTools.hasPending(selectedSlide, element.id) ? '该图表有待保存的 AI 改图，请先撤销采纳' : '删除对象'
   themeSelect.value = selectedTheme ?? ''
   transitionSelect.value = transitionEdits.get(selectedSlide) ?? deck.slides[selectedSlide]!.transition ?? 'none'
   const slide = deck.slides[selectedSlide]!
@@ -308,7 +326,7 @@ function renderInspector() {
   animationTrigger.value = existingAnimation?.trigger ?? 'onClick'
   animationDuration.value = String(existingAnimation?.durationMs ?? 500)
   animationDelay.value = String(existingAnimation?.delayMs ?? 0)
-  animationAdd.disabled = !element
+  animationAdd.disabled = !element?.editable
   animationState.textContent = existingAnimation ? `已有 ${existingAnimation.effect} 动画，可继续添加。` : ''
   root.querySelector('.inspector-heading')!.textContent = `对象 · 第 ${order.indexOf(selectedSlide) + 1} 页`
 }
@@ -366,6 +384,83 @@ animationAdd.addEventListener('click', () => {
   renderInspector()
   markDirty()
 })
+function renderStructurePending() {
+  structurePending.replaceChildren()
+  const row = (label: string, onRemove: () => void, extra?: HTMLElement) => {
+    const item = document.createElement('li')
+    item.append(document.createTextNode(label))
+    if (extra) item.append(extra)
+    const remove = buttonIcon(X, '撤销此项修改')
+    remove.addEventListener('click', () => { onRemove(); renderStructurePending(); renderInspector(); markDirty() })
+    item.append(remove)
+    structurePending.append(item)
+  }
+  for (const [slideIndex, color] of backgroundEdits) {
+    row(`第 ${order.indexOf(slideIndex) + 1} 页 · 背景 ${color}`, () => backgroundEdits.delete(slideIndex))
+  }
+  for (const box of textBoxEdits) {
+    const text = document.createElement('input')
+    text.type = 'text'
+    text.value = box.text
+    text.maxLength = 20000
+    text.setAttribute('aria-label', box.watermark ? '水印文字' : '新增文本内容')
+    text.addEventListener('input', () => { box.text = text.value; markDirty() })
+    row(`第 ${order.indexOf(box.slideIndex) + 1} 页 · ${box.watermark ? '水印' : '文本'} `, () => {
+      textBoxEdits.splice(textBoxEdits.indexOf(box), 1)
+    }, text)
+  }
+  for (const [key, deletion] of deletions) {
+    row(`第 ${order.indexOf(deletion.slideIndex) + 1} 页 · 删除 ${deletion.label}`, () => deletions.delete(key))
+  }
+}
+
+function addTextBox(watermark: boolean) {
+  if (locked() || !deck) return
+  const width = deck.size.cx / 9525
+  const height = deck.size.cy / 9525
+  textBoxEdits.push(watermark
+    ? { slideIndex: selectedSlide, text: '内部资料', watermark, fontSize: 64, fontFamily: 'Microsoft YaHei', color: '#DCE3EB', rotation: -25,
+        geometry: { x: Math.round(width * 0.2), y: Math.round(height * 0.4), width: Math.round(width * 0.6), height: 120 } }
+    : { slideIndex: selectedSlide, text: '请输入文本', watermark, fontSize: 28, fontFamily: 'Microsoft YaHei', color: '#1B2A41',
+        geometry: { x: Math.round(width * 0.1), y: Math.round(height * 0.2), width: Math.round(width * 0.6), height: 90 } })
+  canvasStatus.textContent = '新增文本与水印将在保存并打开新修订后显示在画布中。'
+  renderStructurePending()
+  markDirty()
+}
+textAdd.addEventListener('click', () => addTextBox(false))
+watermarkAdd.addEventListener('click', () => addTextBox(true))
+backgroundColor.addEventListener('change', () => {
+  backgroundEdits.set(selectedSlide, backgroundColor.value.toUpperCase())
+  canvasStatus.textContent = '背景修改将在保存并打开新修订后更新画布。'
+  renderStructurePending()
+  renderInspector()
+  markDirty()
+})
+backgroundReset.addEventListener('click', () => {
+  backgroundEdits.delete(selectedSlide)
+  renderStructurePending()
+  renderInspector()
+  markDirty()
+})
+objectDelete.addEventListener('click', () => {
+  const element = currentElement()
+  if (locked() || !element?.deletable || chartTools.hasPending(selectedSlide, element.id)) return
+  const key = editKey(selectedSlide, element.id)
+  // 删除优先：同一对象的文字/位置/动画修改一并撤回，避免保存时引用已删除对象。
+  edits.delete(key)
+  for (let index = animationEdits.length - 1; index >= 0; index--) {
+    if (editKey(animationEdits[index]!.slideIndex, animationEdits[index]!.elementId) === key) animationEdits.splice(index, 1)
+  }
+  deletions.set(key, { slideIndex: selectedSlide, elementId: element.id, label: element.name || element.text.split('\n')[0]?.slice(0, 30) || element.type })
+  selectedElement = ''
+  undoSnapshot = undefined
+  undoButton.disabled = true
+  renderStructurePending()
+  renderInspector()
+  refreshCanvasPreview()
+  markDirty()
+})
+
 imageForm.addEventListener('submit', async event => {
   event.preventDefault()
   if (!imagePrompt.value.trim() || imageGenerate.disabled) return
@@ -514,6 +609,7 @@ aiAccept.addEventListener('click', async () => {
     undoSnapshot = { order: [...order], edits: [...edits.values()].map(edit => ({ ...edit })), ...(selectedTheme ? { theme: selectedTheme } : {}) }
     for (const edit of pendingAIProposal.edits) {
       const key = editKey(edit.slideIndex, edit.elementId)
+      if (deletions.has(key)) continue
       edits.set(key, { ...edits.get(key), ...edit })
     }
     if (pendingAIProposal.theme) selectedTheme = pendingAIProposal.theme
@@ -545,7 +641,7 @@ saveButton.addEventListener('click', async () => {
   try {
     const result = await request<{ revision: number; pptx?: { downloadUrl?: string }; editor?: { openUrl: string }; validation: { issues: { message: string }[] } }>('save', {
       method: 'POST',
-    body: JSON.stringify({ expectedSha256: deck.sha256, chartEdits: chartTools.pendingEdits(), edits: [...edits.values()], order, ...(selectedTheme ? { theme: selectedTheme } : {}), ...(imageEdits.length ? { imageEdits } : {}), transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: animationEdits, slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })) }),
+    body: JSON.stringify({ expectedSha256: deck.sha256, chartEdits: chartTools.pendingEdits(), edits: [...edits.values()], order, ...(selectedTheme ? { theme: selectedTheme } : {}), ...(imageEdits.length ? { imageEdits } : {}), transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: animationEdits, slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })), backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })), textBoxes: textBoxEdits.map(({ watermark: _watermark, ...box }) => box), deletions: [...deletions.values()].map(({ slideIndex, elementId }) => ({ slideIndex, elementId })) }),
     })
     dirty = false
     savedRevision = true
@@ -557,6 +653,10 @@ saveButton.addEventListener('click', async () => {
     animationEdits.splice(0, animationEdits.length)
     transitionEdits.clear()
     layoutEdits.clear()
+    backgroundEdits.clear()
+    textBoxEdits.splice(0, textBoxEdits.length)
+    deletions.clear()
+    renderStructurePending()
     renderPendingImages()
     revisionLabel.textContent = `修订 ${result.revision}`
     stateLabel.textContent = result.validation.issues.length ? '已保存，存在告警' : '已保存'

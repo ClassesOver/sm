@@ -109,6 +109,7 @@ export function createSlidesChartTools(host: HTMLElement, request: Request, chan
   void load()
   return {
     pendingEdits: () => [...pending.values()].map(item => ({ candidateId: item.id })),
+    hasPending: (slideIndex: number, elementId: string) => pending.has(`${slideIndex}:${elementId}`),
     saved: () => { pending.clear(); renderPending() },
   }
 }

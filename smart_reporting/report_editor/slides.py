@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
+import re
 import secrets
 import subprocess
 import tempfile
@@ -24,6 +26,92 @@ _SLIDE_ANIMATION_EFFECTS = {
     "zoomOut", "motionPath", "mediaPlay", "mediaPause", "mediaStop",
 }
 _SLIDE_ANIMATION_TRIGGERS = {"onClick", "withPrev", "afterPrev"}
+_HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+_MAX_STRUCTURE_EDITS = 200
+
+
+def _slide_index(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _number(value: Any, minimum: float, maximum: float) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and minimum <= value <= maximum
+    )
+
+
+def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[Any], list[Any]]:
+    """页面背景、新增文本框（含水印）和删除对象；引擎按原页序号再次核验目标。"""
+    backgrounds = payload.get("backgrounds", [])
+    text_boxes = payload.get("textBoxes", [])
+    deletions = payload.get("deletions", [])
+    if (
+        not isinstance(backgrounds, list) or len(backgrounds) > _MAX_STRUCTURE_EDITS
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"slideIndex", "color"}
+            or not _slide_index(item["slideIndex"])
+            or not isinstance(item["color"], str)
+            or not _HEX_COLOR.match(item["color"])
+            for item in backgrounds
+        )
+    ):
+        raise ReportingError("report_slides_edit_invalid", "页面背景内容无效。")
+    if len({item["slideIndex"] for item in backgrounds}) != len(backgrounds):
+        raise ReportingError("report_slides_edit_invalid", "同一页面只能设置一次背景。")
+    optional = {"fontSize", "fontFamily", "color", "bold", "rotation"}
+    if (
+        not isinstance(text_boxes, list) or len(text_boxes) > _MAX_STRUCTURE_EDITS
+        or any(
+            not isinstance(item, dict)
+            or not {"slideIndex", "text", "geometry"}.issubset(item)
+            or not set(item).issubset({"slideIndex", "text", "geometry", *optional})
+            or not _slide_index(item["slideIndex"])
+            or not isinstance(item["text"], str)
+            or len(item["text"]) > 20_000
+            or not isinstance(item["geometry"], dict)
+            or set(item["geometry"]) != {"x", "y", "width", "height"}
+            or not all(_number(item["geometry"][key], 0, 100_000) for key in ("x", "y"))
+            or not all(_number(item["geometry"][key], 1, 100_000) for key in ("width", "height"))
+            or ("fontSize" in item and not _number(item["fontSize"], 1, 400))
+            or ("fontFamily" in item and (
+                not isinstance(item["fontFamily"], str)
+                or not item["fontFamily"].strip()
+                or len(item["fontFamily"]) > 200
+            ))
+            or ("color" in item and (not isinstance(item["color"], str) or not _HEX_COLOR.match(item["color"])))
+            or ("bold" in item and not isinstance(item["bold"], bool))
+            or ("rotation" in item and not _number(item["rotation"], -360, 360))
+            for item in text_boxes
+        )
+    ):
+        raise ReportingError("report_slides_edit_invalid", "新增文本框内容无效。")
+    if (
+        not isinstance(deletions, list) or len(deletions) > _MAX_STRUCTURE_EDITS
+        or any(
+            not isinstance(item, dict)
+            or set(item) != {"slideIndex", "elementId"}
+            or not _slide_index(item["slideIndex"])
+            or not isinstance(item["elementId"], str)
+            or not item["elementId"]
+            for item in deletions
+        )
+    ):
+        raise ReportingError("report_slides_edit_invalid", "删除对象内容无效。")
+    deleted = {(item["slideIndex"], item["elementId"]) for item in deletions}
+    if len(deleted) != len(deletions):
+        raise ReportingError("report_slides_edit_invalid", "删除对象重复。")
+    pending = [*payload.get("edits", []), *payload.get("animations", [])]
+    if any(
+        isinstance(item, dict) and (item.get("slideIndex"), item.get("elementId")) in deleted
+        for item in pending
+    ):
+        raise ReportingError("report_slides_edit_invalid", "已删除的对象不能同时修改或添加动画。")
+    return backgrounds, text_boxes, deletions
+
 
 class ReportSlidesEditorService:
     """读取并验证 PPTX 编辑授权所绑定的发布修订。"""
@@ -232,6 +320,8 @@ class ReportSlidesEditorService:
         ):
             raise ReportingError("report_slides_edit_invalid", "幻灯片顺序无效。")
 
+        backgrounds, text_boxes, deletions = _validate_structure_edits(payload)
+
         source = await self._read_verified_pptx(context)
         engine_result = await asyncio.to_thread(
             self._run_engine,
@@ -244,6 +334,9 @@ class ReportSlidesEditorService:
             transitions=transitions,
             animations=animations,
             slide_layouts=slide_layouts,
+            backgrounds=backgrounds,
+            text_boxes=text_boxes,
+            deletions=deletions,
         )
         revised = engine_result["bytes"]
         if chart_replacements:
@@ -456,6 +549,9 @@ class ReportSlidesEditorService:
         transitions: list[dict[str, Any]] | None = None,
         animations: list[dict[str, Any]] | None = None,
         slide_layouts: list[dict[str, Any]] | None = None,
+        backgrounds: list[dict[str, Any]] | None = None,
+        text_boxes: list[dict[str, Any]] | None = None,
+        deletions: list[dict[str, Any]] | None = None,
     ) -> Any:
         engine = Path(os.environ.get(
             "AGENT_REPORTING_SLIDES_ENGINE_DIR",
@@ -491,6 +587,12 @@ class ReportSlidesEditorService:
                     request["animations"] = animations
                 if slide_layouts:
                     request["slideLayouts"] = slide_layouts
+                if backgrounds:
+                    request["backgrounds"] = backgrounds
+                if text_boxes:
+                    request["textBoxes"] = text_boxes
+                if deletions:
+                    request["deletions"] = deletions
             request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
             process = subprocess.run(
                 ["node_modules/.bin/tsx", "bridge/edit-pptx.ts", str(request_path)],

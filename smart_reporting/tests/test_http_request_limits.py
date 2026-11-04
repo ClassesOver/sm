@@ -278,6 +278,8 @@ async def test_agentos_run_middleware_preserves_multipart_for_downstream(
         ("/reports/v1/editor/report-1/1/api/ai/rewrite", "post", 12 * 1024 * 1024),
         ("/reports/v1/workbooks/report-1/1/api/save", "POST", 12 * 1024 * 1024),
         ("/reports/v1/workbooks/report-1/1/api/ai/start", "POST", 12 * 1024 * 1024),
+        ("/reports/v1/slides/report-1/1/api/save", "POST", 12 * 1024 * 1024),
+        ("/reports/v1/slides/report-1/1/api/render-tree", "POST", 12 * 1024 * 1024),
         ("/reports/v1/workbooks/report-1/1/api/file", "GET", None),
         ("/reports/v1/editor/report-1/1/api/document", "GET", None),
         ("/reports/v1/download/grant", "GET", None),

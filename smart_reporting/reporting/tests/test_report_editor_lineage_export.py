@@ -226,10 +226,11 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             assert artifact_manifest["analysisIds"] == ["analysis_001"]
             render_job = run_context.session_state[REPORT_JOBS_STATE_KEY][context.job_id]
             trace_sources = render_job.pop("_traceSourcePresentations", None)
-            if failure is None:
-                assert render_job.pop("_editorExportSettings") == {"sources": False}
-            else:
-                assert render_job.pop("_editorExportSettings") == {"sources": True}
+            # 导出设置包含报告设计的全部版式开关；溯源附录仅在追溯故障时开启。
+            export_settings = render_job.pop("_editorExportSettings")
+            assert export_settings["sources"] is (failure is not None)
+            assert all(isinstance(value, bool) for value in export_settings.values())
+            assert isinstance(render_job.pop("_reportDesign"), dict)
             assert render_job == job
             # B8：数据来源附录载荷与渲染同一次快照装配——claim 摘要来自冻结事实，
             # 状态来自草稿校验（3800 改值 → stale），在线定位指向 N+1 revision。
@@ -530,7 +531,7 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
 
         monkeypatch.setattr(service_module, "snapshot_revision_lineage", broken_snapshot)
     elif fault == "overview":
-        from smart_reporting.report_editor import service as service_module
+        from smart_reporting.report_editor import render_preparation as service_module
 
         validate = editor.trace.validate
 

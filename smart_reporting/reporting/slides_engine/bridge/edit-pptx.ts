@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import { addPicture, applyThemeToArchive, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setSlideAnimations, setSlideLayout, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -8,6 +8,17 @@ type TextEdit = {
   elementId: string
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
+}
+type Geometry = { x: number; y: number; width: number; height: number }
+type TextBox = {
+  slideIndex: number
+  text: string
+  geometry: Geometry
+  fontSize?: number
+  fontFamily?: string
+  color?: string
+  bold?: boolean
+  rotation?: number
 }
 type Input = {
   action: 'inspect' | 'edit'
@@ -33,7 +44,18 @@ type Input = {
     delayMs?: number
   }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]
+  backgrounds?: { slideIndex: number; color: string }[]
+  textBoxes?: TextBox[]
+  deletions?: { slideIndex: number; elementId: string }[]
 }
+
+const colorPattern = /^#[0-9a-fA-F]{6}$/
+const deletableTypes = new Set(['text', 'shape', 'picture'])
+const validSlideIndex = (value: unknown, count: number): value is number =>
+  Number.isInteger(value) && (value as number) >= 0 && (value as number) < count
+const validGeometry = (value: Geometry | undefined) => !!value &&
+  [value.x, value.y, value.width, value.height].every((item) => Number.isFinite(item) && item >= 0 && item <= 100000) &&
+  value.width > 0 && value.height > 0
 
 const themes: Record<NonNullable<Input['theme']>, ThemeSpec> = {
   executive: { name: 'Executive', colors: { dk1: '#183247', lt1: '#F4F6F8', dk2: '#566773', lt2: '#D5DEDF', accent1: '#147D75', accent2: '#307C8A', accent3: '#718B49', accent4: '#C45A3C', accent5: '#6C7180', accent6: '#8A6D3B', hlink: '#0563C1', folHlink: '#954F72' } },
@@ -61,6 +83,7 @@ if (request.action === 'inspect') {
     layouts,
     slides: opened.deck.slides.map((slide, slideIndex) => ({
       slideIndex,
+      background: slide.background?.type === 'solid' ? slide.background.color : null,
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
       animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, presetXml, preset }) => ({
@@ -79,6 +102,7 @@ if (request.action === 'inspect') {
         name: element.name ?? '',
         text: textOf(element),
         editable: element.type === 'text' || element.type === 'shape',
+        deletable: deletableTypes.has(element.type),
         geometry: {
           x: element.transform.offset.x / 9525,
           y: element.transform.offset.y / 9525,
@@ -90,6 +114,38 @@ if (request.action === 'inspect') {
   }))
 } else {
   if (request.theme && !Object.hasOwn(themes, request.theme)) throw new Error('theme_invalid')
+  // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
+  const originalSlides = [...opened.deck.slides]
+  const slideCount = originalSlides.length
+  const deletions = request.deletions ?? []
+  const deleted = new Set<string>()
+  for (const deletion of deletions) {
+    if (!validSlideIndex(deletion.slideIndex, slideCount)) throw new Error('delete_slide_index_invalid')
+    const element = originalSlides[deletion.slideIndex]!.elements.find((candidate) => candidate.id === deletion.elementId)
+    if (!element || !deletableTypes.has(element.type)) throw new Error('delete_target_invalid')
+    const key = `${deletion.slideIndex}:${deletion.elementId}`
+    if (deleted.has(key)) throw new Error('delete_target_duplicated')
+    deleted.add(key)
+  }
+  const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
+  if ((request.edits ?? []).some((edit) => touchesDeleted(edit.slideIndex, edit.elementId)) ||
+    (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
+    throw new Error('delete_target_has_pending_edits')
+  }
+  for (const background of request.backgrounds ?? []) {
+    if (!validSlideIndex(background.slideIndex, slideCount)) throw new Error('background_slide_index_invalid')
+    if (typeof background.color !== 'string' || !colorPattern.test(background.color)) throw new Error('background_color_invalid')
+  }
+  for (const box of request.textBoxes ?? []) {
+    if (!validSlideIndex(box.slideIndex, slideCount)) throw new Error('textbox_slide_index_invalid')
+    if (typeof box.text !== 'string' || box.text.length > 20000) throw new Error('textbox_text_invalid')
+    if (!validGeometry(box.geometry)) throw new Error('textbox_geometry_invalid')
+    if (box.fontSize !== undefined && (!Number.isFinite(box.fontSize) || box.fontSize < 1 || box.fontSize > 400)) throw new Error('textbox_font_invalid')
+    if (box.fontFamily !== undefined && (typeof box.fontFamily !== 'string' || !box.fontFamily.trim() || box.fontFamily.length > 200)) throw new Error('textbox_font_invalid')
+    if (box.color !== undefined && (typeof box.color !== 'string' || !colorPattern.test(box.color))) throw new Error('textbox_color_invalid')
+    if (box.bold !== undefined && typeof box.bold !== 'boolean') throw new Error('textbox_font_invalid')
+    if (box.rotation !== undefined && (!Number.isFinite(box.rotation) || Math.abs(box.rotation) > 360)) throw new Error('textbox_rotation_invalid')
+  }
   for (const edit of request.edits ?? []) {
     if (!Number.isInteger(edit.slideIndex) || edit.slideIndex < 0 || edit.slideIndex >= opened.deck.slides.length) {
       throw new Error('slide_index_invalid')
@@ -166,6 +222,9 @@ if (request.action === 'inspect') {
     else existing.push(updated)
     setSlideAnimations(slide, existing)
   }
+  for (const deletion of deletions) {
+    if (!deleteElement(opened, originalSlides[deletion.slideIndex]!, deletion.elementId)) throw new Error('delete_target_invalid')
+  }
   for (const selection of request.slideLayouts ?? []) {
     if (!Number.isInteger(selection.slideIndex) || selection.slideIndex < 0 || selection.slideIndex >= opened.deck.slides.length) {
       throw new Error('layout_slide_index_invalid')
@@ -192,6 +251,28 @@ if (request.action === 'inspect') {
     const spec = themes[request.theme]
     applyThemeToArchive(opened, spec)
     remapDeckColors(opened, spec)
+  }
+  for (const background of request.backgrounds ?? []) {
+    setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
+  }
+  for (const box of request.textBoxes ?? []) {
+    const { x, y, width, height } = box.geometry
+    const element = addElement(originalSlides[box.slideIndex]!, {
+      kind: 'textbox',
+      offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
+      paragraphs: box.text.split(/\r?\n/).map((text) => ({ runs: [{
+        text,
+        fontSize: box.fontSize ?? 18,
+        ...(box.fontFamily ? { fontFamily: box.fontFamily } : {}),
+        color: (box.color ?? '#000000').toUpperCase(),
+        ...(box.bold ? { bold: true } : {}),
+      }] })),
+      bodyPr: { autoFit: 'shrink' },
+    })
+    if (box.rotation) {
+      element.transform.rot = Math.round(box.rotation * 60000)
+      element.dirtyTransform = true
+    }
   }
   if (!request.output) throw new Error('output_path_required')
   const bytes = await savePptx(opened)

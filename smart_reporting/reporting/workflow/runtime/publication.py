@@ -672,54 +672,65 @@ class RuntimePublicationMixin:
                 slide_outline = build_slide_outline(graph, manifest, title=title)
             chart_files = {item.chart_id: item.source_file for item in manifest.charts}
             pages: list[dict[str, object]] = []
-            with TemporaryDirectory(prefix="report-pptx-assets-") as temporary:
-                for slide in slide_outline.slides:
-                    chart_path = None
-                    for chart_id in slide.chart_ids:
-                        chart = chart_files.get(chart_id)
-                        if chart is None or PurePosixPath(chart.path).suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-                            continue
-                        try:
-                            data = await self.workspace_service.read_limited_regular_file(
-                                self._scope(run_context)["threadId"], chart.path, max_bytes=chart.size,
-                            )
-                            if len(data) != chart.size or hashlib.sha256(data).hexdigest() != chart.sha256:
-                                raise ValueError("chart identity mismatch")
-                        except Exception as error:
-                            validation["issues"].append({
-                                "code": "pptx_chart_unavailable",
-                                "message": "冻结图表无法读取，页面仍保留文字证据。",
-                                "details": {"chartId": chart_id, "errorType": type(error).__name__},
-                            })
-                            continue
-                        asset = Path(temporary) / f"{chart_id}{PurePosixPath(chart.path).suffix.lower()}"
-                        asset.write_bytes(data)
-                        chart_path = str(asset)
-                        break
-                    pages.append({
-                        "title": slide.title,
-                        "bullets": list(slide.bullets),
-                        "evidenceIds": [*slide.finding_ids, *slide.evidence_ids],
-                        **({"chartPath": chart_path} if chart_path else {}),
-                    })
-                if not pages:
-                    raise ValueError("no frozen analysis evidence")
-                local_pptx = Path(temporary) / "report.pptx"
-                built = build_editable_pptx(
-                    output_path=local_pptx,
-                    title=title,
-                    period=str(period),
-                    theme=state.get("report_request_context", {}).get("pptxTheme", "executive"),
-                    slides=tuple(pages),
-                )
-                if built.issues:
-                    validation["issues"].extend(
-                        {"code": "pptx_layout_audit", "message": str(item.get("message", "版式需要复核。")), "details": {"page": item.get("page")}}
-                        for item in built.issues
+            chart_assets: dict[str, bytes] = {}
+            for slide in slide_outline.slides:
+                chart_name = None
+                for chart_id in slide.chart_ids:
+                    chart = chart_files.get(chart_id)
+                    if chart is None or PurePosixPath(chart.path).suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+                        continue
+                    try:
+                        data = await self.workspace_service.read_limited_regular_file(
+                            self._scope(run_context)["threadId"], chart.path, max_bytes=chart.size,
+                        )
+                        if len(data) != chart.size or hashlib.sha256(data).hexdigest() != chart.sha256:
+                            raise ValueError("chart identity mismatch")
+                    except Exception as error:
+                        validation["issues"].append({
+                            "code": "pptx_chart_unavailable",
+                            "message": "冻结图表无法读取，页面仍保留文字证据。",
+                            "details": {"chartId": chart_id, "errorType": type(error).__name__},
+                        })
+                        continue
+                    chart_name = f"{chart_id}{PurePosixPath(chart.path).suffix.lower()}"
+                    chart_assets[chart_name] = data
+                    break
+                pages.append({
+                    "title": slide.title,
+                    "bullets": list(slide.bullets),
+                    "evidenceIds": [*slide.finding_ids, *slide.evidence_ids],
+                    **({"chartPath": chart_name} if chart_name else {}),
+                })
+            if not pages:
+                raise ValueError("no frozen analysis evidence")
+            theme = state.get("report_request_context", {}).get("pptxTheme", "executive")
+
+            def build() -> tuple[Any, bytes]:
+                # 同步构建器（Node 子进程）在工作线程执行，避免阻塞事件循环；
+                # 临时目录由工作线程持有，协程取消时不会删除仍被构建器使用的文件。
+                with TemporaryDirectory(prefix="report-pptx-assets-") as temporary:
+                    root = Path(temporary)
+                    for name, data in chart_assets.items():
+                        (root / name).write_bytes(data)
+                    local_pptx = root / "report.pptx"
+                    built = build_editable_pptx(
+                        output_path=local_pptx, title=title, period=str(period), theme=theme,
+                        slides=tuple({
+                            **page,
+                            **({"chartPath": str(root / str(page["chartPath"]))} if page.get("chartPath") else {}),
+                        } for page in pages),
                     )
-                await self.workspace_service.awrite_bytes(
-                    self._scope(run_context)["threadId"], pptx_path, local_pptx.read_bytes(),
+                    return built, local_pptx.read_bytes()
+
+            built, content = await asyncio.to_thread(build)
+            if built.issues:
+                validation["issues"].extend(
+                    {"code": "pptx_layout_audit", "message": str(item.get("message", "版式需要复核。")), "details": {"page": item.get("page")}}
+                    for item in built.issues
                 )
+            await self.workspace_service.awrite_bytes(
+                self._scope(run_context)["threadId"], pptx_path, content,
+            )
             actual = await self.workspace_service.ahash_file(self._scope(run_context)["threadId"], pptx_path)
             if actual.get("missing") or actual.get("sha256") != built.sha256 or actual.get("size") != built.size:
                 raise ValueError("generated pptx identity mismatch")

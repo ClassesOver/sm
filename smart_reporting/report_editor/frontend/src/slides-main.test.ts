@@ -20,7 +20,7 @@ describe('shared PPTX editor', () => {
         slideIndex,
         animations: [],
         elements: ['title', 'body'].map(id => ({
-          id, type: 'text', name: id, text: `${id} ${slideIndex}`, editable: true,
+          id, type: 'text', name: id, text: `${id} ${slideIndex}`, editable: true, deletable: true,
           geometry: { x: 10, y: 20, width: 300, height: 80 },
         })),
       })),
@@ -61,6 +61,36 @@ describe('shared PPTX editor', () => {
       slideIndex: 0, elementId: 'title',
       geometry: { x: 125, y: 75, width: 300, height: 80 },
     }])
+  })
+
+  it('saves background, watermark and deletions and drops edits of deleted objects', async () => {
+    const { root, shell, fetcher } = await openEditor()
+    const select = root.querySelector<HTMLSelectElement>('#object-select')!
+    select.value = 'body'
+    select.dispatchEvent(new Event('change'))
+    const text = root.querySelector<HTMLTextAreaElement>('#object-text')!
+    text.value = '将被删除'; text.dispatchEvent(new Event('input'))
+    root.querySelector<HTMLButtonElement>('.object-delete')!.click()
+    expect([...select.options].map(option => option.value)).toEqual(['title'])
+
+    root.querySelector<HTMLButtonElement>('.watermark-add')!.click()
+    const watermarkText = root.querySelector<HTMLInputElement>('.structure-pending input')!
+    watermarkText.value = '仅供内部'; watermarkText.dispatchEvent(new Event('input'))
+    const background = root.querySelector<HTMLInputElement>('#background-color')!
+    background.value = '#123456'; background.dispatchEvent(new Event('change'))
+    expect(root.querySelectorAll('.structure-pending li')).toHaveLength(3)
+
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] } })))
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
+    const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
+    expect(payload.edits).toEqual([])
+    expect(payload.deletions).toEqual([{ slideIndex: 0, elementId: 'body' }])
+    expect(payload.backgrounds).toEqual([{ slideIndex: 0, color: '#123456' }])
+    expect(payload.textBoxes).toHaveLength(1)
+    expect(payload.textBoxes[0]).toMatchObject({ slideIndex: 0, text: '仅供内部', fontSize: 64, color: '#DCE3EB', rotation: -25 })
+    expect(payload.textBoxes[0]).not.toHaveProperty('watermark')
+    expect(root.querySelectorAll('.structure-pending li')).toHaveLength(0)
   })
 
   it('locks editing while save is pending and restores it after failure', async () => {
