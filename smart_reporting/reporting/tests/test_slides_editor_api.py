@@ -180,7 +180,14 @@ async def test_slides_api_reads_deck_previews_and_saves_only_inside_slides_sessi
             json={"expectedSha256": "a" * 64},
             headers={"X-CSRF-Token": csrf},
         )
+        malformed = await client.post(
+            f"{path}/api/save",
+            content=b"{not json",
+            headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+        )
 
+    assert malformed.status_code == 400
+    assert malformed.json()["detail"]["code"] == "report_slides_payload_invalid"
     assert deck.status_code == 200
     assert SLIDES_CSRF_COOKIE in opened.headers["set-cookie"]
     assert deck.json() == {"revision": 4, "slides": [{"title": "经营概览"}]}

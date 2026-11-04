@@ -53,6 +53,9 @@ async def test_workbook_api_scopes_cookie_and_requires_csrf_for_unsaved_snapshot
         result = await client.post(base + '/api/snapshot',json={'operations':operations},headers={'X-CSRF-Token':token})
         assert result.status_code == 200
         assert workbooks.snapshots == [operations]
+        malformed = await client.post(base + '/api/snapshot', content=b'{not json',
+            headers={'X-CSRF-Token': token, 'Content-Type': 'application/json'})
+        assert malformed.status_code == 400
         wrong_scope = await client.get('/reports/v1/workbooks/another/1')
         assert wrong_scope.status_code in {403,409}
 

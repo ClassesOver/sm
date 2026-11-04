@@ -49,7 +49,10 @@ def create_report_workbook_editor_router(
         return workbook_ai
 
     async def payload_for(request: Request):
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=400, detail={"code": "report_workbook_payload_invalid"}) from None
         if not isinstance(payload, dict):
             raise HTTPException(status_code=422, detail={"code": "report_workbook_payload_invalid"})
         return payload
