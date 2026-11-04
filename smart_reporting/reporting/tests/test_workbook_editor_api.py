@@ -76,3 +76,25 @@ async def test_workbook_api_accept_binds_candidate_to_server_recomputed_unsaved_
     assert result.status_code == 200
     assert result.json()['accepted'] is True
     assert workbooks.snapshots == [operations]
+
+
+@pytest.mark.anyio
+async def test_workbook_download_keeps_chinese_filename_in_rfc5987_header(tmp_path):
+    context = _context(_bytes()).model_copy(update={"xlsx_path": "报表/智能分析/run/revision-1/医院运营分析报告_2025.xlsx"})
+    grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='s' * 32)
+    raw, _ = await grants.issue(context, capabilities={'xlsx_download': True})
+
+    class Downloads(Workbooks):
+        async def download_for_session(self, _session):
+            return context, b'xlsx-bytes'
+
+    app = FastAPI()
+    app.include_router(create_report_workbook_editor_router(grants, workbooks=Downloads(), static_dir=tmp_path, cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://report.test') as client:
+        response = await client.get(f'/reports/v1/workbooks/download/{raw}')
+
+    assert response.status_code == 200
+    assert response.headers['content-disposition'] == (
+        'attachment; filename="report.xlsx"; filename*=UTF-8\'\''
+        '%E5%8C%BB%E9%99%A2%E8%BF%90%E8%90%A5%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A_2025.xlsx'
+    )

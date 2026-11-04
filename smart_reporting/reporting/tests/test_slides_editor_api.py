@@ -192,12 +192,27 @@ async def test_slides_api_reads_deck_previews_and_saves_only_inside_slides_sessi
 
 
 @pytest.mark.anyio
-async def test_pptx_download_uses_a_separate_capability_grant():
+@pytest.mark.parametrize(
+    ("pptx_path", "ascii_name", "encoded_name"),
+    [
+        ("reports/report.pptx", "report.pptx", "report.pptx"),
+        # 报告标题通常含中文：响应头只能是 latin-1，曾因此返回 500。
+        ("报表/智能分析/run-1/revision-1/医院运营分析报告_2025.pptx", "report.pptx",
+         "%E5%8C%BB%E9%99%A2%E8%BF%90%E8%90%A5%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A_2025.pptx"),
+    ],
+)
+async def test_pptx_download_uses_a_separate_capability_grant(pptx_path, ascii_name, encoded_name):
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret="s" * 32)
     raw, _expires = await grants.issue(_context(), capabilities={"pptx_download": True})
+
+    class NamedSlidesService(SlidesService):
+        async def download_for_session(self, session):
+            context, content = await super().download_for_session(session)
+            return context.model_copy(update={"pptx_path": pptx_path}), content
+
     app = FastAPI()
     app.include_router(create_report_slides_editor_router(
-        grants, slides=SlidesService(), static_dir=Path("."), cookie_secure=False,
+        grants, slides=NamedSlidesService(), static_dir=Path("."), cookie_secure=False,
     ))
 
     async with AsyncClient(
@@ -207,7 +222,9 @@ async def test_pptx_download_uses_a_separate_capability_grant():
 
     assert response.status_code == 200
     assert response.content == b"PPTX-bytes"
-    assert response.headers["content-disposition"].endswith('filename="report.pptx"')
+    assert response.headers["content-disposition"] == (
+        f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+    )
 
 
 @pytest.mark.anyio

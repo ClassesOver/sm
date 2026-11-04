@@ -8,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
+from ..reporting.delivery.publishing import content_disposition
 from ..reporting.models import ReportingError
 from .service import ReportEditorGrantService
 
@@ -74,8 +75,7 @@ def create_report_workbook_editor_router(
             context, content = await workbooks.download_for_session(session)
         except ReportingError as error:
             raise fail(error) from None
-        filename = quote(Path(context.xlsx_path or "report.xlsx").name)
-        return Response(content, media_type=_XLSX_TYPE, headers={"Cache-Control": "no-store", "Content-Disposition": f"attachment; filename=report.xlsx; filename*=UTF-8''{filename}", "X-Content-Type-Options": "nosniff"})
+        return Response(content, media_type=_XLSX_TYPE, headers={"Cache-Control": "no-store", "Content-Disposition": content_disposition(context.xlsx_path or "report.xlsx", artifact="xlsx"), "X-Content-Type-Options": "nosniff"})
 
     @router.get("/reports/v1/workbooks/{report_id}/{revision}", include_in_schema=False)
     async def workbook_page(report_id: str, revision: int, request: Request):

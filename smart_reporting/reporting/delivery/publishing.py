@@ -968,7 +968,7 @@ def create_report_download_router(
             content,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": _content_disposition(grant.pdf_path, artifact="pdf"),
+                "Content-Disposition": content_disposition(grant.pdf_path, artifact="pdf"),
                 "Content-Length": str(grant.pdf_size),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
@@ -991,7 +991,7 @@ def create_report_download_router(
             content,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={
-                "Content-Disposition": _content_disposition(grant.word_path, artifact="word"),
+                "Content-Disposition": content_disposition(grant.word_path, artifact="word"),
                 "Content-Length": str(grant.word_size),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
@@ -1012,7 +1012,7 @@ def create_report_download_router(
             content,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={
-                "Content-Disposition": _content_disposition(grant.pptx_path, artifact="pptx"),
+                "Content-Disposition": content_disposition(grant.pptx_path, artifact="pptx"),
                 "Content-Length": str(grant.pptx_size),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
@@ -1033,7 +1033,7 @@ def create_report_download_router(
             content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={
-                "Content-Disposition": _content_disposition(grant.xlsx_path, artifact="xlsx"),
+                "Content-Disposition": content_disposition(grant.xlsx_path, artifact="xlsx"),
                 "Content-Length": str(grant.xlsx_size),
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
@@ -1044,7 +1044,7 @@ def create_report_download_router(
     return router
 
 
-def _content_disposition(path: str, *, artifact: Literal["pdf", "word", "pptx", "xlsx"]) -> str:
+def content_disposition(path: str, *, artifact: Literal["pdf", "word", "pptx", "xlsx"]) -> str:
     filename = Path(path).name
     suffix = {"pdf": ".pdf", "word": ".docx", "pptx": ".pptx", "xlsx": ".xlsx"}[artifact]
     if Path(filename).suffix.lower() != suffix:

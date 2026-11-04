@@ -8,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 
+from ..reporting.delivery.publishing import content_disposition
 from ..reporting.models import ReportingError
 from .service import ReportEditorGrantService
 
@@ -125,13 +126,13 @@ def create_report_slides_editor_router(
                 status_code=status,
                 detail={"code": error.code, "message": error.message},
             ) from None
-        filename = Path(context.pptx_path or "report.pptx").name
         return Response(
             content,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={
                 "Cache-Control": "no-store",
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                # 报告标题通常含中文；响应头只能是 latin-1，需 ASCII 回退名 + RFC 5987 原名。
+                "Content-Disposition": content_disposition(context.pptx_path or "report.pptx", artifact="pptx"),
                 "X-Content-Type-Options": "nosniff",
             },
         )
