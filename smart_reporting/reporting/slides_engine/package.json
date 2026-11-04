@@ -4,9 +4,11 @@
   "type": "module",
   "workspaces": ["packages/*"],
   "scripts": {
-    "build:pptx": "tsx bridge/build-pptx.ts"
+    "build:pptx": "tsx bridge/build-pptx.ts",
+    "bundle:bridges": "esbuild bridge/build-pptx.ts bridge/edit-pptx.ts bridge/render-pptx.ts bridge/replace-picture.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs --log-level=warning --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\""
   },
   "devDependencies": {
+    "esbuild": "0.28.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

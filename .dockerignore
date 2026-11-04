@@ -22,5 +22,7 @@
 **/.local-artifacts/
 smart_reporting/report_editor/static/
 **/node_modules
+smart_reporting/reporting/slides_engine/dist/
+smart_reporting/reporting/workbook_engine/dist/
 **/.mimosa/
 **/.run-logs/

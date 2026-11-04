@@ -131,3 +131,42 @@ def test_libreoffice_conversion_reports_missing_converter(monkeypatch):
 
     with pytest.raises(office_engine.OfficeConversionError, match="未安装"):
         office_engine.libreoffice_to_pdf(b"x", suffix=".docx", timeout=5)
+
+
+@pytest.mark.parametrize("bundled", [True, False])
+def test_run_bridge_prefers_prebuilt_bundle_and_falls_back_to_source(monkeypatch, tmp_path, bundled):
+    monkeypatch.setenv("AGENT_REPORTING_SLIDES_ENGINE_DIR", str(tmp_path))
+    if bundled:
+        (tmp_path / "dist").mkdir()
+        (tmp_path / "dist" / "edit-pptx.mjs").write_text("// bundled")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["cwd"]))
+        return office_engine.subprocess.CompletedProcess(command, 0, '{"ok":true}', "")
+
+    monkeypatch.setattr(office_engine.subprocess, "run", run)
+    result = office_engine.run_bridge("slides", "edit-pptx", tmp_path / "request.json")
+
+    command, cwd = calls[0]
+    assert cwd == tmp_path
+    assert command[-1] == str(tmp_path / "request.json")
+    if bundled:
+        assert command[:2] == ["node", str(tmp_path / "dist" / "edit-pptx.mjs")]
+    else:
+        assert command[:2] == [str(tmp_path / "node_modules/.bin/tsx"), str(tmp_path / "bridge/edit-pptx.ts")]
+    assert office_engine.last_json_line(result.stdout) == {"ok": True}
+
+
+def test_engine_dir_defaults_to_vendored_engines(monkeypatch):
+    monkeypatch.delenv("AGENT_REPORTING_SLIDES_ENGINE_DIR", raising=False)
+    monkeypatch.delenv("AGENT_REPORTING_WORKBOOK_ENGINE_DIR", raising=False)
+
+    assert (office_engine.engine_dir("slides") / "bridge" / "edit-pptx.ts").is_file()
+    assert (office_engine.engine_dir("workbook") / "bridge" / "cli.ts").is_file()
+
+
+@pytest.mark.parametrize("stdout", ["", "  \n", "log line\nnot json"])
+def test_last_json_line_rejects_missing_or_invalid_receipt(stdout):
+    with pytest.raises(ValueError):
+        office_engine.last_json_line(stdout)

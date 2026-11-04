@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +11,7 @@ from typing import Literal
 from pptx import Presentation
 
 from ..contract import SHA256_PATTERN
+from .office_engine import last_json_line, run_bridge
 
 PptxTheme = Literal["executive", "clinical", "modern"]
 
@@ -60,10 +59,6 @@ def build_editable_pptx(
         })
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    engine = Path(os.environ.get(
-        "AGENT_REPORTING_SLIDES_ENGINE_DIR",
-        Path(__file__).parents[1] / "slides_engine",
-    ))
     with tempfile.TemporaryDirectory(prefix="report-pptx-") as temporary:
         input_path = Path(temporary) / "input.json"
         input_path.write_text(json.dumps({
@@ -73,19 +68,12 @@ def build_editable_pptx(
             "theme": theme,
             "slides": normalized,
         }, ensure_ascii=False), encoding="utf-8")
-        process = subprocess.run(
-            ["npm", "run", "--silent", "build:pptx", "--", str(input_path)],
-            cwd=engine,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        process = run_bridge("slides", "build-pptx", input_path)
         if process.returncode:
             raise RuntimeError(f"pptx_engine_failed: {process.stderr[-2000:]}")
         try:
-            receipt = json.loads(process.stdout.strip().splitlines()[-1])
-        except (IndexError, json.JSONDecodeError) as error:
+            receipt = last_json_line(process.stdout)
+        except ValueError as error:
             raise RuntimeError("pptx_engine_receipt_invalid") from error
 
     content = output_path.read_bytes()

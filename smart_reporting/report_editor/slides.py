@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 import secrets
 import subprocess
@@ -15,7 +14,9 @@ from typing import Any
 
 from ..reporting.delivery.office_engine import (
     OfficeConversionError,
+    last_json_line,
     libreoffice_to_pdf,
+    run_bridge,
     run_office_engine,
 )
 from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadScope
@@ -536,10 +537,6 @@ class ReportSlidesEditorService:
         text_boxes: list[dict[str, Any]] | None = None,
         deletions: list[dict[str, Any]] | None = None,
     ) -> Any:
-        engine = Path(os.environ.get(
-            "AGENT_REPORTING_SLIDES_ENGINE_DIR",
-            Path(__file__).parents[1] / "reporting" / "slides_engine",
-        ))
         with tempfile.TemporaryDirectory(prefix="report-slides-edit-") as directory:
             root = Path(directory)
             source_path = root / "source.pptx"
@@ -577,21 +574,14 @@ class ReportSlidesEditorService:
                 if deletions:
                     request["deletions"] = deletions
             request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
-            process = subprocess.run(
-                ["node_modules/.bin/tsx", "bridge/edit-pptx.ts", str(request_path)],
-                cwd=engine,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
+            process = run_bridge("slides", "edit-pptx", request_path)
             if process.returncode:
                 raise ReportingError(
                     "report_slides_engine_failed", process.stderr[-2000:] or "PPTX 编辑失败。"
                 )
             try:
-                receipt = json.loads(process.stdout.strip().splitlines()[-1])
-            except (IndexError, json.JSONDecodeError) as error:
+                receipt = last_json_line(process.stdout)
+            except ValueError as error:
                 raise ReportingError("report_slides_engine_receipt_invalid", "PPTX 引擎回执无效。") from error
             if action == "edit":
                 return {"bytes": output_path.read_bytes(), "issues": receipt.get("issues", [])}

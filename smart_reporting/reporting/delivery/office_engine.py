@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import json
 import os
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -113,3 +114,47 @@ def libreoffice_to_pdf(content: bytes, *, suffix: str, timeout: float) -> bytes:
             )
             raise OfficeConversionError("Office 页面转换失败")
         return target.read_bytes()
+
+
+_ENGINES = {
+    "slides": ("AGENT_REPORTING_SLIDES_ENGINE_DIR", "slides_engine"),
+    "workbook": ("AGENT_REPORTING_WORKBOOK_ENGINE_DIR", "workbook_engine"),
+}
+
+
+def engine_dir(engine: Literal["slides", "workbook"]) -> Path:
+    """固定版本 Node 引擎目录；部署时可用环境变量指向镜像内副本。"""
+    variable, folder = _ENGINES[engine]
+    return Path(os.environ.get(variable) or Path(__file__).resolve().parents[1] / folder)
+
+
+def run_bridge(
+    engine: Literal["slides", "workbook"], script: str, request_path: Path, *, timeout: float = 120,
+) -> subprocess.CompletedProcess[str]:
+    """执行引擎桥接脚本，返回进程结果，由调用方按各自契约解释。
+
+    镜像构建时会把桥接脚本预先打包为 dist/<script>.mjs，省去每次调用的 TypeScript 转译
+    （单次约 0.7–1.2 秒降到约 0.3 秒）；源码检出没有 dist 时直接用 tsx 运行源文件。
+    """
+    root = engine_dir(engine)
+    bundled = root / "dist" / f"{script}.mjs"
+    if bundled.is_file():
+        command = ["node", str(bundled)]
+    else:
+        command = [str(root / "node_modules" / ".bin" / "tsx"), str(root / "bridge" / f"{script}.ts")]
+    return subprocess.run(
+        [*command, str(request_path)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def last_json_line(stdout: str) -> Any:
+    """桥接脚本把 JSON 回执写在最后一行；回执缺失或无效时抛出 ValueError。"""
+    lines = stdout.strip().splitlines()
+    if not lines:
+        raise ValueError("bridge_receipt_missing")
+    return json.loads(lines[-1])

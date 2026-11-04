@@ -2,31 +2,23 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..reporting.delivery.office_engine import run_bridge
 from ..reporting.models import ReportingError
 
 
 def render_pptx_tree(content: bytes) -> dict[str, Any]:
     """只在已核验的 PPTX bytes 上运行冻结版本的静态 RenderTree builder。"""
-    engine = Path(os.environ.get(
-        "AGENT_REPORTING_SLIDES_ENGINE_DIR",
-        Path(__file__).parents[1] / "reporting" / "slides_engine",
-    ))
     with tempfile.TemporaryDirectory(prefix="report-slides-render-") as directory:
         root = Path(directory)
         source = root / "source.pptx"
         source.write_bytes(content)
         request = root / "request.json"
         request.write_text(json.dumps({"input": str(source)}), encoding="utf-8")
-        result = subprocess.run(
-            ["node_modules/.bin/tsx", "bridge/render-pptx.ts", str(request)],
-            cwd=engine, capture_output=True, text=True, check=False, timeout=120,
-        )
+        result = run_bridge("slides", "render-pptx", request)
         if result.returncode:
             raise ReportingError("report_slides_render_failed", result.stderr[-2000:] or "幻灯片画布载入失败。")
         try:
