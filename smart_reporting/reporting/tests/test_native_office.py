@@ -93,7 +93,7 @@ def test_real_pptx_manual_changes_and_independent_readback():
     assert reopened['slides'][1]['animations'][0]['effect']=='fade'
 
 
-@pytest.mark.parametrize('size', [{'cx': 12192000, 'cy': 6858000}, {'cx': 9144000, 'cy': 6858000}])
+@pytest.mark.parametrize('size', [{'cx': 12192000, 'cy': 6858000}, {'cx': 9144000, 'cy': 6858000}, {'cx': 9000000, 'cy': 7200000}, {'cx': 914400, 'cy': 51206400}])
 def test_real_pptx_slide_size_roundtrips_through_native_operation_and_inspect(size):
     from smart_reporting.report_editor.native_office import inspect_office,patch_office
     from pptx import Presentation
@@ -123,11 +123,11 @@ def test_native_pptx_paper_size_schema_accepts_pinned_presets_in_both_orientatio
 
 
 @pytest.mark.parametrize('size', [
-    {'cx': 10692001, 'cy': 7560000}, {'cx': True, 'cy': 10692000},
+    {'cx': 914399, 'cy': 7560000}, {'cx': True, 'cy': 10692000},
     {'cx': 7560000.0, 'cy': 10692000}, {'cx': 10692000, 'cy': 7560000, 'extra': True},
-    {'cx': 5143500, 'cy': 9144000},
+    {'cx': 5143500, 'cy': 51206401},
 ])
-def test_native_pptx_paper_size_schema_still_rejects_custom_or_malformed_sizes(size):
+def test_native_pptx_size_schema_rejects_out_of_range_or_malformed_sizes(size):
     from smart_reporting.report_editor.native_office import _pptx_arguments
 
     with pytest.raises(ValueError, match='native_office_operations_invalid'):

@@ -1,7 +1,7 @@
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
 export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean }
-export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; cells?: DocxCellAnchor[][] }
+export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][] }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
 export interface DocxSectionAnchor { sectionId: string; expectedSectionSha256: string; settings: SectionSettings }
 type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>>
@@ -57,6 +57,60 @@ function markSequence(node: DocxPmNode): unknown[] {
     if (!result.length || !same(result[result.length - 1], marks)) result.push(marks)
   }
   return result
+}
+export function safeDocxLink(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('请输入有效的链接地址')
+  const href = value.trim()
+  if (!href || href.length > 4096 || /[\s\u0000-\u001f\u007f]/u.test(href)) throw new Error('链接地址不能包含空白或控制字符')
+  let url: URL
+  try { url = new URL(href) } catch { throw new Error('仅支持完整的 http、https 或 mailto 链接') }
+  if (!['http:', 'https:', 'mailto:'].includes(url.protocol) || (url.protocol !== 'mailto:' && !/^https?:\/\//i.test(href)) || url.username || url.password
+    || (url.protocol === 'mailto:' && (!url.pathname || url.pathname.startsWith('//')))) throw new Error('仅支持安全的 http、https 或 mailto 链接')
+  return href
+}
+export function validDocxLinkRange(text: string, from: unknown, to: unknown): boolean {
+  const boundary = (at: number) => !(at > 0 && at < text.length && /[\uD800-\uDBFF]/.test(text[at - 1]) && /[\uDC00-\uDFFF]/.test(text[at]))
+  return typeof from === 'number' && typeof to === 'number' && Number.isInteger(from) && Number.isInteger(to)
+    && from >= 0 && to > from && to <= text.length && boundary(from) && boundary(to)
+}
+const withoutLinks = (node: DocxPmNode): DocxPmNode => ({ ...node, content: node.content?.map(run => ({ ...run, marks: (run.marks ?? []).filter(mark => mark.type !== 'link') })) })
+function linkMap(node: DocxPmNode): (string | null)[] {
+  return (node.content ?? []).flatMap(run => Array.from({ length: textOf(run).length }, () => {
+    const marks = (run.marks ?? []).filter(mark => mark.type === 'link')
+    if (marks.length > 1) throw new Error('链接标记无效')
+    return marks.length ? safeDocxLink(marks[0].attrs?.href) : null
+  }))
+}
+function linkMetadata(node: DocxPmNode) {
+  return (node.content ?? []).flatMap(run => Array.from({ length: textOf(run).length }, () => {
+    const attrs = run.marks?.find(mark => mark.type === 'link')?.attrs
+    return attrs ? { tooltip: attrs.tooltip ?? null, plain: attrs.plain ?? false } : undefined
+  }))
+}
+function compatibleLinkGroups(node: DocxPmNode) {
+  let previous: Record<string, unknown> | undefined
+  for (const run of node.content ?? []) {
+    const link = run.marks?.find(mark => mark.type === 'link')?.attrs
+    if (link && previous && link.href === previous.href && !(link.rId && previous.rId && link.rId !== previous.rId)) {
+      if ((link.tooltip ?? '') !== (previous.tooltip ?? '')) throw new Error('相邻同地址链接的提示不同，暂不支持此链接修改')
+      previous = { ...previous, rId: previous.rId ?? link.rId }
+    } else previous = link
+  }
+}
+/** Split only targeted text; keep every unrelated mark and link attribute unchanged. */
+function applyLink(node: DocxPmNode, from: number, to: number, href: string | null) {
+  if ((node.content ?? []).some(run => run.type !== 'text')) throw new Error('含复杂内联对象的段落暂不支持链接修改')
+  let offset = 0
+  node.content = (node.content ?? []).flatMap(run => {
+    const start = offset, end = offset += (run.text ?? '').length
+    const cuts = [start, ...[from, to].filter(at => at > start && at < end), end].sort((a, b) => a - b)
+    return cuts.slice(0, -1).map((at, index) => {
+      const next = { ...run, text: run.text!.slice(at - start, cuts[index + 1] - start) }
+      if (at >= from && at < to) next.marks = [...(run.marks ?? []).filter(mark => mark.type !== 'link'), ...(href === null ? [] : [{ type: 'link', attrs: { ...run.marks?.find(mark => mark.type === 'link')?.attrs, href, rId: null } }])]
+      return next
+    })
+  })
+  compatibleLinkGroups(node)
 }
 function styleOf(node: DocxPmNode): Record<string, unknown> {
   const runs = (node.content ?? []).filter(child => child.type === 'text')
@@ -177,9 +231,26 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       ops.push({ kind: 'setParagraphAlignment', ...baseOp(anchor), alignment })
     }
     if (!same(structure(node, false), structure({ ...edited, type: node.type, attrs: node.attrs }, false))) throw new Error('暂不支持改变段落结构')
-    if (textOf(node) !== textOf(edited)) ops.push({ kind: 'replaceParagraph', ...baseOp(anchor), text: textOf(edited) })
-    if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(node), markSequence(edited))) {
-      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(node) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(edited)
+    const oldLinks = linkMap(node), newLinks = linkMap(edited), textChanged = textOf(node) !== textOf(edited)
+    if (textChanged && oldLinks.some(Boolean)) throw new Error('含已有链接的段落请先单独修改链接；文字编辑暂不支持保留原链接元数据')
+    if (textChanged) ops.push({ kind: 'replaceParagraph', ...baseOp(anchor), text: textOf(edited) })
+    const beforeMetadata = textChanged ? [] : linkMetadata(node), afterMetadata = linkMetadata(edited)
+    if (afterMetadata.some((metadata, index) => metadata && !same(metadata, beforeMetadata[index] ?? { tooltip: null, plain: false }))) throw new Error('暂不支持修改链接提示或显示属性')
+    const comparison = textChanged ? newLinks.map(() => null) : oldLinks
+    const linkedPreview = textChanged ? withoutLinks(edited) : structuredClone(node)
+    for (let from = 0; from < newLinks.length;) {
+      if (newLinks[from] === comparison[from]) { from++; continue }
+      const href = newLinks[from]
+      let to = from + 1
+      while (to < newLinks.length && newLinks[to] === href && newLinks[to] !== comparison[to]) to++
+      if (!validDocxLinkRange(textOf(edited), from, to)) throw new Error('链接范围不能拆开 Unicode 字符')
+      if ((edited.content ?? []).some(run => run.type !== 'text')) throw new Error('含复杂内联对象的段落暂不支持链接修改')
+      applyLink(linkedPreview, from, to, href)
+      ops.push({ kind: 'setParagraphLink', ...baseOp(anchor), from, to, href })
+      from = to
+    }
+    if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(withoutLinks(node)), markSequence(withoutLinks(edited)))) {
+      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(withoutLinks(node)) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(withoutLinks(edited))
       if (['color', 'fontFamily', 'fontSize'].some(key => key in old && !(key in next))) throw new Error('暂不支持清除段落字体、字号或颜色')
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => !same(value, old[key])))
       if (Object.keys(changed).length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: changed })
@@ -206,7 +277,14 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     if (operation.kind === 'setSectionLayout') continue
     const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
     if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
-    if (operation.kind === 'replaceParagraph') replaceText(node, String(operation.text))
+    if (operation.kind === 'setParagraphLink') {
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'href'].includes(key))) throw new Error('草稿链接包含不支持的字段')
+      if (!anchor.editable || operation.expectedObjectSha256 !== anchor.expectedObjectSha256 || !paragraph(node)
+        || !validDocxLinkRange(textOf(node), operation.from, operation.to)) throw new Error('草稿链接范围或对象身份无效')
+      const href = operation.href === null ? null : safeDocxLink(operation.href)
+      applyLink(node, Number(operation.from), Number(operation.to), href)
+    }
+    else if (operation.kind === 'replaceParagraph') replaceText(node, String(operation.text))
     else if (operation.kind === 'setParagraphIndent') {
       const twips = operation.twips
       if (!Number.isInteger(twips) || Number(twips) < 0 || Number(twips) > 14400 || Number(twips) % 720 !== 0) throw new Error('草稿段落缩进无效')

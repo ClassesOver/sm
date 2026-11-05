@@ -109,16 +109,39 @@ it('steps selected PPTX text sizes on the fixed GenOffice font ladder', () => {
   expect(stepNativeFontSize(null, 1)).toBe(20)
 })
 
-it('dispatches upstream increase and decrease font-size commands from Home', () => {
+it('gates upstream font-size step commands on a text target and the save lock', () => {
   const host = document.createElement('div')
   document.body.append(host)
   const onAction = vi.fn()
   const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const commands = ['fontSizeUp', 'fontSizeDown']
+  const controls = commands.map(command => host.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!)
+  const clickAll = () => controls.forEach(control => control.click())
 
-  host.querySelector<HTMLButtonElement>('[data-command="fontSizeUp"]')!.click()
-  host.querySelector<HTMLButtonElement>('[data-command="fontSizeDown"]')!.click()
+  expect(controls.every(control => control.disabled)).toBe(true)
+  clickAll()
+  expect(onAction).not.toHaveBeenCalled()
 
+  ribbon.setTextFormatEnabled(true)
+  expect(controls.every(control => !control.disabled)).toBe(true)
+  clickAll()
   expect(onAction.mock.calls).toEqual([['fontSizeUp'], ['fontSizeDown']])
+  onAction.mockClear()
+
+  ribbon.setLocked(true)
+  expect(controls.every(control => control.disabled)).toBe(true)
+  clickAll()
+  expect(onAction).not.toHaveBeenCalled()
+  ribbon.setLocked(false)
+  expect(controls.every(control => !control.disabled)).toBe(true)
+
+  ribbon.setTextFormatEnabled(false)
+  expect(controls.every(control => control.disabled)).toBe(true)
+  ribbon.setLocked(true)
+  ribbon.setLocked(false)
+  expect(controls.every(control => control.disabled)).toBe(true)
+  clickAll()
+  expect(onAction).not.toHaveBeenCalled()
   ribbon.dispose()
 })
 

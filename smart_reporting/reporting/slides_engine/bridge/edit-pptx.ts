@@ -330,8 +330,7 @@ if (request.action === 'inspect') {
   if (request.slideSize) {
     const { cx, cy } = request.slideSize
     if (Object.keys(request.slideSize).length !== 2
-      || ![[12192000, 6858000], [9144000, 6858000], [10692000, 7560000], [15120000, 10692000]]
-        .some(([width, height]) => width === cx && height === cy || width === cy && height === cx)) {
+      || ![cx, cy].every(value => Number.isInteger(value) && value >= 914400 && value <= 51206400)) {
       throw new Error('slide_size_invalid')
     }
     // Draft coordinates refer to the original canvas. Resize after all edits;

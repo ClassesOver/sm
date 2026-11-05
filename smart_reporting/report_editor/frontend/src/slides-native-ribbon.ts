@@ -123,6 +123,8 @@ const tabs: Tab[] = [
       { id: 'background', label: 'Background Color', kind: 'color' },
       { id: 'layout', label: 'Slide Layout', kind: 'select' },
       { id: 'slideSize', label: 'Slide Size', kind: 'select', sourceActionId: 'onSlideSize', options: ['16:9', '4:3', 'A4', 'A3'] },
+      { id: 'customSlideSize', label: 'Custom Slide Size', sourceActionId: 'onCustomSlideSize' },
+      { id: 'defaultSlideSize', label: 'Use for New Presentations', sourceActionId: 'saveDefaultNewSlideSize', unavailable: '当前仅支持上传和编辑演示文稿，尚无新建空白演示文稿入口。' },
       { id: 'slideOrientation', label: 'Slide Orientation', kind: 'select', sourceActionId: 'onSlideSize', options: ['landscape', 'portrait'] },
       { id: 'backgroundImage', label: 'Background Image', unavailable: noWrite('图片/渐变背景') },
     ] },
@@ -205,7 +207,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let locked = options.locked === true
   let currentAnimationEffect = ''
   let hasTextTarget = false
-  let hasStandardSlideSize = false
+  let hasWritableSlideSize = false
   const clipboardLocale = genOfficeHomeClipboardLocale(document.documentElement.lang)
 
   const selectTab = (id: string) => {
@@ -351,7 +353,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateTextFormattingState()
     },
     setSlideOrientationEnabled(enabled) {
-      hasStandardSlideSize = enabled
+      hasWritableSlideSize = enabled
       updateSlideOrientationState()
     },
     setLayouts(layouts) {
@@ -399,7 +401,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
 
   function updateTextFormattingState() {
-    for (const command of ['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontFamily', 'fontColor', 'paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify']) {
+    for (const command of ['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontSizeUp', 'fontSizeDown', 'fontFamily', 'fontColor', 'paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify']) {
       for (const element of controls.get(command) ?? []) {
         if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
           element.disabled = locked || !hasTextTarget
@@ -410,8 +412,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   function updateSlideOrientationState() {
     for (const element of controls.get('slideOrientation') ?? []) {
       const select = element as HTMLSelectElement
-      select.disabled = locked || !hasStandardSlideSize
-      select.title = hasStandardSlideSize ? '' : '当前为自定义尺寸；请先明确选择标准预设后再切换方向。'
+      select.disabled = locked || !hasWritableSlideSize
+      select.title = hasWritableSlideSize ? '' : '当前尺寸超出可写范围；请先输入 1–56 in 范围内的尺寸。'
     }
   }
 }

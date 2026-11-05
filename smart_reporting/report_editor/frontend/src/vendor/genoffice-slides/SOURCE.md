@@ -8,8 +8,8 @@ Pinned commit: `f8c17004fb730df11f0f743164ffd8b4281bb38c`
 helpers drive Design's 16:9, 4:3, A4 and A3 choices. Both source and local hashes
 are recorded in `SOURCE-SHA256.json`. Preset selection preserves orientation;
 the orientation control only swaps the current dimensions. Custom source
-sizes remain unchanged and explain why orientation requires an explicit preset
-selection until custom-size writes are supported by the native schema.
+sizes within the native schema's 1–56 inch bounds can also swap orientation
+without replacing their dimensions with a preset.
 
 `components/icons.tsx` is adapted from
 `apps/slides/src/renderer/components/icons.tsx` (upstream SHA-256
@@ -38,8 +38,19 @@ The upstream application license and notice are retained in
 commit's `apps/slides/src/renderer/slide-size.ts`; root `SOURCE-SHA256.json`
 records its upstream and local SHA-256. The native Design controls reuse
 `SLIDE_SIZE_PRESETS`, `presetSize` and orientation helpers for 16:9, 4:3,
-A4 and A3. Only the strict supported dimensions can be saved. A source with
-other dimensions keeps its original size and receives an unavailable reason
-for orientation until an explicit standard preset is chosen. The imported
-custom-unit/default-size helpers do not expose additional native commands;
-custom size entry and new-presentation defaults remain unimplemented.
+A4 and A3. This historical preset-only checkpoint is superseded by the custom-size
+follow-up below. The unchanged imported conversion helpers now drive custom
+size entry; new-presentation defaults still have no creation consumer.
+
+2026-11-05 PR #190 continuation: the Web adapter now reuses the unchanged
+`lengthToEmu`/`emuToLength` helpers for a custom-size dialog (cm/mm/in).
+Both native API and bridge validate integer EMU coordinates in the ECMA-376
+1–56 inch range. Draft history and restore use the existing slideSize operation.
+New-presentation defaults remain explicitly disabled because this host has no
+blank-presentation creation path. This supersedes the earlier preset-only
+writeback limitation; the pinned upstream files and hashes are unchanged.
+
+The follow-up also aligns source identities with fixed `Ribbon.tsx`: custom
+size calls `onCustomSlideSize`, whereas the disabled new-deck default action
+directly invokes the upstream local helper `saveDefaultNewSlideSize`. Preset
+state uses the source matching helper without an aspect-ratio fallback.

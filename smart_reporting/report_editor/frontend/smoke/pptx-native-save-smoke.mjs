@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
+import { verifyBrowserTextInput } from './browser-input-preflight.mjs'
 
 const frontend = process.cwd()
 const repo = new URL('../../../', `file://${frontend}/`).pathname
@@ -13,7 +14,7 @@ const smokeMode = process.env.PPTX_SMOKE_MODE ?? 'textbox'
 const paperPreset = process.env.PPTX_SMOKE_PRESET ?? 'A4'
 const paperSizes = { A4: { cx: 7560000, cy: 10692000 }, A3: { cx: 10692000, cy: 15120000 } }
 if (smokeMode === 'slide-size-presets' && !paperSizes[paperPreset]) throw new Error(`Unknown paper preset: ${paperPreset}`)
-const targetSize = smokeMode === 'slide-size-presets' ? paperSizes[paperPreset] : { cx: 12192000, cy: 6858000 }
+const targetSize = smokeMode === 'slide-size-custom' ? { cx: 9000000, cy: 7200000 } : smokeMode === 'slide-size-presets' ? paperSizes[paperPreset] : { cx: 12192000, cy: 6858000 }
 const runPython = input => {
   const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', `
 import base64, json, sys
@@ -73,12 +74,12 @@ try {
     try { if ((await fetch(`${baseUrl}/reports/v1/editor/assets/native.html`)).ok) break } catch {}
     await delay(250)
   }
-  browser = await chromium.launch({ headless: true })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? { executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE } : {}) })
+  const inputBaseline = await verifyBrowserTextInput(browser)
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true })
   const pageErrors = []
   const failedResponses = []
   page.on('pageerror', error => pageErrors.push(error.message))
-  page.on('console', message => { if (message.type() === 'error') pageErrors.push({ text: message.text(), location: message.location() }) })
   page.on('response', response => { if (response.status() >= 400) failedResponses.push({ status: response.status(), url: response.url() }) })
   await page.route('**/favicon.ico', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' }))
 
@@ -128,7 +129,8 @@ try {
   await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
   try { await page.locator('.slides-native-ribbon').waitFor({ timeout: 60000 }) }
   catch { throw new Error(JSON.stringify({ url: page.url(), body: (await page.locator('body').innerText()).slice(0, 1200), pageErrors, failedResponses })) }
-  await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+  try { await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 }) }
+  catch { throw new Error(JSON.stringify({ phase: 'canvas', body: (await page.locator('body').innerText()).slice(-2500), pageErrors, failedResponses })) }
   await page.waitForFunction(() => document.querySelector('.canvas-status')?.textContent.includes('点击对象选择'))
 
   if (smokeMode === 'textbox') {
@@ -151,9 +153,22 @@ try {
     await page.locator('[data-command="animationDelay"]').fill('300')
     await page.locator('[data-command="addAnimation"][data-source-action="onAddAnimation"]').click()
   } else {
-    assert.ok(['slide-size', 'slide-size-recovery', 'slide-size-presets'].includes(smokeMode))
+    assert.ok(['slide-size', 'slide-size-recovery', 'slide-size-presets', 'slide-size-custom'].includes(smokeMode))
     await page.locator('[data-ribbon-tab="design"]').click()
-    await page.locator('[data-command="slideSize"][data-source-action="onSlideSize"]').selectOption(smokeMode === 'slide-size-presets' ? paperPreset : '16:9')
+    if (smokeMode === 'slide-size-custom') {
+      await page.locator('[data-command="customSlideSize"]').click()
+      await page.getByLabel('Slide Width', { exact: true }).fill('25')
+      await page.getByLabel('Slide Height', { exact: true }).fill('20')
+      assert.equal(await page.getByLabel('Slide Width', { exact: true }).inputValue(), '25')
+      assert.equal(await page.getByLabel('Slide Height', { exact: true }).inputValue(), '20')
+      await page.locator('[data-command="applyCustomSlideSize"]').click()
+      await page.locator('[data-command="slideOrientation"]').selectOption('portrait')
+      await page.locator('[data-command="slideOrientation"]').selectOption('landscape')
+      await page.locator('[data-source-action="onUndo"]').click()
+      await page.locator('[data-source-action="onRedo"]').click()
+    } else {
+      await page.locator('[data-command="slideSize"][data-source-action="onSlideSize"]').selectOption(smokeMode === 'slide-size-presets' ? paperPreset : '16:9')
+    }
     if (smokeMode === 'slide-size-presets') {
       await page.locator('[data-command="slideOrientation"][data-source-action="onSlideSize"]').selectOption('portrait')
       for (const [name, value] of Object.entries({ x: 75, y: 80, width: 300, height: 90 })) {
@@ -242,6 +257,15 @@ try {
     assert.deepEqual(reopened.size, targetSize)
     assert.deepEqual(reopened.pythonPptxSize, [targetSize.cx, targetSize.cy])
     let expectedGeometry = { x: 128, y: 96, width: 640, height: 96 }
+    if (smokeMode === 'slide-size-custom') {
+      const original = JSON.parse(runPython({ mode: 'inspect', bytes: sourceBytes.toString('base64') }))
+      const expectedEmu = Object.fromEntries(Object.entries(original.pythonPptxGeometry[0]).map(([key, value]) => {
+        const axis = key === 'x' || key === 'width' ? 0 : 1
+        return [key, Math.round(value * [targetSize.cx, targetSize.cy][axis] / original.pythonPptxSize[axis])]
+      }))
+      assert.deepEqual(reopened.pythonPptxGeometry[0], expectedEmu)
+      expectedGeometry = Object.fromEntries(Object.entries(expectedEmu).map(([key, value]) => [key, value / 9525]))
+    }
     if (smokeMode === 'slide-size-presets') {
       const expectedEmu = { x: Math.round(75 * targetSize.cx / 960), y: Math.round(80 * targetSize.cy / 720),
         width: Math.round(300 * targetSize.cx / 960), height: Math.round(90 * targetSize.cy / 720) }
@@ -259,7 +283,7 @@ try {
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
     await page.locator('[data-ribbon-tab="design"]').click()
-    assert.equal(await page.locator('[data-command="slideSize"][data-source-action="onSlideSize"]').inputValue(), smokeMode === 'slide-size-presets' ? paperPreset : '16:9')
+    assert.equal(await page.locator('[data-command="slideSize"][data-source-action="onSlideSize"]').inputValue(), smokeMode === 'slide-size-custom' ? '' : smokeMode === 'slide-size-presets' ? paperPreset : '16:9')
     assert.equal(await page.locator('[data-command="slideOrientation"][data-source-action="onSlideSize"]').inputValue(), smokeMode === 'slide-size-presets' ? 'portrait' : 'landscape')
     assert.equal(Number(await page.locator('.geometry-grid input[name="x"]').inputValue()), expectedGeometry.x)
   }
@@ -273,7 +297,7 @@ try {
     assert.deepEqual(pageErrors, [])
     assert.deepEqual(failedResponses, [])
   }
-  console.log(JSON.stringify({ ok: true, mode: smokeMode, revision: reopened.revision, originalSha256: sourceIdentity,
+  console.log(JSON.stringify({ ok: true, inputBaseline, mode: smokeMode, revision: reopened.revision, originalSha256: sourceIdentity,
     downloadedSha256: reopened.sha256, size: reopened.size, transitions: reopened.slides[0].transition,
     animations: reopened.slides[0].animations, operationKinds: savePayload.operations.map(item => item.kind) }))
 } finally {

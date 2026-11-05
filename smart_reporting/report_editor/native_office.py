@@ -33,12 +33,8 @@ _XLSX_FIELDS = {
     'sortRange': {'sheetName', 'spec'},
 }
 _TRANSITIONS = {'none', 'morph', 'fade', 'push', 'wipe', 'split', 'circle', 'cover', 'pull', 'dissolve', 'zoom', 'random'}
-_SLIDE_SIZES = {
-    (12192000, 6858000), (6858000, 12192000),
-    (9144000, 6858000), (6858000, 9144000),
-    (10692000, 7560000), (7560000, 10692000),
-    (15120000, 10692000), (10692000, 15120000),
-}
+# ECMA-376 ST_SlideSizeCoordinate: 1 to 56 inches in EMU.
+_MIN_SLIDE_EMU, _MAX_SLIDE_EMU = 914400, 51206400
 _ANIMATION_DIRECTIONS = {'top', 'bottom', 'left', 'right'}
 _DIRECTIONAL_ANIMATIONS = {'flyIn', 'flyOut', 'wipe', 'wipeOut'}
 _HEX_COLOR = re.compile(r'^#[0-9a-fA-F]{6}$')
@@ -82,7 +78,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
     if slide_size is not None and (
         not isinstance(slide_size, dict) or set(slide_size) != {'cx', 'cy'}
         or any(not isinstance(slide_size[key], int) or isinstance(slide_size[key], bool) for key in ('cx', 'cy'))
-        or (slide_size['cx'], slide_size['cy']) not in _SLIDE_SIZES
+        or any(not _MIN_SLIDE_EMU <= slide_size[key] <= _MAX_SLIDE_EMU for key in ('cx', 'cy'))
     ):
         raise ValueError('native_office_operations_invalid')
     transitions = _records(operation, 'transitions', {'slideIndex', 'kind'})

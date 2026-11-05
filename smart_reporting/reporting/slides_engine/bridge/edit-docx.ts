@@ -19,17 +19,98 @@ function text(value: unknown): string {
   if (typeof value !== 'string' || value.length > 20000 || /[\x00-\x08\x0b-\x1f]/.test(value)) fail('text_invalid')
   return value as string
 }
+function safeLinkHref(value: unknown): value is string {
+  if (typeof value !== 'string' || !value || value.length > 4096 || /[\s\x00-\x1f\x7f]/u.test(value)) return false
+  try {
+    const url = new URL(value)
+    if (url.protocol === 'http:' || url.protocol === 'https:') return /^https?:\/\//i.test(value) && !!url.hostname && !url.username && !url.password
+    return url.protocol === 'mailto:' && !!url.pathname && !value.slice('mailto:'.length).startsWith('//')
+  } catch { return false }
+}
+function linkRange(value: ObjectValue, content: string) {
+  const from = value.from, to = value.to
+  if (typeof from !== 'number' || typeof to !== 'number' || !Number.isInteger(from) || !Number.isInteger(to)
+      || from < 0 || from >= to || to > content.length) fail('link_range_invalid')
+  for (const offset of [from, to]) {
+    if (offset > 0 && offset < content.length && content.charCodeAt(offset - 1) >= 0xd800
+      && content.charCodeAt(offset - 1) <= 0xdbff && content.charCodeAt(offset) >= 0xdc00
+      && content.charCodeAt(offset) <= 0xdfff) fail('link_range_invalid')
+  }
+  return { from, to }
+}
+function linkedRuns(runs: Run[], from: number, to: number, href: string | null): Run[] {
+  const result: Run[] = []
+  let offset = 0
+  for (const run of runs) {
+    const end = offset + run.text.length
+    const points = [...new Set([offset, end, Math.max(offset, Math.min(end, from)), Math.max(offset, Math.min(end, to))])].sort((a, b) => a - b)
+    if (!run.text.length) { result.push({ ...run }); continue }
+    for (let index = 0; index < points.length - 1; index++) {
+      const start = points[index]!, stop = points[index + 1]!
+      const part: Run = { ...run, text: run.text.slice(start - offset, stop - offset) }
+      if (start >= from && stop <= to) {
+        if (href === null) {
+          delete part.link
+          // Remove only the implied Hyperlink style; preserve other raw rPr.
+          if (run.link && !run.styleId && part.rawRPr) part.rawRPr = part.rawRPr.replace(/<w:rStyle\b[^>]*w:val=["']Hyperlink["'][^>]*\/>/g, '')
+        } else if (run.link?.href !== href) part.link = { ...run.link, href, rId: undefined, ...(run.link && !run.styleId && run.link.plain === undefined ? { plain: true } : {}) }
+        else part.link = { ...run.link }
+      }
+      result.push(part)
+    }
+    offset = end
+  }
+  if (!compatibleLinkGroups(result)) fail('link_metadata_merge_unsupported')
+  return result
+}
+function compatibleLinkGroups(runs: Run[]): boolean {
+  let previous: Run['link']
+  for (const run of runs) {
+    const link = run.link
+    if (link && previous && link.href === previous.href && !(link.rId && previous.rId && link.rId !== previous.rId)) {
+      if ((link.tooltip ?? '') !== (previous.tooltip ?? '')) return false
+      previous = { ...previous, rId: previous.rId ?? link.rId }
+    } else previous = link
+  }
+  return true
+}
+function linksOf(block: Block) {
+  const links: { from: number; to: number; href: string }[] = []
+  let offset = 0
+  for (const run of block.runs ?? []) {
+    const end = offset + run.text.length
+    if (run.link && safeLinkHref(run.link.href) && end > offset) {
+      const last = links.at(-1)
+      if (last && last.to === offset && last.href === run.link.href) last.to = end
+      else links.push({ from: offset, to: end, href: run.link.href })
+    }
+    offset = end
+  }
+  return links
+}
 function simpleParagraphXml(xml: string): boolean {
   if (/^<w:p(?:\s[^>]*)?\/>$/.test(xml)) return true
   if (!/^<w:p(?:\s|>)/.test(xml) || !xml.endsWith('</w:p>')) return false
   if (/<w:(?:sectPr|pPrChange|rPrChange|numPrChange)\b/.test(xml)) return false
+  // Unmodeled link attributes stay read-only rather than being flattened.
+  if (/<w:hyperlink\b[^>]*\/>/.test(xml)) return false
+  const linkTooltips = new Map<string, string>()
+  for (const match of xml.matchAll(/<w:hyperlink\b([^>]*)>/g)) {
+    const attributes = match[1]!
+    const relationship = /\br:id=["']([^"']+)["']/.exec(attributes)?.[1] ?? ''
+    const tooltip = /\bw:tooltip=(["'])([\s\S]*?)\1/.exec(attributes)?.[2] ?? ''
+    // Upstream mergeRuns may merge equal-rId runs before exposing tooltip differences.
+    if (linkTooltips.has(relationship) && linkTooltips.get(relationship) !== tooltip) return false
+    linkTooltips.set(relationship, tooltip)
+    if (!/\br:id=/.test(attributes) || attributes.replace(/(?:r:id|w:tooltip)\s*=\s*(?:"[^"]*"|'[^']*')/g, '').trim()) return false
+  }
   const body = xml.replace(/<w:pPr\b[^>]*(?:\/>|>[\s\S]*?<\/w:pPr>)/g, '')
     .replace(/<w:rPr\b[^>]*(?:\/>|>[\s\S]*?<\/w:rPr>)/g, '')
-  return [...body.matchAll(/<\/?([\w:.-]+)/g)].every(match => ['w:p', 'w:r', 'w:t', 'w:tab', 'w:br', 'w:cr'].includes(match[1]!))
+  return [...body.matchAll(/<\/?([\w:.-]+)/g)].every(match => ['w:p', 'w:r', 'w:t', 'w:tab', 'w:br', 'w:cr', 'w:hyperlink'].includes(match[1]!))
 }
 function editableParagraph(block: Block): boolean {
   return ['paragraph', 'heading', 'listItem'].includes(block.type) && Array.isArray(block.runs) &&
-    !!block.originalXml && simpleParagraphXml(block.originalXml)
+    !!block.originalXml && simpleParagraphXml(block.originalXml) && compatibleLinkGroups(block.runs) && block.runs.every(run => !run.link || safeLinkHref(run.link.href))
 }
 function cellXmls(block: Block): string[][] {
   if (block.type !== 'table' || !block.originalXml) return []
@@ -42,7 +123,7 @@ function editableTable(block: Block): boolean {
 }
 function editableCell(xml: string): boolean {
   // 合并/嵌套/域/图片/修订只读，避免上游复杂单元格 patch 静默无操作或展平。
-  if (/<w:(?:tbl|vMerge|hMerge|gridSpan|ins|del|tcPrChange|cellIns|cellDel)\b/.test(xml)) return false
+  if (/<w:(?:tbl|hyperlink|vMerge|hMerge|gridSpan|ins|del|tcPrChange|cellIns|cellDel)\b/.test(xml)) return false
   const paragraphs = xmlSegments(xml, 'w:p', 0, xml.length)
   if (!paragraphs.length || !paragraphs.every(p => simpleParagraphXml(xml.slice(p.start, p.end)))) return false
   const shell = xml.replace(/<w:tcPr\b[^>]*(?:\/>|>[\s\S]*?<\/w:tcPr>)/g, '')
@@ -77,7 +158,9 @@ function style(value: unknown): Partial<Run> {
 function generated(block: Block): GeneratedBlock {
   return { type: block.type as GeneratedBlock['type'], level: block.level, outlineOnly: block.outlineOnly,
     styleId: block.styleId, list: block.list, format: block.format, rawPPr: block.rawPPr,
-    runs: block.runs!.map(run => ({ ...run })) }
+    // Original unstyled links must stay unstyled even when this paragraph regenerates.
+    runs: block.runs!.map(run => ({ ...run, ...(run.link ? { link: { ...run.link,
+      ...(!run.styleId && run.link.plain === undefined ? { plain: true } : {}) } } : {}) })) }
 }
 function pPrWithIndRight(pPr: string, right: number): string {
   let out = pPr.replace(/<w:pPr([^>]*)\/>/, '<w:pPr$1></w:pPr>')
@@ -126,7 +209,7 @@ const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c1700
   capabilities: { paragraphs: true, basicStyles: true, simpleTableText: true, replaceImage: false },
   sections: [{ sectionId, expectedSectionSha256: hash(trailingSection.sectPrXml), settings: readSectionSettings(parsed) }],
   blocks: blocks.map(block => ({ blockId: blockId(block), expectedObjectSha256: hash(block.originalXml ?? ''),
-    type: block.type, text: block.runs?.map(run => run.text).join('') ?? block.previewText ?? '',
+    type: block.type, text: block.runs?.map(run => run.text).join('') ?? block.previewText ?? '', links: linksOf(block),
     ...(block.list ? { list: block.list } : {}),
     editable: editableParagraph(block), readOnlyReason: editableParagraph(block) ? null : 'docx_object_unsupported',
     ...(block.type === 'table' ? { cells: cellXmls(block).map((row, r) => row.map((xml, c) => ({
@@ -180,7 +263,9 @@ if (request.kind === 'inspect') {
     if (hash(block.originalXml!) !== op.expectedObjectSha256) fail('anchor_invalid')
     if (op.kind === 'replaceParagraph') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'text'])
-      return { op, block, value: text(op.text) }
+      const value = text(op.text)
+      if (block.runs!.some(run => run.link) && value !== block.runs!.map(run => run.text).join('')) fail('link_text_replace_unsupported')
+      return { op, block, value }
     }
     if (op.kind === 'insertParagraph') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'text'])
@@ -190,6 +275,13 @@ if (request.kind === 'inspect') {
     if (op.kind === 'formatParagraph') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'style'])
       return { op, block, formatting: style(op.style) }
+    }
+    if (op.kind === 'setParagraphLink') {
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'href'])
+      if (op.href !== null && !safeLinkHref(op.href)) fail('link_href_invalid')
+      if (typeof op.from !== 'number' || typeof op.to !== 'number' || !Number.isInteger(op.from) || !Number.isInteger(op.to)
+          || op.from < 0 || op.from >= op.to) fail('link_range_invalid')
+      return { op, block }
     }
     if (op.kind === 'setParagraphAlignment') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'alignment'])
@@ -274,6 +366,9 @@ if (request.kind === 'inspect') {
       const block = state.saved.kind === 'generated' ? state.saved.block : generated(item.block)
       if (item.op.kind === 'formatParagraph') {
         block.runs = (block.runs.length ? block.runs : [{ text: '' }]).map(run => ({...run, ...item.formatting}))
+      } else if (item.op.kind === 'setParagraphLink') {
+        const range = linkRange(item.op, block.runs.map(run => run.text).join(''))
+        block.runs = linkedRuns(block.runs, range.from, range.to, item.op.href as string | null)
       } else if (item.op.kind === 'setParagraphAlignment') {
         block.format = { ...block.format, align: item.alignment }
         const rawPPr = (block.rawPPr || '<w:pPr></w:pPr>').replace(/^<w:pPr([^>]*)\/>$/, '<w:pPr$1></w:pPr>')
@@ -319,6 +414,7 @@ if (request.kind === 'inspect') {
         block.rawPPr = mergeCellParaFormat(rawPPr, block.format, previousFormat)
         if (values.spaceBefore === 0) block.rawPPr = pPrWithZeroSpaceBefore(block.rawPPr)
       } else {
+        if (block.runs.some(run => run.link) && item.value !== block.runs.map(run => run.text).join('')) fail('link_text_replace_unsupported')
         let remaining = Array.from(item.value!)
         block.runs = (block.runs.length ? block.runs : [{ text: '' }]).map((run, index, runs) => {
           const length = index === runs.length - 1 ? remaining.length : Array.from(run.text).length

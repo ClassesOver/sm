@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import type { Editor } from '@tiptap/core'
+import type { DocxAnchor } from './docx-operations'
+import { applyDocxLink, docxLinkSelection, linkSelectionUnavailable, type DocxLinkSelection } from './docx-links'
 import { IconDoc, IconCaret, IconPageBreak, IconTable, IconPicture, IconChart, IconShapes, IconTextBox, IconWordArt, IconLink, IconBook, IconRefresh, IconComment, IconHeader, IconFooter, IconPageNumber, IconSymbol, IconEquation } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { insertRibbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/insert-zh'
 const BIG = 28
 const unavailable = 'DOCX 原生写回协议尚未支持此结构操作'
-const linkUnavailable = 'DOCX 超链接写回操作尚未接入'
+
 const SYMBOLS = [
   '—',
   '…',
@@ -58,9 +60,21 @@ const SYMBOLS = [
   '⑩',
 ]
 /** 从固定上游 InsertTab 提取原分组、按钮和符号面板；结构操作等待写回协议。 */
-export function DocxInsertSource({ editor, editable }: { editor: Editor; editable: boolean }) {
+export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: Editor; editable: boolean; anchors?: DocxAnchor[] }) {
   const t = (key: keyof typeof insertRibbonZh) => insertRibbonZh[key]
   const [dropdown, setDropdown] = useState<string | null>(null)
+  const [linkDialog, setLinkDialog] = useState<DocxLinkSelection | null>(null)
+  const [href, setHref] = useState('')
+  const [linkError, setLinkError] = useState('')
+  const link = editable ? docxLinkSelection(editor, anchors) : undefined
+  const linkUnavailable = linkSelectionUnavailable
+  const openLink = () => { if (link) { setLinkDialog(link); setHref(link.href ?? ''); setLinkError('') } }
+  const applyLink = (selection: DocxLinkSelection, value: string | null) => {
+    try {
+      if (!applyDocxLink(editor, selection, value)) throw new Error('链接修改未被接受，请检查段落的保存限制')
+      setLinkDialog(null); setLinkError('')
+    } catch (error) { setLinkError(error instanceof Error ? error.message : String(error)) }
+  }
   return <div className="ribbon-content docx-source-insert"><>
       {/* Word: Pages (cover page / blank page / page break) sits leftmost */}
       <div className="ribbon-group">
@@ -179,13 +193,13 @@ export function DocxInsertSource({ editor, editable }: { editor: Editor; editabl
       <div className="ribbon-group">
         <div className="ribbon-group-items">
           <div className="rb-col">
-            <button className="rb-small" disabled={true} title={linkUnavailable} aria-description={linkUnavailable} data-action="insert-link" aria-label={`${t("ribbonLinkTip")}，${linkUnavailable}`}>
+            <button className="rb-small" disabled={!link || editor.state.selection.empty} title={!link || editor.state.selection.empty ? linkUnavailable : undefined} aria-description={!link || editor.state.selection.empty ? linkUnavailable : undefined} onMouseDown={event => event.preventDefault()} onClick={openLink} data-action="insert-link" aria-label={t("ribbonLinkTip")}>
               <IconLink size={14}/> {t('ribbonLink')}
             </button>
-            <button className="rb-small" disabled={true} title={linkUnavailable} aria-description={linkUnavailable} data-action="edit-link" aria-label={`编辑超链接，${linkUnavailable}`}>
+            <button className="rb-small" disabled={!link?.href} title={!link?.href ? linkUnavailable : undefined} aria-description={!link?.href ? linkUnavailable : undefined} onMouseDown={event => event.preventDefault()} onClick={openLink} data-action="edit-link" aria-label="编辑超链接">
               {t('ribbonLink')}（编辑）
             </button>
-            <button className="rb-small" disabled={true} title={linkUnavailable} aria-description={linkUnavailable} data-action="remove-link" aria-label={`移除超链接，${linkUnavailable}`}>
+            <button className="rb-small" disabled={!link?.hasLink} title={!link?.hasLink ? linkUnavailable : undefined} aria-description={!link?.hasLink ? linkUnavailable : undefined} onMouseDown={event => event.preventDefault()} onClick={() => { if (link) applyLink(link, null) }} data-action="remove-link" aria-label="移除超链接">
               移除超链接
             </button>
             <button className="rb-small" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-bookmark" aria-label={t("ribbonBookmarkTip")}>
@@ -279,5 +293,14 @@ export function DocxInsertSource({ editor, editable }: { editor: Editor; editabl
         </div>
         <div className="ribbon-group-label">{t('ribbonGroupSymbols')}</div>
       </div>
+      {linkDialog && <div role="dialog" aria-modal="true" aria-label="Link" className="docx-link-dialog" style={{ position: 'fixed', left: '50%', top: '25%', transform: 'translateX(-50%)', zIndex: 1000, background: 'white', padding: 20, border: '1px solid #aaa', boxShadow: '0 4px 24px #0003' }}>
+        <form onSubmit={event => { event.preventDefault(); applyLink(linkDialog, href) }}>
+          <label>链接地址 <input autoFocus aria-label="Link URL" value={href} onChange={event => setHref(event.target.value)} /></label>
+          <button type="submit" data-command="applyLink" disabled={!editable || !editor.isEditable}>应用</button>
+          <button type="button" data-command="cancelLink" onClick={() => { setLinkDialog(null); setLinkError(''); editor.view.focus() }}>取消</button>
+          {linkError && <p role="alert">{linkError}</p>}
+        </form>
+      </div>}
+      {!linkDialog && linkError && <p role="alert">{linkError}</p>}
     </></div>
 }

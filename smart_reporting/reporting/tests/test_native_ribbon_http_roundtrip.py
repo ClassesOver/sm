@@ -94,6 +94,8 @@ def ribbon_operations(format, model):
             {"kind": "setSectionLayout", "sectionId": section["sectionId"],
              "expectedSectionSha256": section["expectedSectionSha256"],
              "values": {"orientation": "landscape", "pageWidth": 16838, "pageHeight": 11906, "columns": 2}},
+            {"kind": "setParagraphLink", **anchor, "from": 0, "to": 3,
+             "href": "https://example.test/report?source=word&mode=review"},
         ]
     if format == "pdf":
         return [{"kind": "reorderPages", "pageIds": [page["pageId"] for page in reversed(model["pages"])]}]
@@ -105,7 +107,7 @@ def ribbon_operations(format, model):
         ]}]
     element = next(element for element in model["slides"][0]["elements"] if element["editable"] and element["text"])
     return [{"kind": "editSlides", "edits": [{"slideIndex": 0, "elementId": element["id"], "text": "功能区保存正文"}],
-             "slideSize": {"cx": 12192000, "cy": 6858000}}]
+             "slideSize": {"cx": 9000000, "cy": 7200000}}]
 
 
 def assert_file_readback(format, content):
@@ -113,6 +115,12 @@ def assert_file_readback(format, content):
     if format == "docx":
         document = Document(stream)
         assert [paragraph.text for paragraph in document.paragraphs] == ["功能区保存正文", "保留段落"]
+        links = document.paragraphs[0]._p.findall(qn("w:hyperlink"))
+        assert len(links) == 1
+        assert "".join(node.text or "" for node in links[0].iter(qn("w:t"))) == "功能区"
+        relationship = document.part.rels[links[0].get(qn("r:id"))]
+        assert relationship.is_external
+        assert relationship.target_ref == "https://example.test/report?source=word&mode=review"
         paragraph = document.paragraphs[0].paragraph_format
         assert paragraph.space_before.twips == paragraph.space_after.twips == 240
         assert paragraph.line_spacing == 2
@@ -129,10 +137,10 @@ def assert_file_readback(format, content):
         assert "D1:E1" in sheet.merged_cells
     else:
         deck = Presentation(stream)
-        assert (deck.slide_width, deck.slide_height) == (12192000, 6858000)
+        assert (deck.slide_width, deck.slide_height) == (9000000, 7200000)
         shape = deck.slides[0].shapes[0]
         assert shape.text == "功能区保存正文"
-        assert (shape.left, shape.top) == (1219200, 914400)
+        assert (shape.left, shape.top, shape.width, shape.height) == (900000, 960000, 2700000, 960000)
 
 
 @pytest.mark.anyio

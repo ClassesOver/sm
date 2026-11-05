@@ -43,3 +43,27 @@ const uploader = createNativeUploader(container, {
 宿主负责从当前登录会话取得短期签名凭据，返回 `{ thread, capability }`。组件将它们置于请求头，提交 `POST /reports/v1/native/import`，表单只有 `file` 和 `requestId`。服务端按签名确定数据库、公司、用户和线程；单文件上限 24 MiB，只接受未加密的 PDF、DOCX、XLSX、PPTX，拒绝旧二进制和宏格式。上传文件没有系统报告的事实核验和追溯状态。
 
 本仓库提供组件与验签 API；Odoo 或聊天宿主需在各自仓库接入页面、复用已有的短期凭据签发流程，并把 `/reports/v1` 转发到同一来源。验收进展和证据见 [GenOffice 升级记录](../reporting/slides_engine/UPGRADE.md)。
+
+
+2026-11-05 PR #190 follow-up: PPTX Design adds custom cm/mm/in dimensions,
+validated as integer EMU coordinates from 1 to 56 inches per axis in both
+native API and file bridge. Both axes share one draft/history operation;
+canvas resizing is materialized on save/reopen. New-presentation default size
+remains unavailable without a blank-deck creation flow. Feature flags stay off;
+no deployment or production database acceptance is implied. See
+`NATIVE_RIBBON_PLAN.md` for scoped validation and remaining acceptance work.
+
+Custom-size browser acceptance now passes with an explicit Chromium 154
+executable and a native-input preflight. The earlier input failure also occurs
+in bare HTML on the managed Chromium 140 runtime, so it is not evidence of an
+editor defect. See `NATIVE_RIBBON_INPUT_DIAGNOSIS.md` for the controlled
+comparison, exact command, independent file/geometry readback and limitations.
+Custom sizes can swap orientation without selecting a preset; matching
+aspect ratio alone never labels a custom size as a standard preset.
+
+
+Word 选区链接已接通插入、编辑和移除，沿用原文件锚点、修订与下载链。
+仅支持有锚点的可编辑正文/标题/列表段落中的安全外部 URL；新增段落、表格及复杂链接保持明确不可用。
+源段落仍有链接时不支持修改正文；须先移除该段全部链接并保存，再在新修订改文字。
+实际浏览器三次修订、独立文件关系/样式回读及打包引擎 HTTP 验收见 `NATIVE_WORD_LINK_ACCEPTANCE.md`。
+该段验收不代表完整 Word 功能或生产部署通过，开关仍关闭。

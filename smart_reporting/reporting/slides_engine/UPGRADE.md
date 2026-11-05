@@ -233,3 +233,30 @@ PDF 反序复用已有 reorderPages 写回；独立 pypdf 已读回两个不同�
 16:9/4:3 页面尺寸写回和草稿恢复路径。各格式完整原版功能区仍未对齐；最新恢复
 改动后的最终集成、镜像重建/断网及四格式 HTTP 验收仍需完成。此前镜像和 HTTP
 结果只证明对应历史源码状态，不能作为本轮新增功能已部署的证据。功能开关未开启。
+
+
+2026-11-05 PR #190 follow-up: PPTX Design adds custom cm/mm/in dimensions,
+validated as integer EMU coordinates from 1 to 56 inches per axis in both
+native API and file bridge. Both axes share one draft/history operation;
+canvas resizing is materialized on save/reopen. New-presentation default size
+remains unavailable without a blank-deck creation flow. Feature flags stay off;
+no deployment or production database acceptance is implied. See
+`NATIVE_RIBBON_PLAN.md` for scoped validation and remaining acceptance work.
+
+Custom-size browser acceptance now passes with an explicit Chromium 154
+executable and a native-input preflight. The earlier input failure also occurs
+in bare HTML on the managed Chromium 140 runtime, so it is not evidence of an
+editor defect. See `NATIVE_RIBBON_INPUT_DIAGNOSIS.md` for the controlled
+comparison, exact command, independent file/geometry readback and limitations.
+Custom sizes can swap orientation without selecting a preset; matching
+aspect ratio alone never labels a custom size as a standard preset.
+
+
+Word link bridge follow-up: `edit-docx` now accepts source/object-anchored
+`setParagraphLink` UTF16 ranges (href HTTP/HTTPS/mailto, or null to unlink).
+The adapter reuses the unchanged fixed GenOffice run/relationship serializer;
+original unstyled links are marked for plain preservation before paragraph
+regeneration, including untouched fragments. Unsupported metadata grouping and
+linked-source text replacements fail explicitly. No vendored engine file changed.
+See report_editor/NATIVE_WORD_LINK_ACCEPTANCE.md for targeted, independent and
+packed-runtime/browser evidence and remaining limitations.

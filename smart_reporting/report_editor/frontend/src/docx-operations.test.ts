@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { docxOperations, replayDocxOperations, type DocxAnchor } from './docx-operations'
+import { docxOperations, replayDocxOperations, safeDocxLink, type DocxAnchor, type DocxPmNode } from './docx-operations'
 
 const para = (id: number | null, text: string) => ({ type: 'docParagraph', attrs: { docxIndex: id }, content: text ? [{ type: 'text', text }] : [] })
 const anchors: DocxAnchor[] = [{ docxIndex: 0, blockId: 'a', expectedObjectSha256: 'hash-a', editable: true }, { docxIndex: 1, blockId: 'b', expectedObjectSha256: 'hash-b', editable: false }]
@@ -85,11 +85,51 @@ it('rejects unsaveable styles on new paragraphs instead of silently dropping the
   expect(() => docxOperations(base, { type: 'doc', content: [inserted, ...base.content] }, anchors)).toThrow(/普通文字/)
 })
 
-it('rejects hyperlink mark changes until an anchored hyperlink operation exists', () => {
-  const original = { type: 'doc', content: [{ ...para(0, '链接文字'), content: [{ type: 'text', text: '链接文字' }] }] }
-  const current = structuredClone(original) as any
-  current.content[0].content[0].marks = [{ type: 'link', attrs: { href: 'https://example.test/path', rId: null } }]
-  expect(() => docxOperations(original, current, anchors)).toThrow(/文字样式暂不支持保存/)
+const linkMark = (href: string, extra = {}) => ({ type: 'link', attrs: { href, rId: null, tooltip: null, plain: false, ...extra } })
+it('diffs selected links across mixed styled runs and replays without flattening', () => {
+  const original: DocxPmNode = { type: 'doc', content: [{ ...para(0, ''), content: [
+    { type: 'text', text: 'A😀', marks: [{ type: 'bold' }] },
+    { type: 'text', text: 'BC', marks: [{ type: 'italic' }] },
+    { type: 'text', text: 'keep', marks: [linkMark('https://keep.test', { tooltip: 'retain me', plain: true, rId: 'rId7' })] },
+  ] }] }
+  const operations = [{ kind: 'setParagraphLink', blockId: 'a', expectedObjectSha256: 'hash-a', from: 1, to: 4, href: 'https://new.test' }]
+  const replayed = replayDocxOperations(original, operations, anchors)
+  expect(docxOperations(original, replayed, anchors)).toEqual(operations)
+  expect(replayed.content![0].content!.at(-1)).toEqual(original.content![0].content!.at(-1))
+  expect(replayed.content![0].content!.slice(0, -1).flatMap(run => (run.marks ?? []).filter(mark => mark.type !== 'link')).map(mark => mark.type)).toEqual(['bold', 'bold', 'italic', 'italic'])
+  const removed = replayDocxOperations(replayed, [{ ...operations[0], href: null }], anchors)
+  expect(docxOperations(original, removed, anchors)).toEqual([])
+  expect(() => replayDocxOperations(original, [{ ...operations[0], from: 2 }], anchors)).toThrow(/范围/)
+  expect(() => replayDocxOperations(original, [{ ...operations[0], expectedObjectSha256: 'forged' }], anchors)).toThrow(/身份/)
+})
+it('retains targeted link metadata on href edits and refuses unsupported metadata or linked text edits', () => {
+  const original: DocxPmNode = { type: 'doc', content: [{ ...para(0, ''), content: [
+    { type: 'text', text: 'target', marks: [linkMark('https://old.test', { tooltip: 'explanation', plain: true, rId: 'rId4' })] },
+  ] }] }
+  const op = { kind: 'setParagraphLink', blockId: 'a', expectedObjectSha256: 'hash-a', from: 0, to: 6, href: 'mailto:a@example.test' }
+  const replayed = replayDocxOperations(original, [op], anchors)
+  expect(replayed.content![0].content![0].marks![0].attrs).toMatchObject({ tooltip: 'explanation', plain: true, rId: null, href: op.href })
+  expect(docxOperations(original, replayed, anchors)).toEqual([op])
+  const textChanged = structuredClone(replayed); textChanged.content![0].content![0].text = 'changed'
+  expect(() => docxOperations(original, textChanged, anchors)).toThrow(/原链接元数据/)
+  replayed.content![0].content![0].marks![0].attrs!.tooltip = 'forged'
+  expect(() => docxOperations(original, replayed, anchors)).toThrow(/提示/)
+})
+it('composes replacement before newly selected links and recovers the draft', () => {
+  const original = { type: 'doc', content: [para(0, 'old')] }
+  const current = { type: 'doc', content: [{ ...para(0, ''), content: [
+    { type: 'text', text: 'new ' }, { type: 'text', text: '😀 link', marks: [linkMark('https://example.test')] },
+  ] }] }
+  const operations = docxOperations(original, current, anchors)
+  expect(operations.map(op => op.kind)).toEqual(['replaceParagraph', 'setParagraphLink'])
+  expect(operations[1]).toMatchObject({ from: 4, to: 11 })
+  expect(docxOperations(original, replayDocxOperations(original, operations, anchors), anchors)).toEqual(operations)
+})
+it.each(['javascript:alert(1)', 'https:example.test', 'http://user:password@example.test', 'mailto://example.test', 'https://ex ample.test', 'https://example.test/\u00a0x', 'file:///etc/passwd'])('rejects unsupported link %s', href => {
+  expect(() => safeDocxLink(href)).toThrow()
+})
+it.each(['https://example.test/a', 'http://example.test', 'mailto:a@example.test', '\u00a0https://example.test\u00a0'])('accepts backend-compatible link %s', href => {
+  expect(safeDocxLink(href)).toBe(href.trim())
 })
 
 it.each(['left', 'center', 'right', 'justify'])('emits and replays anchored %s paragraph alignment without allowing other layout changes', alignment => {
@@ -213,4 +253,23 @@ it.each([0, -360, 720])('writes and replays an anchored %s-twip right paragraph 
   expect(docxOperations(original, replayDocxOperations(original, operations, anchors), anchors)).toEqual(operations)
   current.content[0].attrs.indentRight = 14401
   expect(() => docxOperations(original, current, anchors)).toThrow(/右缩进/)
+})
+
+it('rejects adjacent tooltip-incompatible link groups before save and during draft replay', () => {
+  const original: DocxPmNode = { type: 'doc', content: [{ ...para(0, ''), content: [
+    { type: 'text', text: 'first', marks: [linkMark('https://first.test', { tooltip: 'first title', rId: 'rId1' })] },
+    { type: 'text', text: 'second', marks: [linkMark('https://second.test', { tooltip: 'second title', rId: 'rId2' })] },
+  ] }] }
+  const current = structuredClone(original)
+  current.content![0].content![0].marks![0].attrs!.href = 'https://second.test'
+  current.content![0].content![0].marks![0].attrs!.rId = null
+  expect(() => docxOperations(original, current, anchors)).toThrow(/相邻同地址链接的提示不同/)
+  expect(() => replayDocxOperations(original, [{ kind: 'setParagraphLink', blockId: 'a', expectedObjectSha256: 'hash-a', from: 0, to: 5, href: 'https://second.test' }], anchors)).toThrow(/相邻同地址链接的提示不同/)
+})
+
+it('rejects unknown hyperlink draft fields before they can disappear in a later diff', () => {
+  const original = { type: 'doc', content: [para(0, 'source text')] }
+  const operation = { kind: 'setParagraphLink', blockId: 'a', expectedObjectSha256: 'hash-a', from: 0, to: 6, href: 'https://example.test', tooltip: 'unsupported draft semantics' }
+  expect(() => replayDocxOperations(original, [operation], anchors)).toThrow(/草稿链接包含不支持的字段/)
+  expect(original.content[0].content[0]).toEqual({ type: 'text', text: 'source text' })
 })

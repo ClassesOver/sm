@@ -6,7 +6,8 @@ import type { SlidesCanvasState } from './slides-canvas'
 import { createSlidesChartTools } from './slides-chart-tools'
 import { createSlidesNativeRibbon, stepNativeFontSize, type NativeSlidesContext, type NativeSlidesRibbon } from './slides-native-ribbon'
 import type { NativeDraft } from './native-draft'
-import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
+import { openSlidesSizeDialog } from './slides-size-dialog'
+import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
 type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type SlideTransition = 'none' | 'morph' | 'fade' | 'push' | 'wipe' | 'split' | 'circle' | 'cover' | 'pull' | 'dissolve' | 'zoom' | 'random'
@@ -417,10 +418,9 @@ function renderInspector() {
   nativeRibbon?.setValue('transition', transitionSelect.value)
   nativeRibbon?.setValue('layout', layoutSelect.value)
   const size = slideSizeEdit ?? deck.size
-  const sizeRatio = Math.max(size.cx, size.cy) / Math.min(size.cx, size.cy)
-  nativeRibbon?.setValue('slideSize', matchSlideSizePreset(size) ?? (Math.abs(sizeRatio - 16 / 9) < 0.02 ? '16:9' : Math.abs(sizeRatio - 4 / 3) < 0.02 ? '4:3' : ''))
+  nativeRibbon?.setValue('slideSize', matchSlideSizePreset(size) ?? '')
   nativeRibbon?.setValue('slideOrientation', isPortrait(size) ? 'portrait' : 'landscape')
-  nativeRibbon?.setSlideOrientationEnabled(isStandardSlideSize(size))
+  nativeRibbon?.setSlideOrientationEnabled(isWritableSlideSize(size))
   nativeRibbon?.setValue('background', backgroundColor.value)
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
   nativeRibbon?.setValue('animationTrigger', animationTrigger.value)
@@ -459,11 +459,11 @@ function updateSelectedTextFormat(patch: Partial<Omit<TextFormatting, 'slideInde
   markDirty()
 }
 
-function isStandardSlideSize(size: { cx: number; cy: number }) {
-  return Object.values(SLIDE_SIZE_PRESETS).some(preset =>
-    preset.cx === Math.max(size.cx, size.cy) && preset.cy === Math.min(size.cx, size.cy))
+function isWritableSlideSize(size: { cx: number; cy: number }) {
+  return [size.cx, size.cy].every(value => Number.isInteger(value) && value >= MIN_SLIDE_EMU && value <= MAX_SLIDE_EMU)
 }
 
+let sizeDialog: ReturnType<typeof openSlidesSizeDialog> | undefined
 let nativeRibbon: NativeSlidesRibbon | undefined
 if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   onAction(command, value) {
@@ -479,6 +479,16 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'layout':
         if (typeof value === 'string' && value) { layoutEdits.set(selectedSlide, value); markDirty() }
         break
+      case 'customSlideSize':
+        sizeDialog?.dispose()
+        sizeDialog = openSlidesSizeDialog(root, slideSizeEdit ?? deck.size, size => {
+          if (locked()) return
+          slideSizeEdit = size
+          renderInspector()
+          canvasStatus.textContent = '页面尺寸将在保存并打开新修订后更新；页面内容会按宽高比例缩放。'
+          markDirty()
+        })
+        break
       case 'slideSize':
         if (typeof value !== 'string' || !Object.hasOwn(SLIDE_SIZE_PRESETS, value)) return
         slideSizeEdit = presetSize(value as SlideSizePreset, isPortrait(slideSizeEdit ?? deck.size))
@@ -487,7 +497,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         break
       case 'slideOrientation': {
         const size = slideSizeEdit ?? deck.size
-        if (!['landscape', 'portrait'].includes(String(value)) || !isStandardSlideSize(size)) return
+        if (!['landscape', 'portrait'].includes(String(value)) || !isWritableSlideSize(size)) return
         if (isPortrait(size) === (value === 'portrait')) return
         slideSizeEdit = { cx: size.cy, cy: size.cx }
         canvasStatus.textContent = '页面方向将在保存并打开新修订后更新；页面内容会按宽高比例缩放。'
@@ -1016,7 +1026,7 @@ async function start() {
 if (root.querySelector('.slides-brand')) root.querySelector('.slides-brand')!.append(createElement(Sparkles, { width: 18, height: 18, 'aria-hidden': 'true' }))
 if (root.querySelector('.download-link')) root.querySelector('.download-link')!.append(createElement(Download, { width: 16, height: 16, 'aria-hidden': 'true' }))
 const ready = start()
-return { ready, dispose() { ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); nativeRibbon?.dispose(); canvas?.destroy?.() } }
+return { ready, dispose() { ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); nativeRibbon?.dispose(); sizeDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

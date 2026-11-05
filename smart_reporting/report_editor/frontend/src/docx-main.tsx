@@ -155,7 +155,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       editor.commands.setMeta('native-section-layout', true)
     },
   }
-  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon))
+  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors))
   await refresh()
   return { refresh, setSaving(value: boolean) { saving = value; editor.setEditable(context.editingEnabled && !saving && !draft.closed, false); editor.commands.setMeta('native-section-layout', true); toolbar.querySelectorAll<HTMLButtonElement>('[data-mutates=true], [data-editable-action=true]').forEach(control => { control.disabled = !context.editingEnabled || saving || draft.closed }) },
     dispose() { ready = false; previewRoot.unmount(); editor.destroy(); void adoptEmbeddedFonts([]); host.remove() } }

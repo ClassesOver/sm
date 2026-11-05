@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { DocxHomeSource } from './docx-home-source'
+import type { DocxAnchor } from './docx-operations'
 import { DocxInsertSource } from './docx-insert-source'
 import { DocxLayoutSource } from './docx-layout-source'
 import type { SectionSettings } from '@genoffice/docx-engine'
@@ -104,7 +105,7 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void }): HTMLElement {
+  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void }, anchors: DocxAnchor[] = []): HTMLElement {
   const ribbon = document.createElement('div')
   ribbon.className = 'ribbon docx-ribbon'
   const tablist = document.createElement('nav')
@@ -303,7 +304,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   home.className = 'ribbon-content'
   const insert = document.createElement('div')
   const insertRoot = createRoot(insert)
-  flushSync(() => insertRoot.render(createElement(DocxInsertSource, { editor, editable })))
+  const renderInsert = () => flushSync(() => insertRoot.render(createElement(DocxInsertSource, { editor, editable, anchors })))
+  renderInsert()
   const selectParagraph = () => {
     const { $from } = editor.state.selection
     for (let depth = $from.depth; depth > 0; depth--) {
@@ -421,6 +423,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   ribbon.append(body)
   const refreshSelection = () => {
     refreshContextTabs()
+    renderInsert()
     if (active === 'layout' && !body.querySelector('[data-action="indent-right"]:focus')) setActive('layout')
   }
   editor.on('selectionUpdate', refreshSelection)

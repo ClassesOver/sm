@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
 ARG UV_IMAGE=ghcr.m.daocloud.io/astral-sh/uv:0.11.26
 ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22-slim
@@ -18,7 +19,9 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /build/smart_reporting/reporting/pdf_engine
 COPY smart_reporting/reporting/pdf_engine ./
 COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
-RUN npm ci --ignore-scripts --registry="${NPM_REGISTRY}" \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --ignore-scripts --registry="${NPM_REGISTRY}" \
     && npm run bundle:bridges -- --metafile=dist/metafile.json \
     && node bridge/package-runtime.mjs . /runtime/reporting-pdf-engine /build/package-office-engine.mjs
 
@@ -31,7 +34,9 @@ WORKDIR /build/smart_reporting/reporting/workbook_engine
 COPY smart_reporting/reporting/workbook_engine ./
 COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
 # 桥接脚本预先打包，运行时不再逐次转译 TypeScript。
-RUN npm ci --registry="${NPM_REGISTRY}" \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --registry="${NPM_REGISTRY}" \
     && npm run bundle:bridges -- --metafile=dist/metafile.json \
     && node /build/package-office-engine.mjs . /runtime/reporting-workbook-engine
 
@@ -44,7 +49,9 @@ COPY smart_reporting/reporting/slides_engine/LICENSE \
     smart_reporting/reporting/slides_engine/SOURCE.md ./
 COPY smart_reporting/reporting/slides_engine/packages ./packages
 COPY smart_reporting/reporting/slides_engine/bridge ./bridge
-RUN npm ci --registry="${NPM_REGISTRY}" \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --registry="${NPM_REGISTRY}" \
     && npm run test --workspace @genoffice/pipelines \
     && npm run typecheck --workspace @genoffice/pipelines \
     && npm run bundle:bridges -- --metafile=dist/metafile.json \
@@ -54,7 +61,9 @@ RUN npm ci --registry="${NPM_REGISTRY}" \
 WORKDIR /build/smart_reporting/report_editor/frontend
 COPY smart_reporting/report_editor/frontend/package.json \
     smart_reporting/report_editor/frontend/package-lock.json ./
-RUN npm ci --registry="${NPM_REGISTRY}"
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --registry="${NPM_REGISTRY}"
 COPY smart_reporting/report_editor/frontend ./
 RUN npm run build && npm run build:slides
 
@@ -104,7 +113,9 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock ./
 RUN sed -i "s|https://files.pythonhosted.org|${PYPI_FILES_MIRROR}|g" uv.lock
-RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
+RUN --mount=type=secret,id=system_ca \
+    if [ -f /run/secrets/system_ca ]; then export SSL_CERT_FILE=/run/secrets/system_ca; fi; \
+    UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
 RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do command -v "$tool" || exit 1; done \

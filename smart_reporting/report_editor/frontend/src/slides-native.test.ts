@@ -69,20 +69,19 @@ function setRibbonValue(host: HTMLElement, command: string, value: string) {
   control.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
-it('keeps custom source dimensions unchanged until a standard preset enables orientation', async () => {
+it('swaps writable custom source dimensions without replacing them with a preset', async () => {
   const draft = new NativeDraft(draftIdentity, draftStore())
   const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
   const { shell, view } = await openDraft(draft, api)
   const orientation = shell.editor.querySelector<HTMLSelectElement>('[data-command="slideOrientation"]')
   expect(orientation).not.toBeNull()
-  expect(orientation!.disabled).toBe(true)
-  expect(orientation!.title).toContain('预设')
+  expect(orientation!.disabled).toBe(false)
   setRibbonValue(shell.editor, 'slideOrientation', 'portrait')
-  expect(draft.operations).toEqual([])
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 5143500, cy: 9144000 } })
   expect(deck.size).toEqual({ cx: 9144000, cy: 5143500 })
   setRibbonValue(shell.editor, 'slideSize', 'A4')
   expect(orientation!.disabled).toBe(false)
-  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 10692000, cy: 7560000 } })
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 7560000, cy: 10692000 } })
   view.dispose()
 })
 
@@ -272,7 +271,7 @@ it('uses the existing NativeDraft history for PPTX size and later text undo/redo
   expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 9144000, cy: 6858000 } })
   undo.click()
   expect(draft.operations).toEqual([])
-  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('16:9')
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('')
   expect(undo.disabled).toBe(true)
   redo.click(); redo.click()
   expect(text.value).toBe('稍后修改')
@@ -363,5 +362,92 @@ it('PPTX alignment clears the previous selection when switching to an object wit
     expect(shell.editor.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!.getAttribute('aria-pressed')).toBe('false')
   }
   expect(draft.operations).toEqual([])
+  view.dispose()
+})
+
+it('commits custom dimensions atomically and restores them through history and refresh', async () => {
+  const store = draftStore()
+  const draft = new NativeDraft(draftIdentity, store)
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
+  const dialog = shell.editor.querySelector<HTMLDialogElement>('dialog')!
+  const width = dialog.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!
+  const height = dialog.querySelector<HTMLInputElement>('[aria-label="Slide Height"]')!
+  width.value = '0'; height.value = '20'
+  dialog.querySelector<HTMLButtonElement>('[data-command="applyCustomSlideSize"]')!.click()
+  expect(dialog.querySelector('[role="alert"]')!.textContent).toContain('1–56')
+  expect(draft.operations).toEqual([])
+  width.value = '30,5'
+  dialog.querySelector<HTMLButtonElement>('[data-command="applyCustomSlideSize"]')!.click()
+  expect(dialog.isConnected).toBe(false)
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 10980000, cy: 7200000 } })
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations).toEqual([])
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 10980000, cy: 7200000 } })
+  view.dispose()
+  const recovered = new NativeDraft(draftIdentity, store)
+  const reopened = await openDraft(recovered, api)
+  reopened.shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
+  expect(reopened.shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!.value).toBe('30.5')
+  expect(reopened.shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Height"]')!.value).toBe('20')
+  reopened.view.dispose()
+  expect(reopened.shell.editor.querySelector('dialog')).toBeNull()
+})
+
+it('cancels custom dimensions without edits and explains unavailable new-document defaults', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
+  shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!.value = '42'
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="cancelCustomSlideSize"]')!.click()
+  expect(draft.operations).toEqual([])
+  const defaults = shell.editor.querySelector<HTMLButtonElement>('[data-command="defaultSlideSize"]')!
+  expect(defaults.dataset.sourceAction).toBe('saveDefaultNewSlideSize')
+  expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.dataset.sourceAction).toBe('onCustomSlideSize')
+  expect(defaults.disabled).toBe(true)
+  expect(defaults.title).toContain('新建空白')
+  view.dispose()
+})
+
+it('refreshes preset and orientation state immediately after applying portrait custom dimensions', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  setRibbonValue(shell.editor, 'slideSize', 'A4')
+  const preset = shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!
+  const orientation = shell.editor.querySelector<HTMLSelectElement>('[data-command="slideOrientation"]')!
+  expect(preset.value).toBe('A4')
+  expect(orientation.value).toBe('landscape')
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
+  shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!.value = '20'
+  shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Height"]')!.value = '30.5'
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="applyCustomSlideSize"]')!.click()
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 7200000, cy: 10980000 } })
+  expect(preset.value).toBe('')
+  expect(orientation.value).toBe('portrait')
+  expect(orientation.disabled).toBe(false)
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(preset.value).toBe('A4')
+  expect(orientation.value).toBe('landscape')
+  expect(orientation.disabled).toBe(false)
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(preset.value).toBe('')
+  expect(orientation.value).toBe('portrait')
+  expect(orientation.disabled).toBe(false)
+  view.dispose()
+})
+
+
+it('does not label custom dimensions as a preset just because the aspect ratio matches', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  draft.setOperations([{ kind: 'editSlides', slideSize: { cx: 10000000, cy: 5625000 } }])
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('')
+  setRibbonValue(shell.editor, 'slideOrientation', 'portrait')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 5625000, cy: 10000000 } })
   view.dispose()
 })

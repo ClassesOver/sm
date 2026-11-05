@@ -81,7 +81,7 @@ The command inventory tasks run concurrently. The shared host contract is review
 - [ ] Add tests per command family plus a browser edit-save-download-reopen check for values/formulas and workbook structure.
 - [ ] Check chunk budget and license/source manifest; do not bundle desktop file, shell or external-link gateway code.
 
-Task 3 progress (2026-11-05): brief/inventory is in `.superpowers/sdd/NATIVE_RIBBON_PLAN/task-3-brief.md`. Univer 0.25.1 FindReplace, Drawing and Table presets are registered in the existing runtime. Browser XLSX readback covers font/size/color, bold, number format/decimal increment and now source `autofn:*` SUM/AVERAGE/COUNT/MAX/MIN; the AutoSum smoke saves, downloads and independently reopens the workbook with openpyxl to verify `=SUM(A1:A2)`. The complete upstream ribbon is still not ported: most source action groups remain incomplete or unavailable and contextual Chart Design does not yet track chart selection/edit state. Do not mark Task 3 complete until remaining parity and command gaps are addressed.
+Task 3 progress (2026-11-05): the historical brief path `.superpowers/sdd/NATIVE_RIBBON_PLAN/task-3-brief.md` is absent in this checkout and is not reviewable evidence. The current bounded, tracked source inventory is in `NATIVE_RIBBON_COMMAND_AUDIT.md`; full inventory remains open. Univer 0.25.1 FindReplace, Drawing and Table presets are registered in the existing runtime. Browser XLSX readback covers font/size/color, bold, number format/decimal increment and now source `autofn:*` SUM/AVERAGE/COUNT/MAX/MIN; the AutoSum smoke saves, downloads and independently reopens the workbook with openpyxl to verify `=SUM(A1:A2)`. The complete upstream ribbon is still not ported: most source action groups remain incomplete or unavailable and contextual Chart Design does not yet track chart selection/edit state. Do not mark Task 3 complete until remaining parity and command gaps are addressed.
 
 Task progress (2026-11-05 continuation):
 
@@ -138,3 +138,55 @@ Task progress (2026-11-05 continuation):
 - [ ] Build a clean app image, compare native module and vendored-source hashes, and test offline readiness and actual four-format HTTP upload/edit/save/download/reopen.
 - [ ] Keep user upload mount/integration and real production-scope database acceptance distinct from fixtures and image tests.
 - [ ] Update NATIVE_EDITING.md and slides_engine/UPGRADE.md with exact commands supported/unavailable, evidence, feature flags, rollback and remaining desktop-only checks.
+
+
+### PR #190 follow-up (2026-11-05): custom PPTX dimensions
+
+- Bounded independent review of NativeDraft/PPTX identity, retry and revision locking found no confirmed blocking defect in the reviewed paths; this is not a full review of all 495 changed files. GitHub returned no commit statuses or PR-triggered workflow runs for `0017ff7a`.
+- Design now provides custom dimensions with cm/mm/in using the unchanged pinned source conversion helpers. Applying both axes creates one NativeDraft edit, supports Undo/Redo and refresh restoration, and refreshes the preset/orientation state immediately. Cancel leaves the draft unchanged.
+- Native API and file bridge require integer dimensions within ECMA-376's 914400–51206400 EMU per axis; malformed fields, booleans, fractions and out-of-range dimensions are rejected. Real PPTX roundtrips include a custom size and the minimum/maximum boundary pair.
+- New-presentation defaults remain explicitly unavailable because this host has no blank-presentation creation flow. Full source parity, fresh offline image and production-scope acceptance remain open; all four format tasks remain incomplete and feature flags stay off.
+- Validation: 45 focused frontend tests plus the added portrait-state regression passed separately; 28 backend size/schema/bridge cases passed. No full repository suite was run. Browser/build results are recorded below after completion.
+
+- Final build evidence: restored the separate frontend, slides-engine and workbook-engine npm dependencies; `npm run build`, `npm run build:slides`, `npm run check:budget` and `npm run test:budget` all passed. Existing third-party/chunk warnings remain.
+- **Browser acceptance NOT passed:** `PPTX_SMOKE_MODE=slide-size-custom node smoke/pptx-native-save-smoke.mjs` exposes a real interaction failure: after Playwright fills width 25 cm, the focused input still reports the source 25.4 cm; saving consequently retains source dimensions. Explicit click/keyboard input also reproduced it. Unit, bridge and build results do not close this gap. The smoke retains an input-value assertion before applying so this cannot be misreported as a successful save. Next step is to resolve the real modal input path, then rerun this affected smoke, independent python-pptx download readback and reopen checks. Custom dimensions are implementation-in-progress and must not be marked accepted or deployed.
+
+
+### Follow-up closure: evidence-led diagnosis and parallel acceptance
+
+The earlier browser failure checkpoint above is superseded: a bare-HTML control reproduces the failed input on managed Chromium 140 without any editor code, while system Chromium 154 passes native input/event checks. No speculative editor fix was retained. The smoke now gates on a checked-in input baseline and accepts an explicit executable path; it never bypasses native input or silently changes browsers.
+
+- Chromium 154 custom-size acceptance passed: 25×20 cm native input, custom orientation changes, Undo/Redo, save/download, SHA identity/source immutability, independent python-pptx dimensions and scaled geometry, and revision-2 browser reopen. See `NATIVE_RIBBON_INPUT_DIAGNOSIS.md` for original evidence and reproducer.
+- Fixed-source command audit found and closed three product discrepancies: custom/default source entry identities, disabled custom orientation despite legal bridge sizes, and ratio-only false preset labels. Native state/source-identity regressions pass; source matching now follows the fixed upstream helper.
+- Parallel inventory and HTTP evidence are recorded in `NATIVE_RIBBON_COMMAND_AUDIT.md` and `NATIVE_RIBBON_HTTP_EVIDENCE.md`. Missing historical `.superpowers` briefs are not treated as available evidence. ASGI routes, actual engines and independent file readback are distinguished from in-memory repository substitutes and production deployment.
+- Tasks 2–6 remain incomplete globally. Next acceptance work: close remaining source inventory gaps and execute fresh image/offline acceptance; real production database/host checks stay separate. No default-new-deck preference is enabled without a creation flow. Feature flags remain off.
+
+
+Final verification for this closure:
+
+- Backend dimensions/schema/bridge: 28 passed in the preceding implementation checkpoint; no subsequent backend product changes.
+- Updated frontend selection initially had 46 passes and one obsolete ratio-label expectation; after correcting it, the four affected size/state regressions passed, followed by the exact custom/default source-entry regression (1 passed). No complete repository suite was repeated.
+- Final standard and Slides production builds, actual chunk budget and budget contract all passed after the orientation/preset fixes; existing third-party chunk warnings remain.
+- The four-format ASGI roundtrip cases passed individually (three initial + PDF after restoring its missing engine dependency), plus three scoped negative cases. The modified PPTX custom-dimension HTTP case then passed separately with independent dimension/text/geometry readback and the existing identity/retry/reopen assertions (1 passed, 10.84s).
+- Native Chromium 154 browser custom-size smoke passed independently; command audit was independently reviewed against pinned upstream source. Browser route substitutes, ASGI repository substitutes and the still-open production/clean-image boundaries remain documented separately.
+
+
+### Next planned slice: packaged/offline acceptance and Home state
+
+- Continued Task 6 rather than adding another feature family. Added `scripts/verify_native_offline.py` and two fail-closed negative checks. Freshly packaged all three engines, then verified four-format edit/independent file readback in an actual read-only `--network none` container (only loopback). Static entry/PDF.js identities and all-disabled flags passed; report provenance is explicitly `mounted-runtime-probe`.
+- The same packaged runtimes then passed all four ASGI upload/save/download/retry/reopen cases under network isolation (4 passed, 8.74s). Repository substitutions and the absence of production DB/TCP/TLS evidence remain explicit.
+- Attempted a fresh complete application Docker build. It failed on the managed 8 GB `vfs` workspace with ENOSPC, before any completed app image existed. Recovered space by removing this attempt's build cache. Complete-image acceptance stays unchecked; the smaller probe is not a substitute. Dockerfile now accepts optional ephemeral CA secret mounts while retaining TLS checks. Two obsolete Dockerfile contracts were corrected for the third PDF engine and passed.
+- Independent Home Font/Paragraph source audit found enabled font-step buttons without a text target. Added them to the existing target/lock predicate; the focused selection/lock-transition case passed (1 passed, 15 skipped). Both production builds and budget checks passed after the change. The source Paragraph inventory now records missing bullets/numbering/indent/direction/spacing actions as missing, rather than claiming they are all explicitly disabled.
+- Evidence, exact probe commands, runtime identity, artifacts and still-open boundaries: `NATIVE_RIBBON_OFFLINE_ACCEPTANCE.md`. The authoritative Paragraph slice inventory is in `NATIVE_RIBBON_COMMAND_AUDIT.md`.
+- Next: complete the application-image boundary in adequate build storage, and use the tracked source inventory to connect or visibly explain the remaining Paragraph commands. Global Tasks 2–6 remain incomplete. Feature flags remain off; no deployment/merge/push.
+
+
+### Word range links: implementation and independent acceptance
+
+- [x] Connect Insert/Edit/Remove Link to an actual anchored text range using the existing pinned Tiptap link mark and GenOffice relationship allocator; strict UTF16/current-text ranges and URL validation are shared across diff/replay and backend.
+- [x] Preserve mixed styles, untouched same-paragraph links and tooltips, source file identity, Undo/Redo and refresh; reject unsupported metadata/selection/restored fields explicitly.
+- [x] Close an independently reproduced preservation defect: partial edit of unstyled external link ABC had injected Hyperlink style on untouched A/C. The bridge now preserves all original unstyled link runs during regeneration; independent re-probe and targeted regression passed without modifying vendor code.
+- [x] Verify actual browser insert/edit/remove across revisions 2/3/4, file download and independent python-docx relationship/style readback. Verify the composed DOCX HTTP path separately with the production-packed bridge in Node 22 and a read-only network-disabled container (1 passed, 12.72s). Repository/route substitute boundaries remain explicit.
+- [ ] Support body-text changes while a source paragraph still contains links; currently explicitly rejected. New paragraphs, table cells and complex/unsupported source links also stay unavailable for range-link editing.
+
+Exact source/protocol boundaries, commands, tests and generated artifacts are in `NATIVE_WORD_LINK_ACCEPTANCE.md`. No full repository suite was repeated. This closes the bounded Word range-link slice only; Task 2/full ribbon parity, table/header/footer work, complete application-image and production-database/host acceptance remain open. Features remain disabled; no deployment/merge/push.

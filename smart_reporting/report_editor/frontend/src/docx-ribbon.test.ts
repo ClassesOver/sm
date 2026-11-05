@@ -55,8 +55,8 @@ it('offers source-bound Home formatting and leaves unsupported Ribbon commands d
   for (const action of ['insert-link', 'edit-link', 'remove-link']) {
     const linkCommand = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)
     expect(linkCommand?.disabled).toBe(true)
-    expect(linkCommand?.title).toContain('DOCX 超链接写回操作尚未接入')
-    expect(linkCommand?.getAttribute('aria-label')).toContain('DOCX 超链接写回操作尚未接入')
+    expect(linkCommand?.title).toContain('请选择已有可编辑正文段落')
+    expect(linkCommand?.getAttribute('aria-label')).toBeTruthy()
   }
   const onPreview = vi.fn()
   const withPreview = createDocxRibbon(editor, true, onPreview)

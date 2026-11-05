@@ -111,7 +111,7 @@ def test_slides_bridge_paper_size_presets_scale_geometry_and_independently_reope
     assert shape.text == '纸张尺寸'
 
 
-@pytest.mark.parametrize('size', [{'cx': 1, 'cy': 1}, {'cx': 12192000, 'cy': 6858000, 'extra': True}])
+@pytest.mark.parametrize('size', [{'cx': 1, 'cy': 1}, {'cx': 51206401, 'cy': 914400}, {'cx': True, 'cy': 914400}, {'cx': 9000000.5, 'cy': 7200000}, {'cx': 12192000, 'cy': 6858000, 'extra': True}])
 def test_slides_bridge_rejects_unadvertised_slide_size_fields_without_output(tmp_path: Path, size):
     source = tmp_path / 'source.pptx'
     output = tmp_path / 'invalid.pptx'
