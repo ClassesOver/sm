@@ -115,4 +115,3 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
     dispose() { root.remove() },
   }
 }
-

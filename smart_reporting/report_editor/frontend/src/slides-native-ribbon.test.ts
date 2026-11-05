@@ -339,4 +339,3 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(onAction).toHaveBeenCalledWith('transition', 'wipe')
   ribbon.dispose()
 })
-

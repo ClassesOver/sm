@@ -137,4 +137,3 @@ test('AcroForm values reject stale, read-only, forged and duplicate field identi
   await assert.rejects(() => patchPdfWithReceipt(source, [{ ...operation, fieldId: 'foreign' }], model.sourceSha256), /identity|invalid/i)
   await assert.rejects(() => patchPdfWithReceipt(source, [operation, operation], model.sourceSha256), /重复|duplicate/i)
 })
-

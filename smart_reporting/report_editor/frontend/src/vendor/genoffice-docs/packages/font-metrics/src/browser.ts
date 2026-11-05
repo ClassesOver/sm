@@ -15,4 +15,3 @@ export interface FaceVerticalMetrics {
   /** OS/2 ulCodePageRange1; bits 17-21 flag the East Asian code pages */
   codePageRange1: number | null
 }
-

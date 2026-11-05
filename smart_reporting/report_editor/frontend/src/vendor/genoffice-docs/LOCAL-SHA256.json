@@ -214,7 +214,7 @@
   "apps/docs/src/renderer/text-layout/inline-segments.ts": "4fa1f416873834d2d53a098a6d9805c88f70ed00bd214512acf4e5f79854328e",
   "apps/docs/src/renderer/text-layout/para-line-box.ts": "8783212626cb3124840e89c482c2bc016928e824955a39dbcb000f79ca12e5a2",
   "apps/docs/src/renderer/text-layout/run-faces.ts": "f38502212ddda3bf54c511dbbb5ec00fdd93350f7f52bdeaed799b719de4d09c",
-  "packages/font-metrics/src/browser.ts": "b5ad12d90550c82dd61d1ba1301a49a3ceb3d29a7a62aabc4d89ff1d22f8d98a",
+  "packages/font-metrics/src/browser.ts": "f2e3905e0d7d4c24999a5bca8b8ea867c0cfce7e0401b1c094e889267840bdc2",
   "packages/font-metrics/src/resolve.ts": "3b958ea218283e75bba4402731bda1ee5ed106f78294169e09049f732c558798",
   "packages/font-metrics/word-faces.json": "4a884d2d5fbba96b422a2d066fdf2f1ca629729c61577cbac623b983541d0cad",
   "packages/i18n/src/common-ribbon.ts": "0cddb281a66bc24d047aeb1e7135d5b70de6b1caf3fe779ee1ddecc9f2a6a6ad",

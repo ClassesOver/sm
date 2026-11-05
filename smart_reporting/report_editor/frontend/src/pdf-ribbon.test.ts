@@ -67,4 +67,3 @@ it('localizes the source ribbon tabs and group titles from the active document l
   expect(document.querySelector('[data-pdf-ribbon-tab=home]')?.textContent).toBe('Home')
   expect(group.querySelector('h3')?.textContent).toBe('Organize')
 })
-

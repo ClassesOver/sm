@@ -415,4 +415,3 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     }
   }
 }
-
