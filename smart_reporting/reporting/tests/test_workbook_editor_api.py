@@ -29,6 +29,9 @@ class Workbooks:
         self.snapshots.append(operations)
         return {'snapshotSha256': 'c' * 64, 'workbook': {'sheets': []}}
 
+    async def file_for_session(self, session):
+        return await self.context_for_session(session), _bytes()
+
 
 @pytest.mark.anyio
 async def test_workbook_api_scopes_cookie_and_requires_csrf_for_unsaved_snapshot(tmp_path):

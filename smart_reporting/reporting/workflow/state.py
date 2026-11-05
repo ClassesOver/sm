@@ -1030,6 +1030,16 @@ def apply(
         ):
             raise ReportingStateError("report_warning_invalid", "Reporting 告警必须是对象列表。")
         payload["warnings"] = _tuple_unique([*payload.get("warnings", []), *warnings])
+    elif name == "reserve_report_editor_revision":
+        minimum = arguments.get("minimumRevision")
+        if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+            raise ReportingStateError("report_editor_revision_invalid", "修订编号下限无效。")
+        contexts = payload.get("reportEditorContexts", {})
+        counter = payload.get("reportEditorRevisionCounter", 0)
+        if not isinstance(contexts, dict) or type(counter) is not int or counter < 0:
+            raise ReportingStateError("report_state_invalid", "报告修订编号状态损坏。")
+        known = [int(key) for key in contexts if str(key).isdigit()]
+        payload["reportEditorRevisionCounter"] = max([minimum, counter, *known]) + 1
     elif name == "set_report_editor_context":
         from ...report_editor.service import ReportEditorContext
 
