@@ -1337,6 +1337,21 @@ def create_report_editor_router(
                 except ReportingError as error:
                     _editor_http_error(error)
 
+    if editor is not None:
+        from .ai_tasks import AITaskService, register_ai_task_routes
+
+        async def task_authorize(request: Request, report_id: str, revision: int, write: bool):
+            if write:
+                return await _write_session_context(
+                    grants, editor, request, report_id=report_id, revision=revision,
+                    allowed_origin=allowed_origin,
+                )
+            return await _read_session_context(grants, editor, request, report_id=report_id, revision=revision)
+
+        register_ai_task_routes(
+            router, prefix='/reports/v1/editor/{report_id}/{revision}', authorize=task_authorize,
+            service=AITaskService(**{'document-selection': ai, 'chart-edit': chart_ai, 'table-edit': table_ai}),
+        )
     if editor is not None and hasattr(editor, "design"):
         from .design_api import register_design_routes
         register_design_routes(router, grants=grants, editor=editor, allowed_origin=allowed_origin)

@@ -101,14 +101,15 @@ class ReportSlidesAIService:
         self._jobs: dict[str, _SlidesAIJob] = {}
         self._lock = asyncio.Lock()
 
-    async def start_edit(self, session: ReportEditorSession, instruction: str) -> dict[str, str]:
+    async def start_edit(self, session: ReportEditorSession, instruction: str, *, deck: dict[str, Any] | None = None) -> dict[str, str]:
         context = await self.slides.context_for_session(session)
         normalized = instruction.strip() if isinstance(instruction, str) else ""
         if not normalized:
             raise ReportingError("report_slides_ai_instruction_required", "请输入幻灯片调整要求。")
         if len(normalized) > _MAX_INSTRUCTION_CHARS:
             raise ReportingError("report_slides_ai_instruction_too_large", "调整要求过长，请缩短后重试。")
-        deck = await self.slides.deck_for_session(session)
+        if deck is None:
+            deck = await self.slides.deck_for_session(session)
         prompt, editable = _build_prompt(normalized, deck)
         edit_id = uuid4().hex
         job = _SlidesAIJob(

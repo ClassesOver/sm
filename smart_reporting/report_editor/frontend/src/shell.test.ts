@@ -49,7 +49,7 @@ describe('createEditorShell', () => {
     expect(root.querySelector('.report-meta')?.textContent).not.toContain('自动保存已开启')
     expect(shell.exportPdf.getAttribute('aria-label')).toBe('导出 PDF')
     expect(shell.exportWord.getAttribute('aria-label')).toBe('导出 Word')
-    expect(root.querySelector('.toolbar-shortcuts')).toBe(root.querySelector('.report-actions')?.lastElementChild)
+    expect(root.querySelector('.toolbar-shortcuts')?.closest('[data-toolbar-overflow]')).not.toBeNull()
     expect(root.classList.contains('toolbar-full')).toBe(true)
   })
 
@@ -89,19 +89,7 @@ describe('createEditorShell', () => {
         (icon) => icon.dataset.lucide,
       ),
     ).toEqual([
-      'panel-left',
-      'search',
-      'history',
-      'database',
-      'share-2',
-      'focus',
-      'more-horizontal',
-      'save',
-      'file-down',
-      'file-text',
-      'settings-2',
-      'keyboard',
-      'x',
+      'save', 'panel-left', 'file-down', 'file-text', 'search', 'database', 'more-horizontal', 'x', 'history', 'share-2', 'focus', 'settings-2', 'keyboard',
     ])
     expect(root.querySelector('[data-action="save"]')?.classList.contains('is-primary')).toBe(true)
   })
@@ -133,4 +121,23 @@ describe('workbook shell', () => {
     expect(shell.exportPdf.hidden).toBe(true)
     expect(shell.exportWord.hidden).toBe(true)
   })
+})
+
+it('keeps registered utility actions in More and supports keyboard navigation without duplicates', async () => {
+  const { vi } = await import('vitest')
+  const root = document.querySelector<HTMLElement>('#app')!
+  const shell = createEditorShell(root, 'full')
+  const run = vi.fn()
+  shell.registerToolbarAction({ id: 'history', bar: 'public', label: '历史', run })
+  const menu = root.querySelector<HTMLElement>('[data-toolbar-overflow]')!
+  expect(root.querySelectorAll('[data-action="history"]')).toHaveLength(1)
+  expect(menu.contains(shell.history)).toBe(true)
+  expect(menu.hidden).toBe(true)
+  shell.more.click(); expect(menu.hidden).toBe(false); expect(document.activeElement).toBe(shell.history)
+  shell.history.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  expect(document.activeElement).toBe(shell.share)
+  shell.history.click()
+  expect(run).toHaveBeenCalledTimes(1); expect(menu.hidden).toBe(true)
+  shell.more.click(); window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  expect(menu.hidden).toBe(true); expect(document.activeElement).toBe(shell.more)
 })

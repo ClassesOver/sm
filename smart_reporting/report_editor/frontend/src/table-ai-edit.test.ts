@@ -33,6 +33,8 @@ describe('createTableAIEdit review', () => {
   it('shows the complete current table as a readable preview', async () => {
     document.body.innerHTML = ''
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
       tableTemplates: vi.fn(async () => ({ templates: [] })),
     } as unknown as ReportEditorClient
@@ -59,6 +61,8 @@ describe('createTableAIEdit review', () => {
     document.body.innerHTML = ''
     const markdown = '[[table:tbl-new]]\n| 项目 |\n| --- |\n| 新值 |\n\n[[/table:tbl-new]]'
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('no record') }),
       tableTemplates: vi.fn(async () => ({ templates: [] })),
       startTableAiEdit: vi.fn(async () => ({ editId: 'tedit-next', status: 'queued' })),
@@ -79,6 +83,7 @@ describe('createTableAIEdit review', () => {
     await vi.waitFor(() => expect(document.querySelector('.table-ai-review')).not.toBeNull())
     const adopt = document.querySelector<HTMLButtonElement>('.ask-ai-review-dock:not([hidden]) .ui-button--primary')!
     expect(adopt.textContent).toBe('采用到正文'); adopt.click()
+    await new Promise(resolve => setTimeout(resolve, 0))
     const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')!
     expect(receipt).not.toBeNull()
     expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(false)
@@ -106,6 +111,8 @@ describe('createTableAIEdit review', () => {
     document.body.innerHTML = ''
     const markdown = '[[table:tbl-new]]\n| 项目 |\n| --- |\n| 新值 |\n\n[[/table:tbl-new]]'
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('no record') }),
       tableTemplates: vi.fn(async () => ({ templates: [] })),
       startTableAiEdit: vi.fn(async () => ({ editId: 'tedit-next', status: 'queued' })),
@@ -124,6 +131,7 @@ describe('createTableAIEdit review', () => {
     document.querySelector<HTMLButtonElement>('.ask-ai-composers .ui-button--primary')!.click()
     await vi.waitFor(() => expect(document.querySelector('.table-ai-review')).not.toBeNull())
     document.querySelector<HTMLButtonElement>('.ask-ai-review-dock:not([hidden]) .ui-button--primary')!.click()
+    await new Promise(resolve => setTimeout(resolve, 0))
     const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')!
     const selection = view.state.selection
     vi.spyOn(view, 'nodeDOM').mockReturnValue(document.createElement('table'))
@@ -135,6 +143,8 @@ describe('createTableAIEdit review', () => {
   it('打开不可用的表格时先展示原因卡，不挂载输入区', async () => {
     document.body.innerHTML = ''
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
       tableAiAvailability: vi.fn(async () => ({ available: false, reason: 'table_unbound' })),
       tableTemplates: vi.fn(async () => ({ templates: [] })),
@@ -153,6 +163,8 @@ describe('createTableAIEdit review', () => {
   it('可用性预检请求失败时照常打开输入区', async () => {
     document.body.innerHTML = ''
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
       tableAiAvailability: vi.fn(async () => { throw new Error('network') }),
       tableTemplates: vi.fn(async () => ({ templates: [] })),
@@ -168,6 +180,8 @@ describe('createTableAIEdit review', () => {
   it('同一表格正文改变后重开，保留要求并使用新表体提交', async () => {
     document.body.innerHTML = ''
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
       tableTemplates: vi.fn(async () => ({ templates: [] })),
       startTableAiEdit: vi.fn(async () => ({ editId: 'tedit-test' })),
@@ -192,6 +206,8 @@ describe('createTableAIEdit review', () => {
   it('首屏推荐按表格列给出建议：AI 建议只填入要求，推荐模板一键执行', async () => {
     document.body.innerHTML = ''
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
       tableTemplates: vi.fn(async () => ({ templates: [{ templateId: 'budget-execution', name: '预算执行', available: true, recommended: true }] })),
       startTableTemplateEdit: vi.fn(async () => ({ editId: 'tedit-template' })),
@@ -216,6 +232,8 @@ describe('createTableAIEdit review', () => {
   it('预制表格模板保持无自由要求的确定性执行路径', async () => {
     document.body.innerHTML = ''
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
       tableTemplates: vi.fn(async () => ({ templates: [{ templateId: 'budget-execution', name: '预算执行', available: true }] })),
       startTableTemplateEdit: vi.fn(async () => ({ editId: 'tedit-template' })),
@@ -235,6 +253,8 @@ describe('createTableAIEdit review', () => {
     document.body.innerHTML = ''
     let complete: (value: unknown) => void = () => undefined
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableTemplates: vi.fn(async () => ({ templates: [] })),
       tableEditRecordByTableId: vi.fn(async () => { throw new Error('not edited') }),
       startTableAiEdit: vi.fn(async () => ({ editId: 'tedit-test', status: 'queued' })),
@@ -267,6 +287,8 @@ describe('createTableAIEdit review', () => {
   it.each([false, true])('逐格核验来源，替换时保护正文的新改动（正文已改：%s）', async changed => {
     document.body.innerHTML = '<div id="root"></div>'
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableTemplates: vi.fn(async () => ({
         tableId: 'tbl-1',
         templates: [
@@ -352,6 +374,7 @@ describe('createTableAIEdit review', () => {
     await vi.waitFor(() => expect(document.querySelector('.table-ai-review')).not.toBeNull())
     if (changed) currentBody = '| 项目 |\n| --- |\n| 用户的新内容 |'
     document.querySelector<HTMLButtonElement>('.ask-ai-review-dock:not([hidden]) .ui-button--primary')!.click()
+    await new Promise(resolve => setTimeout(resolve, 0))
     if (changed) {
       expect(dispatch).not.toHaveBeenCalled()
       expect(document.querySelector('.chart-ai-note')!.textContent).toContain('未覆盖新内容')
@@ -367,6 +390,8 @@ describe('createTableAIEdit review', () => {
   it('reopens an edited table through its original table id and previous edit id', async () => {
     document.body.innerHTML = '<div id="root"></div>'
     const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
       tableEditRecordByTableId: vi.fn(async () => ({
         editId: 'tedit-12345678abcdef00', tableId: 'tbl-original',
         newTableId: 'tbl-original-e12345678', markdown: '',

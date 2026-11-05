@@ -1,3 +1,5 @@
+import { markAIDraft } from './ai-draft'
+import { pollAIResult } from './asset-task-adapter'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { TABLE_PROTOCOL_EDIT_META } from './protocol-plugin'
 import { buttonClasses } from './button'
@@ -193,11 +195,9 @@ export function createTableAIEdit(options: {
     runningEditId = null
   }
   const poll = async (tableId: string, editId: string, owner: number, stage: HTMLElement, timeline: HTMLElement): Promise<TableAIEditState | null> => {
-    while (!disposed && owner === generation) {
-      await new Promise(resolve => setTimeout(resolve, interval))
-      if (disposed || owner !== generation) return null
-      const state = await options.client.tableAiEditStatus(tableId, editId)
-      if (disposed || owner !== generation) return null
+    return pollAIResult({ read: () => options.client.tableAiEditStatus(tableId, editId),
+      active: () => !disposed && owner === generation, interval,
+      progress: state => {
       stage.textContent = TABLE_STAGE_LABELS[state.stage ?? ''] ?? '正在处理表格'
       const currentIndex = TABLE_STAGE_GROUPS.findIndex(group => group.stages.includes(state.stage ?? ''))
       timeline.querySelectorAll<HTMLElement>('li').forEach((item, index) => {
@@ -205,9 +205,8 @@ export function createTableAIEdit(options: {
         item.dataset.stepState = stepState
         item.querySelector('.ai-stage-dot')!.textContent = stepState === 'done' ? '✓' : ''
       })
-      if (state.status === 'succeeded' || state.status === 'failed' || state.status === 'cancelled') return state
-    }
-    return null
+      },
+    })
   }
   /** 预检判定不可用时与改图一致地展示原因卡，不挂载输入区，避免提交后才失败。 */
   const renderUnavailable = (reason?: string) => {
@@ -495,14 +494,25 @@ export function createTableAIEdit(options: {
     ;(result.skipped ?? []).forEach(item => { const note = document.createElement('p'); note.className = 'chart-ai-note'; note.textContent = `「${item.request}」未执行：${item.reason}`; body().append(note) })
     const actions = document.createElement('div'); actions.className = 'chart-ai-actions'
     const pending = document.createElement('p'); pending.className = 'ask-ai-adopt-note'; pending.textContent = '尚未修改正文'; actions.append(pending)
-    actions.append(button('采用到正文', 'primary', () => {
+    let accepting = false
+    actions.append(button('采用到正文', 'primary', async () => {
+      if (accepting) return
+      accepting = true
+      const owner = generation
+      const controls = [...actions.querySelectorAll('button')]
+      controls.forEach(button => { button.disabled = true }); modal.composer.disabled = true
+      try { await options.client.acceptAssetTask(result.editId) }
+      catch (error) { accepting = false; detail.textContent = (error as Error).message; return }
+      finally { controls.forEach(button => { button.disabled = false }); modal.composer.disabled = false }
+      if (disposed || owner !== generation) return
       const currentBody = options.currentBody?.(targetTableId) ?? latestBody
       if (currentBody !== baseBody) {
         void input(tableId, targetTableId, currentBody, undefined, '正文表格已改变，未覆盖新内容。已读取最新表格，请重新生成。', true)
         return
       }
+      markAIDraft()
       if (!result.markdown || !replaceTableProtocolBlock(options.view, targetTableId, result.markdown, result.baseCaption)) {
-        detail.textContent = '未能定位完整原表，尚未替换。请回到正文重新选择表格。'
+        accepting = false; detail.textContent = '未能定位完整原表，尚未替换。请回到正文重新选择表格。'
         options.hooks?.onError?.('report_editor_table_ai_target_missing'); return
       }
       options.hooks?.onReplaced?.(result.editId); tracker.adopted('accepted'); openedTableId = null
@@ -545,7 +555,7 @@ export function createTableAIEdit(options: {
       })
     }))
     actions.append(button('继续调整', 'secondary', () => modal.focusComposer()))
-    actions.append(button('放弃', 'quiet', () => { tracker.adopted('discarded'); openedTableId = null; modal.setState('idle'); modal.mountComposer(null); body().replaceChildren(text('已放弃本轮结果。继续编辑时，请在正文选择表格。')); modal.close() }))
+    actions.append(button('放弃', 'quiet', () => { void options.client.rejectAssetTask(result.editId).catch(error => { detail.textContent = (error as Error).message }); tracker.adopted('discarded'); openedTableId = null; modal.setState('idle'); modal.mountComposer(null); body().replaceChildren(text('已放弃本轮结果。继续编辑时，请在正文选择表格。')); modal.close() }))
     body().append(actions)
     modal.mountReviewActions(actions)
     const keyHint = document.createElement('p')

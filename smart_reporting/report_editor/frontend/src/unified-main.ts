@@ -30,6 +30,6 @@ if (isWorkbookPath) {
   loadState.setAttribute('role', 'status')
   loadState.textContent = '正在打开幻灯片'
   shell.editor.append(loadState)
-  createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx })
+  createSlidesEditorView(shell.editor, { ...shell, download: shell.exportPptx })
   loadState.remove()
 }

@@ -1,3 +1,6 @@
+import { askAIPanel } from './ask-ai-panel'
+import { createAITaskAdapter } from './ai-task'
+import { renderWorkbookProposal } from './workbook-ai-preview'
 import { LocaleType, mergeLocales } from '@univerjs/core'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
 import CoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
@@ -16,7 +19,6 @@ import { withWorkbookLocked } from './workbook-grid-guards'
 import { requestJson } from './api-request'
 import './workbook.css'
 
-type AIStatus = { editId: string; status: string; snapshotSha256: string; proposal?: WorkbookProposal; error?: { message: string } }
 
 export async function createWorkbookEditorView(shell: EditorShell) {
   const base = location.pathname.replace(/\/$/, '')
@@ -27,22 +29,13 @@ export async function createWorkbookEditorView(shell: EditorShell) {
     'report_workbook_csrf',
   )
   shell.editor.innerHTML = `
-    <section class="workbook-ai" aria-label="工作簿 AI 编辑"><form><label for="workbook-instruction">Ask AI</label><textarea id="workbook-instruction" maxlength="2000" rows="2" placeholder="描述要调整的单元格、公式或样式"></textarea><button type="submit">生成候选</button><button type="button" class="workbook-undo" disabled>撤销 AI 采纳</button></form><div class="workbook-feedback" role="status" aria-live="polite"></div><div class="workbook-candidate" hidden><strong></strong><pre></pre><button type="button" class="workbook-accept">采纳到草稿</button><button type="button" class="workbook-reject">拒绝</button></div><div class="workbook-actions" role="toolbar" aria-label="单元格布局"><button type="button" data-workbook-command="sheet.command.add-worksheet-merge-all">合并单元格</button><button type="button" data-workbook-command="sheet.command.remove-worksheet-merge">取消合并</button></div></section>
+    <div class="workbook-feedback" role="status" aria-live="polite"></div>
     <div id="workbook-grid" class="workbook-grid" aria-label="报告工作簿"></div>`
   const feedback = shell.editor.querySelector<HTMLElement>('.workbook-feedback')!
-  const form = shell.editor.querySelector<HTMLFormElement>('form')!
-  const instruction = shell.editor.querySelector<HTMLTextAreaElement>('textarea')!
-  const submit = form.querySelector<HTMLButtonElement>('[type="submit"]')!
-  const candidate = shell.editor.querySelector<HTMLElement>('.workbook-candidate')!
-  const accept = candidate.querySelector<HTMLButtonElement>('.workbook-accept')!
-  const reject = candidate.querySelector<HTMLButtonElement>('.workbook-reject')!
-  const undo = form.querySelector<HTMLButtonElement>('.workbook-undo')!
   let original: Uint8Array
   let currentModel!: WorkbookModel
   let expectedSha256 = ''
   let staged: WorkbookOperation[] = []
-  let aiId = ''
-  let candidateOperations = ''
   let dirty = false
   // 新修订已登记后不再从当前底稿保存，避免重复生成修订。
   let saved = false
@@ -56,19 +49,24 @@ export async function createWorkbookEditorView(shell: EditorShell) {
   const markDirty = () => {
     dirty = true
     shell.statusLabel.textContent = '有未保存修改'
-    if (!candidate.hidden) feedback.textContent = '内容已变化时需重新生成 AI 候选。'
+    shell.refreshToolbar()
   }
-  for (const button of shell.editor.querySelectorAll<HTMLButtonElement>('[data-workbook-command]')) {
-    button.addEventListener('click', async () => {
-      button.disabled = true
-      try {
-        const applied = await runtime.univerAPI.executeCommand(button.dataset.workbookCommand!)
-        feedback.textContent = applied ? '合并布局已更新，尚未保存。' : '请选择要合并或取消合并的单元格区域。'
-      } catch (error) { feedback.textContent = (error as Error).message }
-      finally { button.disabled = false }
-    })
-  }
+  for (const [id, label, command] of [
+    ['workbook-merge', '合并单元格', 'sheet.command.add-worksheet-merge-all'],
+    ['workbook-unmerge', '取消合并', 'sheet.command.remove-worksheet-merge'],
+  ]) shell.registerToolbarAction({ id, label, bar: 'format', disabled: () => loading || saved || shell.editor.inert,
+    run: async () => {
+      const applied = await runtime.univerAPI.executeCommand(command)
+      feedback.textContent = applied ? '布局已更新，尚未保存。' : '请选择单元格区域。'
+    },
+  })
   runtime.univerAPI.onCommandExecuted(command => {
+    if (!loading) {
+      const workbook = runtime.univerAPI.getActiveWorkbook()
+      const sheet = workbook?.getActiveSheet?.()
+      const range = workbook?.getActiveRange?.()
+      if (sheet) shell.setContextTarget({ kind: 'cells', label: `${sheet.getSheetName()} · ${range?.getA1Notation() ?? 'A1'}` })
+    }
     if (!loading && command.id.startsWith('sheet.mutation.')) {
       const mutation = structuralMutation(command.id, command.params)
       if (mutation) structural.push(mutation)
@@ -107,7 +105,6 @@ export async function createWorkbookEditorView(shell: EditorShell) {
     structural = []
     loading = false
   }
-  const hideCandidate = () => { candidate.hidden = true; draft.reject(); aiId = '' }
   try {
     const response = await fetch(`${base}/api/file`, { credentials: 'same-origin' })
     if (!response.ok) throw new Error('工作簿载入失败，请刷新重试。')
@@ -127,67 +124,63 @@ export async function createWorkbookEditorView(shell: EditorShell) {
     feedback.textContent = (error as Error).message
     shell.statusLabel.textContent = '载入失败'
     shell.save.disabled = true
-    submit.disabled = true
     return
   }
-  form.addEventListener('submit', async event => {
-    event.preventDefault()
-    submit.disabled = true
-    hideCandidate()
-    feedback.textContent = '正在生成候选；包含当前未保存修改。'
-    try {
-      const ops = await currentOperations()
-      draft.setOperations(ops)
-      candidateOperations = JSON.stringify(ops)
-      let status = await request<AIStatus>('ai/start', { instruction: instruction.value, operations: ops })
-      aiId = status.editId
-      while (status.status === 'running') status = await request<AIStatus>(`ai/${aiId}?wait_ms=20000`)
-      if (status.status !== 'succeeded' || !status.proposal) throw new Error(status.error?.message ?? 'AI 候选未生成。')
-      draft.preview(status.proposal)
-      candidate.querySelector('strong')!.textContent = status.proposal.summary
-      candidate.querySelector('pre')!.textContent = JSON.stringify(status.proposal.operations, null, 2)
-      candidate.hidden = false
-      feedback.textContent = '候选尚未改变草稿，采纳后可撤销。'
-    } catch (error) { feedback.textContent = (error as Error).message }
-    finally { submit.disabled = false }
-  })
-  reject.addEventListener('click', () => {
-    if (aiId) void request(`ai/${aiId}/cancel`, {}).catch(() => {})
-    hideCandidate()
-    feedback.textContent = '已拒绝候选，草稿保持原样。'
-  })
-  accept.addEventListener('click', async () => {
-    accept.disabled = true
-    shell.save.disabled = true
-    try {
-      await withWorkbookLocked(shell.editor, async () => {
-        const ops = await currentOperations()
-        draft.setOperations(ops)
-        if (JSON.stringify(ops) !== candidateOperations) throw new Error('工作簿内容已变化，请重新生成候选。')
-        await request(`ai/${aiId}/accept`, { operations: ops })
-        draft.accept()
-        await loadOperations(draft.operations)
-        candidate.hidden = true
-        undo.disabled = false
+  let aiTarget: { sheet: string; range: string } | undefined
+  const aiSession = askAIPanel().createTaskSession({
+    kind: 'workbook', label: '工作簿',
+    context: '候选包含当前未保存修改。检查工作表、单元格和公式变更后采纳，保存需单独操作。',
+    suggestions: [
+      { label: '统一数字格式', instruction: '统一金额列的数字格式，使用千分位并保留两位小数，不修改原始数值。' },
+      { label: '突出表头与合计', instruction: '突出显示表头与合计行，保留原始数据和公式。' },
+      { label: '调整列宽', instruction: '调整列宽，使表头和主要数值完整可读。' },
+    ],
+    refinements: ['保留所有原始数值和公式', '数值统一保留两位小数', '突出显示合计行'],
+    captureInput: async () => ({ snapshot: { expectedSha256, operations: await currentOperations() } }),
+    adapter: createAITaskAdapter<WorkbookProposal>({
+      kind: 'workbook-edit',
+      request: (path, init) => requestJson(`${base}/api/${path}`, init, 'report_workbook_csrf'),
+      validateTarget: () => { if (saved || loading) throw new Error('请在当前可编辑修订中重试。') },
+      renderProposal: renderWorkbookProposal,
+      withDraftLock: async action => {
+        if (shell.editor.inert) throw new Error('工作簿正在处理其他操作。')
+        shell.save.disabled = true
+        try { return await withWorkbookLocked(shell.editor, action) }
+        finally { shell.save.disabled = saved; shell.refreshToolbar() }
+      },
+      locateTarget: () => {
+        const workbook = runtime.univerAPI.getActiveWorkbook()
+        const sheet = aiTarget && workbook?.getSheetByName(aiTarget.sheet)
+        if (!sheet || !aiTarget) return false
+        workbook!.setActiveSheet(sheet); workbook!.setActiveRange(sheet.getRange(aiTarget.range))
+        sheet.scrollToCell?.(sheet.getRange(aiTarget.range).getRow(), sheet.getRange(aiTarget.range).getColumn())
+        return true
+      },
+      applyProposal: async proposal => {
+        const workbook = runtime.univerAPI.getActiveWorkbook()
+        const sheet = workbook?.getActiveSheet?.()
+        const range = workbook?.getActiveRange?.()
+        aiTarget = sheet ? { sheet: sheet.getSheetName(), range: range?.getA1Notation() ?? 'A1' } : undefined
+        const before = await currentOperations()
+        const next = [...before, ...proposal.operations]
+        await loadOperations(next)
+        draft.setOperations(before); draft.preview(proposal); draft.accept()
         acceptedSnapshot = JSON.stringify(await currentOperations())
         markDirty()
-        feedback.textContent = '候选已进入草稿，尚未保存。'
-      })
-    } catch (error) { feedback.textContent = (error as Error).message }
-    finally { accept.disabled = false; shell.save.disabled = saved }
+      },
+      undo: async () => {
+        await withWorkbookLocked(shell.editor, async () => {
+          if (saved || JSON.stringify(await currentOperations()) !== acceptedSnapshot) throw new Error('采纳后已有其他修改，请先用网格撤销这些修改。')
+          draft.undo(); await loadOperations(draft.operations); markDirty()
+        })
+      },
+    }),
   })
-  undo.addEventListener('click', async () => {
-    if (JSON.stringify(await currentOperations()) !== acceptedSnapshot) {
-      feedback.textContent = '采纳后又有手动修改，请使用网格撤销，或保存当前草稿后重新编辑。'
-      return
-    }
-    draft.undo()
-    await loadOperations(draft.operations)
-    undo.disabled = true
-    markDirty()
-    feedback.textContent = '已撤销 AI 采纳，恢复采纳前草稿。'
+  shell.setContextTarget({ kind: 'cells', label: '工作簿单元格' })
+  shell.registerToolbarAction({ id: 'workbook-ai', bar: 'context', label: 'Ask AI', disabled: () => saved || loading,
+    run: () => aiSession.open(),
   })
-  shell.save.addEventListener('click', async () => {
+  shell.registerToolbarAction({ id: 'save', bar: 'public', label: '保存', disabled: () => saved || loading || shell.editor.inert, run: async () => {
     if (saved) return
     shell.save.disabled = true
     shell.editor.inert = true
@@ -203,7 +196,7 @@ export async function createWorkbookEditorView(shell: EditorShell) {
       if (outcome.kind === 'reopen') location.assign(outcome.url)
     } catch (error) { shell.statusLabel.textContent = '保存失败，草稿已保留'; feedback.textContent = (error as Error).message }
     finally { shell.save.disabled = saved; shell.editor.inert = saved }
-  })
+  } })
   window.addEventListener('beforeunload', event => {
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   })

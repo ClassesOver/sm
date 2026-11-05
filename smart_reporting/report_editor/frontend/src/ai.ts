@@ -10,7 +10,7 @@ import { findProtocolMarkers, restoreProtocolMarkers } from './protocol'
 export const selectionAIActions = ['polish', 'shorten', 'expand', 'professional'] as const
 export type SelectionAIAction = (typeof selectionAIActions)[number]
 
-const selectionAILabels: Record<SelectionAIAction, { label: string; streamingLabel: string }> = {
+export const selectionAILabels: Record<SelectionAIAction, { label: string; streamingLabel: string }> = {
   polish: { label: '润色表达', streamingLabel: '正在润色' },
   shorten: { label: '精简内容', streamingLabel: '正在精简' },
   expand: { label: '扩写说明', streamingLabel: '正在扩写' },

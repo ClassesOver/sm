@@ -24,6 +24,8 @@ function setup() {
     window: { clearTimeout: vi.fn(), setTimeout }, saveTimer: 0,
     editReviewMode: () => 'idle', evidenceView: { state: { doc: {} } },
     pendingConflict: null, savePromise: null,
+    aiDraftVersion: 0, savedAIDraftVersion: 0,
+    needsExplicitSave: () => context.aiDraftVersion !== context.savedAIDraftVersion,
     designPanel: null as { refresh(): Promise<void> } | null,
     currentMarkdown: 'B', lastSavedMarkdown: 'A', sha256: 'hash-A',
     status: vi.fn(), saveState: null, draftController: null,
@@ -40,7 +42,7 @@ function setup() {
   }
   const sandbox = vm.createContext(context)
   vm.runInContext(code, sandbox)
-  return { context, requests, save: sandbox.run as () => Promise<void> }
+  return { context, requests, save: sandbox.run as (explicit?: boolean) => Promise<void> }
 }
 
 describe('saveNow before export', () => {
@@ -125,4 +127,20 @@ describe('saveNow before export', () => {
     expect(context.lastSavedMarkdown).toBe('B')
     expect(context.currentMarkdown).toBe('C')
   })
+})
+
+it('does not autosave AI changes arriving during an earlier save, and resumes after explicit save', async () => {
+  const { context, requests, save } = setup()
+  const automatic = save(false)
+  context.aiDraftVersion = 1; context.currentMarkdown = 'AI candidate'
+  requests[0]!.resolve({ sha256: 'hash-B' })
+  await automatic
+  expect(context.client.save).toHaveBeenCalledTimes(1)
+  expect(context.lastSavedMarkdown).toBe('B')
+  await save(false)
+  expect(context.client.save).toHaveBeenCalledTimes(1)
+  const explicit = save()
+  expect(context.client.save).toHaveBeenLastCalledWith('AI candidate', 'hash-B')
+  requests[1]!.resolve({ sha256: 'hash-AI' }); await explicit
+  expect(context.needsExplicitSave()).toBe(false)
 })

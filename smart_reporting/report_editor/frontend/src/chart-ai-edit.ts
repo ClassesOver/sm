@@ -1,3 +1,5 @@
+import { markAIDraft } from './ai-draft'
+import { pollAIResult } from './asset-task-adapter'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model'
 import { closeHistory } from '@milkdown/kit/prose/history'
@@ -466,6 +468,7 @@ interface EditTarget {
   bodyEditId?: string
   bodyPages?: ChartAIEditPage[]
   bodyImageSrc?: string
+  bodyNode?: ProseMirrorNode
 }
 
 export function createChartAIEdit(options: {
@@ -477,7 +480,6 @@ export function createChartAIEdit(options: {
   hooks?: ChartAIEditHooks
 }): ChartAIEditController {
   const { view, client, basePath, hooks } = options
-  const pollIntervalMs = options.pollIntervalMs ?? 1500
   const tracker = createAITracker(client, 'chart')
   let modal: AskAISession | null = null
   let actionModal: ReturnType<typeof createModal> | null = null
@@ -578,6 +580,7 @@ export function createChartAIEdit(options: {
         standardForms: availability.standardChartCapabilities?.forms,
         recommendations: availability.recommendations,
         bodyImageSrc: locateImage(view, img)?.node.attrs.src as string | undefined,
+        bodyNode: locateImage(view, img)?.node,
         ...(record ? { previousEditId: record.editId, bodyEditId: record.editId, bodyPages: record.pages } : {}),
       }
     } catch {
@@ -735,6 +738,7 @@ export function createChartAIEdit(options: {
           ...(resetStandard.checked ? { inheritPreviousStandard: false } : {}),
           baseImagePath: current.imagePath, expectedSha256: current.expectedSha256,
           ...(current.previousEditId ? { previousEditId: current.previousEditId } : {}),
+        ...(current.expectedSha256 ? { expectedSha256: current.expectedSha256 } : {}),
           ...(current.title ? { baseTitle: current.title } : {}),
           ...(current.altText ? { baseAltText: current.altText } : {}),
         })
@@ -956,48 +960,20 @@ export function createChartAIEdit(options: {
         // 服务端返回编号前已取消：补发取消请求，避免后台任务继续占用该图与额度。
         void client.cancelChartAiEdit(current.chartId, runningEditId).catch(() => undefined)
       }
-      let transientFailures = 0
-      let firstStatus = true
-      for (;;) {
-        const waitMs = !firstStatus && transientFailures === 0 && options.pollIntervalMs === undefined ? 1500 : 0
-        if (!firstStatus) await new Promise((resolve) => setTimeout(resolve,
-          transientFailures ? pollIntervalMs : options.pollIntervalMs ?? 0))
-        firstStatus = false
-        if (owner !== generation) return
-        if (cancelled) break
-        let state: Awaited<ReturnType<typeof client.chartAiEditStatus>>
-        try {
-          state = waitMs ? await client.chartAiEditStatus(current.chartId, runningEditId, waitMs)
-            : await client.chartAiEditStatus(current.chartId, runningEditId)
-          transientFailures = 0
-        } catch (error) {
-          if (error instanceof TypeError && ++transientFailures < 5) continue
-          throw error
-        }
-        if (owner !== generation) return
-        if (cancelled) break
-        setStage(String(state.stage ?? ''))
-        if (dismissed) return
-        if (state.status === 'succeeded') {
-          tracker.finished('succeeded')
-          renderReviewPhase(current, state as unknown as ChartAIEditSuccess)
-          return
-        }
-        if (state.status === 'failed' || state.status === 'cancelled') {
-          const error = (state as { error?: { code?: string; message?: string; skipped?: { request: string; reason: string }[] } }).error
-          hooks?.onError?.(error?.code ?? 'report_editor_chart_ai_failed')
-          tracker.finished(state.status, error?.code)
-          const skippedNote = (error?.skipped ?? []).map(item => item.reason).join('；')
-          renderInputPhase(
-            current,
-            error?.message
-              ? `${error.message}${skippedNote ? `（${skippedNote}）` : ''}`
-              : '改图未完成，原图保持不变，可调整要求后重试。',
-            state.status === 'failed',
-          )
-          return
-        }
+      const state = await pollAIResult({
+        read: waitMs => waitMs ? client.chartAiEditStatus(current.chartId, runningEditId!, waitMs) : client.chartAiEditStatus(current.chartId, runningEditId!),
+        active: () => owner === generation && !cancelled && !dismissed,
+        interval: options.pollIntervalMs ?? 0, serverWaitMs: options.pollIntervalMs === undefined ? 1500 : 0, retryMs: options.pollIntervalMs ?? 1500,
+        progress: state => setStage(String(state.stage ?? '')),
+      })
+      if (!state) return
+      if (state.status === 'succeeded') {
+        tracker.finished('succeeded'); renderReviewPhase(current, state as unknown as ChartAIEditSuccess); return
       }
+      const error = (state as { error?: { code?: string; message?: string; skipped?: { reason: string }[] } }).error
+      hooks?.onError?.(error?.code ?? 'report_editor_chart_ai_failed')
+      tracker.finished(state.status === 'cancelled' ? 'cancelled' : 'failed', error?.code)
+      renderInputPhase(current, [error?.message ?? '改图未完成，原图保持不变。', ...(error?.skipped ?? []).map(item => item.reason)].join('；'), state.status !== 'cancelled')
       if (cancelled && !dismissed) {
         renderInputPhase(current, '已取消本次改图，原图保持不变。')
       }
@@ -1263,7 +1239,20 @@ export function createChartAIEdit(options: {
       body.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.click()
     }
     document.addEventListener('keydown', onReviewKey)
-    body.querySelector<HTMLButtonElement>('[data-action="accept"]')!.addEventListener('click', () => {
+    body.querySelector<HTMLButtonElement>('[data-action="accept"]')!.addEventListener('click', async event => {
+      const acceptButton = event.currentTarget as HTMLButtonElement
+      if (acceptButton.disabled) return
+      const owner = generation
+      const controls = [...ensureModal().reviewDock.querySelectorAll<HTMLButtonElement>('button')]
+      controls.forEach(button => { button.disabled = true }); ensureModal().composer.disabled = true
+      try { await client.acceptAssetTask(result.editId) }
+      catch (error) {
+        const note = ensureModal().reviewDock.querySelector<HTMLElement>('.ask-ai-adopt-note')
+        if (note) note.textContent = (error as Error).message
+        hooks?.onError?.((error as Error).message); return
+      }
+      finally { controls.forEach(button => { button.disabled = false }); ensureModal().composer.disabled = false }
+      if (dismissed || owner !== generation) return
       stopBlink()
       let bodyImage = openedImage ?? current.img
       // 后台完成时正文可能因装饰重绘而更换 DOM；只恢复唯一同源图片，歧义仍拒绝。
@@ -1273,12 +1262,22 @@ export function createChartAIEdit(options: {
           .filter(image => image.getAttribute('src') === source) : []
         if (matches.length === 1) bodyImage = openedImage = matches[0]!
       }
+      const located = locateImage(view, bodyImage)
+      if (current.bodyNode && (!located || !current.bodyNode.eq(located.node))) {
+        acceptButton.disabled = false
+        const note = ensureModal().reviewDock.querySelector<HTMLElement>('.ask-ai-adopt-note')
+        if (note) note.textContent = '正文图表已变化，请重新生成候选。'
+        return
+      }
+      markAIDraft()
       const replaced = applyChartPagesReplacement(view, bodyImage, pages, {
         basePath, previousEditId: current.bodyEditId, previousPages: current.bodyPages, expectedImageSrc: current.bodyImageSrc,
       })
       if (!replaced) {
         hooks?.onError?.('report_editor_chart_ai_target_missing')
-        renderInputPhase(current, '未能完整定位正文图表组（可能缺页、分散或包含其他正文），尚未替换。请刷新并从完整图组重新打开。', true)
+        acceptButton.disabled = false
+        const note = ensureModal().reviewDock.querySelector<HTMLElement>('.ask-ai-adopt-note')
+        if (note) note.textContent = '未能完整定位原图，草稿未改变。候选已保留，可重试。'
         return
       }
       hooks?.onReplaced?.(result.editId)
@@ -1319,6 +1318,7 @@ export function createChartAIEdit(options: {
       })
     })
     body.querySelector<HTMLButtonElement>('[data-action="discard"]')!.addEventListener('click', () => {
+      void client.rejectAssetTask(result.editId).catch(error => hooks?.onError?.((error as Error).message))
       tracker.adopted('discarded')
       stopBlink()
       openedImage = null
@@ -1393,6 +1393,7 @@ export function createChartAIEdit(options: {
         if (openedImage) {
           resolved.img = openedImage
           resolved.bodyImageSrc = locateImage(view, openedImage)?.node.attrs.src as string | undefined
+          resolved.bodyNode = locateImage(view, openedImage)?.node
         }
         renderInputPhase(resolved)
       })

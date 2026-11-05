@@ -225,7 +225,7 @@ describe('页响应完整性', () => {
 })
 
 function client(overrides: Record<string, unknown> = {}) {
-  return { charts: vi.fn(async () => ({ charts: [{ chartId: 'chart_001', imagePath: 'reports/revision-1/original.png' }] })),
+  return { acceptAssetTask: vi.fn(async () => {}), rejectAssetTask: vi.fn(async () => {}), charts: vi.fn(async () => ({ charts: [{ chartId: 'chart_001', imagePath: 'reports/revision-1/original.png' }] })),
     chartAiAvailability: vi.fn(async () => ({ available: true })),
     cancelChartAiEdit: vi.fn(async () => ({ status: 'cancelled' })),
     startChartAiEdit: vi.fn(async () => ({ editId: 'cedit-new12345' })), chartAiEditStatus: vi.fn(async () => result()),
@@ -280,6 +280,7 @@ describe('模板选择与完整预览', () => {
       document.querySelector<HTMLButtonElement>('[data-action="submit"]')!.click()
       await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
       ;(document.querySelector('[data-action="accept"]') as HTMLButtonElement).click()
+    await new Promise(resolve => setTimeout(resolve, 0))
       await vi.waitFor(() => expect(reportEvent).toHaveBeenCalledTimes(4))
       const events = reportEvent.mock.calls.map(([payload]) => payload)
       expect(events.map(item => item.event)).toEqual(['ai_suggestion_used', 'ai_edit_started', 'ai_edit_finished', 'ai_edit_adopted'])
@@ -772,6 +773,7 @@ describe('模板选择与完整预览', () => {
     ;(document.querySelector('[data-action="submit"]') as HTMLButtonElement).click()
     await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
     ;(document.querySelector('[data-action="accept"]') as HTMLButtonElement).click()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(view.dispatch).toHaveBeenCalledTimes(1)
     const sources: string[] = []
     view.state.doc.descendants(node => { if (node.type.name === 'image-block') sources.push(String(node.attrs.src)) })

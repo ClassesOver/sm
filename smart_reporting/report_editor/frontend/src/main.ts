@@ -1,3 +1,4 @@
+import { AI_DRAFT_APPLY } from './ai-draft'
 import { createAssetAIActions } from './asset-ai-actions'
 import { updateAskAISourceStatus } from './ask-ai-panel'
 import { bodySourceLinksPlugin, updateBodySourceLinks } from './body-source-links'
@@ -17,7 +18,7 @@ import '@milkdown/crepe/theme/common/diff.css'
 import '@milkdown/crepe/theme/frame.css'
 import './style.css'
 
-import { editorViewCtx } from '@milkdown/kit/core'
+import { editorViewCtx, serializerCtx, parserCtx } from '@milkdown/kit/core'
 import type { EditorView } from '@milkdown/kit/prose/view'
 import { indent } from '@milkdown/kit/plugin/indent'
 import { trailing } from '@milkdown/kit/plugin/trailing'
@@ -42,11 +43,10 @@ import {
 } from 'lucide'
 
 import { ReportEditorApiError, ReportEditorClient } from './api'
-import { configureSelectionAISuggestions, selectionAIProvider } from './ai'
+import { createDocumentAI } from './document-ai'
 import { runInBackground } from './background'
 import {
   createFocusModeController,
-  createMoreActionsController,
   createNetworkStatusController,
   createExportPanel,
   createImagePreview,
@@ -109,22 +109,21 @@ const progressBar = root.querySelector<HTMLElement>('.reading-progress')
 if (progressBar) createScrollProgressController(progressBar)
 const backToTop = root.querySelector<HTMLButtonElement>('.back-to-top')
 if (backToTop) createBackToTopController(backToTop)
-createMoreActionsController(root, shell.more)
 let shortcutsPanelPromise: Promise<{ open(): void }> | null = null
-shell.shortcuts.addEventListener('click', async () => {
+shell.registerToolbarAction({ id: 'shortcuts', bar: 'format', label: '快捷键', run: async () => {
   shortcutsPanelPromise ??= import('./shortcuts').then(({ createShortcutsPanel }) =>
     createShortcutsPanel(),
   )
   const panel = await shortcutsPanelPromise
   panel.open()
-})
+} })
 const preferences = createEditorPreferenceController(root, basePath)
 // 证据浏览器在下方异步创建；创建前没有覆盖层，判断恒为 false。
 let evidenceCovering = () => false
 createFocusModeController(root, shell.focus, shell.focusExit, () => evidenceCovering())
 const exportPanel = createExportPanel()
 const sharePanel = createSharePanel(root, () => client.share())
-shell.share.addEventListener('click', () => sharePanel.open())
+shell.registerToolbarAction({ id: 'share', bar: 'public', label: '分享', run: () => sharePanel.open() })
 // 导出阻塞遮罩（blockUI/unblockUI）：渲染与验收可持续数分钟，期间全屏禁止编辑，
 // 避免用户在导出进行中改内容导致 revision 错乱。
 const blockOverlay = document.createElement('div')
@@ -146,7 +145,7 @@ const exportSettingsPanel = createExportSettingsPanel(root)
 let pendingExportSettings: ExportSettings | null = null
 let designPanel: ReturnType<typeof import('./design-panel').createDesignPanel> | null = null
 let designState: DesignDocument | null = null
-shell.exportSettings.addEventListener('click', () => designPanel ? designPanel.open() : exportSettingsPanel.open())
+shell.registerToolbarAction({ id: 'export-settings', bar: 'format', label: '导出设置', run: () => designPanel ? designPanel.open() : exportSettingsPanel.open() })
 exportSettingsPanel.dialog.querySelector('[data-export-settings="confirm"]')?.addEventListener('click', () => {
   pendingExportSettings = exportSettingsPanel.read()
   exportSettingsPanel.close()
@@ -378,10 +377,10 @@ const evidenceBrowser = {
   reset: () => void withEvidenceBrowser(browser => browser.reset()),
 }
 evidenceCovering = () => evidenceBrowser.isOpen()
-shell.sources.addEventListener('click', () => {
+shell.registerToolbarAction({ id: 'sources', bar: 'format', label: '来源', run: () => {
   document.querySelector<HTMLDialogElement>('.report-source-preview')?.close('selected')
   evidenceBrowser.open()
-})
+} })
 // 编辑器视图在异步创建后登记；来源预览经由它绘制标记高亮、找回标记。
 let bodyMarkerView: EditorView | undefined
 const previewBodySource = createBodySourcePreview({
@@ -424,6 +423,10 @@ let pendingConflict: { remoteSha: string; base: string; remote: string } | null 
 let sha256 = ''
 let lastSavedMarkdown = ''
 let currentMarkdown = ''
+let aiDraftVersion = 0
+let savedAIDraftVersion = 0
+const needsExplicitSave = () => aiDraftVersion !== savedAIDraftVersion
+document.addEventListener(AI_DRAFT_APPLY, () => { ++aiDraftVersion; window.clearTimeout(saveTimer) })
 let saveTimer: number | undefined
 let savePromise: Promise<void> | null = null
 let retryAction: (() => void) | null = null
@@ -457,7 +460,7 @@ function status(
   shell.status.setAttribute('title', state === 'busy'
     ? '正在处理，请稍候'
     : state === 'dirty'
-      ? '修改会自动保存，也可以使用保存按钮立即保存'
+      ? needsExplicitSave() ? 'AI 修改尚未保存，请点击保存' : '修改会自动保存，也可以使用保存按钮立即保存'
       : state === 'error'
         ? '操作未完成，可点击重试或查看提示'
         : '内容已保存，可继续编辑')
@@ -473,7 +476,9 @@ function savedLabel(): string {
 
 shell.retry.addEventListener('click', () => retryAction?.())
 
+let actionsDisabled = false
 function setActionsDisabled(disabled: boolean) {
+  actionsDisabled = disabled
   shell.save.disabled = disabled
   shell.exportPdf.disabled = disabled
   shell.exportWord.disabled = disabled
@@ -533,14 +538,13 @@ try {
   lastSavedMarkdown = documentState.markdown
   currentMarkdown = documentState.markdown
   saveState = createSaveStateTracker(documentState.markdown)
+  let documentAI: ReturnType<typeof createDocumentAI>
+  const openDocumentAI = () => { try { documentAI.open() } catch (error) { status((error as Error).message, 'error') } }
   const crepe = createReportEditor(
     shell.editor,
     documentState.markdown,
     {
       ...editorChineseLocale.ai,
-      provider: selectionAIProvider(client),
-      buildAISuggestions: configureSelectionAISuggestions,
-      diffReviewOnEnd: true,
       onError: (error) => {
         // 接口错误走统一标签（含请求编号），不要把错误码原文展示给用户；本地校验错误保留其自带说明。
         rewriteError = error instanceof ReportEditorApiError
@@ -549,7 +553,16 @@ try {
         status(rewriteError, 'error')
       },
     },
+    openDocumentAI,
   )
+  documentAI = createDocumentAI({
+    view: () => crepe.editor.action(ctx => ctx.get(editorViewCtx)),
+    serialize: node => crepe.editor.action(ctx => ctx.get(serializerCtx)(node)),
+    parse: markdown => crepe.editor.action(ctx => ctx.get(parserCtx)(markdown)),
+    request: (path, init) => client.aiTaskRequest(path, init),
+  })
+  crepe.editor.use(documentAI.plugin)
+  shell.registerToolbarAction({ id: 'document-ai', bar: 'context', label: 'Ask AI', run: openDocumentAI })
   crepe.editor.use(protocolMarkerPlugin)
   crepe.editor.use(evidenceLocationPlugin)
   crepe.editor.use(bodySourceLinksPlugin)
@@ -712,7 +725,8 @@ try {
       draftController?.store(markdown)
       status(saveState?.dirtyLabel(!navigator.onLine) ?? '有未保存更改', 'dirty')
       window.clearTimeout(saveTimer)
-      saveTimer = window.setTimeout(saveInBackground, 800)
+      if (!needsExplicitSave()) saveTimer = window.setTimeout(() => runInBackground(saveNow(false)), 800)
+      else status('AI 修改已进入草稿，请点击保存', 'dirty')
   }
   loadState.hide()
   const [
@@ -748,7 +762,7 @@ try {
     },
   })
   searchController.setEditor(shell.editor)
-  shell.search.addEventListener('click', () => searchController.open())
+  shell.registerToolbarAction({ id: 'search', bar: 'format', label: '搜索', run: () => searchController.open() })
   const historyController = createHistoryController(
     root,
     async (markdown, historyRevision, sourceRevision) => {
@@ -798,7 +812,7 @@ try {
     async (historyRevision) => (await client.historyRevision(historyRevision)).markdown,
     createPersistedHistoryLoader((limit, offset) => client.historyPage(limit, offset)),
   )
-  shell.history.addEventListener('click', () => historyController.open())
+  shell.registerToolbarAction({ id: 'history', bar: 'public', label: '历史', run: () => historyController.open() })
   draftController = createLocalDraftController(
     root,
     `smart-reporting-editor:${basePath}`,
@@ -819,7 +833,7 @@ try {
       const key = img.getAttribute('src') ?? ''
       const controller = chartAIControllers.get(key) ?? createChartAIEdit({
         view: evidenceView, client, basePath,
-        hooks: { onReplaced: () => status('已替换为 AI 改图结果，正在自动保存…', 'dirty') },
+        hooks: { onReplaced: () => status('已替换为 AI 改图结果，请点击保存', 'dirty') },
       })
       chartAIControllers.set(key, controller)
       controller.open(img)
@@ -830,14 +844,14 @@ try {
       const controller = tableAIControllers.get(tableId) ?? createTableAIEdit({
         view: evidenceView, client,
         currentBody: id => tableBodyMarkdown(getEditorMarkdown(), id),
-        hooks: { onReplaced: () => status('已替换为 AI 改表结果，正在自动保存…', 'dirty') },
+        hooks: { onReplaced: () => status('已替换为 AI 改表结果，请点击保存', 'dirty') },
       })
       tableAIControllers.set(tableId, controller)
       controller.open(tableId, tableBodyMarkdown(getEditorMarkdown(), tableId))
     }).catch(() => status('无法加载 AI 改表面板，请稍后重试', 'error'))
   } : undefined
   createImagePreview(shell.editor, { onChartEdit: openChartAI })
-  createAssetAIActions(shell.editor, { onChartEdit: openChartAI, onTableEdit: openTableAI })
+  createAssetAIActions(shell.editor, { onChartEdit: openChartAI, onTableEdit: openTableAI, shell })
   if (openTableAI) {
     shell.editor.addEventListener('dblclick', (event) => {
       const table = event.target instanceof Element ? event.target.closest('table') : null
@@ -862,7 +876,8 @@ try {
   const showConflictStatus = () =>
     status('保存冲突 · 请选择本地或远端版本', 'error', reopenConflict)
 
-  async function saveNow(): Promise<void> {
+  async function saveNow(explicit = true): Promise<void> {
+    if (!explicit && needsExplicitSave()) return
     window.clearTimeout(saveTimer)
     if (editReviewMode(evidenceView.state) !== 'idle') {
       status(reviewMessage(), 'dirty')
@@ -875,7 +890,7 @@ try {
     }
     if (savePromise) {
       await savePromise
-      if (getEditorMarkdown() !== lastSavedMarkdown) return saveNow()
+      if (getEditorMarkdown() !== lastSavedMarkdown) return saveNow(explicit)
       return
     }
     const markdown = getEditorMarkdown()
@@ -884,6 +899,7 @@ try {
     status('保存中', 'busy')
     saveState?.beginSave()
     const saveStartedAt = performance.now()
+    const savingAIDraftVersion = aiDraftVersion
     const savingMarkdown = markdown
     const savingEditorDoc = evidenceView.state.doc
     savePromise = client
@@ -894,6 +910,7 @@ try {
           await new Promise((resolve) => window.setTimeout(resolve, remainingFeedbackTime))
         }
         sha256 = saved.sha256
+        savedAIDraftVersion = savingAIDraftVersion
         lastSavedMarkdown = savingMarkdown
         savedEditorDoc = savingEditorDoc
         saveState?.saved(savingMarkdown)
@@ -942,13 +959,13 @@ try {
       })
     await savePromise
     // 保存期间仍可能输入；导出等调用者必须等最新正文保存后才能继续。
-    if (getEditorMarkdown() !== lastSavedMarkdown) return saveNow()
+    if (getEditorMarkdown() !== lastSavedMarkdown) return saveNow(explicit)
   }
 
   const networkLabel = root.querySelector<HTMLElement>('.network-status')
   if (networkLabel) {
     createNetworkStatusController(networkLabel, () => {
-      if (currentMarkdown !== lastSavedMarkdown) saveInBackground()
+      if (currentMarkdown !== lastSavedMarkdown && !needsExplicitSave()) runInBackground(saveNow(false))
     })
     window.addEventListener('offline', () => {
       if (currentMarkdown !== lastSavedMarkdown) {
@@ -1028,9 +1045,12 @@ try {
     }
   }
 
-  shell.save.addEventListener('click', saveInBackground)
-  shell.exportPdf.addEventListener('click', () => void exportFormat('pdf'))
-  shell.exportWord.addEventListener('click', () => void exportFormat('word'))
+  shell.registerToolbarAction({ id: 'save', bar: 'public', label: '保存', disabled: () => actionsDisabled || reviewMode !== 'idle',
+    run: async () => { await saveNow(); await designPanel?.flush() },
+  })
+  for (const [id, format, label] of [['pdf', 'pdf', '导出 PDF'], ['word', 'word', '导出 Word']] as const) {
+    shell.registerToolbarAction({ id, bar: 'public', label, disabled: () => actionsDisabled || reviewMode !== 'idle', run: () => exportFormat(format) })
+  }
   installEditorShortcuts({
     save: saveInBackground,
     exportPdf: () => void exportFormat('pdf'),

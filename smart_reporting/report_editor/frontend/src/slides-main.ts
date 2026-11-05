@@ -1,4 +1,9 @@
-import { createElement, ArrowDown, ArrowUp, Download, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
+import { askAIPanel } from './ask-ai-panel'
+import { createAITaskAdapter } from './ai-task'
+import { renderAITextPreview } from './ai-text-preview'
+import { createToolbar } from './toolbar'
+import type { EditorShell } from './shell'
+import { createElement, ArrowDown, ArrowUp, Download, Save, Sparkles, Trash2, X } from 'lucide'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
@@ -19,7 +24,6 @@ type Edit = {
 }
 type BusinessTheme = 'executive' | 'clinical' | 'modern'
 type AIProposal = { summary: string; edits: Edit[]; order: number[]; theme?: BusinessTheme }
-type AIStatus = { editId: string; status: string; proposal?: AIProposal; error?: { message: string } }
 type GeneratedImage = { candidateId: string; mediaType: string; previewDataUrl: string }
 type ImageEdit = { candidateId: string; slideIndex: number; geometry: { x: number; y: number; width: number; height: number } }
 type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
@@ -30,7 +34,7 @@ type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationE
 export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
   save?: HTMLButtonElement
   download?: HTMLAnchorElement
-}) {
+} & Partial<Pick<EditorShell, 'registerToolbarAction' | 'setContextTarget' | 'refreshToolbar'>>) {
 const root = host
 const basePath = location.pathname.replace(/\/$/, '')
 const embedded = Boolean(sharedShell)
@@ -50,10 +54,9 @@ root.innerHTML = `${embedded ? '' : `
   <header class="slides-topbar">
     <a class="slides-brand" href="#" aria-label="报告幻灯片"><span class="brand-mark"></span><span>报告幻灯片</span></a>
     <div class="slides-topbar-meta"><span class="revision"></span><span class="slides-save-state" role="status">正在载入</span></div>
-    <div class="slides-topbar-actions"><button class="undo-button" type="button" title="撤销 AI 采纳" aria-label="撤销 AI 采纳" disabled></button><a class="download-link" hidden></a><button class="save-button" type="button"><span class="save-icon"></span><span>保存修订</span></button></div>
+    <div class="slides-topbar-actions"><a class="download-link" hidden></a><button class="save-button" type="button"><span class="save-icon"></span><span>保存修订</span></button></div>
   </header>
 `}
-  <section class="slides-ai" aria-label="Ask AI"><form class="ai-form"><label for="ai-instruction">Ask AI</label><textarea id="ai-instruction" rows="2" maxlength="2000" placeholder="描述要调整的内容或页面顺序"></textarea><button class="ai-submit" type="submit">生成候选</button><button class="ai-cancel" type="button" hidden aria-label="取消 AI 任务"></button></form><div class="ai-result" role="status" aria-live="polite"></div><div class="ai-preview" hidden><strong class="ai-summary"></strong><ul class="ai-edits"></ul><button class="ai-accept" type="button">采纳候选</button></div></section>
   <section class="slides-image-tools" aria-label="AI 配图"><form class="image-form"><label for="image-prompt">AI 配图</label><textarea id="image-prompt" rows="1" maxlength="1000" placeholder="描述一张用于汇报的配图"></textarea><label class="image-target-label" for="image-target">目标页</label><select id="image-target"></select><button class="image-generate" type="submit">生成预览</button></form><div class="image-output"><span class="image-status" role="status">尚未生成配图</span><div class="image-candidate" hidden><img class="image-preview" alt="AI 配图预览"><button class="image-add" type="button">加入待保存配图</button></div><ul class="image-pending"></ul></div></section>
   <div class="slides-workspace">
     <aside class="slides-sidebar" aria-label="幻灯片列表"><div class="sidebar-heading">页面 <span class="slide-count"></span></div><ol class="slide-list"></ol></aside>
@@ -72,22 +75,6 @@ const stateLabel = root.querySelector<HTMLElement>('.slides-save-state') ?? docu
 const statusMessage = root.querySelector<HTMLElement>('.status-message')!
 const revisionLabel = root.querySelector<HTMLElement>('.revision') ?? document.querySelector<HTMLElement>('.revision-label')!
 const downloadLink = root.querySelector<HTMLAnchorElement>('.download-link') ?? sharedShell?.download!
-const aiForm = root.querySelector<HTMLFormElement>('.ai-form')!
-const aiInstruction = root.querySelector<HTMLTextAreaElement>('#ai-instruction')!
-const aiResult = root.querySelector<HTMLElement>('.ai-result')!
-const aiPreview = root.querySelector<HTMLElement>('.ai-preview')!
-const aiSummary = root.querySelector<HTMLElement>('.ai-summary')!
-const aiEdits = root.querySelector<HTMLUListElement>('.ai-edits')!
-const aiAccept = root.querySelector<HTMLButtonElement>('.ai-accept')!
-const aiSubmit = root.querySelector<HTMLButtonElement>('.ai-submit')!
-const aiCancel = root.querySelector<HTMLButtonElement>('.ai-cancel')!
-const undoButton = root.querySelector<HTMLButtonElement>('.undo-button') ?? (() => {
-  const button = buttonIcon(Undo2, '撤销 AI 采纳')
-  button.className = 'undo-button'
-  button.disabled = true
-  root.querySelector('.ai-form')?.prepend(button)
-  return button
-})()
 const themeSelect = root.querySelector<HTMLSelectElement>('#theme-select')!
 const transitionSelect = root.querySelector<HTMLSelectElement>('#transition-select')!
 const animationAdd = root.querySelector<HTMLButtonElement>('.animation-add')!
@@ -124,9 +111,6 @@ const animationEdits: AnimationEdit[] = []
 const transitionEdits = new Map<number, SlideTransition>()
 const layoutEdits = new Map<number, string>()
 let undoSnapshot: { order: number[]; edits: Edit[]; theme?: BusinessTheme } | undefined
-let activeAIEditId = ''
-let pendingAIEditId = ''
-let pendingAIProposal: AIProposal | undefined
 let selectedTheme: BusinessTheme | undefined
 let generatedImage: GeneratedImage | undefined
 let deck: Deck
@@ -148,7 +132,7 @@ function setEditingLocked(value: boolean) {
   renderCanvas()
 }
 for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener(kind, event => {
-  if (locked() && !(savedRevision && event.target instanceof Element && event.target.closest('a'))) { event.preventDefault(); event.stopImmediatePropagation() }
+  if ((locked() || mutationPending > 0) && !(savedRevision && event.target instanceof Element && event.target.closest('a'))) { event.preventDefault(); event.stopImmediatePropagation() }
 }, true)
 
 let renderTree: { slides: (RenderSlide & { slideIndex: number })[] } | undefined
@@ -203,7 +187,6 @@ function renderCanvas() {
       edits.set(key, { ...edits.get(key), slideIndex: selectedSlide, elementId: id, geometry })
       selectedElement = id
       undoSnapshot = undefined
-      undoButton.disabled = true
       renderInspector()
       refreshCanvasPreview()
       markDirty()
@@ -217,6 +200,7 @@ const currentElement = () => deck.slides[selectedSlide]?.elements.find(item => i
 const currentGeometryInputs = () => [...root.querySelectorAll<HTMLInputElement>('.geometry-grid input')]
 
 function markDirty() {
+  sharedShell?.refreshToolbar?.()
   if (locked()) return
   renderCanvas()
   dirty = true
@@ -273,13 +257,13 @@ function move(position: number, direction: -1 | 1) {
   ;[order[position], order[target]] = [order[target]!, order[position]!]
   selectedSlide = order[target]!
   undoSnapshot = undefined
-  undoButton.disabled = true
   renderSlides()
   renderInspector()
   markDirty()
 }
 
 function renderInspector() {
+  sharedShell?.setContextTarget?.({ kind: selectedElement ? 'object' : 'slide', id: `${selectedSlide}:${selectedElement}`, label: `第 ${selectedSlide + 1} 页` })
   renderCanvas()
   const elements = deck.slides[selectedSlide]!.elements.filter(item => (item.editable || item.deletable) && !deletions.has(editKey(selectedSlide, item.id)))
   select.replaceChildren(...elements.map(item => {
@@ -291,6 +275,7 @@ function renderInspector() {
   if (!elements.some(item => item.id === selectedElement)) selectedElement = elements[0]?.id ?? ''
   select.value = selectedElement
   const element = currentElement()
+  toolbar.setContextTarget?.({ kind: 'slide-object', id: selectedElement, label: `第 ${order.indexOf(selectedSlide) + 1} 页${element?.name ? ` · ${element.name}` : ''}` })
   textArea.disabled = savedRevision || !element || !['text', 'shape'].includes(element.type)
   textArea.value = element ? edits.get(editKey(selectedSlide, element.id))?.text ?? element.text : ''
   const box = element && (edits.get(editKey(selectedSlide, element.id))?.geometry ?? element.geometry)
@@ -338,7 +323,6 @@ textArea.addEventListener('input', () => {
   refreshCanvasPreview()
   edits.set(editKey(selectedSlide, element.id), edit)
   undoSnapshot = undefined
-  undoButton.disabled = true
   markDirty()
 })
 for (const input of currentGeometryInputs()) input.addEventListener('change', () => {
@@ -349,14 +333,12 @@ for (const input of currentGeometryInputs()) input.addEventListener('change', ()
   edit.geometry = Object.fromEntries(currentGeometryInputs().map(field => [field.name, Number(field.value)])) as Edit['geometry']
   edits.set(editKey(selectedSlide, element.id), edit)
   undoSnapshot = undefined
-  undoButton.disabled = true
   markDirty()
 })
 themeSelect.addEventListener('change', () => {
   selectedTheme = themeSelect.value ? themeSelect.value as BusinessTheme : undefined
   canvasStatus.textContent = '主题修改将在保存并打开新修订后更新画布。'
   undoSnapshot = undefined
-  undoButton.disabled = true
   markDirty()
 })
 transitionSelect.addEventListener('change', () => {
@@ -452,7 +434,6 @@ objectDelete.addEventListener('click', () => {
   deletions.set(key, { slideIndex: selectedSlide, elementId: element.id, label: element.name || element.text.split('\n')[0]?.slice(0, 30) || element.type })
   selectedElement = ''
   undoSnapshot = undefined
-  undoButton.disabled = true
   renderStructurePending()
   renderInspector()
   refreshCanvasPreview()
@@ -501,135 +482,103 @@ imageAdd.addEventListener('click', () => {
   markDirty()
 })
 
-const chartTools = createSlidesChartTools(root.querySelector<HTMLElement>('.slides-inspector')!, request, markDirty)
+const chartTools = createSlidesChartTools(root.querySelector<HTMLElement>('.slides-inspector')!, request, markDirty, sharedShell?.registerToolbarAction, () => locked() || mutationPending > 0)
 
 const saveButton = root.querySelector<HTMLButtonElement>('.save-button') ?? sharedShell?.save!
 if (!saveButton) throw new Error('slides save action is missing')
 if (root.querySelector('.save-icon')) saveButton.querySelector('.save-icon')!.append(createElement(Save, { width: 16, height: 16, 'aria-hidden': 'true' }))
-undoButton.replaceChildren(createElement(Undo2, { width: 17, height: 17, 'aria-hidden': 'true' }))
-aiCancel.append(createElement(X, { width: 16, height: 16, 'aria-hidden': 'true' }))
-undoButton.addEventListener('click', () => {
-  if (!undoSnapshot) return
-  order.splice(0, order.length, ...undoSnapshot.order)
-  edits.clear()
-  for (const edit of undoSnapshot.edits) edits.set(editKey(edit.slideIndex, edit.elementId), edit)
-  selectedTheme = undoSnapshot.theme
-  undoSnapshot = undefined
-  undoButton.disabled = true
-  dirty = true
-  renderSlides()
-  renderInspector()
-  refreshCanvasPreview()
-  markDirty()
+const toolbar = sharedShell?.registerToolbarAction ? sharedShell as Pick<EditorShell, 'registerToolbarAction' | 'setContextTarget' | 'refreshToolbar'>
+  : createToolbar(root.querySelector<HTMLElement>('.slides-topbar-actions') ?? root.insertBefore(document.createElement('nav'), root.firstChild))
+const draftPayload = () => ({ expectedSha256: deck.sha256, chartEdits: chartTools.pendingEdits(), edits: [...edits.values()], order, ...(selectedTheme ? { theme: selectedTheme } : {}), ...(imageEdits.length ? { imageEdits } : {}), transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: animationEdits, slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })), backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })), textBoxes: textBoxEdits.map(({ watermark: _watermark, ...box }) => box), deletions: [...deletions.values()].map(({ slideIndex, elementId }) => ({ slideIndex, elementId })) })
+let acceptedSnapshot = ''
+let aiTarget: { slideIndex: number; elementId: string } | undefined
+const aiSession = askAIPanel().createTaskSession({
+  kind: 'slides', label: '幻灯片',
+  context: '预览各页文字、位置、页序与主题调整，采纳后可撤销，保存为新修订。',
+  suggestions: [
+    { label: '精简页面文字', instruction: '精简各页文字，保留全部数字、事实和页面顺序。' },
+    { label: '标题突出结论', instruction: '将各页标题调整为结论式标题，保留原有事实。' },
+    { label: '梳理汇报顺序', instruction: '按结论、分析、行动的顺序整理页面，并说明调整理由。' },
+  ],
+  refinements: ['标题再精简一些', '保留当前页面顺序', '使用执行汇报主题'],
+  captureInput: async () => ({ snapshot: structuredClone(draftPayload()) }),
+  adapter: createAITaskAdapter<AIProposal>({
+    kind: 'slides-edit', request,
+    validateTarget: () => { if (locked() || !deck) throw new Error('请在当前可编辑修订中重试。') },
+    withDraftLock: async action => {
+      if (locked() || mutationPending) throw new Error('幻灯片正在处理其他操作。')
+      ++mutationPending; setEditingLocked(true); saveButton.disabled = true; toolbar.refreshToolbar()
+      try { return await action() }
+      finally { --mutationPending; setEditingLocked(false); saveButton.disabled = savedRevision; toolbar.refreshToolbar() }
+    },
+    renderProposal: (proposal, target) => {
+      const summary = document.createElement('p'); summary.textContent = proposal.summary
+      const changes = document.createElement('ul'); changes.className = 'ai-proposal-changes'
+      const pages = new Map<number, HTMLUListElement>()
+      for (const edit of proposal.edits) {
+        if (!pages.has(edit.slideIndex)) {
+          const page = document.createElement('li'); page.className = 'ai-proposal-page'
+          const heading = document.createElement('h4'); heading.textContent = `第 ${edit.slideIndex + 1} 页`
+          const items = document.createElement('ul'); items.className = 'ai-proposal-changes'
+          page.append(heading, items); changes.append(page); pages.set(edit.slideIndex, items)
+        }
+        const existing = deck.slides[edit.slideIndex]?.elements.find(element => element.id === edit.elementId)
+        const current = edits.get(editKey(edit.slideIndex, edit.elementId))
+        const item = document.createElement('li')
+        const title = document.createElement('h4'); title.textContent = `第 ${edit.slideIndex + 1} 页 · ${existing?.name || existing?.text.split('\n')[0] || edit.elementId}`
+        item.append(title)
+        if (edit.text !== undefined) {
+          const comparison = document.createElement('div'); renderAITextPreview(current?.text ?? existing?.text ?? '', edit.text, comparison); item.append(comparison)
+        }
+        if (edit.geometry) {
+          const position = document.createElement('p'); const { x, y, width, height } = edit.geometry
+          position.textContent = `位置与大小：X ${x}，Y ${y}，宽 ${width}，高 ${height}`; item.append(position)
+        }
+        pages.get(edit.slideIndex)!.append(item)
+      }
+      const add = (text: string) => { const item = document.createElement('li'); item.textContent = text; changes.append(item) }
+      if (proposal.order.some((slide, index) => order[index] !== slide)) add(`页面顺序：${order.map(index => index + 1).join(' → ')} → 调整为 ${proposal.order.map(index => index + 1).join(' → ')}`)
+      if (proposal.theme) add(`商务主题：${{ executive: '执行汇报', clinical: '临床医疗', modern: '现代商务' }[proposal.theme]}`)
+      if (!changes.childElementCount) add('没有需要应用的变化')
+      target.replaceChildren(summary, changes)
+    },
+    locateTarget: () => {
+      if (!aiTarget || !deck.slides[aiTarget.slideIndex] || deletions.has(editKey(aiTarget.slideIndex, aiTarget.elementId))) return false
+      selectedSlide = aiTarget.slideIndex; selectedElement = aiTarget.elementId
+      renderSlides(); renderInspector(); renderCanvas(); return true
+    },
+    applyProposal: async proposal => {
+      aiTarget = proposal.edits[0] ?? { slideIndex: proposal.order[0] ?? selectedSlide, elementId: '' }
+      undoSnapshot = { order: [...order], edits: structuredClone([...edits.values()]), ...(selectedTheme ? { theme: selectedTheme } : {}) }
+      for (const edit of proposal.edits) {
+        const key = editKey(edit.slideIndex, edit.elementId)
+        edits.set(key, { ...edits.get(key), ...edit })
+      }
+      if (proposal.theme) selectedTheme = proposal.theme
+      order.splice(0, order.length, ...proposal.order)
+      acceptedSnapshot = JSON.stringify(draftPayload())
+      refreshCanvasPreview(); renderSlides(); renderInspector(); markDirty()
+    },
+    undo: async () => {
+      if (locked() || !undoSnapshot || JSON.stringify(draftPayload()) !== acceptedSnapshot) throw new Error('采纳后已有其他修改，无法直接撤销此候选。')
+      order.splice(0, order.length, ...undoSnapshot.order)
+      edits.clear()
+      for (const edit of undoSnapshot.edits) edits.set(editKey(edit.slideIndex, edit.elementId), edit)
+      selectedTheme = undoSnapshot.theme; undoSnapshot = undefined
+      refreshCanvasPreview(); renderSlides(); renderInspector(); markDirty()
+    },
+  }),
+})
+toolbar.registerToolbarAction({ id: 'slides-ai', bar: 'context', label: 'Ask AI', disabled: () => locked() || mutationPending > 0 || !deck, run: () => aiSession.open() })
+for (const [id, label, element] of [
+  ['slides-structure', '页面结构', layoutSelect], ['slides-text', '新增文本', textAdd],
+  ['slides-image', 'AI 配图', imagePrompt],
+] as const) toolbar.registerToolbarAction({ id, label, bar: 'format', disabled: () => locked() || mutationPending > 0 || !deck,
+  run: () => { if (element instanceof HTMLButtonElement) element.click(); else { element.scrollIntoView({ block: 'nearest' }); element.focus() } },
 })
 
-function renderAIProposal(proposal: AIProposal) {
-  pendingAIProposal = proposal
-  aiSummary.textContent = proposal.summary
-  aiEdits.replaceChildren()
-  for (const edit of proposal.edits) {
-    const item = document.createElement('li')
-    const existing = deck.slides[edit.slideIndex]?.elements.find(element => element.id === edit.elementId)
-    item.textContent = `第 ${edit.slideIndex + 1} 页 · ${existing?.name || existing?.text.split('\n')[0] || edit.elementId}${edit.text !== undefined ? `：${edit.text}` : ' · 调整位置与大小'}`
-    aiEdits.append(item)
-  }
-  if (proposal.order.some((slide, index) => order[index] !== slide)) {
-    const item = document.createElement('li')
-    item.textContent = `页面顺序：${proposal.order.map(index => index + 1).join(' → ')}`
-    aiEdits.append(item)
-  }
-  if (proposal.theme) {
-    const item = document.createElement('li')
-    item.textContent = `商务主题：${{ executive: '执行汇报', clinical: '临床医疗', modern: '现代商务' }[proposal.theme]}`
-    aiEdits.append(item)
-  }
-  if (!proposal.edits.length && !proposal.theme && !proposal.order.some((slide, index) => order[index] !== slide)) {
-    const item = document.createElement('li')
-    item.textContent = '没有需要应用的变化'
-    aiEdits.append(item)
-  }
-  aiPreview.hidden = false
-  aiAccept.disabled = false
-}
-
-aiForm.addEventListener('submit', async (event) => {
-  event.preventDefault()
-  if (!aiInstruction.value.trim() || activeAIEditId) return
-  aiPreview.hidden = true
-  pendingAIProposal = undefined
-  aiSubmit.disabled = true
-  aiResult.textContent = '正在规划幻灯片调整…'
-  try {
-    const started = await request<{ editId: string }>('ai/start', {
-      method: 'POST', body: JSON.stringify({ instruction: aiInstruction.value }),
-    })
-    activeAIEditId = started.editId
-    aiCancel.hidden = false
-    let status: AIStatus
-    do {
-      status = await request<AIStatus>(`ai/${encodeURIComponent(activeAIEditId)}?wait_ms=20000`)
-    } while (status.status === 'running')
-    if (status.status === 'succeeded' && status.proposal) {
-      pendingAIEditId = activeAIEditId
-      aiResult.textContent = '候选已就绪，请检查后采纳。'
-      renderAIProposal(status.proposal)
-    } else {
-      aiResult.textContent = status.error?.message ?? 'AI 编辑已取消。'
-    }
-  } catch (error) {
-    aiResult.textContent = error instanceof Error ? error.message : 'AI 编辑失败'
-  } finally {
-    activeAIEditId = ''
-    aiSubmit.disabled = false
-    aiCancel.hidden = true
-  }
-})
-
-aiCancel.addEventListener('click', async () => {
-  if (!activeAIEditId) return
-  aiCancel.disabled = true
-  try {
-    await request(`ai/${encodeURIComponent(activeAIEditId)}/cancel`, { method: 'POST' })
-  } catch (error) {
-    aiResult.textContent = error instanceof Error ? error.message : '取消失败'
-  } finally {
-    aiCancel.disabled = false
-  }
-})
-
-aiAccept.addEventListener('click', async () => {
-  if (locked() || !pendingAIProposal || !pendingAIEditId) return
-  ++mutationPending
-  aiAccept.disabled = true
-  try {
-    await request(`ai/${encodeURIComponent(pendingAIEditId)}/accept`, { method: 'POST' })
-    if (locked()) return
-    undoSnapshot = { order: [...order], edits: [...edits.values()].map(edit => ({ ...edit })), ...(selectedTheme ? { theme: selectedTheme } : {}) }
-    for (const edit of pendingAIProposal.edits) {
-      const key = editKey(edit.slideIndex, edit.elementId)
-      if (deletions.has(key)) continue
-      edits.set(key, { ...edits.get(key), ...edit })
-    }
-    if (pendingAIProposal.theme) selectedTheme = pendingAIProposal.theme
-    order.splice(0, order.length, ...pendingAIProposal.order)
-    undoButton.disabled = false
-    pendingAIProposal = undefined
-    pendingAIEditId = ''
-    aiPreview.hidden = true
-    aiResult.textContent = '候选已采纳，可撤销或保存为新修订。'
-    dirty = true
-    refreshCanvasPreview()
-    renderSlides()
-    renderInspector()
-    markDirty()
-  } catch (error) {
-    aiAccept.disabled = false
-    aiResult.textContent = error instanceof Error ? error.message : '采纳失败'
-  } finally { --mutationPending }
-})
-
-saveButton.addEventListener('click', async () => {
-  if (locked() || mutationPending || (!dirty && imageEdits.length === 0) || saveButton.disabled) return
+toolbar.registerToolbarAction({ id: 'save', element: saveButton, bar: 'public', label: '保存', disabled: () => locked() || mutationPending > 0, run: async () => {
+  if (locked() || mutationPending || (!dirty && imageEdits.length === 0)) return
   saving = true
   ++previewSequence
   clearTimeout(previewTimer)
@@ -639,7 +588,7 @@ saveButton.addEventListener('click', async () => {
   try {
     const result = await request<{ revision: number; pptx?: { downloadUrl?: string }; editor?: { openUrl: string }; validation: { issues: { message: string }[] } }>('save', {
       method: 'POST',
-    body: JSON.stringify({ expectedSha256: deck.sha256, chartEdits: chartTools.pendingEdits(), edits: [...edits.values()], order, ...(selectedTheme ? { theme: selectedTheme } : {}), ...(imageEdits.length ? { imageEdits } : {}), transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: animationEdits, slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })), backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })), textBoxes: textBoxEdits.map(({ watermark: _watermark, ...box }) => box), deletions: [...deletions.values()].map(({ slideIndex, elementId }) => ({ slideIndex, elementId })) }),
+    body: JSON.stringify(draftPayload()),
     })
     dirty = false
     savedRevision = true
@@ -682,7 +631,7 @@ saveButton.addEventListener('click', async () => {
     if (!savedRevision) setEditingLocked(false)
     saveButton.disabled = savedRevision
   }
-})
+} })
 
 async function start() {
   try {

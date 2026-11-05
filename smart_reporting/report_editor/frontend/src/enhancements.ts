@@ -40,27 +40,7 @@ export function createEditorPreferenceController(root: HTMLElement, key: string)
   }
 }
 
-export function createMoreActionsController(root: HTMLElement, toggle: HTMLButtonElement) {
-  const close = (restoreFocus = false) => {
-    root.classList.remove('more-actions-open')
-    toggle.setAttribute('aria-expanded', 'false')
-    if (restoreFocus) toggle.focus()
-  }
-  toggle.addEventListener('click', (event) => {
-    event.stopPropagation()
-    const expanded = root.classList.toggle('more-actions-open')
-    toggle.setAttribute('aria-expanded', String(expanded))
-    if (expanded) {
-      root.querySelector<HTMLButtonElement>('.secondary-actions button:not([disabled])')?.focus()
-    }
-  })
-  root.querySelector('.secondary-actions')?.addEventListener('click', () => close())
-  document.addEventListener('click', () => close())
-  window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && root.classList.contains('more-actions-open')) close(true)
-  })
-  return { close }
-}
+export { createMoreActionsController } from './toolbar-menu'
 
 export function createNetworkStatusController(label: HTMLElement, onReconnect: () => void) {
   const offline = () => {

@@ -31,7 +31,7 @@ describe('shared PPTX editor', () => {
     vi.stubGlobal('fetch', fetcher)
     const root = document.querySelector<HTMLElement>('#app')!
     const shell = createEditorShell(root, 'full', 'pptx')
-    createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx })
+    createSlidesEditorView(shell.editor, { ...shell, download: shell.exportPptx })
     await vi.waitFor(() => expect(root.querySelectorAll('.slide-open')).toHaveLength(2))
     return { root, shell, fetcher }
   }
@@ -120,16 +120,18 @@ describe('shared PPTX editor', () => {
     const { root, shell, fetcher } = await openEditor()
     const text = root.querySelector<HTMLTextAreaElement>('#object-text')!
     text.value = '人工文字'; text.dispatchEvent(new Event('input'))
-    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ editId: 'pending-accept' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ editId: 'pending-accept', status: 'succeeded', proposal: { summary: '改标题', edits: [{ slideIndex: 0, elementId: 'title', text: 'AI文字' }], order: [0, 1] } })))
-    root.querySelector<HTMLTextAreaElement>('#ai-instruction')!.value = '改标题'
-    root.querySelector<HTMLFormElement>('.ai-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
-    await vi.waitFor(() => expect(root.querySelector<HTMLElement>('.ai-preview')!.hidden).toBe(false))
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ taskId: 'pending-accept' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ taskId: 'pending-accept', kind: 'slides-edit', state: 'ready', proposal: { summary: '改标题', edits: [{ slideIndex: 0, elementId: 'title', text: 'AI文字' }], order: [0, 1] } })))
+    root.querySelector<HTMLButtonElement>('[data-action="slides-ai"]')!.click()
+    document.querySelector<HTMLTextAreaElement>('.ask-ai-composers textarea')!.value = '改标题'
+    document.querySelector<HTMLFormElement>('.ask-ai-composers form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-task-action="accept"]')?.hidden).toBe(false))
     let resolve!: (response: Response) => void
     fetcher.mockImplementationOnce(() => new Promise(done => { resolve = done }))
-    root.querySelector<HTMLButtonElement>('.ai-accept')!.click()
+    document.querySelector<HTMLButtonElement>('[data-task-action="accept"]')!.click()
     shell.save.click()
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/save'))).toHaveLength(0)
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
     resolve(new Response(JSON.stringify({ accepted: true })))
     await vi.waitFor(() => expect(text.value).toBe('AI文字'))
     fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] } })))
@@ -165,30 +167,37 @@ describe('shared PPTX editor', () => {
     text.value = '人工修订标题'
     text.dispatchEvent(new Event('input'))
     fetcher
-      .mockResolvedValueOnce(new Response(JSON.stringify({ editId: 'edit-1' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ taskId: 'edit-1' })))
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        editId: 'edit-1', status: 'succeeded', proposal: {
+        taskId: 'edit-1', kind: 'slides-edit', state: 'ready', proposal: {
           summary: '缩短标题并调整页面顺序',
           edits: [{ slideIndex: 0, elementId: 'title', text: 'AI 精简标题' }],
           order: [1, 0], theme: 'modern',
         },
       })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ accepted: true })))
-    root.querySelector<HTMLTextAreaElement>('#ai-instruction')!.value = '精简标题'
-    root.querySelector<HTMLFormElement>('.ai-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
-    await vi.waitFor(() => expect(root.querySelector<HTMLElement>('.ai-preview')!.hidden).toBe(false))
+    root.querySelector<HTMLButtonElement>('[data-action="slides-ai"]')!.click()
+    document.querySelector<HTMLTextAreaElement>('.ask-ai-composers textarea')!.value = '精简标题'
+    document.querySelector<HTMLFormElement>('.ask-ai-composers form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>('[data-task-action="accept"]')?.hidden).toBe(false))
     expect(text.value).toBe('人工修订标题')
-    root.querySelector<HTMLButtonElement>('.ai-accept')!.click()
+    const preview = document.querySelector<HTMLElement>('.ai-task-preview')!
+    expect(preview.textContent).toContain('第 1 页 · title')
+    expect(preview.textContent).toContain('页面顺序：1 → 2 → 调整为 2 → 1')
+    expect(preview.textContent).toContain('商务主题：现代商务')
+    preview.querySelector<HTMLButtonElement>('[data-preview-mode="compare"]')!.click()
+    expect([...preview.querySelectorAll('.ai-preview-text')].map(item => item.textContent)).toEqual(['人工修订标题', 'AI 精简标题'])
+    document.querySelector<HTMLButtonElement>('[data-task-action="accept"]')!.click()
     await vi.waitFor(() => expect(text.value).toBe('AI 精简标题'))
     expect(root.querySelector<HTMLSelectElement>('#theme-select')!.value).toBe('modern')
     expect(root.querySelector('.slide-title')!.textContent).toBe('title 1')
 
-    root.querySelector<HTMLButtonElement>('.undo-button')!.click()
+    document.querySelector<HTMLButtonElement>('[data-task-action="undo"]')!.click()
 
-    expect(text.value).toBe('人工修订标题')
+    await vi.waitFor(() => expect(text.value).toBe('人工修订标题'))
     expect(root.querySelector<HTMLSelectElement>('#theme-select')!.value).toBe('')
     expect(root.querySelector('.slide-title')!.textContent).toBe('title 0')
-    expect(root.querySelector<HTMLButtonElement>('.undo-button')!.disabled).toBe(true)
+    expect(document.querySelector<HTMLButtonElement>('[data-task-action="undo"]')).toBeNull()
   })
 })
 
@@ -199,7 +208,7 @@ it('requires reopening the saved revision before another edit can be saved', asy
   vi.stubGlobal('fetch', fetcher)
   const root = document.querySelector<HTMLElement>('#app')!
   const shell = createEditorShell(root, 'full', 'pptx')
-  createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx })
+  createSlidesEditorView(shell.editor, { ...shell, download: shell.exportPptx })
   await vi.waitFor(() => expect(root.querySelectorAll('.slide-open')).toHaveLength(1))
   const text = root.querySelector<HTMLTextAreaElement>('#object-text')!
   text.value = '第一轮修改'; text.dispatchEvent(new Event('input'))

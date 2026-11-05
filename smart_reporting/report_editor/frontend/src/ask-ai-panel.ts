@@ -1,6 +1,7 @@
 import { createElement, ChevronRight, ChartNoAxesCombined, CircleCheck, CircleAlert, Sparkles, Table2, X } from 'lucide'
 import { buttonClasses } from './button'
 import { createModal } from './modal'
+import { mountTaskSession, type TaskSessionOptions } from './ai-task-session'
 
 type SessionState = 'idle' | 'running' | 'ready' | 'error' | 'applied'
 type SourceState = 'checking' | 'updated' | 'error' | 'unavailable'
@@ -11,7 +12,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
   const panel = document.createElement('aside')
   panel.className = 'ask-ai-panel'
   panel.hidden = true
-  panel.setAttribute('aria-label', 'Ask AI 图表助手')
+  panel.setAttribute('aria-label', 'Ask AI 编辑助手')
   panel.innerHTML = `
     <header class="ask-ai-header"><span class="ask-ai-brand"></span><div><h2>Ask AI</h2></div></header>
     <nav class="ask-ai-sessions" aria-label="编辑会话"></nav>
@@ -25,14 +26,14 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
   resizeHandle.setAttribute('role', 'separator')
   resizeHandle.setAttribute('aria-orientation', 'vertical')
   resizeHandle.setAttribute('aria-label', '调整 Ask AI 宽度')
-  resizeHandle.setAttribute('aria-valuemin', '400')
+  resizeHandle.setAttribute('aria-valuemin', '360')
   resizeHandle.tabIndex = 0
   resizeHandle.innerHTML = '<span aria-hidden="true"></span>'
   panel.append(resizeHandle)
-  const resizeMin = 400
-  const resizeMax = 760
-  const availableMax = () => Math.max(resizeMin, Math.min(resizeMax, window.innerWidth - 80))
-  const currentWidth = () => Number.parseFloat(panel.style.getPropertyValue('--ask-ai-panel-width')) || Math.min(640, window.innerWidth)
+  const resizeMin = 360
+  const resizeMax = 800
+  const availableMax = () => Math.max(resizeMin, Math.min(resizeMax, window.innerWidth - 64))
+  const currentWidth = () => Number.parseFloat(panel.style.getPropertyValue('--ask-ai-panel-width')) || 560
   const setWidth = (requested: number) => {
     const width = Math.round(Math.max(resizeMin, Math.min(availableMax(), requested)))
     panel.style.setProperty('--ask-ai-panel-width', `${width}px`)
@@ -40,11 +41,15 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     resizeHandle.setAttribute('aria-valuenow', String(width))
     resizeHandle.setAttribute('aria-valuetext', `${width} px`)
   }
+  let preferredWidth = 560
+  try { preferredWidth = Number(localStorage.getItem('report-ask-ai-width')) || 560 } catch { /* Storage may be disabled. */ }
+  setWidth(preferredWidth)
   resizeHandle.setAttribute('aria-valuemax', String(availableMax()))
   resizeHandle.setAttribute('aria-valuenow', String(Math.min(availableMax(), currentWidth())))
   resizeHandle.setAttribute('aria-valuetext', `${Math.min(availableMax(), currentWidth())} px`)
   let resizeStart: { x: number; width: number } | null = null
   const finishResize = () => {
+    if (resizeStart) { preferredWidth = currentWidth(); try { localStorage.setItem('report-ask-ai-width', String(preferredWidth)) } catch { /* Optional preference. */ } }
     resizeStart = null
     window.removeEventListener('pointermove', moveResize)
     window.removeEventListener('pointerup', finishResize)
@@ -67,15 +72,18 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
     event.preventDefault()
     setWidth(currentWidth() + (event.key === 'ArrowLeft' ? 16 : -16))
+    preferredWidth = currentWidth()
+    try { localStorage.setItem('report-ask-ai-width', String(preferredWidth)) } catch { /* Optional preference. */ }
   })
-  const clampOnResize = () => { if (window.innerWidth > 640) setWidth(currentWidth()) }
+  const clampOnResize = () => { if (window.innerWidth > 768) setWidth(preferredWidth) }
   window.addEventListener('resize', clampOnResize)
   const closeButton = document.createElement('button')
   closeButton.type = 'button'
-  closeButton.className = `${buttonClasses('quiet', true)} ask-ai-close`
+  closeButton.className = `${buttonClasses('quiet')} ask-ai-close`
   closeButton.setAttribute('aria-label', '收起 Ask AI')
   closeButton.title = '收起侧栏，任务继续运行'
   closeButton.append(createElement(ChevronRight, { width: 20, height: 20, 'aria-hidden': 'true' }))
+  closeButton.append('收起')
   panel.querySelector('header')!.append(closeButton)
   const launcher = document.createElement('button')
   launcher.type = 'button'
@@ -108,7 +116,8 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     }
   }
   const sessions = new Set<ReturnType<typeof createSession>>()
-  const sessionCounts = { chart: 0, table: 0 }
+  const sessionCounts = { chart: 0, table: 0, document: 0, slides: 0, workbook: 0 }
+  const kindLabels = { chart: '图', table: '表', document: '正文', slides: '幻灯片', workbook: '工作簿' }
   let active: ReturnType<typeof createSession> | null = null
   let opener: HTMLElement | null = null
   let imagePreview: ReturnType<typeof createModal> | null = null
@@ -152,6 +161,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     }
   }
   const hide = (restoreFocus = true) => {
+    active?.rememberScroll()
     panel.hidden = true
     document.body.classList.remove('ask-ai-open')
     launcher.setAttribute('aria-expanded', 'false')
@@ -168,9 +178,9 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     if (event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); hide() }
   })
 
-  function createSession(options: { kind: 'chart' | 'table'; label: string; content: string }) {
+  function createSession(options: { kind: keyof typeof sessionCounts; label: string; content: string }) {
     const overlay = document.createElement('div')
-    overlay.className = options.kind === 'chart' ? 'chart-ai-edit' : 'table-ai-edit'
+    overlay.className = `${options.kind}-ai-edit`
     overlay.hidden = true
     const card = document.createElement('section')
     card.className = `ask-ai-session ${options.kind}-ai-edit-card`
@@ -182,7 +192,11 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     // 消息区紧跟会话头（若有）插入；没有会话头时放在内容首位，避免依赖可选锚点导致消息区丢失。
     const headerAnchor = card.querySelector('.panel-header')
     if (headerAnchor) headerAnchor.after(messages)
-    else card.prepend(messages)
+    else {
+      const history = document.createElement('details'); history.className = 'ai-task-history'
+      const title = document.createElement('summary'); title.textContent = '本次对话'
+      history.append(title, messages); card.prepend(history)
+    }
     const workflow = document.createElement('ol')
     workflow.className = 'ask-ai-steps'
     workflow.setAttribute('aria-label', '修改步骤')
@@ -197,7 +211,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     const reviewDock = document.createElement('div'); reviewDock.className = 'ask-ai-review-dock'; reviewDock.hidden = true; reviewDocks.append(reviewDock)
     const composer = document.createElement('fieldset')
     composer.className = 'ask-ai-composer'
-    composer.setAttribute('aria-label', options.kind === 'chart' ? '改图输入区' : '改表输入区')
+    composer.setAttribute('aria-label', `${kindLabels[options.kind]}修改输入区`)
     composer.hidden = true
     composers.append(composer)
     // 输入区（修改要求）固定在面板底部、滚动区之外：任何状态下都保持展开，审阅态与操作条上下并列。
@@ -214,10 +228,16 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     tab.append(tabIcon, tabThumbnail, tabLabel, tabStatus)
     navigation.append(tab)
     const number = ++sessionCounts[options.kind]
+    let scrollTop = 0
     let notification: HTMLElement | null = null
     const clearNotice = () => { notification?.remove(); notification = null; refresh() }
     const session = {
       overlay, card, composer, closeButton, reviewDock,
+      rememberScroll() { if (active === session) scrollTop = content.scrollTop },
+      viewResult() {
+        const target = card.querySelector<HTMLElement>('.ai-task-preview, .chart-ai-review, .table-ai-review')
+        if (target) content.scrollTop += target.getBoundingClientRect().top - content.getBoundingClientRect().top
+      },
       idSuffix: number === 1 ? '' : `-${number}`,
       state: 'idle' as SessionState,
       label: options.label,
@@ -226,6 +246,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
         document.dispatchEvent(new CustomEvent('report-panel-open', { detail: 'ask-ai' }))
         clearNotice()
         if (panel.hidden) opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+        active?.rememberScroll()
         for (const item of sessions) {
           item.overlay.hidden = item !== session
           item.reviewDock.hidden = item !== session || !item.reviewDock.childElementCount
@@ -240,8 +261,9 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
         closeButton.classList.add(`${options.kind}-ai-edit-close`)
         refresh()
         tab.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+        content.scrollTop = scrollTop
         const availableButton = [...card.querySelectorAll<HTMLButtonElement>('button:not([disabled])')].find(button => !button.closest('details:not([open])'))
-        ;(initialFocus ?? (!composer.disabled && !composer.hidden ? composer.querySelector<HTMLElement>('textarea:not([disabled])') : null) ?? card.querySelector<HTMLElement>('textarea:not([disabled])') ?? availableButton ?? closeButton).focus()
+        ;(initialFocus ?? (!composer.disabled && !composer.hidden ? composer.querySelector<HTMLElement>('textarea:not([disabled])') : null) ?? card.querySelector<HTMLElement>('textarea:not([disabled])') ?? availableButton ?? closeButton).focus({ preventScroll: true })
       },
       close() { if (active === session) hide() },
       remove() {
@@ -316,7 +338,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
       tab,
     }
     function updateTab() {
-      tabLabel.textContent = `${options.kind === 'chart' ? '图' : '表'} ${number} · ${session.label}`
+      tabLabel.textContent = `${kindLabels[options.kind]} ${number} · ${session.label}`
       tabStatus.textContent = stateLabels[session.state]
       tab.title = `${tabLabel.textContent} · ${tabStatus.textContent}`
       tab.dataset.state = session.state
@@ -344,7 +366,7 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
       const title = document.createElement('strong')
       title.textContent = kind === 'replaced' ? '已替换到正文' : kind === 'ready' ? '新结果已生成' : '本轮修改未完成'
       const label = document.createElement('p'); label.className = 'ask-ai-notification-target'
-      label.textContent = `${options.kind === 'chart' ? '图' : '表'} ${number} · ${session.label}`
+      label.textContent = `${kindLabels[options.kind]} ${number} · ${session.label}`
       label.title = label.textContent
       const detail = document.createElement('p')
       detail.textContent = kind === 'replaced' ? '可撤销。'
@@ -369,7 +391,10 @@ export function createAskAIPanel(root: HTMLElement = document.body) {
     updateTab(); updateSteps(); refresh()
     return session
   }
-  return { panel, createSession, setSourceStatus }
+  function createTaskSession<T>(options: TaskSessionOptions<T>) {
+    return mountTaskSession(createSession({ kind: options.kind, label: options.label, content: '<div class="ai-task-feedback" role="status"></div><div class="ai-task-preview"></div>' }), options)
+  }
+  return { panel, createSession, createTaskSession, setSourceStatus }
 }
 
 export type AskAISession = ReturnType<ReturnType<typeof createAskAIPanel>['createSession']>
