@@ -56,6 +56,7 @@ from smart_reporting.reporting.workflow.scope import (
 
 from .delivery_fakes import InMemoryDownloadGrantRepository, InMemoryReportArtifactRepository
 from .lineage_fixtures.manifest import register_trace_manifest
+from .test_native_publication_nonblocking import create_publication
 
 
 @pytest.mark.anyio
@@ -1675,3 +1676,141 @@ async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, mon
         response = await client.get(result["xlsx"]["downloadUrl"])
     assert response.status_code == 200
     assert hashlib.sha256(response.content).hexdigest() == result["xlsx"]["sha256"]
+
+
+# 新签发链路故障点在这里逐项登记；使用真实文件桥接、签名授权及 HTTP 下载。
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['validation', 'receipt', 'receipt_probe', 'primary_identity', 'registration', 'persistence', 'primary_grant', 'editor_grant', 'pdf_export'])
+async def test_native_http_publication_keeps_download_on_optional_faults(tmp_path, monkeypatch, fault):
+    from smart_reporting.report_editor.native import NativeEditorService
+    from smart_reporting.report_editor.native_api import (
+        NATIVE_SESSION_COOKIE,
+        create_native_editor_router,
+    )
+
+    publication, context, downloads = await create_publication(tmp_path)
+    grants = publication.editor_grants
+    editor = NativeEditorService(publication.workspace, publication.repository, grants,
+        report_editor=None, docx_enabled=True, publication=publication)
+    # 本测试覆盖保存与签发，来源分支/仓储鉴权另由 native_editor_api 与真实PG测试验证。
+    editor.context_for_session = AsyncMock(return_value=context)
+    raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await grants.exchange(raw)
+    if fault == 'validation':
+        publication.validator = AsyncMock(side_effect=RuntimeError('layout unavailable'))
+    elif fault == 'receipt':
+        original_write = publication.workspace.awrite_bytes
+        async def write(thread, path, content, **kwargs):
+            if path.endswith('/saved.json'):
+                raise OSError('recovery record unavailable')
+            return await original_write(thread, path, content, **kwargs)
+        monkeypatch.setattr(publication.workspace, 'awrite_bytes', write)
+    elif fault == 'receipt_probe':
+        monkeypatch.setattr(publication.workspace, 'apath_exists', AsyncMock(side_effect=OSError('recovery lookup unavailable')))
+    elif fault == 'primary_identity':
+        from io import BytesIO
+
+        from reportlab.pdfgen.canvas import Canvas
+
+        output = BytesIO()
+        canvas = Canvas(output)
+        canvas.drawString(30, 700, 'retained PDF')
+        canvas.save()
+        monkeypatch.setattr('smart_reporting.report_editor.native_publication.libreoffice_to_pdf', lambda *a, **k: output.getvalue())
+        original_write = publication._write_file
+        async def write_primary(key, path, content, media_type):
+            identity = await original_write(key, path, content, media_type)
+            if path.endswith('.docx'):
+                raise OSError('primary identity unavailable')
+            return identity
+        monkeypatch.setattr(publication, '_write_file', write_primary)
+    elif fault == 'registration':
+        monkeypatch.setattr(publication.repository, 'complete_revision', AsyncMock(side_effect=RuntimeError('registration unavailable')))
+    elif fault == 'persistence':
+        monkeypatch.setattr(publication.artifact_persistence, 'persist_available', AsyncMock(side_effect=RuntimeError('copy unavailable')))
+    elif fault == 'primary_grant':
+        monkeypatch.setattr(publication.download_grants, 'issue', AsyncMock(side_effect=RuntimeError('primary unavailable')))
+    elif fault == 'editor_grant':
+        monkeypatch.setattr(grants, 'issue', AsyncMock(side_effect=RuntimeError('editor unavailable')))
+    elif fault == 'pdf_export':
+        def failed_conversion(*args, **kwargs):
+            raise RuntimeError('conversion unavailable')
+        monkeypatch.setattr('smart_reporting.report_editor.native_publication.libreoffice_to_pdf', failed_conversion)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(grants, editor=editor, download_service=downloads,
+        cookie_secure=False, allowed_origin='http://test'))
+    path = f'/reports/v1/native/{context.document_id}/{context.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token, path=path)
+        result = await client.post(path + ('/api/export' if fault in {'pdf_export', 'primary_identity'} else '/api/save'),
+            headers={'Origin': 'http://test', 'X-CSRF-Token': grants.csrf_token(token)},
+            json={'requestId': 'save-http', 'expectedSha256': context.source_file.sha256, 'operations': [], 'note': 'HTTP故障回归'})
+        assert result.status_code == 200, result.text
+        payload = result.json()
+        assert payload['validation']['ok'] is False
+        expected = {'validation': 'native_validation_failed', 'receipt': 'native_recovery_record_failed',
+            'receipt_probe': 'native_recovery_record_invalid', 'primary_identity': 'native_word_identity_unavailable',
+            'registration': 'native_revision_registration_failed', 'persistence': 'native_artifact_persistence_failed',
+            'primary_grant': 'native_download_grant_failed', 'editor_grant': 'native_editor_grant_failed',
+            'pdf_export': 'native_pdf_export_failed'}[fault]
+        assert expected in {issue['code'] for issue in payload['validation']['issues']}
+        artifact = payload['artifacts']['pdf' if fault == 'primary_identity' else 'word']
+        downloaded = await client.get(artifact['downloadUrl'])
+        assert downloaded.status_code == 200, downloaded.text
+        assert hashlib.sha256(downloaded.content).hexdigest() == artifact['sha256']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('format',['xlsx','pptx'])
+async def test_native_office_postwrite_validation_failure_keeps_http_download(tmp_path,monkeypatch,format):
+    """新增签发步骤登记：Office写回后的结构回读失败只生成告警。"""
+    from io import BytesIO
+    from openpyxl import Workbook, load_workbook
+    from pptx import Presentation
+    from smart_reporting.report_editor import native_office
+    from smart_reporting.report_editor.native import NativeEditorService,bind_native_workspace
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE,create_native_editor_router
+    from smart_reporting.report_editor.native_models import NativeEditorContext,NATIVE_MEDIA
+    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+    publication,old,downloads=await create_publication(tmp_path)
+    stream=BytesIO()
+    if format == 'xlsx':
+        book = Workbook()
+        book.active['A1'] = '原值'
+        operations = [{'kind': 'applyCellEdits', 'edits': [{
+            'sheetName': 'Sheet', 'row': 0, 'column': 0, 'writeValue': True,
+            'cell': {'value': '修改值'},
+        }]}]
+    else:
+        book = Presentation()
+        slide = book.slides.add_slide(book.slide_layouts[6])
+        slide.shapes.add_textbox(0, 0, 100, 100)
+        operations = [{'kind': 'editSlides', 'animations': [{
+            'slideIndex': 0, 'elementId': 'sp_0', 'effect': 'flyIn',
+            'trigger': 'onClick', 'direction': 'right',
+        }]}]
+    book.save(stream)
+    content=stream.getvalue();key=bind_native_workspace(publication.workspace,old.scope)
+    path=f'native/source.{format}';await publication.workspace.awrite_bytes(key,path,content)
+    context=NativeEditorContext(documentId='document',revision=1,origin='upload',format=format,scope=old.scope,sourceFile=ArtifactFile(path=path,mediaType=NATIVE_MEDIA[format],size=len(content),sha256=hashlib.sha256(content).hexdigest()))
+    editor=NativeEditorService(publication.workspace,publication.repository,publication.editor_grants,report_editor=None,office_enabled=True,publication=publication)
+    editor.context_for_session=AsyncMock(return_value=context)
+    raw,_=await publication.editor_grants.issue(context,capabilities=editor.capabilities(context));token,_=await publication.editor_grants.exchange(raw)
+    monkeypatch.setattr(native_office,'inspect_office',lambda *_: (_ for _ in ()).throw(ValueError('structure unavailable')))
+    app=FastAPI();app.include_router(create_native_editor_router(publication.editor_grants,editor=editor,download_service=downloads,cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        base='/reports/v1/native/document/1'
+        client.cookies.set(NATIVE_SESSION_COOKIE,token,path=base)
+        response=await client.post(base+'/api/save',headers={'Origin':'http://test','X-CSRF-Token':publication.editor_grants.csrf_token(token)},json={'requestId':'save','expectedSha256':context.source_file.sha256,'operations':operations})
+        assert response.status_code==200,response.text
+        saved=response.json()
+        assert saved['revisionRegistered'] and not saved['validation']['ok']
+        assert any(issue['code']=='native_office_read_validation_failed' for issue in saved['validation']['issues'])
+        artifact=saved['artifacts'][format]
+        actual=await client.get(artifact['downloadUrl'])
+        assert actual.status_code == 200 and actual.content != content
+        assert hashlib.sha256(actual.content).hexdigest() == artifact['sha256']
+        if format == 'xlsx':
+            assert load_workbook(BytesIO(actual.content)).active['A1'].value == '修改值'
+        else:
+            assert len(Presentation(BytesIO(actual.content)).slides[0].shapes) == 1

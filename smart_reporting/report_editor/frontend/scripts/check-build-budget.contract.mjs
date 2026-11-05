@@ -21,12 +21,33 @@ assert.match(failures[2], /history\.js/)
 
 // Heavy grid packages are lazy workbook chunks with package-specific limits.
 assert.deepEqual(checkBuildBudget([
+  { file: 'assets/lazy-workbook-icons-hash1234.js', size: 269 * 1024 },
   { file: 'assets/workbook-sheets-ui-hash1234.js', size: 900 * 1024 },
   { file: 'assets/workbook-dictionary-hu-hash1234.js', size: 770 * 1024 },
 ]), [])
+assert.equal(checkBuildBudget([
+  { file: 'assets/lazy-workbook-icons-hash1234.js', size: 271 * 1024 },
+]).length, 1)
 assert.equal(checkBuildBudget([
   { file: 'assets/workbook-sheets-ui-hash1234.js', size: 911 * 1024 },
   { file: 'assets/workbook-arbitrary-hash1234.js', size: 251 * 1024 },
 ]).length, 2)
 
 assert.deepEqual(checkBuildBudget([{file:"assets/lazy-index-hash1234.js",size:240*1024}]),[])
+
+assert.deepEqual(checkBuildBudget([
+  {file:'assets/lazy-native-docx-engine-hash1234.js',size:419*1024},
+  {file:'assets/lazy-native-docx-render-hash1234.js',size:699*1024},
+  {file:'assets/lazy-native-pdfjs-hash1234.js',size:499*1024},
+  {file:'assets/parse-worker-hash1234.js',size:699*1024},
+]), [])
+assert.deepEqual(checkBuildBudget([
+  {file:'assets/lazy-react-hash1234.js',size:100*1024},
+  {file:'assets/lazy-react-dom-hash1234.js',size:200*1024},
+  {file:'assets/lazy-scheduler-hash1234.js',size:30*1024},
+]), [])
+assert.equal(checkBuildBudget([
+  {file:'assets/lazy-native-docx-render-hash1234.js',size:701*1024},
+  {file:'assets/lazy-native-arbitrary-hash1234.js',size:251*1024},
+  {file:'assets/index-hash1234.js',size:181*1024},
+]).length,3)

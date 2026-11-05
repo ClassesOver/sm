@@ -1,0 +1,15 @@
+.editor-format-docx .report-outline,
+.editor-format-pdf .report-outline { display: none; }
+.editor-format-docx .report-workspace,
+.editor-format-pdf .report-workspace { grid-template-columns: minmax(0, 1fr); }
+.native-delivery { padding: 12px 24px; background: #fff7e6; border-bottom: 1px solid #e8d6aa; }
+.native-delivery p { margin: 4px 0; }
+.native-delivery a { display: inline-block; margin: 4px 16px 4px 0; color: #234c8f; }
+.editor-format-docx #report-editor,
+.editor-format-pdf #report-editor { max-width: none; padding: 12px; }
+.native-ai { padding: 12px 24px; border-top: 1px solid #dbe3ef; background: #f5f8fc; }
+.native-ai textarea { display: block; width: 100%; min-height: 64px; box-sizing: border-box; margin-bottom: 8px; }
+.native-ai button { margin-right: 8px; }
+.native-ai p { white-space: pre-wrap; }
+[data-native-editor] [hidden] { display: none !important; }
+.native-ai pre { white-space: pre-wrap; overflow-wrap: anywhere; }

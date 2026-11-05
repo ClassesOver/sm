@@ -1,5 +1,21 @@
 # Upstream 来源登记
 
+## 当前维护版本（2026-11-05）
+
+当前实现仍是下文登记的 sheets-web 裁剪引擎与本地扩展，并对照 GenOffice `4b55db9ed1994575a695160ffc6cfd0bfc866211` 选择性回移修复；不是最新 `xlsx-gateway` 全量替换。原始来源快照由 `SOURCE-SHA256.json` 保留，`LOCAL-ADAPTATIONS-SHA256.json` 登记本次之前已存在的包清单适配（文件字节与 git HEAD 一致），本次修改/新增文件由 `UPSTREAM-PATCHES-SHA256.json` 覆盖登记。完整清单覆盖与排除范围见 `SOURCE.md`。
+
+| 本地文件 | 上游提交 | 实际回移内容 |
+| --- | --- | --- |
+| `src/pivot-grouping.ts` | `92ab9c46` (#1810) | Excel 1900 日期序列小于 60 时补偿一天；序列 60 保持虚构闰日在二月，避免序列 1 被分入 1899 年十二月 |
+| `src/pivot-layout.ts` | `17cd6e4a` (#1244/#1304) | 数字文本参与 sum/average/min/max 及计算字段引用求和；忽略空值和不可转换文本，保留 count 语义 |
+| `src/sort-range.ts` | `69880bc8` (#598) | 数字比较避免 NaN 比较器结果；有限数和非有限数稳定排序，保持空值末尾和同值原始顺序 |
+
+表中 `src/` 相对 `packages/xlsx-engine/`。定向回归 `tests/upstream-fixes.test.ts` 在回移前复现 7 项失败，回移后覆盖日期边界/小数、四种数值聚合/count、计算字段及双向排序。
+
+核对但无需重复移植：本地 `workbook-write.ts` 已优先匹配自闭合 cell/row，`geometry.ts` 已独立读取列 min/max 属性，`rules.ts` 已拒绝非有限条件格式阈值。浏览器 `create-univer.ts` 保持上游相同注册语义；其余 workbook-vendor 数据/会话适配为 sheets-web 本地实现，仍保留现有 API 和浏览器依赖边界。
+
+未覆盖差异：最新上游完整网格边界策略、结构操作/公式重写扩展、连接与外链、完整透视表聚合/Show Values As 族，以及依赖桌面状态与 journal 的公式缓存刷新链路，未在本次升级中全量移植。排序显示值 CAS 修复依赖上游预览/CAS 模型；本地排序直接构造编辑值，没有该守卫，不增加不使用的字段。绘图、交互图及新图表产品能力不在本次升级范围内。下方旧版本验收记录仅为原迁移历史，不代表本次验收或最新上游功能覆盖。
+
 vendored 代码统一来源：genoffice @ `f5247d3`（本地路径 `/home/junge/pros/genoffice`）。
 移植方式：**选择性移植 + 精简重写**（Mimosa 安全钩子要求源码经 Write/Edit 提交，整树 cp 被拦截；
 由此改为按文件移植——小文件逐字移植，大文件按 web 所需裁剪重写，算法保持一致）。

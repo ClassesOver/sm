@@ -240,12 +240,20 @@ class ReportSlidesEditorService:
         transitions = payload.get("transitions", [])
         animations = payload.get("animations", [])
         slide_layouts = payload.get("slideLayouts", [])
+        paragraph_formatting = payload.get("paragraphFormatting", [])
         if not isinstance(transitions, list) or len(transitions) > 500:
             raise ReportingError("report_slides_edit_invalid", "幻灯片转场内容无效。")
         if not isinstance(animations, list) or len(animations) > 500:
             raise ReportingError("report_slides_edit_invalid", "对象动画内容无效。")
         if not isinstance(slide_layouts, list) or len(slide_layouts) > 500:
             raise ReportingError("report_slides_edit_invalid", "幻灯片版式内容无效。")
+        if (not isinstance(paragraph_formatting, list) or len(paragraph_formatting) > 500
+            or any(not isinstance(item, dict) or set(item) != {"slideIndex", "elementId", "align"}
+                   or not isinstance(item["slideIndex"], int) or isinstance(item["slideIndex"], bool) or item["slideIndex"] < 0
+                   or not isinstance(item["elementId"], str) or not item["elementId"]
+                   or item["align"] not in {"left", "center", "right", "justify"}
+                   for item in paragraph_formatting)):
+            raise ReportingError("report_slides_edit_invalid", "段落对齐内容无效。")
         transition_kinds = {"none", "morph", "fade", "push", "wipe", "split", "circle", "cover", "pull", "dissolve", "zoom", "random"}
         if any(
             not isinstance(item, dict)
@@ -322,6 +330,7 @@ class ReportSlidesEditorService:
             backgrounds=backgrounds,
             text_boxes=text_boxes,
             deletions=deletions,
+            paragraph_formatting=paragraph_formatting,
         )
         revised = engine_result["bytes"]
         if chart_replacements:
@@ -524,6 +533,7 @@ class ReportSlidesEditorService:
         edits: list[dict[str, Any]] | None = None,
         order: list[int] | None = None,
         theme: str | None = None,
+        slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
         transitions: list[dict[str, Any]] | None = None,
         animations: list[dict[str, Any]] | None = None,
@@ -531,6 +541,7 @@ class ReportSlidesEditorService:
         backgrounds: list[dict[str, Any]] | None = None,
         text_boxes: list[dict[str, Any]] | None = None,
         deletions: list[dict[str, Any]] | None = None,
+        paragraph_formatting: list[dict[str, Any]] | None = None,
     ) -> Any:
         with tempfile.TemporaryDirectory(prefix="report-slides-edit-") as directory:
             root = Path(directory)
@@ -543,6 +554,8 @@ class ReportSlidesEditorService:
                 request.update({"output": str(output_path), "edits": edits or [], "order": order})
                 if theme is not None:
                     request["theme"] = theme
+                if slide_size is not None:
+                    request["slideSize"] = slide_size
                 if images:
                     import base64
 
@@ -568,6 +581,8 @@ class ReportSlidesEditorService:
                     request["textBoxes"] = text_boxes
                 if deletions:
                     request["deletions"] = deletions
+                if paragraph_formatting:
+                    request["paragraphFormatting"] = paragraph_formatting
             request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
             process = run_bridge("slides", "edit-pptx", request_path)
             if process.returncode:

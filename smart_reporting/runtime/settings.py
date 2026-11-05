@@ -218,6 +218,12 @@ class AgentSettings:
     # 编辑器导出同步执行渲染与验收两次报表运行时调用（各自上限 600 秒）；网关/反向
     # 代理的读超时必须不小于该值，否则请求会先于服务端被切断。
     report_editor_export_timeout_seconds: int = 1200
+    # 原生编辑按能力独立灰度；未完成部署与验收前不自动开放。
+    native_docx_enabled: bool = False
+    native_pdf_enabled: bool = False
+    native_ai_enabled: bool = False
+    native_pdf_text_enabled: bool = False
+    native_upload_enabled: bool = False
     # 编辑器 AI 改图（设计稿 docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md）：
     # 默认开启；显式关闭可隐藏入口，未配置视觉审查模型时提示不可用。
     report_editor_chart_ai_enabled: bool = True
@@ -420,6 +426,11 @@ class AgentSettings:
                 1200,
                 maximum=3600,
             ),
+            native_docx_enabled=_flag(values.get("AGENT_REPORT_EDITOR_DOCX_ENABLED", values.get("AGENT_NATIVE_DOCX_ENABLED"))),
+            native_pdf_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_ENABLED", values.get("AGENT_NATIVE_PDF_ENABLED"))),
+            native_ai_enabled=_flag(values.get("AGENT_REPORT_EDITOR_AI_ENABLED", values.get("AGENT_NATIVE_AI_ENABLED"))),
+            native_pdf_text_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_TEXT_ENABLED", values.get("AGENT_NATIVE_PDF_TEXT_ENABLED"))),
+            native_upload_enabled=_flag(values.get("AGENT_REPORT_EDITOR_UPLOAD_ENABLED", values.get("AGENT_NATIVE_UPLOAD_ENABLED"))),
             report_editor_chart_ai_enabled=_flag(
                 values.get("AGENT_REPORT_EDITOR_CHART_AI_ENABLED"), default=True
             ),

@@ -1,0 +1,367 @@
+import { afterEach, expect, it, vi } from 'vitest'
+import { createEditorShell } from './shell'
+import { createSlidesEditorView } from './slides-main'
+import { createNativeOfficeView } from './native-office-view'
+import { NativeDraft, type NativeDraftIdentity, type NativeSaveRequest } from './native-draft'
+import type { NativeContextResponse } from './native-api'
+vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks() })
+const deck = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [{ slideIndex: 0, animations: [], elements: [{ id: 'title', type: 'text', name: 'title', text: '原文', editable: true, geometry: { x: 10, y: 20, width: 300, height: 80 } }] }] }
+it('native PPTX skips unsupported AI requests and retains draft until registration, then offers explicit reopen', async () => {
+  document.body.innerHTML = '<main id="app"></main>'
+  const shell = createEditorShell(document.querySelector('#app')!, 'full', 'pptx')
+  let saves = 0
+  const request = vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === 'deck') return deck
+    if (path === 'render-tree') return { slides: [] }
+    if (path === 'save') return { revision: 2, revisionRegistered: ++saves > 1, editor: { openUrl: '/next-revision' }, pptx: { downloadUrl: '/download' }, validation: { issues: [{ message: '待复核' }] } }
+    throw Error(`unexpected ${path}`)
+  })
+  const view = createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, request: request as any, native: true })
+  await view.ready
+  expect(shell.editor.querySelector<HTMLElement>('.slides-ai')!.hidden).toBe(true)
+  expect(shell.editor.querySelector<HTMLElement>('.slides-image-tools')!.hidden).toBe(true)
+  expect(request.mock.calls.some(([path]) => path.startsWith('charts') || path.startsWith('ai'))).toBe(false)
+  const effect = shell.editor.querySelector<HTMLSelectElement>('[data-command="animationEffect"]')!
+  effect.value = 'fade'
+  effect.dispatchEvent(new Event('change', { bubbles: true }))
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="addAnimation"]')!.click()
+  const slideSize = shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"][data-source-action="onSlideSize"]')!
+  slideSize.value = '16:9'
+  slideSize.dispatchEvent(new Event('change', { bubbles: true }))
+  const text = shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '修改值'; text.dispatchEvent(new Event('input'))
+  shell.save.click(); await vi.waitFor(() => expect(saves).toBe(1)); await vi.waitFor(() => expect(shell.save.disabled).toBe(false))
+  const saveRequest = request.mock.calls.find(([path]) => path === 'save')
+  const payload = JSON.parse(saveRequest?.[1]?.body as string) as { animations: { effect: string; append?: boolean }[]; slideSize: { cx: number; cy: number } }
+  expect(payload.animations).toEqual([expect.objectContaining({ effect: 'fade', append: true })])
+  expect(payload.slideSize).toEqual({ cx: 12192000, cy: 6858000 })
+  expect(text.value).toBe('修改值')
+  shell.save.click(); await vi.waitFor(() => expect(shell.save.disabled).toBe(true))
+  expect(shell.editor.querySelector<HTMLAnchorElement>('.revision-link')?.getAttribute('href')).toBe('/next-revision')
+  expect(shell.editor.textContent).toContain('待复核'); view.dispose()
+})
+it('native PPTX exposes initialization failure to the host', async () => {
+  document.body.innerHTML = '<span class="save-state-label"></span><span class="revision-label"></span>'
+  const host = document.createElement('div'); document.body.append(host)
+  const view = createSlidesEditorView(host, { save: document.createElement('button'), download: document.createElement('a'), native: true, request: async () => { throw Error('源文件不可读') } })
+  await expect(view.ready).rejects.toThrow('源文件不可读'); view.dispose()
+})
+
+const draftIdentity: NativeDraftIdentity = { documentId: 'slides-draft', revision: 1, sourceSha256: deck.sha256,
+  scope: { database: 'fixture', companyId: 'company', userId: 'user', threadId: 'thread' } }
+const draftContext = { context: { ...draftIdentity, format: 'pptx', sourceFile: { sha256: deck.sha256 } }, editingEnabled: true } as unknown as NativeContextResponse
+function draftStore() {
+  const values = new Map<string, string>()
+  return { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } }
+}
+async function openDraft(draft: NativeDraft, api: Record<string, unknown>) {
+  document.body.innerHTML = '<main id="app"></main>'
+  const shell = createEditorShell(document.querySelector('#app')!, 'full', 'pptx')
+  const view = await createNativeOfficeView(shell, { api: api as never, context: draftContext, draft })
+  if (!view) throw new Error('PPTX 编辑器未创建')
+  return { shell, view }
+}
+function setRibbonValue(host: HTMLElement, command: string, value: string) {
+  const control = host.querySelector<HTMLInputElement | HTMLSelectElement>(`[data-command="${command}"]`)!
+  control.value = value
+  control.dispatchEvent(new Event('change', { bubbles: true }))
+}
+
+it('keeps custom source dimensions unchanged until a standard preset enables orientation', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  const orientation = shell.editor.querySelector<HTMLSelectElement>('[data-command="slideOrientation"]')
+  expect(orientation).not.toBeNull()
+  expect(orientation!.disabled).toBe(true)
+  expect(orientation!.title).toContain('预设')
+  setRibbonValue(shell.editor, 'slideOrientation', 'portrait')
+  expect(draft.operations).toEqual([])
+  expect(deck.size).toEqual({ cx: 9144000, cy: 5143500 })
+  setRibbonValue(shell.editor, 'slideSize', 'A4')
+  expect(orientation!.disabled).toBe(false)
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 10692000, cy: 7560000 } })
+  view.dispose()
+})
+
+it('keeps preset orientation changes in the single PPTX draft and restores them with undo and redo', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  setRibbonValue(shell.editor, 'slideSize', 'A4')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 10692000, cy: 7560000 } })
+  setRibbonValue(shell.editor, 'slideOrientation', 'portrait')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 7560000, cy: 10692000 } })
+  setRibbonValue(shell.editor, 'slideSize', 'A3')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 10692000, cy: 15120000 } })
+  setRibbonValue(shell.editor, 'slideOrientation', 'landscape')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 15120000, cy: 10692000 } })
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideOrientation"]')!.value).toBe('portrait')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 10692000, cy: 15120000 } })
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideOrientation"]')!.value).toBe('landscape')
+  view.dispose()
+})
+
+it('unlocks preset and orientation controls after a failed PPTX save', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })),
+    save: vi.fn(async () => { throw Error('网络故障') }) }
+  const { shell, view } = await openDraft(draft, api)
+  setRibbonValue(shell.editor, 'slideSize', 'A4')
+  shell.save.click()
+  await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('保存失败'))
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.disabled).toBe(false)
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideOrientation"]')!.disabled).toBe(false)
+  setRibbonValue(shell.editor, 'slideOrientation', 'portrait')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 7560000, cy: 10692000 } })
+  view.dispose()
+})
+
+it.each([
+  ['16:9', 6858000, 12192000], ['4:3', 6858000, 9144000],
+  ['A4', 7560000, 10692000], ['A3', 10692000, 15120000],
+] as const)('retains restored portrait orientation when selecting the %s preset', async (preset, cx, cy) => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  draft.setOperations([{ kind: 'editSlides', slideSize: { cx: 7560000, cy: 10692000 } }])
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('A4')
+  setRibbonValue(shell.editor, 'slideSize', preset)
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx, cy } })
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideOrientation"]')!.value).toBe('portrait')
+  view.dispose()
+})
+
+it('restores a failed PPTX size draft before later text edits and retries without losing size', async () => {
+  const store = draftStore()
+  let sequence = 0
+  const newDraft = () => new NativeDraft(draftIdentity, store, () => `request-${++sequence}`)
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })),
+    save: vi.fn().mockRejectedValueOnce(new Error('network unavailable')).mockRejectedValueOnce(new Error('network unavailable')).mockResolvedValue({ revision: 2, revisionRegistered: true,
+      artifacts: { pptx: { downloadUrl: '/saved.pptx' } }, validation: { issues: [] } }) }
+  const firstDraft = newDraft()
+  const first = await openDraft(firstDraft, api)
+  setRibbonValue(first.shell.editor, 'slideSize', '4:3')
+  expect(firstDraft.operations[0]).toMatchObject({ kind: 'editSlides', slideSize: { cx: 9144000, cy: 6858000 } })
+  first.shell.save.click()
+  await vi.waitFor(() => expect(first.shell.statusLabel.textContent).toBe('保存失败'))
+  first.view.dispose()
+
+  const recovered = newDraft()
+  const reopened = await openDraft(recovered, api)
+  expect(reopened.shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('4:3')
+  reopened.shell.save.click()
+  await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(2))
+  expect(api.save.mock.calls[1][0]).toEqual(api.save.mock.calls[0][0])
+  await vi.waitFor(() => expect(reopened.shell.save.disabled).toBe(false))
+  const text = reopened.shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '刷新后继续编辑'; text.dispatchEvent(new Event('input'))
+  reopened.shell.save.click()
+  await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(3))
+  expect(api.save.mock.calls[2][0].operations[0]).toMatchObject({ slideSize: { cx: 9144000, cy: 6858000 }, edits: [{ slideIndex: 0, elementId: 'title', text: '刷新后继续编辑' }] })
+  expect(api.save.mock.calls[2][0].requestId).not.toBe(api.save.mock.calls[0][0].requestId)
+  reopened.view.dispose()
+})
+
+it('retains restored PPTX size when another edit replaces the saved draft snapshot', async () => {
+  const store = draftStore()
+  const original = new NativeDraft(draftIdentity, store)
+  original.setOperations([{ kind: 'editSlides', slideSize: { cx: 9144000, cy: 6858000 } }])
+  const recovered = new NativeDraft(draftIdentity, store)
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })),
+    save: vi.fn(async (_request: NativeSaveRequest) => ({ revision: 2, revisionRegistered: true, artifacts: {}, validation: { issues: [] } })) }
+  const { shell, view } = await openDraft(recovered, api)
+  const text = shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '刷新后修改'
+  text.dispatchEvent(new Event('input'))
+  expect(recovered.operations[0]).toMatchObject({ slideSize: { cx: 9144000, cy: 6858000 }, edits: [{ slideIndex: 0, elementId: 'title', text: '刷新后修改' }] })
+  shell.save.click()
+  await vi.waitFor(() => expect(api.save).toHaveBeenCalledOnce())
+  expect(api.save.mock.calls[0][0].operations[0]).toMatchObject({ slideSize: { cx: 9144000, cy: 6858000 }, edits: [{ text: '刷新后修改', slideIndex: 0, elementId: 'title' }] })
+  view.dispose()
+})
+
+it('restores all supported PPTX editSlides fields without rewriting an unchanged recovery request', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const operation = { kind: 'editSlides', edits: [{ slideIndex: 0, elementId: 'title', text: '恢复正文', geometry: { x: 30, y: 40, width: 310, height: 90 } }],
+    order: [0], theme: 'modern', slideSize: { cx: 9144000, cy: 6858000 },
+    textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true, fontSizePt: 24 }],
+    paragraphFormatting: [{ slideIndex: 0, elementId: 'title', align: 'center' }],
+    transitions: [{ slideIndex: 0, kind: 'wipe' }],
+    animations: [{ slideIndex: 0, elementId: 'title', effect: 'flyIn', trigger: 'afterPrev', durationMs: 900, delayMs: 150, direction: 'right', append: true }],
+    slideLayouts: [{ slideIndex: 0, layoutPath: 'ppt/slideLayouts/layout2.xml' }],
+    backgrounds: [{ slideIndex: 0, color: '#123456' }],
+    textBoxes: [{ slideIndex: 0, text: '恢复文本框', geometry: { x: 30, y: 40, width: 180, height: 30 }, fontSize: 28, fontFamily: 'Arial', color: '#123456' }],
+    deletions: [{ slideIndex: 0, elementId: 'old-shape' }] }
+  draft.setOperations([operation])
+  const source = { ...deck, layouts: [{ path: 'ppt/slideLayouts/layout2.xml', name: '标题', layoutType: 'title', placeholders: [] }],
+    slides: [{ ...deck.slides[0], elements: [...deck.slides[0].elements, { id: 'old-shape', type: 'shape', name: '旧对象', editable: true, deletable: true, text: '' }] }] }
+  let saves = 0
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })),
+    save: vi.fn(async (_request: NativeSaveRequest) => ({ revision: 2, revisionRegistered: ++saves > 1, artifacts: {}, validation: { issues: [] } })) }
+  const { shell, view } = await openDraft(draft, api)
+  expect(shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!.value).toBe('恢复正文')
+  expect(shell.editor.querySelector<HTMLInputElement>('.geometry-grid [name="x"]')!.value).toBe('30')
+  expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="bold"]')!.getAttribute('aria-pressed')).toBe('true')
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!.value).toBe('wipe')
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="animationDirection"]')!.value).toBe('right')
+  expect(shell.editor.querySelector<HTMLInputElement>('[aria-label="新增文本内容"]')!.value).toBe('恢复文本框')
+  expect(shell.editor.querySelector<HTMLOptionElement>('#object-select option[value="old-shape"]')).toBeNull()
+  shell.save.click()
+  await vi.waitFor(() => expect(api.save).toHaveBeenCalledOnce())
+  expect(api.save.mock.calls[0][0].operations).toEqual([operation])
+  await vi.waitFor(() => expect(shell.save.disabled).toBe(false))
+  const text = shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '恢复后再次修改'; text.dispatchEvent(new Event('input'))
+  expect(draft.operations[0]).toEqual({ ...operation, edits: [{ ...operation.edits[0], text: '恢复后再次修改' }] })
+  shell.save.click()
+  await vi.waitFor(() => expect(api.save).toHaveBeenCalledTimes(2))
+  expect(api.save.mock.calls[1][0].operations).toEqual(draft.operations)
+  view.dispose()
+})
+
+it('retains successive supported formatting records when editing a recovered PPTX object', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  draft.setOperations([{ kind: 'editSlides',
+    edits: [{ slideIndex: 0, elementId: 'title', text: '恢复正文' }, { slideIndex: 0, elementId: 'title', geometry: { x: 40, y: 50, width: 300, height: 80 } }],
+    textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true }, { slideIndex: 0, elementId: 'title', fontSizePt: 24 }] }])
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  expect(shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!.value).toBe('恢复正文')
+  expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="bold"]')!.getAttribute('aria-pressed')).toBe('true')
+  setRibbonValue(shell.editor, 'slideSize', '4:3')
+  expect(draft.operations[0]).toMatchObject({ edits: [{ slideIndex: 0, elementId: 'title', text: '恢复正文', geometry: { x: 40, y: 50, width: 300, height: 80 } }],
+    textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true, fontSizePt: 24 }] })
+  view.dispose()
+})
+
+it('preserves unknown recovery fields even if a newer preview service accepts them', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const operations = [{ kind: 'editSlides', futureOperation: true }]
+  draft.setOperations(operations)
+  const api = { preview: vi.fn(async () => ({ model: deck })) }
+  await expect(openDraft(draft, api)).rejects.toThrow('草稿已保留')
+  expect(draft.operations).toEqual(operations)
+})
+
+it('preserves a rejected restored PPTX draft instead of replacing it with a fresh empty view', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const operations = [{ kind: 'editSlides', futureOperation: true }]
+  draft.setOperations(operations)
+  const api = { preview: vi.fn().mockRejectedValue(new Error('草稿操作不受支持')) }
+  await expect(openDraft(draft, api)).rejects.toThrow('草稿操作不受支持')
+  expect(api.preview).toHaveBeenCalledWith({ expectedSha256: deck.sha256, operations })
+  expect(draft.operations).toEqual(operations)
+})
+
+it('uses the existing NativeDraft history for PPTX size and later text undo/redo', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  setRibbonValue(shell.editor, 'slideSize', '4:3')
+  const text = shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '稍后修改'; text.dispatchEvent(new Event('input'))
+  const undo = shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!
+  const redo = shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!
+  undo.click()
+  expect(text.value).toBe('原文')
+  expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 9144000, cy: 6858000 } })
+  undo.click()
+  expect(draft.operations).toEqual([])
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('16:9')
+  expect(undo.disabled).toBe(true)
+  redo.click(); redo.click()
+  expect(text.value).toBe('稍后修改')
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('4:3')
+  expect(redo.disabled).toBe(true)
+  view.dispose()
+})
+
+it('locks PPTX draft history during save and restores it after a failed request', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  let failSave!: (error: Error) => void
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })),
+    save: vi.fn(() => new Promise((_resolve, reject) => { failSave = reject })) }
+  const { shell, view } = await openDraft(draft, api)
+  setRibbonValue(shell.editor, 'slideSize', '4:3')
+  const undo = shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!
+  const redo = shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!
+  expect(undo.disabled).toBe(false)
+  shell.save.click()
+  expect(undo.disabled).toBe(true)
+  expect(redo.disabled).toBe(true)
+  failSave(new Error('故障注入'))
+  await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('保存失败'))
+  expect(undo.disabled).toBe(false)
+  undo.click()
+  expect(draft.operations).toEqual([])
+  view.dispose()
+})
+
+it('PPTX format deletion clears every target patch and preserves other object formats when saving', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const source = { ...deck, slides: [{ ...deck.slides[0], elements: [
+    { ...deck.slides[0].elements[0], deletable: true },
+    { ...deck.slides[0].elements[0], id: 'keep', name: '保留对象' },
+  ] }] }
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })),
+    save: vi.fn(async (_request: NativeSaveRequest) => ({ revision: 2, revisionRegistered: true, artifacts: {}, validation: { issues: [] } })) }
+  const { shell, view } = await openDraft(draft, api)
+  const object = shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+  object.value = 'keep'; object.dispatchEvent(new Event('change'))
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="bold"]')!.click()
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="paragraphAlignRight"]')!.click()
+  object.value = 'title'; object.dispatchEvent(new Event('change'))
+  setRibbonValue(shell.editor, 'fontSize', '32')
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="paragraphAlignCenter"]')!.click()
+  const text = shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '待删除文字'; text.dispatchEvent(new Event('input'))
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="addAnimation"]')!.click()
+  shell.editor.querySelector<HTMLButtonElement>('.object-delete')!.click()
+  const expected = { textFormatting: [{ slideIndex: 0, elementId: 'keep', bold: true }],
+    paragraphFormatting: [{ slideIndex: 0, elementId: 'keep', align: 'right' }],
+    deletions: [{ slideIndex: 0, elementId: 'title' }], edits: [], animations: [] }
+  expect(draft.operations[0]).toMatchObject(expected)
+  shell.save.click()
+  await vi.waitFor(() => expect(api.save).toHaveBeenCalledOnce())
+  expect(api.save.mock.calls[0][0].operations[0]).toMatchObject(expected)
+  await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
+  view.dispose()
+})
+
+it('PPTX alignment clears all pressed buttons when undo restores an unspecified source alignment', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  const center = shell.editor.querySelector<HTMLButtonElement>('[data-command="paragraphAlignCenter"]')!
+  center.click()
+  expect(center.getAttribute('aria-pressed')).toBe('true')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations).toEqual([])
+  for (const command of ['paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify']) {
+    expect(shell.editor.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!.getAttribute('aria-pressed')).toBe('false')
+  }
+  view.dispose()
+})
+
+it('PPTX alignment clears the previous selection when switching to an object without explicit alignment', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const source = { ...deck, slides: [{ ...deck.slides[0], elements: [
+    { ...deck.slides[0].elements[0], paragraphAlignments: ['center'] },
+    { ...deck.slides[0].elements[0], id: 'unspecified', paragraphAlignments: [null] },
+  ] }] }
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="paragraphAlignCenter"]')!.getAttribute('aria-pressed')).toBe('true')
+  const object = shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+  object.value = 'unspecified'; object.dispatchEvent(new Event('change'))
+  for (const command of ['paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify']) {
+    expect(shell.editor.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!.getAttribute('aria-pressed')).toBe('false')
+  }
+  expect(draft.operations).toEqual([])
+  view.dispose()
+})

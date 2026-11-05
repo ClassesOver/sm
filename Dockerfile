@@ -12,6 +12,16 @@ RUN sed -i \
 
 FROM ${UV_IMAGE} AS uv-source
 
+FROM ${NODE_IMAGE} AS report-pdf-engine
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+WORKDIR /build/smart_reporting/reporting/pdf_engine
+COPY smart_reporting/reporting/pdf_engine ./
+COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
+RUN npm ci --ignore-scripts --registry="${NPM_REGISTRY}" \
+    && npm run bundle:bridges -- --metafile=dist/metafile.json \
+    && node bridge/package-runtime.mjs . /runtime/reporting-pdf-engine /build/package-office-engine.mjs
+
 FROM ${NODE_IMAGE} AS report-editor-frontend
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
@@ -51,10 +61,10 @@ RUN npm run build && npm run build:slides
 # COPY smart_reporting 会再次带入引擎源码；在独立构建层裁剪，避免镜像层仍保存副本。
 FROM base AS app-source
 COPY smart_reporting /app/smart_reporting
-RUN find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine \
+RUN find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine \
         -type f ! -iname '*license*' ! -iname '*notice*' ! -iname '*copying*' ! -iname '*copyright*' \
         ! -name 'SOURCE*' ! -name 'UPSTREAM*' -delete \
-    && find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine \
+    && find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine \
         -depth -type d -empty -delete
 
 FROM base AS env-init
@@ -74,6 +84,7 @@ COPY --from=uv-source /uv /uvx /bin/
 COPY --from=report-editor-frontend /usr/local /usr/local
 COPY --from=report-editor-frontend /runtime/reporting-slides-engine /opt/reporting-slides-engine
 COPY --from=report-editor-frontend /runtime/reporting-workbook-engine /opt/reporting-workbook-engine
+COPY --from=report-pdf-engine /runtime/reporting-pdf-engine /opt/reporting-pdf-engine
 
 WORKDIR /app
 
@@ -109,6 +120,8 @@ COPY --from=report-editor-frontend /build/smart_reporting/report_editor/static /
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_REPORTING_SLIDES_ENGINE_DIR=/opt/reporting-slides-engine \
     AGENT_REPORTING_WORKBOOK_ENGINE_DIR=/opt/reporting-workbook-engine \
+    AGENT_REPORTING_PDF_ENGINE_DIR=/opt/reporting-pdf-engine \
+    AGENT_REPORTING_PDF_WASM_DIR=/opt/reporting-pdf-engine/wasm \
     AGENT_REPORT_EDITOR_STATIC_DIR=/opt/report-editor-static \
     MPLCONFIGDIR=/tmp/reporting-matplotlib \
     MPLBACKEND=Agg \

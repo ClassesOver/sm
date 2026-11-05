@@ -2,7 +2,15 @@ export {}
 
 const isSlidesPath = window.location.pathname.includes('/reports/v1/slides/')
 const isWorkbookPath = window.location.pathname.includes('/reports/v1/workbooks/')
-if (isWorkbookPath) {
+const isNativePath = window.location.pathname.includes('/reports/v1/native/')
+if (isNativePath) {
+  await import('./style.css')
+  const { startNativeEditor } = await import('./native-main')
+  await startNativeEditor().catch(error => {
+    const root = document.querySelector<HTMLElement>('#app')
+    if (root) root.textContent = error instanceof Error ? error.message : '原生文档载入失败，请重新打开'
+  })
+} else if (isWorkbookPath) {
   await import('./style.css')
   const { createEditorShell } = await import('./shell')
   const { toolbarMode } = await import('./viewport')

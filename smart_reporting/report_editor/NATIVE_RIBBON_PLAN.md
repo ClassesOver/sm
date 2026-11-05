@@ -1,0 +1,140 @@
+# GenOffice Native Ribbon Implementation Plan
+
+> For agentic workers: Use subagent-driven development for independent format tracks. Steps use checkbox syntax; review each track against NATIVE_RIBBON_DESIGN.md before integration.
+
+**Goal:** Bring the complete fixed-version GenOffice DOCX, XLSX, PPTX, and PDF ribbon UI into the native editor and connect each action to the existing Web editor, authorized API, or an explicit unavailable state.
+
+**Architecture:** Keep one editor state and one immutable revision/publication path per native document. Migrate upstream ribbon UI and only its required browser-safe dependencies; adapt command callbacks to NativeDraft and current format engines/API. Desktop-only commands remain visibly unavailable until a reviewed server capability exists.
+
+**Tech Stack:** TypeScript, React, Tiptap/ProseMirror, Univer 0.25.1, Konva, PDF.js, native FastAPI API, GenOffice revision f8c17004fb730df11f0f743164ffd8b4281bb38c.
+
+**Spec:** NATIVE_RIBBON_DESIGN.md
+
+## Global Constraints
+
+- Preserve the Markdown authoritative content model and all current report routes.
+- Use the existing NativeDraft, NativeEditorService, file identities, CSRF, publication, and download grants.
+- Keep gate, validation, and lineage faults nonblocking for generated files whose identities can be verified.
+- Register new signing-chain failure injections and static signing functions as required by repository AGENTS.md.
+- Do not add Plotly, .plotly.json, or interactiveCharts support.
+- Keep editing features off by default; do not deploy during implementation.
+- Retain GenOffice license/NOTICE/SOURCE and refresh local-adaptation SHA manifests for vendored upstream code.
+- Browser tests must verify command effect, save, actual download, and independent reopen; screenshots alone do not establish command support.
+- Do not use browser or LibreOffice output as Microsoft Office desktop certification.
+
+## Files and Boundaries
+
+- frontend/src/native-ribbon/: shared command availability, status messages, tab integration helpers and format-specific native adapters; no editor business state.
+- frontend/src/docx-main.tsx: existing Tiptap-backed Word state and save-operation translation.
+- frontend/src/workbook-main.ts: existing Univer-backed workbook shell and plugin registration.
+- frontend/src/slides-main.ts and native-office-view.ts: existing Konva slide state and editSlides translation.
+- frontend/src/pdf-main.ts and pdf-operations.ts: PDF.js state and PDFium operation translation.
+- frontend/src/vendor/genoffice-*: pinned upstream component files and exact adapted dependency closure only.
+- frontend/src/*-native-ribbon.test.ts and per-format browser fixtures: command contract and actual browser checks.
+- reporting/tests/test_http_publication_lineage.py and test_publication_nonblocking.py: required signing fault/static registrations only when server signing code changes.
+- reporting/slides_engine/UPGRADE.md: upstream revision, selected source closure, omitted desktop dependencies, tests and known gaps.
+
+## Execution Order
+
+The command inventory tasks run concurrently. The shared host contract is reviewed before format integration; then Word, Excel, PowerPoint, and PDF tracks can run concurrently because they own separate adapters/views. Each worker edits only the files in its assignment and must not change the shared shell or another format's code.
+
+### Task 0: Four-Format Upstream Command Inventory
+
+**Files:** modify NATIVE_RIBBON_DESIGN.md; add command inventory section to NATIVE_RIBBON_PLAN.md.
+
+- [x] Enumerated the fixed-revision top-level/contextual tabs and command families for all four formats in NATIVE_RIBBON_DESIGN.md. The per-tab command IDs/callback fields and engine mapping remain mandatory in each format's implementation brief before that tab is migrated.
+- [x] Read the Docs Ribbon and tab props, Slides Ribbon plus ribbon-actions boundary, Sheets ExcelShell and Univer command registration, and PDF App ribbon sections.
+- [x] Traced currently advertised operations to native editor/bridge schemas; documented unconnected families and the PPTX animation direction mismatch.
+- [x] Confirmed upstream command-bearing components have desktop boundaries: Docs Ribbon has pickImage; PDF App owns file/print/signing handlers; ExcelShell and Slides Ribbon delegate through callbacks to desktop-aware App. No such source is safe to import as an unadapted Web module.
+- [x] Added command families, current Web mapping and known gaps to the design. Per-tab implementation briefs will record exact command IDs and final status.
+- [x] git diff --check passes.
+
+### Task 1: Shared Native Ribbon Host Contract
+
+**Files:** create frontend/src/native-ribbon/host.ts, frontend/src/native-ribbon/status.ts, and focused unit tests; modify native-main.ts only to provide shared shell state.
+
+**Interface:** NativeRibbonCommandState contains enabled:boolean and optional reason:string. NativeRibbonHost exposes format as docx/xlsx/pptx/pdf, commandState(command) and reportCommand(command, result), where result status is applied/unavailable/failed and code is an optional safe public code.
+
+- [x] Rejected a global NativeRibbonHost object: each ribbon is natively coupled to a distinct editor/state owner. Format adapters call their existing editor APIs directly; add only a shared helper if two completed format migrations demonstrate actual identical behavior.
+
+### Task 2: Word Ribbon
+
+**Files:** pinned Docs Ribbon support under vendor/genoffice-docs; modify docx-main.tsx, docx.css, and targeted tests.
+
+- [ ] Port the ribbon's required browser components, icons, palettes, formatting helpers and localization from the fixed upstream revision; refresh SHA/source metadata and preserve license headers.
+- [ ] Bind ribbon format state to the active Tiptap selection and existing parsed DOCX styles/sections; update on selection and transactions without stale state.
+- [ ] Connect supported character/paragraph/list/table/page-layout commands to current Tiptap transactions and docxOperations; ensure undo/redo is existing ProseMirror history.
+- [ ] Map save/export/open to current Native API and publication flow. Keep filename/path, OS print dialog and unsupported document features explicit and non-executable.
+- [ ] Replace OS print with browser print/downloadable output and system font enumeration with browser/document fonts. Leave certificate signing behind the separate security design gate; do not access host certificate stores.
+- [ ] Add component tests for tab visibility/state and command mapping; browser tests for each command family, undo, actual DOCX save/download/reopen.
+- [ ] Scope Markdown CSS to Markdown editor roots so it cannot distort Word canvas or pagination measurements; verify the long Chinese/67-row table fixture has no empty trailing pages.
+- [ ] Run affected Word/Vitest and browser fixture checks, then production frontend build/budget once after the track stabilizes.
+
+### Task 3: Excel Ribbon
+
+**Files:** modify workbook-main.ts, Univer runtime/preset registration, native workbook adapters/tests; add only source wrappers required by GenOffice.
+
+- [ ] Port GenOffice self-drawn ExcelShell tabs (Home, Insert, Page Layout, Formulas, Data, Review, View, contextual Chart Design) and ribbon-actions semantics; Univer supplies grid/presets, not this ribbon.
+- [ ] Reuse existing Univer selection, command, history, locale and rendering state. Register the minimum upstream-compatible FindReplace, Drawing and Table UI presets/plugins after checking their APIs against Univer 0.25.1.
+- [ ] Map each enabled ribbon command to a supported Univer command and NativeDraft operation; disable commands without safe XLSX writeback and explain their state.
+- [ ] Ensure edits serialize through existing workbook operations and engine bridge; preserve formulas/styles/merged ranges and source identities.
+- [ ] Add tests per command family plus a browser edit-save-download-reopen check for values/formulas and workbook structure.
+- [ ] Check chunk budget and license/source manifest; do not bundle desktop file, shell or external-link gateway code.
+
+Task 3 progress (2026-11-05): brief/inventory is in `.superpowers/sdd/NATIVE_RIBBON_PLAN/task-3-brief.md`. Univer 0.25.1 FindReplace, Drawing and Table presets are registered in the existing runtime. Browser XLSX readback covers font/size/color, bold, number format/decimal increment and now source `autofn:*` SUM/AVERAGE/COUNT/MAX/MIN; the AutoSum smoke saves, downloads and independently reopens the workbook with openpyxl to verify `=SUM(A1:A2)`. The complete upstream ribbon is still not ported: most source action groups remain incomplete or unavailable and contextual Chart Design does not yet track chart selection/edit state. Do not mark Task 3 complete until remaining parity and command gaps are addressed.
+
+Task progress (2026-11-05 continuation):
+
+- Task 2 adds anchored paragraph insertion/deletion, source-derived Home/Insert controls, symbol insertion, paragraph alignment and non-list paragraph/heading left indentation, with browser save/download/reopen. Table, links, list-level indentation and full tab parity remain open.
+- Task 3 adds source glyphs, formatting controls, numeric-format and decimal increment, with browser save/download/openpyxl readback for values, formula, style, number format and sheet structure. Most upstream command families and exact source Ribbon parity remain open.
+- Task 4 adds selected-object text formatting with strict operation validation and PPTX inspect readback. The browser save/download/reopen smoke passes; full source tab/group/control parity remains open.
+- Task 5 adds validated AcroForm value editing with independent value readback, source-derived icon/label/color controls, saved-page browser printing, and browser form save/download/reopen. A signed-PDF fixture, full command parity, Form Design and static-form editing remain open.
+- Unified standard and Slides builds, TypeScript checks, chunk budget and its contract passed after the format slices stabilized. Existing third-party bundler warnings and >500 KiB chunk notices remain visible; the repository budget contract passes.
+- No format task is complete. Browser smoke now covers Word edits/download/reopen (including nonblocking validation failure), PPTX selected-text formatting/save/download/independent inspect, and PDF AcroForm save/download/readback. XLSX has browser readback for supported style/number commands. Full upstream tab/control parity, clean-image/offline readiness and remaining command families are still required.
+- 2026-11-05 continuation: DOCX now mounts a source-derived Home React component backed by fixed-upstream SVG glyph and Chinese Ribbon label resources; XLSX uses its byte-identical source glyph module and browser readback now covers font/size/color and decimal increment; PPTX uses byte-identical source icons on native controls; PDF uses a source-derived icon/palette subset and implements isolated printing of saved PDF pages. See the format briefs for exact hashes and test evidence. These are partial UI closures, not completion: DOCX/PPTX source Ribbon groups and control parity remain incomplete, ExcelShell remains an adapted group model, and PDF's original controls/locales are only partially represented.
+- 2026-11-05 parallel continuation: Word now maps all four source paragraph alignments through an anchored operation and independently reopened DOCX; Excel maps five source `autofn:*` actions and verifies the formula in a downloaded/reopened XLSX; PPTX has button-dispatch coverage for the source font-size ladder with existing strict bridge/readback path; PDF Fill Form has previous/next focus navigation across actual editable fields. Merged TypeScript and 54 focused frontend tests pass. Standard and Slides builds pass, as does the budget contract; the actual chunk budget currently fails on the 425 KiB `lazy-react` chunk versus the 250 KiB ordinary limit. The full command inventories, feature parity and offline acceptance remain open.
+- 2026-11-05 Word indent continuation: Home increase/decrease indentation follows GenOffice's 720-twip half-inch stops for anchored paragraphs and headings; list items stay disabled because list-level writeback is not implemented. A Chromium save/download/reopen smoke independently reads 720 twips from the downloaded DOCX and checks the reopened browser's 48px paragraph inset. Forty focused DOCX/ribbon/draft tests, TypeScript, and nine paragraph-indent bridge cases pass.
+- 2026-11-05 parallel command-group continuation: PDF Pages now follows the pinned source's four command groups and semantic IDs; left/right rotate and delete stay enabled on the verified bridge, while unsupported extract/insert/replace/crop/size/reverse/split/merge actions have individual disabled reasons. PDF View adds source IDs for thumbnails, outline, search, page jump in Home and View, single/two-page layout, zoom and fit; only night mode remains unavailable in this source group. Two-page Chromium coverage verifies outline destination navigation, spread toggling, View zoom and Home page jump before PDF save/download/form readback. Word Home/Layout exposes source IDs for line spacing and before/after spacing as disabled because DOCX operation and bridge allowlists do not support those paragraph attributes; Table Design/Layout commands are inventoried and disabled except anchored cell text editing. Insert link/edit/remove link remain disabled until anchored DOCX link operations are supported. Excel Review Comments/Notes and Data filter/clear/reapply/advanced actions remain disabled because current runtime/engine lack persisted filter state and readable comment state; Data ascending/descending sort is enabled using public Univer 0.25.1 `getValues()` plus `getFormulas()` and the shared stable sort engine, rejecting formulas before grid writes. Browser save/download/openpyxl readback verifies sorting `alpha, zeta` in A1:A2. PPTX Review Comments remain disabled without comment writeback/state; Home paragraph alignment and layout selection bind to strict native operations and verified inspect state. New slide, slide-with-layout, reset-layout and section commands remain disabled without bridge operations. Combined focused PDF/Word/XLSX/PPTX tests pass 83/83, merged TypeScript checking and `git diff --check` pass. The standard frontend production build passed before these final command group additions and will be rerun. Build output reports existing third-party chunk/circular-chunk warnings. These are command-group increments only; Tasks 2-5 and final acceptance remain open.
+- 2026-11-05 continuation: PDF View outline now resolves PDF.js named/direct destinations to source page indexes and exposes a navigable nested sidebar; a two-page Chromium fixture with a real outline verifies bookmark navigation to page 2, zoom and Home/View page inputs, then PDF form save/download/readback. Word list indentation now uses a strict `setParagraphListLevel` operation with source numbering identity and compatible adjacent-level checks; bridge validates level 0-8 and preserves `numId`, with a real DOCX multilevel roundtrip. Excel View adds source-ordered controls and binds gridline visibility to Univer's worksheet view API; other unsupported view commands remain individually disabled. PPTX Home layout selection is enabled on the existing inspectable layout operation; unsupported slide add/reset/sections and Insert table/image/shape/SmartArt/chart commands are present with source IDs and explicit reasons. The combined focused ribbon/operation selection passes 87/87, merged TypeScript and `git diff --check` pass. Build and full acceptance remain to be rerun; all four format tasks remain open.
+- 2026-11-05 source parity continuation: PDF View's single/two-page command now toggles the renderer's page grid; actual outline destination, spread state, zoom, Home/View page navigation and PDF form save/readback all pass the two-page Chromium smoke. Word Home list controls now map legal existing numbering levels to strict `setParagraphListLevel`; list style galleries, new definitions, numbering values and restart semantics remain explicitly disabled. The DOCX bridge roundtrip preserves `numId` and is covered by a focused pytest. Excel Data Tools now includes source-ordered text-to-columns choices, Flash Fill, Remove Duplicates, Validation, Consolidate and a separate Outline subtotal placement; these remain disabled where the XLSX bridge lacks equivalent persistent operation/readback. PPTX Insert Text Box maps to the existing addText operation; its browser smoke saves revision 2, downloads it, and independently reads text/type/geometry with `inspect_office` and python-pptx. WordArt/header-footer/dynamic fields/equation remain unavailable. Merged focused ribbon/operation tests pass 89/89; TypeScript and `git diff --check` pass. Four-format full source parity and final acceptance remain incomplete.
+- 2026-11-05 continued source parity: PDF Home Document Properties now opens a read-only panel sourced from PDF.js Info/XMP with missing-XMP fallback; the AcroForm browser smoke verifies title/author while also checking outline, spread, zoom, Home/View page navigation, save/download and field readback. PPTX native-office strict validation now accepts optional animation `append` only as a boolean, matching the existing bridge contract. API tests cover invalid types and ordered append readback. The transitions/animations browser smoke saves and independently reopens the downloaded revision, confirming `wipe` and `flyIn/right/afterPrev/1250ms/300ms`. Cross-format focused frontend tests pass 95/95, native-office pytest passes 31, merged TypeScript and `git diff --check` pass. Standard build must be rerun after these latest PDF/PPTX edits. Tasks 2-5 and full four-format source parity remain open.
+- 2026-11-05 Word Layout/Header/Footer continuation: DOCX Layout now writes the anchored trailing section's orientation, paper size, margins, column count, and header/footer distances through `setSectionLayout`; unsafe section-break and independent header/footer part controls retain stable source IDs with explicit unavailable reasons. Focused frontend ribbon/operation tests pass 93/93, section bridge tests pass 2, `git diff --check` and the standard production build pass. The build still reports existing circular/dynamic chunk and >500 KiB chunk warnings. Full source parity, browser end-to-end acceptance for this layout slice, build-budget compliance, offline/image readiness, and four-format HTTP acceptance remain open.
+- 2026-11-06 integration continuation: PDF source Reverse Pages now stages the existing identity-bound `reorderPages` operation from the surviving draft order. Browser save/download plus independent pypdf readback verifies two distinct page sizes in reverse order while retaining all four AcroForm values and unchanged source bytes. Word Home spacing now supports source multiplier presets and before/after 0/240-twip toggles; 16 real bridge cases cover raw OOXML group preservation, inherited before=0, automatic spacing cleanup and invalid inputs. The browser smoke saves/downloads/reopens spacing alongside prior alignment/list/indent commands. Review found and fixed the section-aware Layout replacing paragraph right-indent controls and losing section controls on selection refresh; both section/no-section right-indent tests pass. Home uses the pinned UI popover-dismiss hook; editor destruction now unmounts React roots/listeners. XLSX row deletion capture now uses actual Univer `sheet.mutation.remove-rows`; browser save contains four structural operations without compensating cell edits, and openpyxl verifies deletion, formula and number format preservation. PPTX Design 16:9/4:3 saves and reopens real size/geometry, but review found a pending-size draft-restoration gap, which remains in progress before accepting that command. The last stable integrated selection passed 106 frontend tests, standard/Slides builds and both budget checks; subsequent review fixes still require final integrated verification. Complete fixed-source parity, latest clean-image/offline and four-format HTTP acceptance remain open. No format is complete.
+
+### Task 4: PowerPoint Ribbon
+
+2026-11-06 acceptance update: Word's section Layout slice now passes `DOCX_SMOKE_MODE=section-layout node smoke/docx-native-save-smoke.mjs`. Independent python-docx confirms A4 landscape, two columns, custom margins and header/footer distances from the downloaded file; browser revision-2 controls retain the values. Source bytes and nonblocking validation download behavior remain intact. This closes the earlier missing browser/file check for this slice only. DOCX draft refresh/undo restoration remains under repair; full source parity and HTTP/production acceptance are not complete.
+
+**Files:** create focused vendored ribbon adapter components; modify slides-main.ts, slide editor view styles, native-office-view.ts, and format-specific tests.
+
+- [ ] Port upstream Ribbon, tab subcomponents, icons, palettes, and only browser-safe helpers at the pinned commit; regenerate SHA/source manifests.
+- [ ] Bind hasSelection, hasTextSelection, font/alignment, layout, animation, transition, theme, zoom and undo/redo state to the current Konva model and render tree.
+- [ ] Map commands onto the existing strict editSlides operation schema and real bridge. For a missing operation, add schema validation, bridge writeback, roundtrip test and failure injection before exposing its button.
+- [ ] Replace Electron open/save/save-as/print/image export with Native API behavior or a clear unavailable state; keep existing revision and download chain.
+- [ ] Replace system printing with browser print or a downloadable rendered PDF; map image picking to the existing safe upload/import path.
+- [ ] Add tests for tab/state updates and each operation family; browser tests edit text/geometry/layout, save, download and reopen with independent python-pptx readback.
+- [ ] Run affected slide tests and source/module typecheck; do not claim the known broken upstream full-package test toolchain is fixed by this task.
+
+### Task 5: PDF Ribbon
+
+**Files:** add isolated PDF ribbon components under frontend/src/pdf-ribbon/; modify pdf-main.ts, pdf-operations.ts, pdf.css, and focused tests.
+
+- [ ] Extract upstream tab/control components and command definitions for Home, Annotate, Edit, Page, View, Fill Form and Form Design without importing GenOffice's full Electron App.
+- [ ] Bind commands to existing PDF.js document, stable page/object selection, annotations, form state, PDF operation stack and actual PDF preview; preserve explicit PDF text preview confirmation.
+- [ ] Add server operation/schema/bridge and tests before enabling commands not yet in the current PDF operation contract.
+- [ ] Map open/save/export/download to authorized Native API endpoints. Keep certificate-store signing, OS printer dialogs, local file paths and desktop windows disabled with explicit explanations unless a separately reviewed server service exists.
+- [ ] Implement browser print and server-side PDF/page operations as Web equivalents. Before certificate signing, write a separate key-custody/authorization/recovery security design and validate it; this ribbon plan must not store private keys or passwords.
+- [ ] Add tab and selection-state tests; browser-test each enabled command family, preview confirmation for text changes, save/sign/download and pypdf/poppler readback.
+- [ ] Keep PDF.js assets same-origin, lazy loaded and within the fixed chunk budget.
+
+### Task 6: Cross-Format Review and Final Acceptance
+
+2026-11-06 PR checkpoint: section Layout and DOCX draft recovery now pass real browser/file readback; XLSX draft recovery and structural Undo preserve formulas/defined names/merges; PPTX A4/A3 portrait presets pass save/download/readback/reopen. Four new HTTP integration cases cover real authorization, file engines, nonblocking failed validation, signing/download and reopen with explicit repository test doubles. Both production builds and budget checks pass after the structural-Undo repair. The work is being submitted as a draft PR: complete source-command parity, a fresh clean/offline image, production database/host acceptance and deployment remain outstanding. No format is marked complete.
+
+- [ ] Run command inventory against all delivered ribbons: every source action is executable, implemented server-side, or explicitly unavailable with a reason.
+- [ ] Run format tests independently; run required nonblocking publication contracts once if server publishing code changed.
+- [ ] Run npm test only for affected ribbon/editor test files, then once each npm run build, npm run build:slides, npm run check:budget, and npm run test:budget.
+- [ ] Verify no Electron imports, Node filesystem paths, CDN loads, or unlicensed assets enter browser output.
+- [ ] Build a clean app image, compare native module and vendored-source hashes, and test offline readiness and actual four-format HTTP upload/edit/save/download/reopen.
+- [ ] Keep user upload mount/integration and real production-scope database acceptance distinct from fixtures and image tests.
+- [ ] Update NATIVE_EDITING.md and slides_engine/UPGRADE.md with exact commands supported/unavailable, evidence, feature flags, rollback and remaining desktop-only checks.

@@ -130,6 +130,7 @@ def create_report_editor_router(
     ai: Any | None = None,
     chart_ai: Any | None = None,
     table_ai: Any | None = None,
+    native_editor: Any | None = None,
     cookie_secure: bool = True,
     allowed_origin: str | None = None,
     static_dir: str | Path | None = None,
@@ -276,6 +277,19 @@ def create_report_editor_router(
             feature_reader = getattr(editor, "lineage_features", None)
             if callable(feature_reader):
                 result["lineageFeatures"] = feature_reader()
+            if native_editor is not None:
+                session = await grants.lookup_session(raw_session)
+                render = context.job.get("render")
+                render = render if isinstance(render, dict) else {}
+                result["nativeFormats"] = [
+                    format_name for format_name, label, enabled in (
+                        ("docx", "word", native_editor.docx_enabled),
+                        ("pdf", "pdf", native_editor.pdf_enabled),
+                    )
+                    if enabled and session.capabilities is None and context.delivery_format == "document"
+                    and isinstance(render.get(label), dict)
+                    and all(field in render[label] for field in ("path", "size", "sha256"))
+                ]
             # AI 改图入口可见性：仅在装配了改图服务时暴露开关；缺省视为关闭，
             # 前端据此隐藏入口而不是点击后报错。
             if chart_ai is not None:

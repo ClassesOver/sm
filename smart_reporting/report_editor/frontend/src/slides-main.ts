@@ -1,11 +1,14 @@
-import { createElement, ArrowDown, ArrowUp, Download, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
+import { createElement, ArrowDown, ArrowUp, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
 import type { SlidesCanvasState } from './slides-canvas'
 import { createSlidesChartTools } from './slides-chart-tools'
+import { createSlidesNativeRibbon, stepNativeFontSize, type NativeSlidesContext, type NativeSlidesRibbon } from './slides-native-ribbon'
+import type { NativeDraft } from './native-draft'
+import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number } }
+type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type SlideTransition = 'none' | 'morph' | 'fade' | 'push' | 'wipe' | 'split' | 'circle' | 'cover' | 'pull' | 'dissolve' | 'zoom' | 'random'
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
@@ -17,6 +20,8 @@ type Edit = {
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
 }
+type TextFormatting = { slideIndex: number; elementId: string; fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
+type ParagraphFormatting = { slideIndex: number; elementId: string; align: 'left' | 'center' | 'right' | 'justify' }
 type BusinessTheme = 'executive' | 'clinical' | 'modern'
 type AIProposal = { summary: string; edits: Edit[]; order: number[]; theme?: BusinessTheme }
 type AIStatus = { editId: string; status: string; proposal?: AIProposal; error?: { message: string } }
@@ -25,17 +30,30 @@ type ImageEdit = { candidateId: string; slideIndex: number; geometry: { x: numbe
 type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
 type AnimationTrigger = 'onClick' | 'withPrev' | 'afterPrev'
 type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; watermark: boolean }
-type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: string }
+type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
+type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
+type SlideChanges = {
+  edits?: Edit[]; order?: number[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
+  textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
+  transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
+  slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
+  textBoxes?: Omit<TextBoxEdit, 'watermark'>[]; deletions?: { slideIndex: number; elementId: string }[]
+}
 
 export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
   save?: HTMLButtonElement
   download?: HTMLAnchorElement
+  request?: <T>(path: string, init?: RequestInit) => Promise<T>
+  native?: boolean
+  draft?: NativeDraft
 }) {
 const root = host
 const basePath = location.pathname.replace(/\/$/, '')
 const embedded = Boolean(sharedShell)
-const request = <T>(path: string, init?: RequestInit): Promise<T> =>
-  requestJson(`${basePath}/api/${path}`, init, 'report_slides_csrf')
+const native = sharedShell?.native === true
+const nativeDraft = native ? sharedShell?.draft : undefined
+const request = sharedShell?.request ?? (<T>(path: string, init?: RequestInit): Promise<T> =>
+  requestJson(`${basePath}/api/${path}`, init, 'report_slides_csrf'))
 
 const buttonIcon = (icon: typeof Save, label: string) => {
   const button = document.createElement('button')
@@ -63,6 +81,7 @@ root.innerHTML = `${embedded ? '' : `
   <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><span>编辑器</span></footer>
 `
 if (embedded) root.classList.add('slides-embedded')
+if (native) for (const panel of root.querySelectorAll<HTMLElement>('.slides-ai, .slides-image-tools')) { panel.hidden = true; panel.inert = true }
 
 const list = root.querySelector<HTMLOListElement>('.slide-list')!
 const select = root.querySelector<HTMLSelectElement>('#object-select')!
@@ -117,12 +136,18 @@ objectDelete.prepend(createElement(Trash2, { width: 15, height: 15, 'aria-hidden
 const order: number[] = []
 const backgroundEdits = new Map<number, string>()
 const textBoxEdits: TextBoxEdit[] = []
+const textFormattingEdits = new Map<string, TextFormatting>()
+const paragraphFormattingEdits = new Map<string, ParagraphFormatting>()
 const deletions = new Map<string, { slideIndex: number; elementId: string; label: string }>()
 const edits = new Map<string, Edit>()
 const imageEdits: ImageEdit[] = []
 const animationEdits: AnimationEdit[] = []
 const transitionEdits = new Map<number, SlideTransition>()
 const layoutEdits = new Map<number, string>()
+let slideSizeEdit: { cx: number; cy: number } | undefined
+let animationDirection: AnimationDirection = 'bottom'
+let animationDurationMs = 500
+let animationDelayMs = 0
 let undoSnapshot: { order: number[]; edits: Edit[]; theme?: BusinessTheme } | undefined
 let activeAIEditId = ''
 let pendingAIEditId = ''
@@ -137,6 +162,12 @@ let savedRevision = false
 let saving = false
 let mutationPending = 0
 const locked = () => saving || savedRevision
+let nativeUndo: HTMLButtonElement | undefined
+let nativeRedo: HTMLButtonElement | undefined
+function updateNativeHistory() {
+  if (nativeUndo) nativeUndo.disabled = locked() || !nativeDraft?.canUndo
+  if (nativeRedo) nativeRedo.disabled = locked() || !nativeDraft?.canRedo
+}
 const lockFields = new Map<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement | HTMLSelectElement, boolean>()
 function setEditingLocked(value: boolean) {
   root.inert = value
@@ -144,7 +175,9 @@ function setEditingLocked(value: boolean) {
     if (value) { if (!lockFields.has(field)) lockFields.set(field, field.disabled); field.disabled = true }
     else { field.disabled = lockFields.get(field) ?? field.disabled }
   }
+  nativeRibbon?.setLocked(value)
   if (!value) lockFields.clear()
+  updateNativeHistory()
   renderCanvas()
 }
 for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener(kind, event => {
@@ -152,7 +185,7 @@ for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener
 }, true)
 
 let renderTree: { slides: (RenderSlide & { slideIndex: number })[] } | undefined
-let canvas: { update: (state: SlidesCanvasState) => void } | undefined
+let canvas: { update: (state: SlidesCanvasState) => void; destroy?: () => void } | undefined
 let previewSequence = 0
 let previewTimer: ReturnType<typeof setTimeout> | undefined
 // 每个页面最多一个预览请求在途：服务端每次预览要启动两个引擎进程，连续输入时
@@ -172,7 +205,9 @@ function sendCanvasPreview() {
   previewInFlight = true
   const sequence = previewSequence
   void request<{ slides: (RenderSlide & { slideIndex: number })[] }>('render-tree', {
-    method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, edits: [...edits.values()] }),
+    method: 'POST', body: JSON.stringify(native
+      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] }] }
+      : { expectedSha256: deck.sha256, edits: [...edits.values()] }),
   }).then(tree => {
     if (sequence !== previewSequence || locked()) return
     renderTree = tree
@@ -218,10 +253,58 @@ const currentGeometryInputs = () => [...root.querySelectorAll<HTMLInputElement>(
 
 function markDirty() {
   if (locked()) return
+  nativeDraft?.setOperations([{ kind: 'editSlides', ...slideChanges() }])
+  updateNativeHistory()
   renderCanvas()
   dirty = true
   stateLabel.textContent = '有未保存修改'
-  statusMessage.textContent = '修改尚未保存'
+  statusMessage.textContent = nativeDraft?.persistenceError ?? '修改尚未保存'
+}
+
+function slideChanges(): SlideChanges {
+  return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
+    order: [...order], ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
+    slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
+    backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
+    textBoxes: textBoxEdits.map(({ watermark: _watermark, ...box }) => box),
+    deletions: [...deletions.values()].map(({ slideIndex, elementId }) => ({ slideIndex, elementId })) }
+}
+
+function restoreNativeDraft() {
+  if (!nativeDraft) return
+  const operations = nativeDraft.operations
+  const supported = new Set(['kind', 'edits', 'order', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
+  if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
+    throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
+  }
+  const changes = (operations[0] ?? {}) as SlideChanges
+  edits.clear(); textFormattingEdits.clear(); paragraphFormattingEdits.clear(); transitionEdits.clear(); layoutEdits.clear(); backgroundEdits.clear(); deletions.clear()
+  for (const edit of changes.edits ?? []) {
+    const key = editKey(edit.slideIndex, edit.elementId)
+    edits.set(key, { ...edits.get(key), ...edit })
+  }
+  for (const format of changes.textFormatting ?? []) {
+    const key = editKey(format.slideIndex, format.elementId)
+    textFormattingEdits.set(key, { ...textFormattingEdits.get(key), ...format })
+  }
+  for (const format of changes.paragraphFormatting ?? []) paragraphFormattingEdits.set(editKey(format.slideIndex, format.elementId), format)
+  for (const transition of changes.transitions ?? []) transitionEdits.set(transition.slideIndex, transition.kind)
+  for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
+  for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
+  for (const deletion of changes.deletions ?? []) {
+    const element = deck.slides[deletion.slideIndex]?.elements.find(item => item.id === deletion.elementId)
+    deletions.set(editKey(deletion.slideIndex, deletion.elementId), { ...deletion, label: element?.name || element?.text || deletion.elementId })
+  }
+  animationEdits.splice(0, animationEdits.length, ...(changes.animations ?? []))
+  textBoxEdits.splice(0, textBoxEdits.length, ...(changes.textBoxes ?? []).map(box => ({ ...box, watermark: box.rotation === -25 })))
+  order.splice(0, order.length, ...(changes.order ?? deck.slides.map(slide => slide.slideIndex)))
+  selectedTheme = changes.theme
+  slideSizeEdit = changes.slideSize
+  dirty = nativeDraft.dirty
+  renderStructurePending()
+  updateNativeHistory()
 }
 
 function renderPendingImages() {
@@ -324,9 +407,205 @@ function renderInspector() {
   animationTrigger.value = existingAnimation?.trigger ?? 'onClick'
   animationDuration.value = String(existingAnimation?.durationMs ?? 500)
   animationDelay.value = String(existingAnimation?.delayMs ?? 0)
+  animationDurationMs = Number(animationDuration.value)
+  animationDelayMs = Number(animationDelay.value)
+  animationDirection = (existingAnimation?.direction as AnimationDirection | undefined) ?? 'bottom'
   animationAdd.disabled = !element?.editable
   animationState.textContent = existingAnimation ? `已有 ${existingAnimation.effect} 动画，可继续添加。` : ''
   root.querySelector('.inspector-heading')!.textContent = `对象 · 第 ${order.indexOf(selectedSlide) + 1} 页`
+  nativeRibbon?.setValue('theme', selectedTheme ?? '')
+  nativeRibbon?.setValue('transition', transitionSelect.value)
+  nativeRibbon?.setValue('layout', layoutSelect.value)
+  const size = slideSizeEdit ?? deck.size
+  const sizeRatio = Math.max(size.cx, size.cy) / Math.min(size.cx, size.cy)
+  nativeRibbon?.setValue('slideSize', matchSlideSizePreset(size) ?? (Math.abs(sizeRatio - 16 / 9) < 0.02 ? '16:9' : Math.abs(sizeRatio - 4 / 3) < 0.02 ? '4:3' : ''))
+  nativeRibbon?.setValue('slideOrientation', isPortrait(size) ? 'portrait' : 'landscape')
+  nativeRibbon?.setSlideOrientationEnabled(isStandardSlideSize(size))
+  nativeRibbon?.setValue('background', backgroundColor.value)
+  nativeRibbon?.setValue('animationEffect', animationEffect.value)
+  nativeRibbon?.setValue('animationTrigger', animationTrigger.value)
+  nativeRibbon?.setValue('animationDuration', animationDuration.value)
+  nativeRibbon?.setValue('animationDelay', animationDelay.value)
+  nativeRibbon?.setValue('animationDirection', animationDirection)
+  nativeRibbon?.setValue('text', textArea.value)
+  const textStyle = element?.textStyle ?? {}
+  const textFormat = element ? textFormattingEdits.get(editKey(selectedSlide, element.id)) : undefined
+  nativeRibbon?.setValue('bold', String(textFormat?.bold ?? textStyle.bold ?? false))
+  nativeRibbon?.setValue('italic', String(textFormat?.italic ?? textStyle.italic ?? false))
+  nativeRibbon?.setValue('underline', String(textFormat?.underline ?? textStyle.underline ?? false))
+  nativeRibbon?.setValue('strike', String(textFormat?.strike ?? textStyle.strike ?? false))
+  nativeRibbon?.setValue('fontSize', String(textFormat?.fontSizePt ?? textStyle.fontSizePt ?? ''))
+  nativeRibbon?.setValue('fontFamily', textFormat?.fontFamily ?? textStyle.fontFamily ?? '')
+  nativeRibbon?.setValue('fontColor', (textFormat?.color ?? textStyle.color ?? '#000000').toLowerCase())
+  nativeRibbon?.setValue('paragraphAlign', paragraphFormattingEdits.get(editKey(selectedSlide, element?.id ?? ''))?.align ?? element?.paragraphAlignments?.[0] ?? '')
+  const contextualType: NativeSlidesContext = !element ? null
+    : element.type === 'table' ? 'table'
+      : element.type === 'chart' ? 'chart'
+        : element.type === 'picture' ? 'picture'
+          : element.type === 'model3d' ? 'model3d'
+            : ['shape', 'text'].includes(element.type) ? 'shape' : null
+  nativeRibbon?.setContext(contextualType)
+  nativeRibbon?.setTextFormatEnabled(!!element?.editable && !!element.text.trim())
+}
+
+function updateSelectedTextFormat(patch: Partial<Omit<TextFormatting, 'slideIndex' | 'elementId'>>) {
+  const element = currentElement()
+  if (!element?.editable || !element.text.trim()) return
+  const key = editKey(selectedSlide, element.id)
+  textFormattingEdits.set(key, {
+    ...textFormattingEdits.get(key), slideIndex: selectedSlide, elementId: element.id, ...patch,
+  })
+  refreshCanvasPreview()
+  markDirty()
+}
+
+function isStandardSlideSize(size: { cx: number; cy: number }) {
+  return Object.values(SLIDE_SIZE_PRESETS).some(preset =>
+    preset.cx === Math.max(size.cx, size.cy) && preset.cy === Math.min(size.cx, size.cy))
+}
+
+let nativeRibbon: NativeSlidesRibbon | undefined
+if (native) nativeRibbon = createSlidesNativeRibbon(root, {
+  onAction(command, value) {
+    if (locked()) return
+    switch (command) {
+      case 'movePrevious': move(order.indexOf(selectedSlide), -1); break
+      case 'moveNext': move(order.indexOf(selectedSlide), 1); break
+      case 'theme':
+        selectedTheme = value ? value as BusinessTheme : undefined
+        markDirty()
+        break
+      case 'transition': transitionEdits.set(selectedSlide, value as SlideTransition); markDirty(); break
+      case 'layout':
+        if (typeof value === 'string' && value) { layoutEdits.set(selectedSlide, value); markDirty() }
+        break
+      case 'slideSize':
+        if (typeof value !== 'string' || !Object.hasOwn(SLIDE_SIZE_PRESETS, value)) return
+        slideSizeEdit = presetSize(value as SlideSizePreset, isPortrait(slideSizeEdit ?? deck.size))
+        canvasStatus.textContent = '页面尺寸将在保存并打开新修订后更新；页面内容会按宽高比例缩放。'
+        markDirty()
+        break
+      case 'slideOrientation': {
+        const size = slideSizeEdit ?? deck.size
+        if (!['landscape', 'portrait'].includes(String(value)) || !isStandardSlideSize(size)) return
+        if (isPortrait(size) === (value === 'portrait')) return
+        slideSizeEdit = { cx: size.cy, cy: size.cx }
+        canvasStatus.textContent = '页面方向将在保存并打开新修订后更新；页面内容会按宽高比例缩放。'
+        markDirty()
+        break
+      }
+      case 'background':
+        if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) {
+          backgroundEdits.set(selectedSlide, value.toUpperCase()); renderStructurePending(); markDirty()
+        }
+        break
+      case 'text': {
+        const element = currentElement()
+        if (!element || !['text', 'shape'].includes(element.type)) break
+        const edit = edits.get(editKey(selectedSlide, element.id)) ?? { slideIndex: selectedSlide, elementId: element.id }
+        edit.text = String(value ?? '')
+        edits.set(editKey(selectedSlide, element.id), edit)
+        refreshCanvasPreview(); markDirty()
+        break
+      }
+      case 'bold':
+        updateSelectedTextFormat({ bold: value === true })
+        break
+      case 'italic':
+        updateSelectedTextFormat({ italic: value === true })
+        break
+      case 'underline':
+        updateSelectedTextFormat({ underline: value === true })
+        break
+      case 'strike':
+        updateSelectedTextFormat({ strike: value === true })
+        break
+      case 'fontSize': {
+        const fontSizePt = Number(value)
+        if (Number.isFinite(fontSizePt) && fontSizePt >= 1 && fontSizePt <= 400) updateSelectedTextFormat({ fontSizePt })
+        break
+      }
+      case 'fontSizeUp':
+      case 'fontSizeDown': {
+        const element = currentElement()
+        const current = element ? textFormattingEdits.get(editKey(selectedSlide, element.id))?.fontSizePt ?? element.textStyle?.fontSizePt : null
+        updateSelectedTextFormat({ fontSizePt: stepNativeFontSize(current, command === 'fontSizeUp' ? 1 : -1) })
+        break
+      }
+      case 'fontFamily': {
+        const fontFamily = String(value ?? '').trim()
+        if (fontFamily && fontFamily.length <= 200 && !/[\x00-\x1f]/.test(fontFamily)) updateSelectedTextFormat({ fontFamily })
+        break
+      }
+      case 'fontColor':
+        if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) updateSelectedTextFormat({ color: value.toUpperCase() })
+        break
+      case 'paragraphAlignLeft':
+      case 'paragraphAlignCenter':
+      case 'paragraphAlignRight':
+      case 'paragraphAlignJustify': {
+        const element = currentElement()
+        if (!element?.editable || !element.text.trim()) break
+        const align = command.replace('paragraphAlign', '').toLowerCase() as ParagraphFormatting['align']
+        paragraphFormattingEdits.set(editKey(selectedSlide, element.id), { slideIndex: selectedSlide, elementId: element.id, align })
+        refreshCanvasPreview()
+        markDirty()
+        break
+      }
+      case 'addText': addTextBox(false); break
+      case 'addWatermark': addTextBox(true); break
+      case 'deleteObject': objectDelete.click(); break
+      case 'saveRevision': saveButton.click(); return
+      case 'shapeGeometry': currentGeometryInputs()[0]?.focus(); root.querySelector('.geometry-heading')?.scrollIntoView({ block: 'nearest' }); return
+      case 'animationEffect': animationEffect.value = String(value); nativeRibbon?.setValue(command, String(value)); return
+      case 'animationDirection': animationDirection = value as AnimationDirection; return
+      case 'animationTrigger': animationTrigger.value = String(value) as AnimationTrigger; return
+      case 'animationDuration':
+        animationDurationMs = Math.max(1, Math.min(120000, Number(value) || 500))
+        animationDuration.value = String(animationDurationMs)
+        return
+      case 'animationDelay':
+        animationDelayMs = Math.max(0, Math.min(120000, Number(value) || 0))
+        animationDelay.value = String(animationDelayMs)
+        return
+      case 'addAnimation':
+        if (!currentElement()?.editable) break
+        animationEdits.push({ slideIndex: selectedSlide, elementId: selectedElement,
+          effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger,
+          durationMs: animationDurationMs, delayMs: animationDelayMs, append: true,
+          ...( ['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(animationEffect.value) ? { direction: animationDirection } : {}),
+        })
+        renderInspector(); markDirty()
+        break
+      default: break
+    }
+    renderInspector()
+  },
+})
+
+if (native) {
+  const history = document.createElement('div')
+  history.className = 'slides-native-ribbon-group'
+  history.setAttribute('aria-label', '编辑历史')
+  nativeUndo = buttonIcon(Undo2, '撤销')
+  nativeRedo = buttonIcon(Redo2, '重做')
+  nativeUndo.dataset.sourceAction = 'onUndo'
+  nativeRedo.dataset.sourceAction = 'onRedo'
+  for (const [button, direction] of [[nativeUndo, 'undo'], [nativeRedo, 'redo']] as const) {
+    button.title = direction === 'undo' ? '撤销本次页面中的修改；刷新后仅恢复草稿内容，不恢复历史' : '重做本次页面中撤销的修改'
+    button.addEventListener('mousedown', event => event.preventDefault())
+    button.addEventListener('click', () => {
+      if (locked() || !nativeDraft) return
+      nativeDraft[direction]()
+      restoreNativeDraft()
+      renderSlides(); renderInspector(); refreshCanvasPreview()
+      stateLabel.textContent = dirty ? '有未保存修改' : '可编辑'
+      statusMessage.textContent = nativeDraft.persistenceError ?? (dirty ? '修改尚未保存' : '已恢复原始幻灯片')
+    })
+    history.append(button)
+  }
+  root.querySelector('.slides-native-ribbon')!.prepend(history)
+  updateNativeHistory()
 }
 
 select.addEventListener('change', () => { selectedElement = select.value; renderInspector() })
@@ -444,8 +723,10 @@ objectDelete.addEventListener('click', () => {
   const element = currentElement()
   if (locked() || !element?.deletable || chartTools.hasPending(selectedSlide, element.id)) return
   const key = editKey(selectedSlide, element.id)
-  // 删除优先：同一对象的文字/位置/动画修改一并撤回，避免保存时引用已删除对象。
+  // 删除优先：同一对象的文字、位置、格式和动画修改一并撤回，避免保存时引用已删除对象。
   edits.delete(key)
+  textFormattingEdits.delete(key)
+  paragraphFormattingEdits.delete(key)
   for (let index = animationEdits.length - 1; index >= 0; index--) {
     if (editKey(animationEdits[index]!.slideIndex, animationEdits[index]!.elementId) === key) animationEdits.splice(index, 1)
   }
@@ -461,6 +742,7 @@ objectDelete.addEventListener('click', () => {
 
 imageForm.addEventListener('submit', async event => {
   event.preventDefault()
+  if (native) return
   if (!imagePrompt.value.trim() || imageGenerate.disabled) return
   imageGenerate.disabled = true
   imageStatus.textContent = '正在生成配图…'
@@ -501,7 +783,7 @@ imageAdd.addEventListener('click', () => {
   markDirty()
 })
 
-const chartTools = createSlidesChartTools(root.querySelector<HTMLElement>('.slides-inspector')!, request, markDirty)
+const chartTools = createSlidesChartTools(root.querySelector<HTMLElement>('.slides-inspector')!, request, markDirty, { enabled: !native })
 
 const saveButton = root.querySelector<HTMLButtonElement>('.save-button') ?? sharedShell?.save!
 if (!saveButton) throw new Error('slides save action is missing')
@@ -554,7 +836,7 @@ function renderAIProposal(proposal: AIProposal) {
 
 aiForm.addEventListener('submit', async (event) => {
   event.preventDefault()
-  if (!aiInstruction.value.trim() || activeAIEditId) return
+  if (native || !aiInstruction.value.trim() || activeAIEditId) return
   aiPreview.hidden = true
   pendingAIProposal = undefined
   aiSubmit.disabled = true
@@ -628,7 +910,7 @@ aiAccept.addEventListener('click', async () => {
   } finally { --mutationPending }
 })
 
-saveButton.addEventListener('click', async () => {
+const save = async () => {
   if (locked() || mutationPending || (!dirty && imageEdits.length === 0) || saveButton.disabled) return
   saving = true
   ++previewSequence
@@ -637,10 +919,17 @@ saveButton.addEventListener('click', async () => {
   saveButton.disabled = true
   stateLabel.textContent = '正在保存'
   try {
-    const result = await request<{ revision: number; pptx?: { downloadUrl?: string }; editor?: { openUrl: string }; validation: { issues: { message: string }[] } }>('save', {
+    const result = await request<{ revision: number; revisionRegistered?: boolean; pptx?: { downloadUrl?: string }; editor?: { openUrl: string }; validation: { issues: { message: string }[] } }>('save', {
       method: 'POST',
-    body: JSON.stringify({ expectedSha256: deck.sha256, chartEdits: chartTools.pendingEdits(), edits: [...edits.values()], order, ...(selectedTheme ? { theme: selectedTheme } : {}), ...(imageEdits.length ? { imageEdits } : {}), transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: animationEdits, slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })), backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })), textBoxes: textBoxEdits.map(({ watermark: _watermark, ...box }) => box), deletions: [...deletions.values()].map(({ slideIndex, elementId }) => ({ slideIndex, elementId })) }),
+    body: JSON.stringify({ expectedSha256: deck.sha256, ...(nativeDraft ? { operations: nativeDraft.operations }
+      : { ...slideChanges(), ...(!native ? { chartEdits: chartTools.pendingEdits() } : {}), ...(imageEdits.length ? { imageEdits } : {}) }) }),
     })
+    if (native && result.revisionRegistered !== true) {
+      stateLabel.textContent = '修订未登记，草稿已保留'
+      statusMessage.textContent = result.validation.issues.map(issue => issue.message).join('；') || '文件已生成，可重试保存登记'
+      if (result.pptx?.downloadUrl) { downloadLink.href = result.pptx.downloadUrl; downloadLink.hidden = false; downloadLink.textContent = '下载 PPTX' }
+      return
+    }
     dirty = false
     savedRevision = true
     ++previewSequence
@@ -651,8 +940,11 @@ saveButton.addEventListener('click', async () => {
     animationEdits.splice(0, animationEdits.length)
     transitionEdits.clear()
     layoutEdits.clear()
+    slideSizeEdit = undefined
     backgroundEdits.clear()
     textBoxEdits.splice(0, textBoxEdits.length)
+    textFormattingEdits.clear()
+    paragraphFormattingEdits.clear()
     deletions.clear()
     renderStructurePending()
     renderPendingImages()
@@ -680,14 +972,18 @@ saveButton.addEventListener('click', async () => {
     saving = false
     root.inert = false
     if (!savedRevision) setEditingLocked(false)
+    updateNativeHistory()
     saveButton.disabled = savedRevision
   }
-})
+}
+saveButton.addEventListener('click', save)
 
 async function start() {
   try {
     deck = await request<Deck>('deck')
+    nativeRibbon?.setLayouts((deck.layouts ?? []).map(layout => ({ path: layout.path, name: layout.name })))
     order.push(...deck.slides.map(slide => slide.slideIndex))
+    restoreNativeDraft()
     imageTarget.replaceChildren(...deck.slides.map((slide, index) => {
       const option = document.createElement('option')
       option.value = String(slide.slideIndex)
@@ -706,18 +1002,21 @@ async function start() {
       canvas = mountSlidesCanvas(canvasHost)
       canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
       renderCanvas()
+      if (nativeDraft?.dirty) refreshCanvasPreview()
     }).catch(() => { canvasStatus.textContent = '画布暂不可用，显示 PDF 兼容预览；可继续使用对象面板编辑。' })
-    stateLabel.textContent = '可编辑'
-    statusMessage.textContent = `${deck.slides.length} 页 · 已核验 PPTX 身份`
+    stateLabel.textContent = dirty ? '有未保存修改' : '可编辑'
+    statusMessage.textContent = nativeDraft?.persistenceError ?? `${deck.slides.length} 页 · 已核验 PPTX 身份${dirty ? ' · 已恢复本地草稿' : ''}`
   } catch (error) {
     stateLabel.textContent = '载入失败'
     statusMessage.textContent = error instanceof Error ? error.message : '无法载入幻灯片'
+    if (native) throw error
   }
 }
 
 if (root.querySelector('.slides-brand')) root.querySelector('.slides-brand')!.append(createElement(Sparkles, { width: 18, height: 18, 'aria-hidden': 'true' }))
 if (root.querySelector('.download-link')) root.querySelector('.download-link')!.append(createElement(Download, { width: 16, height: 16, 'aria-hidden': 'true' }))
-void start()
+const ready = start()
+return { ready, dispose() { ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); nativeRibbon?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

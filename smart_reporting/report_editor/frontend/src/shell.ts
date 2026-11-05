@@ -1,6 +1,6 @@
 import type { ToolbarMode } from './viewport'
 
-export type EditorFormat = 'document' | 'pptx' | 'xlsx'
+export type EditorFormat = 'document' | 'pptx' | 'xlsx' | 'docx' | 'pdf'
 
 export interface EditorShell {
   editor: HTMLElement
@@ -39,6 +39,7 @@ export function createEditorShell(
 ): EditorShell {
   const isPptx = format === 'pptx'
   const isBinary = format !== 'document'
+  const isNative = format === 'docx' || format === 'pdf'
   root.className = `report-app view-wide toolbar-${mode} editor-format-${format}`
   root.innerHTML = `
     <header class="app-bar">
@@ -79,13 +80,13 @@ export function createEditorShell(
         <div class="toolbar-group toolbar-group-output"><button type="button" class="is-primary" data-action="save" aria-label="保存" title="保存">
           <i data-lucide="save" aria-hidden="true"></i><span>保存</span>
         </button>
-        <button type="button" data-action="pdf" aria-label="导出 PDF" title="导出 PDF"${isBinary ? ' hidden' : ''}>
+        <button type="button" data-action="pdf" aria-label="导出 PDF" title="导出 PDF"${isBinary && !isNative ? ' hidden' : ''}>
           <i data-lucide="file-down" aria-hidden="true"></i><span>PDF</span>
         </button>
-        <button type="button" data-action="word" aria-label="导出 Word" title="导出 Word"${isBinary ? ' hidden' : ''}>
+        <button type="button" data-action="word" aria-label="导出 Word" title="导出 Word"${isBinary && format !== 'docx' ? ' hidden' : ''}>
           <i data-lucide="file-text" aria-hidden="true"></i><span>Word</span>
         </button>
-        ${isBinary ? `<a class="is-primary ${format}-download" data-action="${format}-download" aria-label="下载 ${format.toUpperCase()}" title="下载 ${format.toUpperCase()}" hidden>
+        ${isBinary && !isNative ? `<a class="is-primary ${format}-download" data-action="${format}-download" aria-label="下载 ${format.toUpperCase()}" title="下载 ${format.toUpperCase()}" hidden>
           <i data-lucide="download" aria-hidden="true"></i><span>${format.toUpperCase()}</span>
         </a>` : ''}</div>
         <button type="button" class="is-subtle toolbar-settings" data-action="export-settings" aria-label="导出设置" title="导出设置"${isBinary ? ' hidden' : ''}><i data-lucide="settings-2" aria-hidden="true"></i><span>设置</span></button>
@@ -113,7 +114,7 @@ export function createEditorShell(
         </div>
         <nav class="outline-list" aria-label="章节导航"></nav>
       </aside>
-      <section class="editor-surface" aria-label="${isPptx ? '报告幻灯片' : format === 'xlsx' ? '报告工作簿' : '报告正文'}">
+      <section class="editor-surface" aria-label="${isPptx ? '报告幻灯片' : format === 'xlsx' ? '报告工作簿' : format === 'docx' ? '报告 Word 文档' : format === 'pdf' ? '报告 PDF' : '报告正文'}">
         <div id="report-editor" aria-busy="true"></div>
       </section>
     </div>

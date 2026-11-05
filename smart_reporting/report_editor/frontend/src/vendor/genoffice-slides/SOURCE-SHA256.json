@@ -1,0 +1,9 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "upstream": {
+    "apps/slides/src/renderer/slide-size.ts": "4f428b6e000b405ccaf2034be859b4de1a86a95641da747cd70e1b51467fe27a"
+  },
+  "local": {
+    "slide-size.ts": "4f428b6e000b405ccaf2034be859b4de1a86a95641da747cd70e1b51467fe27a"
+  }
+}

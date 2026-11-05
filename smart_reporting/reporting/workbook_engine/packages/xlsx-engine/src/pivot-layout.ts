@@ -7,6 +7,13 @@ import { groupValue, isValidGrouping, type PivotFieldGrouping } from './pivot-gr
 
 export type PivotScalar = string | number | boolean | null
 
+// 与上游 pivot-engine 的数字转换一致，文本数字也参与烘焙聚合。
+function numericValue(value: PivotScalar): number | null {
+  if (value === null || value === '') return null
+  const numeric = typeof value === 'number' ? value : Number(String(value).trim())
+  return Number.isFinite(numeric) ? numeric : null
+}
+
 export type PivotLayoutErrorCode =
   | 'sourceNeedsRows'
   | 'sourceRowLimit'
@@ -297,8 +304,8 @@ export function buildPivotLayout(
       return evaluatePivotFormula(spec.ast, (name) => {
         const refIndex = fieldIndex(name)
         return rows
-          .map((row) => row[refIndex])
-          .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+          .map((row) => numericValue(row[refIndex] ?? null))
+          .filter((value): value is number => value !== null)
           .reduce((total, value) => total + value, 0)
       })
     }
@@ -307,8 +314,8 @@ export function buildPivotLayout(
         .length
     }
     const numbers = rows
-      .map((row) => row[spec.fieldIndex])
-      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+      .map((row) => numericValue(row[spec.fieldIndex] ?? null))
+      .filter((value): value is number => value !== null)
     if (numbers.length === 0) return null
     switch (spec.agg) {
       case 'sum':

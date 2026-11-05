@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -8,7 +8,7 @@ type TextEdit = {
   elementId: string
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
-}
+} & { fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
 type Geometry = { x: number; y: number; width: number; height: number }
 type TextBox = {
   slideIndex: number
@@ -27,6 +27,7 @@ type Input = {
   edits?: TextEdit[]
   order?: number[]
   theme?: 'executive' | 'clinical' | 'modern'
+  slideSize?: { cx: number; cy: number }
   images?: {
     slideIndex: number
     bytesBase64: string
@@ -42,11 +43,14 @@ type Input = {
     trigger: SlideAnimation['trigger']
     durationMs?: number
     delayMs?: number
+    direction?: SlideAnimation['direction']
+    append?: boolean
   }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]
   backgrounds?: { slideIndex: number; color: string }[]
   textBoxes?: TextBox[]
   deletions?: { slideIndex: number; elementId: string }[]
+  paragraphFormatting?: { slideIndex: number; elementId: string; align: 'left' | 'center' | 'right' | 'justify' }[]
 }
 
 const colorPattern = /^#[0-9a-fA-F]{6}$/
@@ -86,13 +90,14 @@ if (request.action === 'inspect') {
       background: slide.background?.type === 'solid' ? slide.background.color : null,
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
-      animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, presetXml, preset }) => ({
+      animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset }) => ({
         spid,
         elementId: slide.elements.find((element) => elementSpid(element) === spid)?.id ?? '',
         effect,
         trigger,
         durationMs,
         delayMs,
+        ...(direction ? { direction } : {}),
         ...(presetXml ? { presetXml } : {}),
         ...(preset ? { preset } : {}),
       })),
@@ -101,6 +106,22 @@ if (request.action === 'inspect') {
         type: element.type,
         name: element.name ?? '',
         text: textOf(element),
+        ...(element.type === 'text' || element.type === 'shape' ? (() => {
+          const paragraphs = element.text?.paragraphs ?? []
+          const run = paragraphs[0]?.runs[0]
+          return {
+            paragraphAlignments: paragraphs.map((paragraph) => paragraph.align ?? null),
+            ...(run ? { textStyle: {
+            fontSizePt: run.fontSize ?? null,
+            fontFamily: run.fontFamily ?? null,
+            color: run.color ?? null,
+            bold: run.bold ?? null,
+            italic: run.italic ?? null,
+            underline: run.underline ?? null,
+            strike: run.strike ?? null,
+            } } : {}),
+          }
+        })() : {}),
         editable: element.type === 'text' || element.type === 'shape',
         deletable: deletableTypes.has(element.type),
         geometry: {
@@ -147,6 +168,13 @@ if (request.action === 'inspect') {
     if (box.rotation !== undefined && (!Number.isFinite(box.rotation) || Math.abs(box.rotation) > 360)) throw new Error('textbox_rotation_invalid')
   }
   for (const edit of request.edits ?? []) {
+    if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
+      throw new Error('element_edit_invalid')
+    }
+    if (edit.fontSizePt !== undefined && (!Number.isFinite(edit.fontSizePt) || edit.fontSizePt < 1 || edit.fontSizePt > 400)) throw new Error('text_format_font_invalid')
+    if (edit.fontFamily !== undefined && (typeof edit.fontFamily !== 'string' || !edit.fontFamily.trim() || edit.fontFamily.length > 200 || /[\x00-\x1f]/.test(edit.fontFamily))) throw new Error('text_format_font_invalid')
+    if (edit.color !== undefined && (typeof edit.color !== 'string' || !colorPattern.test(edit.color))) throw new Error('text_format_color_invalid')
+    if (['bold', 'italic', 'underline', 'strike'].some(key => edit[key as keyof TextEdit] !== undefined && typeof edit[key as keyof TextEdit] !== 'boolean')) throw new Error('text_format_font_invalid')
     if (!Number.isInteger(edit.slideIndex) || edit.slideIndex < 0 || edit.slideIndex >= opened.deck.slides.length) {
       throw new Error('slide_index_invalid')
     }
@@ -202,6 +230,10 @@ if (request.action === 'inspect') {
     if (!Number.isFinite(durationMs) || durationMs < 0 || !Number.isFinite(delayMs) || delayMs < 0) {
       throw new Error('animation_timing_invalid')
     }
+    if (animation.direction !== undefined && (
+      !['top', 'bottom', 'left', 'right'].includes(animation.direction) ||
+      !['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(animation.effect)
+    )) throw new Error('animation_direction_invalid')
     const slide = opened.deck.slides[animation.slideIndex]
     const element = slide?.elements.find((candidate) => candidate.id === animation.elementId)
     const spid = element ? elementSpid(element) : null
@@ -209,7 +241,7 @@ if (request.action === 'inspect') {
       throw new Error('animation_target_invalid')
     }
     const existing = getSlideAnimations(slide)
-    const index = existing.findIndex((item) => item.spid === spid && item.effect === animation.effect)
+    const index = animation.append ? -1 : existing.findIndex((item) => item.spid === spid && item.effect === animation.effect)
     const updated: SlideAnimation = {
       ...(index >= 0 ? existing[index] : {}),
       spid,
@@ -217,6 +249,7 @@ if (request.action === 'inspect') {
       trigger: animation.trigger,
       durationMs,
       delayMs,
+      ...(animation.direction !== undefined ? { direction: animation.direction } : {}),
     }
     if (index >= 0) existing[index] = updated
     else existing.push(updated)
@@ -232,9 +265,11 @@ if (request.action === 'inspect') {
     if (!layouts.some((layout) => layout.path === selection.layoutPath)) {
       throw new Error('layout_path_invalid')
     }
-    if (!setSlideLayout(opened, selection.slideIndex, selection.layoutPath)) {
-      throw new Error('layout_apply_failed')
-    }
+    const laidOut = setSlideLayout(opened, selection.slideIndex, selection.layoutPath)
+    if (!laidOut) throw new Error('layout_apply_failed')
+    // Layout materialization replaces the slide model; later edits must target
+    // that live object while retaining the request's original slide indices.
+    originalSlides[selection.slideIndex] = laidOut
   }
   if (request.order) {
     if (request.order.length !== opened.deck.slides.length || new Set(request.order).size !== request.order.length || request.order.some((n) => !Number.isInteger(n) || n < 0 || n >= request.order!.length)) {
@@ -251,6 +286,24 @@ if (request.action === 'inspect') {
     const spec = themes[request.theme]
     applyThemeToArchive(opened, spec)
     remapDeckColors(opened, spec)
+  }
+  for (const edit of request.edits ?? []) {
+    const { fontSizePt, fontFamily, color, bold, italic, underline, strike } = edit
+    if ([fontSizePt, fontFamily, color, bold, italic, underline, strike].some(value => value !== undefined)) {
+      if (!setElementFont(originalSlides[edit.slideIndex]!, edit.elementId, {
+        ...(fontSizePt !== undefined ? { fontSizePt } : {}),
+        ...(fontFamily !== undefined ? { fontFamily } : {}),
+        ...(color !== undefined ? { color: color.toUpperCase() } : {}),
+        ...(bold !== undefined ? { bold } : {}),
+        ...(italic !== undefined ? { italic } : {}),
+        ...(underline !== undefined ? { underline } : {}),
+        ...(strike !== undefined ? { strike } : {}),
+      })) throw new Error('text_format_target_invalid')
+    }
+  }
+  for (const format of request.paragraphFormatting ?? []) {
+    const slide = opened.deck.slides[format.slideIndex]
+    if (!slide || !setElementParagraphFormat(slide, format.elementId, { align: format.align })) throw new Error('paragraph_format_target_invalid')
   }
   for (const background of request.backgrounds ?? []) {
     setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
@@ -272,6 +325,19 @@ if (request.action === 'inspect') {
     if (box.rotation) {
       element.transform.rot = Math.round(box.rotation * 60000)
       element.dirtyTransform = true
+    }
+  }
+  if (request.slideSize) {
+    const { cx, cy } = request.slideSize
+    if (Object.keys(request.slideSize).length !== 2
+      || ![[12192000, 6858000], [9144000, 6858000], [10692000, 7560000], [15120000, 10692000]]
+        .some(([width, height]) => width === cx && height === cy || width === cy && height === cx)) {
+      throw new Error('slide_size_invalid')
+    }
+    // Draft coordinates refer to the original canvas. Resize after all edits;
+    // setSlideSize materializes slides and must not invalidate pending targets.
+    if ((opened.deck.size.cx !== cx || opened.deck.size.cy !== cy) && !setSlideSize(opened, cx, cy)) {
+      throw new Error('slide_size_apply_failed')
     }
   }
   if (!request.output) throw new Error('output_path_required')

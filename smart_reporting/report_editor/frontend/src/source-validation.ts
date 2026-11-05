@@ -236,7 +236,10 @@ function sha256Fallback(input: Uint8Array): Uint8Array {
 }
 
 export async function markdownSha256(markdown: string): Promise<string> {
-  const input = new TextEncoder().encode(markdown)
+  return bytesSha256(new TextEncoder().encode(markdown))
+}
+
+export async function bytesSha256(input: Uint8Array<ArrayBuffer>): Promise<string> {
   const digest = crypto.subtle
     ? new Uint8Array(await crypto.subtle.digest('SHA-256', input))
     : sha256Fallback(input)

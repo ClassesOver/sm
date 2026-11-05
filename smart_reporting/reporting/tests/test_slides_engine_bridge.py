@@ -68,6 +68,62 @@ def test_slides_bridge_edits_text_and_preserves_other_slide_xml(tmp_path: Path):
         assert archive.read(untouched_path) == untouched_xml
 
 
+def test_slides_bridge_slide_size_rescales_objects_and_independently_reopens(tmp_path: Path):
+    source = tmp_path / 'source.pptx'
+    output = tmp_path / 'resized.pptx'
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1)).text = '尺寸回读'
+    presentation.save(source)
+
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output),
+             'slideSize': {'cx': 12192000, 'cy': 6858000}}, tmp_path)
+
+    model = _invoke({'action': 'inspect', 'input': str(output)}, tmp_path)
+    assert model['size'] == {'cx': 12192000, 'cy': 6858000}
+    assert model['slides'][0]['elements'][0]['geometry'] == {'x': 128, 'y': 96, 'width': 384, 'height': 96}
+    reopened = Presentation(output)
+    assert reopened.slide_width == 12192000 and reopened.slide_height == 6858000
+    assert reopened.slides[0].shapes[0].left == Inches(4 / 3)
+
+
+@pytest.mark.parametrize('size', [
+    {'cx': 10692000, 'cy': 7560000}, {'cx': 7560000, 'cy': 10692000},
+    {'cx': 15120000, 'cy': 10692000}, {'cx': 10692000, 'cy': 15120000},
+])
+def test_slides_bridge_paper_size_presets_scale_geometry_and_independently_reopen(tmp_path: Path, size):
+    source = tmp_path / 'source.pptx'
+    output = tmp_path / 'paper.pptx'
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1)).text = '纸张尺寸'
+    presentation.save(source)
+
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'slideSize': size}, tmp_path)
+
+    reopened = Presentation(output)
+    assert (reopened.slide_width, reopened.slide_height) == (size['cx'], size['cy'])
+    shape = reopened.slides[0].shapes[0]
+    assert shape.left == round(914400 * size['cx'] / 9144000)
+    assert shape.top == round(914400 * size['cy'] / 6858000)
+    assert shape.width == round(2743200 * size['cx'] / 9144000)
+    assert shape.height == round(914400 * size['cy'] / 6858000)
+    assert shape.text == '纸张尺寸'
+
+
+@pytest.mark.parametrize('size', [{'cx': 1, 'cy': 1}, {'cx': 12192000, 'cy': 6858000, 'extra': True}])
+def test_slides_bridge_rejects_unadvertised_slide_size_fields_without_output(tmp_path: Path, size):
+    source = tmp_path / 'source.pptx'
+    output = tmp_path / 'invalid.pptx'
+    source.write_bytes(FIXTURE.read_bytes())
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'slideSize': size}, tmp_path)
+
+    assert 'slide_size_invalid' in error.value.stderr
+    assert not output.exists()
+
+
 def test_slides_bridge_applies_business_theme_and_keeps_all_slides(tmp_path: Path):
     source = tmp_path / "source.pptx"
     output = tmp_path / "themed.pptx"
@@ -230,6 +286,39 @@ def test_slides_bridge_updates_existing_animation_timing_and_preserves_other_eff
         and item["delayMs"] == 100
         for item in animations
     )
+
+
+def test_slides_bridge_appends_same_target_animations_in_request_order(tmp_path: Path):
+    source = tmp_path / "source.pptx"
+    animated = tmp_path / "animated.pptx"
+    output = tmp_path / "with-more-animations.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    slide_index, element = next(
+        (slide["slideIndex"], element)
+        for slide in inspected["slides"]
+        for element in slide["elements"]
+        if element["editable"] and element["text"].strip()
+    )
+    target = {"slideIndex": slide_index, "elementId": element["id"]}
+    first = {**target, "effect": "fade", "trigger": "onClick", "durationMs": 500, "delayMs": 0}
+    _invoke({"action": "edit", "input": str(source), "output": str(animated), "animations": [first]}, tmp_path)
+    appended = [
+        {**target, "effect": "fade", "trigger": "withPrev", "durationMs": 700, "delayMs": 50, "append": True},
+        {**target, "effect": "pulse", "trigger": "afterPrev", "durationMs": 900, "delayMs": 100, "append": True},
+    ]
+    _invoke({"action": "edit", "input": str(animated), "output": str(output), "animations": appended}, tmp_path)
+
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)
+    animations = [
+        item for item in reopened["slides"][slide_index]["animations"]
+        if item["elementId"] == element["id"]
+    ]
+    assert [(item["effect"], item["trigger"], item["durationMs"], item["delayMs"]) for item in animations] == [
+        ("fade", "onClick", 500, 0),
+        ("fade", "withPrev", 700, 50),
+        ("pulse", "afterPrev", 900, 100),
+    ]
 
 
 @pytest.mark.parametrize('replacement', ['新正文', '新第一段\n新第二段\n追加第三段'])

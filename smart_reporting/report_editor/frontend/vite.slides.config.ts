@@ -1,12 +1,13 @@
 import { fileURLToPath } from 'node:url'
 import { slidesReact } from './vite.slides-react'
 import { defineConfig } from 'vite'
+import editorConfig from './vite.config'
 
 export default defineConfig({
   base: '/reports/v1/slides/',
   plugins: [slidesReact()],
   esbuild: { jsxFactory: 'h', jsxFragment: 'Fragment' },
-  resolve: { alias: { '@genoffice/pptx-render': fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-render/src/browser.ts', import.meta.url)) } },
+  resolve: editorConfig.resolve,
   build: {
     emptyOutDir: true,
     outDir: '../static/slides',

@@ -1,0 +1,86 @@
+{
+  "src/main/atomic-write.ts": {
+    "upstreamPath": "apps/pdf/src/main/atomic-write.ts",
+    "sha256": "412030336168c38397fe0e04abba737c825b27e88417b1aec22583218572fc10"
+  },
+  "src/main/font-cmap.ts": {
+    "upstreamPath": "apps/pdf/src/main/font-cmap.ts",
+    "sha256": "16b81cff9f15aa5e974506b41a5862c56ea73bb449a0d586d8ffea0b1ca111fa"
+  },
+  "src/main/font-locate.ts": {
+    "upstreamPath": "apps/pdf/src/main/font-locate.ts",
+    "sha256": "50209937d848a0f62847b1b1379cf02492b6a1e98d9c01a91ea637fc4fbee678"
+  },
+  "src/main/font-subset.ts": {
+    "upstreamPath": "apps/pdf/src/main/font-subset.ts",
+    "sha256": "e21aaf07165476c6511354d8372df05750fd4b9d439f15c54fc690b3fe18f2c6"
+  },
+  "src/main/form-text.ts": {
+    "upstreamPath": "apps/pdf/src/main/form-text.ts",
+    "sha256": "ffa83dc944e7e96e8ab36f416cabe5f90e1a29972e39fafa33f0da88285e62c6"
+  },
+  "src/main/pdf-attachments.ts": {
+    "upstreamPath": "apps/pdf/src/main/pdf-attachments.ts",
+    "sha256": "7de34150d811b478678e74c196740ff19b326b49d10fc8c7f5360941f0486bec"
+  },
+  "src/main/pdf-crypt.ts": {
+    "upstreamPath": "apps/pdf/src/main/pdf-crypt.ts",
+    "sha256": "8dda423184d20fcb7e689aa8377fb18423e00a61d6c6b7d94bc8502cc36cfae5"
+  },
+  "src/main/redaction.ts": {
+    "upstreamPath": "apps/pdf/src/main/redaction.ts",
+    "sha256": "6270d0c939e13b1b1dbf7968d0572667df1fa568226950ab39125f06fadfa9ef"
+  },
+  "src/main/save-pdf.ts": {
+    "upstreamPath": "apps/pdf/src/main/save-pdf.ts",
+    "sha256": "21648506698c378492dffee6ab4afc7d80e75cc589e184ae1e334d1ff4fca74b"
+  },
+  "src/main/text-edit.ts": {
+    "upstreamPath": "apps/pdf/src/main/text-edit.ts",
+    "sha256": "2af833994a3f1d29bfffa72c323af2ff5ff0d2cf202629a62d1f70eb4ab58d4d"
+  },
+  "src/main/wasm-path.ts": {
+    "upstreamPath": "apps/pdf/src/main/wasm-path.ts",
+    "sha256": "9e1b993dffaad77125212b9a3aa3b19744bf9a3e6400cc4062051cf06bd61a60"
+  },
+  "src/shared/ipc.ts": {
+    "upstreamPath": "apps/pdf/src/shared/ipc.ts",
+    "sha256": "c03d6e31f299783cad2f777c688aa15adf2ba151577cb5d36ca327152daf77aa"
+  },
+  "src/shared/radicals.ts": {
+    "upstreamPath": "apps/pdf/src/shared/radicals.ts",
+    "sha256": "575de046475eb6a074676ffb6e0fb22adf2e317c8dcec133cf529a556c07a09d"
+  },
+  "src/shared/x-layers.ts": {
+    "upstreamPath": "apps/pdf/src/shared/x-layers.ts",
+    "sha256": "b4207c97c41dc63b6190e3e74eccda182bab6a93e0c66321ab927d22e02225c0"
+  },
+  "vendor/electron-utils/src/atomic-write.ts": {
+    "upstreamPath": "packages/electron-utils/src/atomic-write.ts",
+    "sha256": "41ddefdd1a402ba10359c60b7604d734eb404a95669f22df4f8fe33a2ac0c319"
+  },
+  "vendor/font-metrics/src/advance.ts": {
+    "upstreamPath": "packages/font-metrics/src/advance.ts",
+    "sha256": "f5aff6ad39a8ed8d6a3ad626774c6a38a39b13d28c2eceddc1ad17700908eb89"
+  },
+  "vendor/font-metrics/src/font-locate.ts": {
+    "upstreamPath": "packages/font-metrics/src/font-locate.ts",
+    "sha256": "754ae6e55722a6ee11cda9700727ffb6fce6a57930c55ca187879f0e2bb94b59"
+  },
+  "vendor/font-metrics/src/index.ts": {
+    "upstreamPath": "packages/font-metrics/src/index.ts",
+    "sha256": "96bf394d35724cce93cd7bad43bb974d5284f3b88dfeb9af20e7bbd2657f3658"
+  },
+  "vendor/font-metrics/src/metrics.ts": {
+    "upstreamPath": "packages/font-metrics/src/metrics.ts",
+    "sha256": "ac92791391bba12791a573b05e381f3eb97f00db72bdf89bd8f9506b45697981"
+  },
+  "vendor/font-metrics/src/resolve.ts": {
+    "upstreamPath": "packages/font-metrics/src/resolve.ts",
+    "sha256": "3b958ea218283e75bba4402731bda1ee5ed106f78294169e09049f732c558798"
+  },
+  "vendor/font-metrics/src/sfnt.ts": {
+    "upstreamPath": "packages/font-metrics/src/sfnt.ts",
+    "sha256": "dc143fcd8ea26b1963e10050280fa4cc13f23f9cd910ce3f919ba54703431068"
+  }
+}

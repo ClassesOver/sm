@@ -52,6 +52,7 @@ export interface PivotGroupValue {
 /// Excel serial-date epoch: 1899-12-30 (compatible with the 1900 leap-year bug).
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30)
 const DAY_MS = 86_400_000
+const EXCEL_PHANTOM_LEAP_SERIAL = 60
 
 /// Parses a cell date: numbers as Excel serial dates, strings in YYYY-MM-DD /
 /// YYYY/M/D read digits directly (avoiding Date.parse timezone ambiguity), and
@@ -59,7 +60,10 @@ const DAY_MS = 86_400_000
 export function parseDateParts(value: string | number): { year: number; month: number } | null {
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || value < 0 || value > 2_958_465) return null
-    const date = new Date(EXCEL_EPOCH_UTC + Math.floor(value) * DAY_MS)
+    const serial = Math.floor(value)
+    if (serial === EXCEL_PHANTOM_LEAP_SERIAL) return { year: 1900, month: 2 }
+    const shift = serial < EXCEL_PHANTOM_LEAP_SERIAL ? 1 : 0
+    const date = new Date(EXCEL_EPOCH_UTC + (serial + shift) * DAY_MS)
     return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1 }
   }
   const direct = value.match(/^\s*(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?/)

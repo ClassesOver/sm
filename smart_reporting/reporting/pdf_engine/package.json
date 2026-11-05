@@ -1,0 +1,22 @@
+{
+  "name": "@smart-reporting/pdf-engine",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bundle:bridges": "esbuild bridge/cli.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs --banner:js=\"import { createRequire as createBridgeRequire } from 'node:module'; const require = createBridgeRequire(import.meta.url);\"",
+    "test": "node --import tsx --test bridge/operations.test.ts",
+    "package:runtime": "node bridge/package-runtime.mjs ."
+  },
+  "dependencies": {
+    "@embedpdf/pdfium": "2.15.1",
+    "harfbuzzjs": "0.10.3",
+    "pdf-lib": "1.17.1",
+    "zod": "4.6.5",
+    "@genoffice/font-metrics": "file:./vendor/font-metrics",
+    "@genoffice/electron-utils": "file:./vendor/electron-utils"
+  },
+  "devDependencies": {
+    "tsx": "4.20.6",
+    "esbuild": "0.25.12"
+  }
+}

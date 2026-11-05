@@ -1,0 +1,7 @@
+{
+  "packages/xlsx-engine/src/pivot-grouping.ts": "f0e167a3a3e12610a0e268f6775feb3e20bc8b023a5a7b2efef43376e2f659d0",
+  "packages/xlsx-engine/src/pivot-layout.ts": "b068254667e5d1574f7f761a2d0b3e4536343a2b91233f393d91668aba071fce",
+  "packages/xlsx-engine/src/sort-range.ts": "7b1b39a7f932584a5a7bd3bcb21d789686d360908aecb0c847ce311e7b7196a7",
+  "packages/xlsx-engine/tests/pivot-grouping.test.ts": "1d3e2f20ca433131fd8ba5c78ac22247cd7d7c489ec4031b690bad1987593345",
+  "packages/xlsx-engine/tests/upstream-fixes.test.ts": "177a0cbdaa8c43ffa5dd4594f852e9cd49b1f11cf9155b9b89322fc898575f78"
+}
