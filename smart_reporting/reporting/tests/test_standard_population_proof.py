@@ -96,3 +96,33 @@ def test_real_month_start_labels_keep_explicit_month_grain_in_table_and_proof():
 def test_parent_with_wider_window_cannot_authorize_subset_as_total_population():
     assert _proof(mutate=lambda parent,payload: parent.period_values.append(
         SimpleNamespace(period='2025-03', value=0))) is None
+
+
+@pytest.mark.parametrize('label', ['', '   ', '\t', '\u3000'])
+def test_blank_members_keep_amount_but_warn_and_cannot_certify(label):
+    csv = CSV + f'2025-01,"{label}",0\n'.encode()
+    _, _, payload = _inputs(csv)
+    assert sum(row[1] for row in payload['findings'][0]['rows']) == 200
+    assert payload['warnings']
+    assert _proof(csv) is None
+
+
+def test_valid_padded_members_and_string_zero_are_never_merged():
+    csv = b'period,department,amount\n2025-01,A,50\n2025-01, A ,50\n2025-02,0,100\n'
+    req, parent, payload = _inputs(csv)
+    assert not payload['warnings']
+    proof = standard.build_standard_population_proof(csv_content=csv,
+        dataset_sha256=parent.dataset_sha256, request=req, parent_fact=parent,
+        finding=payload['findings'][0])
+    assert proof['members'] == [' A ', '0', 'A']
+
+
+def test_observed_zero_month_still_has_complete_coverage():
+    csv = b'period,department,amount\n2025-01,A,200\n2025-02,A,0\n'
+    req, parent, payload = _inputs(csv)
+    parent.period_values = [SimpleNamespace(period='2025-01', value=200),
+                            SimpleNamespace(period='2025-02', value=0)]
+    proof = standard.build_standard_population_proof(csv_content=csv,
+        dataset_sha256=parent.dataset_sha256, request=req, parent_fact=parent,
+        finding=payload['findings'][0])
+    assert proof['selectedRowCount'] == 2

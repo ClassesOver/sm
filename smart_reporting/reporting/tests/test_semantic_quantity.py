@@ -448,6 +448,36 @@ def test_model_declared_population_proof_without_server_context_does_not_authori
         'selection': 'items', 'evidence': ['前两项']}, '前两项。') is None
 
 
+def test_blank_member_context_cannot_advertise_complete_population():
+    catalog = _catalog(rows=[['甲科', 60, 60], ['   ', 40, 40]])
+    tables = [item for item in catalog.prompt if item['kind'] == 'table_column']
+    assert tables
+    assert all(not item.get('completePopulation') for item in tables)
+
+
+def test_persisted_top_proof_with_rehashed_blank_member_is_rejected():
+    import hashlib
+
+    from smart_reporting.reporting.trace.contracts_v1 import canonical_sha256
+    from smart_reporting.reporting.trace.table_sources import table_derivation_token
+    catalog = _proven_catalog()
+    amount = _source(catalog, kind='table_column', column='value')
+    binding = catalog.resolve({'operation': 'top_sum', 'left': [amount], 'limit': 2,
+        'selection': 'items', 'evidence': ['前两项']}, '前两项。')
+    sources = dict(catalog.sources)
+    resource = 'trf-' + 'b' * 20
+    document = json.loads(sources[resource])
+    table = document['findings'][0]
+    table['rows'][2][0] = '   '
+    proof = table['populationProof']
+    proof['members'] = sorted(row[0] for row in table['rows'])
+    proof['membersSha256'] = hashlib.sha256(json.dumps(proof['members'], ensure_ascii=False,
+        separators=(',', ':')).encode()).hexdigest()
+    sources[resource] = json.dumps(document).encode()
+    changed = binding.table_derivation.model_copy(update={'population_proof_sha256': canonical_sha256(proof)})
+    assert table_derivation_token(changed, sources) is None
+
+
 def test_explicit_month_grain_normalizes_real_standard_date_labels():
     catalog = _proven_catalog(dated_months=True)
     amount = _source(catalog, kind='table_column', column='value')

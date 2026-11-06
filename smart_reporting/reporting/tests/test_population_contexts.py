@@ -16,11 +16,18 @@ from smart_reporting.reporting.workflow.runtime.standard_supplemental import (
 )
 
 
-def registered_population():
+def registered_population(*, invalid_legacy_member=False):
     from smart_reporting.reporting.tests.test_standard_supplemental import CSV
     req, parent, payload = _inputs()
     proof = build_standard_population_proof(csv_content=CSV, dataset_sha256=parent.dataset_sha256,
         request=req, parent_fact=parent, finding=payload['findings'][0])
+    if invalid_legacy_member:
+        # 重新登记有效文件身份：验证语义边界，而非仅触发文件哈希不一致。
+        payload['findings'][0]['rows'][0][0] = '   '
+        if invalid_legacy_member != 'rows_only':
+            proof['members'] = sorted(row[0] for row in payload['findings'][0]['rows'])
+            proof['membersSha256'] = hashlib.sha256(json.dumps(proof['members'],
+                ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
     payload['findings'][0]['populationProof'] = proof
     raw = json.dumps(payload, ensure_ascii=False).encode()
     identity = FileIdentity(path='evidence.json',size=len(raw),sha256=hashlib.sha256(raw).hexdigest())
@@ -34,6 +41,16 @@ def registered_population():
     item = SimpleNamespace(analysis_id='analysis_001',dataset_ids=(req.dataset_id,),
                            evidence_files=(identity,),computation_record=record.model_dump(mode='json',by_alias=True))
     return SimpleNamespace(evidence=(item,)), {derive_resource_id(identity.path):raw}, proof
+
+
+@pytest.mark.parametrize('invalid_legacy_member', [True, 'rows_only'])
+def test_identity_valid_legacy_blank_proof_loses_authority_but_keeps_source_bytes(invalid_legacy_member):
+    from smart_reporting.reporting.workflow.runtime.sections import _verified_population_contexts
+    work, sources, _ = registered_population(invalid_legacy_member=invalid_legacy_member)
+    before = dict(sources)
+    assert not _verified_population_contexts(work, sources)
+    assert sources == before
+    assert json.loads(next(iter(sources.values())))['findings'][0]['rows']
 
 
 def test_server_registered_population_context_is_table_pointer_scoped():
