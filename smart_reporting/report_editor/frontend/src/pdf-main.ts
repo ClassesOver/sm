@@ -11,7 +11,7 @@ import type { NativeContextResponse, createNativeApi } from './native-api'
 import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
-import { deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -358,6 +358,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const pageActions: Record<string, () => void | Promise<void>> = {
     'genoffice.pdf.page.rotateLeft': () => append({ kind: 'rotatePage', pageId: activeId, delta: 270 }),
     'genoffice.pdf.page.rotateRight': () => append({ kind: 'rotatePage', pageId: activeId, delta: 90 }),
+    'genoffice.pdf.page.rotateAll': async () => {
+      if (disposed || !document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed) return
+      draft.setOperations(rotateAllPdfPages(model.pages, draft.operations)); await refresh()
+    },
     'genoffice.pdf.page.delete': async () => {
       if (!activeId) return
       draft.setOperations(deletePdfPage(model.pages, draft.operations, activeId)); await refresh()
@@ -447,6 +451,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       for (const total of root.querySelectorAll('.pdf-view-page-row span')) total.textContent = ` / ${pages.length}`
     }
     for (const id of ['genoffice.pdf.page.rotateLeft', 'genoffice.pdf.page.rotateRight']) pageButtons.get(id)!.disabled ||= !activeId
+    const rotateAll = pageButtons.get('genoffice.pdf.page.rotateAll')!
+    const rotateAllOverBudget = !!document && draft.operations.length + state().length > 500
+    rotateAll.disabled ||= !document || rotateAllOverBudget
+    rotateAll.title = rotateAllOverBudget ? '旋转全部页面将超过 500 条修改；请先保存当前修改或减少页面后重开' : '将当前全部保留页面顺时针旋转 90°'
+    rotateAll.setAttribute('aria-description', rotateAll.title)
     pageButtons.get('genoffice.pdf.page.delete')!.disabled ||= !activeId || (!!document && state().length <= 1)
     pageButtons.get('genoffice.pdf.page.reverse')!.disabled ||= !document || state().length <= 1
     status.dataset.dirty = String(draft.dirty)

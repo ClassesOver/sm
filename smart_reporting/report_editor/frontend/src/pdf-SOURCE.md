@@ -22,8 +22,8 @@ The Pages tab preserves the source control order in four groups: rotation;
 delete/extract/insert/replace; crop/page size; reverse/split/merge. Its semantic
 IDs use the local `genoffice.pdf.page.*` namespace because the source has no
 stable DOM command IDs. Left/right rotation, delete, extract, import, replace,
-crop, sizing, reverse, split and merge actions are individually mapped. Only
-left/right rotation, delete, and reverse have verified bridge operations; the other
+crop, sizing, reverse, split and merge actions are individually mapped. Left/right rotation, clockwise rotate-all, delete, and reverse have verified
+bridge operation paths; the other
 source actions stay disabled with their own bridge or publication reason. The
 local move-previous/move-next controls remain in a separate draft-controls
 group and are not presented as source commands. The four-group command ledger
@@ -148,3 +148,14 @@ rendered the PDF without a text entry or any extra text-inspection request.
 Desktop/mobile screenshots and fixture scripts are under
 `/tmp/pdf-text-native-web-smoke/`; independent engine text/PNG checks and the
 resource-bound digest contract are documented in the PDF engine SOURCE.md.
+
+
+2026-11-06 bounded Page rotation continuation: `page.rotateAll` now follows
+pinned App.tsx `rotateAllPages(90)` over `visList`. The host appends one source-
+bound `rotatePage` +90 record per surviving page in one NativeDraft snapshot,
+without changing page order, prior rotations, annotations or field values. A
+500-record budget is checked before state changes, with a visible unavailable
+reason if exceeded. Existing edit/preview/print/save/readonly locks apply and
+text-preview approval is invalidated by the changed complete snapshot. Source
+provenance and actual evidence are in `NATIVE_PDF_ROTATE_ALL_ACCEPTANCE.md`;
+this does not close Task 5 or implement other page operations.

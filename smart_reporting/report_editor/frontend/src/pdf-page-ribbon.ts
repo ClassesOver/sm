@@ -23,7 +23,7 @@ export const PDF_PAGE_RIBBON_GROUPS: PdfPageRibbonGroup[] = [
     commands: [
       { id: 'genoffice.pdf.page.rotateLeft', label: '向左旋转', enabled: true },
       { id: 'genoffice.pdf.page.rotateRight', label: '向右旋转', enabled: true },
-      unavailable('page.rotateAll', '旋转全部页面', 'PDF bridge 尚未提供批量旋转页面操作'),
+      { id: 'genoffice.pdf.page.rotateAll', label: '旋转全部页面', enabled: true },
     ],
   },
   {

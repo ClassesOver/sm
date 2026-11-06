@@ -81,6 +81,12 @@ export function reversePdfPages(pages: PdfPageIdentity[], operations: NativeOper
   if (order.length <= 1) return structuredClone(operations)
   return withOrder(operations, order.reverse())
 }
+/** Pinned source rotateAllPages(90): one draft action over surviving source IDs. */
+export function rotateAllPdfPages(pages: PdfPageIdentity[], operations: NativeOperation[]): NativeOperation[] {
+  const survivors = pdfPageState(pages, operations)
+  if (operations.length + survivors.length > 500) throw new Error('旋转全部页面将超过 500 条修改；请先保存当前修改或减少页面后重开')
+  return [...structuredClone(operations), ...survivors.map(page => ({ kind: 'rotatePage', pageId: page.pageId, delta: 90 }))]
+}
 export function deletePdfPage(pages: PdfPageIdentity[], operations: NativeOperation[], pageId: string): NativeOperation[] {
   const order = pdfPageState(pages, operations).map(page => page.pageId)
   if (!order.includes(pageId)) throw new Error('页面不存在')

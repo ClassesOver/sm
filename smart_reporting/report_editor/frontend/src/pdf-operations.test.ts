@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, stickyNoteRect } from './pdf-operations'
+import { NativeDraft } from './native-draft'
+import { deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, PdfPreviewReview, stickyNoteRect } from './pdf-operations'
 
 const pages = [0, 1, 2].map(index => ({ pageId: `source:page:${index}`, index, mediaBox: { x: 0, y: 0, width: 300, height: 400 }, cropBox: { x: 20, y: 30, width: 200, height: 300 }, rotation: index * 90 }))
 
@@ -116,4 +117,51 @@ describe('PDF text draft and preview confirmation', () => {
     review.confirm(original, false)
     expect(review.confirmedDigest(original)).toBeUndefined()
   })
+})
+
+
+describe('fixed-source rotate all surviving pages', () => {
+  it('rotates each surviving source identity clockwise once after reorder, deletion and existing rotations', () => {
+    const operations = reversePdfPages(pages, [{ kind: 'rotatePage', pageId: pages[1].pageId, delta: 270 }, { kind: 'setFormValue', name: 'field', fieldKind: 'text', value: 'kept', fieldId: 'a'.repeat(64), expectedFieldSha256: 'b'.repeat(64) }])
+    const before = deletePdfPage(pages, operations, pages[0].pageId)
+    const rotated = rotateAllPdfPages(pages, before)
+    expect(rotated.slice(0, before.length)).toEqual(before)
+    expect(rotated.slice(before.length)).toEqual([
+      { kind: 'rotatePage', pageId: pages[2].pageId, delta: 90 },
+      { kind: 'rotatePage', pageId: pages[1].pageId, delta: 90 },
+    ])
+    expect(pdfPageState(pages, rotated).map(page => [page.index, page.rotation])).toEqual([[2, 270], [1, 90]])
+    expect(pdfPageState(pages, before).map(page => [page.index, page.rotation])).toEqual([[2, 180], [1, 0]])
+    expect(pages.map(page => page.rotation)).toEqual([0, 90, 180])
+  })
+  it('retains an atomic operation budget and refuses stale or empty source projections', () => {
+    const existing = Array.from({ length: 498 }, () => ({ kind: 'rotatePage', pageId: pages[0].pageId, delta: 90 }))
+    expect(() => rotateAllPdfPages(pages, existing)).toThrow(/500/)
+    expect(existing).toHaveLength(498)
+    expect(rotateAllPdfPages(pages, existing.slice(1))).toHaveLength(500)
+    expect(() => rotateAllPdfPages(pages, [{ kind: 'reorderPages', pageIds: ['stale'] }])).toThrow()
+    expect(() => rotateAllPdfPages(pages, pages.map(page => ({ kind: 'deletePage', pageId: page.pageId })))).toThrow(/全部页面/)
+  })
+})
+
+it('commits rotate-all as one NativeDraft history step and invalidates prior text-preview approval', () => {
+  const store = new Map<string, string>()
+  const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value) }, removeItem: (key: string) => { store.delete(key) } }
+  const identity = { documentId: 'rotate-all', revision: 1, sourceSha256: 'a'.repeat(64), scope: { database: 'fixture', companyId: 'fixture', userId: 'fixture', threadId: 'fixture' } }
+  const draft = new NativeDraft(identity, storage)
+  const before = [{ kind: 'rotatePage', pageId: pages[0].pageId, delta: 270 }]
+  draft.setOperations(before)
+  const review = new PdfPreviewReview(); review.stage(before, 'b'.repeat(64)); review.confirm(before, true)
+  const rotated = rotateAllPdfPages(pages, draft.operations)
+  draft.setOperations(rotated)
+  expect(review.confirmedDigest(draft.operations)).toBeUndefined()
+  draft.undo(); expect(draft.operations).toEqual(before); expect(review.confirmedDigest(draft.operations)).toBeUndefined()
+  draft.redo(); expect(draft.operations).toEqual(rotated)
+  const restored = new NativeDraft(identity, storage)
+  expect(restored.operations).toEqual(rotated)
+  expect(pdfPageState(pages, restored.operations).map(page => page.rotation)).toEqual([0, 180, 270])
+  draft.setOperations(Array.from({ length: 498 }, () => ({ kind: 'rotatePage', pageId: pages[0].pageId, delta: 90 })))
+  const persisted = [...store.entries()]
+  expect(() => draft.setOperations(rotateAllPdfPages(pages, draft.operations))).toThrow(/500/)
+  expect([...store.entries()]).toEqual(persisted)
 })
