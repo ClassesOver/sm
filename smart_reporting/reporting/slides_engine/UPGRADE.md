@@ -344,3 +344,13 @@ PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步�
 及既有文字服务检查、浏览器下载/pypdf、Node22两例和最终构建预算通过。
 详见 `report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`；独立bridge tsc仍
 有六项基线桌面声明问题，零新增，不视作完整镜像/桌面验收，开关关闭。
+
+
+2026-11-06 PDF 文字选区标注：引入固定源 annotations.ts 的选区/匹配算法，
+以单独原始/适配 SHA 与变更通知保留来源；严格 addMarkup 复用未改 AP writer，
+支持四类型、多行、源颜色、待保存切换、回放与实际输出预览。已保存标注
+移除仍明确禁用，读取不完整来源拒绝。44新文件/40受影响文件、14新前端/
+52受影响前端、新服务/四既有服务、Chromium/pypdf及Node22两例通过；
+详见 `report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体差异
+与真实签名依赖分别见 ALIGNMENT_STATUS 和 SIGNING_WEB_DESIGN 文档，不将
+禁用项、设计或缺服务的路径算作完成。开关关闭。

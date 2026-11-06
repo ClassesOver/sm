@@ -212,3 +212,14 @@ actual-output preview and strict source/mixing gates. The UserUnit2 raw source
 counterexample remains reproducible and unsupported sources stay readonly for
 size. See `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`; arbitrary-source/desktop parity
 and remaining Page/Form Design families are not closed.
+
+
+## PDF selected-text markup and whole-format status (2026-11-06)
+
+Home/Annotate four markup additions now share pinned selection/quads/matching and
+real AP writeback. Pending marks toggle; saved matches are not duplicated and
+saved removal remains explicitly unavailable. This supersedes earlier disabled
+underline/squiggly/strikeout addition entries, not the complete source toggle/
+delete behavior. See `NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md` and the separate
+family-level `NATIVE_PDF_ALIGNMENT_STATUS.md`; neither disabled controls nor206
+mechanical App callback nodes are counted as completed source parity.

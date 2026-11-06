@@ -8,3 +8,8 @@
 .pdf-crop-dialog label { display: flex; justify-content: space-between; gap: 16px; }
 .pdf-crop-dialog input { width: 100px; }
 .pdf-crop-dialog p { line-height: 1.6; }
+
+.pdf-pending-markup { position: absolute; box-sizing: border-box; pointer-events: none; }
+.pdf-underline { border-bottom: 1.5px solid currentColor; }
+.pdf-strikeout::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1.5px solid currentColor; }
+.pdf-squiggly { background-repeat: repeat-x; background-position: left bottom; background-size: 8px 4px; }

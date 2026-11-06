@@ -30,6 +30,7 @@ const fieldIdentity = { fieldId: z.string().regex(/^[a-f0-9]{64}$/), expectedFie
 const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('setFormValue'), ...fieldIdentity, value: z.string().max(4000).optional(), checked: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal('replaceText'), ...page, objectId: z.string().min(1).max(256), expectedTextSha256: z.string().regex(/^[a-f0-9]{64}$/), newText: z.string().max(4000) }).strict(),
+  z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, rect, text: z.string().trim().min(1).max(10000), color: color.optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
@@ -64,10 +65,26 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
   const pages = document.getPages().map((page, index) => ({
     pageId: `sha256:${sourceSha256}:page:${index}`, index,
     ...(textPages ? { textObjects: textPages[index] } : {}),
+    ...(() => {
+      try {
+        const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray)
+        const markups = annots ? Array.from({ length: annots.size() }, (_, i) => annots.lookup(i, PDFDict)).flatMap(annotation => {
+          const subtype = String(annotation.get(PDFName.of('Subtype'))).slice(1)
+          const type = ({ Highlight: 'highlight', Underline: 'underline', Squiggly: 'squiggly', StrikeOut: 'strikeout' } as Record<string, string>)[subtype]
+          if (!type) return []
+          const q = annotation.lookupMaybe(PDFName.of('QuadPoints'), PDFArray)?.asArray().map(value => Number(String(value))) ?? []
+          if (!q.length || q.length % 8 || !q.every(Number.isFinite)) throw new Error('unreadable_source_markup')
+          const quads = Array.from({ length: q.length / 8 }, (_, i) => q.slice(i * 8, i * 8 + 8))
+          const c = annotation.lookupMaybe(PDFName.of('C'), PDFArray)?.asArray().map(value => Number(String(value))) ?? []
+          return [{ markupType: type, quads, color: c }]
+        }) : []
+        return { markups, markupReadSafe: true }
+      } catch { return { markups: [], markupReadSafe: false } }
+    })(),
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, ...pageSizeAvailability(document, formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, ...pageSizeAvailability(document, formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
@@ -138,6 +155,17 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       continue
     }
     if (op.kind === 'replaceText') continue
+    if (op.kind === 'addMarkup') {
+      if (!target.markupReadSafe) throw new Error('pdf_source_markup_unreadable')
+      const current = crops.get(op.pageId), b = target.cropBox
+      const [left, bottom, right, top] = current ?? [b.x, b.y, b.x + b.width, b.y + b.height]
+      for (const q of op.quads) {
+        const [x1, y2, x2, , , y1] = q
+        if (x2 - x1 < .5 || y2 - y1 < .5 || q[3] !== y2 || q[4] !== x1 || q[6] !== x2 || q[7] !== y1 || x1 < left || y1 < bottom || x2 > right || y2 > top) throw new Error('PDF 文字标注范围无效')
+      }
+      request.markups.push({ pageIndex: target.index, type: op.markupType, quads: op.quads, color: op.color })
+      continue
+    }
     const [x1, y1, x2, y2] = op.rect
     const previousCrop = crops.get(op.pageId)
     const box = previousCrop ? { x: previousCrop[0], y: previousCrop[1], width: previousCrop[2] - previousCrop[0], height: previousCrop[3] - previousCrop[1] } : target.cropBox
@@ -199,7 +227,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => op.kind === 'addMarkup') ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

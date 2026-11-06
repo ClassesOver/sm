@@ -1,3 +1,4 @@
+import { validatePdfMarkup, type SavedPdfMarkup } from './pdf-markup'
 import type { NativeOperation } from './native-draft'
 import type { PDFPageProxy } from 'pdfjs-dist'
 
@@ -15,9 +16,9 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
   return result
 }
 export interface PdfBox { x: number; y: number; width: number; height: number }
-export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[] }
+export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
@@ -44,7 +45,11 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (deleted.has(page.pageId)) throw new Error('裁切不能引用已删除页面')
       const rect = validatedPdfCrop(operation.rect, page.cropBox)
       page.cropBox = { x: rect[0], y: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] }
-    } else if (!['highlight', 'addTextAnnotation', 'replaceText'].includes(operation.kind)) throw new Error('不支持的 PDF 操作')
+    } else if (operation.kind === 'addMarkup') {
+      if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
+      validatePdfMarkup(operation)
+      for (const q of operation.quads as number[][]) validatedPdfCrop([q[0], q[5], q[2], q[1]], page.cropBox)
+    } else if (!['addMarkup', 'highlight', 'addTextAnnotation', 'replaceText'].includes(operation.kind)) throw new Error('不支持的 PDF 操作')
   }
   const remaining = order.filter(id => !deleted.has(id))
   if (remaining.length !== pages.length - deleted.size) throw new Error('页面排序必须包含所有保留页面')

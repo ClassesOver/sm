@@ -3,7 +3,7 @@
   "NOTICE": "77e4351edbd07aa69c1009f83d8aff960dafdebf74bdb3d8b6adc278492e14a1",
   "bridge/cli.ts": "764dcff90e2625420c5ff2ae7ec15f84d2de4531c8ba3893b0fdf9e8ecd98fb2",
   "bridge/operations.test.ts": "1fb56168f1571cb5f101b8d893dd9d5d1f454b7bc1bc6dde6651a2c8ba63a1be",
-  "bridge/operations.ts": "4d6edcceb0284d934e52e13ab059a934f0416b0aabdf8a320b8f4b6b00bdc571",
+  "bridge/operations.ts": "17f95b7a17ed4095d4385344a5f937c512b2cbc47015d394a8d6cf43e7bc4a84",
   "bridge/package-runtime.mjs": "52be833e51c3ca6441ebd44f62345444c93be99d0c307579050fd135e24da338",
   "bridge/text-operations.ts": "c389398b373b2bd939ea78c8a67eec645ad30d67b4ffaa5f02c700205e448bb7",
   "package-lock.json": "0f39e8e11e5e3a28ff4005611b15951a4dd212a2d3568498040495223e0eba2b",

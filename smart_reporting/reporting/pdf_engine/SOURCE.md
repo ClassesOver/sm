@@ -147,3 +147,21 @@ service returns a receipt even when the independent text feature is disabled.
 No vendor or upstream hash change. See
 `report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md` for raw UserUnit limitation,
 actual files/browser/service/Node22 evidence and exact restrictions.
+
+
+## Selected-text markups (2026-11-06)
+
+Strict addMarkup binds source/page identity, one of highlight/underline/squiggly/
+strikeout,1–200 canonical axis-aligned PDF-space quads and finite RGB. Current
+CropBox/deleted-target rules apply before the unchanged markups/AP writer runs.
+Inspection exposes readable source marks and markupReadSafe; malformed relevant
+QuadPoints make that page readonly for this new operation. Selection controls
+require selectionMarkup capability; old rectangle-highlight requests remain.
+The native service provides actual-output preview receipts without the text
+feature flag, binding the preview digest to markup output SHA as well as intent.
+
+The renderer annotations helper is separately adapted with source/current SHA,
+local type import/content-box selector and prominent notice under frontend/src.
+No Node vendor or upstream SOURCE hash changed. See
+`report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`; saved annotation
+delete/edit is not implemented and is never disguised as a successful toggle.

@@ -19,6 +19,9 @@ import { PDF_VIEW_RIBBON_GROUPS, resolvePdfOutline, type ResolvedPdfOutlineItem 
 import { createPdfRibbonIcon, type PdfRibbonIconName } from './pdf-ribbon-icons'
 import { pdfRibbonLabel } from './pdf-ribbon-locales'
 
+import { MARKUP_COLORS, quadToRect, selectionQuadsByPage } from './genoffice-pdf-annotations'
+import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
+
 GlobalWorkerOptions.workerSrc = workerUrl
 const ASSET_BASE = '/reports/v1/editor/assets/pdfjs/'
 const MAX_PAGE_PIXELS = 48_000_000
@@ -42,7 +45,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   let reportedSelectionPage = ''
   let textSelectionPage = '', selectedTextId = '', lastOperationsKey = JSON.stringify(draft.operations)
   let scale = 1
-  let markupColor: [number, number, number] = [1, 0.85, 0]
+  let markupColor: [number, number, number] = [...MARKUP_COLORS.highlight]
+  let markupSelection: PdfMarkupSelection[] = []
+  let markupStructureKey = ''
+  const markupButtons: { button: HTMLButtonElement; type: MarkupType }[] = []
   let printing = false
   let printRoot: HTMLElement | undefined
   let printTimer: number | undefined
@@ -142,12 +148,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       swatches.push(swatch)
       palette.append(swatch)
     }
-    const customColor = documentElement('input'); customColor.type = 'color'; customColor.value = '#ffda32'; customColor.setAttribute('aria-label', '更多标注颜色')
+    const customColor = documentElement('input'); customColor.type = 'color'; customColor.value = '#ffde59'; customColor.setAttribute('aria-label', '更多标注颜色')
     customColor.addEventListener('input', () => {
       const color = customColor.value
       markupColor = [parseInt(color.slice(1, 3), 16) / 255, parseInt(color.slice(3, 5), 16) / 255, parseInt(color.slice(5, 7), 16) / 255]
       root.querySelectorAll<HTMLButtonElement>('[data-ribbon-command="markup-color-preset"]').forEach(item => item.setAttribute('aria-pressed', 'false'))
     })
+    markupPalette.title = '设置高亮颜色；下划线、波浪线和删除线使用固定源颜色'
     markupPalette.append(palette, customColor)
     return markupPalette
   }
@@ -167,14 +174,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   ])
   commandGroup = ribbon.group('home', 'Markup')
   const homeMarkupGroup = commandGroup
-  const homeHighlight = button('高亮', () => setMode('highlight'), true, 'highlight')
-  sourceCommand(homeHighlight, 'home.markup.highlight')
+  function selectionMarkupButton(type: MarkupType, label: string, sourceId: string) {
+    const control = button(label, () => applySelectedMarkup(type), true, type === 'highlight' ? 'highlight' : undefined)
+    control.addEventListener('mousedown', event => event.preventDefault())
+    sourceCommand(control, sourceId); markupButtons.push({ button: control, type }); return control
+  }
+  for (const [type, label] of [['highlight', '高亮'], ['underline', '下划线'], ['squiggly', '波浪线'], ['strikeout', '删除线']] as const) selectionMarkupButton(type, label, `home.markup.${type}`)
   homeMarkupGroup.append(createMarkupPalette())
-  unavailableSourceGroup('home', 'Markup', [
-    { id: 'home.markup.underline', label: '下划线', reason: 'PDF 写回桥尚未实现带来源身份及输出复读的 Underline 标注' },
-    { id: 'home.markup.squiggly', label: '波浪线', reason: 'PDF 写回桥尚未实现带来源身份及输出复读的 Squiggly 标注' },
-    { id: 'home.markup.strikeout', label: '删除线', reason: 'PDF 写回桥尚未实现带来源身份及输出复读的 Strikeout 标注' },
-  ], homeMarkupGroup)
   commandGroup = ribbon.group('home', 'Edit')
   const homeEditGroup = commandGroup
   const undo = button('撤销', async () => { draft.undo(); await refresh() }, true, 'undo')
@@ -322,13 +328,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup = ribbon.group('annotate', 'Markup')
   const annotateMarkupGroup = commandGroup
   const select = button('选择文字', () => setMode('select'), false)
-  const highlight = button('高亮', () => setMode('highlight'), true, 'highlight')
-  sourceCommand(highlight, 'annotate.markup.highlight')
-  unavailableSourceGroup('annotate', 'Markup', [
-    { id: 'annotate.markup.underline', label: '下划线', reason: 'PDF 写回桥尚未实现带来源身份及输出复读的 Underline 标注' },
-    { id: 'annotate.markup.squiggly', label: '波浪线', reason: 'PDF 写回桥尚未实现带来源身份及输出复读的 Squiggly 标注' },
-    { id: 'annotate.markup.strikeout', label: '删除线', reason: 'PDF 写回桥尚未实现带来源身份及输出复读的 Strikeout 标注' },
-  ], annotateMarkupGroup)
+  for (const [type, label] of [['highlight', '高亮'], ['underline', '下划线'], ['squiggly', '波浪线'], ['strikeout', '删除线']] as const) selectionMarkupButton(type, label, `annotate.markup.${type}`)
   commandGroup.append(createMarkupPalette())
   const note = button('文字批注', () => setMode('note'), true, 'note')
   sourceCommand(note, 'annotate.drawTools.note')
@@ -497,6 +497,30 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       draft.setOperations(operations); notifyTextSelection(); void refresh().catch(showError)
     } catch (error) { showError(error) }
   })
+  function captureMarkupSelection() {
+    if (!document || locked || previewing || previewDocument || !response.editingEnabled || draft.closed || !model.capabilities?.selectionMarkup) return
+    const selection = window.getSelection()
+    if (!selection || selection.isCollapsed) return
+    const pages = state()
+    const quads = selectionQuadsByPage(viewport, pages.map(page => {
+      const unit = pagesCached.get(page.index)?.userUnit ?? 1
+      return { pw: page.cropBox.width * unit, ph: page.cropBox.height * unit, x0: page.cropBox.x, y0: page.cropBox.y, rot: page.rotation, userUnit: unit }
+    }), scale)
+    if (!quads) return
+    markupSelection = [...quads].map(([index, selected]) => ({ pageId: pages[index].pageId, quads: selected, saved: pages[index].markups ?? [] }))
+    updateControls()
+  }
+  window.document.addEventListener('selectionchange', captureMarkupSelection, { signal: abort.signal })
+  viewport.addEventListener('pointerdown', () => { markupSelection = []; updateControls() })
+  viewport.addEventListener('pointerup', captureMarkupSelection)
+  async function applySelectedMarkup(type: MarkupType) {
+    if (locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || !model.capabilities?.selectionMarkup) return
+    if (markupSelection.some(selection => !state().find(page => page.pageId === selection.pageId)?.markupReadSafe)) throw new Error('此页已有标注尚不能完整读取，原草稿已保留')
+    const color = type === 'highlight' ? markupColor : MARKUP_COLORS[type]
+    const next = togglePdfMarkup(markupSelection, draft.operations, type, color)
+    pdfPageState(model.pages, next)
+    draft.setOperations(next); await refresh()
+  }
   function documentElement<K extends keyof HTMLElementTagNameMap>(tag: K, className = ''): HTMLElementTagNameMap[K] {
     const element = window.document.createElement(tag); element.className = className; return element
   }
@@ -520,7 +544,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [highlight, 'highlight'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)) }
+  function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)) }
   function updateControls() {
     for (const button of editableButtons) button.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     sizeOptions.disabled = sizeApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
@@ -556,6 +580,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     rotateAll.setAttribute('aria-description', rotateAll.title)
     pageButtons.get('genoffice.pdf.page.delete')!.disabled ||= !activeId || (!!document && state().length <= 1)
     pageButtons.get('genoffice.pdf.page.reverse')!.disabled ||= !document || state().length <= 1
+    for (const { button, type } of markupButtons) {
+      const state = markupSelectionState(markupSelection, draft.operations, type)
+      const savedRemoval = state.active && state.matches.some(match => match.saved)
+      button.disabled ||= !document || model.capabilities?.selectionMarkup !== true || !markupSelection.length || markupSelection.some(selection => !model.pages.find(page => page.pageId === selection.pageId)?.markupReadSafe) || savedRemoval
+      button.setAttribute('aria-pressed', String(state.active))
+      button.title = !document ? '请先打开 PDF' : !response.editingEnabled || draft.closed ? '当前修订为只读' : model.capabilities?.selectionMarkup !== true ? '当前引擎未确认文字选区标注能力' : markupSelection.some(selection => !model.pages.find(page => page.pageId === selection.pageId)?.markupReadSafe) ? '此页已有文字标注尚不能完整读取' : savedRemoval ? '此选区已有保存的同类标注，移除尚未接通' : '选择页面文字后添加；再次点击可移除本次草稿标注'
+    }
     status.dataset.dirty = String(draft.dirty)
   }
   async function append(operation: NativeOperation) {
@@ -601,13 +632,20 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function overlays(holder: HTMLElement, page: PdfPageIdentity, pdfViewport: ReturnType<PDFPageProxy['getViewport']>) {
     const layer = documentElement('div', 'pdf-draft-overlays')
-    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['highlight', 'addTextAnnotation'].includes(op.kind))) {
-      const rect = operation.rect as PdfRect
-      const converted = [...pdfViewport.convertToViewportPoint(rect[0], rect[1]), ...pdfViewport.convertToViewportPoint(rect[2], rect[3])]
-      const overlay = documentElement('span', operation.kind === 'highlight' ? 'pdf-highlight' : 'pdf-note')
-      Object.assign(overlay.style, { left: `${Math.min(converted[0], converted[2])}px`, top: `${Math.min(converted[1], converted[3])}px`, width: `${Math.abs(converted[2] - converted[0])}px`, height: `${Math.abs(converted[3] - converted[1])}px` })
-      if (operation.kind === 'addTextAnnotation') { overlay.textContent = '▤'; overlay.title = String(operation.text) }
-      layer.append(overlay)
+    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'highlight', 'addTextAnnotation'].includes(op.kind))) {
+      const type = operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
+      const rects = operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
+      for (const rect of rects) {
+        const converted = [...pdfViewport.convertToViewportPoint(rect[0], rect[1]), ...pdfViewport.convertToViewportPoint(rect[2], rect[3])]
+        const overlay = documentElement('span', type === 'highlight' ? 'pdf-highlight' : type === 'note' ? 'pdf-note' : `pdf-pending-markup pdf-${type}`)
+        Object.assign(overlay.style, { left: `${Math.min(converted[0], converted[2])}px`, top: `${Math.min(converted[1], converted[3])}px`, width: `${Math.abs(converted[2] - converted[0])}px`, height: `${Math.abs(converted[3] - converted[1])}px` })
+        const rgb = (operation.color as number[] | undefined)?.map(value => Math.round(value * 255)).join(',') ?? '255,217,0'
+        overlay.style.color = `rgb(${rgb})`
+        if (type === 'highlight') overlay.style.backgroundColor = `rgba(${rgb},.4)`
+        if (type === 'squiggly') overlay.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='8' height='4'><path d='M0 2 Q2 0 4 2 T8 2' fill='none' stroke='rgb(${rgb})'/></svg>`)}")`
+        if (type === 'note') { overlay.textContent = '▤'; overlay.title = String(operation.text) }
+        layer.append(overlay)
+      }
     }
     holder.append(layer)
   }
@@ -746,7 +784,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -763,7 +801,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -798,6 +836,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function refresh() {
     if (disposed || !document) return
+    const structureKey = JSON.stringify(draft.operations.filter(op => op.kind !== 'addMarkup'))
+    if (markupStructureKey !== structureKey) { markupStructureKey = structureKey; markupSelection = [] }
     const operationsKey = JSON.stringify(draft.operations)
     if (lastOperationsKey !== operationsKey) { lastOperationsKey = operationsKey; textSelectionPage = '' }
     review.invalidate(draft.operations)
@@ -864,7 +904,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       link.addEventListener('click', () => jumpToPageForIdentity(page.pageId))
       outlinePanel.append(link)
     }
-    status.textContent = previewDocument ? '正在显示实际写回的 PDF 预览；未执行的修改仍保留原文。返回原稿后可继续调整。' : draft.persistenceError ?? (draft.dirty ? `有 ${draft.operations.length} 项未保存修改；保存会创建新修订。` : response.editingEnabled ? `选择文字可复制；高亮请拖选范围，文字批注为便签。${textEnabled ? '原位改字需核对实际预览后保存。' : '原位改字尚未开放。'}` : '当前为只读，原生编辑尚未开放；可下载文件。')
+    status.textContent = previewDocument ? '正在显示实际写回的 PDF 预览；未执行的修改仍保留原文。返回原稿后可继续调整。' : draft.persistenceError ?? (draft.dirty ? `有 ${draft.operations.length} 项未保存修改；保存会创建新修订。` : response.editingEnabled ? `选择页面文字可添加或切换本次高亮、下划线、波浪线和删除线；文字批注为便签。${textEnabled ? '原位改字需核对实际预览后保存。' : '原位改字尚未开放。'}` : '当前为只读，原生编辑尚未开放；可下载文件。')
     if (textLoadWarning) status.textContent += ` ${textLoadWarning}`
     renderTextPanel(); updateControls(); onDraftChange?.()
   }
@@ -923,6 +963,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const sourceModel = await api.preview<PdfModel>({ expectedSha256: actualSha256, operations: [] }, abort.signal)
       if (sourceModel.sourceSha256 !== actualSha256 || sourceModel.model.sourceSha256 !== actualSha256) throw new Error('PDF 字段与文字对象来源不匹配')
       model.capabilities = sourceModel.model.capabilities
+      for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true }
       model.formFields = sourceModel.model.formFields ?? []
       renderFormControls(model.formFields)
       if (textEnabled) {

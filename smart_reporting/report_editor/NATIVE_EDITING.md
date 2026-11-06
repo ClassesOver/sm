@@ -131,3 +131,10 @@ PDF 页面尺寸现支持受限来源的 A3/A4/A5/Letter/Legal，复用固定上
 与居中实现，并显示真实写回预览。非默认 UserUnit、签名、导航坐标、印刷
 框及未建模批注来源禁用；不与裁切/原位改字混用。尺寸不同的页重置裁切，
 尺寸已匹配的页保持原样。验收见 `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`。
+
+PDF Home/Annotate 的四类文字标注现按多行选区写入，复用固定源选区/匹配与
+AP 写回；本次草稿可叠加/切换，高亮可自选颜色。已保存标注的移除尚未
+接通，明确禁用；复杂或不可读来源保守拒绝，详见
+`NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体仍未全面对齐，当前功能族
+差异见 `NATIVE_PDF_ALIGNMENT_STATUS.md`，证书服务前置条件和 Web 设计见
+`NATIVE_PDF_SIGNING_WEB_DESIGN.md`。
