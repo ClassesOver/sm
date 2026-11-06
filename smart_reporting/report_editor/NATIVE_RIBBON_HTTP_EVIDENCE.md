@@ -131,3 +131,16 @@ container (final adapter: 1 passed, 7.18s). Native/artifact/grant repositories r
 this selection; the earlier PostgreSQL counts are not evidence for this new
 flow against SQL. Source preservation, protocol and remaining UI/desktop gaps
 are recorded in `NATIVE_WORD_TABLE_ACCEPTANCE.md`.
+
+
+## Word table frontend browser checkpoint
+
+The source-aware frontend now dispatches four strict table structure kinds via
+six Ribbon buttons. Chromium 154 clicks all six, verifies isolated Undo groups,
+true reload recovery, same-table editing refusal and complex-table readonly
+states, saves four independent tables, downloads actual DOCX bytes and reopens
+revision 2. Python-docx/lxml independently verify matrices, integer widths, full
+original paragraph XML and untouched package files. Browser authorization and
+revision routes are substitutes; the actual production-packed transformer is
+used. This is additional browser evidence, not a new PostgreSQL or deployed
+HTTP claim. See `NATIVE_WORD_TABLE_ACCEPTANCE.md`.

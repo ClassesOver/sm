@@ -7,6 +7,7 @@ import type { EditorShell } from './shell'
 import type { createNativeApi, NativeContextResponse } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { docxOperations, replayDocxOperations, restoredDocxSectionOperation, type DocxAnchor, type DocxPmNode } from './docx-operations'
+import { NativeTableStructure, createDocxTableCommands } from './docx-tables'
 import { createDocxRibbon } from './docx-ribbon'
 import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/renderer/parse-off-thread'
 import { blocksToPmDoc, pmDocOptions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/convert'
@@ -40,7 +41,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     const block = visible[index], anchor = inspected.model.blocks[index]
     if (block.docxIndex == null || block.type !== anchor.type || await sha256(new TextEncoder().encode(block.originalXml ?? '')) !== anchor.expectedObjectSha256
       || await sha256(new TextEncoder().encode(`${expectedSha256}:block:${block.docxIndex}`)) !== anchor.blockId) throw new Error('Word 对象身份校验失败')
-    anchors.push({ ...anchor, docxIndex: block.docxIndex })
+    anchors.push({ ...anchor, docxIndex: block.docxIndex, tableWidthsTwips: block.table?.colWidthsTwips, tableHeaderCount: block.table?.repeatHeaderRows?.findIndex(header => !header) === -1 ? block.table.rows.length : block.table?.repeatHeaderRows?.findIndex(header => !header) ?? 0 })
   }
   setResolverFontTable(parsed.fontTable)
   await adoptEmbeddedFonts(parsed.embeddedFonts)
@@ -53,7 +54,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const sectionOperation = () => restoredDocxSectionOperation(draft.operations, sectionAnchor)
   sectionOperation()
   const host = document.createElement('div'); host.className = 'docx-native'
-  host.innerHTML = '<div class="docx-tools" role="toolbar" aria-label="Word 编辑"></div><p class="docx-notice" role="status">支持正文、整段基础样式和简单表格文字。复杂对象保留原样；不支持的编辑会提示原因。</p><div class="editor-scroll"><div class="doc-zoom"><div class="docx-canvas"></div></div></div><div class="docx-preview-root"></div>'
+  host.innerHTML = '<div class="docx-tools" role="toolbar" aria-label="Word 编辑"></div><p class="docx-notice" role="status">支持正文、基础样式、表格文字及符合条件表格的增删行列。每张表的结构修改需保存并重开后继续；不支持的编辑会提示原因。</p><div class="editor-scroll"><div class="doc-zoom"><div class="docx-canvas"></div></div></div><div class="docx-preview-root"></div>'
   shell.editor.replaceChildren(host)
   const style = document.createElement('style'); style.textContent = docStyleCss(parsed); host.append(style)
   const notice = host.querySelector<HTMLElement>('.docx-notice')!, toolbar = host.querySelector<HTMLElement>('.docx-tools')!
@@ -64,11 +65,11 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     filterTransaction(transaction) {
       if (!ready || refreshing || !transaction.docChanged) return true
       if (saving || draft.saving || draft.closed || !context.editingEnabled) return false
-      try { docxOperations(baseline, transaction.doc.toJSON(), anchors, sectionOperation()); return true }
+      try { docxOperations(baseline, transaction.doc.toJSON(), anchors, sectionOperation(), editor.schema); return true }
       catch (error) { reportError(error); return false }
     },
   })] })
-  const editor = new Editor({ element: host.querySelector<HTMLElement>('.docx-canvas')!, extensions: [...editorExtensions, Guard],
+  const editor = new Editor({ element: host.querySelector<HTMLElement>('.docx-canvas')!, extensions: [...editorExtensions, NativeTableStructure, Guard],
     content: blocksToPmDoc(parsed.blocks, sections, pmDocOptions(parsed)) as JSONContent,
     editable: context.editingEnabled,
     editorProps: { attributes: { class: 'doc-page', 'aria-label': 'Word 文档编辑区', role: 'textbox', 'aria-multiline': 'true' } },
@@ -80,6 +81,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
         if (node.attrs.docxIndex != null) { anchor = anchors.find(item => item.docxIndex === node.attrs.docxIndex); if (anchor) break }
       }
       if (!anchor) { options.onSelectionChange?.([]); return }
+      if (editor.state.doc.content.content.some(node => node.attrs.docxIndex === anchor!.docxIndex && node.attrs.nativeTableStructure)) { options.onSelectionChange?.([{ blockId: anchor.blockId }]); return }
       let cellId: string | undefined
       for (let depth = $from.depth; depth > 1; depth--) if (['docTableCell', 'docTableHeader'].includes($from.node(depth).type.name)) {
         cellId = anchor.cells?.[$from.index(depth - 2)]?.[$from.index(depth - 1)]?.cellId
@@ -89,7 +91,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     },
     onUpdate: () => {
       if (!ready || refreshing) return
-      try { draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, sectionOperation())); options.onDraftChange?.() }
+      try { draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, sectionOperation(), editor.schema)); options.onDraftChange?.() }
       catch (error) { reportError(error) }
     },
   })
@@ -108,7 +110,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   }
   baseline = editor.getJSON(); ready = true
   const refresh = async () => {
-    const content = replayDocxOperations(baseline, draft.operations, anchors, sectionAnchor)
+    const content = replayDocxOperations(baseline, draft.operations, anchors, sectionAnchor, editor.schema)
     refreshing = true
     try { syncSection(); editor.commands.setContent(content as JSONContent, { emitUpdate: false }); editor.setEditable(context.editingEnabled && !saving && !draft.closed, false) }
     finally { refreshing = false }
@@ -149,13 +151,13 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       try {
         const operation = restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId: sectionAnchor.sectionId,
           expectedSectionSha256: sectionAnchor.expectedSectionSha256, values: { ...sectionOperation()?.values, ...values } }], sectionAnchor)
-        draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, operation)); options.onDraftChange?.()
+        draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, operation, editor.schema)); options.onDraftChange?.()
       } catch (error) { reportError(error) }
       syncSection()
       editor.commands.setMeta('native-section-layout', true)
     },
   }
-  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors))
+  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError)))
   await refresh()
   return { refresh, setSaving(value: boolean) { saving = value; editor.setEditable(context.editingEnabled && !saving && !draft.closed, false); editor.commands.setMeta('native-section-layout', true); toolbar.querySelectorAll<HTMLButtonElement>('[data-mutates=true], [data-editable-action=true]').forEach(control => { control.disabled = !context.editingEnabled || saving || draft.closed }) },
     dispose() { ready = false; previewRoot.unmount(); editor.destroy(); void adoptEmbeddedFonts([]); host.remove() } }

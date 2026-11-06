@@ -1,3 +1,4 @@
+import { TABLE_ACTIONS, type DocxTableCommands } from './docx-tables'
 import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
@@ -105,7 +106,7 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void }, anchors: DocxAnchor[] = []): HTMLElement {
+  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands): HTMLElement {
   const ribbon = document.createElement('div')
   ribbon.className = 'ribbon docx-ribbon'
   const tablist = document.createElement('nav')
@@ -219,16 +220,21 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         const command = document.createElement('button')
         command.type = 'button'
         command.className = 'rb-icon docx-ribbon-command'
-        const available = !actionId && id === 'view' && label === '分页预览' && !!onPaginationPreview
-        command.disabled = !!actionId || !available
+        const structure = !!TABLE_ACTIONS[actionId]
+        const reason = structure && tableCommands ? (!editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(actionId)) : actionId ? tableUnavailable : migrating
+        const available = structure && tableCommands ? reason === null : !actionId && id === 'view' && label === '分页预览' && !!onPaginationPreview
+        command.disabled = !available
         command.textContent = label
-        const reason = actionId ? tableUnavailable : migrating
         command.title = available ? label : `${label}：${reason}`
         command.setAttribute('aria-label', available ? label : `${label}，${reason}`)
-        if (!available) command.setAttribute('aria-description', reason)
+        if (!available) command.setAttribute('aria-description', reason ?? migrating)
         if (actionId) command.dataset.action = actionId
         else if (available) command.dataset.action = 'pagination-preview'
-        if (available) command.addEventListener('click', onPaginationPreview!)
+        if (structure && tableCommands) {
+          command.dataset.sourceAction = actionId
+          command.addEventListener('mousedown', event => event.preventDefault())
+          command.addEventListener('click', () => tableCommands.run(actionId))
+        } else if (available) command.addEventListener('click', onPaginationPreview!)
         items.append(command)
       }
       group.append(items)
@@ -424,6 +430,17 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const refreshSelection = () => {
     refreshContextTabs()
     renderInsert()
+    if (active === 'tableLayout' && tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action]')) {
+      const action = button.dataset.action!
+      if (!TABLE_ACTIONS[action]) continue
+      const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(action)
+      button.disabled = reason !== null
+      const label = button.textContent ?? action
+      button.title = reason === null ? label : `${label}：${reason}`
+      button.setAttribute('aria-label', reason === null ? label : `${label}，${reason}`)
+      if (reason === null) button.removeAttribute('aria-description')
+      else button.setAttribute('aria-description', reason)
+    }
     if (active === 'layout' && !body.querySelector('[data-action="indent-right"]:focus')) setActive('layout')
   }
   editor.on('selectionUpdate', refreshSelection)

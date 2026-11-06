@@ -149,3 +149,18 @@ Gallery display labels were checked against pinned `bullet-presets.ts`, blob
 (e.g. visible ▪ stores § with Wingdings). See `NATIVE_PPTX_LISTS_ACCEPTANCE.md`
 for options, independent defect repros, browser/file evidence and limitations.
 This closes the tracked Paragraph slice, not all Home, Font or Task 6 parity.
+
+
+## Word Table Layout bounded frontend closure
+
+Six existing source IDs now have guarded native writeback:
+`table-insert-row-before`, `table-insert-row-after`,
+`table-insert-column-before`, `table-insert-column-after`,
+`table-delete-row`, `table-delete-column`. They reuse PM table commands and
+retain source coordinates through canonical projection/draft replay. Controls
+require an inspected safe source, a single cell, no same-table pending changes
+and an editable/unlocked session. Other individual Table Design/Layout controls
+remain disabled. This is not a claim of whole-table selection, continuous
+structure transactions, merged/complex tables or all-source parity. All six
+buttons and independent downloaded-file checks pass the browser fixture; see
+`NATIVE_WORD_TABLE_ACCEPTANCE.md` for the original cases and boundaries.

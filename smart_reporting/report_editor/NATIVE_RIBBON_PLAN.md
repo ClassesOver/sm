@@ -209,7 +209,7 @@ Final spacing checkpoint: both production builds and both budget checks passed a
 - [x] Connect the remaining supported PPTX Paragraph list/number/indent/direction controls, including full source option inventories and strict API/bridge validation. Preserve ordered records rather than merging relative operations; independently reproduced Undo, record-budget and overflow defects are fixed. See `NATIVE_PPTX_LISTS_ACCEPTANCE.md`.
 - [x] Run real PostgreSQL 18 repository isolation, transaction, retry, immutable completion and concurrency checks, including independent engines/processes; connect all four existing HTTP/file roundtrips to actual SQL persistence. 18 distinct checks passed across selected runs. Disposable schemas and container removed. See `NATIVE_POSTGRES_ACCEPTANCE.md`.
 - [x] Trace Word table structure serializer and original XML, row-property ownership, column-width and anchor contracts. Found unmodeled paragraph-property loss even for nonmerged tables; enabling structural buttons now would overstate preservation. See `NATIVE_WORD_TABLE_PLAN.md`.
-- [ ] Next Word slice: executable original-XML preservation probes and a proven structural allowlist before UI operations. No table structure feature is delivered by the investigation.
+- [x] Execute original-XML preservation probes and prove the structural allowlist; the later backend/frontend checkpoints deliver the bounded table operations. The original investigation itself did not deliver a feature.
 - [ ] Complete clean application-image acceptance with sufficient build storage; mounted runtime evidence does not close the recorded 8GB/vfs failure.
 - [ ] Complete source parity and production host/tenant/grant persistence checks. Real native SQL tests do not establish production permissions; ASGI artifact/grant repositories still use doubles.
 
@@ -228,5 +228,14 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Admit strict insert/delete row/column operations for fixed-width rectangular sources; expose separate structure availability/reasons, dimension budgets, width policy and contiguous repeating-header handling.
 - [x] Reject same-table mixed/second structural operations; invalidate old table/cell anchors and permit fresh revision cell editing. Validate actual output matrix/width/XML before emitting bytes; injected silent failure is rejected.
 - [x] 44 distinct new backend checks, five affected regressions, expanded DOCX ASGI case and production-packed Node22 read-only/offline case passed. Details: `NATIVE_WORD_TABLE_ACCEPTANCE.md`. No full repository suite was repeated.
-- [ ] Next: capture frontend table transactions against source coordinates, implement draft/Undo/replay and one structural operation per table before save/reopen, then connect Ribbon only for the inspectable safe subset.
+- [x] Capture bounded frontend table transactions against source coordinates, implement draft/Undo/replay and connect six Ribbon controls only for the inspectable safe subset (frontend checkpoint below).
 - [ ] Desktop, native SQL combined with these new operations, full application image and deployed host acceptance remain open. Global Tasks 2–6 remain incomplete; flags off.
+
+
+### Word table bounded frontend continuation
+
+- [x] Connect six Table Layout controls through upstream PM commands and canonical source projection; preserve source coordinates even with duplicate text. Guard whole-table/multi-cell selections, locks, readonly sources, same-table dirty text, dimensions and minimum widths.
+- [x] Persist/replay strict structure intentions with source hash validation; retain pending-cell identity safety and block mixed/second same-table operations until save/reopen. PM and NativeDraft Undo/Redo restore the same protocol.
+- [x] Repair real-browser caret escape into an adjacent table and merged quick-action Undo groups. Keep table buttons stable during selection/transaction refresh.
+- [x] 26 new frontend checks and 70 affected existing checks passed across focused selections. Chromium clicks all six controls, restores across reload, saves four independent structural operations, downloads and independently reads original paragraph XML/widths, then reopens revision 2. Exact evidence: `NATIVE_WORD_TABLE_ACCEPTANCE.md`.
+- [ ] Broader same-table structural sequences, merged/complex source support, remaining source command groups, desktop checks, this combined flow against actual SQL/production grants and full application-image acceptance remain open. Global Tasks 2–6 remain incomplete; flags off.

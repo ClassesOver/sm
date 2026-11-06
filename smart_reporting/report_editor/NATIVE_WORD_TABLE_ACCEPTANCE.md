@@ -1,7 +1,8 @@
-# Native Word table structure: preservation adapter and bounded backend
+# Native Word table structure: preservation adapter, bounded backend and UI
 
-2026-11-06. This implements the backend slice that follows
-`NATIVE_WORD_TABLE_PLAN.md`; Ribbon structure commands are still unavailable.
+2026-11-06. This implements the bounded backend and frontend slices following
+`NATIVE_WORD_TABLE_PLAN.md`; six source Table Layout controls are connected for
+the inspected safe subset. Full Word table/source parity remains incomplete.
 The fixed GenOffice engine remains `f8c17004fb730df11f0f743164ffd8b4281bb38c`.
 No vendor source was changed.
 
@@ -39,7 +40,8 @@ Each operation has exactly:
 
 Inspection exposes `structureEditable`, `structureReadOnlyReason`, `rowCount`
 and `columnCount` separately from text/cell editability. The backend capability
-is `simpleTableStructure`; this does not mean the Ribbon can dispatch it yet.
+is `simpleTableStructure`; the frontend additionally requires a valid single-cell selection, unmodified
+source table and an editable/unlocked session.
 
 - Only top-level, rectangular, fixed-width tables with positive integer twip
   widths, matching tblW/tblGrid/tcW and a conservative property subset qualify.
@@ -108,9 +110,11 @@ in the distinct counts above. A third-party imghdr deprecation warning remains.
 
 ## Remaining acceptance
 
-The current frontend still rejects table structure changes. Ribbon commands,
-ProseMirror transaction capture, undo/redo, draft restoration and explicit
-save/reopen before another same-table structural operation remain to implement.
+The frontend now connects the six bounded commands and source-aware
+transaction/draft/history path described below. Uncontrolled table transactions
+(such as raw last-cell Tab row insertion), multiple same-table structure edits,
+and same-table text/format mixing remain rejected. Broader structural sequences
+and unsupported command families remain open.
 There is no Microsoft Word/LibreOffice desktop acceptance; `desktopVerified`
 stays false. ASGI native/artifact/grant repositories in this phase are doubles.
 The prior PostgreSQL runs establish their earlier native SQL scope, not this new
@@ -124,3 +128,80 @@ the new adapter. XML is now inserted through replacement callbacks; the same
 real-DOCX regression passed. The final package and Node22 offline HTTP case were
 rerun after this fix; the recorded package SHA above is the final version. The
 final 13-case probe checks whole paragraphs and cell properties with zero loss.
+
+
+## Frontend transaction and browser checkpoint (2026-11-06)
+
+Six existing source IDs are connected: `table-insert-row-before`,
+`table-insert-row-after`, `table-insert-column-before`,
+`table-insert-column-after`, `table-delete-row`, `table-delete-column`. Other
+Table Layout/Design controls keep individual disabled explanations. Source
+width/row-header metadata comes from the independently parsed, hash-checked
+original file; server structure availability remains a separate prerequisite.
+Readonly reasons are presented in plain language.
+
+The adapter calls the existing `@tiptap/pm/tables` commands to construct the
+structure, then preserves surviving PM content/attributes by **source** row and
+column and applies the backend width/header/new-empty-cell policy. It does not
+infer identities by text, serialize client XML, or submit a TableModel. A
+non-rendered table attribute retains only `{kind,index}` so history can restore
+the intent. The diff accepts only its exact canonical source projection and
+emits one strict source-hash-bound operation; replay validates fields, source
+identity, boundaries and same-table batch exclusivity before changing the view.
+Original widths remain integer twips; rounded canvas pixels do not become save
+coordinates. Floating percentage display comparisons use numerical tolerance.
+
+After a structure operation, same-table edits require saving/reopening a new
+revision, while independent tables/body edits remain possible. Pending table
+selection no longer exposes an old source cellId for a shifted cell. A whole
+table node or multi-cell/range selection is not accepted as an implicit cell
+coordinate. Table control states update in place, retaining the live DOM node.
+
+Real browser work found and repaired two behavioral defects that small schema
+tests alone missed:
+
+- Replacing a whole table mapped the caret into a following table, so the UI
+  displayed the wrong table's availability. The command now explicitly selects
+  the inserted or surviving target cell inside the edited table. A following-
+  table regression checks that the adjacent source table remains untouched.
+- Quick adjacent-table commands could merge into one ProseMirror Undo group;
+  undoing a trial column insertion also removed a prior table's row deletion.
+  Each structure command now opens/closes its own history boundary using
+  `closeHistory`; the rapid two-table original scenario passes without sleeps.
+
+Verification: **26 distinct new frontend cases** passed across targeted runs;
+**70 affected existing operation/Ribbon/recovery cases** passed once. The initial
+new selection had one over-strict floating percentage assertion; a tolerance
+check fixed the test, without changing integer width behavior. TypeScript
+passed. Neither full repository nor complete frontend suites were repeated.
+
+`frontend/smoke/docx-table-smoke.mjs` passed with Chromium 154.0.8037.57 and the
+production-packed backend recorded above. It uses five real DOCX tables:
+row/column insert/delete on four independent targets, with a fifth merged table
+remaining readonly and byte-equivalent in canonical XML. All six buttons are
+actually clicked, including trial after-insert actions followed by Undo. It
+checks Ctrl-Z/Shift-Ctrl-Z, true page reload and persisted draft recovery,
+same-table typing refusal, disabled reasons, one save of four source-coordinate
+operations, actual download SHA, independent python-docx/lxml matrix/width/full
+paragraph-XML readback, unchanged source and unrelated ZIP files, and revision-2
+reopen with fresh enabled controls. Validation failure retains the download.
+
+Accepted browser source SHA:
+`ea3cf367a216e10db4ec90daea13451e4df121a125daf3c0e50089625b4d5ed6`;
+download SHA:
+`149cf10ed9f0d541d37ac888fe0905d1515bde9630a3f7a17d232b3c2fd8fe50`.
+
+Reproduce from `report_editor/frontend` with a current production-packed engine:
+
+```sh
+REPORT_EDITOR_CHROMIUM_EXECUTABLE=/usr/bin/chromium \
+AGENT_REPORTING_SLIDES_ENGINE_DIR=/tmp/pr190-word-table-final-runtime \
+DOCX_SMOKE_EVIDENCE_DIR=/tmp/word-table-ui-evidence \
+node smoke/docx-table-smoke.mjs
+```
+
+The successful browser routes substitute authorization/revision registration,
+while the actual file transformer and downloaded files are real. The earlier
+ASGI/Node22 proof remains the backend boundary; this is no claim of a browser
+hosted by the full application image, production grant/SQL flow or desktop
+verification. Feature flags remain off.

@@ -1,7 +1,9 @@
+import { TABLE_KINDS, projectDocxTable, tableIntent } from './docx-tables'
+import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
 export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean }
-export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][] }
+export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
 export interface DocxSectionAnchor { sectionId: string; expectedSectionSha256: string; settings: SectionSettings }
 type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>>
@@ -134,7 +136,7 @@ function styleOf(node: DocxPmNode): Record<string, unknown> {
   return styles[0]
 }
 /** 原始XML和资源路径从不进入保存协议；变化仅映射为后端允许操作。 */
-export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation): NativeOperation[] {
+export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation, schema?: Schema): NativeOperation[] {
   const before = original.content ?? [], after = current.content ?? []
   const byIndex = new Map(anchors.map(anchor => [anchor.docxIndex, anchor]))
   const retained = after.filter(node => idOf(node) != null)
@@ -165,6 +167,11 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       ops.push({ kind: 'deleteParagraph', ...baseOp(anchor) }); continue
     }
     if (node.type === 'docTable' && edited.type === 'docTable') {
+      if (edited.attrs?.nativeTableStructure) {
+        const intent = tableIntent(edited.attrs.nativeTableStructure)
+        if (!same(edited, projectDocxTable(node, anchor, intent, schema))) throw new Error('表格结构修改后请先保存；同表文字、格式或第二次结构修改不能混用')
+        ops.push({ ...baseOp(anchor), ...intent }); continue
+      }
       if (!same(node.attrs, edited.attrs) || node.content?.length !== edited.content?.length) throw new Error('暂不支持修改表格布局')
       for (let row = 0; row < (node.content?.length ?? 0); row++) {
         const left = node.content![row], right = edited.content![row]
@@ -262,7 +269,7 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
 }
 
 /** 从原文件恢复草稿，保持原 docxIndex 和对象身份。 */
-export function replayDocxOperations(original: DocxPmNode, operations: NativeOperation[], anchors: DocxAnchor[], section?: DocxSectionAnchor): DocxPmNode {
+export function replayDocxOperations(original: DocxPmNode, operations: NativeOperation[], anchors: DocxAnchor[], section?: DocxSectionAnchor, schema?: Schema): DocxPmNode {
   restoredDocxSectionOperation(operations, section)
   const result = structuredClone(original), originalNodes = new Map((result.content ?? []).map(node => [Number(idOf(node)), node]))
   const byId = new Map(anchors.map(anchor => [anchor.blockId, anchor])), afterCounts = new Map<string, number>()
@@ -273,11 +280,22 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     runs.forEach((run, index) => { run.text = remaining.splice(0, index === runs.length - 1 ? remaining.length : Array.from(run.text ?? '').length).join('') })
     node.content = node.content?.filter(child => child.type !== 'text' || child.text)
   }
+  const structural = new Set<string>()
+  for (const operation of operations) if (TABLE_KINDS.includes(operation.kind as any)) {
+    const id = String(operation.blockId)
+    if (structural.has(id) || operations.some(other => other !== operation && other.blockId === id)) throw new Error('同表草稿不能混合文字或多次结构操作')
+    structural.add(id)
+  }
   for (const operation of operations) {
     if (operation.kind === 'setSectionLayout') continue
     const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
     if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
-    if (operation.kind === 'setParagraphLink') {
+    if (TABLE_KINDS.includes(operation.kind as any)) {
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'index'].includes(key)) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('草稿表格身份或字段无效')
+      const projected = projectDocxTable(node, anchor, { kind: operation.kind, index: operation.index }, schema)
+      Object.assign(node, projected)
+    }
+    else if (operation.kind === 'setParagraphLink') {
       if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'href'].includes(key))) throw new Error('草稿链接包含不支持的字段')
       if (!anchor.editable || operation.expectedObjectSha256 !== anchor.expectedObjectSha256 || !paragraph(node)
         || !validDocxLinkRange(textOf(node), operation.from, operation.to)) throw new Error('草稿链接范围或对象身份无效')

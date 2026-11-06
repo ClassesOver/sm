@@ -1,6 +1,6 @@
 # Native Word Table：结构操作复用调查与实施前置条件
 
-调查日期：2026-11-06。基线：仓库固定 GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c`。本文保留最初源码调查与后续验收方案；后续已执行保真探针并接入受限后端增删行列，当前状态见 `NATIVE_WORD_TABLE_ACCEPTANCE.md`。前端结构命令与最终验收尚未完成。
+调查日期：2026-11-06。基线：仓库固定 GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c`。本文保留最初源码调查与后续验收方案；后续已执行保真探针并接入受限后端增删行列，当前状态见 `NATIVE_WORD_TABLE_ACCEPTANCE.md`。受限前端六个结构命令与草稿/历史现已接通；完整源能力与最终验收尚未完成。
 
 ## 结论
 
@@ -155,3 +155,9 @@ core.xml；core 仅允许 revision 1→2 与 modified 时间改变，并独立�
 原生 UI 结构事务/草稿/Undo 和桌面验收仍未完成。准确协议、证据边界及
 下一步见 `NATIVE_WORD_TABLE_ACCEPTANCE.md`，不能再把旧的 serializer
 丢失风险描述为本适配仍未解决，也不能将后端可用等同于 Ribbon 已开放。
+
+
+前端后续状态：六个受限行列命令已连接，真实浏览器刷新恢复、Undo/Redo、
+下载独立回读及修订重开通过；原“前端结构命令未开放”表述属于后端阶段
+历史。当前边界与剩余复杂表格/连续操作/桌面/生产验收见
+`NATIVE_WORD_TABLE_ACCEPTANCE.md` 的 frontend checkpoint。
