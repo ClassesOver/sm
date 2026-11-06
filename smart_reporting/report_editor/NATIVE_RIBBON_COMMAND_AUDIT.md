@@ -193,3 +193,12 @@ viewports preserve source-space identity through rotations and reorder. Actual
 file/browser/history/ASGI/Node22 evidence and remaining source all-pages/image UI
 boundaries are in `NATIVE_PDF_CROP_ACCEPTANCE.md`. The Page Size command remains
 disabled; this is not a complete Crop & Resize group or Task 5 closure.
+
+
+## PDF CropDialog all-pages option (2026-11-06)
+
+The source checkbox now applies displayed margins to all surviving page IDs in
+one draft history step. Per-page current bounds and rotation are retained;
+async preparation is atomic and the opener is guarded during pending work.
+`NATIVE_PDF_CROP_ALL_ACCEPTANCE.md` supersedes the earlier all-pages UI gap.
+Image drag handles and the separate Page Size command remain unavailable.

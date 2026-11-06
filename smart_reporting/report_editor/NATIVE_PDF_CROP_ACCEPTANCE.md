@@ -3,6 +3,9 @@
 2026-11-06. This closes the current-page crop command gap. It does not complete
 Task 5, all-source ribbon parity or desktop acceptance.
 
+The later `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md` closes the all-surviving-pages
+checkbox; counts and current-page evidence below remain the original checkpoint.
+
 ## Original material and chosen boundary
 
 Read pinned GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c`, original

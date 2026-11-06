@@ -268,3 +268,10 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Preserve MediaBox/content/UserUnit/forms/annotations; dialog explains hidden content remains and shows invalid input inside the modal. Old engines need an explicit crop capability. Vendor unchanged.
 - [x] 27 distinct new file cases, 13 affected existing file cases, 18 new frontend checks and 18 affected inventory/operation checks pass across focused runs. Production-static Chromium four rotations/UserUnit2/save/download/reopen, one actual-engine ASGI crop combination and two Node22 readonly/offline cases pass. Final builds/budgets and 32-item local SHA audit pass; standalone bridge tsc retains identical baseline desktop-type diagnostics. Details: `NATIVE_PDF_CROP_ACCEPTANCE.md`.
 - [ ] Crop-all/image handles, size, extraction/insertion/replacement, splitting/merging and Form Design remain open. This closes one bounded command, not Task 5 or deployment/desktop/full-image acceptance. Flags off.
+
+
+### PDF crop-all source option closure (2026-11-06)
+
+- [x] Connect the pinned CropDialog all-visible-pages checkbox as all surviving original IDs, preserving individual CropBoxes/rotations/UserUnit and earlier drafts. Prepare before one history commit; retain no-op/budget/error/cancel/source/readonly guards and prevent reopening during pending preparation.
+- [x] Ten new frontend cases and 18 affected crop cases pass across focused runs; production-static Chromium mixed-size/mixed-direction/UserUnit1/2/3 batch, cancellation/forced reopen, actual download/pypdf and revision2 reopen pass, as do final builds/budget checks. Evidence: `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`. This supersedes the crop-all open item in the preceding checkpoint.
+- [ ] Image drag handles, Page Size, extract/insert/replace, split/merge, Form Design, full source/context parity and desktop/deployed/full-image acceptance remain open. Backend and flags unchanged; Tasks 2–6 remain incomplete.

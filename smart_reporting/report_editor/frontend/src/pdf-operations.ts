@@ -67,6 +67,19 @@ export function cropPdfPage(pages: PdfPageIdentity[], operations: NativeOperatio
   return [...structuredClone(operations), { kind: 'cropPage', pageId, rect: bounds }]
 }
 
+/** Prepare every surviving page before committing one NativeDraft history step. */
+export async function cropAllPdfPages(pages: PdfPageIdentity[], operations: NativeOperation[], margins: number[], getViewport: (page: PdfPageIdentity) => Promise<PdfViewportInverse>): Promise<NativeOperation[]> {
+  const snapshot = structuredClone(operations), selection = [...margins]
+  const survivors = pdfPageState(pages, snapshot)
+  let result = snapshot
+  for (const page of survivors) {
+    const viewport = await getViewport(page)
+    const rect = pdfCropFromMargins(viewport, page.cropBox, selection)
+    result = cropPdfPage(pages, result, page.pageId, rect)
+  }
+  return result
+}
+
 export function pdfCropFromMargins(viewport: PdfViewportInverse, box: PdfBox, margins: number[]): PdfRect {
   if (margins.length !== 4 || !margins.every(value => Number.isFinite(value) && value >= 0 && value < 100)) throw new Error('裁切边距须为 0–100% 之间的数值')
   const [left, top, right, bottom] = margins

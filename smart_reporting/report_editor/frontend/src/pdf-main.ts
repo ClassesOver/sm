@@ -11,7 +11,7 @@ import type { NativeContextResponse, createNativeApi } from './native-api'
 import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
-import { cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -365,6 +365,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const input = documentElement('input'); input.type = 'number'; input.min = '0'; input.max = '99.99'; input.step = 'any'; input.value = '0'; input.setAttribute('aria-label', label)
     row.append(input); cropFields.append(row); return input
   })
+  const cropAllLabel = documentElement('label')
+  const cropAll = documentElement('input'); cropAll.type = 'checkbox'; cropAll.setAttribute('aria-label', '裁切全部保留页')
+  const cropAllText = documentElement('span')
+  cropAllLabel.append(cropAll, cropAllText); cropFields.append(cropAllLabel)
+  cropAll.addEventListener('change', () => {
+    cropTitle.textContent = cropAll.checked ? '裁切全部保留页' : '裁切当前页面'
+    cropDialog.setAttribute('aria-label', cropTitle.textContent)
+  })
+  let cropApplying = false
   const cropApply = documentElement('button'); cropApply.type = 'button'; cropApply.textContent = '应用裁切'
   const cropCancel = documentElement('button'); cropCancel.type = 'button'; cropCancel.textContent = '取消'
   cropFields.append(cropApply, cropCancel); cropDialog.append(cropTitle, cropHelp, cropError, cropFields); root.append(cropDialog)
@@ -372,23 +381,32 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   cropCancel.addEventListener('click', () => cropDialog.close())
   cropApply.addEventListener('click', () => { void applyCrop().catch(error => { cropError.textContent = error instanceof Error ? error.message : String(error); showError(error) }) })
   async function openCrop() {
-    if (!document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || model.capabilities?.cropPage !== true) return
+    if (cropApplying || !document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || model.capabilities?.cropPage !== true) return
     const page = state().find(item => item.pageId === activeId)
     if (!page) return
-    cropError.textContent = ''; cropPageId = page.pageId; cropInputs.forEach(input => { input.value = '0' })
+    cropError.textContent = ''; cropAll.checked = false; cropTitle.textContent = '裁切当前页面'; cropDialog.setAttribute('aria-label', cropTitle.textContent); cropAllText.textContent = `裁切全部保留页（${state().length} 页，各按当前显示方向和可见范围）`; cropPageId = page.pageId; cropInputs.forEach(input => { input.value = '0' })
     cropDialog.showModal()
   }
   async function applyCrop() {
-    if (!cropDialog.open || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || model.capabilities?.cropPage !== true) return
+    if (cropApplying || !cropDialog.open || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || model.capabilities?.cropPage !== true) return
     const page = state().find(item => item.pageId === cropPageId)
     if (!page) throw new Error('裁切目标页面已变化，请重新选择')
-    const key = JSON.stringify(draft.operations)
-    const original = await sourcePage(page.index)
-    if (locked || previewing || printing || previewDocument || draft.closed || key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新选择裁切范围')
+    const key = JSON.stringify(draft.operations), operations = structuredClone(draft.operations)
     if (cropInputs.some(input => input.value.trim() === '')) throw new Error('请填写全部四个裁切边距')
-    const rect = pdfCropFromMargins(pdfPageViewport(original, page, 1), page.cropBox, cropInputs.map(input => Number(input.value)))
-    draft.setOperations(cropPdfPage(model.pages, draft.operations, page.pageId, rect))
-    cropDialog.close(); await refresh()
+    const margins = cropInputs.map(input => Number(input.value)), allPages = cropAll.checked
+    cropApplying = true; updateControls()
+    try {
+      let next: NativeOperation[]
+      if (allPages) next = await cropAllPdfPages(model.pages, operations, margins, async target => pdfPageViewport(await sourcePage(target.index), target, 1))
+      else {
+        const original = await sourcePage(page.index)
+        const rect = pdfCropFromMargins(pdfPageViewport(original, page, 1), page.cropBox, margins)
+        next = cropPdfPage(model.pages, operations, page.pageId, rect)
+      }
+      if (disposed || !cropDialog.open || locked || previewing || printing || previewDocument || draft.closed || key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化或裁切已取消，请重新选择裁切范围')
+      draft.setOperations(next)
+      cropDialog.close(); await refresh()
+    } finally { cropApplying = false; updateControls() }
   }
   const pageButtons = new Map<string, HTMLButtonElement>()
   const pageActions: Record<string, () => void | Promise<void>> = {
@@ -470,7 +488,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [highlight, 'highlight'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)) }
   function updateControls() {
     for (const button of editableButtons) button.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
-    cropFields.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
+    cropFields.disabled = cropApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     undo.disabled ||= !draft.canUndo; redo.disabled ||= !draft.canRedo
     noteInput.disabled = locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
     textObjects.disabled = replacement.disabled = stageText.disabled = locked || previewing || !!previewDocument || draft.closed
@@ -490,7 +508,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
     for (const id of ['genoffice.pdf.page.rotateLeft', 'genoffice.pdf.page.rotateRight']) pageButtons.get(id)!.disabled ||= !activeId
     const crop = pageButtons.get('genoffice.pdf.page.crop')!
-    crop.disabled ||= !document || !activeId || model.capabilities?.cropPage !== true || draft.operations.length >= 500
+    crop.disabled ||= cropApplying || !document || !activeId || model.capabilities?.cropPage !== true || draft.operations.length >= 500
     crop.title = document && model.capabilities?.cropPage === true ? '裁切当前页的可见范围，保留底层内容；不能用于删除敏感信息' : '当前 PDF 引擎未确认裁切写回能力'
     const rotateAll = pageButtons.get('genoffice.pdf.page.rotateAll')!
     const rotateAllOverBudget = !!document && draft.operations.length + state().length > 500

@@ -326,3 +326,11 @@ SHA核对中同时校正一条历史测试过期记录；SOURCE清单不变。�
 仍有六项已有桌面类型声明缺失，与HEAD对照零新增，不记作干净通过。详见
 `report_editor/NATIVE_PDF_CROP_ACCEPTANCE.md`；全页裁切/其他Page命令和桌面/
 完整镜像/生产身份仍未验收，开关关闭。
+
+
+2026-11-06 PDF 裁切全部保留页：仅扩展原生对话框和草稿适配，各页复用自身
+PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步历史，异常/
+取消/超预算不保留半批结果，准备期间阻止重入。后端/vendor/运行包不变。
+混合尺寸/方向/UserUnit 与实际下载、pypdf 回读见
+`report_editor/NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`；不累计前阶段后端验收为新增，
+其他 Page 命令、桌面和完整镜像仍未完成，开关关闭。
