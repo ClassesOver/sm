@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from openpyxl import Workbook, load_workbook
 from pptx import Presentation
+from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches
 from pypdf import PdfReader, PdfWriter
 
@@ -107,7 +108,9 @@ def ribbon_operations(format, model):
         ]}]
     element = next(element for element in model["slides"][0]["elements"] if element["editable"] and element["text"])
     return [{"kind": "editSlides", "edits": [{"slideIndex": 0, "elementId": element["id"], "text": "功能区保存正文"}],
-             "slideSize": {"cx": 9000000, "cy": 7200000}}]
+             "slideSize": {"cx": 9000000, "cy": 7200000},
+             "paragraphFormatting": [{"slideIndex": 0, "elementId": element["id"], "align": "right",
+                                      "lineSpacingPct": 200, "spaceBeforePt": 12.5, "spaceAfterPt": 0}]}]
 
 
 def assert_file_readback(format, content):
@@ -141,6 +144,11 @@ def assert_file_readback(format, content):
         shape = deck.slides[0].shapes[0]
         assert shape.text == "功能区保存正文"
         assert (shape.left, shape.top, shape.width, shape.height) == (900000, 960000, 2700000, 960000)
+        paragraph = shape.text_frame.paragraphs[0]
+        assert paragraph.alignment == PP_ALIGN.RIGHT
+        assert paragraph.line_spacing == 2.0
+        assert paragraph.space_before.pt == 12.5
+        assert paragraph.space_after.pt == 0
 
 
 @pytest.mark.anyio

@@ -227,14 +227,16 @@ it('retains successive supported formatting records when editing a recovered PPT
   const draft = new NativeDraft(draftIdentity, draftStore())
   draft.setOperations([{ kind: 'editSlides',
     edits: [{ slideIndex: 0, elementId: 'title', text: '恢复正文' }, { slideIndex: 0, elementId: 'title', geometry: { x: 40, y: 50, width: 300, height: 80 } }],
-    textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true }, { slideIndex: 0, elementId: 'title', fontSizePt: 24 }] }])
+    textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true }, { slideIndex: 0, elementId: 'title', fontSizePt: 24 }],
+    paragraphFormatting: [{ slideIndex: 0, elementId: 'title', align: 'right' }, { slideIndex: 0, elementId: 'title', lineSpacingPct: 150 }] }])
   const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
   const { shell, view } = await openDraft(draft, api)
   expect(shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!.value).toBe('恢复正文')
   expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="bold"]')!.getAttribute('aria-pressed')).toBe('true')
   setRibbonValue(shell.editor, 'slideSize', '4:3')
   expect(draft.operations[0]).toMatchObject({ edits: [{ slideIndex: 0, elementId: 'title', text: '恢复正文', geometry: { x: 40, y: 50, width: 300, height: 80 } }],
-    textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true, fontSizePt: 24 }] })
+    textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true, fontSizePt: 24 }],
+    paragraphFormatting: [{ slideIndex: 0, elementId: 'title', align: 'right', lineSpacingPct: 150 }] })
   view.dispose()
 })
 
@@ -449,5 +451,69 @@ it('does not label custom dimensions as a preset just because the aspect ratio m
   expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="slideSize"]')!.value).toBe('')
   setRibbonValue(shell.editor, 'slideOrientation', 'portrait')
   expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 5625000, cy: 10000000 } })
+  view.dispose()
+})
+
+function enterSpacing(host: HTMLElement, command: string, value: string) {
+  const input = host.querySelector<HTMLInputElement>(`[data-command="${command}"]`)!
+  input.value = value
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+}
+
+it('PPTX paragraph spacing merges only explicit fields and shares alignment history and refresh', async () => {
+  const store = draftStore()
+  const draft = new NativeDraft(draftIdentity, store)
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  enterSpacing(shell.editor, 'spaceBeforePt', '12,5')
+  setRibbonValue(shell.editor, 'lineSpacingPct', '150')
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="paragraphAlignCenter"]')!.click()
+  enterSpacing(shell.editor, 'spaceAfterPt', '0')
+  const expected = { slideIndex: 0, elementId: 'title', spaceBeforePt: 12.5, lineSpacingPct: 150, align: 'center', spaceAfterPt: 0 }
+  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [expected] })
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  const { spaceAfterPt: _removed, ...beforeAfterEdit } = expected
+  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [beforeAfterEdit] })
+  expect((draft.operations[0] as any).paragraphFormatting[0]).not.toHaveProperty('spaceAfterPt')
+  expect(shell.editor.querySelector<HTMLInputElement>('[data-command="spaceAfterPt"]')!.value).toBe('')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [expected] })
+  view.dispose()
+  const reopened = await openDraft(new NativeDraft(draftIdentity, store), api)
+  expect(reopened.shell.editor.querySelector<HTMLInputElement>('[data-command="spaceBeforePt"]')!.value).toBe('12.5')
+  expect(reopened.shell.editor.querySelector<HTMLSelectElement>('[data-command="lineSpacingPct"]')!.value).toBe('150')
+  reopened.view.dispose()
+})
+
+it('PPTX paragraph spacing shows mixed, unset and alternate units honestly and rejects invalid input without mutation', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const source = { ...deck, slides: [{ ...deck.slides[0], elements: [
+    { ...deck.slides[0].elements[0], paragraphFormatting: [{ lineSpacingPct: 150, spaceBeforePt: 10 }, { lineSpacingPct: 200, spaceBeforePt: 20 }] },
+    { ...deck.slides[0].elements[0], id: 'other', paragraphFormatting: [{ lineSpacingPt: 24, spaceBeforePct: 100 }] },
+    { ...deck.slides[0].elements[0], id: 'readonly', editable: false, deletable: true },
+  ] }] }
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  const before = shell.editor.querySelector<HTMLInputElement>('[data-command="spaceBeforePt"]')!
+  const line = shell.editor.querySelector<HTMLSelectElement>('[data-command="lineSpacingPct"]')!
+  expect(before.value).toBe(''); expect(line.value).toBe('')
+  expect(before.placeholder).toContain('混合值')
+  for (const value of ['', '-1', '501', 'NaN', 'Infinity', '1,2,3', '1e2']) enterSpacing(shell.editor, 'spaceBeforePt', value)
+  expect(draft.operations).toEqual([])
+  setRibbonValue(shell.editor, 'lineSpacingPct', '115')
+  enterSpacing(shell.editor, 'spaceBeforePt', '500')
+  const object = shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+  object.value = 'other'; object.dispatchEvent(new Event('change'))
+  expect(before.value).toBe(''); expect(line.value).toBe('')
+  enterSpacing(shell.editor, 'spaceAfterPt', '3.25')
+  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [
+    { slideIndex: 0, elementId: 'title', lineSpacingPct: 115, spaceBeforePt: 500 },
+    { slideIndex: 0, elementId: 'other', spaceAfterPt: 3.25 },
+  ] })
+  object.value = 'readonly'; object.dispatchEvent(new Event('change'))
+  const snapshot = JSON.stringify(draft.operations)
+  expect(before.disabled).toBe(true); expect(line.disabled).toBe(true)
+  enterSpacing(shell.editor, 'spaceBeforePt', '7')
+  expect(JSON.stringify(draft.operations)).toBe(snapshot)
   view.dispose()
 })

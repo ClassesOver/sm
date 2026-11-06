@@ -67,3 +67,12 @@ Word 选区链接已接通插入、编辑和移除，沿用原文件锚点、修
 源段落仍有链接时不支持修改正文；须先移除该段全部链接并保存，再在新修订改文字。
 实际浏览器三次修订、独立文件关系/样式回读及打包引擎 HTTP 验收见 `NATIVE_WORD_LINK_ACCEPTANCE.md`。
 该段验收不代表完整 Word 功能或生产部署通过，开关仍关闭。
+
+
+Native PPTX Home Paragraph now supports six source line-spacing multipliers and
+0–500pt before/after spacing through a nonempty strict paragraph-format patch.
+Readback preserves mixed/unset and alternative source units; only explicitly
+changed fields are written. The pinned engine is unchanged. Scope, commands,
+independent readback, restore/lock tests and packaged HTTP/browser evidence are
+in `NATIVE_PPTX_SPACING_ACCEPTANCE.md`. Bullet/indent/direction and complete
+source parity remain open; feature flags remain disabled.

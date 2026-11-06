@@ -125,3 +125,8 @@ npx vitest run src/slides-native-ribbon.test.ts -t 'gates upstream font-size'
 ```
 
 Result: **1 passed, 15 skipped**, duration 971 ms. `git diff --check` passed on the changed product/test/document paths. No full format or repository test suite was repeated. This is state/dispatch verification; it does not establish browser/file acceptance for the omitted Paragraph families or all Font controls. The root task is responsible for ensuring its fresh image snapshot includes this product change.
+
+
+## PPTX spacing slice closure
+
+The earlier Home Paragraph inventory was a source-state snapshot. Line spacing and before/after point spacing are now implemented through `onParagraphFormat`, with strict native API/bridge support and actual per-paragraph inspector values. Explicit fields are merged with alignment and restored records; missing/mixed/alternative units remain blank rather than defaulting. See `NATIVE_PPTX_SPACING_ACCEPTANCE.md` for 52 backend cases, frontend/independent-review scope, browser/file acceptance and the separate packaged-ASGI proof. Bullets/numbering/indent/direction entries above remain open; there is still no claim of complete source parity.

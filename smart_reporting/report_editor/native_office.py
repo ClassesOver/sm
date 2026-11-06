@@ -105,9 +105,16 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or ('color' in item and (not isinstance(item['color'], str) or not _HEX_COLOR.fullmatch(item['color'])))
             or any(key in item and not isinstance(item[key], bool) for key in ('bold', 'italic', 'underline', 'strike'))):
             raise ValueError('native_office_operations_invalid')
-    paragraph_formatting = _records(operation, 'paragraphFormatting', {'slideIndex', 'elementId', 'align'})
-    if any(not isinstance(item['elementId'], str) or not item['elementId'] or item['align'] not in {'left', 'center', 'right', 'justify'} for item in paragraph_formatting):
-        raise ValueError('native_office_operations_invalid')
+    paragraph_formatting = _records(operation, 'paragraphFormatting', {'slideIndex', 'elementId'}, {
+        'align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt',
+    })
+    for item in paragraph_formatting:
+        if (not isinstance(item['elementId'], str) or not item['elementId']
+            or not set(item) - {'slideIndex', 'elementId'}
+            or ('align' in item and (not isinstance(item['align'], str) or item['align'] not in {'left', 'center', 'right', 'justify'}))
+            or ('lineSpacingPct' in item and (not _number(item['lineSpacingPct'], 100, 300) or item['lineSpacingPct'] not in {100, 115, 150, 200, 250, 300}))
+            or any(key in item and not _number(item[key], 0, 500) for key in ('spaceBeforePt', 'spaceAfterPt'))):
+            raise ValueError('native_office_operations_invalid')
     bridge_edits = [
         *edits,
         *[

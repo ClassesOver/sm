@@ -260,3 +260,12 @@ regeneration, including untouched fragments. Unsupported metadata grouping and
 linked-source text replacements fail explicitly. No vendored engine file changed.
 See report_editor/NATIVE_WORD_LINK_ACCEPTANCE.md for targeted, independent and
 packed-runtime/browser evidence and remaining limitations.
+
+
+Native PPTX Home Paragraph now supports six source line-spacing multipliers and
+0–500pt before/after spacing through a nonempty strict paragraph-format patch.
+Readback preserves mixed/unset and alternative source units; only explicitly
+changed fields are written. The pinned engine is unchanged. Scope, commands,
+independent readback, restore/lock tests and packaged HTTP/browser evidence are
+in `NATIVE_PPTX_SPACING_ACCEPTANCE.md`. Bullet/indent/direction and complete
+source parity remain open; feature flags remain disabled.

@@ -9,7 +9,7 @@ import type { NativeDraft } from './native-draft'
 import { openSlidesSizeDialog } from './slides-size-dialog'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type SlideTransition = 'none' | 'morph' | 'fade' | 'push' | 'wipe' | 'split' | 'circle' | 'cover' | 'pull' | 'dissolve' | 'zoom' | 'random'
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
@@ -22,7 +22,8 @@ type Edit = {
   geometry?: { x: number; y: number; width: number; height: number }
 }
 type TextFormatting = { slideIndex: number; elementId: string; fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
-type ParagraphFormatting = { slideIndex: number; elementId: string; align: 'left' | 'center' | 'right' | 'justify' }
+type ParagraphSourceFormatting = { align?: 'left' | 'center' | 'right' | 'justify' | null; lineSpacingPct?: number | null; lineSpacingPt?: number | null; spaceBeforePt?: number | null; spaceAfterPt?: number | null; spaceBeforePct?: number | null; spaceAfterPct?: number | null }
+type ParagraphFormatting = { slideIndex: number; elementId: string; align?: 'left' | 'center' | 'right' | 'justify'; lineSpacingPct?: number; spaceBeforePt?: number; spaceAfterPt?: number }
 type BusinessTheme = 'executive' | 'clinical' | 'modern'
 type AIProposal = { summary: string; edits: Edit[]; order: number[]; theme?: BusinessTheme }
 type AIStatus = { editId: string; status: string; proposal?: AIProposal; error?: { message: string } }
@@ -290,7 +291,10 @@ function restoreNativeDraft() {
     const key = editKey(format.slideIndex, format.elementId)
     textFormattingEdits.set(key, { ...textFormattingEdits.get(key), ...format })
   }
-  for (const format of changes.paragraphFormatting ?? []) paragraphFormattingEdits.set(editKey(format.slideIndex, format.elementId), format)
+  for (const format of changes.paragraphFormatting ?? []) {
+    const key = editKey(format.slideIndex, format.elementId)
+    paragraphFormattingEdits.set(key, { ...paragraphFormattingEdits.get(key), ...format })
+  }
   for (const transition of changes.transitions ?? []) transitionEdits.set(transition.slideIndex, transition.kind)
   for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
   for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
@@ -437,7 +441,16 @@ function renderInspector() {
   nativeRibbon?.setValue('fontSize', String(textFormat?.fontSizePt ?? textStyle.fontSizePt ?? ''))
   nativeRibbon?.setValue('fontFamily', textFormat?.fontFamily ?? textStyle.fontFamily ?? '')
   nativeRibbon?.setValue('fontColor', (textFormat?.color ?? textStyle.color ?? '#000000').toLowerCase())
-  nativeRibbon?.setValue('paragraphAlign', paragraphFormattingEdits.get(editKey(selectedSlide, element?.id ?? ''))?.align ?? element?.paragraphAlignments?.[0] ?? '')
+  const paragraphPatch = paragraphFormattingEdits.get(editKey(selectedSlide, element?.id ?? ''))
+  const alignments = element?.paragraphFormatting?.map(item => item.align) ?? element?.paragraphAlignments ?? []
+  nativeRibbon?.setValue('paragraphAlign', paragraphPatch?.align ?? (alignments.length && alignments.every(value => value === alignments[0]) ? alignments[0] : '') ?? '')
+  for (const field of ['lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'] as const) {
+    const values = element?.paragraphFormatting?.map(item => item[field]) ?? []
+    const uniform = values.length > 0 && values.every(value => value === values[0])
+    const value = paragraphPatch?.[field] ?? (uniform ? values[0] : undefined)
+    const supported = typeof value === 'number' && (field !== 'lineSpacingPct' || [100, 115, 150, 200, 250, 300].includes(value))
+    nativeRibbon?.setValue(field, supported ? String(value) : '', supported ? (field === 'lineSpacingPct' ? '行距倍数' : '段距（磅）；Enter 提交') : '未设置、混合值或源单位不适用；可明确设置新值')
+  }
   const contextualType: NativeSlidesContext = !element ? null
     : element.type === 'table' ? 'table'
       : element.type === 'chart' ? 'chart'
@@ -557,7 +570,22 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         const element = currentElement()
         if (!element?.editable || !element.text.trim()) break
         const align = command.replace('paragraphAlign', '').toLowerCase() as ParagraphFormatting['align']
-        paragraphFormattingEdits.set(editKey(selectedSlide, element.id), { slideIndex: selectedSlide, elementId: element.id, align })
+        paragraphFormattingEdits.set(editKey(selectedSlide, element.id), { ...paragraphFormattingEdits.get(editKey(selectedSlide, element.id)), slideIndex: selectedSlide, elementId: element.id, align })
+        refreshCanvasPreview()
+        markDirty()
+        break
+      }
+      case 'lineSpacingPct':
+      case 'spaceBeforePt':
+      case 'spaceAfterPt': {
+        const element = currentElement()
+        if (!element?.editable || !element.text.trim() || typeof value !== 'string' || !value.trim()) break
+        const normalized = value.trim().replace(',', '.')
+        if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) break
+        const number = Number(normalized)
+        if (!Number.isFinite(number) || (command === 'lineSpacingPct' ? ![100, 115, 150, 200, 250, 300].includes(number) : number < 0 || number > 500)) break
+        const key = editKey(selectedSlide, element.id)
+        paragraphFormattingEdits.set(key, { ...paragraphFormattingEdits.get(key), slideIndex: selectedSlide, elementId: element.id, [command]: command === 'lineSpacingPct' ? number : Math.round(number * 100) / 100 })
         refreshCanvasPreview()
         markDirty()
         break

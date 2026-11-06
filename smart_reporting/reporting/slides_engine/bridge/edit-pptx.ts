@@ -50,7 +50,14 @@ type Input = {
   backgrounds?: { slideIndex: number; color: string }[]
   textBoxes?: TextBox[]
   deletions?: { slideIndex: number; elementId: string }[]
-  paragraphFormatting?: { slideIndex: number; elementId: string; align: 'left' | 'center' | 'right' | 'justify' }[]
+  paragraphFormatting?: {
+    slideIndex: number
+    elementId: string
+    align?: 'left' | 'center' | 'right' | 'justify'
+    lineSpacingPct?: number
+    spaceBeforePt?: number
+    spaceAfterPt?: number
+  }[]
 }
 
 const colorPattern = /^#[0-9a-fA-F]{6}$/
@@ -111,6 +118,15 @@ if (request.action === 'inspect') {
           const run = paragraphs[0]?.runs[0]
           return {
             paragraphAlignments: paragraphs.map((paragraph) => paragraph.align ?? null),
+            paragraphFormatting: paragraphs.map((paragraph) => ({
+              align: paragraph.align ?? null,
+              lineSpacingPct: paragraph.lineHeight ?? null,
+              lineSpacingPt: paragraph.lineExact ?? null,
+              spaceBeforePt: paragraph.spaceBefore ?? null,
+              spaceAfterPt: paragraph.spaceAfter ?? null,
+              spaceBeforePct: paragraph.spaceBeforePct ?? null,
+              spaceAfterPct: paragraph.spaceAfterPct ?? null,
+            })),
             ...(run ? { textStyle: {
             fontSizePt: run.fontSize ?? null,
             fontFamily: run.fontFamily ?? null,
@@ -138,6 +154,22 @@ if (request.action === 'inspect') {
   // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
   const originalSlides = [...opened.deck.slides]
   const slideCount = originalSlides.length
+  if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
+    throw new Error('paragraph_format_invalid')
+  }
+  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt']
+  for (const format of request.paragraphFormatting ?? []) {
+    if (!format || typeof format !== 'object' || Array.isArray(format) ||
+      Object.keys(format).some(key => !['slideIndex', 'elementId', ...paragraphFields].includes(key)) ||
+      !paragraphFields.some(key => Object.hasOwn(format, key)) ||
+      !validSlideIndex(format.slideIndex, slideCount) || typeof format.elementId !== 'string' || !format.elementId ||
+      (Object.hasOwn(format, 'align') && !['left', 'center', 'right', 'justify'].includes(format.align!)) ||
+      (Object.hasOwn(format, 'lineSpacingPct') && ![100, 115, 150, 200, 250, 300].includes(format.lineSpacingPct!)) ||
+      (['spaceBeforePt', 'spaceAfterPt'] as const).some(key => Object.hasOwn(format, key) &&
+        (typeof format[key] !== 'number' || !Number.isFinite(format[key]) || format[key]! < 0 || format[key]! > 500))) {
+      throw new Error('paragraph_format_invalid')
+    }
+  }
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
   for (const deletion of deletions) {
@@ -150,7 +182,8 @@ if (request.action === 'inspect') {
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
   if ((request.edits ?? []).some((edit) => touchesDeleted(edit.slideIndex, edit.elementId)) ||
-    (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
+    (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId)) ||
+    (request.paragraphFormatting ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
     throw new Error('delete_target_has_pending_edits')
   }
   for (const background of request.backgrounds ?? []) {
@@ -302,8 +335,9 @@ if (request.action === 'inspect') {
     }
   }
   for (const format of request.paragraphFormatting ?? []) {
-    const slide = opened.deck.slides[format.slideIndex]
-    if (!slide || !setElementParagraphFormat(slide, format.elementId, { align: format.align })) throw new Error('paragraph_format_target_invalid')
+    const { slideIndex, elementId, ...patch } = format
+    const slide = originalSlides[slideIndex]
+    if (!slide || !setElementParagraphFormat(slide, elementId, patch)) throw new Error('paragraph_format_target_invalid')
   }
   for (const background of request.backgrounds ?? []) {
     setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())

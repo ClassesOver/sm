@@ -362,3 +362,27 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(onAction).toHaveBeenCalledWith('transition', 'wipe')
   ribbon.dispose()
 })
+
+it('uses source paragraph formatting actions, spacing presets and Enter-only point inputs with target and lock gates', () => {
+  const host = document.createElement('div'); document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const line = host.querySelector<HTMLSelectElement>('[data-command="lineSpacingPct"]')!
+  const before = host.querySelector<HTMLInputElement>('[data-command="spaceBeforePt"]')!
+  expect([...line.options].map(option => option.value)).toEqual(['', '100', '115', '150', '200', '250', '300'])
+  expect(line.dataset.sourceAction).toBe('onParagraphFormat')
+  expect(before.dataset.sourceAction).toBe('onParagraphFormat')
+  expect(line.disabled).toBe(true); expect(before.disabled).toBe(true)
+  ribbon.setTextFormatEnabled(true)
+  expect(line.disabled).toBe(false); expect(before.disabled).toBe(false)
+  before.value = '12,5'
+  before.dispatchEvent(new Event('change', { bubbles: true }))
+  expect(onAction).not.toHaveBeenCalled()
+  before.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  expect(onAction).toHaveBeenLastCalledWith('spaceBeforePt', '12,5')
+  ribbon.setLocked(true)
+  expect(line.disabled).toBe(true); expect(before.disabled).toBe(true)
+  ribbon.setLocked(false); ribbon.setTextFormatEnabled(false)
+  expect(line.disabled).toBe(true); expect(before.disabled).toBe(true)
+  ribbon.dispose()
+})

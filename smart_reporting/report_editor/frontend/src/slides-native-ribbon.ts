@@ -16,7 +16,7 @@ export interface NativeSlidesLayout { path: string; name: string }
 export interface NativeSlidesRibbon {
   setContext(context: NativeSlidesContext): void
   setLayouts(layouts: NativeSlidesLayout[]): void
-  setValue(command: string, value: string): void
+  setValue(command: string, value: string, hint?: string): void
   setTextFormatEnabled(enabled: boolean): void
   setSlideOrientationEnabled(enabled: boolean): void
   setLocked(locked: boolean): void
@@ -24,7 +24,7 @@ export interface NativeSlidesRibbon {
 }
 
 type RibbonGlyph = ComponentType<{ size?: number }>
-type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'text' | 'font'; options?: string[]; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
+type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'text' | 'font' | 'spacing'; options?: string[]; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
 type Group = { label: string; controls: Control[] }
 type Tab = { id: string; label: string; groups: Group[]; context?: NativeSlidesContext }
 
@@ -83,6 +83,9 @@ const tabs: Tab[] = [
       { id: 'paragraphAlignCenter', label: 'Center', sourceIcon: IconAlignCenter, sourceActionId: 'onAlign' },
       { id: 'paragraphAlignRight', label: 'Align Right', sourceIcon: IconAlignRight, sourceActionId: 'onAlign' },
       { id: 'paragraphAlignJustify', label: 'Justify', sourceIcon: IconAlignJustify, sourceActionId: 'onAlign' },
+      { id: 'lineSpacingPct', label: 'Line Spacing', kind: 'select', options: ['100', '115', '150', '200', '250', '300'], sourceActionId: 'onParagraphFormat' },
+      { id: 'spaceBeforePt', label: 'Space Before', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
+      { id: 'spaceAfterPt', label: 'Space After', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
     ] },
     { label: 'Arrange', controls: [
       { id: 'alignLeft', label: 'Align Left', unavailable: noWrite('对象对齐') },
@@ -286,19 +289,25 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           const select = document.createElement('select')
           select.setAttribute('aria-label', control.label)
           select.dataset.command = control.id
+          if (control.id === 'lineSpacingPct') select.add(new Option('未设置或混合值', ''))
           if (control.id === 'layout') {
             for (const layout of options.layouts ?? []) select.add(new Option(`${layout.name || layout.path}`, layout.path))
           } else {
-            for (const value of control.options ?? []) select.add(new Option(value, value))
+            for (const value of control.options ?? []) select.add(new Option(control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value, value))
           }
           select.addEventListener('change', () => options.onAction(control.id, select.value))
           element = select
-        } else if (control.kind === 'text' || control.kind === 'font' || control.kind === 'number' || control.kind === 'color') {
+        } else if (control.kind === 'text' || control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
           const input = document.createElement(control.kind === 'text' ? 'textarea' : 'input')
-          if (input instanceof HTMLInputElement) input.type = control.kind === 'font' ? 'text' : control.kind
+          if (input instanceof HTMLInputElement) input.type = control.kind === 'font' || control.kind === 'spacing' ? 'text' : control.kind
           input.setAttribute('aria-label', control.label)
           input.dataset.command = control.id
-          input.addEventListener(control.kind === 'text' ? 'change' : 'change', () => options.onAction(control.id, input.value))
+          if (control.kind === 'spacing') {
+            input.setAttribute('inputmode', 'decimal')
+            input.addEventListener('keydown', event => {
+              if ((event as KeyboardEvent).key === 'Enter') { event.preventDefault(); options.onAction(control.id, input.value) }
+            })
+          } else input.addEventListener('change', () => options.onAction(control.id, input.value))
           element = input
         } else {
           const buttonElement = document.createElement('button')
@@ -323,7 +332,13 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         }
         if (control.sourceActionId) element.dataset.sourceAction = control.sourceActionId
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
-        group.append(element)
+        if (['lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
+          const label = document.createElement('label')
+          label.htmlFor = controlId
+          Object.assign(label.style, { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', whiteSpace: 'nowrap' })
+          label.append(document.createTextNode(control.id === 'lineSpacingPct' ? '行距' : control.id === 'spaceBeforePt' ? '段前（磅）' : '段后（磅）'), element)
+          group.append(label)
+        } else group.append(element)
       }
       panel.append(group)
     }
@@ -364,9 +379,14 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         picker.value = layouts.some(layout => layout.path === current) ? current : ''
       }
     },
-    setValue(command, value) {
+    setValue(command, value, hint) {
       for (const element of controls.get(command) ?? []) {
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) element.value = value
+        if (hint !== undefined) {
+          element.title = hint
+          if (element instanceof HTMLInputElement) element.placeholder = hint
+          if (command === 'lineSpacingPct' && element instanceof HTMLSelectElement) element.options[0]!.textContent = hint
+        }
         if (command === 'bold' && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
         if (['italic', 'underline', 'strike'].includes(command) && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
       }
@@ -401,9 +421,9 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
 
   function updateTextFormattingState() {
-    for (const command of ['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontSizeUp', 'fontSizeDown', 'fontFamily', 'fontColor', 'paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify']) {
+    for (const command of ['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontSizeUp', 'fontSizeDown', 'fontFamily', 'fontColor', 'paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt']) {
       for (const element of controls.get(command) ?? []) {
-        if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
           element.disabled = locked || !hasTextTarget
         }
       }

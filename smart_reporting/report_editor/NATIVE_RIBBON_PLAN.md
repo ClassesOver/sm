@@ -190,3 +190,15 @@ Final verification for this closure:
 - [ ] Support body-text changes while a source paragraph still contains links; currently explicitly rejected. New paragraphs, table cells and complex/unsupported source links also stay unavailable for range-link editing.
 
 Exact source/protocol boundaries, commands, tests and generated artifacts are in `NATIVE_WORD_LINK_ACCEPTANCE.md`. No full repository suite was repeated. This closes the bounded Word range-link slice only; Task 2/full ribbon parity, table/header/footer work, complete application-image and production-database/host acceptance remain open. Features remain disabled; no deployment/merge/push.
+
+
+### PPTX Paragraph spacing continuation
+
+- [x] Connect six pinned-source line-spacing presets plus before/after point spacing to strict native API/bridge fields and unchanged `setElementParagraphFormat`; require a nonempty patch and preserve all unspecified properties.
+- [x] Inspect per-paragraph actual values and alternative units; present mixed/unset/unsupported source units without fabricated defaults. Merge pending alignment/spacing and same-object restored records; validate Enter input, selection and saving locks.
+- [x] Validate 52 backend/native cases, 43 frontend cases plus 3 affected restore checks, and an independent reorder/multi-record/font-preservation probe. Real browser mixed-value/input/Undo/refresh/download/reopen and independent python-pptx/ZIP checks passed. The combined PPTX ASGI path passed with the production-packed bridge in a read-only Node22 network-disabled container (1 passed, 9.86s).
+- [ ] Complete the remaining source bullet/numbering, indent and direction families; this slice does not complete PPTX or Task 6.
+
+Source/format boundaries, exact commands and retained samples: `NATIVE_PPTX_SPACING_ACCEPTANCE.md`. Full application-image acceptance remains blocked by the previously documented 8GB/vfs build storage limit; mounted probes are not substituted for it. Feature flags remain off.
+
+Final spacing checkpoint: both production builds and both budget checks passed after adding visible line/before/after unit labels. No full repository suite was repeated.
