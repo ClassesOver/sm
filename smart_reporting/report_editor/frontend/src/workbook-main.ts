@@ -18,7 +18,7 @@ import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot
 import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import {
-  applyWorkbookRibbonCommand,
+  applyWorkbookRibbonCommand, selectedWorkbookRotation,
   mountWorkbookRibbon,
   type RibbonWorkbook,
 } from './workbook-ribbon'
@@ -101,6 +101,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       }).catch(error => { feedback.textContent = `本地草稿暂未更新：${(error as Error).message}` })
     }
   }
+  const rotationUnavailable = () => {
+    const name = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+    return currentModel?.sheets.find(sheet => sheet.name === name)?.rotationReadOnlyReason ? '此工作表包含尚不能完整回读的继承格式，暂不支持旋转编辑' : undefined
+  }
   const ribbon = mountWorkbookRibbon(
     shell.editor.querySelector<HTMLElement>('.workbook-ribbon-host')!,
     command => {
@@ -108,10 +112,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       const workbook = runtime.univerAPI.getActiveWorkbook()
       if (!workbook) return
       try {
+        if (command.startsWith('rotate:') && rotationUnavailable()) throw new Error(rotationUnavailable())
         const applied = applyWorkbookRibbonCommand(
           command,
           workbook as unknown as RibbonWorkbook,
           step => stepSelectionDecimals(runtime, step),
+          value => { if (!runtime.univerAPI.syncExecuteCommand('sheet.command.set-text-rotation', { value })) throw new Error('文字旋转未应用') },
         )
         if (!applied) {
           feedback.textContent = 'Select a cell or range first.'
@@ -123,8 +129,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           : 'Selection updated; changes are not saved.'
       } catch (error) { feedback.textContent = (error as Error).message }
     },
+    { rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null), editable: () => !loading && !saving && !saved && !disposed, unavailableReason: rotationUnavailable },
   )
   runtime.univerAPI.onCommandExecuted(command => {
+    ribbon.refreshState?.()
     if (!loading && !saving && !saved && command.id.startsWith('sheet.mutation.')) {
       const mutation = structuralMutation(command.id, command.params)
       if (mutation) {
@@ -180,6 +188,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     staged = structuredClone(ops)
     structural = []
     loading = false
+    ribbon.refreshState?.()
   }
   const hideCandidate = () => { candidate.hidden = true; draft.reject(); aiId = '' }
   try {
@@ -276,6 +285,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const save = async () => {
     if (saved || saving) return
     saving = true
+    ribbon.refreshState?.()
     shell.save.disabled = true
     shell.editor.inert = true
     shell.statusLabel.textContent = '正在保存'
@@ -301,6 +311,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     } catch (error) { shell.statusLabel.textContent = '保存失败，草稿已保留'; feedback.textContent = (error as Error).message }
     finally {
       saving = false
+      ribbon.refreshState?.()
       shell.save.disabled = saved
       shell.editor.inert = saved && !options.native
       if (options.native && saved) shell.editor.querySelector<HTMLElement>('.workbook-grid')!.inert = true

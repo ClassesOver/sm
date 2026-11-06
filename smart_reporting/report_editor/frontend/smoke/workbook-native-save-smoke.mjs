@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
@@ -8,21 +9,33 @@ const frontend = process.cwd()
 const repo = new URL('../../../', `file://${frontend}/`).pathname
 const port = Number(process.env.WORKBOOK_SMOKE_PORT ?? 4189)
 const smokeCase = process.env.WORKBOOK_SMOKE_CASE ?? 'format-autosum'
-if (!['format-autosum', 'sort', 'row-column', 'draft-recovery', 'structural-undo'].includes(smokeCase)) throw new Error(`Unknown workbook smoke case: ${smokeCase}`)
+if (!['format-autosum', 'sort', 'row-column', 'draft-recovery', 'structural-undo', 'rotation'].includes(smokeCase)) throw new Error(`Unknown workbook smoke case: ${smokeCase}`)
 const baseUrl = `http://127.0.0.1:${port}`
-const sourceSha = 'a'.repeat(64)
 const runPython = input => {
   const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', `
 import base64, json, sys
 from io import BytesIO
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font
 from openpyxl.workbook.defined_name import DefinedName
 payload = json.load(sys.stdin)
 if payload['mode'] == 'create':
     book = Workbook()
     sheet = book.active
     sheet.title = 'Summary'
-    if payload['scenario'] == 'sort':
+    if payload['scenario'] == 'rotation':
+        sheet['A1'] = 'Rotated source'
+        sheet['A1'].alignment = Alignment(textRotation=135, horizontal='center', wrap_text=True, indent=2)
+        sheet['A1'].font = Font(name='Calibri', size=14, bold=True, italic=True, color='194361')
+        sheet['B1'] = '=1+1'
+        sheet['B1'].alignment = Alignment(textRotation=90)
+        sheet['B1'].number_format = '0.00'
+        sheet['C1'] = 'Untouched stacked'
+        sheet['C1'].alignment = Alignment(textRotation=255)
+        sheet['D1'] = 'merged'
+        sheet.merge_cells('D1:E2')
+        book.defined_names.add(DefinedName('Revenue', attr_text='Summary!$A$1'))
+    elif payload['scenario'] == 'sort':
         sheet['A1'] = 'zeta'
         sheet['A2'] = 'alpha'
     elif payload['scenario'] == 'structural-undo':
@@ -51,6 +64,11 @@ elif payload['mode'] == 'patch':
 elif payload['mode'] == 'inspect':
     book = load_workbook(BytesIO(base64.b64decode(payload['bytes'])), data_only=False)
     sheet = book['Summary']
+    if payload['scenario'] == 'rotation':
+        print(json.dumps({'rotation':sheet['A1'].alignment.textRotation,'horizontal':sheet['A1'].alignment.horizontal,'wrap':sheet['A1'].alignment.wrap_text,'indent':sheet['A1'].alignment.indent,
+            'bold':sheet['A1'].font.bold,'italic':sheet['A1'].font.italic,'fontSize':sheet['A1'].font.sz,'formula':sheet['B1'].value,'formulaRotation':sheet['B1'].alignment.textRotation,'formulaNumberFormat':sheet['B1'].number_format,
+            'untouchedRotation':sheet['C1'].alignment.textRotation,'definedName':book.defined_names['Revenue'].attr_text,'merges':list(map(str,sheet.merged_cells.ranges))}))
+        sys.exit(0)
     if payload['scenario'] == 'sort':
         print(json.dumps({'values': [sheet['A1'].value, sheet['A2'].value], 'sheets': book.sheetnames}))
         sys.exit(0)
@@ -67,6 +85,7 @@ elif payload['mode'] == 'inspect':
   return result.stdout.trim()
 }
 const sourceBytes = Buffer.from(runPython({ mode: 'create', scenario: smokeCase }), 'base64')
+const sourceSha = createHash('sha256').update(sourceBytes).digest('hex')
 let savedBytes
 let savePayload
 const saveAttempts = []
@@ -77,7 +96,7 @@ try {
     try { if ((await fetch(`${baseUrl}/reports/v1/editor/assets/native.html`)).ok) break } catch {}
     await delay(250)
   }
-  browser = await chromium.launch({ headless: true })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? { executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE } : {}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true })
   const pageErrors = []
   const failedResponses = []
@@ -111,7 +130,11 @@ try {
       editor: { openUrl: '/reports/v1/native/fixture-xlsx/2' }, validation: { ok: true, issues: [] } } })
   })
   await page.route('**/fixture-download.xlsx', route => route.fulfill({ body: savedBytes, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
-  await page.addInitScript(() => history.replaceState(null, '', '/reports/v1/native/fixture-xlsx/1'))
+  await page.route('**/reports/v1/native/fixture-xlsx/2/api/context', route => route.fulfill({ json: {
+    context: { documentId: 'fixture-xlsx', format: 'xlsx', revision: 2, parentRevision: 1, scope: { database: 'fixture', companyId: 'fixture', userId: 'fixture', threadId: 'fixture' }, sourceFile: { path: 'saved.xlsx', size: savedBytes.length, sha256: createHash('sha256').update(savedBytes).digest('hex'), mediaType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, origin: 'upload' }, csrfToken: 'fixture-csrf', capabilities: { xlsx_editor: true }, editingEnabled: true,
+  } }))
+  await page.route('**/reports/v1/native/fixture-xlsx/2/api/file', route => route.fulfill({ body: savedBytes, contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+  await page.addInitScript(() => history.replaceState(null, '', `/reports/v1/native/fixture-xlsx/${new URL(location.href).searchParams.get('revision') === '2' ? 2 : 1}`))
   await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
   try { await page.locator('.workbook-ribbon').waitFor({ timeout: 60000 }) }
   catch { throw new Error(JSON.stringify({ url: page.url(), body: (await page.locator('body').innerText()).slice(0, 1000), pageErrors, failedResponses })) }
@@ -120,7 +143,24 @@ try {
     .map(selector => { const element = document.querySelector(selector); const rect = element?.getBoundingClientRect(); return [selector, rect ? { width: rect.width, height: rect.height, display: getComputedStyle(element).display } : null] })))
   if (!geometry['.workbook-grid']?.width || !geometry['.workbook-grid']?.height) throw new Error(JSON.stringify({ geometry, pageErrors, failedResponses }))
   if (!await page.locator('.workbook-grid canvas').count()) throw new Error(JSON.stringify({ url: page.url(), body: await page.locator('body').innerText(), pageErrors, failedResponses }))
-  if (smokeCase === 'structural-undo') {
+  if (smokeCase === 'rotation') {
+    const persistedRotation = angle => page.waitForFunction(({ expected, fallback }) => Object.keys(localStorage).filter(key => key.startsWith('native-editor-draft:')).some(key => {
+      const edits = JSON.parse(localStorage.getItem(key)).operations.flatMap(op => op.kind === 'applyCellEdits' ? op.edits : [])
+      return (edits.filter(edit => edit.row === 0 && edit.column === 0 && edit.style?.textRotation !== undefined).at(-1)?.style.textRotation ?? fallback) === expected
+    }), { expected: angle, fallback: 135 })
+    await page.locator('.workbook-grid').click({ position: { x: 120, y: 36 } })
+    assert.equal(await page.locator('[data-ribbon-command="rotate:-45"]').getAttribute('aria-pressed'), 'true')
+    for (const [id, angle] of [['45',45],['vertical',255],['-45',135],['90',90],['-90',180],['0',0]]) {
+      await page.locator(`[data-ribbon-command="rotate:${id}"]`).click(); await persistedRotation(angle)
+      assert.equal(await page.locator(`[data-ribbon-command="rotate:${id}"]`).getAttribute('aria-pressed'), 'true')
+    }
+    await page.locator('.workbook-grid').click({ position: { x: 120, y: 36 } }); await page.keyboard.press('Control+z'); await persistedRotation(180)
+    await page.keyboard.press('Control+y'); await persistedRotation(0)
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
+    await page.waitForFunction(() => document.querySelectorAll('.workbook-grid canvas').length >= 1, null, { timeout: 60000 })
+    await page.locator('.workbook-grid').click({ position: { x: 120, y: 36 } })
+    assert.equal(await page.locator('[data-ribbon-command="rotate:0"]').getAttribute('aria-pressed'), 'true')
+  } else if (smokeCase === 'structural-undo') {
     const persistedStructure = async present => page.waitForFunction(expected => Object.keys(localStorage)
       .filter(key => key.startsWith('native-editor-draft:')).some(key => {
         const operations = JSON.parse(localStorage.getItem(key)).operations
@@ -166,7 +206,7 @@ try {
     await page.keyboard.press('Shift+ArrowDown')
     await page.locator('[data-ribbon-command="autofn:SUM"]').click()
     await page.locator('[data-ribbon-command="rotate:45"]').evaluate(button => {
-      if (!button.disabled || !button.getAttribute('aria-description')?.includes('does not capture text rotation')) throw new Error('unsafe text rotation command must be disabled with a reason')
+      if (button.disabled) throw new Error('persistable text rotation command must be available')
     })
   }
   if (smokeCase === 'draft-recovery') {
@@ -203,7 +243,10 @@ try {
   }
   await page.locator('[data-action="save"]').click()
   await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 30000 })
-  if (smokeCase === 'structural-undo') {
+  if (smokeCase === 'rotation') {
+    assert.ok(savePayload.operations.some(op => op.kind === 'applyCellEdits' && op.edits.some(edit => edit.row === 0 && edit.column === 0 && edit.style?.textRotation === 0)), JSON.stringify(savePayload))
+    assert.ok(savePayload.operations.flatMap(op => op.kind === 'applyCellEdits' ? op.edits : []).every(edit => edit.row === 0 && edit.column === 0 && !edit.writeValue && Object.keys(edit.style).every(key => key === 'textRotation')), JSON.stringify(savePayload))
+  } else if (smokeCase === 'structural-undo') {
     assert.ok(savePayload?.operations.every(operation => operation.kind !== 'applyRowColumnOps'), JSON.stringify(savePayload))
   } else if (smokeCase === 'sort') {
     assert.ok(savePayload?.operations.some(operation => operation.kind === 'applyCellEdits'
@@ -232,7 +275,13 @@ try {
   const downloaded = Buffer.from(download.bytes)
   assert.equal(createHash('sha256').update(downloaded).digest('hex'), createHash('sha256').update(savedBytes).digest('hex'))
   const reopened = JSON.parse(runPython({ mode: 'inspect', scenario: smokeCase, bytes: downloaded.toString('base64') }))
-  if (smokeCase === 'structural-undo') assert.deepEqual(reopened, { values: ['original', 'second'], formula: '=A1', definedName: 'Summary!$A$1', merges: ['C1:D2'], sheets: ['Summary'] })
+  if (smokeCase === 'rotation') {
+    assert.deepEqual(reopened, { rotation:0,horizontal:'center',wrap:true,indent:2,bold:true,italic:true,fontSize:14,formula:'=1+1',formulaRotation:90,formulaNumberFormat:'0.00',untouchedRotation:255,definedName:'Summary!$A$1',merges:['D1:E2'] })
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?revision=2`)
+    await page.waitForFunction(() => document.querySelectorAll('.workbook-grid canvas').length >= 1, null, { timeout:60000 })
+    await page.locator('.workbook-grid').click({ position:{x:120,y:36} })
+    assert.equal(await page.locator('[data-ribbon-command="rotate:0"]').getAttribute('aria-pressed'),'true')
+  } else if (smokeCase === 'structural-undo') assert.deepEqual(reopened, { values: ['original', 'second'], formula: '=A1', definedName: 'Summary!$A$1', merges: ['C1:D2'], sheets: ['Summary'] })
   else if (smokeCase === 'sort') assert.deepEqual(reopened, { values: ['alpha', 'zeta'], sheets: ['Summary'] })
   else if (smokeCase === 'row-column') assert.deepEqual(reopened, { values: [null, 'value', null], formula: '=LEN(A2)', numberFormat: '0.00', sheets: ['Summary'] })
   else assert.deepEqual(reopened, { value: 12.34, secondValue: smokeCase === 'draft-recovery' ? 3 : 2, bold: true, fontName: 'Calibri', fontSize: 14, fontColor: 'FFCC0000', numberFormat: '0.000', formula: '=1+1', autoSum: '=SUM(A1:A2)', sheets: ['Summary'] })
@@ -242,7 +291,9 @@ try {
     assert.equal(await page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('native-editor-draft:'))), false)
   }
   assert.deepEqual(pageErrors, [])
-  console.log(JSON.stringify({ ok: true, scenario: smokeCase, operationKinds: savePayload.operations.map(operation => operation.kind), downloadedBytes: downloaded.length, reopened }))
+  const evidence = { ok: true, scenario: smokeCase, browserVersion: browser.version(), sourceSha256:sourceSha, downloadedSha256:createHash('sha256').update(downloaded).digest('hex'), operations:savePayload.operations, operationKinds: savePayload.operations.map(operation => operation.kind), downloadedBytes: downloaded.length, reopened, desktopVerified:false }
+  if (process.env.WORKBOOK_SMOKE_EVIDENCE_DIR) { await mkdir(process.env.WORKBOOK_SMOKE_EVIDENCE_DIR,{recursive:true}); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/source.xlsx`,sourceBytes); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/downloaded.xlsx`,downloaded); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/evidence.json`,JSON.stringify(evidence,null,2)) }
+  console.log(JSON.stringify(evidence))
 } finally {
   await browser?.close()
   server.kill('SIGTERM')

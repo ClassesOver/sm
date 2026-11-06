@@ -3,5 +3,8 @@
   "packages/xlsx-engine/src/pivot-layout.ts": "b068254667e5d1574f7f761a2d0b3e4536343a2b91233f393d91668aba071fce",
   "packages/xlsx-engine/src/sort-range.ts": "7b1b39a7f932584a5a7bd3bcb21d789686d360908aecb0c847ce311e7b7196a7",
   "packages/xlsx-engine/tests/pivot-grouping.test.ts": "1d3e2f20ca433131fd8ba5c78ac22247cd7d7c489ec4031b690bad1987593345",
-  "packages/xlsx-engine/tests/upstream-fixes.test.ts": "177a0cbdaa8c43ffa5dd4594f852e9cd49b1f11cf9155b9b89322fc898575f78"
+  "packages/xlsx-engine/tests/upstream-fixes.test.ts": "177a0cbdaa8c43ffa5dd4594f852e9cd49b1f11cf9155b9b89322fc898575f78",
+  "packages/xlsx-engine/src/style-read.ts": "d67bb36ced611ebe1f55f63517e5d5de105dc9ee5556273cf7185b7e8e0b31e5",
+  "packages/xlsx-engine/src/workbook-read.ts": "0267246db3f01ff8fad4bd7421eeae0ec0d0af4971ee709714737e6550bcd968",
+  "packages/xlsx-engine/tests/style-read-alignment.test.ts": "43792392a3102118fad847c02e8305b7c86cfd08d1824d79469620989e6d2389"
 }

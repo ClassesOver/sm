@@ -9,3 +9,17 @@ Latest review: `f8c17004fb730df11f0f743164ffd8b4281bb38c` (2026-11-05). The addi
 The native workbook editor also uses the official Apache-2.0 Univer presets `@univerjs/preset-sheets-find-replace`, `@univerjs/preset-sheets-drawing`, and `@univerjs/preset-sheets-table`, all pinned to 0.25.1. They remain installed in the frontend dependency graph and are not copied or modified in this vendor directory.
 
 `grid/decimal-step.ts` adapts GenOffice `apps/sheets/src/renderer/decimal-step.ts` at `f8c17004fb730df11f0f743164ffd8b4281bb38c`. `ui/ribbon-icons.tsx` is copied byte-for-byte from the same revision's `apps/sheets/src/renderer/ribbon-icons.tsx`. Only the icon module is included from the Ribbon dependency closure; the desktop `ExcelShell.tsx`, React shell state, file dialogs, renderer App, IPC, Electron filesystem access, and command dispatcher are excluded. The native ribbon maps its existing operation IDs to these browser-safe upstream glyphs and keeps its own narrow DOM host. See SOURCE-SHA256.json for the pinned sources and hashes.
+
+
+2026-11-06 native rotation adapter: `core/style-map.ts` now imports and reads
+OOXML textRotation through Univer's signed-angle/stacked `tr` shape, retains
+explicit clearing in style deltas and leaves invalid angles unset. The original
+SOURCE-SHA256 remains unchanged; LOCAL-ADAPTATIONS-SHA256 records this adapter.
+The six native command values reuse fixed GenOffice `ribbon-actions.ts` at
+`f8c17004fb730df11f0f743164ffd8b4281bb38c`, blob
+`c38df65e12b3f2f22edd1d43583277516c34ae45`: signed numeric degrees or `'v'`,
+dispatched to registered `sheet.command.set-text-rotation`. Only the browser-safe
+callback contract is adapted; no desktop dispatcher is imported. Source files
+with unsupported row/column/default/named-XF rotation inheritance are gated
+readonly for these commands rather than advertising a clear operation that
+cannot be represented by the current source model.

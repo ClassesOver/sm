@@ -30,8 +30,8 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   expect(deferred.disabled).toBe(true)
   expect(deferred.title).toContain('native workbook editor')
   const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
-  expect(rotation.disabled).toBe(true)
-  expect(rotation.title).toContain('does not capture text rotation')
+  expect(rotation.disabled).toBe(false)
+  expect(rotation.title).not.toContain('does not capture text rotation')
   ribbon.dispose()
 })
 
@@ -92,7 +92,7 @@ it('writes formatting through the selected Univer range and inserts a worksheet 
     ['insert-row', 2, 1], ['delete-row', 2, 1], ['insert-col', 3, 1], ['delete-col', 3, 1],
     ['insert-sheet'],
   ])
-  expect(() => applyWorkbookRibbonCommand('rotate:45', workbook)).toThrow('does not capture text rotation')
+  expect(() => applyWorkbookRibbonCommand('rotate:45', workbook)).toThrow('not wired to the workbook runtime')
   const step = vi.fn()
   expect(applyWorkbookRibbonCommand('decimal-inc', workbook, step)).toBe(true)
   expect(applyWorkbookRibbonCommand('decimal-dec', workbook, step)).toBe(true)
@@ -283,7 +283,6 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   ])
   expect(getLabel('clear-contents')).toBe('清除内容')
   for (const [id, reason] of [
-    ['rotate:-45', 'does not capture text rotation'], ['rotate:vertical', 'does not capture text rotation'],
     ['indent-step:increase', 'does not roundtrip OOXML indent styles'], ['format-cells', 'no Format Cells dialog'],
     ['row-height-open', 'no row-height dialog'], ['col-width-open', 'no column-width dialog'],
     ['autofit-row-height', 'does not persist Univer auto-height'], ['autofit-col-width', 'does not persist Univer auto-width'],

@@ -1,3 +1,4 @@
+import { ROTATION_VALUES, univerRotationToOoxml, type RotationValue } from './workbook-rotation'
 import { BorderStyleTypes, BorderType } from '@univerjs/core'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { computeSortChanges, formatAddress, parseAddress } from '@sheets-web/xlsx-engine'
@@ -89,6 +90,7 @@ export type RibbonWorkbook = {
   getActiveSheet(): ({
     getSelection(): { getActiveRange(): RibbonRange | null } | null
     getRange(startRow: number, startColumn: number): {
+      getCellStyleData?(): { tr?: { a?: number; v?: number } } | null
       setFormula(formula: string): unknown
       setValue(value: unknown): unknown
     }
@@ -270,7 +272,6 @@ const disabledReasons: Record<string, string> = {
   'cf-open': 'Conditional-formatting editor is not connected to the native draft operations.',
   'format-as-table': 'Table creation is not connected to the native XLSX operation schema.',
   'cell-style': 'Cell-style presets are not connected to the native XLSX operation schema.',
-  'rotate:45': 'The grid readback style diff does not capture text rotation, so this edit cannot be saved.',
   'find': 'Find Replace is registered; its native dialog command is not wired to this ribbon yet.',
   'replace': 'Find Replace is registered; its native dialog command is not wired to this ribbon yet.',
   'insert-cells': 'The XLSX bridge has no insert-shifted-cells operation.',
@@ -282,11 +283,6 @@ const disabledReasons: Record<string, string> = {
   'autofit-col-width': 'The native workbook bridge does not persist Univer auto-width commands as explicit column widths.',
   'clear-all': 'The native ribbon adapter only supports clearing cell contents; full cell reset is not captured as one safe XLSX operation.',
   'clear-formats': 'The native workbook readback does not distinguish every cleared inherited/style component for a safe format-only reset.',
-  'rotate:-45': 'The grid readback style diff does not capture text rotation, so this edit cannot be saved.',
-  'rotate:vertical': 'The grid readback style diff does not capture text rotation, so this edit cannot be saved.',
-  'rotate:90': 'The grid readback style diff does not capture text rotation, so this edit cannot be saved.',
-  'rotate:-90': 'The grid readback style diff does not capture text rotation, so this edit cannot be saved.',
-  'rotate:0': 'The grid readback style diff does not capture text rotation, so this edit cannot be saved.',
   'indent-step:increase': 'The native workbook bridge does not roundtrip OOXML indent styles from the current grid readback.',
   'indent-step:decrease': 'The native workbook bridge does not roundtrip OOXML indent styles from the current grid readback.',
   'insert-checkbox': 'Checkbox drawing creation is not captured by workbook readback or XLSX operations.',
@@ -360,6 +356,7 @@ export function applyWorkbookRibbonCommand(
   command: RibbonCommand,
   workbook: RibbonWorkbook,
   stepDecimals?: (step: 1 | -1) => void,
+  rotateSelection?: (value: RotationValue) => void,
 ): boolean {
   const unavailableReason = disabledReasons[command]
   if (unavailableReason !== undefined) throw new Error(unavailableReason)
@@ -376,6 +373,12 @@ export function applyWorkbookRibbonCommand(
   const range = sheet?.getSelection()?.getActiveRange() ?? null
   if (!range || !sheet) return false
   const [name, value] = command.split(/:(.*)/s).slice(0, 2)
+  if (name === 'rotate') {
+    const rotation = ROTATION_VALUES[command as keyof typeof ROTATION_VALUES]
+    if (rotation === undefined) throw new Error('Unsupported text rotation.')
+    if (!rotateSelection) throw new Error('Text rotation is not wired to the workbook runtime.')
+    rotateSelection(rotation); return true
+  }
   if (name === 'autofn') {
     const fn = value?.toUpperCase()
     if (!['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'].includes(fn ?? '')) throw new Error('Unsupported AutoSum function.')
@@ -481,6 +484,7 @@ export function applyWorkbookRibbonCommand(
 export function mountWorkbookRibbon(
   container: HTMLElement,
   onCommand: (command: RibbonCommand) => void,
+  view?: { rotation(): number | 'mixed' | undefined; editable(): boolean; unavailableReason?(): string | undefined },
 ) {
   container.innerHTML = `
     <header class="workbook-ribbon" aria-label="Excel ribbon">
@@ -491,6 +495,19 @@ export function mountWorkbookRibbon(
   const body = container.querySelector<HTMLElement>('.workbook-ribbon-body')!
   let active: RibbonTab = 'Home'
 
+  const refreshState = () => {
+    if (!view) return
+    const rotation = view.rotation(), editable = view.editable(), reason = view.unavailableReason?.()
+    for (const [id, value] of Object.entries(ROTATION_VALUES)) {
+      const button = body.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
+      if (!button) continue
+      button.disabled = !editable || rotation === undefined || !!reason
+      const expected = value === 'v' ? 255 : value < 0 ? 90 - value : value
+      button.setAttribute('aria-pressed', String(rotation === expected))
+      if (button.disabled) { button.title = editable ? reason ?? '请先选择单元格或区域' : '当前工作簿不可编辑或正在保存'; button.setAttribute('aria-description', button.title) }
+      else { button.title = button.textContent ?? ''; button.removeAttribute('aria-description') }
+    }
+  }
   const render = () => {
     nav.replaceChildren(...tabs.map(tab => {
       const button = document.createElement('button')
@@ -584,7 +601,24 @@ export function mountWorkbookRibbon(
       sections.push(section)
     }
     body.replaceChildren(...sections)
+    refreshState()
   }
   render()
-  return { dispose() { container.replaceChildren() } }
+  return { refreshState, dispose() { container.replaceChildren() } }
+}
+
+/** Public FRange composed style access preserves inherited row/column rotation. */
+export function selectedWorkbookRotation(workbook: RibbonWorkbook | null): number | 'mixed' | undefined {
+  const sheet = workbook?.getActiveSheet(), range = sheet?.getSelection()?.getActiveRange()
+  if (!sheet || !range) return undefined
+  if (range.getHeight() * range.getWidth() > 10000) return 'mixed'
+  let selected: number | undefined
+  for (let r = 0; r < range.getHeight(); r++) for (let c = 0; c < range.getWidth(); c++) {
+    const cell = sheet.getRange(range.getRow() + r, range.getColumn() + c)
+    if (!cell.getCellStyleData) return undefined
+    const value = univerRotationToOoxml(cell.getCellStyleData()?.tr) ?? 0
+    if (selected !== undefined && selected !== value) return 'mixed'
+    selected = value
+  }
+  return selected
 }
