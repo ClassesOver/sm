@@ -214,3 +214,9 @@ Final spacing checkpoint: both production builds and both budget checks passed a
 - [ ] Complete source parity and production host/tenant/grant persistence checks. Real native SQL tests do not establish production permissions; ASGI artifact/grant repositories still use doubles.
 
 Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updates PR #190 without merging or deploying.
+
+### Word table executable preservation checkpoint
+
+- [x] Execute 14 real-DOCX serializer scenarios: original save, unchanged-model regeneration, four structure operations at first/middle/last positions. Python-docx/lxml independently verify matrices, widths, row ownership, rich text and untouched package members.
+- [x] Confirm original save is byte-identical, while all 13 regenerated scenarios lose surviving paragraph `mirrorIndents` and `rsidR`. Record per-cell differences and hashes; do not treat modeled-content checks as structural preservation acceptance.
+- [ ] Preserve original surviving-cell paragraph XML or prove a strict regeneration subset before API/UI structure commands. Original-source anchors and unsupported combinations still require their planned tests. See the executed-probe section of `NATIVE_WORD_TABLE_PLAN.md`.

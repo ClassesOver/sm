@@ -99,3 +99,49 @@ rg -n 'NativeTableSupport|tableRole|addRowAfter' smart_reporting/report_editor/f
 | LibreOffice（若可用） | 打开/渲染、PDF 对照 | 作为第二消费者补充证据，不能替代 Word 桌面验收 |
 
 当前完成状态：**源码路径已确认；协议建议、风险和验收已列出；结构探针、产品接通及桌面验收均未完成。** 后续优先提交可重放 fixture 与限定 serializer probe；只有保真子集和锚点规则都通过，才进入四种命令的产品实现。保持已有导出 revision、Markdown 权威和下载非阻断契约，不将本阶段表格限制变为已生成文件的下载阻断条件。
+
+## 已执行 serializer 保真探针（2026-11-06）
+
+前述“未执行”的调查状态现由本节更新；产品结构操作仍未开放。
+新增可重放入口：
+
+```sh
+.venv/bin/python scripts/probe_native_docx_tables.py /tmp/native-word-table-new-run
+```
+
+输出目录必须不存在。Python 生成真实固定非等宽 3×3 DOCX，Node/tsx
+调用仓库固定 `parseDocx` / `generateTableModelXml` / `saveDocx`，再由
+**python-docx 和 lxml** 独立读取每个文件，而非只相信 engine 回读。
+探针 TS 位于 `reporting/slides_engine/probes/docx-table-structure.ts`。
+它不是 native API，也不接受任何客户端 TableModel/XML。
+
+实际结果：**14 个场景的已建模检查通过，13 个场景存在段落属性丢失**。
+原文件 SHA-256：
+`a354800f004bc8c4681baa67554e2b8a23a2a1818ff9cb4d814e5cc17e51d303`。
+
+| 场景 | 文件数 | 独立检查 | 保真结果 |
+| --- | ---: | --- | --- |
+| 全部 original 块保存 | 1 | 完整文件字节、所有 ZIP 成员 | 与源文件逐字节相同 |
+| 不改模型但再生成整表 | 1 | 矩阵、宽度、行/格属性、粗体/颜色、非目标部件 | 9 格的 `w:mirrorIndents` 和 `w:rsidR` 均丢失，共 18 个差异 |
+| 插行/插列：首、中、末 | 6 | 3→4 行/列，新格为空，幸存内容/属性随源对象移动，列宽总和 9000 twips | 每文件 18 个相同属性差异 |
+| 删行/删列：首、中、末 | 6 | 3→2 行/列，正确删除内容，余格宽度及属性准确 | 每文件 12 个相同属性差异 |
+
+所有场景均检查 engine 与独立读取器矩阵一致、tblGrid 与每格 tcW
+一致、总宽保持 9000、行高/header/cantSplit 随原行移动、幸存格底色和
+粗体/颜色保留。未修改正文块完整 canonical XML 相同，页眉/页脚、关系
+及其他非目标 ZIP 文件字节相同。仅整表再生成场景修改 document.xml 和
+core.xml；core 仅允许 revision 1→2 与 modified 时间改变，并独立比对其余
+元数据。ZIP 目录条目不作为文件内容差异。
+
+首轮探针因未将 engine 的 revision/modified 元数据更新及 ZIP 目录条目
+区分出来而失败；收紧为上述精确元数据契约后，最终探针完成。未改动产品
+或 vendor serializer 来迎合验证，也未放宽任何正文/关系部件保真检查。
+
+输出包含原 DOCX、14 个 DOCX、engine 矩阵、独立矩阵、每文件 SHA、
+改变的成员及逐格丢失属性的 `evidence.json`。`structureReady:false` 和
+`desktopVerified:false` 明确保留；14 个已建模检查通过不等于结构验收通过。
+实际证据目录 `/tmp/pr190-word-table-probe-final`。Ruff 和 diff 检查通过。
+
+下一步应先为幸存单元格保留原段落 XML，或实现并证明严格的结构专用
+保真子集；不能仅因本矩阵内容/样式通过就开放结构命令。当前探针尚未
+覆盖嵌套/合并/修订负例、旧锚点失效、前端结构事务或 Office 桌面验收。
