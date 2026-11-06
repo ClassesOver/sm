@@ -373,3 +373,11 @@ Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行�
 构建和预算、33项本地SHA通过；独立bridge仍有六项基线诊断。证据见
 `report_editor/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`，保留失败迭代，
 不声称完整镜像/桌面/生产或全PDF对齐；开关关闭。
+
+
+2026-11-06 PDF 逐处搜索：固定search.ts与ui/find-text.ts算法独立复用，
+保留上游/本地SHA和变更声明；逐处框/计数、大小写/全词、循环导航、
+快捷键与原稿/实际预览页身份映射接通。删除/重排与异步预览重建有
+浏览器检查，八个新定向/七个受影响前端检查通过；后端和运行包未变。
+详见 `report_editor/NATIVE_PDF_SEARCH_ACCEPTANCE.md`，不把OCR、浮动栏、
+复杂字形精确几何或完整镜像/桌面/生产对齐计作完成，开关关闭。

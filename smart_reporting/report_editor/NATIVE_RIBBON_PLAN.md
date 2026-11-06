@@ -305,3 +305,10 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Match fixed source pending-first/one-saved toggle semantics; strict immutable annotation identity removes only its original page slot before pinned text/image rewrites. Copy shared Annots arrays. Safe four-type sources support history/reload, pending outlines, actual preview and downloaded reopen.
 - [x] 18 new file cases,3 new +31 affected frontend checks,new +prior markup service cases,two affected source cases,Chromium revision2→3 and independent content/form/AP readback pass across focused runs. Standard/Slides builds,budgets,33 local hashes and zero new standalone bridge diagnostics pass; six baseline desktop diagnostics remain. Node22 readonly/offline passes removal,font-unavailable text skip preservation,and forged identity refusal. See `NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`.
 - [ ] Linked replies/popups/structure,direct objects,signed/XFA/incompletely read sources remain readonly. Arbitrary annotation editing/replies,desktop/full-image/deployed and whole PDF parity remain open; flags off. This supersedes earlier saved-markup-removal refusal only within the accepted source boundary.
+
+
+### PDF occurrence search continuation (2026-11-06)
+
+- [x] Replace page-only lookup with pinned index/case-fold/whole-word algorithms, per-occurrence boxes/current count and cyclic navigation. Preserve source1000 cap/200ms debounce and original-page identities across deletion/reorder and actual-output preview. Query shortcuts, readonly and disposal are connected.
+- [x] Eight new focused cases and seven affected View/zoom cases pass across selected runs; production-static Chromium validates actual PDF.js matching/navigation, draft/source invariance and packed-engine preview. Standard/Slides typing/builds and actual budgets pass. Evidence: `NATIVE_PDF_SEARCH_ACCEPTANCE.md`. Backend/runtime unchanged; no old runtime checks recounted.
+- [ ] OCR/auto-OCR, floating search UI/context, complex-glyph exact geometry, complete shortcuts and whole PDF/desktop/image/deployed acceptance remain open. Flags off.

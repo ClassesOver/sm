@@ -244,3 +244,12 @@ and dictionary digest, history and actual preview/download. The original disable
 removal checkpoint is superseded only for these bounded sources. Linked replies/
 popups/structure, direct objects, signed/XFA and unreadable sources stay readonly;
 arbitrary annotation commands are not credited. Evidence: `NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`.
+
+
+## PDF occurrence search follow-up
+
+Home previous/next now address individual source matches, with case/whole-word
+modifiers and counts; View search and Ctrl/Meta+F focus Home search. Pinned
+search.ts and ui/find-text.ts algorithms/hash manifests are retained. The inline
+search adapts the floating source bar; OCR and full contextual/layout parity are
+not credited. Details: `NATIVE_PDF_SEARCH_ACCEPTANCE.md`.

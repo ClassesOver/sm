@@ -21,3 +21,9 @@
 .pdf-view-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 6px 14px; flex: none; background: white; border-top: 1px solid #d9e0ea; font-size: 12px; }
 .pdf-view-status input { width: 150px; }
 .pdf-view-status button { border: 1px solid #ccd5e2; border-radius: 4px; background: white; min-width: 24px; }
+
+/* Search boxes reuse pinned approximate per-item PDF geometry, without altering selectable text. */
+.pdf-search-overlays { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.pdf-search-match { position: absolute; background: #ffad4666; }
+.pdf-search-match.is-current { background: #ff8c0088; outline: 1px solid #ad5700; }
+.pdf-search-count { font-size: 12px; min-width: 45px; }

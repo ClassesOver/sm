@@ -22,6 +22,8 @@ import { pdfRibbonLabel } from './pdf-ribbon-locales'
 import { MARKUP_COLORS, quadToRect, selectionQuadsByPage } from './genoffice-pdf-annotations'
 import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
 
+import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
+
 import { PDF_ZOOM_STEPS, clampPdfZoom, stepPdfZoom, capturePdfZoomAnchor, restorePdfZoomAnchor, type PdfZoomAnchor } from './pdf-view-state'
 
 GlobalWorkerOptions.workerSrc = workerUrl
@@ -59,10 +61,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const textLayers = new Set<TextLayer>()
   const pageNodes = new Map<string, HTMLElement>()
   const pagesCached = new Map<number, PDFPageProxy>()
-  const textIndex = new Map<string, string>()
+  const searchCache = createSearchIndexCache()
+  let searchIndex: SearchIndex = [], searchPageIds: string[] = []
+  let searchMatches: { pageId: string; rects: [number, number, number, number][] }[] = []
+  let searchMatchCase = false, searchWholeWord = false, searchLoading = false
+  let searchJumpPending = false, searchRendering = false
+  let searchTimer: number | undefined
   let observer: IntersectionObserver | undefined
   const visible = new Set<string>()
-  let activeId = '', currentSearch = '', searchPosition = -1
+  let activeId = '', currentSearch = '', searchPosition = 0
   const ribbon = createPdfRibbon(root, { hasForms: false })
   ribbon.setLanguage(window.document.documentElement.lang || 'en')
   let commandGroup: HTMLElement
@@ -244,18 +251,29 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   search.type = 'search'; search.placeholder = '搜索文字'; search.setAttribute('aria-label', '搜索 PDF 文字')
   sourceCommand(search, 'home.search.search')
   searchPrintGroup.append(search)
-  search.addEventListener('input', () => { currentSearch = search.value.trim(); searchPosition = -1; markSearch() })
-  const stepSearch = async (direction: -1 | 1) => {
-    if (!currentSearch) return
-    const matches = state().filter(page => textIndex.get(page.pageId)?.includes(currentSearch.toLocaleLowerCase()))
-    if (!matches.length) { status.textContent = '未找到匹配文字；扫描页需要 OCR 后才能搜索。'; return }
-    searchPosition = (searchPosition + direction + matches.length) % matches.length
-    const page = matches[searchPosition]
-    pageNodes.get(page.pageId)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
-    activeId = page.pageId
-    for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
-    updateControls(); renderTextPanel(true)
-    status.textContent = `匹配页面 ${searchPosition + 1} / ${matches.length}`
+  search.addEventListener('input', () => { currentSearch = search.value.trim(); scheduleSearch() })
+  function openSearch() {
+    root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="home"]')?.click()
+    search.focus(); search.select()
+  }
+  search.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); stepSearch(event.shiftKey ? -1 : 1) }
+    else if (event.key === 'Escape') { event.preventDefault(); search.value = ''; currentSearch = ''; runSearch(false); viewport.focus() }
+  })
+  window.document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); openSearch() }
+  }, { signal: abort.signal })
+  const matchCase = button('区分大小写', () => { searchMatchCase = !searchMatchCase; matchCase.setAttribute('aria-pressed', String(searchMatchCase)); scheduleSearch() }, false)
+  sourceCommand(matchCase, 'search.matchCase'); matchCase.setAttribute('aria-pressed', 'false')
+  const wholeWord = button('全词匹配', () => { searchWholeWord = !searchWholeWord; wholeWord.setAttribute('aria-pressed', String(searchWholeWord)); scheduleSearch() }, false)
+  sourceCommand(wholeWord, 'search.wholeWord'); wholeWord.setAttribute('aria-pressed', 'false')
+  const searchCount = documentElement('span', 'pdf-search-count'); searchCount.setAttribute('role', 'status'); searchCount.setAttribute('aria-label', '搜索匹配计数')
+  searchPrintGroup.append(matchCase, wholeWord, searchCount)
+  const stepSearch = (direction: -1 | 1) => {
+    if (searchTimer !== undefined) runSearch(false)
+    if (!searchMatches.length) return
+    searchPosition = (searchPosition + direction + searchMatches.length) % searchMatches.length
+    markSearch(); jumpSearch()
   }
   const previousSearch = button('上一处', () => stepSearch(-1), false)
   sourceCommand(previousSearch, 'home.search.previousMatch')
@@ -271,7 +289,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup = viewNavigation
   sourceCommand(toggleThumbnails, 'view.navigation.thumbnails')
   viewNavigation.append(toggleThumbnails)
-  const focusSearch = button('搜索', () => search.focus(), false)
+  const focusSearch = button('搜索', openSearch, false)
   sourceCommand(focusSearch, 'view.navigation.search')
   commandGroup = viewNavigation
   const outlineToggle = button('目录大纲', () => {
@@ -651,8 +669,59 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       throw error
     }
   }
+  function scheduleSearch() {
+    if (searchTimer !== undefined) window.clearTimeout(searchTimer)
+    searchCount.textContent = currentSearch ? '正在搜索…' : ''
+    searchTimer = window.setTimeout(() => runSearch(true), 200)
+  }
+  function runSearch(jump: boolean, reset = true) {
+    if (searchTimer !== undefined) window.clearTimeout(searchTimer)
+    searchTimer = undefined
+    if (disposed || !document) return
+    const surviving = new Set(state().map(page => page.pageId))
+    searchMatches = searchInIndex(searchIndex, currentSearch, { matchCase: searchMatchCase, wholeWord: searchWholeWord })
+      .map(match => ({ pageId: searchPageIds[match.pageIndex], rects: match.rects })).filter(match => surviving.has(match.pageId))
+    searchPosition = reset ? 0 : Math.min(searchPosition, Math.max(0, searchMatches.length - 1))
+    markSearch()
+    if (jump) searchJumpPending = searchMatches.length > 0
+    if (!searchMatches.length) searchJumpPending = false
+    if (searchJumpPending) jumpSearch()
+  }
+  function jumpSearch() {
+    if (searchRendering) { searchJumpPending = true; return }
+    const match = searchMatches[searchPosition], page = match && state().find(page => page.pageId === match.pageId)
+    const holder = match && pageNodes.get(match.pageId)?.querySelector<HTMLElement>('.pdf-page-content')
+    if (!page || !holder) return
+    const original = pagesCached.get(previewDocument ? state().findIndex(item => item.pageId === page.pageId) : page.index)
+    if (!original) return
+    const view = displayViewport(original, page, scale), rect = match.rects[0]
+    const point = view.convertToViewportPoint(rect[0], rect[3])
+    const bounds = holder.getBoundingClientRect(), scroll = viewport.getBoundingClientRect()
+    viewport.scrollTop = Math.max(0, viewport.scrollTop + bounds.top - scroll.top + point[1] - viewport.clientHeight * .35)
+    searchJumpPending = false
+    activeId = page.pageId
+    for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
+    updateControls(); renderTextPanel(true)
+  }
   function markSearch() {
-    for (const node of viewport.querySelectorAll<HTMLSpanElement>('.textLayer span')) node.classList.toggle('pdf-search-hit', !!currentSearch && (node.textContent ?? '').toLocaleLowerCase().includes(currentSearch.toLocaleLowerCase()))
+    searchCount.textContent = !currentSearch ? '' : searchLoading ? '正在建立搜索索引…' : searchMatches.length ? `${searchPosition + 1} / ${searchMatches.length}${searchMatches.length === 1000 ? '（最多 1000 处）' : ''}` : '无匹配；扫描页需 OCR'
+    previousSearch.disabled = nextSearch.disabled = !searchMatches.length || searchLoading
+    for (const [pageId, node] of pageNodes) {
+      node.querySelector('.pdf-search-overlays')?.remove()
+      const holder = node.querySelector<HTMLElement>('.pdf-page-content'), page = state().find(item => item.pageId === pageId)
+      if (!holder?.querySelector('canvas') || !page) continue
+      const original = pagesCached.get(previewDocument ? state().findIndex(item => item.pageId === pageId) : page.index)
+      if (!original) continue
+      const view = displayViewport(original, page, scale), layer = documentElement('div', 'pdf-search-overlays')
+      for (const [index, match] of searchMatches.entries()) if (match.pageId === pageId) for (const rect of match.rects) {
+        const [x1, y1] = view.convertToViewportPoint(rect[0], rect[1]), [x2, y2] = view.convertToViewportPoint(rect[2], rect[3])
+        const mark = documentElement('span', `pdf-search-match${index === searchPosition ? ' is-current' : ''}`)
+        mark.dataset.matchIndex = String(index)
+        Object.assign(mark.style, { left: `${Math.min(x1, x2)}px`, top: `${Math.min(y1, y2)}px`, width: `${Math.abs(x2 - x1)}px`, height: `${Math.abs(y2 - y1)}px` })
+        layer.append(mark)
+      }
+      holder.append(layer)
+    }
   }
   async function sourcePage(index: number) {
     if (!document) throw new Error('PDF 尚未载入')
@@ -797,15 +866,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     return !textPanel.hidden && !!target && replacement.value !== String(draft.operations.find(op => op.kind === 'replaceText' && op.objectId === target.objectId)?.newText ?? target.text)
   }
   async function rebuildTextIndex() {
-    const version = ++indexGeneration
-    textIndex.clear()
-    for (const page of state()) {
-      if (disposed || version !== indexGeneration) return
-      const original = await sourcePage(page.index), content = await original.getTextContent()
-      if (disposed || version !== indexGeneration) return
-      textIndex.set(page.pageId, content.items.map(item => 'str' in item ? item.str : '').join(' ').toLocaleLowerCase())
+    const version = ++indexGeneration, indexedDocument = document
+    if (!indexedDocument) return
+    searchLoading = true; searchIndex = []; searchMatches = []; markSearch()
+    const ids = (previewDocument ? state() : model.pages).map(page => page.pageId)
+    try {
+      const index = await searchCache.get(indexedDocument)
+      if (disposed || version !== indexGeneration || document !== indexedDocument) return
+      searchIndex = index; searchPageIds = ids; searchLoading = false; runSearch(true)
+    } catch (error) {
+      if (!disposed && version === indexGeneration) { searchLoading = false; searchCount.textContent = '搜索索引读取失败'; throw error }
     }
-    markSearch()
   }
   async function leavePreview() {
     for (const task of tasks) task.cancel()
@@ -868,6 +939,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function refresh() {
     if (disposed || !document) return
+    searchRendering = true
     const structureKey = JSON.stringify(draft.operations.filter(op => !['addMarkup', 'removeMarkup'].includes(op.kind)))
     if (markupStructureKey !== structureKey) { markupStructureKey = structureKey; markupSelection = [] }
     const operationsKey = JSON.stringify(draft.operations)
@@ -939,7 +1011,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (pendingZoomAnchor) { restorePdfZoomAnchor(viewport, pendingZoomAnchor, scale); pendingZoomAnchor = null }
     status.textContent = previewDocument ? '正在显示实际写回的 PDF 预览；未执行的修改仍保留原文。返回原稿后可继续调整。' : draft.persistenceError ?? (draft.dirty ? `有 ${draft.operations.length} 项未保存修改；保存会创建新修订。` : response.editingEnabled ? `选择页面文字可添加或切换本次高亮、下划线、波浪线和删除线；文字批注为便签。${textEnabled ? '原位改字需核对实际预览后保存。' : '原位改字尚未开放。'}` : '当前为只读，原生编辑尚未开放；可下载文件。')
     if (textLoadWarning) status.textContent += ` ${textLoadWarning}`
-    renderTextPanel(); updateControls(); onDraftChange?.()
+    searchRendering = false; runSearch(false, false); renderTextPanel(); updateControls(); onDraftChange?.()
   }
   setMode('select')
   updateControls()
@@ -1016,6 +1088,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    disposed = true; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    disposed = true; if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }
