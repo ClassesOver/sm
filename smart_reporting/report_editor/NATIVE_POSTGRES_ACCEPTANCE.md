@@ -117,3 +117,9 @@ settings produced the recorded passing run. No product workaround was required.
 The new fixture has no fallback to application database settings. Without the
 explicit test URL it skips; a skipped run is **not** acceptance evidence.
 The exact recorded run finished in 11.77 seconds with `14 passed, 1 warning`.
+
+
+Scope checkpoint: these 18 distinct checks were recorded before the later Word
+table structural adapter. The shared DOCX HTTP fixture now also exercises column
+insertion, but this phase did not rerun it against PostgreSQL. Do not infer new
+structural-operation SQL acceptance from the earlier counts.

@@ -751,6 +751,7 @@ def test_docx_silent_cell_patch_failure_is_not_reported_as_success(content, tmp_
         'parseDocx, saveDocx, patchTableCellTexts,', 'parseDocx, saveDocx,',
     ).replace('type ObjectValue =', 'const patchTableCellTexts = (xml: string, _grid: unknown) => xml\ntype ObjectValue =')
     (isolated / 'bridge/edit-docx.ts').write_text(script)
+    (isolated / 'bridge/docx-table-structure.ts').write_text((engine / 'bridge/docx-table-structure.ts').read_text())
     source, output, request = tmp_path / 'source.docx', tmp_path / 'edited.docx', tmp_path / 'request.json'
     source.write_bytes(content)
     request.write_text(json.dumps({'kind': 'patch', 'input': str(source), 'output': str(output), 'operations': [

@@ -120,3 +120,14 @@ Artifact/download/editor grant stores are still test doubles and HTTP is still
 in-process ASGI. This closes the exercised native SQL persistence boundary, not
 production authorization or deployed network behavior. Exact isolation, run
 counts and reproduction are in `NATIVE_POSTGRES_ACCEPTANCE.md`.
+
+
+## Word table structural adapter HTTP continuation
+
+The DOCX fixture now combines column insertion with body/link/spacing/section
+changes. ASGI upload/save/download/SHA/retry/reopen and independent python-docx
+checks passed locally and in a production-packed Node22 read-only/network-none
+container (final adapter: 1 passed, 7.18s). Native/artifact/grant repositories remain doubles in
+this selection; the earlier PostgreSQL counts are not evidence for this new
+flow against SQL. Source preservation, protocol and remaining UI/desktop gaps
+are recorded in `NATIVE_WORD_TABLE_ACCEPTANCE.md`.

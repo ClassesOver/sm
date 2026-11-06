@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -62,6 +63,18 @@ def source_file(format):
         document = Document()
         document.add_paragraph("功能区原始正文")
         document.add_paragraph("保留段落")
+        table = document.add_table(rows=2, cols=2)
+        table.autofit = False
+        table._tbl.tblPr.find(qn("w:tblW")).set(qn("w:type"), "dxa")
+        table._tbl.tblPr.find(qn("w:tblW")).set(qn("w:w"), "9000")
+        for node in table._tbl.tblGrid:
+            node.set(qn("w:w"), "4500")
+        for ri, row in enumerate(table.rows):
+            for ci, cell in enumerate(row.cells):
+                cell.text = f"R{ri}C{ci}"
+                cell._tc.get_or_add_tcPr().find(qn("w:tcW")).set(qn("w:w"), "4500")
+                cell.paragraphs[0]._p.set(qn("w:rsidR"), f"{ri + 1:04X}{ci + 1:04X}")
+                cell.paragraphs[0]._p.get_or_add_pPr().append(OxmlElement("w:mirrorIndents"))
         document.save(stream)
     elif format == "pdf":
         writer = PdfWriter()
@@ -89,7 +102,9 @@ def ribbon_operations(format, model):
         paragraph = model["blocks"][0]
         anchor = {key: paragraph[key] for key in ("blockId", "expectedObjectSha256")}
         section = model["sections"][-1]
+        table = next(block for block in model["blocks"] if block["type"] == "table")
         return [
+            {"kind": "insertTableColumn", "blockId": table["blockId"], "expectedObjectSha256": table["expectedObjectSha256"], "index": 1},
             {"kind": "replaceParagraph", **anchor, "text": "功能区保存正文"},
             {"kind": "setParagraphSpacing", **anchor, "spaceBefore": 240, "spaceAfter": 240, "lineSpacing": 2},
             {"kind": "setSectionLayout", "sectionId": section["sectionId"],
@@ -124,6 +139,14 @@ def assert_file_readback(format, content):
     if format == "docx":
         document = Document(stream)
         assert [paragraph.text for paragraph in document.paragraphs] == ["功能区保存正文", "保留段落"]
+        table = document.tables[0]
+        assert [[cell.text for cell in row.cells] for row in table.rows] == [["R0C0", "", "R0C1"], ["R1C0", "", "R1C1"]]
+        assert [node.get(qn("w:w")) for node in table._tbl.tblGrid] == ["4500", "2250", "2250"]
+        for ri, row in enumerate(table.rows):
+            for ci in [0, 2]:
+                para = row.cells[ci].paragraphs[0]._p
+                assert para.get(qn("w:rsidR")) == f"{ri + 1:04X}{1 if ci == 0 else 2:04X}"
+                assert para.find(qn("w:pPr")).find(qn("w:mirrorIndents")) is not None
         links = document.paragraphs[0]._p.findall(qn("w:hyperlink"))
         assert len(links) == 1
         assert "".join(node.text or "" for node in links[0].iter(qn("w:t"))) == "功能区"

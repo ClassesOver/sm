@@ -1,21 +1,25 @@
 /** Local acceptance probe only; this does not expose native structural operations. */
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { editTableStructure, type TableStructureKind } from '../bridge/docx-table-structure.ts'
 import { parseDocx, saveDocx, generateTableModelXml, type TableModel, type SaveBlock } from '@genoffice/docx-engine'
 
 const [source, destination] = process.argv.slice(2)
 if (!source || !destination) throw new Error('Usage: tsx probes/docx-table-structure.ts SOURCE.docx NEW_OUTPUT_DIRECTORY')
+const preserving = process.argv[4] === '--preserve'
 const output = resolve(destination)
 await mkdir(output) // Refuse an existing directory; never overwrite previous evidence.
 const parsed = await parseDocx(await readFile(source))
 const blocks = parsed.blocks.filter(block => !block.hidden)
+if (blocks.some(block => block.docxIndex === null)) throw new Error('Probe requires original source block indexes')
 const target = blocks.find(block => block.table)
 if (!target?.table || !target.originalXml) throw new Error('Probe requires a source table with original XML')
+const originalTableXml = target.originalXml
 if (target.table.rows.length !== 3 || target.table.rows.some(row => row.length !== 3 || row.some(cell => cell.colSpan || cell.vMerge || cell.gridGap || cell.nestedTables?.length))) throw new Error('Probe fixture must be a simple 3x3 rectangle')
 const rowArrays = ['rowHeightsTwips', 'rowHeightRules', 'repeatHeaderRows', 'rowCantSplit', 'rawTrPrs', 'rowRevisions', 'rowPrChanges', 'rawTblPrExs', 'rowTblPrExChanges'] as const
 const blankCell = () => ({ paras: [''], richParas: [{ runs: [] }] })
 const cases: Record<string, unknown>[] = []
-for (const operation of ['original', 'regenerate', 'insertRow', 'deleteRow', 'insertColumn', 'deleteColumn']) {
+for (const operation of ['original', ...(preserving ? [] : ['regenerate']), 'insertRow', 'deleteRow', 'insertColumn', 'deleteColumn']) {
   const positions = ['original', 'regenerate'].includes(operation) ? [0] : operation.startsWith('insert') ? [0, 1, 3] : [0, 1, 2]
   for (const index of positions) {
     const model: TableModel = structuredClone(target.table)
@@ -49,8 +53,8 @@ for (const operation of ['original', 'regenerate', 'insertRow', 'deleteRow', 'in
       model.colWidthsPct = widths.map(width => width / total * 100)
     }
     const finalBlocks: SaveBlock[] = blocks.map(block => block === target && operation !== 'original'
-      ? { kind: 'xml', docxIndex: block.docxIndex, xml: generateTableModelXml(model, target.originalXml) }
-      : { kind: 'original', docxIndex: block.docxIndex })
+      ? { kind: 'xml', docxIndex: block.docxIndex!, xml: preserving ? editTableStructure(target, operation.replace(/(Row|Column)$/, 'Table$1') as TableStructureKind, index).xml : generateTableModelXml(model, originalTableXml) }
+      : { kind: 'original', docxIndex: block.docxIndex! })
     const bytes = await saveDocx(parsed, finalBlocks)
     const name = `${operation}-${index}.docx`
     await writeFile(resolve(output, name), bytes)

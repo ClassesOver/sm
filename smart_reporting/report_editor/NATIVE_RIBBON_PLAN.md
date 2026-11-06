@@ -219,4 +219,14 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 
 - [x] Execute 14 real-DOCX serializer scenarios: original save, unchanged-model regeneration, four structure operations at first/middle/last positions. Python-docx/lxml independently verify matrices, widths, row ownership, rich text and untouched package members.
 - [x] Confirm original save is byte-identical, while all 13 regenerated scenarios lose surviving paragraph `mirrorIndents` and `rsidR`. Record per-cell differences and hashes; do not treat modeled-content checks as structural preservation acceptance.
-- [ ] Preserve original surviving-cell paragraph XML or prove a strict regeneration subset before API/UI structure commands. Original-source anchors and unsupported combinations still require their planned tests. See the executed-probe section of `NATIVE_WORD_TABLE_PLAN.md`.
+- [x] Preserve original surviving-cell paragraph XML through the bounded backend adapter (frontend structure commands remain open). Original-source anchors and unsupported combinations still require their planned tests. See the executed-probe section of `NATIVE_WORD_TABLE_PLAN.md`.
+
+
+### Word table bounded backend continuation
+
+- [x] Reuse pinned table generation and restore original surviving cells/paragraph XML by source coordinates; independent 13-case preservation probe has zero property loss. Raw vendor serializer baseline remains separately reproducible.
+- [x] Admit strict insert/delete row/column operations for fixed-width rectangular sources; expose separate structure availability/reasons, dimension budgets, width policy and contiguous repeating-header handling.
+- [x] Reject same-table mixed/second structural operations; invalidate old table/cell anchors and permit fresh revision cell editing. Validate actual output matrix/width/XML before emitting bytes; injected silent failure is rejected.
+- [x] 44 distinct new backend checks, five affected regressions, expanded DOCX ASGI case and production-packed Node22 read-only/offline case passed. Details: `NATIVE_WORD_TABLE_ACCEPTANCE.md`. No full repository suite was repeated.
+- [ ] Next: capture frontend table transactions against source coordinates, implement draft/Undo/replay and one structural operation per table before save/reopen, then connect Ribbon only for the inspectable safe subset.
+- [ ] Desktop, native SQL combined with these new operations, full application image and deployed host acceptance remain open. Global Tasks 2–6 remain incomplete; flags off.

@@ -1,4 +1,5 @@
 // GenOffice Apache-2.0: 仅从原文件解析锚点，不接受客户端 OOXML 或资源路径。
+import { TABLE_STRUCTURE_KINDS, editTableStructure, tableStructureAvailability, type TableStructureKind } from './docx-table-structure.ts'
 import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { readFile, writeFile, realpath, stat } from 'node:fs/promises'
@@ -206,13 +207,13 @@ const trailingSection = readSections(parsed).at(-1)!
 const sectionId = hash(`${sourceSha256}:section:${trailingSection.lastBlockIndex}`)
 const indexed = new Map(blocks.map(block => [blockId(block), block]))
 const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c17004fb730df11f0f743164ffd8b4281bb38c', desktopVerified: false,
-  capabilities: { paragraphs: true, basicStyles: true, simpleTableText: true, replaceImage: false },
+  capabilities: { paragraphs: true, basicStyles: true, simpleTableText: true, simpleTableStructure: true, replaceImage: false },
   sections: [{ sectionId, expectedSectionSha256: hash(trailingSection.sectPrXml), settings: readSectionSettings(parsed) }],
   blocks: blocks.map(block => ({ blockId: blockId(block), expectedObjectSha256: hash(block.originalXml ?? ''),
     type: block.type, text: block.runs?.map(run => run.text).join('') ?? block.previewText ?? '', links: linksOf(block),
     ...(block.list ? { list: block.list } : {}),
     editable: editableParagraph(block), readOnlyReason: editableParagraph(block) ? null : 'docx_object_unsupported',
-    ...(block.type === 'table' ? { cells: cellXmls(block).map((row, r) => row.map((xml, c) => ({
+    ...(block.type === 'table' ? { ...tableStructureAvailability(block), rowCount: block.table?.rows.length ?? 0, columnCount: block.table?.rows[0]?.length ?? 0, cells: cellXmls(block).map((row, r) => row.map((xml, c) => ({
       cellId: cellId(block, r, c), expectedObjectSha256: hash(xml), row: r, column: c,
       text: block.table?.rows[r]?.[c]?.paras.join('\n') ?? '', editable: editableTable(block) && editableCell(xml),
       readOnlyReason: editableTable(block) && editableCell(xml) ? null : 'docx_cell_unsupported',
@@ -250,6 +251,12 @@ if (request.kind === 'inspect') {
     const block = indexed.get(op.blockId as string)
     if (!block || block.docxIndex === null) fail('anchor_invalid')
     if (op.kind === 'replaceImage') fail('image_unsupported')
+    if (TABLE_STRUCTURE_KINDS.includes(op.kind as TableStructureKind)) {
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'index'])
+      if (hash(block.originalXml ?? '') !== op.expectedObjectSha256) fail('anchor_invalid')
+      if (typeof op.index !== 'number' || !Number.isInteger(op.index)) fail('table_structure_index_invalid')
+      return { op, block, tableStructure: editTableStructure(block, op.kind as TableStructureKind, op.index) }
+    }
     if (op.kind === 'replaceCellText') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'cellId', 'text'])
       const rows = cellXmls(block)
@@ -330,9 +337,17 @@ if (request.kind === 'inspect') {
     }
     return fail('operation_unsupported')
   })
+  const structuralTables = new Set<string>()
+  for (const item of operations) if (item.tableStructure) {
+    const id = blockId(item.block)
+    if (structuralTables.has(id)) fail('table_structure_batch_conflict')
+    structuralTables.add(id)
+  }
+  for (const item of operations) if (item.cell && structuralTables.has(blockId(item.block))) fail('table_structure_batch_conflict')
   const states = new Map(blocks.map(block => [blockId(block), {
     block, saved: {kind: 'original', docxIndex: block.docxIndex!} as SaveBlock,
     before: [] as SaveBlock[], after: [] as SaveBlock[], deleted: false,
+    tableStructure: undefined as ReturnType<typeof editTableStructure> | undefined,
     cellValues: new Map<string, {row: number; column: number; text: string}>(),
   }]))
   // 引擎补建缺失 numbering.xml 时自带 1/2 两个模板定义。
@@ -350,7 +365,10 @@ if (request.kind === 'inspect') {
     if (item.sectionValues) { sectionValues = { ...sectionValues, ...item.sectionValues }; continue }
     const state = states.get(blockId(item.block))!
     if (state.deleted) fail('operation_after_delete')
-    if (item.op.kind === 'insertParagraph') {
+    if (item.tableStructure) {
+      state.saved = { kind: 'xml', docxIndex: item.block.docxIndex!, xml: item.tableStructure.xml }
+      state.tableStructure = item.tableStructure
+    } else if (item.op.kind === 'insertParagraph') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'generated', block: {type: 'paragraph', runs: [{text:item.value!}]} })
     } else if (item.op.kind === 'deleteParagraph') {
       state.deleted = true
@@ -431,12 +449,14 @@ if (request.kind === 'inspect') {
     ...(newDefs.length ? { numbering: { newDefs } } : {}),
     ...(sectionValues ? { section: { ...readSectionSettings(parsed), ...sectionValues } } : {}),
   })
-  if (operations.some(item => item.op.kind === 'replaceCellText')) {
+  if (operations.some(item => item.op.kind === 'replaceCellText' || item.tableStructure)) {
     const reopened = await parseDocx(output)
     for (const state of states.values()) {
-      if (!state.cellValues.size || state.saved.kind !== 'xml') continue
+      if ((!state.cellValues.size && !state.tableStructure) || state.saved.kind !== 'xml') continue
       const xml = state.saved.xml
       const table = reopened.blocks.find(block => block.type === 'table' && block.originalXml === xml)?.table
+      if (state.tableStructure && (JSON.stringify(table?.rows.map(row => row.map(cell => cell.paras.join('\n')))) !== JSON.stringify(state.tableStructure.matrix)
+        || JSON.stringify(table?.colWidthsTwips) !== JSON.stringify(state.tableStructure.widths))) fail('table_structure_write_not_applied')
       for (const cell of state.cellValues.values()) {
         if (table?.rows[cell.row]?.[cell.column]?.paras.join('\n') !== cell.text) fail('cell_write_not_applied')
       }

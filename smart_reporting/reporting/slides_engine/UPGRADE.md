@@ -280,3 +280,10 @@ caret/table/group editing is not covered. See `NATIVE_PPTX_LISTS_ACCEPTANCE.md`
 in report_editor. Real PostgreSQL repository plus four-format ASGI/file
 acceptance is recorded in `NATIVE_POSTGRES_ACCEPTANCE.md`; production grant
 storage and clean application-image acceptance remain open.
+
+
+Word 表格后端保真阶段（2026-11-06）：新增受限固定列宽表的增删行列
+协议，复用 pinned generator 并按源坐标保留幸存格原 XML；原段落属性
+丢失问题在独立探针中消除。单表单结构操作、同表文字混用拒绝、新修订
+锚点及实际写回检查已接通。前端仍不开放结构编辑；详见 report_editor
+中的 `NATIVE_WORD_TABLE_ACCEPTANCE.md`。未修改 vendor 源码或发布开关。

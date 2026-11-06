@@ -81,12 +81,12 @@ def row_props(row):
             'header': enabled('tblHeader'), 'cantSplit': enabled('cantSplit')}
 
 
-def run(output):
+def run(output, preserve=False):
     output.mkdir(parents=True, exist_ok=False)
     source = output / 'source.docx'
     fixture(source)
     subprocess.run([str(ENGINE / 'node_modules/.bin/tsx'), 'probes/docx-table-structure.ts',
-                    str(source), str(output / 'cases')], cwd=ENGINE, check=True)
+                    str(source), str(output / 'cases'), *(['--preserve'] if preserve else [])], cwd=ENGINE, check=True)
     original, root, table, matrix = read_package(source)
     cases = json.loads((output / 'cases/engine-cases.json').read_text())
     original_rows = table.findall('w:tr', NS)
@@ -138,6 +138,8 @@ def run(output):
         losses = []
         for ri, row in enumerate(after_table.findall('w:tr', NS)):
             expected_props = row_props(original_rows[row_ids[ri]]) if row_ids[ri] is not None else {'height': None, 'header': False, 'cantSplit': False}
+            if preserve and row_ids[ri] is None and index == 0:
+                expected_props['header'] = True
             assert row_props(row) == expected_props, (case, ri, row_props(row), expected_props)
             for ci, cell in enumerate(row.findall('w:tc', NS)):
                 assert int(cell.find('w:tcPr/w:tcW', NS).get(qn('w:w'))) == widths[ci], case
@@ -149,6 +151,13 @@ def run(output):
                 assert cell.find('w:p/w:r/w:rPr/w:b', NS) is not None, case
                 assert cell.find('w:p/w:r/w:rPr/w:color', NS).get(qn('w:val')) == '194361', case
                 para = cell.find('w:p', NS)
+                if preserve:
+                    assert [etree.tostring(p, method='c14n') for p in cell.findall('w:p', NS)] == [etree.tostring(p, method='c14n') for p in source_cell.findall('w:p', NS)], (case, value)
+                    before_props = etree.fromstring(etree.tostring(source_cell.find('w:tcPr', NS)))
+                    after_props = etree.fromstring(etree.tostring(cell.find('w:tcPr', NS)))
+                    before_props.find('w:tcW', NS).set(qn('w:w'), str(widths[ci]))
+                    assert etree.tostring(before_props, method='c14n') == etree.tostring(after_props, method='c14n'), (case, value)
+
                 for label, retained in [('w:rsidR', para.get(qn('w:rsidR')) == source_cell.find('w:p', NS).get(qn('w:rsidR'))),
                                         ('w:mirrorIndents', para.find('w:pPr/w:mirrorIndents', NS) is not None)]:
                     if not retained:
@@ -162,8 +171,10 @@ def run(output):
     receipt = {'sourceSha256': hashlib.sha256(source.read_bytes()).hexdigest(),
                'cases': results, 'modeledChecksPassed': len(results),
                'casesWithPropertyLoss': sum(bool(case['lostProperties']) for case in results),
-               'structureReady': False, 'desktopVerified': False,
-               'scope': 'local serializer feasibility; native structural API remains unavailable'}
+               'preservationAdapterVerified': preserve, 'structureReady': False, 'desktopVerified': False,
+               'scope': 'local serializer and preservation adapter; product UI not enabled'}
+    if preserve:
+        assert all(not case['lostProperties'] for case in results)
     (output / 'evidence.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps({key: receipt[key] for key in ['sourceSha256', 'modeledChecksPassed', 'casesWithPropertyLoss', 'structureReady']}))
 
@@ -171,4 +182,6 @@ def run(output):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='New directory for fixtures, files and evidence')
-    run(parser.parse_args().output.resolve())
+    parser.add_argument('--preserve', action='store_true', help='Exercise the source-XML preservation adapter')
+    args = parser.parse_args()
+    run(args.output.resolve(), args.preserve)
