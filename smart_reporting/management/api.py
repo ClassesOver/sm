@@ -13,9 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from .auth import AdminAuthService
-from .models import AdminAccount, AdminSessionInvalid, ManagementError
+from .models import AdminAccount, AdminSessionInvalid, ManagementError, ManagementScope
 from .repository import audit_events
 from .settings import ManagementSettings
+from .scopes import ScopeService
 
 SESSION_COOKIE = "report_management_session"
 
@@ -56,6 +57,13 @@ class PasswordInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     current_password: str = Field(alias="currentPassword", max_length=128)
     new_password: str = Field(alias="newPassword", min_length=12, max_length=128)
+
+
+class ScopeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    database: str = Field(min_length=1, max_length=128)
+    company_id: str = Field(alias="companyId", min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=200)
 
 
 def create_management_router(auth: AdminAuthService, settings: ManagementSettings) -> APIRouter:
@@ -178,6 +186,19 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
             "items": jsonable_encoder([dict(row) for row in rows[:limit]]),
             "nextCursor": rows[limit - 1]["id"] if len(rows) > limit else None,
         }
+
+    scopes = ScopeService(auth)
+
+    @protected.get("/management/api/v1/scopes")
+    async def list_scopes(request: Request, limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                          after: str | None = None):
+        return await scopes.list(request.cookies[SESSION_COOKIE], limit, after)
+
+    @protected.post("/management/api/v1/scopes", status_code=201)
+    async def register_scope(request: Request, payload: ScopeInput):
+        require_csrf(request)
+        return await scopes.register(request.cookies[SESSION_COOKIE],
+                                     ManagementScope(payload.database, payload.company_id), payload.name)
 
     router.include_router(protected)
 

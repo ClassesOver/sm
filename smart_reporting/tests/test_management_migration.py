@@ -47,7 +47,7 @@ async def test_management_migration_is_repeatable_and_preserves_account():
             revision = await connection.scalar(
                 text("SELECT version_num FROM reporting_management.alembic_version")
             )
-        assert revision == "0001_admin"
+            assert revision == "0004_profiles"
         from smart_reporting.management.auth import AdminAuthService
         from smart_reporting.management.repository import AdminRepository
 
@@ -55,5 +55,10 @@ async def test_management_migration_is_repeatable_and_preserves_account():
         await service.bootstrap("migration test password")
         login = await service.login("admin", "migration test password", "127.0.0.1")
         assert (await service.authenticate(login.raw_token)).username == "admin"
+        from smart_reporting.management.models import ManagementScope
+        from smart_reporting.management.scopes import ScopeService
+        scopes = ScopeService(service)
+        await scopes.register(login.raw_token, ManagementScope("migration", "100"), "迁移组织")
+        assert (await scopes.list(login.raw_token))["items"][0]["companyId"] == "100"
     finally:
         await engine.dispose()

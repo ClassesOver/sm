@@ -16,6 +16,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    UniqueConstraint,
     delete,
     insert,
     select,
@@ -69,6 +70,41 @@ audit_events = Table(
     Column("actor", String(32), nullable=False),
     Column("action", String(64), nullable=False),
     Column("details", JSON, nullable=False),
+)
+
+
+tenant_settings = Table(
+    "tenant_settings", metadata,
+    Column("id", String(36), primary_key=True),
+    Column("database", String(128), nullable=False),
+    Column("company_id", String(128), nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("default_source_ids", JSON, nullable=False),
+    Column("default_knowledge_base_ids", JSON, nullable=False),
+    UniqueConstraint("database", "company_id", name="uq_management_scope"),
+)
+
+profile_drafts = Table(
+    "profile_drafts",
+    metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("profile_id", String(128), primary_key=True),
+    Column("version", Integer, nullable=False),
+    Column("document", JSON, nullable=False),
+    Column("content_hash", String(64), nullable=False),
+)
+profile_versions = Table(
+    "profile_versions",
+    metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("profile_id", String(128), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("document", JSON, nullable=False),
+    Column("effective_profile", JSON, nullable=False),
+    Column("effective_profile_hash", String(64), nullable=False),
+    Column("parent_versions", JSON, nullable=False),
+    Column("published_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -308,3 +344,53 @@ class AdminRepository:
             await connection.execute(delete(sessions))
             await connection.execute(delete(login_attempts))
             await self.audit(connection, "password_changed" if raw else "password_reset", now)
+
+sources = Table(
+    "sources", metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("source_id", String(64), primary_key=True),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("draft_version", Integer, nullable=False),
+    Column("published_revision", Integer),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+source_drafts = Table(
+    "source_drafts", metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("source_id", String(64), primary_key=True),
+    Column("version", Integer, nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("source_type", String(32), nullable=False),
+    Column("database", String(128), nullable=False),
+    Column("credential_ref", String(36), nullable=False),
+    Column("credential_revision", Integer, nullable=False),
+    Column("profile_version_id", String(64)),
+    Column("metadata_version_id", String(64)),
+    Column("content_hash", String(64), nullable=False),
+)
+source_versions = Table(
+    "source_versions", metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("source_id", String(64), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("content_hash", String(64), nullable=False),
+    Column("published_at", DateTime(timezone=True), nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("source_type", String(32), nullable=False),
+    Column("database", String(128), nullable=False),
+    Column("credential_ref", String(36), nullable=False),
+    Column("credential_revision", Integer, nullable=False),
+    Column("profile_version_id", String(64)),
+    Column("metadata_version_id", String(64)),
+)
+source_credentials = Table(
+    "source_credentials", metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("source_id", String(64), primary_key=True),
+    Column("credential_ref", String(36), primary_key=True),
+    Column("revision", Integer, nullable=False),
+    Column("key_id", String(32), nullable=False),
+    Column("ciphertext", JSON, nullable=False),
+    Column("secret_hash", String(64), nullable=False),
+)

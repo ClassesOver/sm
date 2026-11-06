@@ -28,6 +28,9 @@ from .management.api import create_management_router
 from .management.auth import AdminAuthService
 from .management.repository import AdminRepository
 from .management.settings import ManagementSettings
+from .management.data_sources.api import create_source_router
+from .management.data_sources.secrets import CredentialVault
+from .management.profile_api import create_profile_router
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
@@ -366,9 +369,18 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.state.agentos_context = context
     management_auth = AdminAuthService(AdminRepository(agent_database.async_engine))
     application.state.management_auth = management_auth
-    application.include_router(
-        create_management_router(management_auth, ManagementSettings.from_environment())
-    )
+    management_settings = ManagementSettings.from_environment()
+    application.state.management_settings = management_settings
+    application.include_router(create_management_router(management_auth, management_settings))
+    try:
+        source_vault = CredentialVault()
+    except Exception:
+        source_vault = None
+    from .management.scopes import ScopeService
+    management_scopes = ScopeService(management_auth)
+    application.include_router(create_profile_router(management_scopes))
+    if source_vault is not None:
+        application.include_router(create_source_router(management_scopes, source_vault))
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
