@@ -186,6 +186,54 @@ async def test_config_import_dry_run_and_idempotent_commit(
     assert "reporter:secret@" in await service.resolve_credentials(scope, "operations", 1)
     assert "reporter:new-secret@" in await service.resolve_credentials(scope, "operations", 2)
 
+    # 模拟 0007 迁移保留的 NULL；即使旧 hash 恰好相同，也必须重新发布而非误判幂等。
+    from sqlalchemy import update
+
+    from smart_reporting.management.repository import source_drafts
+
+    async with repository.engine.begin() as connection:
+        await connection.execute(update(source_drafts).values(execution_parameters=None))
+        await connection.execute(
+            update(source_versions)
+            .where(source_versions.c.revision == 2)
+            .values(execution_parameters=None)
+        )
+        legacy_hash = await connection.scalar(
+            select(source_versions.c.content_hash).where(source_versions.c.revision == 2)
+        )
+    preview = await importer.import_configuration(login.raw_token, scope, tmp_path, True, environ)
+    assert preview["legacySourceIds"] == ["operations"]
+    assert preview["changedSources"] == 1
+    async with repository.engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(source_versions)) == 2
+    repaired = await importer.import_configuration(login.raw_token, scope, tmp_path, False, environ)
+    assert repaired["legacySourceIds"] == ["operations"]
+    async with repository.engine.connect() as connection:
+        old = (
+            (
+                await connection.execute(
+                    select(source_versions).where(source_versions.c.revision == 2)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert old["content_hash"] == legacy_hash
+        assert old["execution_parameters"] is None
+        latest = (
+            (
+                await connection.execute(
+                    select(source_versions).where(source_versions.c.revision == 3)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert latest["execution_parameters"]["statementTimeoutSeconds"] == 9
+    repeated = await importer.import_configuration(login.raw_token, scope, tmp_path, True, environ)
+    assert repeated["legacySourceIds"] == []
+    assert repeated["changed"] is False
+
 
 async def test_import_preflight_and_database_faults_do_not_leave_partial_publication(
     auth_context, tmp_path, metadata_client, monkeypatch

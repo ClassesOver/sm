@@ -76,7 +76,7 @@ JUnit 目录：`/tmp/smart-reporting-management-acceptance/2026-11-06-storage-fo
 - 扩大 Ruff 扫描到未修改文件时，`data_sources/secrets.py` 和 `test_management_scopes.py` 有 4 项既有 import-order 问题，本次未顺带改动，不能称全管理目录 Ruff 全绿。
 - 新证据：`/tmp/smart-reporting-management-acceptance/2026-11-06-config-fidelity/{management.xml,manifest.json}`。manifest 记录提交、源文件/JUnit hash、检查范围和 A1–O1 的 not_run；21 项结果不等于端到端验收。
 
-## Task 4 报告接入与本次边界修复
+## Task 4 报告接入与本次边界修复（fe3c20c3）
 
 已实现部署级 file/database 选择；database 不调用文件加载器。HTTP capability 验签后绑定可信身份，MCP 读已验证 token claims，CLI 要求显式组织。运行登记与恢复绑定用户/组织/thread；配置引用持久固定，后续画像、规划和物化从原发布版本重建校验，不以可编辑 session_state 作为授权。
 
@@ -109,7 +109,13 @@ bootstrap 使用有效 AsyncEngine，缺失或错误引擎明确失败；databas
 
 ## 下一执行批次
 
-1. 提交 Task 4 本任务文件与证据记录，不标整个任务或上线验收完成。
-2. 补旧配置 dry-run 逐源提示，保留旧发布 hash/运行引用；补连接测试、列表/详情、分页版本、启停/默认源 CAS、差异和历史复制 API，完成 React 管理页面。
+1. Task 4 接入及边界修复已提交 fe3c20c3；真实部署验收仍待完成。
+2. 旧配置 dry-run 逐源提示已补；继续连接测试、列表/详情、分页版本、启停/默认源 CAS、差异和历史复制 API，完成 React 管理页面。
 3. 顺序推进知识原文/版本、Agno 索引与可恢复 worker、管理检索、报告冻结引用；不增加负责人或可编辑查询限额。
 4. 按 A1–O1（含 D3、D4）补真实证据；知识异常与验收失败不阻断已生成且身份可核验 PDF/Word 的下载签发。未执行项明确 not_run，最终一次完整检查。
+
+## 旧执行参数导入对账补充
+
+预览和正式导入结果返回 `legacySourceIds`：仅列出本次文件中、当前组织草稿或当前发布版本缺少执行参数快照的源。即使旧 hash 恰好相同，NULL 参数也不能当作无变更，必须从原文件生成新发布版本；旧版本 hash、NULL 和运行引用不改。修复后保留历史 NULL 不会重复提示。
+
+真实 PG `test_management_source_import.py`：3 passed（先观察新增断言失败，再修复通过）；覆盖 dry-run 不落库、同 hash/NULL 修复、新版本参数、历史不改及修复后幂等。JUnit：上述证据目录 `import-legacy.xml`。importer 定点 mypy、改动文件 Ruff 与 diff 检查通过；只读复核无 Critical/Important。本次未运行完整项目测试。

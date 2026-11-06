@@ -136,6 +136,38 @@ class ConfigurationImporter:
                 raise ManagementError(
                     "management_version_conflict", "预检期间配置已变化，请重新预览导入。", 409
                 )
+            # 仅提示本次导入资源当前依赖的旧快照；已修复源的历史 NULL 不重复告警。
+            legacy_source_ids = set(
+                (
+                    await connection.scalars(
+                        select(source_drafts.c.source_id).where(
+                            source_drafts.c.scope_id == scope_id,
+                            source_drafts.c.source_id.in_(configured),
+                            source_drafts.c.execution_parameters.is_(None),
+                        )
+                    )
+                ).all()
+            )
+            legacy_source_ids.update(
+                (
+                    await connection.scalars(
+                        select(source_versions.c.source_id)
+                        .join(
+                            sources,
+                            (
+                                (sources.c.scope_id == source_versions.c.scope_id)
+                                & (sources.c.source_id == source_versions.c.source_id)
+                                & (sources.c.published_revision == source_versions.c.revision)
+                            ),
+                        )
+                        .where(
+                            source_versions.c.scope_id == scope_id,
+                            source_versions.c.source_id.in_(configured),
+                            source_versions.c.execution_parameters.is_(None),
+                        )
+                    )
+                ).all()
+            )
             refs: dict[str, int] = {}
             changed_profiles = 0
             # resolver 的 layers 已提供父先子后的顺序，仍使用原有继承语义。
@@ -267,6 +299,7 @@ class ConfigurationImporter:
                 "profiles": len(effective),
                 "changedProfiles": changed_profiles,
                 "credentials": "redacted",
+                "legacySourceIds": sorted(legacy_source_ids),
             }
 
     async def _import_source(
@@ -361,7 +394,8 @@ class ConfigurationImporter:
             metadataVersionId=f"{source_id}:{catalog_revision}",
         )
         content_hash = SourceService._config_hash(
-            payload.model_dump(mode="json", by_alias=True, exclude={"dsn"}), credential_revision,
+            payload.model_dump(mode="json", by_alias=True, exclude={"dsn"}),
+            credential_revision,
             source.limits.public_dict(),
         )
         published = (
@@ -382,8 +416,10 @@ class ConfigurationImporter:
         if (
             current
             and current["content_hash"] == content_hash
+            and current["execution_parameters"] == source.limits.public_dict()
             and published
             and published["content_hash"] == content_hash
+            and published["execution_parameters"] == source.limits.public_dict()
             and current_source["enabled"]
             and current_source["published_revision"] == published["revision"]
         ):
