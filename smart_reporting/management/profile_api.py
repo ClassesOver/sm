@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from .api import ManagementRoute, SESSION_COOKIE, csrf_token
+from .api import SESSION_COOKIE, create_protected_router, csrf_token
 from .models import ManagementError, ManagementScope
 from .profiles import ProfileService
 from .scopes import ScopeService
@@ -29,7 +29,7 @@ class ProfilePublishPayload(BaseModel):
 
 
 def create_profile_router(scopes: ScopeService) -> APIRouter:
-    router = APIRouter(route_class=ManagementRoute, tags=["management-profiles"])
+    router = create_protected_router(scopes.auth, "management-profiles")
     service = ProfileService(scopes)
 
     def require_csrf(request: Request):

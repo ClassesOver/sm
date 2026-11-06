@@ -7,14 +7,13 @@ import uuid
 
 from sqlalchemy import insert, select, update
 
+from ...reporting.data_source.starrocks import parse_starrocks_source
 from ..models import ManagementError, ManagementScope
-from ..scopes import ScopeService
 from ..repository import source_credentials, source_drafts, source_versions, sources
+from ..scopes import ScopeService
 from .models import SourceDraftInput
 from .repository import SourceRepository
 from .secrets import CredentialVault
-from ...reporting.data_source.starrocks import parse_starrocks_source
-
 
 _SOURCE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
 
@@ -28,7 +27,7 @@ class SourceService:
         self.vault = vault
 
     @staticmethod
-    def _validate_payload(source_id: str, payload: SourceDraftInput) -> None:
+    def _validate_payload(source_id: str, payload: SourceDraftInput):
         try:
             parsed = parse_starrocks_source({
                 'id': source_id, 'type': 'starrocks', 'name': payload.name,
@@ -40,11 +39,13 @@ class SourceService:
             raise ManagementError('management_source_config_invalid', 'StarRocks 连接配置无效。', 422) from error
         if parsed.database != payload.database.lower():
             raise ManagementError('management_source_config_invalid', 'StarRocks 连接数据库与声明不一致。', 422)
+        return parsed
 
     @staticmethod
-    def _config_hash(payload: dict, credential_revision: int) -> str:
+    def _config_hash(payload: dict, credential_revision: int, execution_parameters: dict) -> str:
         public = {key: value for key, value in payload.items() if key != 'dsn'}
         public['credentialRevision'] = credential_revision
+        public['executionParameters'] = execution_parameters
         encoded = json.dumps(public, sort_keys=True, ensure_ascii=True, separators=(',', ':'))
         return hashlib.sha256(encoded.encode()).hexdigest()
 
@@ -52,7 +53,7 @@ class SourceService:
                            source_id: str, payload: SourceDraftInput) -> dict:
         if not _SOURCE_ID.fullmatch(source_id):
             raise ManagementError('management_source_id_invalid', '数据源标识格式无效。', 422)
-        self._validate_payload(source_id, payload)
+        parsed = self._validate_payload(source_id, payload)
         now = self.auth.clock()
         async with self.repository.transaction() as connection:
             account = await self.repository.authenticate_in_transaction(connection, raw_session, now)
@@ -64,14 +65,15 @@ class SourceService:
                 raise ManagementError('management_source_exists', '数据源标识已存在。', 409)
             credential_ref = str(uuid.uuid4())
             content = payload.model_dump(mode='json', by_alias=True, exclude={'dsn'})
-            digest = self._config_hash(content, 1)
+            execution_parameters = parsed.limits.public_dict()
+            digest = self._config_hash(content, 1, execution_parameters)
             values = dict(scope_id=scope_id, source_id=source_id, version=1,
                           name=payload.name.strip(), source_type=payload.source_type,
                           database=payload.database.lower(), credential_ref=credential_ref,
                           credential_revision=1,
                           profile_version_id=payload.profile_version_id,
                           metadata_version_id=payload.metadata_version_id,
-                          content_hash=digest)
+                          content_hash=digest, execution_parameters=execution_parameters)
             await connection.execute(insert(sources).values(scope_id=scope_id, source_id=source_id,
                 enabled=1, draft_version=1, published_revision=None, created_at=now, updated_at=now))
             await connection.execute(insert(source_drafts).values(**values))
@@ -95,10 +97,13 @@ class SourceService:
             current = await self.sources.get_draft(connection, scope_id, source_id)
             if current['version'] != expected_version:
                 raise ManagementError('management_version_conflict', '草稿已被其他操作更新，请重新载入。', 409)
+            execution_parameters = current['execution_parameters']
+            if execution_parameters is None:
+                raise ManagementError('management_source_reimport_required', '旧配置缺少执行参数快照，请从原配置文件重新导入并对账。', 422)
             credential_ref = str(uuid.uuid4())
             credential_revision = current['credential_revision'] + 1
             content = payload.model_dump(mode='json', by_alias=True, exclude={'dsn'})
-            digest = self._config_hash(content, credential_revision)
+            digest = self._config_hash(content, credential_revision, execution_parameters)
             values = dict(version=expected_version + 1, name=payload.name.strip(),
                           source_type=payload.source_type, database=payload.database.lower(),
                           credential_ref=credential_ref, credential_revision=credential_revision,
@@ -133,6 +138,18 @@ class SourceService:
             draft = await self.sources.get_draft(connection, scope_id, source_id)
             if draft['version'] != expected_version:
                 raise ManagementError('management_version_conflict', '草稿已被其他操作更新。', 409)
+            if draft['execution_parameters'] is None:
+                raise ManagementError('management_source_reimport_required', '旧配置缺少执行参数快照，请从原配置文件重新导入并对账。', 422)
+            from .releases import require_release_dependencies
+            await require_release_dependencies(connection, scope_id, source_id, draft)
+            current = (await connection.execute(select(source_versions).join(sources,
+                (sources.c.scope_id == source_versions.c.scope_id)
+                & (sources.c.source_id == source_versions.c.source_id)
+                & (sources.c.published_revision == source_versions.c.revision),
+            ).where(source_versions.c.scope_id == scope_id,
+                    source_versions.c.source_id == source_id))).mappings().one_or_none()
+            if current and current['content_hash'] == draft['content_hash']:
+                return self.sources.version_model(current).public_dict()
             published = (await connection.execute(select(source_versions.c.revision).where(
                 source_versions.c.scope_id == scope_id, source_versions.c.source_id == source_id
             ).order_by(source_versions.c.revision.desc()).limit(1))).scalar_one_or_none()
@@ -142,7 +159,8 @@ class SourceService:
                 content_hash=draft['content_hash'], published_at=now,
                 name=draft['name'], source_type=draft['source_type'], database=draft['database'],
                 credential_ref=draft['credential_ref'], credential_revision=draft['credential_revision'],
-                profile_version_id=draft['profile_version_id'], metadata_version_id=draft['metadata_version_id']))
+                profile_version_id=draft['profile_version_id'], metadata_version_id=draft['metadata_version_id'],
+                execution_parameters=draft['execution_parameters']))
             await connection.execute(update(sources).where(sources.c.scope_id == scope_id,
                 sources.c.source_id == source_id).values(published_revision=revision, enabled=1, updated_at=now))
             from ..models import ManagementActor

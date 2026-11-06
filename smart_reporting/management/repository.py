@@ -118,6 +118,18 @@ catalog_versions = Table(
     Column("synced_at", DateTime(timezone=True), nullable=False),
 )
 
+runtime_snapshots = Table(
+    "runtime_snapshots", metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("run_id", String(256), primary_key=True),
+    Column("user_id", String(256), nullable=False),
+    Column("thread_id", String(256), nullable=False),
+    Column("entrypoint", String(32), nullable=False),
+    Column("references", JSON),
+    Column("reference_hash", String(64)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
 
 def token_hash(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -379,6 +391,7 @@ source_drafts = Table(
     Column("profile_version_id", String(64)),
     Column("metadata_version_id", String(64)),
     Column("content_hash", String(64), nullable=False),
+    Column("execution_parameters", JSON(none_as_null=True)),
 )
 source_versions = Table(
     "source_versions", metadata,
@@ -394,6 +407,7 @@ source_versions = Table(
     Column("credential_revision", Integer, nullable=False),
     Column("profile_version_id", String(64)),
     Column("metadata_version_id", String(64)),
+    Column("execution_parameters", JSON(none_as_null=True)),
 )
 source_credentials = Table(
     "source_credentials", metadata,

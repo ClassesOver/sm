@@ -5,7 +5,8 @@ import os
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from .api import ManagementRoute, SESSION_COOKIE, csrf_token
+from ..reporting.metadata import ReportingMetadataClient
+from .api import SESSION_COOKIE, create_protected_router, csrf_token
 from .data_sources.secrets import CredentialVault
 from .importer import ConfigurationImporter
 from .models import ManagementError, ManagementScope
@@ -21,9 +22,10 @@ class ImportInput(BaseModel):
     dry_run: bool = Field(alias="dryRun", default=True)
 
 
-def create_import_router(scopes: ScopeService, vault: CredentialVault) -> APIRouter:
-    router = APIRouter(route_class=ManagementRoute, tags=["management-import"])
-    importer = ConfigurationImporter(scopes, vault)
+def create_import_router(scopes: ScopeService, vault: CredentialVault,
+                         metadata_client: ReportingMetadataClient | None = None) -> APIRouter:
+    router = create_protected_router(scopes.auth, "management-import")
+    importer = ConfigurationImporter(scopes, vault, metadata_client=metadata_client)
 
     @router.post("/management/api/v1/config/import")
     async def import_config(request: Request, payload: ImportInput):

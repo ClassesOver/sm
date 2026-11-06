@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field
 
-from ..api import ManagementRoute, SESSION_COOKIE, csrf_token
-from ..settings import ManagementSettings
+from ..api import SESSION_COOKIE, create_protected_router, csrf_token
 from ..models import ManagementError, ManagementScope
 from ..scopes import ScopeService
+from ..settings import ManagementSettings
 from .models import SourceDraftInput
 from .secrets import CredentialVault
 from .service import SourceService
@@ -32,7 +32,7 @@ class PublishInput(BaseModel):
 
 
 def create_source_router(scopes: ScopeService, vault: CredentialVault) -> APIRouter:
-    router = APIRouter(route_class=ManagementRoute, tags=['management-sources'])
+    router = create_protected_router(scopes.auth, 'management-sources')
     service = SourceService(scopes, vault)
 
     def scope_from(payload):
@@ -51,14 +51,14 @@ def create_source_router(scopes: ScopeService, vault: CredentialVault) -> APIRou
         csrf(request)
         source_id = payload.source_id
         scope = scope_from(payload)
-        draft = SourceDraftInput(name=payload.name, source_type=payload.source_type, database=payload.database, dsn=payload.dsn, profile_version_id=payload.profile_version_id, metadata_version_id=payload.metadata_version_id)
+        draft = SourceDraftInput(name=payload.name, type=payload.source_type, database=payload.database, dsn=payload.dsn, reportingProfileVersionId=payload.profile_version_id, metadataVersionId=payload.metadata_version_id)
         return await service.create_draft(request.cookies[SESSION_COOKIE], scope, source_id, draft)
 
     @router.put('/management/api/v1/sources/{source_id}/draft')
     async def save(request: Request, source_id: str, payload: SourceSaveInput):
         csrf(request)
         scope = scope_from(payload)
-        draft = SourceDraftInput(name=payload.name, source_type=payload.source_type, database=payload.database, dsn=payload.dsn, profile_version_id=payload.profile_version_id, metadata_version_id=payload.metadata_version_id)
+        draft = SourceDraftInput(name=payload.name, type=payload.source_type, database=payload.database, dsn=payload.dsn, reportingProfileVersionId=payload.profile_version_id, metadataVersionId=payload.metadata_version_id)
         expected = payload.expected_version
         return await service.save_draft(request.cookies[SESSION_COOKIE], scope, source_id, draft, expected)
 

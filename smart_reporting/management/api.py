@@ -15,8 +15,8 @@ from sqlalchemy import select
 from .auth import AdminAuthService
 from .models import AdminAccount, AdminSessionInvalid, ManagementError, ManagementScope
 from .repository import audit_events
-from .settings import ManagementSettings
 from .scopes import ScopeService
+from .settings import ManagementSettings
 
 SESSION_COOKIE = "report_management_session"
 
@@ -45,6 +45,13 @@ class ManagementRoute(APIRoute):
             return response
 
         return handler
+
+
+def create_protected_router(auth: AdminAuthService, tag: str) -> APIRouter:
+    async def require_admin(request: Request):
+        return await auth.authenticate(request.cookies.get(SESSION_COOKIE, ""))
+
+    return APIRouter(route_class=ManagementRoute, tags=[tag], dependencies=[Depends(require_admin)])
 
 
 class LoginInput(BaseModel):

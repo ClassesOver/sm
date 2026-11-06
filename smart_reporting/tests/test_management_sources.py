@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 from sqlalchemy import select
 
-from smart_reporting.tests.test_management_persistence import OLD_PASSWORD, auth_context
+from smart_reporting.tests.test_management_persistence import OLD_PASSWORD
+from smart_reporting.tests.test_management_persistence import auth_context as auth_context
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
@@ -17,12 +16,13 @@ def anyio_backend():
 
 async def test_source_release_versions_credentials_and_cas(auth_context):
     from cryptography.fernet import Fernet
+
     from smart_reporting.management.data_sources.models import SourceDraftInput
     from smart_reporting.management.data_sources.secrets import CredentialVault
     from smart_reporting.management.data_sources.service import SourceService
     from smart_reporting.management.models import ManagementScope
-    from smart_reporting.management.scopes import ScopeService
     from smart_reporting.management.repository import source_credentials, source_versions
+    from smart_reporting.management.scopes import ScopeService
 
     auth, repository, _ = auth_context
     await auth.bootstrap(OLD_PASSWORD)
@@ -35,10 +35,13 @@ async def test_source_release_versions_credentials_and_cas(auth_context):
     payload = SourceDraftInput.model_validate({
         'name': '生产数仓', 'type': 'starrocks', 'database': 'warehouse',
         'dsn': 'starrocks://reporter:first-secret@localhost:9030/warehouse',
+        'reportingProfileVersionId': 'base:1', 'metadataVersionId': 'operations:1',
     })
     draft = await service.create_draft(admin.raw_token, scope, 'operations', payload)
     assert draft['version'] == 1
     assert 'first-secret' not in str(draft)
+    from smart_reporting.tests.management_fixtures import publish_dependencies
+    await publish_dependencies(scope_service, admin.raw_token, scope)
     with pytest.raises(Exception, match='management_version_conflict'):
         await service.publish(admin.raw_token, scope, 'operations', 2)
     first = await service.publish(admin.raw_token, scope, 'operations', 1)
@@ -48,6 +51,7 @@ async def test_source_release_versions_credentials_and_cas(auth_context):
     updated_payload = SourceDraftInput.model_validate({
         'name': '生产数仓改密', 'type': 'starrocks', 'database': 'warehouse',
         'dsn': 'starrocks://reporter:second-secret@localhost:9030/warehouse',
+        'reportingProfileVersionId': 'base:1', 'metadataVersionId': 'operations:1',
     })
     with pytest.raises(Exception, match='management_version_conflict'):
         await service.save_draft(admin.raw_token, scope, 'operations', updated_payload, 2)
@@ -67,6 +71,7 @@ async def test_source_release_versions_credentials_and_cas(auth_context):
 
 async def test_source_rejects_unsupported_database_and_unrequested_fields():
     from pydantic import ValidationError
+
     from smart_reporting.management.data_sources.models import SourceDraftInput
     with pytest.raises(ValidationError):
         SourceDraftInput.model_validate({'name': 'x', 'type': 'mysql', 'database': 'warehouse', 'dsn': 'mysql://x'})
