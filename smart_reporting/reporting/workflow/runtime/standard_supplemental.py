@@ -1221,7 +1221,9 @@ def _ratio_rows(
                 # 各派生值独立判断：比率溢出不能抹去有限分母或仍可表示的差额。
                 scaled_denominator = scaled_denominator if math.isfinite(scaled_denominator) else None
                 difference = difference if math.isfinite(difference) else None
-                ratio = ratio if ratio is not None and math.isfinite(ratio) else None
+                ratio = ratio if (
+                    scaled_denominator is not None and ratio is not None and math.isfinite(ratio)
+                ) else None
             elif scaled_denominator == 0:
                 warnings.append(
                     f"分组 {dimension if dimension is not None else 'null'} 分母为零，ratio 保留为空"

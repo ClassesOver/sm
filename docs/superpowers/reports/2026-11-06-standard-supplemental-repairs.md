@@ -32,7 +32,7 @@ worktree：/home/junge/.codex/worktrees/b554/smart_reporting。
 | R13 | 已明确口径 | 保留各自有效操作数独立汇总；finding标注`operandAggregation=independent_valid_sums`，无效输入有结构化原因。分子100/invalid与invalid/分母50仍为100/50并告警；未擅自改为同行删除。 |
 | R14 | 已核查 | 各组和总体独立计算均值/中位数；中位数不可加时保留实际残差和空贡献，不配平。 |
 | R15 | 已核查 | 完整尾部、跨期先合并、HHI不乘10000；负净组HHI空；有限CR5可超过1，不clamp。concentration及独立尾部样本。 |
-| R16 | 已修复并核查 | 比率/差额溢出各自置空，保留其他有限操作数和派生值；summary/series/cross占比及CR5溢出置空并告警。14项极限样本覆盖大/小数、消减、微小分母、NaN/Inf、抵消后微小总体及严格JSON有限性。未改容差、未引入全面Decimal。 |
+| R16 | 已修复并核查 | 比率/差额溢出各自置空，保留其他有限操作数和派生值；summary/series/cross占比及CR5溢出置空并告警。16项极限样本覆盖大/小数、消减、微小分母、NaN/Inf、抵消后微小总体及严格JSON有限性。未改容差、未引入全面Decimal。 |
 | R17 | 已核查 | 原36项独立验证全通过。csv/Decimal期望不调用生产聚合、期间、单位换算或对账helper；Hypothesis保持确定性设置。 |
 | R18 | 已核查 | 同总额错误成员、期间、scope、hash拒绝证明；共同聚合依赖故障仍会使生产与proof一起错，独立Decimal基准能识别。保留此盲区演示，不新增第二套生产引擎。 |
 | R19 | 未完成 | 用户暂无真实定义、grain/行键、SQL+参数+连接基数及冻结CSV。只读检索本机output发现历史探针/投影样本，未将其认定为这条完整业务证据；未读取生产库或提交新报告。待材料齐全后才能作真实业务验收。 |
@@ -108,7 +108,7 @@ worktree：/home/junge/.codex/worktrees/b554/smart_reporting。
 
 | 文件 | SHA256 |
 |---|---|
-| smart_reporting/reporting/workflow/runtime/standard_supplemental.py | fee774ff257d595e8fe44373ac625a5e3078dd4d0240845f45eda65949f671ef |
+| smart_reporting/reporting/workflow/runtime/standard_supplemental.py | b81e496c8018e6da7e03da19a6f176f5f199643d995318642fd88ec2ee92f5d4 |
 | smart_reporting/reporting/workflow/runtime/analysis.py | 7e9e80669e4f44d632df0ea3ff234be48c2d28d2685449051be1ce8e80d131c5 |
 | smart_reporting/reporting/workflow/runtime/sections.py | 224421c82ad0bee83c4a9ed14b59c8d9de31fdf390866948e4cdda0ed439f9f6 |
 | smart_reporting/reporting/trace/table_sources.py | 487114ecbfa18cd1f56a41c05d1a5b7726b4298697bd9c411ec5b7534630c6a1 |
@@ -120,7 +120,7 @@ worktree：/home/junge/.codex/worktrees/b554/smart_reporting。
 | smart_reporting/reporting/tests/test_standard_supplemental_artifact.py | c3f3abac32da33d4ae7e036dc2258fb9df811cbccd98f8c74b9ea15f58cee96e |
 | smart_reporting/reporting/tests/test_standard_population_diagnostics.py | 8a68294939f8a47376f5c635b91df157153e9900a0eaf445002c386a5af9a38f |
 | smart_reporting/reporting/tests/test_standard_population_parent_coverage.py | 1a19c050ed7f79b45f49e57617350d8a55c797b1742bce243b91c4723a4b6aea |
-| smart_reporting/reporting/tests/test_standard_supplemental_numeric_limits.py | dbd3d3f38b95d0d2794c5aa293ae1f9ce748999775f20335523a014c2f94656a |
+| smart_reporting/reporting/tests/test_standard_supplemental_numeric_limits.py | b363f795defbc01a04dca5f399dc96e86a8c111f6bdcc1ddf91aed0644d172b8 |
 
 ## PR 提交前复核
 
@@ -131,3 +131,12 @@ worktree：/home/junge/.codex/worktrees/b554/smart_reporting。
 13个源码/测试文件的已登记SHA256仍一致，Ruff与git diff检查通过。
 GitHub HTTPS git传输持续连接超时，拟通过GitHub Git Data API发布同一提交树并创建PR；
 PR中的R19仍明确未完成，不将其记为业务验收通过。不自动合并。
+
+## 合并前独立复核补修
+
+独立复核发现单位换算分母先溢出为Inf时，原修复可能保留由 `finite/Inf` 得到的错误 `±0.0`。
+例如分子 `1e308`、原始分母 `±1e308`、换算10000，数学比率为 `±0.0001`，
+现有浮点计算路径无法表示换算后的分母，因此只能撤回该路径的比率，不能把受Inf污染的零当作有效结果。
+修复仅增加换算分母仍有限的前提，ratio为空并保留软告警；有限分母下的比率/差额独立保留不变。
+正负两个反例先红后绿。直接相关 numeric_limits、period_ratio、zero_denominator、independent、artifact
+回归 **133 passed，11.11s**；Ruff通过。独立复核确认该项关闭。未重复全仓测试。

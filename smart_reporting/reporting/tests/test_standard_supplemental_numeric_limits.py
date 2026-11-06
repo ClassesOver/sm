@@ -52,6 +52,20 @@ def test_unrepresentable_derived_ratio_or_difference_keeps_finite_operands(
     json.dumps(payload, allow_nan=False)
 
 
+@pytest.mark.parametrize('denominator', ['1e308', '-1e308'])
+def test_overflowed_scaled_denominator_cannot_authorize_a_finite_zero_ratio(denominator):
+    _, payload = _run(f'period,department,amount,budget\n2025-01,A,1e308,{denominator}\n',
+        'group_ratio', total=1e308, denominatorField='budget',
+        denominatorParentTotal=float(denominator), denominatorScale=10000, ratioFactId='ratio')
+    row, = _table(payload)
+    assert row['numerator'] == 1e308
+    assert row['denominator'] is None
+    assert row['difference'] is None
+    assert row['ratio'] is None
+    assert payload['warnings']
+    json.dumps(payload, allow_nan=False)
+
+
 @pytest.mark.parametrize('value', ['NaN', 'inf', '-inf', '1e999'])
 def test_nonfinite_source_values_warn_and_are_not_serialized(value):
     _, payload = _run(HEADER + f'2025-01,A,100\n2025-01,B,{value}\n')
