@@ -8,7 +8,7 @@ import json
 import re
 import sys
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 from pathlib import PurePosixPath
 from time import monotonic
@@ -27,6 +27,7 @@ from ..runtime.settings import AgentSettings
 from .bootstrap import create_report_runtime
 from .contract import REPORT_WORKFLOW_SCOPE_STATE_KEY, parse_reporting_workflow_input
 from .models import ReportingError
+from .workflow.identity import VerifiedReportingIdentity, bind_verified_reporting_identity
 from .workflow.scope import (
     REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY,
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
@@ -592,47 +593,55 @@ async def run_cli(
         raise ReportingError(
             "report_workflow_context_missing", "租户 database 和 companyId 必须同时提供。"
         )
+    explicit_scope = bool(database and company_id)
+    current_settings = settings or AgentSettings.from_environment()
+    current_settings = _cli_settings(current_settings, debug=debug)
+    if current_settings.report_configuration_mode == "database" and not explicit_scope:
+        raise ReportingError("report_verified_identity_required", "数据库配置模式须显式提供 database 和 companyId。")
     database = database or DEFAULT_TENANT_DATABASE
     company_id = company_id or DEFAULT_TENANT_COMPANY_ID
     report_input = (
         None if resume_run_id is not None else parse_report_input(read_report_input(read=read))
     )
-    current_settings = settings or AgentSettings.from_environment()
-    current_settings = _cli_settings(current_settings, debug=debug)
     context = create_execution_context(current_settings)
     progress_sink = _CliProgressSink(write)
     reporting_agent_template, runtime = create_report_runtime(context, context.settings)
     workflow = runtime.workflow()
     run_id = resume_run_id or f"cli-report-{uuid4().hex}"
     session_id = resume_session_id or f"cli-report-{uuid4().hex}"
+    identity_context = (
+        bind_verified_reporting_identity(VerifiedReportingIdentity(database, company_id, "cli", session_id, "cli"))
+        if explicit_scope else nullcontext()
+    )
     try:
-        async with _bind_cli_progress(progress_sink):
-            if resume_run_id is not None:
-                result = await resume_workflow(
-                    workflow,
-                    runtime,
-                    run_id=run_id,
-                    session_id=session_id,
-                    user_id="cli",
-                    database=database,
-                    company_id=company_id,
-                    read=read,
-                    write=write,
-                )
-            else:
-                assert report_input is not None
-                result = await drive_workflow(
-                    workflow,
-                    runtime,
-                    report_input,
-                    run_id=run_id,
-                    session_id=session_id,
-                    user_id="cli",
-                    database=database,
-                    company_id=company_id,
-                    read=read,
-                    write=write,
-                )
+        with identity_context:
+            async with _bind_cli_progress(progress_sink):
+                if resume_run_id is not None:
+                    result = await resume_workflow(
+                        workflow,
+                        runtime,
+                        run_id=run_id,
+                        session_id=session_id,
+                        user_id="cli",
+                        database=database,
+                        company_id=company_id,
+                        read=read,
+                        write=write,
+                    )
+                else:
+                    assert report_input is not None
+                    result = await drive_workflow(
+                        workflow,
+                        runtime,
+                        report_input,
+                        run_id=run_id,
+                        session_id=session_id,
+                        user_id="cli",
+                        database=database,
+                        company_id=company_id,
+                        read=read,
+                        write=write,
+                    )
         write(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     finally:
         await complete_cleanup(close_execution_resources(context, reporting_agent_template))

@@ -17,6 +17,16 @@ def settings(values=None, **overrides):
     return AgentSettings.from_environment(environ, load_env_file=False)
 
 
+@pytest.mark.parametrize("mode", ["file", "database"])
+def test_report_configuration_mode_is_deployment_configuration(mode):
+    assert settings(AGENT_REPORT_CONFIGURATION_MODE=mode).report_configuration_mode == mode
+
+
+def test_invalid_report_configuration_mode_never_silently_uses_files():
+    with pytest.raises(ValueError, match="AGENT_REPORT_CONFIGURATION_MODE"):
+        settings(AGENT_REPORT_CONFIGURATION_MODE="unknown")
+
+
 def test_settings_defaults():
     environ: dict[str, str] = {}
 

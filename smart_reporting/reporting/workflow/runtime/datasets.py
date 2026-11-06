@@ -23,12 +23,14 @@ from .base import (
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_EFFECTIVE_PROFILE_STATE_KEY,
     REPORT_PROFILE_COVERAGE_STATE_KEY,
+    REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
     AnalysisItem,
     Any,
     ApprovedQuery,
     DatasetAnalysisContext,
     DatasetHandle,
+    DataShape,
     DetailedAnalysisItem,
     DetailedAnalysisPlan,
     FileIdentity,
@@ -45,6 +47,7 @@ from .base import (
     _sha256_hex,
     _source_warnings_from_state,
     anyio,
+    approve_query_batch,
     build_profile_coverage_manifest,
     hashlib,
     payload_sha256,
@@ -90,9 +93,36 @@ class RuntimeDatasetsMixin:
                 "report_dataset_count_invalid", "SQL 数据集与 URL CSV 附件总数超过限制。"
             )
         adapters = {
-            source.id: self._adapter(source, run_context) for source in self._sources(run_context)
+            source.id: self._adapter(source, run_context)
+            for source in await self._sources(run_context)
         }
         try:
+            if getattr(self, "configuration_provider", None) is not None:
+                # session PATCH 可同时改写 SQL 与其 hash，取数前必须重新审核完整契约。
+                state = self._state(run_context)
+                approve_query_batch(
+                    [
+                        query.model_dump(
+                            mode="json", by_alias=True, exclude={"sql_hash", "business_label"}
+                        )
+                        | {"periodRole": query.period_roles[0]}
+                        for query in approved
+                    ],
+                    sources={source_id: adapter.config for source_id, adapter in adapters.items()},
+                    snapshots=self._snapshots(run_context),
+                    envelope=self._envelope(run_context),
+                    requirements=tuple(
+                        QueryRequirement.model_validate(item)
+                        for item in state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, ())
+                    ),
+                    row_preserving_requirement_ids=tuple(
+                        state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
+                    ),
+                    data_shapes=tuple(
+                        DataShape.model_validate(item)
+                        for item in state.get(REPORT_DATA_SHAPES_STATE_KEY, ())
+                    ),
+                )
             handles, lineage = await self.datasets.materialize_batch(
                 approved, adapters, run_context=self._tool_context(run_context)
             )

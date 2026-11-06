@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from os import getenv
 from pathlib import Path
 
@@ -9,8 +10,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .context_management import validate_configured_tiktoken_cache
 from .http.identity import (
-    apply_report_identity,
     requires_workspace_capability,
+    verified_report_request,
 )
 from .http.request_limits import (
     RequestBodyLimitError,
@@ -24,6 +25,15 @@ from .http.request_limits import (
 from .http.security import CapabilityError, verify_capability
 from .integrations.agno_function_arguments import install_agno_function_argument_decoder
 from .integrations.dingyi_process import DingyiProcessAdapter, mount_process_routes
+from .management.api import create_management_router
+from .management.auth import AdminAuthService
+from .management.catalog_api import create_catalog_router
+from .management.data_sources.api import create_source_router
+from .management.data_sources.secrets import CredentialVault
+from .management.import_api import create_import_router
+from .management.profile_api import create_profile_router
+from .management.repository import AdminRepository
+from .management.settings import ManagementSettings
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
@@ -157,6 +167,8 @@ def _request_thread(request: Request) -> str:
 
 
 def _request_limit(path: str, method: str) -> int | None:
+    if path.startswith("/management/api/v1/") and method.upper() in {"POST", "PUT", "PATCH"}:
+        return 64 * 1024
     return agentos_run_request_limit(path, method) or report_editor_write_request_limit(
         path, method
     )
@@ -194,8 +206,9 @@ async def require_workspace_capability(request: Request, call_next):
             return JSONResponse({"error": error.code}, status_code=error.status_code)
     # AgentOS 原生 run 表单允许调用方提交 user_id/session_id。这里用已验签的
     # Odoo 身份覆盖它们，避免合法 capability 被用于访问其他用户或 thread。
+    identity_context = nullcontext()
     if capability_required:
-        apply_report_identity(
+        identity_context = verified_report_request(
             request,
             user_id=str(request.state.capability.user),
             thread_id=thread,
@@ -203,7 +216,8 @@ async def require_workspace_capability(request: Request, call_next):
             company_id=str(request.state.capability.company),
         )
     try:
-        response = await call_next(request)
+        with identity_context:
+            response = await call_next(request)
     except (RequestBodyLimitError, BaseExceptionGroup) as error:
         limit_error = request_body_limit_error(error)
         if limit_error is None:
@@ -345,7 +359,7 @@ report_agent = create_report_agent(
 reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
     sources=tuple(
         source
-        for source in report_runtime.registry.sources.values()
+        for source in (report_runtime.registry.sources.values() if report_runtime.registry is not None else ())
         if isinstance(source, StarRocksSourceConfig)
     ),
     metadata_client=report_runtime.metadata_client,
@@ -358,6 +372,26 @@ router.include_router(
 def create_base_app(context: ApplicationContext) -> FastAPI:
     application = FastAPI(title="开发智能体服务")
     application.state.agentos_context = context
+    management_auth = AdminAuthService(AdminRepository(agent_database.async_engine))
+    application.state.management_auth = management_auth
+    management_settings = ManagementSettings.from_environment()
+    application.state.management_settings = management_settings
+    application.include_router(create_management_router(management_auth, management_settings))
+    try:
+        source_vault = CredentialVault()
+    except Exception:
+        source_vault = None
+    from .management.scopes import ScopeService
+    management_scopes = ScopeService(management_auth)
+    application.include_router(create_profile_router(management_scopes))
+    application.include_router(create_catalog_router(
+        management_scopes, source_vault, report_runtime.metadata_client,
+    ))
+    if source_vault is not None:
+        application.include_router(create_source_router(management_scopes, source_vault))
+        application.include_router(create_import_router(
+            management_scopes, source_vault, report_runtime.metadata_client,
+        ))
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))

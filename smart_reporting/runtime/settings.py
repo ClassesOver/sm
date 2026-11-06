@@ -236,6 +236,7 @@ class AgentSettings:
     # 编辑器前端静态目录；镜像把构建产物放在源码 bind mount 之外，避免被宿主目录覆盖。
     report_editor_static_dir: str | None = None
     platform_settings: PlatformSettings | None = None
+    report_configuration_mode: Literal["file", "database"] = "file"
 
     @classmethod
     def from_environment(
@@ -293,6 +294,9 @@ class AgentSettings:
         )
         if reporting_execution_mode not in {"sequential", "parallel"}:
             raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")
+        configuration_mode = values.get("AGENT_REPORT_CONFIGURATION_MODE", "file").strip().lower()
+        if configuration_mode not in {"file", "database"}:
+            raise ValueError("AGENT_REPORT_CONFIGURATION_MODE 必须是 file 或 database")
         from ..reporting.host_workspace import validate_host_workspace_root
 
         reporting_host_workspace_root = str(
@@ -352,6 +356,7 @@ class AgentSettings:
             report_data_sources_dir=(
                 values.get("AGENT_REPORT_DATA_SOURCES_DIR", "").strip() or None
             ),
+            report_configuration_mode=cast(Literal["file", "database"], configuration_mode),
             report_metadata_url=_report_metadata_url(values),
             report_metadata_token=(values.get("AGENT_REPORT_METADATA_TOKEN", "").strip() or None),
             report_public_base_url=_report_public_base_url(values),
