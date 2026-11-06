@@ -12,6 +12,8 @@ const repo = new URL('../../../', `file://${frontend}/`).pathname
 const port = Number(process.env.PPTX_SMOKE_PORT ?? 4191)
 const baseUrl = `http://127.0.0.1:${port}`
 const smokeMode = process.env.PPTX_SMOKE_MODE ?? 'textbox'
+const listVariant = process.env.PPTX_LIST_VARIANT ?? 'number'
+if (!['number', 'glyph', 'none'].includes(listVariant)) throw new Error('Unknown list variant')
 const paperPreset = process.env.PPTX_SMOKE_PRESET ?? 'A4'
 const paperSizes = { A4: { cx: 7560000, cy: 10692000 }, A3: { cx: 10692000, cy: 15120000 } }
 if (smokeMode === 'slide-size-presets' && !paperSizes[paperPreset]) throw new Error(`Unknown paper preset: ${paperPreset}`)
@@ -40,6 +42,11 @@ if payload['mode'] == 'create':
         other = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1)); other.text = 'Untouched object'
         p = other.text_frame.paragraphs[0]; p.line_spacing = 1.37; p.space_before = Pt(8.25); p.space_after = Pt(9.75)
         p.runs[0].font.bold = True
+    if payload.get('listsSample'):
+        for index, paragraph in enumerate(shape.text_frame.paragraphs):
+            paragraph._p.get_or_add_pPr().set('lvl', '0' if index == 0 else '8')
+        props = shape.text_frame.paragraphs[0]._p.get_or_add_pPr()
+        props.set('marL', '285750'); props.set('indent', '-285750')
     stream = BytesIO(); presentation.save(stream)
     print(base64.b64encode(stream.getvalue()).decode())
 elif payload['mode'] == 'inspect':
@@ -62,7 +69,15 @@ elif payload['mode'] == 'inspect':
                 'spaceBeforePt': p.space_before.pt if p.space_before is not None else None,
                 'spaceAfterPt': p.space_after.pt if p.space_after is not None else None,
                 'bullet': bullet.get('char') if bullet is not None else None,
-                'rtl': props.get('rtl') if props is not None else None})
+                'rtl': props.get('rtl') if props is not None else None,
+                'level': int(props.get('lvl', '0')) if props is not None else 0,
+                'margin': int(props.get('marL')) if props is not None and props.get('marL') is not None else None,
+                'indent': int(props.get('indent')) if props is not None and props.get('indent') is not None else None,
+                'bulletFont': props.find(qn('a:buFont')).get('typeface') if props is not None and props.find(qn('a:buFont')) is not None else None,
+                'numberType': props.find(qn('a:buAutoNum')).get('type') if props is not None and props.find(qn('a:buAutoNum')) is not None else None,
+                'startAt': int(props.find(qn('a:buAutoNum')).get('startAt')) if props is not None and props.find(qn('a:buAutoNum')) is not None and props.find(qn('a:buAutoNum')).get('startAt') is not None else None,
+                'bulletSize': int(props.find(qn('a:buSzPct')).get('val')) / 1000 if props is not None and props.find(qn('a:buSzPct')) is not None else None,
+                'bulletColor': props.find(qn('a:buClr')).find(qn('a:srgbClr')).get('val') if props is not None and props.find(qn('a:buClr')) is not None and props.find(qn('a:buClr')).find(qn('a:srgbClr')) is not None else None})
         python_pptx_paragraphs.append({'paragraphs': paragraphs, 'xml': shape._element.xml})
     slides = [{'transition': slide.get('transition'), 'animations': slide.get('animations', [])} for slide in model['slides']]
     print(json.dumps({'revision': payload.get('revision'), 'sha256': __import__('hashlib').sha256(content).hexdigest(), 'size': model['size'], 'pythonPptxSize': [presentation.slide_width, presentation.slide_height], 'pythonPptxParagraphs': python_pptx_paragraphs, 'pythonPptxGeometry': python_pptx_geometry, 'texts': [item['text'] for item in targets], 'elements': targets, 'pythonPptxTexts': python_pptx_texts, 'slides': slides, 'slideCount': len(model['slides'])}))
@@ -75,7 +90,7 @@ elif payload['mode'] == 'patch':
   return result.stdout.trim()
 }
 
-const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: smokeMode === 'paragraph-spacing' }), 'base64')
+const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists'].includes(smokeMode), listsSample: smokeMode === 'paragraph-lists' }), 'base64')
 const sourceIdentity = createHash('sha256').update(sourceBytes).digest('hex')
 const sourceSha = sourceIdentity
 let activeBytes = sourceBytes
@@ -185,6 +200,40 @@ try {
     await page.locator('[data-command="animationDuration"]').fill('1250')
     await page.locator('[data-command="animationDelay"]').fill('300')
     await page.locator('[data-command="addAnimation"][data-source-action="onAddAnimation"]').click()
+  } else if (smokeMode === 'paragraph-lists') {
+    const target = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    await page.locator('#object-select').selectOption(target.id)
+    const command = id => page.locator(`[data-command="${id}"]`)
+    assert.equal(await command('pictureBullet').isDisabled(), true)
+    await command('indentIncrease').click(); await command('indentDecrease').click()
+    await command('bulletCustomChar').fill('😀rest'); await command('bulletCustomChar').press('Enter')
+    await command('bulletCharPreset').selectOption('2')
+    if (listVariant !== 'glyph') {
+      await command('bulletNumber').click()
+      await command('numType').selectOption('romanLcPeriod')
+      await command('startAt').fill('3'); await command('startAt').press('Enter')
+    }
+    await command('bulletSizePct').selectOption('125')
+    await command('bulletColorPreset').selectOption('#0F9ED5')
+    await command('bulletColor').fill('#c43e1c')
+    await command('bulletHangEmu').selectOption('171450')
+    await command('directionRtl').click(); await command('directionLtr').click()
+    await command('paragraphAlignRight').click()
+    await command('lineSpacingPct').selectOption('200')
+    await command('spaceBeforePt').fill('12,5'); await command('spaceBeforePt').press('Enter')
+    await command('spaceAfterPt').fill('0'); await command('spaceAfterPt').press('Enter')
+    if (listVariant === 'none') await command('bulletNone').click()
+    await page.locator('[data-source-action="onUndo"]').click()
+    await page.locator('[data-source-action="onRedo"]').click()
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
+    try { await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 }) }
+    catch { throw new Error(JSON.stringify({ phase: 'lists-refresh', listVariant, body: (await page.locator('body').innerText()).slice(-4000), pageErrors, failedResponses })) }
+    await page.locator('#object-select').selectOption(target.id)
+    assert.equal(await command('directionLtr').getAttribute('aria-pressed'), 'true')
+    assert.equal(await command('spaceBeforePt').inputValue(), '12.5')
+    if (listVariant === 'number') assert.equal(await command('numType').inputValue(), 'romanLcPeriod')
+    if (listVariant === 'glyph') assert.equal(await command('bulletCharPreset').inputValue(), '2')
+    if (listVariant === 'none') assert.equal(await command('bulletSizePct').isDisabled(), true)
   } else if (smokeMode === 'paragraph-spacing') {
     const target = inspected.slides[0].elements.find(item => item.editable && item.text.includes('Native browser formatting fixture'))
     const other = inspected.slides[0].elements.find(item => item.text === 'Untouched object')
@@ -286,9 +335,14 @@ try {
       slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.editable && item.text.trim()).id,
       effect: 'flyIn', trigger: 'afterPrev', durationMs: 1250, delayMs: 300, direction: 'right', append: true,
     }])
+  } else if (smokeMode === 'paragraph-lists') {
+    assert.deepEqual(operation.paragraphFormatting.filter(record => record.indentDelta != null).map(record => record.indentDelta), [1, -1])
+    assert.ok(operation.paragraphFormatting.some(record => record.bulletChar === '😀'))
+    assert.ok(operation.paragraphFormatting.some(record => record.rtl === false))
   } else if (smokeMode === 'paragraph-spacing') {
     const target = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
-    assert.deepEqual(operation.paragraphFormatting, [{ slideIndex: 0, elementId: target.id, align: 'right', lineSpacingPct: 200, spaceBeforePt: 12.5, spaceAfterPt: 0 }])
+    assert.ok(operation.paragraphFormatting.every(record => record.slideIndex === 0 && record.elementId === target.id))
+    assert.deepEqual(operation.paragraphFormatting.reduce((value, patch) => ({ ...value, ...patch }), {}), { slideIndex: 0, elementId: target.id, align: 'right', lineSpacingPct: 200, spaceBeforePt: 12.5, spaceAfterPt: 0 })
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
     if (smokeMode === 'slide-size-presets') assert.deepEqual(operation.edits[0].geometry, { x: 75, y: 80, width: 300, height: 90 })
@@ -328,6 +382,38 @@ try {
       elementId: operation.animations[0].elementId, effect: 'flyIn', trigger: 'afterPrev',
       durationMs: 1250, delayMs: 300, direction: 'right',
     }])
+  } else if (smokeMode === 'paragraph-lists') {
+    const original = JSON.parse(runPython({ mode: 'inspect', bytes: sourceBytes.toString('base64') }))
+    assert.deepEqual(reopened.pythonPptxParagraphs[1], original.pythonPptxParagraphs[1])
+    const paragraphs = reopened.pythonPptxParagraphs[0].paragraphs
+    assert.deepEqual(paragraphs.map(item => item.level), [0, 7], 'Relative clamp operations must remain ordered')
+    for (let index = 0; index < paragraphs.length; index++) {
+      const value = paragraphs[index]
+      assert.equal(value.text, original.pythonPptxParagraphs[0].paragraphs[index].text)
+      assert.equal(value.rtl, '0'); assert.equal(value.align, 3)
+      assert.equal(value.lineSpacingPct, 200); assert.equal(value.spaceBeforePt, 12.5); assert.equal(value.spaceAfterPt, 0)
+      if (listVariant === 'none') {
+        assert.equal(value.bullet, null); assert.equal(value.numberType, null)
+        assert.equal(value.margin, 0); assert.equal(value.indent, 0)
+      } else {
+        assert.equal(value.bulletSize, 125); assert.equal(value.bulletColor, 'C43E1C')
+        assert.equal(value.margin, 171450 * (value.level + 1)); assert.equal(value.indent, -171450)
+        if (listVariant === 'glyph') { assert.equal(value.bullet, '§'); assert.equal(value.bulletFont, 'Wingdings') }
+        else { assert.equal(value.numberType, 'romanLcPeriod'); assert.equal(value.startAt, 3) }
+      }
+    }
+    activeBytes = downloaded; activeSha = saveReceipt.artifacts.pptx.sha256; activeRevision = 2
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`)
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.locator('#object-select').selectOption(reopened.elements[0].id)
+    assert.equal(await page.locator('[data-command="directionLtr"]').getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('[data-command="spaceBeforePt"]').inputValue(), '12.5')
+    if (listVariant === 'number') {
+      assert.equal(await page.locator('[data-command="numType"]').inputValue(), 'romanLcPeriod')
+      assert.equal(await page.locator('[data-command="startAt"]').inputValue(), '3')
+    }
+    if (listVariant === 'glyph') assert.equal(await page.locator('[data-command="bulletCharPreset"]').inputValue(), '2')
+    if (listVariant === 'none') assert.equal(await page.locator('[data-command="bulletSizePct"]').isDisabled(), true)
   } else if (smokeMode === 'paragraph-spacing') {
     const original = JSON.parse(runPython({ mode: 'inspect', bytes: sourceBytes.toString('base64') }))
     assert.deepEqual(reopened.size, original.size)
@@ -392,7 +478,7 @@ try {
   const receipt = { ok: true, inputBaseline, mode: smokeMode, revision: reopened.revision, originalSha256: sourceIdentity,
     downloadedSha256: reopened.sha256, size: reopened.size, transitions: reopened.slides[0].transition,
     animations: reopened.slides[0].animations, operationKinds: savePayload.operations.map(item => item.kind),
-    ...(smokeMode === 'paragraph-spacing' ? { paragraphs: reopened.pythonPptxParagraphs.map(shape => shape.paragraphs) } : {}),
+    ...(['paragraph-spacing', 'paragraph-lists'].includes(smokeMode) ? { listVariant: smokeMode === 'paragraph-lists' ? listVariant : undefined, paragraphs: reopened.pythonPptxParagraphs.map(shape => shape.paragraphs) } : {}),
   }
   if (process.env.PPTX_SMOKE_EVIDENCE_DIR) {
     const root = resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR)

@@ -1,3 +1,4 @@
+import { PARAGRAPH_LIST_COMMANDS, BULLET_GLYPHS, paragraphCommandPatch, projectParagraphs, uniformParagraphValue, type ParagraphFormatting, type ParagraphSourceFormatting, type ParagraphList } from './slides-paragraph'
 import { createElement, ArrowDown, ArrowUp, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
@@ -9,7 +10,7 @@ import type { NativeDraft } from './native-draft'
 import { openSlidesSizeDialog } from './slides-size-dialog'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type SlideTransition = 'none' | 'morph' | 'fade' | 'push' | 'wipe' | 'split' | 'circle' | 'cover' | 'pull' | 'dissolve' | 'zoom' | 'random'
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
@@ -22,8 +23,6 @@ type Edit = {
   geometry?: { x: number; y: number; width: number; height: number }
 }
 type TextFormatting = { slideIndex: number; elementId: string; fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
-type ParagraphSourceFormatting = { align?: 'left' | 'center' | 'right' | 'justify' | null; lineSpacingPct?: number | null; lineSpacingPt?: number | null; spaceBeforePt?: number | null; spaceAfterPt?: number | null; spaceBeforePct?: number | null; spaceAfterPct?: number | null }
-type ParagraphFormatting = { slideIndex: number; elementId: string; align?: 'left' | 'center' | 'right' | 'justify'; lineSpacingPct?: number; spaceBeforePt?: number; spaceAfterPt?: number }
 type BusinessTheme = 'executive' | 'clinical' | 'modern'
 type AIProposal = { summary: string; edits: Edit[]; order: number[]; theme?: BusinessTheme }
 type AIStatus = { editId: string; status: string; proposal?: AIProposal; error?: { message: string } }
@@ -139,7 +138,7 @@ const order: number[] = []
 const backgroundEdits = new Map<number, string>()
 const textBoxEdits: TextBoxEdit[] = []
 const textFormattingEdits = new Map<string, TextFormatting>()
-const paragraphFormattingEdits = new Map<string, ParagraphFormatting>()
+const paragraphFormattingEdits: ParagraphFormatting[] = []
 const deletions = new Map<string, { slideIndex: number; elementId: string; label: string }>()
 const edits = new Map<string, Edit>()
 const imageEdits: ImageEdit[] = []
@@ -282,7 +281,16 @@ function restoreNativeDraft() {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
   }
   const changes = (operations[0] ?? {}) as SlideChanges
-  edits.clear(); textFormattingEdits.clear(); paragraphFormattingEdits.clear(); transitionEdits.clear(); layoutEdits.clear(); backgroundEdits.clear(); deletions.clear()
+  // Validate every step before mutating the recovered view or the persisted history.
+  try {
+    if ((changes.paragraphFormatting?.length ?? 0) > 500) throw new Error('段落格式操作超过 500 条；请分批保存')
+    for (const slide of deck.slides) for (const element of slide.elements) {
+      projectParagraphs(element.paragraphFormatting, element.paragraphLists, (changes.paragraphFormatting ?? []).filter(patch => patch.slideIndex === slide.slideIndex && patch.elementId === element.id))
+    }
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : '段落操作无效'}；原草稿已保留`)
+  }
+  edits.clear(); textFormattingEdits.clear(); paragraphFormattingEdits.splice(0); transitionEdits.clear(); layoutEdits.clear(); backgroundEdits.clear(); deletions.clear()
   for (const edit of changes.edits ?? []) {
     const key = editKey(edit.slideIndex, edit.elementId)
     edits.set(key, { ...edits.get(key), ...edit })
@@ -291,10 +299,8 @@ function restoreNativeDraft() {
     const key = editKey(format.slideIndex, format.elementId)
     textFormattingEdits.set(key, { ...textFormattingEdits.get(key), ...format })
   }
-  for (const format of changes.paragraphFormatting ?? []) {
-    const key = editKey(format.slideIndex, format.elementId)
-    paragraphFormattingEdits.set(key, { ...paragraphFormattingEdits.get(key), ...format })
-  }
+  // Older drafts already stored an array: retain every record, including noncommuting list commands.
+  paragraphFormattingEdits.push(...(changes.paragraphFormatting ?? []).map(format => ({ ...format })))
   for (const transition of changes.transitions ?? []) transitionEdits.set(transition.slideIndex, transition.kind)
   for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
   for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
@@ -441,16 +447,34 @@ function renderInspector() {
   nativeRibbon?.setValue('fontSize', String(textFormat?.fontSizePt ?? textStyle.fontSizePt ?? ''))
   nativeRibbon?.setValue('fontFamily', textFormat?.fontFamily ?? textStyle.fontFamily ?? '')
   nativeRibbon?.setValue('fontColor', (textFormat?.color ?? textStyle.color ?? '#000000').toLowerCase())
-  const paragraphPatch = paragraphFormattingEdits.get(editKey(selectedSlide, element?.id ?? ''))
-  const alignments = element?.paragraphFormatting?.map(item => item.align) ?? element?.paragraphAlignments ?? []
-  nativeRibbon?.setValue('paragraphAlign', paragraphPatch?.align ?? (alignments.length && alignments.every(value => value === alignments[0]) ? alignments[0] : '') ?? '')
+  const paragraphs = projectedParagraphs(element)
+  nativeRibbon?.setValue('paragraphAlign', uniformParagraphValue(paragraphs, 'align') ?? '')
   for (const field of ['lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'] as const) {
-    const values = element?.paragraphFormatting?.map(item => item[field]) ?? []
-    const uniform = values.length > 0 && values.every(value => value === values[0])
-    const value = paragraphPatch?.[field] ?? (uniform ? values[0] : undefined)
+    const value = uniformParagraphValue(paragraphs, field)
     const supported = typeof value === 'number' && (field !== 'lineSpacingPct' || [100, 115, 150, 200, 250, 300].includes(value))
     nativeRibbon?.setValue(field, supported ? String(value) : '', supported ? (field === 'lineSpacingPct' ? '行距倍数' : '段距（磅）；Enter 提交') : '未设置、混合值或源单位不适用；可明确设置新值')
   }
+  const unset = '未设置或混合值；作用于当前对象的全部段落'
+  const kind = uniformParagraphValue(paragraphs, 'bulletKind')
+  nativeRibbon?.setValue('bulletKind', kind ?? '')
+  const char = uniformParagraphValue(paragraphs, 'bulletChar')
+  const font = uniformParagraphValue(paragraphs, 'bulletFont')
+  const glyphIndex = BULLET_GLYPHS.findIndex(([glyph, family]) => glyph === char && family === font)
+  nativeRibbon?.setValue('bulletCharPreset', kind === 'char' && glyphIndex >= 0 ? String(glyphIndex) : '', unset)
+  nativeRibbon?.setValue('bulletSymbol', kind === 'char' && font === 'Arial' ? char ?? '' : '', unset)
+  nativeRibbon?.setValue('bulletCustomChar', kind === 'char' ? char ?? '' : '', unset)
+  for (const field of ['numType', 'startAt', 'bulletSizePct', 'bulletColor'] as const) {
+    const value = uniformParagraphValue(paragraphs, field)
+    const shown = value === null || value === undefined ? '' : String(value)
+    nativeRibbon?.setValue(field, shown, shown ? '当前对象全部段落；自定义输入 Enter 提交' : unset)
+    if (field === 'bulletColor') nativeRibbon?.setValue('bulletColorPreset', shown, unset)
+  }
+  const indent = uniformParagraphValue(paragraphs, 'indentEmu')
+  const hang = typeof indent === 'number' && (indent < 0 || (indent === 0 && !!kind && kind !== 'none')) ? -indent : undefined
+  nativeRibbon?.setValue('bulletHangEmu', hang === undefined ? '' : String(hang), unset)
+  nativeRibbon?.setValue('bulletHangPx', hang === undefined ? '' : String(hang / 9525), unset)
+  const rtl = uniformParagraphValue(paragraphs, 'rtl')
+  nativeRibbon?.setValue('paragraphDirection', typeof rtl === 'boolean' ? String(rtl) : '')
   const contextualType: NativeSlidesContext = !element ? null
     : element.type === 'table' ? 'table'
       : element.type === 'chart' ? 'chart'
@@ -458,7 +482,38 @@ function renderInspector() {
           : element.type === 'model3d' ? 'model3d'
             : ['shape', 'text'].includes(element.type) ? 'shape' : null
   nativeRibbon?.setContext(contextualType)
+  nativeRibbon?.setListTargets({ bullets: paragraphs.some(p => !!p.bulletKind && p.bulletKind !== 'none'), numbers: paragraphs.some(p => p.bulletKind === 'number'), hanging: paragraphs.some(p => (!!p.bulletKind && p.bulletKind !== 'none') || (p.indentEmu ?? 0) < 0) })
   nativeRibbon?.setTextFormatEnabled(!!element?.editable && !!element.text.trim())
+}
+
+function projectedParagraphs(element: DeckElement | undefined) {
+  const formatting = element?.paragraphFormatting ?? element?.paragraphAlignments?.map(align => ({ align })) ?? []
+  return projectParagraphs(formatting, element?.paragraphLists ?? [], paragraphFormattingEdits.filter(patch => patch.slideIndex === selectedSlide && patch.elementId === element?.id))
+}
+function updateSelectedParagraph(patch: Omit<ParagraphFormatting, 'slideIndex' | 'elementId'>) {
+  const element = currentElement()
+  if (!element?.editable || !element.text.trim()) return
+  // Avoid recording conditional commands that have no target. The source only applies these to existing lists.
+  const paragraphs = projectedParagraphs(element)
+  const bulleted = paragraphs.some(p => p.bulletKind && p.bulletKind !== 'none')
+  if (!patch.bullet && (patch.bulletSizePct !== undefined || patch.bulletColor !== undefined) && !bulleted) return
+  if (!patch.bullet && patch.startAt !== undefined && !paragraphs.some(p => p.bulletKind === 'number')) return
+  let proposal
+  try {
+    proposal = projectParagraphs(paragraphs, paragraphs, [patch])
+  } catch (error) {
+    statusMessage.textContent = error instanceof Error ? error.message : '段落操作无效；当前操作未应用'
+    return
+  }
+  // Keep a repeated absolute value from manufacturing a history entry and a false undo step.
+  if (JSON.stringify(proposal) === JSON.stringify(paragraphs)) return
+  if (paragraphFormattingEdits.length >= 500) {
+    statusMessage.textContent = '段落格式修改已达到 500 条；请先保存并打开新修订，再继续分批编辑。当前操作未应用。'
+    return
+  }
+  paragraphFormattingEdits.push({ slideIndex: selectedSlide, elementId: element.id, ...patch })
+  refreshCanvasPreview()
+  markDirty()
 }
 
 function updateSelectedTextFormat(patch: Partial<Omit<TextFormatting, 'slideIndex' | 'elementId'>>) {
@@ -481,6 +536,12 @@ let nativeRibbon: NativeSlidesRibbon | undefined
 if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   onAction(command, value) {
     if (locked()) return
+    if (PARAGRAPH_LIST_COMMANDS.includes(command)) {
+      const patch = paragraphCommandPatch(command, value)
+      if (patch) updateSelectedParagraph(patch)
+      renderInspector()
+      return
+    }
     switch (command) {
       case 'movePrevious': move(order.indexOf(selectedSlide), -1); break
       case 'moveNext': move(order.indexOf(selectedSlide), 1); break
@@ -570,9 +631,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         const element = currentElement()
         if (!element?.editable || !element.text.trim()) break
         const align = command.replace('paragraphAlign', '').toLowerCase() as ParagraphFormatting['align']
-        paragraphFormattingEdits.set(editKey(selectedSlide, element.id), { ...paragraphFormattingEdits.get(editKey(selectedSlide, element.id)), slideIndex: selectedSlide, elementId: element.id, align })
-        refreshCanvasPreview()
-        markDirty()
+        updateSelectedParagraph({ align })
         break
       }
       case 'lineSpacingPct':
@@ -584,10 +643,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) break
         const number = Number(normalized)
         if (!Number.isFinite(number) || (command === 'lineSpacingPct' ? ![100, 115, 150, 200, 250, 300].includes(number) : number < 0 || number > 500)) break
-        const key = editKey(selectedSlide, element.id)
-        paragraphFormattingEdits.set(key, { ...paragraphFormattingEdits.get(key), slideIndex: selectedSlide, elementId: element.id, [command]: command === 'lineSpacingPct' ? number : Math.round(number * 100) / 100 })
-        refreshCanvasPreview()
-        markDirty()
+        updateSelectedParagraph({ [command]: command === 'lineSpacingPct' ? number : Math.round(number * 100) / 100 })
         break
       }
       case 'addText': addTextBox(false); break
@@ -764,7 +820,10 @@ objectDelete.addEventListener('click', () => {
   // 删除优先：同一对象的文字、位置、格式和动画修改一并撤回，避免保存时引用已删除对象。
   edits.delete(key)
   textFormattingEdits.delete(key)
-  paragraphFormattingEdits.delete(key)
+  for (let index = paragraphFormattingEdits.length - 1; index >= 0; index--) {
+    const patch = paragraphFormattingEdits[index]!
+    if (editKey(patch.slideIndex, patch.elementId) === key) paragraphFormattingEdits.splice(index, 1)
+  }
   for (let index = animationEdits.length - 1; index >= 0; index--) {
     if (editKey(animationEdits[index]!.slideIndex, animationEdits[index]!.elementId) === key) animationEdits.splice(index, 1)
   }
@@ -982,7 +1041,7 @@ const save = async () => {
     backgroundEdits.clear()
     textBoxEdits.splice(0, textBoxEdits.length)
     textFormattingEdits.clear()
-    paragraphFormattingEdits.clear()
+    paragraphFormattingEdits.splice(0)
     deletions.clear()
     renderStructurePending()
     renderPendingImages()

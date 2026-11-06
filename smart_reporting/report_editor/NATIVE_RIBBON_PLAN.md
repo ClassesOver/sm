@@ -197,8 +197,20 @@ Exact source/protocol boundaries, commands, tests and generated artifacts are in
 - [x] Connect six pinned-source line-spacing presets plus before/after point spacing to strict native API/bridge fields and unchanged `setElementParagraphFormat`; require a nonempty patch and preserve all unspecified properties.
 - [x] Inspect per-paragraph actual values and alternative units; present mixed/unset/unsupported source units without fabricated defaults. Merge pending alignment/spacing and same-object restored records; validate Enter input, selection and saving locks.
 - [x] Validate 52 backend/native cases, 43 frontend cases plus 3 affected restore checks, and an independent reorder/multi-record/font-preservation probe. Real browser mixed-value/input/Undo/refresh/download/reopen and independent python-pptx/ZIP checks passed. The combined PPTX ASGI path passed with the production-packed bridge in a read-only Node22 network-disabled container (1 passed, 9.86s).
-- [ ] Complete the remaining source bullet/numbering, indent and direction families; this slice does not complete PPTX or Task 6.
+- [x] Complete the bounded source bullet/numbering, indent and direction families (2026-11-06); picture upload explicitly disabled. This does not complete PPTX or Task 6.
 
 Source/format boundaries, exact commands and retained samples: `NATIVE_PPTX_SPACING_ACCEPTANCE.md`. Full application-image acceptance remains blocked by the previously documented 8GB/vfs build storage limit; mounted probes are not substituted for it. Feature flags remain off.
 
 Final spacing checkpoint: both production builds and both budget checks passed after adding visible line/before/after unit labels. No full repository suite was repeated.
+
+
+### Overall continuation: ordered Paragraph commands and real SQL evidence
+
+- [x] Connect the remaining supported PPTX Paragraph list/number/indent/direction controls, including full source option inventories and strict API/bridge validation. Preserve ordered records rather than merging relative operations; independently reproduced Undo, record-budget and overflow defects are fixed. See `NATIVE_PPTX_LISTS_ACCEPTANCE.md`.
+- [x] Run real PostgreSQL 18 repository isolation, transaction, retry, immutable completion and concurrency checks, including independent engines/processes; connect all four existing HTTP/file roundtrips to actual SQL persistence. 18 distinct checks passed across selected runs. Disposable schemas and container removed. See `NATIVE_POSTGRES_ACCEPTANCE.md`.
+- [x] Trace Word table structure serializer and original XML, row-property ownership, column-width and anchor contracts. Found unmodeled paragraph-property loss even for nonmerged tables; enabling structural buttons now would overstate preservation. See `NATIVE_WORD_TABLE_PLAN.md`.
+- [ ] Next Word slice: executable original-XML preservation probes and a proven structural allowlist before UI operations. No table structure feature is delivered by the investigation.
+- [ ] Complete clean application-image acceptance with sufficient build storage; mounted runtime evidence does not close the recorded 8GB/vfs failure.
+- [ ] Complete source parity and production host/tenant/grant persistence checks. Real native SQL tests do not establish production permissions; ASGI artifact/grant repositories still use doubles.
+
+Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updates PR #190 without merging or deploying.

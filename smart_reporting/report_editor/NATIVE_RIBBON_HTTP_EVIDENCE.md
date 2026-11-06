@@ -106,3 +106,17 @@ AGENT_REPORT_PUBLIC_BASE_URL=https://reports.test.invalid \
 ```
 
 修改后测试文件 SHA256：`c7b3e85becdda73666e9ae822b51ce575e1ff4a12a00044361c2813af7ab1a2d`。执行日志：`/tmp/pr190-http-custom-pptx-evidence-test.log`。结果：**1 passed，10.84s**（只有既有 imghdr 弃用警告）。
+
+
+## Real native-repository PostgreSQL boundary (2026-11-06)
+
+The previous in-memory repository evidence remains historical. New opt-in
+`test_native_repository_postgres_integration.py` cases reuse the four existing
+HTTP roundtrip flows with actual PostgreSQL 18 and independent SQL checks: one
+document, two saved revisions, next revision 3, persisted failed validation,
+idempotent retry and second-engine readback. All four formats passed. PPTX now
+combines ordered list/indent/direction and spacing with independent file checks.
+Artifact/download/editor grant stores are still test doubles and HTTP is still
+in-process ASGI. This closes the exercised native SQL persistence boundary, not
+production authorization or deployed network behavior. Exact isolation, run
+counts and reproduction are in `NATIVE_POSTGRES_ACCEPTANCE.md`.

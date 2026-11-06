@@ -127,6 +127,25 @@ npx vitest run src/slides-native-ribbon.test.ts -t 'gates upstream font-size'
 Result: **1 passed, 15 skipped**, duration 971 ms. `git diff --check` passed on the changed product/test/document paths. No full format or repository test suite was repeated. This is state/dispatch verification; it does not establish browser/file acceptance for the omitted Paragraph families or all Font controls. The root task is responsible for ensuring its fresh image snapshot includes this product change.
 
 
-## PPTX spacing slice closure
+## PPTX spacing slice closure (historical checkpoint)
 
 The earlier Home Paragraph inventory was a source-state snapshot. Line spacing and before/after point spacing are now implemented through `onParagraphFormat`, with strict native API/bridge support and actual per-paragraph inspector values. Explicit fields are merged with alignment and restored records; missing/mixed/alternative units remain blank rather than defaulting. See `NATIVE_PPTX_SPACING_ACCEPTANCE.md` for 52 backend cases, frontend/independent-review scope, browser/file acceptance and the separate packaged-ASGI proof. Bullets/numbering/indent/direction entries above remain open; there is still no claim of complete source parity.
+
+
+## Current Paragraph closure (2026-11-06)
+
+The inventory above is retained as the **pre-implementation** source snapshot;
+its “missing” states are superseded here. Bullets, seven glyph/font presets,
+sixteen symbols/custom scalar, nine numbering schemes/start value, three/custom
+hanging indents, five sizes, ten/custom colors, ±1 level and LTR/RTL now have
+strict native API/bridge, ordered draft/history and actual-file readback.
+Picture upload is individually disabled with its browser identity limitation.
+Alignment and spacing share the ordered ledger. Mixed/unset state remains
+explicit. Scope is all paragraphs of a selected top-level editable text/shape;
+caret selection, table and group contexts are not covered.
+
+Gallery display labels were checked against pinned `bullet-presets.ts`, blob
+`504692a82ebde8cc49c9908005bc4ff5213527c9`, separately from its wire characters
+(e.g. visible ▪ stores § with Wingdings). See `NATIVE_PPTX_LISTS_ACCEPTANCE.md`
+for options, independent defect repros, browser/file evidence and limitations.
+This closes the tracked Paragraph slice, not all Home, Font or Task 6 parity.

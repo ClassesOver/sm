@@ -1,3 +1,4 @@
+import { BULLET_GLYPHS, BULLET_GLYPH_LABELS, BULLET_SYMBOLS, NUMBER_TYPES, BULLET_COLORS, PARAGRAPH_LIST_COMMANDS } from './slides-paragraph'
 import { ArrowDown, ArrowUp, Bold, Download, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
 import { createElement as reactElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -18,13 +19,14 @@ export interface NativeSlidesRibbon {
   setLayouts(layouts: NativeSlidesLayout[]): void
   setValue(command: string, value: string, hint?: string): void
   setTextFormatEnabled(enabled: boolean): void
+  setListTargets(state: { bullets: boolean; numbers: boolean; hanging: boolean }): void
   setSlideOrientationEnabled(enabled: boolean): void
   setLocked(locked: boolean): void
   dispose(): void
 }
 
 type RibbonGlyph = ComponentType<{ size?: number }>
-type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'text' | 'font' | 'spacing'; options?: string[]; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
+type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'text' | 'font' | 'spacing'; options?: string[]; optionLabels?: string[]; caption?: string; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
 type Group = { label: string; controls: Control[] }
 type Tab = { id: string; label: string; groups: Group[]; context?: NativeSlidesContext }
 
@@ -79,6 +81,24 @@ const tabs: Tab[] = [
       { id: 'fontColor', label: 'Font Color', kind: 'color' },
     ] },
     { label: 'Paragraph', controls: [
+      { id: 'bulletChar', label: 'Bullets', sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletNumber', label: 'Numbering', sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletNone', label: 'No Bullets', sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletCharPreset', label: 'Bullet Gallery', caption: '项目符号', kind: 'select', options: BULLET_GLYPHS.map((_, i) => String(i)), optionLabels: BULLET_GLYPHS.map(([, font], i) => `${BULLET_GLYPH_LABELS[i]} (${font})`), sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletSymbol', label: 'Bullet Symbols', caption: '其他符号', kind: 'select', options: BULLET_SYMBOLS, sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletCustomChar', label: 'Custom Bullet Character', caption: '自定义字符', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
+      { id: 'pictureBullet', label: 'Picture Bullet', sourceActionId: 'onParagraphFormat', unavailable: desktop('图片项目符号文件选择与上传') },
+      { id: 'numType', label: 'Numbering Scheme', caption: '编号格式', kind: 'select', options: [...NUMBER_TYPES], optionLabels: ['1. 2. 3.', '1) 2) 3)', 'I. II. III.', 'A. B. C.', 'a) b) c)', 'a. b. c.', 'i. ii. iii.', '① ② ③', '一. 二. 三.'], sourceActionId: 'onParagraphFormat' },
+      { id: 'startAt', label: 'Numbering Start', caption: '起始编号', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletHangEmu', label: 'Bullet Hanging Indent', caption: '悬挂缩进', kind: 'select', options: ['171450', '285750', '342900'], optionLabels: ['18 px', '30 px', '36 px'], sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletHangPx', label: 'Custom Hanging Indent (px)', caption: '自定义缩进（px）', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletSizePct', label: 'Bullet Size', caption: '符号大小', kind: 'select', options: ['75', '90', '100', '125', '150'], optionLabels: ['75%', '90%', '100%', '125%', '150%'], sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletColorPreset', label: 'Bullet Color Palette', caption: '符号颜色', kind: 'select', options: BULLET_COLORS, sourceActionId: 'onParagraphFormat' },
+      { id: 'bulletColor', label: 'Custom Bullet Color', caption: '自定义颜色', kind: 'color', sourceActionId: 'onParagraphFormat' },
+      { id: 'indentDecrease', label: 'Decrease Indent', sourceActionId: 'onParagraphFormat' },
+      { id: 'indentIncrease', label: 'Increase Indent', sourceActionId: 'onParagraphFormat' },
+      { id: 'directionLtr', label: 'Left to Right', sourceActionId: 'onDirection' },
+      { id: 'directionRtl', label: 'Right to Left', sourceActionId: 'onDirection' },
       { id: 'paragraphAlignLeft', label: 'Align Left', sourceIcon: IconAlignLeft, sourceActionId: 'onAlign' },
       { id: 'paragraphAlignCenter', label: 'Center', sourceIcon: IconAlignCenter, sourceActionId: 'onAlign' },
       { id: 'paragraphAlignRight', label: 'Align Right', sourceIcon: IconAlignRight, sourceActionId: 'onAlign' },
@@ -209,6 +229,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let activeContext: NativeSlidesContext = null
   let locked = options.locked === true
   let currentAnimationEffect = ''
+  let listTargets = { bullets: false, numbers: false, hanging: false }
   let hasTextTarget = false
   let hasWritableSlideSize = false
   const clipboardLocale = genOfficeHomeClipboardLocale(document.documentElement.lang)
@@ -289,11 +310,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           const select = document.createElement('select')
           select.setAttribute('aria-label', control.label)
           select.dataset.command = control.id
-          if (control.id === 'lineSpacingPct') select.add(new Option('未设置或混合值', ''))
+          if (control.id === 'lineSpacingPct' || PARAGRAPH_LIST_COMMANDS.includes(control.id)) select.add(new Option('未设置或混合值', ''))
           if (control.id === 'layout') {
             for (const layout of options.layouts ?? []) select.add(new Option(`${layout.name || layout.path}`, layout.path))
           } else {
-            for (const value of control.options ?? []) select.add(new Option(control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value, value))
+            for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value), value))
           }
           select.addEventListener('change', () => options.onAction(control.id, select.value))
           element = select
@@ -331,12 +352,18 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (locked) (element as HTMLButtonElement).disabled = true
         }
         if (control.sourceActionId) element.dataset.sourceAction = control.sourceActionId
+        if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = '作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
-        if (['lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
+        if (control.caption || ['lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
           const label = document.createElement('label')
           label.htmlFor = controlId
           Object.assign(label.style, { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', whiteSpace: 'nowrap' })
-          label.append(document.createTextNode(control.id === 'lineSpacingPct' ? '行距' : control.id === 'spaceBeforePt' ? '段前（磅）' : '段后（磅）'), element)
+          label.append(document.createTextNode(control.caption ?? (control.id === 'lineSpacingPct' ? '行距' : control.id === 'spaceBeforePt' ? '段前（磅）' : '段后（磅）')), element)
+          if (control.id === 'bulletColor') {
+            const status = document.createElement('span')
+            status.className = 'bullet-color-state'
+            label.append(status)
+          }
           group.append(label)
         } else group.append(element)
       }
@@ -363,6 +390,10 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       if (activeContextTab && activeContextTab.context !== context) selectTab('home')
       updateTextFormattingState()
     },
+    setListTargets(state) {
+      listTargets = state
+      updateTextFormattingState()
+    },
     setTextFormatEnabled(enabled) {
       hasTextTarget = enabled
       updateTextFormattingState()
@@ -381,7 +412,16 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setValue(command, value, hint) {
       for (const element of controls.get(command) ?? []) {
-        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) element.value = value
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+          element.value = value
+          if (command === 'bulletColor') {
+            element.dataset.mixed = String(!value)
+            element.style.opacity = value ? '1' : '0'
+            const stateLabel = element.parentElement?.querySelector<HTMLElement>('.bullet-color-state')
+            if (stateLabel) stateLabel.textContent = value || '未设置或混合值（点击选择）'
+            element.setAttribute('aria-valuetext', value || '未设置或混合值')
+          }
+        }
         if (hint !== undefined) {
           element.title = hint
           if (element instanceof HTMLInputElement) element.placeholder = hint
@@ -389,6 +429,12 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         }
         if (command === 'bold' && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
         if (['italic', 'underline', 'strike'].includes(command) && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
+      }
+      if (command === 'bulletKind') for (const [kind, id] of [['char', 'bulletChar'], ['number', 'bulletNumber'], ['none', 'bulletNone']]) {
+        for (const element of controls.get(id!) ?? []) element.setAttribute('aria-pressed', String(kind === value))
+      }
+      if (command === 'paragraphDirection') for (const [rtl, id] of [['false', 'directionLtr'], ['true', 'directionRtl']]) {
+        for (const element of controls.get(id!) ?? []) element.setAttribute('aria-pressed', String(rtl === value))
       }
       if (command === 'paragraphAlign') for (const alignment of ['left', 'center', 'right', 'justify']) {
         for (const element of controls.get(`paragraphAlign${alignment[0]!.toUpperCase()}${alignment.slice(1)}`) ?? []) {
@@ -421,10 +467,15 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
 
   function updateTextFormattingState() {
-    for (const command of ['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontSizeUp', 'fontSizeDown', 'fontFamily', 'fontColor', 'paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt']) {
+    for (const command of ['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontSizeUp', 'fontSizeDown', 'fontFamily', 'fontColor', 'paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt', ...PARAGRAPH_LIST_COMMANDS]) {
       for (const element of controls.get(command) ?? []) {
         if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
-          element.disabled = locked || !hasTextTarget
+          const requiresNumber = command === 'startAt'
+          const requiresBullet = ['bulletSizePct', 'bulletColorPreset', 'bulletColor'].includes(command)
+          const requiresHang = ['bulletHangEmu', 'bulletHangPx'].includes(command)
+          const unavailableTarget = (requiresNumber && !listTargets.numbers) || (requiresBullet && !listTargets.bullets) || (requiresHang && !listTargets.hanging)
+          element.disabled = locked || !hasTextTarget || unavailableTarget
+          if (unavailableTarget) element.title = requiresNumber ? '先设置编号；起始编号仅作用于现有编号段落。' : '先设置项目符号或编号；此选项仅作用于适用段落。'
         }
       }
     }

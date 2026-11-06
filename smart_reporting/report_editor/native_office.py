@@ -37,6 +37,9 @@ _TRANSITIONS = {'none', 'morph', 'fade', 'push', 'wipe', 'split', 'circle', 'cov
 _MIN_SLIDE_EMU, _MAX_SLIDE_EMU = 914400, 51206400
 _ANIMATION_DIRECTIONS = {'top', 'bottom', 'left', 'right'}
 _DIRECTIONAL_ANIMATIONS = {'flyIn', 'flyOut', 'wipe', 'wipeOut'}
+_NUMBERING_TYPES = {'arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPeriod', 'alphaLcParenR', 'alphaLcPeriod', 'romanLcPeriod', 'circleNumDbPlain', 'ea1ChsPeriod'}
+# ECMA-376 ST_TextMargin/ST_TextIndent use an absolute limit of 56 inches.
+_MAX_PARAGRAPH_EMU = 51206400
 _HEX_COLOR = re.compile(r'^#[0-9a-fA-F]{6}$')
 
 
@@ -107,13 +110,27 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             raise ValueError('native_office_operations_invalid')
     paragraph_formatting = _records(operation, 'paragraphFormatting', {'slideIndex', 'elementId'}, {
         'align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt',
+        'bullet', 'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu',
+        'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta',
     })
     for item in paragraph_formatting:
         if (not isinstance(item['elementId'], str) or not item['elementId']
             or not set(item) - {'slideIndex', 'elementId'}
             or ('align' in item and (not isinstance(item['align'], str) or item['align'] not in {'left', 'center', 'right', 'justify'}))
             or ('lineSpacingPct' in item and (not _number(item['lineSpacingPct'], 100, 300) or item['lineSpacingPct'] not in {100, 115, 150, 200, 250, 300}))
-            or any(key in item and not _number(item[key], 0, 500) for key in ('spaceBeforePt', 'spaceAfterPt'))):
+            or any(key in item and not _number(item[key], 0, 500) for key in ('spaceBeforePt', 'spaceAfterPt'))
+            or ('bullet' in item and (not isinstance(item['bullet'], str) or item['bullet'] not in {'char', 'number', 'none'}))
+            or ('bulletChar' in item and (not isinstance(item['bulletChar'], str) or len(item['bulletChar']) != 1 or ord(item['bulletChar']) < 32 or 0x7f <= ord(item['bulletChar']) <= 0x9f or 0xd800 <= ord(item['bulletChar']) <= 0xdfff or ord(item['bulletChar']) in {0xfffe, 0xffff}))
+            or ('bulletFont' in item and (not isinstance(item['bulletFont'], str) or not item['bulletFont'].strip() or len(item['bulletFont']) > 200 or any(ord(char) < 32 or 0x7f <= ord(char) <= 0x9f or 0xd800 <= ord(char) <= 0xdfff or ord(char) in {0xfffe, 0xffff} for char in item['bulletFont'])))
+            or ('numType' in item and (not isinstance(item['numType'], str) or item['numType'] not in _NUMBERING_TYPES))
+            or any(key in item and (not isinstance(item[key], int) or isinstance(item[key], bool) or not low <= item[key] <= high) for key, low, high in [('startAt', 1, 32767), ('bulletHangEmu', 0, _MAX_PARAGRAPH_EMU)])
+            or ('bulletSizePct' in item and (not _number(item['bulletSizePct'], 75, 150) or item['bulletSizePct'] not in {75, 90, 100, 125, 150}))
+            or ('bulletColor' in item and (not isinstance(item['bulletColor'], str) or not _HEX_COLOR.fullmatch(item['bulletColor'])))
+            or ('rtl' in item and not isinstance(item['rtl'], bool))
+            or ('indentDelta' in item and (not isinstance(item['indentDelta'], int) or isinstance(item['indentDelta'], bool) or item['indentDelta'] not in {-1, 1}))
+            or (item.get('bullet') == 'none' and bool(set(item) & {'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor'}))
+            or (item.get('bullet') == 'char' and bool(set(item) & {'numType', 'startAt'}))
+            or (bool(set(item) & {'bulletChar', 'bulletFont'}) and item.get('bullet') != 'char')):
             raise ValueError('native_office_operations_invalid')
     bridge_edits = [
         *edits,

@@ -76,3 +76,14 @@ changed fields are written. The pinned engine is unchanged. Scope, commands,
 independent readback, restore/lock tests and packaged HTTP/browser evidence are
 in `NATIVE_PPTX_SPACING_ACCEPTANCE.md`. Bullet/indent/direction and complete
 source parity remain open; feature flags remain disabled.
+
+
+PPTX Paragraph continuation (2026-11-06): source bullet/number galleries, custom
+Unicode, start value, hanging indent, bullet size/color, relative level and
+LTR/RTL are connected through strict fields and the unchanged pinned formatter.
+Draft records retain execution order; mixed/inherited values, overflow and
+500-record budget are handled explicitly. Picture upload stays visibly disabled;
+caret/table/group editing is not covered. See `NATIVE_PPTX_LISTS_ACCEPTANCE.md`
+in report_editor. Real PostgreSQL repository plus four-format ASGI/file
+acceptance is recorded in `NATIVE_POSTGRES_ACCEPTANCE.md`; production grant
+storage and clean application-image acceptance remain open.

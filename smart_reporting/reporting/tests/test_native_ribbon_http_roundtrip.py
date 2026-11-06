@@ -109,8 +109,14 @@ def ribbon_operations(format, model):
     element = next(element for element in model["slides"][0]["elements"] if element["editable"] and element["text"])
     return [{"kind": "editSlides", "edits": [{"slideIndex": 0, "elementId": element["id"], "text": "功能区保存正文"}],
              "slideSize": {"cx": 9000000, "cy": 7200000},
-             "paragraphFormatting": [{"slideIndex": 0, "elementId": element["id"], "align": "right",
-                                      "lineSpacingPct": 200, "spaceBeforePt": 12.5, "spaceAfterPt": 0}]}]
+             "paragraphFormatting": [
+                 {"slideIndex": 0, "elementId": element["id"], "align": "right",
+                  "lineSpacingPct": 200, "spaceBeforePt": 12.5, "spaceAfterPt": 0,
+                  "bullet": "number", "numType": "romanLcPeriod", "startAt": 3,
+                  "bulletHangEmu": 171450, "bulletSizePct": 125, "bulletColor": "#0F9ED5", "rtl": False},
+                 {"slideIndex": 0, "elementId": element["id"], "indentDelta": 1},
+                 {"slideIndex": 0, "elementId": element["id"], "indentDelta": -1},
+             ]}]
 
 
 def assert_file_readback(format, content):
@@ -149,6 +155,14 @@ def assert_file_readback(format, content):
         assert paragraph.line_spacing == 2.0
         assert paragraph.space_before.pt == 12.5
         assert paragraph.space_after.pt == 0
+        props = paragraph._p.get_or_add_pPr()
+        assert props.get("rtl") == "0"
+        assert int(props.get("lvl", "0")) == 0
+        assert props.get("marL") == "171450" and props.get("indent") == "-171450"
+        auto = props.find(qn("a:buAutoNum"))
+        assert auto is not None and auto.get("type") == "romanLcPeriod" and auto.get("startAt") == "3"
+        assert props.find(qn("a:buSzPct")).get("val") == "125000"
+        assert props.find(qn("a:buClr")).find(qn("a:srgbClr")).get("val") == "0F9ED5"
 
 
 @pytest.mark.anyio

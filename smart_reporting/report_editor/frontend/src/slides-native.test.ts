@@ -236,7 +236,7 @@ it('retains successive supported formatting records when editing a recovered PPT
   setRibbonValue(shell.editor, 'slideSize', '4:3')
   expect(draft.operations[0]).toMatchObject({ edits: [{ slideIndex: 0, elementId: 'title', text: '恢复正文', geometry: { x: 40, y: 50, width: 300, height: 80 } }],
     textFormatting: [{ slideIndex: 0, elementId: 'title', bold: true, fontSizePt: 24 }],
-    paragraphFormatting: [{ slideIndex: 0, elementId: 'title', align: 'right', lineSpacingPct: 150 }] })
+    paragraphFormatting: [{ slideIndex: 0, elementId: 'title', align: 'right' }, { slideIndex: 0, elementId: 'title', lineSpacingPct: 150 }] })
   view.dispose()
 })
 
@@ -460,7 +460,7 @@ function enterSpacing(host: HTMLElement, command: string, value: string) {
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
 }
 
-it('PPTX paragraph spacing merges only explicit fields and shares alignment history and refresh', async () => {
+it('PPTX paragraph spacing retains explicit ordered fields and shares alignment history and refresh', async () => {
   const store = draftStore()
   const draft = new NativeDraft(draftIdentity, store)
   const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
@@ -469,15 +469,16 @@ it('PPTX paragraph spacing merges only explicit fields and shares alignment hist
   setRibbonValue(shell.editor, 'lineSpacingPct', '150')
   shell.editor.querySelector<HTMLButtonElement>('[data-command="paragraphAlignCenter"]')!.click()
   enterSpacing(shell.editor, 'spaceAfterPt', '0')
-  const expected = { slideIndex: 0, elementId: 'title', spaceBeforePt: 12.5, lineSpacingPct: 150, align: 'center', spaceAfterPt: 0 }
-  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [expected] })
+  const target = { slideIndex: 0, elementId: 'title' }
+  const expected = [{ ...target, spaceBeforePt: 12.5 }, { ...target, lineSpacingPct: 150 }, { ...target, align: 'center' }, { ...target, spaceAfterPt: 0 }]
+  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: expected })
   shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
-  const { spaceAfterPt: _removed, ...beforeAfterEdit } = expected
-  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [beforeAfterEdit] })
+  const beforeAfterEdit = expected.slice(0, -1)
+  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: beforeAfterEdit })
   expect((draft.operations[0] as any).paragraphFormatting[0]).not.toHaveProperty('spaceAfterPt')
   expect(shell.editor.querySelector<HTMLInputElement>('[data-command="spaceAfterPt"]')!.value).toBe('')
   shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
-  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [expected] })
+  expect(draft.operations[0]).toMatchObject({ paragraphFormatting: expected })
   view.dispose()
   const reopened = await openDraft(new NativeDraft(draftIdentity, store), api)
   expect(reopened.shell.editor.querySelector<HTMLInputElement>('[data-command="spaceBeforePt"]')!.value).toBe('12.5')
@@ -507,7 +508,8 @@ it('PPTX paragraph spacing shows mixed, unset and alternate units honestly and r
   expect(before.value).toBe(''); expect(line.value).toBe('')
   enterSpacing(shell.editor, 'spaceAfterPt', '3.25')
   expect(draft.operations[0]).toMatchObject({ paragraphFormatting: [
-    { slideIndex: 0, elementId: 'title', lineSpacingPct: 115, spaceBeforePt: 500 },
+    { slideIndex: 0, elementId: 'title', lineSpacingPct: 115 },
+    { slideIndex: 0, elementId: 'title', spaceBeforePt: 500 },
     { slideIndex: 0, elementId: 'other', spaceAfterPt: 3.25 },
   ] })
   object.value = 'readonly'; object.dispatchEvent(new Event('change'))
@@ -516,4 +518,136 @@ it('PPTX paragraph spacing shows mixed, unset and alternate units honestly and r
   enterSpacing(shell.editor, 'spaceBeforePt', '7')
   expect(JSON.stringify(draft.operations)).toBe(snapshot)
   view.dispose()
+})
+
+it('retains every ordered list command across undo, redo, selection changes and draft refresh', async () => {
+  const store = draftStore()
+  const draft = new NativeDraft(draftIdentity, store)
+  const source = { ...deck, slides: [{ ...deck.slides[0], elements: [
+    { ...deck.slides[0].elements[0], paragraphLists: [{ level: 0, rtl: null }, { level: 8, rtl: null }] },
+    { ...deck.slides[0].elements[0], id: 'other', paragraphLists: [{ bulletKind: 'none', rtl: null }] },
+  ] }] }
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  const button = (command: string) => shell.editor.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!
+  expect(button('directionLtr').getAttribute('aria-pressed')).toBe('false')
+  expect(shell.editor.querySelector<HTMLInputElement>('[data-command="startAt"]')!.disabled).toBe(true)
+  button('indentIncrease').click(); button('indentDecrease').click()
+  setRibbonValue(shell.editor, 'bulletCharPreset', '2')
+  setRibbonValue(shell.editor, 'bulletSizePct', '125')
+  button('directionRtl').click()
+  const target = { slideIndex: 0, elementId: 'title' }
+  const expected = [{ ...target, indentDelta: 1 }, { ...target, indentDelta: -1 }, { ...target, bullet: 'char', bulletChar: '§', bulletFont: 'Wingdings' }, { ...target, bulletSizePct: 125 }, { ...target, rtl: true }]
+  expect((draft.operations[0] as any).paragraphFormatting).toEqual(expected)
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(button('directionRtl').getAttribute('aria-pressed')).toBe('false')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(button('directionRtl').getAttribute('aria-pressed')).toBe('true')
+  const select = shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+  select.value = 'other'; select.dispatchEvent(new Event('change'))
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="bulletCharPreset"]')!.value).toBe('')
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="bulletSizePct"]')!.disabled).toBe(true)
+  view.dispose()
+  const recoveredDraft = new NativeDraft(draftIdentity, store)
+  const reopened = await openDraft(recoveredDraft, api)
+  expect((recoveredDraft.operations[0] as any).paragraphFormatting).toEqual(expected)
+  expect(reopened.shell.editor.querySelector<HTMLSelectElement>('[data-command="bulletCharPreset"]')!.value).toBe('2')
+  expect(reopened.shell.editor.querySelector<HTMLSelectElement>('[data-command="bulletSizePct"]')!.value).toBe('125')
+  expect(reopened.shell.editor.querySelector<HTMLButtonElement>('[data-command="directionRtl"]')!.getAttribute('aria-pressed')).toBe('true')
+  reopened.view.dispose()
+})
+
+it('rejects overflowing list proposals before history persistence and keeps the valid draft reopenable', async () => {
+  const store = draftStore(); const draft = new NativeDraft(draftIdentity, store)
+  const source = { ...deck, slides: [{ ...deck.slides[0], elements: [{ ...deck.slides[0].elements[0], paragraphLists: [{ bulletKind: 'char', bulletChar: '•', level: 0, indentEmu: -285750, marLEmu: 285750, hasExplicitHangingIndent: true }] }] }] }
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  enterSpacing(shell.editor, 'bulletHangPx', '5376')
+  const before = JSON.stringify(draft.operations)
+  const history = vi.spyOn(draft, 'setOperations')
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="indentIncrease"]')!.click()
+  expect(history).not.toHaveBeenCalled()
+  expect(JSON.stringify(draft.operations)).toBe(before)
+  expect(shell.editor.textContent).toContain('超出 OOXML 范围')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations).toEqual([])
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(JSON.stringify(draft.operations)).toBe(before)
+  view.dispose()
+  const recovered = new NativeDraft(draftIdentity, store)
+  const reopened = await openDraft(recovered, api)
+  expect(JSON.stringify(recovered.operations)).toBe(before)
+  reopened.view.dispose()
+})
+
+it('rejects a previously stored overflowing list sequence without rewriting its draft', async () => {
+  const store = draftStore(); const draft = new NativeDraft(draftIdentity, store)
+  const target = { slideIndex: 0, elementId: 'title' }
+  const operations = [{ kind: 'editSlides', paragraphFormatting: [{ ...target, bullet: 'char', bulletHangEmu: 51206400 }, { ...target, indentDelta: 1 }, { ...target, indentDelta: -1 }] }]
+  draft.setOperations(operations)
+  const source = { ...deck, slides: [{ ...deck.slides[0], elements: [{ ...deck.slides[0].elements[0], paragraphLists: [{ level: 0, hasExplicitHangingIndent: false }] }] }] }
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const writes = vi.spyOn(draft, 'setOperations')
+  await expect(openDraft(draft, api)).rejects.toThrow('原草稿已保留')
+  expect(writes).not.toHaveBeenCalled()
+  expect(draft.operations).toEqual(operations)
+  expect(new NativeDraft(draftIdentity, store).operations).toEqual(operations)
+})
+
+it('does not create an undo step when Enter repeats an absolute paragraph value', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="indentDecrease"]')!.click()
+  expect(draft.operations).toEqual([])
+  enterSpacing(shell.editor, 'spaceBeforePt', '12.5')
+  const before = JSON.stringify(draft.operations)
+  const writes = vi.spyOn(draft, 'setOperations')
+  for (let index = 0; index < 501; index++) enterSpacing(shell.editor, 'spaceBeforePt', '12,5')
+  expect(writes).not.toHaveBeenCalled()
+  expect(JSON.stringify(draft.operations)).toBe(before)
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations).toEqual([])
+  view.dispose()
+})
+
+it('undoes the preceding real paragraph edit after repeating an earlier field value', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  enterSpacing(shell.editor, 'spaceBeforePt', '12.5')
+  enterSpacing(shell.editor, 'spaceAfterPt', '0')
+  const writes = vi.spyOn(draft, 'setOperations')
+  enterSpacing(shell.editor, 'spaceBeforePt', '12.5')
+  expect(writes).not.toHaveBeenCalled()
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(shell.editor.querySelector<HTMLInputElement>('[data-command="spaceAfterPt"]')!.value).toBe('')
+  expect(shell.editor.querySelector<HTMLInputElement>('[data-command="spaceBeforePt"]')!.value).toBe('12.5')
+  view.dispose()
+})
+
+it('refuses the 501st real paragraph edit without changing persistence or history', async () => {
+  const store = draftStore(); const draft = new NativeDraft(draftIdentity, store)
+  const target = { slideIndex: 0, elementId: 'title' }
+  draft.setOperations([{ kind: 'editSlides', paragraphFormatting: Array.from({ length: 499 }, (_, i) => ({ ...target, spaceBeforePt: i % 2 })) }])
+  const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
+  const { shell, view } = await openDraft(draft, api)
+  enterSpacing(shell.editor, 'spaceBeforePt', '2')
+  expect((draft.operations[0] as any).paragraphFormatting).toHaveLength(500)
+  const snapshot = JSON.stringify(draft.operations)
+  const writes = vi.spyOn(draft, 'setOperations')
+  enterSpacing(shell.editor, 'spaceBeforePt', '3')
+  expect(writes).not.toHaveBeenCalled()
+  expect(JSON.stringify(draft.operations)).toBe(snapshot)
+  expect(shell.editor.textContent).toContain('请先保存并打开新修订')
+  expect(shell.editor.querySelector<HTMLInputElement>('[data-command="spaceBeforePt"]')!.value).toBe('2')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect((draft.operations[0] as any).paragraphFormatting).toHaveLength(499)
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(JSON.stringify(draft.operations)).toBe(snapshot)
+  view.dispose()
+  const recovered = new NativeDraft(draftIdentity, store)
+  const reopened = await openDraft(recovered, api)
+  expect(JSON.stringify(recovered.operations)).toBe(snapshot)
+  reopened.view.dispose()
 })

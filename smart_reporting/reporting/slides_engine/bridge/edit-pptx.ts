@@ -53,6 +53,16 @@ type Input = {
   paragraphFormatting?: {
     slideIndex: number
     elementId: string
+    bullet?: 'char' | 'number' | 'none'
+    bulletChar?: string
+    bulletFont?: string
+    numType?: string
+    startAt?: number
+    bulletHangEmu?: number
+    bulletSizePct?: number
+    bulletColor?: string
+    rtl?: boolean
+    indentDelta?: 1 | -1
     align?: 'left' | 'center' | 'right' | 'justify'
     lineSpacingPct?: number
     spaceBeforePt?: number
@@ -60,6 +70,8 @@ type Input = {
   }[]
 }
 
+const numberingTypes = ['arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPeriod', 'alphaLcParenR', 'alphaLcPeriod', 'romanLcPeriod', 'circleNumDbPlain', 'ea1ChsPeriod']
+const maxParagraphEmu = 51206400 // ECMA-376 ST_TextMargin/ST_TextIndent, 56 inches.
 const colorPattern = /^#[0-9a-fA-F]{6}$/
 const deletableTypes = new Set(['text', 'shape', 'picture'])
 const validSlideIndex = (value: unknown, count: number): value is number =>
@@ -117,6 +129,21 @@ if (request.action === 'inspect') {
           const paragraphs = element.text?.paragraphs ?? []
           const run = paragraphs[0]?.runs[0]
           return {
+            paragraphLists: paragraphs.map((paragraph) => ({
+              bulletKind: paragraph.bullet?.type ?? null,
+              bulletChar: paragraph.bullet?.char ?? null,
+              bulletFont: paragraph.bullet?.font ?? null,
+              numType: paragraph.bullet?.numType ?? null,
+              startAt: paragraph.bullet?.startAt ?? null,
+              bulletSizePct: paragraph.bullet?.sizePct ?? null,
+              bulletSizePt: paragraph.bullet?.sizePt ?? null,
+              bulletColor: paragraph.bullet?.color ?? null,
+              level: paragraph.level ?? null,
+              rtl: paragraph.rtl ?? null,
+              marLEmu: paragraph.marL ?? null,
+              indentEmu: paragraph.indent ?? null,
+              hasExplicitHangingIndent: Boolean(paragraph.pPrExplicit?.marL && paragraph.indent != null && paragraph.indent < 0),
+            })),
             paragraphAlignments: paragraphs.map((paragraph) => paragraph.align ?? null),
             paragraphFormatting: paragraphs.map((paragraph) => ({
               align: paragraph.align ?? null,
@@ -157,7 +184,7 @@ if (request.action === 'inspect') {
   if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
     throw new Error('paragraph_format_invalid')
   }
-  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt']
+  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt', 'bullet', 'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta']
   for (const format of request.paragraphFormatting ?? []) {
     if (!format || typeof format !== 'object' || Array.isArray(format) ||
       Object.keys(format).some(key => !['slideIndex', 'elementId', ...paragraphFields].includes(key)) ||
@@ -166,7 +193,20 @@ if (request.action === 'inspect') {
       (Object.hasOwn(format, 'align') && !['left', 'center', 'right', 'justify'].includes(format.align!)) ||
       (Object.hasOwn(format, 'lineSpacingPct') && ![100, 115, 150, 200, 250, 300].includes(format.lineSpacingPct!)) ||
       (['spaceBeforePt', 'spaceAfterPt'] as const).some(key => Object.hasOwn(format, key) &&
-        (typeof format[key] !== 'number' || !Number.isFinite(format[key]) || format[key]! < 0 || format[key]! > 500))) {
+        (typeof format[key] !== 'number' || !Number.isFinite(format[key]) || format[key]! < 0 || format[key]! > 500)) ||
+      (Object.hasOwn(format, 'bullet') && !['char', 'number', 'none'].includes(format.bullet!)) ||
+      (Object.hasOwn(format, 'bulletChar') && (typeof format.bulletChar !== 'string' || [...format.bulletChar].length !== 1 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletChar))) ||
+      (Object.hasOwn(format, 'bulletFont') && (typeof format.bulletFont !== 'string' || !format.bulletFont.trim() || [...format.bulletFont].length > 200 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletFont))) ||
+      (Object.hasOwn(format, 'numType') && !numberingTypes.includes(format.numType!)) ||
+      (Object.hasOwn(format, 'startAt') && (!Number.isInteger(format.startAt) || format.startAt! < 1 || format.startAt! > 32767)) ||
+      (Object.hasOwn(format, 'bulletHangEmu') && (!Number.isInteger(format.bulletHangEmu) || format.bulletHangEmu! < 0 || format.bulletHangEmu! > maxParagraphEmu)) ||
+      (Object.hasOwn(format, 'bulletSizePct') && ![75, 90, 100, 125, 150].includes(format.bulletSizePct!)) ||
+      (Object.hasOwn(format, 'bulletColor') && (typeof format.bulletColor !== 'string' || !colorPattern.test(format.bulletColor))) ||
+      (Object.hasOwn(format, 'rtl') && typeof format.rtl !== 'boolean') ||
+      (Object.hasOwn(format, 'indentDelta') && ![-1, 1].includes(format.indentDelta!)) ||
+      (format.bullet === 'none' && ['bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor'].some(key => Object.hasOwn(format, key))) ||
+      (format.bullet === 'char' && ['numType', 'startAt'].some(key => Object.hasOwn(format, key))) ||
+      (['bulletChar', 'bulletFont'].some(key => Object.hasOwn(format, key)) && format.bullet !== 'char')) {
       throw new Error('paragraph_format_invalid')
     }
   }
@@ -337,7 +377,15 @@ if (request.action === 'inspect') {
   for (const format of request.paragraphFormatting ?? []) {
     const { slideIndex, elementId, ...patch } = format
     const slide = originalSlides[slideIndex]
-    if (!slide || !setElementParagraphFormat(slide, elementId, patch)) throw new Error('paragraph_format_target_invalid')
+    const element = slide?.elements.find(candidate => candidate.id === elementId)
+    if (!slide || !element || (element.type !== 'text' && element.type !== 'shape') || !element.text ||
+      !setElementParagraphFormat(slide, elementId, patch)) throw new Error('paragraph_format_target_invalid')
+    // Validate every ordered command so a later opposite indent cannot hide overflow.
+    if (element.text?.paragraphs.some(paragraph =>
+        (paragraph.marL != null && (paragraph.marL < 0 || paragraph.marL > maxParagraphEmu)) ||
+        (paragraph.indent != null && Math.abs(paragraph.indent) > maxParagraphEmu))) {
+      throw new Error('paragraph_indent_out_of_range')
+    }
   }
   for (const background of request.backgrounds ?? []) {
     setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
