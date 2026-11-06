@@ -203,5 +203,18 @@ node smoke/docx-table-smoke.mjs
 The successful browser routes substitute authorization/revision registration,
 while the actual file transformer and downloaded files are real. The earlier
 ASGI/Node22 proof remains the backend boundary; this is no claim of a browser
-hosted by the full application image, production grant/SQL flow or desktop
-verification. Feature flags remain off.
+hosted by the full application image, production tenant integration or desktop
+verification. The subsequent dedicated SQL delivery scenario is recorded in
+`NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`. Feature flags remain off.
+
+
+## Subsequent SQL delivery checkpoint
+
+Four structure operations and a follow-up after revision reopen now pass with
+real PostgreSQL native/artifact/download-grant/editor-grant-session stores,
+including actual persisted byte chunks, one injected failed reservation, two
+concurrent identical retries, old-anchor refusal and revision-3 immutable
+readback. This closes that exercised SQL gap without changing the earlier
+browser fixture's route substitutes. See `NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`;
+production identity, distributed workers, desktop and full-image boundaries
+remain open.

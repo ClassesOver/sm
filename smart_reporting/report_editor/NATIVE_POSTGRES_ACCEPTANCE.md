@@ -1,6 +1,6 @@
 # Native repository PostgreSQL acceptance
 
-## Result and scope
+## Original result and scope
 
 2026-11-06: **14 passed, 0 skipped** against real PostgreSQL **18.0** with
 SQLAlchemy AsyncEngine and the psycopg driver. The run comprised five new
@@ -123,3 +123,18 @@ Scope checkpoint: these 18 distinct checks were recorded before the later Word
 table structural adapter. The shared DOCX HTTP fixture now also exercises column
 insertion, but this phase did not rerun it against PostgreSQL. Do not infer new
 structural-operation SQL acceptance from the earlier counts.
+
+
+## Word table SQL delivery continuation
+
+The later table-flow gap is now exercised in
+`test_native_word_table_postgres.py`: four actual source-bound structure
+operations, injected failure recovery in the same reservation, concurrent
+idempotent saves, revision-2 reopen/old-anchor rejection and fresh revision 3.
+The final `postgres` variant uses production SQL repositories for native
+revisions, actual artifact bytes/chunks, download grants and editor
+grants/sessions; independent SQL checks and actual downloaded-file readback
+passed (1 passed, 8.81s). Thus the earlier statement that delivery stores are
+doubles remains true for the original runs, not this new dedicated scenario.
+Exact run counts, grant rotation behavior, cleanup and remaining synthetic
+ASGI/tenant boundaries: `NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`.
