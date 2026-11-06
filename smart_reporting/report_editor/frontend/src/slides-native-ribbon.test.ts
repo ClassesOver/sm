@@ -437,3 +437,16 @@ it('exposes all pinned list options, disabled picture picking and honest conditi
   expect(picture.disabled).toBe(true)
   ribbon.dispose()
 })
+
+it('retains source transition editability across lock/unlock independently of Apply to All', () => {
+  const host = document.createElement('div'); document.body.append(host)
+  const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
+  const select = host.querySelector<HTMLSelectElement>('[data-command="transition"]')!
+  expect(select.disabled).toBe(true)
+  ribbon.setTransitionEditEnabled(true); expect(select.disabled).toBe(false)
+  ribbon.setLocked(true); expect(select.disabled).toBe(true)
+  ribbon.setLocked(false); expect(select.disabled).toBe(false)
+  ribbon.setTransitionEditEnabled(false, '来源无法保真'); ribbon.setLocked(true); ribbon.setLocked(false)
+  expect(select.disabled).toBe(true); expect(select.title).toBe('来源无法保真')
+  ribbon.dispose()
+})

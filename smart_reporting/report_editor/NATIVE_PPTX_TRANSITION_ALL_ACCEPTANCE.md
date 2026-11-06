@@ -26,7 +26,9 @@ Only the effect kind/generic or pinned default variant and legal per-page
 `advTm` are accepted. Missing safety metadata disables batch application rather
 than assuming an older engine is safe. The handler repeats this gate even if a
 script dispatches a click on the disabled control; stored drafts remain intact.
-Single-page transition writeback is unchanged and is **not** claimed lossless.
+At this checkpoint single-page writeback was unchanged. The later native bridge
+preservation adapter closes the supported-source loss below; see
+`NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`. Bulk restrictions remain.
 
 The adapter uses original slide indices even after visible reorder. Apply to All
 writes one NativeDraft snapshot; repeated identical application does not add an
@@ -124,12 +126,13 @@ root agent after all four parallel format tracks stabilize; they are not
 claimed by this per-format agent.
 
 
-## Confirmed formatter limitation and the new refusal boundary
+## Historical upstream formatter limitation and the batch refusal boundary
 
 A real source PPTX with `advTm=1000`, `spd=slow`, `advClick=0` and a sound-stop
 `p:sndAc/p:endSnd` action was run through the existing single-page formatter.
-The output retained only advTm. This is a **confirmed existing preservation
-limitation**, not a passing Apply-to-All case. The source, actual existing
+The output retained only advTm. This is a **confirmed upstream formatter preservation
+limitation**, not a passing Apply-to-All case. The later native adapter repairs
+supported single-page writes without modifying that upstream formatter. The source, actual existing
 single-page output, original/output transition XML and hashes are retained in
 `/tmp/pr190-pptx-apply-all-limitation-evidence/evidence.json` and adjacent PPTX
 files. The new inspect flag is false for this file; the new batch button and

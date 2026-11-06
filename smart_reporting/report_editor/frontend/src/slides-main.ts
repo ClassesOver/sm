@@ -14,7 +14,7 @@ import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_S
 type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
-type DeckSlide = { slideIndex: number; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
+type DeckSlide = { slideIndex: number; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
 type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
 type Edit = {
   slideIndex: number
@@ -282,6 +282,7 @@ function restoreNativeDraft() {
   }
   const changes = (operations[0] ?? {}) as SlideChanges
   const transitions = restoredTransitions(changes.transitions, deck.slides.length)
+  if (native && transitions.some(item => !transitionEditingAllowed(deck.slides[item.slideIndex]))) throw new Error('来源含尚不能安全修改的转场兼容性内容；原草稿已保留')
   if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== deck.slides.length || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length))) throw new Error('草稿页面顺序无效；原草稿已保留')
   // Validate every step before mutating the recovered view or the persisted history.
   try {
@@ -375,6 +376,12 @@ function move(position: number, direction: -1 | 1) {
   markDirty()
 }
 
+function transitionEditingAllowed(slide: DeckSlide | undefined) {
+  return !native || (slide?.transitionEditSafe ?? slide?.transitionApplyAllSafe) === true
+}
+function transitionEditUnavailable(): string | null {
+  return transitionEditingAllowed(deck.slides[selectedSlide]) ? null : '此页含尚不能安全修改的转场兼容性内容，请保留原转场'
+}
 function transitionApplyAllUnavailable(): string | null {
   if (!order.length || order.length > 500 || !order.includes(selectedSlide)) return '请先打开可编辑的演示文稿；一次最多支持 500 页'
   if (order.some(index => deck.slides[index]?.transitionApplyAllSafe !== true)) return '部分页面含未支持的转场速度、换片、声音或效果变体设置，暂不能全部应用；原文件保持不变'
@@ -433,7 +440,11 @@ function renderInspector() {
   animationState.textContent = existingAnimation ? `已有 ${existingAnimation.effect} 动画，可继续添加。` : ''
   root.querySelector('.inspector-heading')!.textContent = `对象 · 第 ${order.indexOf(selectedSlide) + 1} 页`
   nativeRibbon?.setValue('theme', selectedTheme ?? '')
+  const transitionReason = transitionEditUnavailable()
+  transitionSelect.disabled = locked() || transitionReason !== null
+  transitionSelect.title = transitionReason ?? '更改视觉转场效果；保留原速度、换片、声音及扩展设置'
   nativeRibbon?.setValue('transition', transitionSelect.value)
+  nativeRibbon?.setTransitionEditEnabled(transitionReason === null, transitionReason ?? undefined)
   nativeRibbon?.setTransitionApplyAllEnabled(transitionApplyAllUnavailable() === null, transitionApplyAllUnavailable() ?? undefined)
   nativeRibbon?.setValue('layout', layoutSelect.value)
   const size = slideSizeEdit ?? deck.size
@@ -559,6 +570,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         markDirty()
         break
       case 'transition':
+        if (transitionEditUnavailable()) { statusMessage.textContent = transitionEditUnavailable()!; break }
         if (SLIDE_TRANSITIONS.includes(value as SlideTransition) && order.includes(selectedSlide)) { transitionEdits.set(selectedSlide, value as SlideTransition); markDirty() }
         break
       case 'applyTransitionAll': {
@@ -751,6 +763,7 @@ themeSelect.addEventListener('change', () => {
   markDirty()
 })
 transitionSelect.addEventListener('change', () => {
+  if (locked() || transitionEditUnavailable()) { statusMessage.textContent = transitionEditUnavailable() ?? '当前不可编辑'; return }
   transitionEdits.set(selectedSlide, transitionSelect.value as SlideTransition)
   markDirty()
 })

@@ -178,5 +178,8 @@ buttons and independent downloaded-file checks pass the browser fixture; see
 Each family has a dedicated acceptance record in this directory containing the
 pinned original source/blob, exact callback/library path, runtime/browser/file
 checks and remaining limitations. A connected bounded family is not evidence
-that all four source inventories are complete. The known PPTX single-page
-formatter metadata-loss case is retained as an unresolved source-fidelity gap.
+that all four source inventories are complete. The upstream single-page
+formatter metadata-loss case remains valid historical evidence; the native bridge
+now preserves supported-source metadata through a thin adapter. See
+`NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md` for actual-file/browser proof
+and readonly boundaries. The bulk gate and incomplete overall inventory remain.

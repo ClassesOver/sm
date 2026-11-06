@@ -114,3 +114,9 @@ Word 四表新修订流程另外通过真实 PostgreSQL 四类仓储（修订、
 下载授权、编辑授权/会话）组合验收，见 `NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`。
 这仍不代表生产租户身份、部署网络、完整应用镜像或 Office 桌面通过。
 全部功能开关保持关闭。
+
+PPTX 原生单页转场现通过薄适配层保留速度、点击/自动换片、时长、声音、
+扩展及音频关系；仅支持已建模普通来源和固定 Morph 兼容结构，其他来源
+禁用并拒绝强制提交。批量应用仍保留更严格来源门槛。实际文件、浏览器和
+Node22 只读断网验收见 `NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`；
+不代表播放、Office 桌面或任意兼容结构通过。

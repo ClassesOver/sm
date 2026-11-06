@@ -748,3 +748,24 @@ it.each([false, undefined])('disables and refuses Apply to All when any source p
   expect(shell.editor.textContent).toMatch(/未支持的转场/)
   view.dispose!()
 })
+
+it.each([true, false])('gates single transition editing separately from bulk metadata eligibility %s', async transitionEditSafe => {
+  const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
+  const source = { ...deck, slides: [{ ...deck.slides[0], transitionApplyAllSafe: false, transitionEditSafe, transition: 'fade' }] }
+  const { shell, view } = await openDraft(draft, { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })
+  const select = shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!
+  expect(select.disabled).toBe(!transitionEditSafe)
+  expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!.disabled).toBe(true)
+  select.value = 'wipe'; select.dispatchEvent(new Event('change', { bubbles: true }))
+  if (transitionEditSafe) expect(draft.operations[0].transitions).toEqual([{ slideIndex: 0, kind: 'wipe' }])
+  else { expect(draft.operations).toEqual([]); expect(shell.editor.querySelector('.slides-status')?.textContent ?? shell.editor.textContent).toMatch(/不能安全修改/) }
+  view.dispose!()
+})
+it('refuses an unsafe restored source transition without replacing persisted draft', async () => {
+  const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
+  const operations = [{ kind: 'editSlides', transitions: [{ slideIndex: 0, kind: 'wipe' }] }]
+  draft.setOperations(operations)
+  const source = { ...deck, slides: [{ ...deck.slides[0], transitionEditSafe: false }] }
+  await expect(openDraft(new NativeDraft(draftIdentity, store), { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })).rejects.toThrow(/原草稿已保留/)
+  expect(new NativeDraft(draftIdentity, store).operations).toEqual(operations)
+})

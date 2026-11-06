@@ -306,3 +306,13 @@ gate并刷新UPSTREAM/LOCAL SHA清单；PDF RotateAll只组合现有rotatePage�
 结构流程另以真实SQL修订、字节块和两类授权仓储通过，仍不是生产身份认证
 或完整应用镜像验收。详见report_editor新增的四份格式专属验收和
 `NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`。未开启开关、合并或部署。
+
+
+2026-11-06 PPTX 单页保真补缺：新增 native bridge 薄适配层，复用 pinned
+效果生成器、XML 工具和 dirty hook，只替换视觉效果，保留转场属性、
+sound/ext、音频及关系字节。vendor 未改。普通来源及固定 Morph MC 支持；
+未建模 MC/效果/重复容器显式只读，UI/草稿/强制后端请求共同执行。
+批量 ApplyAll gate 不放宽。29 个不同新文件用例、20 个已有批量用例、
+浏览器下载独立读取，以及 Node22 只读断网包三个定向用例通过；两份生产
+构建和预算通过。详见 `report_editor/NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`。
+原 upstream setter 的历史丢失探针仍有效；未声称桌面/播放/完整镜像通过。

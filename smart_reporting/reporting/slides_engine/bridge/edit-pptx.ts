@@ -1,3 +1,4 @@
+import { patchTransitionPreservingMetadata, transitionEditAvailability } from './pptx-transition.ts'
 import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -142,6 +143,7 @@ if (request.action === 'inspect') {
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
       ...transitionApplyAllState(slide),
+      ...transitionEditAvailability(slide.bodySuffix),
       animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset }) => ({
         spid,
         elementId: slide.elements.find((element) => elementSpid(element) === spid)?.id ?? '',
@@ -328,7 +330,13 @@ if (request.action === 'inspect') {
     if (!Number.isInteger(transition.slideIndex) || transition.slideIndex < 0 || transition.slideIndex >= opened.deck.slides.length) {
       throw new Error('transition_slide_index_invalid')
     }
-    setSlideTransition(opened.deck.slides[transition.slideIndex]!, transition.kind)
+    const slide = opened.deck.slides[transition.slideIndex]!
+    const preserved = patchTransitionPreservingMetadata(slide.bodySuffix, transition.kind)
+    if (preserved !== slide.bodySuffix) {
+      // Keep the pinned operation's dirty/save hook, then install preserved source XML.
+      setSlideTransition(slide, transition.kind)
+      slide.bodySuffix = preserved
+    }
   }
   for (const animation of request.animations ?? []) {
     const durationMs = animation.durationMs ?? 500

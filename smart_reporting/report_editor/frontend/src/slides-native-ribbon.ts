@@ -22,6 +22,7 @@ export interface NativeSlidesRibbon {
   setTextFormatEnabled(enabled: boolean): void
   setListTargets(state: { bullets: boolean; numbers: boolean; hanging: boolean }): void
   setSlideOrientationEnabled(enabled: boolean): void
+  setTransitionEditEnabled(enabled: boolean, reason?: string): void
   setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
   setLocked(locked: boolean): void
   dispose(): void
@@ -236,6 +237,14 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let hasWritableSlideSize = false
   const clipboardLocale = genOfficeHomeClipboardLocale(document.documentElement.lang)
 
+  let transitionEditReady = false
+  let transitionEditReason: string | undefined
+  const updateTransitionEdit = () => {
+    for (const control of controls.get('transition') ?? []) {
+      ;(control as HTMLSelectElement).disabled = locked || !transitionEditReady
+      control.title = transitionEditReady ? '更改视觉转场效果；保留原速度、换片、声音及扩展设置' : transitionEditReason ?? '请先打开已核验的演示文稿'
+    }
+  }
   let transitionApplyAllReady = false
   let transitionApplyAllReason: string | undefined
   const updateTransitionApplyAll = () => {
@@ -388,6 +397,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   updateTextFormattingState()
   updateSlideOrientationState()
   updateTransitionApplyAll()
+  updateTransitionEdit()
 
   return {
     setContext(context) {
@@ -409,6 +419,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       hasTextTarget = enabled
       updateTextFormattingState()
     },
+    setTransitionEditEnabled(enabled, reason) { transitionEditReady = enabled; transitionEditReason = reason; updateTransitionEdit() },
     setTransitionApplyAllEnabled(enabled, reason) { transitionApplyAllReady = enabled; transitionApplyAllReason = reason; updateTransitionApplyAll() },
     setSlideOrientationEnabled(enabled) {
       hasWritableSlideSize = enabled
@@ -475,6 +486,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateTextFormattingState()
       updateSlideOrientationState()
       updateTransitionApplyAll()
+      updateTransitionEdit()
     },
     dispose() { root.remove() },
   }
