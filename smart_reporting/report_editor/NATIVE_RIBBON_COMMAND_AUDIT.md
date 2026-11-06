@@ -164,3 +164,19 @@ remain disabled. This is not a claim of whole-table selection, continuous
 structure transactions, merged/complex tables or all-source parity. All six
 buttons and independent downloaded-file checks pass the browser fixture; see
 `NATIVE_WORD_TABLE_ACCEPTANCE.md` for the original cases and boundaries.
+
+
+## Parallel bounded command closures (2026-11-06)
+
+| Task | Newly connected source family | Availability and preservation boundary |
+| --- | --- | --- |
+| Word | Home superscript/subscript, with baseline clearing | Anchored nonempty whole paragraphs; preserve mixed run/link properties; no caret/cell/new-paragraph claim. |
+| Excel | Six `rotate:*` choices | Exact signed angle/OOXML conversion; source inheritance not modeled by the reader is explicitly rotation-readonly; direct reader defect fixed. |
+| PowerPoint | Transitions Apply to All | Source indices, effect kind and per-page advTm only; speed/advance-click/sound/extensions/variants/AC that cannot be preserved are refused before batch staging. |
+| PDF | Pages rotateAll | Fixed clockwise +90 applied to surviving source page IDs in one draft step; budget and existing preview/lock contracts retained. |
+
+Each family has a dedicated acceptance record in this directory containing the
+pinned original source/blob, exact callback/library path, runtime/browser/file
+checks and remaining limitations. A connected bounded family is not evidence
+that all four source inventories are complete. The known PPTX single-page
+formatter metadata-loss case is retained as an unresolved source-fidelity gap.

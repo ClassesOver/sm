@@ -144,3 +144,19 @@ original paragraph XML and untouched package files. Browser authorization and
 revision routes are substitutes; the actual production-packed transformer is
 used. This is additional browser evidence, not a new PostgreSQL or deployed
 HTTP claim. See `NATIVE_WORD_TABLE_ACCEPTANCE.md`.
+
+
+## Real SQL delivery and parallel command checkpoint
+
+The dedicated four-table test now replaces all native/artifact/download/editor
+repositories with production PostgreSQL implementations and independently reads
+actual byte chunks, grant rotation, sessions and revisions 1–3. Failure retry,
+two identical concurrent HTTP saves, source-anchor renewal and immutable prior
+files passed. This is synthetic in-process ASGI, not deployed provider identity.
+Exact scope: `NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`.
+
+Parallel Word vertical alignment, Excel rotation, PPTX gated ApplyAll and PDF
+rotateAll have separate actual browser/download/readback evidence. These
+commands were not all run against SQL; do not transfer the table SQL result to
+them. PDF's final fixture serves production static output with strict console
+checks; the others' development-server evidence remains separately labeled.

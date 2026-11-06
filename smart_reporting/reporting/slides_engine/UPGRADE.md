@@ -294,3 +294,15 @@ Word 表格前端阶段（2026-11-06）：新增 adapter 复用 `@tiptap/pm/tabl
 vendor 或后端序列化代码。真实浏览器发现并修复光标跨表、快速操作
 历史合组问题；下载 XML/宽度保真及新修订重开通过。仍须保留复杂表格
 拒绝与单表单操作限制，不把本阶段算作完整源功能区或桌面验收。
+
+
+并行补缺阶段（2026-11-06）：Word 上下标新增严格整段操作与显式baseline
+文件继承覆盖，pinned vendor不改；PPTX ApplyAll复用formatter，但inspect新增
+源元数据gate，以拒绝旧formatter不能保留的speed/advClick/sound/变体/AC。
+Excel旋转修复上游reader的direct numeric attribute路径，新增继承来源只读
+gate并刷新UPSTREAM/LOCAL SHA清单；PDF RotateAll只组合现有rotatePage操作。
+四格式均有真实下载与独立读取证据；PDF最终使用生产静态preview避免dev HMR
+环境问题。Word baseline在Node22只读断网包通过3个受影响检查；此前新Word表
+结构流程另以真实SQL修订、字节块和两类授权仓储通过，仍不是生产身份认证
+或完整应用镜像验收。详见report_editor新增的四份格式专属验收和
+`NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`。未开启开关、合并或部署。
