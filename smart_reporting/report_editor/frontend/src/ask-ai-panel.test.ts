@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { askAIPanel, updateAskAISourceStatus } from './ask-ai-panel'
 
-afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ''; document.body.classList.remove('ask-ai-open'); updateAskAISourceStatus('checking') })
+afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = ''; document.body.classList.remove('ask-ai-open'); localStorage.removeItem('report-ask-ai-width'); updateAskAISourceStatus('checking') })
 
 describe('Ask AI shared sidebar', () => {
   it('desktop sidebar supports pointer and keyboard resizing within limits', () => {
@@ -11,17 +11,17 @@ describe('Ask AI shared sidebar', () => {
     const separator = panel.querySelector<HTMLElement>('[role="separator"]')!
 
     expect(separator.getAttribute('aria-label')).toBe('调整 Ask AI 宽度')
-    expect(separator.getAttribute('aria-valuenow')).toBe('640')
+    expect(separator.getAttribute('aria-valuenow')).toBe('560')
     separator.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 600 }))
     window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 500 }))
-    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('740px')
-    expect(separator.getAttribute('aria-valuenow')).toBe('740')
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('660px')
+    expect(separator.getAttribute('aria-valuenow')).toBe('660')
     window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
 
     separator.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowLeft' }))
-    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('756px')
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('676px')
     for (let index = 0; index < 25; index++) separator.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
-    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('400px')
+    expect(panel.style.getPropertyValue('--ask-ai-panel-width')).toBe('360px')
     session.remove()
   })
 
@@ -223,4 +223,28 @@ describe('Ask AI shared sidebar', () => {
     expect(document.querySelector('.ask-ai-notification')).toBeNull()
     chart.remove()
   })
+})
+
+it('remembers width and restores independent session scroll positions after collapse', () => {
+  localStorage.setItem('report-ask-ai-width', '720')
+  const first = askAIPanel().createSession({ kind: 'document', label: '正文', content: '<div></div>' })
+  const second = askAIPanel().createSession({ kind: 'slides', label: '幻灯片', content: '<div></div>' })
+  const content = document.querySelector<HTMLElement>('.ask-ai-content')!
+  expect(document.querySelector('.ask-ai-panel')?.getAttribute('style')).toContain('720px')
+  first.open(); content.scrollTop = 140; first.close(); first.open(); expect(content.scrollTop).toBe(140)
+  second.open(); content.scrollTop = 80; first.open(); expect(content.scrollTop).toBe(140)
+  second.open(); expect(content.scrollTop).toBe(80)
+  first.remove(); second.remove()
+})
+it('locates a result relative to the scroll container rather than its offset parent', () => {
+  const session = askAIPanel().createSession({ kind: 'document', label: '正文', content: '<div class="ai-task-preview"></div>' })
+  session.open()
+  const content = document.querySelector<HTMLElement>('.ask-ai-content')!
+  const target = session.card.querySelector<HTMLElement>('.ai-task-preview')!
+  content.scrollTop = 90
+  vi.spyOn(content, 'getBoundingClientRect').mockReturnValue({ top: 50 } as DOMRect)
+  vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 150 } as DOMRect)
+  session.viewResult()
+  expect(content.scrollTop).toBe(190)
+  session.remove()
 })

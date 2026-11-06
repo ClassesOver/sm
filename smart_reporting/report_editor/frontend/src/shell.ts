@@ -1,8 +1,14 @@
+import { createMoreActionsController } from './toolbar-menu'
 import type { ToolbarMode } from './viewport'
+import { createToolbar, type ToolbarAction, type ToolbarContext } from './toolbar'
 
 export type EditorFormat = 'document' | 'pptx' | 'xlsx'
 
 export interface EditorShell {
+  registerToolbarAction(action: ToolbarAction): () => void
+  setContextTarget(target: ToolbarContext | null): void
+  getContextTarget(): ToolbarContext | null
+  refreshToolbar(): void
   editor: HTMLElement
   outline: HTMLElement
   outlineToggle: HTMLButtonElement
@@ -120,12 +126,42 @@ export function createEditorShell(
     <button type="button" class="back-to-top" aria-label="回到报告顶部" title="回到顶部" hidden>↑</button>
     <button type="button" class="focus-mode-exit">退出专注</button>
   `
+  const toolbarHost = root.querySelector<HTMLElement>('.report-actions')!
+  const publicActions = [...toolbarHost.children]
+  const toolbar = createToolbar(toolbarHost)
+  toolbarHost.addEventListener('toolbar-error', event => {
+    const error = (event as CustomEvent).detail
+    const label = root.querySelector<HTMLElement>('.save-state-label')
+    if (label) label.textContent = error instanceof Error ? error.message : '操作未完成，请重试。'
+  })
+  toolbar.bars.public.append(...publicActions)
+  const nodes = new Map([...toolbarHost.querySelectorAll<HTMLElement>('[data-action]')].map(node => [node.dataset.action!, node]))
+  const menu = toolbarHost.querySelector<HTMLElement>('.secondary-actions')!
+  menu.dataset.toolbarOverflow = 'true'
+  menu.setAttribute('aria-label', '更多报告操作')
+  menu.replaceChildren(...['history', 'share', 'focus', 'export-settings', 'shortcuts'].map(id => nodes.get(id)!).filter(Boolean))
+  root.append(menu)
+  for (const id of ['save', 'outline', 'pdf', 'word', 'pptx-download', 'xlsx-download']) {
+    const node = nodes.get(id)
+    if (node) toolbar.bars.public.append(node)
+  }
+  for (const id of ['search', 'sources', 'more']) {
+    const node = nodes.get(id)
+    if (node) toolbar.bars.format.append(node)
+  }
+  const more = toolbarHost.querySelector<HTMLButtonElement>('[data-action="more"]')!
+  more.hidden = isBinary
+  createMoreActionsController(root, more)
   const required = <T extends Element>(selector: string): T => {
     const element = root.querySelector<T>(selector)
     if (!element) throw new Error(`missing editor shell element: ${selector}`)
     return element
   }
   return {
+    registerToolbarAction: toolbar.registerToolbarAction,
+    setContextTarget: toolbar.setContextTarget,
+    getContextTarget: toolbar.getContextTarget,
+    refreshToolbar: toolbar.refreshToolbar,
     editor: required<HTMLElement>('#report-editor'),
     outline: required<HTMLElement>('.report-outline'),
     outlineToggle: required<HTMLButtonElement>('[data-action="outline"]'),

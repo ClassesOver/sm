@@ -152,6 +152,8 @@ describe('chartEditIdFromSrc', () => {
 function fakeClient(overrides: Partial<Record<string, unknown>> = {}) {
   const calls: Record<string, unknown[]> = {}
   const client = {
+    acceptAssetTask: vi.fn(async () => {}),
+    rejectAssetTask: vi.fn(async () => {}),
     charts: vi.fn(async () => ({ available: true, charts: [chart] })),
     chartAiAvailability: vi.fn(async () => ({ available: true, chartId: 'chart_001' })),
     startChartAiEdit: vi.fn(async () => ({ editId: 'cedit-abc12345', status: 'queued' })),
@@ -211,6 +213,7 @@ describe('createChartAIEdit', () => {
     await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
     expect(document.querySelector('[data-action="accept"]')?.textContent).toBe('采用到正文')
     document.querySelector<HTMLButtonElement>('[data-action="accept"]')!.click()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(document.querySelector<HTMLElement>('.ask-ai-panel')!.hidden).toBe(false)
     const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')!
     expect(receipt).not.toBeNull()
@@ -397,6 +400,7 @@ describe('createChartAIEdit', () => {
     })))
     await vi.waitFor(() => expect(document.querySelector('[data-action="accept"]')).not.toBeNull())
     ;(document.querySelector('[data-action="accept"]') as HTMLButtonElement).click()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(view.dispatch).toHaveBeenCalledTimes(1)
     expect(onReplaced).toHaveBeenCalledWith('cedit-abc12345')
     const receipt = document.querySelector<HTMLElement>('.ask-ai-receipt')
@@ -589,6 +593,7 @@ describe('createChartAIEdit', () => {
       document.querySelector<HTMLButtonElement>('.ask-ai-launcher')!.click()
     }
     document.querySelector<HTMLButtonElement>('[data-action="accept"]')!.click()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(view.dispatch).toHaveBeenCalledTimes(phase === '通知恢复有重复资源' ? 0 : 1)
     controller.dispose()
   })

@@ -1,7 +1,9 @@
+import type { EditorShell } from './shell'
 import { createElement, Sparkles } from 'lucide'
 import { findEvidenceTableId } from './evidence-location'
 
 interface AssetAIActionsOptions {
+  shell?: Pick<EditorShell, 'registerToolbarAction' | 'setContextTarget' | 'refreshToolbar'>
   onChartEdit?: (image: HTMLImageElement) => void
   onTableEdit?: (tableId: string) => void
 }
@@ -28,7 +30,7 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
   let target: HTMLElement | null = null
   let action: (() => void) | null = null
 
-  const hide = () => { toolbar.hidden = true; outline.hidden = true; target = null; action = null }
+  const hide = () => { options.shell?.setContextTarget(null); toolbar.hidden = true; outline.hidden = true; target = null; action = null }
   const position = () => {
     if (!target || !editor.contains(target)) return hide()
     const rect = target.getBoundingClientRect()
@@ -60,7 +62,8 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
     } else return hide()
     button.title = `${label.textContent}：从推荐一键调整或描述修改，预览后再替换`
     target = asset
-    toolbar.hidden = false
+    options.shell?.setContextTarget({ kind: asset instanceof HTMLImageElement ? 'chart' : 'table', label: label.textContent ?? '' })
+    toolbar.hidden = Boolean(options.shell)
     outline.hidden = false
     position()
   }
@@ -76,9 +79,13 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
     if (element && editor.contains(element)) showTarget(element)
   }
   const dismiss = (event: Event) => {
+    if (event.target instanceof Element && event.target.closest('.editor-toolbar-context')) return
     if (event.target instanceof Node && !toolbar.contains(event.target) && !editor.contains(event.target)) hide()
   }
   const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') hide() }
+  const unregister = options.shell?.registerToolbarAction({ id: 'document-asset-ai', bar: 'context', label: 'AI 改图 / 改表',
+    visible: () => Boolean(target && editor.contains(target)), run: () => { action?.() },
+  })
   button.addEventListener('click', () => {
     const run = target && editor.contains(target) ? action : null
     hide()
@@ -95,6 +102,7 @@ export function createAssetAIActions(editor: HTMLElement, options: AssetAIAction
   window.addEventListener('resize', position)
   return {
     dispose() {
+      unregister?.()
       editor.removeEventListener('pointerover', showFor)
       editor.removeEventListener('click', showFor)
       editor.removeEventListener('focusin', showFor)

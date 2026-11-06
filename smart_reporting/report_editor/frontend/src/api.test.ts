@@ -22,27 +22,26 @@ describe('ReportEditorClient', () => {
   it('preserves an explicit false inheritance option and scope identity in standard edit JSON', async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({ markdown: '# 报告', sha256: 'a'.repeat(64), csrfToken: 'csrf' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ editId: 'cedit-new12345', status: 'running' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ taskId: 'task-1', nativeId: 'cedit-new12345', state: 'running' })))
     const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
     await client.load()
     const payload = { standard: { standardForm: 'pie' }, inheritPreviousStandard: false,
       previousEditId: 'cedit-old12345', baseImagePath: 'reports/revision-1/chart-edits/cedit-old12345/chart--page-2.png',
       expectedSha256: 'b'.repeat(64) }
     await client.startChartStandardEdit('chart_001', payload)
-    expect(fetcher.mock.calls[1]![0]).toBe('/reports/v1/editor/report-1/1/api/charts/chart_001/standard-edits')
+    expect(fetcher.mock.calls[1]![0]).toBe('/reports/v1/editor/report-1/1/api/ai/tasks')
     const init = fetcher.mock.calls[1]![1]!
-    expect(JSON.parse(init.body as string)).toEqual(payload)
+    expect(JSON.parse(init.body as string)).toMatchObject({ kind: 'chart-edit', target: { chartId: 'chart_001', mode: 'standard' }, snapshot: payload })
     expect(init).toMatchObject({ method: 'POST', credentials: 'same-origin', headers: { 'X-CSRF-Token': 'csrf' } })
   })
 
-  it('waits for chart status with a bounded server wait instead of a client sleep', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () =>
-      new Response(JSON.stringify({ editId: 'cedit-12345678', status: 'running' })))
+  it('polls unified task status without substituting the native resource identity', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(JSON.stringify({ taskId: 'task-1', nativeId: 'cedit-12345678' })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ taskId: 'task-1', state: 'ready', native: { editId: 'cedit-12345678', imagePath: 'chart.png' } })))
     const client = new ReportEditorClient('/reports/v1/editor/report-1/1', fetcher)
-    await client.chartAiEditStatus('chart_001', 'cedit-12345678', 1500)
-    expect(fetcher.mock.calls[0][0]).toBe('/reports/v1/editor/report-1/1/api/charts/chart_001/ai-edits/cedit-12345678?waitMs=1500')
-    await client.chartAiEditStatus('chart_001', 'cedit-12345678')
-    expect(fetcher.mock.calls[1][0]).toBe('/reports/v1/editor/report-1/1/api/charts/chart_001/ai-edits/cedit-12345678')
+    await client.startChartAiEdit('chart_001', { instruction: '调整颜色' })
+    expect(await client.chartAiEditStatus('chart_001', 'cedit-12345678')).toMatchObject({ editId: 'cedit-12345678', status: 'succeeded', imagePath: 'chart.png' })
+    expect(fetcher.mock.calls[1][0]).toBe('/reports/v1/editor/report-1/1/api/ai/tasks/task-1')
   })
 
   it('issues an edit share link with the current session and CSRF token', async () => {

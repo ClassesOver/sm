@@ -75,6 +75,23 @@ def create_report_slides_editor_router(
         status = 403 if "permission_denied" in error.code else 409
         return reporting_http_error(error, status_code=status)
 
+    from .ai_tasks import AITaskService, register_ai_task_routes
+
+    async def task_authorize(request: Request, report_id: str, revision: int, write: bool):
+        if write:
+            require_csrf(request)
+        return await require_context(request, report_id, revision)
+
+    async def task_deck(session, snapshot):
+        images = await require_image_service().resolve_for_session(session, snapshot['imageEdits']) if snapshot.get('imageEdits') else []
+        charts = await require_chart_service().resolve_for_session(session, snapshot['chartEdits']) if snapshot.get('chartEdits') else []
+        return await slides.draft_deck_for_session(session, snapshot, images=images, chart_replacements=charts)
+
+    register_ai_task_routes(
+        router, prefix='/reports/v1/slides/{report_id}/{revision}', authorize=task_authorize,
+        service=AITaskService(**{'slides-edit': slides_ai, 'chart-edit': slides_charts, 'slides_snapshot': task_deck}),
+    )
+
     @router.get("/reports/v1/slides/open/{raw_grant}", include_in_schema=False)
     async def open_slides_editor(raw_grant: str) -> RedirectResponse:
         try:

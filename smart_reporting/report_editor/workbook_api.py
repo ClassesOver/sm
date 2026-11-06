@@ -59,6 +59,19 @@ def create_report_workbook_editor_router(
             raise HTTPException(status_code=422, detail={"code": "report_workbook_payload_invalid"})
         return payload
 
+    from .ai_tasks import AITaskService, register_ai_task_routes
+
+    async def task_authorize(request: Request, report_id: str, revision: int, write: bool):
+        if write:
+            require_csrf(request)
+        session = await require_session(request, report_id, revision)
+        return session, await workbooks.context_for_session(session)
+
+    register_ai_task_routes(
+        router, prefix='/reports/v1/workbooks/{report_id}/{revision}', authorize=task_authorize,
+        service=AITaskService(**{'workbook-edit': workbook_ai, 'workbooks': workbooks}),
+    )
+
     @router.get("/reports/v1/workbooks/open/{raw_grant}", include_in_schema=False)
     async def open_workbook(raw_grant: str):
         try:

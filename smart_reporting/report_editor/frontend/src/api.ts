@@ -1,3 +1,4 @@
+import { AssetTaskAdapter } from './asset-task-adapter'
 import type { DesignDocument, DesignPreview, DesignTemplate, ReportDesign } from './design-types'
 
 /** 与 PDF/Word、静态图共用的服务端主题令牌。 */
@@ -750,6 +751,14 @@ export class ReportEditorClient {
     return this.request('/api/computations', { signal })
   }
 
+  private assetTasks = new AssetTaskAdapter((path, init) => this.aiTaskRequest(path, init))
+  acceptAssetTask(editId: string) { return this.assetTasks.transition(editId, 'accept') }
+  rejectAssetTask(editId: string) { return this.assetTasks.transition(editId, 'reject') }
+
+  aiTaskRequest<T>(path: string, init?: RequestInit): Promise<T> {
+    return this.request(`/api/${path}`, init)
+  }
+
   async chartAiAvailability(chartId: string, signal?: AbortSignal): Promise<ChartAIAvailability> {
     return this.request<ChartAIAvailability>(
       `/api/charts/${encodeURIComponent(chartId)}/ai-edits/availability`,
@@ -762,7 +771,7 @@ export class ReportEditorClient {
   }
 
   async startChartTemplateEdit(chartId: string, payload: { templateId: string; instruction?: string; baseImagePath?: string; baseTitle?: string; baseAltText?: string; previousEditId?: string; expectedSha256?: string }): Promise<{ editId: string; status: string }> {
-    return this.request(`/api/charts/${encodeURIComponent(chartId)}/template-edits`, { method: 'POST', body: JSON.stringify(payload) })
+    return this.assetTasks.start('chart-edit', chartId, { ...payload }, 'template')
   }
 
   async tableAiAvailability(tableId: string, signal?: AbortSignal): Promise<{ available: boolean; reason?: string; tableId?: string }> {
@@ -774,19 +783,19 @@ export class ReportEditorClient {
   }
 
   async startTableAiEdit(tableId: string, payload: TableAIEditRequest): Promise<{ editId: string; status: string }> {
-    return this.request(`/api/tables/${encodeURIComponent(tableId)}/ai-edits`, { method: 'POST', body: JSON.stringify(payload) })
+    return this.assetTasks.start('table-edit', tableId, { ...payload })
   }
 
   async startTableTemplateEdit(tableId: string, payload: TableTemplateApplyRequest): Promise<{ editId: string; status: string }> {
-    return this.request(`/api/tables/${encodeURIComponent(tableId)}/template-edits`, { method: 'POST', body: JSON.stringify(payload) })
+    return this.assetTasks.start('table-edit', tableId, { ...payload }, 'template')
   }
 
   async tableAiEditStatus(tableId: string, editId: string): Promise<TableAIEditState> {
-    return this.request(`/api/tables/${encodeURIComponent(tableId)}/ai-edits/${encodeURIComponent(editId)}`)
+    return this.assetTasks.status<TableAIEditState>(editId, tableId)
   }
 
   async cancelTableAiEdit(tableId: string, editId: string): Promise<void> {
-    await this.request(`/api/tables/${encodeURIComponent(tableId)}/ai-edits/${encodeURIComponent(editId)}/cancel`, { method: 'POST' })
+    await this.assetTasks.transition(editId, 'cancel', tableId)
   }
 
   tableEditRecord(editId: string): Promise<{ editId: string; tableId: string; newTableId: string; markdown: string }> {
@@ -801,22 +810,15 @@ export class ReportEditorClient {
     chartId: string,
     payload: ChartAIEditRequest,
   ): Promise<{ editId: string; status: string; requestId?: string }> {
-    return this.request(`/api/charts/${encodeURIComponent(chartId)}/ai-edits`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    })
+    return this.assetTasks.start('chart-edit', chartId, { ...payload })
   }
 
   startChartStandardEdit(chartId: string, payload: ChartStandardEditRequest): Promise<{ editId: string; status: string }> {
-    return this.request(`/api/charts/${encodeURIComponent(chartId)}/standard-edits`, {
-      method: 'POST', body: JSON.stringify(payload),
-    })
+    return this.assetTasks.start('chart-edit', chartId, { ...payload }, 'standard')
   }
 
   chartAiEditStatus(chartId: string, editId: string, waitMs = 0): Promise<ChartAIEditState> {
-    return this.request<ChartAIEditState>(
-      `/api/charts/${encodeURIComponent(chartId)}/ai-edits/${encodeURIComponent(editId)}${waitMs ? `?waitMs=${waitMs}` : ''}`,
-    )
+    return this.assetTasks.status<ChartAIEditState>(editId, chartId, waitMs)
   }
 
   /** 已登记改图的图表归属：正文图片已替换为改图结果时据此继续改图。 */
@@ -825,10 +827,7 @@ export class ReportEditorClient {
   }
 
   async cancelChartAiEdit(chartId: string, editId: string): Promise<void> {
-    await this.request(
-      `/api/charts/${encodeURIComponent(chartId)}/ai-edits/${encodeURIComponent(editId)}/cancel`,
-      { method: 'POST' },
-    )
+    await this.assetTasks.transition(editId, 'cancel', chartId)
   }
 
   async computationDetail(

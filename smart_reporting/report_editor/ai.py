@@ -42,12 +42,15 @@ class ReportEditorAIService:
         *,
         selection: str,
         action: str,
+        instruction: str | None = None,
     ) -> AsyncIterator[str]:
         normalized = selection.strip()
         if not normalized:
             raise ReportingError("report_editor_ai_selection_required", "请先选择需要改写的正文。")
-        instruction = _ACTION_INSTRUCTIONS.get(action)
-        if instruction is None:
+        instruction = instruction.strip() if instruction is not None else _ACTION_INSTRUCTIONS.get(action)
+        if instruction is not None and len(instruction) > 2000:
+            raise ReportingError('report_editor_ai_instruction_invalid', '修改要求过长。')
+        if not instruction:
             raise ReportingError("report_editor_ai_action_invalid", "报告 AI 改写动作无效。")
         if len(normalized) > MAX_AI_SELECTION_CHARS:
             raise ReportingError(

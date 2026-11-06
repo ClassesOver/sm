@@ -1,5 +1,5 @@
 import { CrepeBuilder } from '@milkdown/crepe/builder'
-import { ai } from '@milkdown/crepe/feature/ai'
+import { ai, defaultAIIcon } from '@milkdown/crepe/feature/ai'
 import type { AIFeatureConfig } from '@milkdown/crepe/feature/ai'
 import { blockEdit } from '@milkdown/crepe/feature/block-edit'
 import { cursor } from '@milkdown/crepe/feature/cursor'
@@ -16,6 +16,7 @@ export function createReportEditor(
   root: Node,
   defaultValue: string,
   aiConfig: AIFeatureConfig,
+  openSharedAI?: () => void,
 ): CrepeBuilder {
   return new CrepeBuilder({
     root,
@@ -26,7 +27,13 @@ export function createReportEditor(
     .addFeature(linkTooltip, editorChineseLocale.linkTooltip)
     .addFeature(blockEdit, editorChineseLocale.blockEdit)
     .addFeature(placeholder, { text: '开始编辑报告…' })
-    .addFeature(toolbar, editorChineseLocale.toolbar)
+    .addFeature(toolbar, { ...editorChineseLocale.toolbar,
+      ...(openSharedAI ? { buildToolbar: builder => {
+        const group = builder.getGroup('function')
+        group.group.items = group.group.items.filter(item => item.key !== 'ai')
+        group.addItem('ai', { icon: defaultAIIcon, label: 'Ask AI', active: () => false, onRun: openSharedAI })
+      } } : {}),
+    })
     .addFeature(topBar, editorChineseLocale.topBar)
     .addFeature(table)
     .addFeature(ai, aiConfig)

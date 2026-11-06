@@ -219,15 +219,7 @@ class ReportSlidesEditorService:
         pptx = await self._read_verified_pptx(context)
         return await run_office_engine(self._render_pdf, pptx)
 
-    async def save_revision(
-        self,
-        session: ReportEditorSession,
-        payload: Any,
-        *,
-        images: list[dict[str, Any]] | None = None,
-        chart_replacements: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        context = await self.context_for_session(session)
+    async def _draft_bytes(self, context: ReportEditorContext, payload: Any, *, images=None, chart_replacements=None) -> dict[str, Any]:
         if not isinstance(payload, dict) or payload.get("expectedSha256") != context.pptx_sha256:
             raise ReportingError("report_slides_conflict", "PPTX 已发生变化，请重新载入。")
         edits = payload.get("edits", [])
@@ -331,6 +323,36 @@ class ReportSlidesEditorService:
             from .slides_chart_ai import replace_pptx_pictures
 
             revised = await run_office_engine(replace_pptx_pictures, revised, chart_replacements)
+        return {**engine_result, "bytes": revised}
+
+    async def draft_deck_for_session(self, session: ReportEditorSession, payload: dict[str, Any], *, images=None, chart_replacements=None) -> dict[str, Any]:
+        context = await self.context_for_session(session)
+        original = await self.deck_for_session(session)
+        order = payload.get("order", list(range(len(original["slides"]))))
+        if not isinstance(order, list) or any(type(index) is not int for index in order) or sorted(order) != list(range(len(original["slides"]))):
+            raise ReportingError("report_slides_edit_invalid", "幻灯片顺序无效。")
+        # Apply in original slide order so native slide/object identifiers stay stable.
+        result = await self._draft_bytes(context, {**payload, "order": None}, images=images, chart_replacements=chart_replacements)
+        deck = await run_office_engine(self._run_engine, result["bytes"], "inspect")
+        original_ids = {(slide["slideIndex"], element["id"]) for slide in original["slides"] for element in slide["elements"]}
+        for slide in deck["slides"]:
+            for element in slide["elements"]:
+                if (slide["slideIndex"], element["id"]) not in original_ids:
+                    element["editable"] = False
+        deck["slides"] = [deck["slides"][index] for index in order]
+        return {**deck, "sha256": context.pptx_sha256}
+
+    async def save_revision(
+        self,
+        session: ReportEditorSession,
+        payload: Any,
+        *,
+        images: list[dict[str, Any]] | None = None,
+        chart_replacements: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        context = await self.context_for_session(session)
+        engine_result = await self._draft_bytes(context, payload, images=images, chart_replacements=chart_replacements)
+        revised = engine_result["bytes"]
         # 从旧修订或多个标签页保存时，不能复用“当前修订 + 1”的固定文件名。
         next_revision, revision_issues = await next_manual_revision(self.state_repository, context)
         revision_path = revision_file_path(context.pptx_path or "report.pptx", next_revision, suffix=".pptx")
