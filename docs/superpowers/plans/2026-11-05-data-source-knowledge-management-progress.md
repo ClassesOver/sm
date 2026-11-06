@@ -1,14 +1,14 @@
 # 数据源与知识库管理实施进度
 
-对应计划：[实施计划](2026-11-05-data-source-knowledge-management.md)。2026-11-06 更新：计划修订后继续在功能 worktree 实施，已提交配置发布、原子导入和持久化运行快照基础。以下区分已有实施、定点验证与仍需完成的验收。
+对应计划：[实施计划](2026-11-05-data-source-knowledge-management.md)。2026-11-06 更新：已提交配置发布、原子导入和持久化运行快照基础；Task 4 报告接入已有未提交实现和定点结果，但审查仍有两项 Important。本次只更新计划/进度，读取现存 JUnit、源码及审查结论，没有重跑应用测试；以下区分已提交、未提交、局部证据和未完成验收。
 
 ## 工作区与版本基线
 
 - 主工作区：`/home/junge/pros/smart_reporting`；已有 Office 编辑器修改，本次未修改这些应用文件。主工作区尚无管理应用模块。
-- 功能 worktree：`/home/junge/.codex/worktrees/dc7b/smart_reporting`，分支 `feat/data-source-knowledge-management`，起点 `4b543a53`，本批应用提交 `ef08213b`（前序 HEAD `f3dc0cff`）。
+- 功能 worktree：`/home/junge/.codex/worktrees/dc7b/smart_reporting`，分支 `feat/data-source-knowledge-management`，起点 `4b543a53`；最新应用提交 `ef08213b`，本次文档更新前 HEAD `0aac2a93`（文档提交）。
 - 两个工作区仅同步本计划和进度文档；管理应用代码仍在功能 worktree，不表示已合并。
 - 已有提交：`1ae7200d` admin/迁移；`408a4b0d` 组织/数据源/Profile；`f3dc0cff` Catalog/导入初版。
-- 下表中的配置存储与运行快照续做代码已提交为 `ef08213b`；报告接入尚未完成。功能 worktree 有独立 `.venv`；已有验证使用专用 PostgreSQL 18 测试容器 `reporting-management-test-db`，端口 `55439`，库与用户均为 `management_test`。本次未检查容器状态，凭据不写入文档。
+- 配置存储与运行快照基础已提交 `ef08213b`；14 个报告接入应用/测试文件尚未提交，不能称 Task 4 完成。功能 worktree 有独立 `.venv`；已有验证使用专用 PostgreSQL 18 测试容器 `reporting-management-test-db`，端口 `55439`，库与用户均为 `management_test`。本次文档更新未检查容器状态，凭据不写入文档。
 
 ## 任务状态
 
@@ -17,7 +17,7 @@
 | 1 admin | 核心后端已提交；统一业务路由认证已补充 | 完整应用启动、实际路由矩阵、浏览器和部署验收 |
 | 2 数据源 | 草稿/发布/凭据已提交；依赖检查、发布重试幂等已提交 | 规范化哈希已修复；连接测试、列表/详情、启停/默认源、差异/历史复制闭环 |
 | 3 目录/Profile/导入 | 完整 metadata 快照、服务端同步、原子导入、CLI、固定 Profile 祖先闭包已提交 | 既有执行参数丢失已修复并复核；仍需旧配置导入差异提示、真实 StarRocks/metadata 验收 |
-| 4 运行配置 | 数据库快照、可信身份登记方法、freeze/load_pinned、跨实例/并发测试已提交 | 方法尚未接入可信 HTTP/MCP/CLI 入口、bootstrap、confirm_source 或后续取数；不可称 database 模式可用 |
+| 4 运行配置 | provider/迁移已提交；入口上下文、bootstrap、确认数据源及后续物化已有未提交实现；5 项 PG /261 项定点回归通过 | 先修会话状态越界和实时目录覆盖两项 Important；类型检查及应用装配尚未收口；完整 HTTP/MCP 恢复和真实 StarRocks 未验收 |
 | 5 管理前端 | 未开始 | 独立 React 入口、页面操作及真实后端闭环 |
 | 6 文档存储 | 未开始 | 原文文件、版本、受控访问、任务登记 |
 | 7 Agno 索引/worker | 未开始 | 锁定版本核对、manifest 读回、租约/attempt/generation 恢复 |
@@ -76,11 +76,33 @@ JUnit 目录：`/tmp/smart-reporting-management-acceptance/2026-11-06-storage-fo
 - 扩大 Ruff 扫描到未修改文件时，`data_sources/secrets.py` 和 `test_management_scopes.py` 有 4 项既有 import-order 问题，本次未顺带改动，不能称全管理目录 Ruff 全绿。
 - 新证据：`/tmp/smart-reporting-management-acceptance/2026-11-06-config-fidelity/{management.xml,manifest.json}`。manifest 记录提交、源文件/JUnit hash、检查范围和 A1–O1 的 not_run；21 项结果不等于端到端验收。
 
+## 报告接入：未提交实现与现存证据
+
+- 新增 `reporting/workflow/identity.py`，使用任务隔离的 ContextVar；HTTP 只在 capability 验签后绑定，MCP 只读已验证 token claims，CLI 在 database 模式要求显式组织。JSON 的 `verified=true`、请求组织字符串和 admin Cookie 不能自行生成可信报告身份。
+- 新增 `AGENT_REPORT_CONFIGURATION_MODE=file|database`，默认 file；database 分支不加载文件 registry/Profile，缺密钥明确失败。运行登记、恢复检查、confirm_source、画像/SQL 与数据物化已有接入，配置公开状态不含明文凭据。
+- 后续物化测试使用真实 PostgreSQL、ReportingWorkspaceRegistry/Router 和宿主文件；重建 provider、发布新 DSN 后，旧运行仍使用原连接，并读回实际 CSV `amount\n100\n`。StarRocks 网络 I/O 被受控替换，不代表真实数仓通过。
+- 现存 `runtime.xml`：**5 passed，0 failed/error/skipped**；`regressions.xml`：**261 passed，0 failed/error/skipped**。本次直接解析 JUnit 核对计数；没有重跑这些测试，也没有把重复覆盖相加为独立验收数。回归包含身份上下文/流式生命周期、CLI、设置、bootstrap、工作流生命周期和宿主取数等路径。
+- 证据目录：`/tmp/smart-reporting-management-acceptance/2026-11-06-report-configuration/`。`runtime.xml` SHA-256 为 `6e93cc99fed906bd7949e4a17e3c46500600ce9bd5871c04fb7356fd1c2d1919`，`regressions.xml` 为 `eb5c08743bee19107bd05fe7e3224fda65bcb364f32052ff2d383a16f5f3f737`。运行接入的完整验收 manifest 尚待两项修复及新证据收口。
+- 上次定点 mypy 在 `reporting/bootstrap.py:156` 报 `AsyncBaseDb` 无 `db_engine` 属性，不能声称静态检查全绿。应用导入探针因未配置公开下载基址失败；补齐 `AGENT_REPORT_PUBLIC_BASE_URL` 后待重跑。该失败未证明 provider 装配错误，也未证明应用可启动。
+- database 模式的全局 diagnostics 目前传入空文件源列表；它没有覆盖管理源真实连通性，不能当完整健康证据。连接测试仍按 Task 2 补齐。
+
+## 报告接入审查：两项 Important 待修复
+
+只读审查者报告未发现 Critical，仍有以下两项 Important。已有 5/261 项结果未覆盖它们，不能以局部绿灯关闭问题。
+
+| 问题 | 原始证据与可复核反例 | 最小修复与验收 |
+| --- | --- | --- |
+| 可编辑 session state 扩大取数范围 | `runtime/base.py::_managed_snapshot` 只核对 references；`_adapter` 从可改的 `report_schema_snapshots` 生成允许表，`_profile` 同样直接读取 state。Agno 原生 PATCH session 路由保存 state，恢复时重新加载。纯函数探针将快照替换为 `warehouse.payroll` 后，adapter 允许表随之变化 | 从持久固定的 metadata/Profile 重建执行依据；请求只能缩小范围。实际 session PATCH→恢复反例分别覆盖未发布表、额外字段、移除组织过滤；数仓不得收到越界 SQL，合法查询仍能执行 |
+| 实时 Catalog 静默覆盖已发布元数据 | `planning.py:1031` 继续调用 `query_pipeline.py::resolve_schema_snapshot`，该路径覆盖类型、可空性和描述。纯函数探针把发布 `amount DECIMAL(18,2) NOT NULL` 改为实时 `VARCHAR(32)`/可空，报告 schema hash 随之变化且没有漂移告警 | database 分支保留发布 metadata/schema hash，实时 Catalog 仅报告差异；不能执行的缺表/列明确返回取数错误。验证类型、可空性、说明漂移，保持 file 分支兼容 |
+
+证据边界：上述发现来自已安装 Agno 源码与无数据库纯函数探针；审查者未实际执行完整 HTTP PATCH→恢复→StarRocks 查询，没有清测试 schema、调用真实模型或修改文件。计划新增 D3、D4 验收行，均未签收。即使取数因越界或结构不兼容失败，已有且身份可核验 PDF/Word 仍按原契约签发下载。
+
 ## 下一执行批次
 
-1. 已完成上述修复、定点验证、只读复核与应用提交。后续补旧配置 dry-run 逐源提示，并以原文件重新导入对账；不改写旧发布 hash。
-2. 复用已有 Task 4.1 基础，完成 4.2–4.4：可信 HTTP/MCP/受控 CLI 上下文 → 运行登记与恢复授权 → confirm_source 冻结 → 后续实际取数。验证不能以请求字符串、admin Cookie 或 default/default 授权，database 不回退 file。
-3. 补齐数据源页面所需 API，完成 Task 5；再推进 6–9 知识库与报告引用，不增加原范围之外的子系统。
-4. Task 10 按 A1–O1 留存真实证据：操作页面、真实取数、知识检索、生成报告、直接下载核验和独立恢复；最后一次完整检查。未执行项明确标为 not_run。
+1. 先为两项 Important 写失败回归，再最小修复，检查画像、SQL 规划、adapter 和物化均使用冻结依据；不得只保护 `_sources` 或禁用原生 session 编辑。运行新反例与受影响定点回归，再只读复核。
+2. 修 bootstrap 的 AsyncEngine 类型访问，定点 mypy；补公开下载基址重跑应用装配探针。完善实际 HTTP/MCP 的启动、暂停和恢复验证后保存 manifest，再提交 Task 4；不把导入探针当真实报告验收，不提前切换 database 部署。
+3. 补旧配置 dry-run 逐源提示，并以原文件重新导入对账；不改写旧发布 hash。补齐数据源页面所需列表/详情、分页版本、启停/默认源 CAS、差异/历史复制和真实草稿连接测试 API，再完成 Task 5。
+4. 顺序推进 Task 6–9 知识库、Agno 索引/可恢复 worker、管理检索与报告引用，不增加原范围之外的子系统。
+5. Task 10 按 A1–O1（含 D3、D4）留存真实证据：操作页面、真实取数、知识检索、生成报告、直接下载核验和独立恢复；最后一次完整检查。未执行项明确标为 not_run。
 
 继续保持：单 admin、StarRocks、现有 Profile、PDF/DOCX/Markdown/UTF-8 TXT、Agno 优先、无负责人、无可编辑查询限额、无首版 SSO/多角色 ACL/OCR/网页抓取/通用 BI。知识异常与报告验收失败不阻断已生成且身份可核验 PDF/Word 的下载签发。

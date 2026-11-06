@@ -10,7 +10,7 @@
 
 **Spec:** 本文件“已确认范围”和“关键设计”是本次实施的需求基线，来自本轮对话。
 
-**Revision:** 2026-11-06，按“深入而不是更大”修订。保留专家方法、原始材料、具体工具、独立验收证据及重写题目；本次按隔离分支当前源码和现存 JUnit 校正基线，把配置规范化哈希、既有执行参数保真两项审查问题纳入 Task 2/3/4 的前置修复。计划描述目标，进度文件记录实施与证据边界；计划修订后续做的配置基础与审查修复已提交为 `ef08213b`；尚未启用 database 报告模式或执行上线验收。
+**Revision:** 2026-11-06，按“深入而不是更大”更新现有计划。配置基础与保真修复已提交 `ef08213b`，上次计划提交为 `0aac2a93`；Task 4 报告接入已有未提交实现，现存 JUnit 为 5 项 PostgreSQL 集成、261 项定点回归，均无失败/跳过。本次文档更新核对源码、JUnit 及只读审查，未重跑应用测试；把会话状态扩大取数范围、实时目录覆盖已发布元数据两项 Important 列为下一批优先修复。局部通过不等于 Task 4 或上线验收完成，部署仍不应切换 database 模式。
 
 ## 先回答“深入而不是更大”
 
@@ -79,7 +79,7 @@
 
 ## 原始证据与设计取舍
 
-初版于 2026-11-06 只读核对下列源码。本次修订读取隔离分支提交、未提交管理模块、只读审查结论及现存 JUnit；未重跑应用测试、执行迁移、调用模型或生成报告。续做阶段已有的测试结果在进度文件单列，不当作本次重跑或端到端签收。README 和旧计划只用于定位，不作为验收证据。
+初版于 2026-11-06 只读核对下列源码。本次修订读取隔离分支提交、未提交报告接入变更、只读审查结论及现存 JUnit；未重跑应用测试、执行迁移、调用模型或生成报告。续做阶段已有的测试结果在进度文件单列，不当作本次重跑或端到端签收。README 和旧计划只用于定位，不作为验收证据。
 
 | 原始素材及定位 | 已核对事实 | 对计划的影响 |
 | --- | --- | --- |
@@ -256,6 +256,8 @@
 | 运行固定同一配置组合 | 读默认源时另一事务发布新 Profile | 一致性事务读取旧组合或新组合，不能拼接混合版本 |
 | 配置身份可重建 | 名称含首尾空格、数据库名大小写不同 | 先按现有 parser 规范化，再用同一内容落库/哈希/恢复；合法配置发布后可 freeze |
 | 导入不改变执行语义 | 非默认 QueryLimits 导入、改值、历史恢复 | 文件解析对象与数据库恢复对象逐字段相等；改值生成新版本，旧运行仍保留旧值 |
+| 会话状态不能授予取数权限 | 保留真实 references，经原生 session PATCH 换入未发布表、额外列或移除 Profile 过滤后恢复 | 从服务端固定版本重建执行依据；越界 SQL 不进入数仓，不能只比较 references 或信任 state 自带 hash |
+| 已发布元数据不被实时目录覆盖 | 发布后实时字段从 DECIMAL/非空变为 VARCHAR/可空，或描述改变 | 保留发布版本的类型、可空性、描述和 schema hash，另列漂移告警；不能执行的结构返回具体取数错误 |
 | 文件可读才登记处理任务 | 文件落盘后 DB 事务失败 | 无可见文档/任务；受控重试清理该次临时对象，不能把孤立文件当发布文档 |
 | 索引完整才 ready | 部分 batch 提交后 worker 退出 | 发布仍指向旧版本；读回不匹配 manifest，不置 ready |
 | 过期 worker 不能激活结果 | 租约过期后新 attempt 已领取 | 提交时 CAS attempt/generation/lease；旧 worker 结果不激活 |
@@ -277,6 +279,7 @@
 | `smart_reporting/reporting/data_source/registry.py` | 复用文件读取和严格解析，不改为动态数据库访问入口 |
 | `smart_reporting/reporting/profile/registry.py` | 抽取并复用内存文档校验/继承解析，不修改 Profile 语义 |
 | `smart_reporting/reporting/bootstrap.py` | 注入配置 provider 和业务知识检索服务 |
+| `smart_reporting/reporting/workflow/identity.py`、`http/identity.py`、`reporting/cli.py` | 封装验签后的 HTTP/MCP 身份和受控 CLI 组织，隔离请求上下文；不增加另一套 token 体系 |
 | `smart_reporting/reporting/workflow/runtime/base.py` | 声明新增依赖，修正 `_source`/`_resolve_profile` 的运行配置读取，保留 file 模式兼容 |
 | `smart_reporting/reporting/workflow/runtime/planning.py` | 按运行冻结配置、目录与口径 |
 | `smart_reporting/reporting/workflow/runtime/datasets.py` | 使用冻结配置构建后续取数依赖 |
@@ -295,16 +298,16 @@
 | 1 admin | 核心后端已提交 `1ae7200d`；统一业务路由认证补充已提交 | 应用启动、实际路由全覆盖、浏览器登录及部署验收 |
 | 2 数据源 | 草稿/发布/凭据已提交；依赖校验与发布幂等补充已提交 | 规范化哈希已修复；连接测试、列表/详情、启停/默认源、差异与历史复制接口 |
 | 3 Profile/目录/导入 | 存储/API 已提交 `f3dc0cff`；完整同步、原子导入、CLI、固定祖先闭包补充已提交 | 既有执行参数保真已修复；补旧配置 dry-run 逐源提示；受控外部响应不算真实 StarRocks 验收 |
-| 4 运行配置 | 持久化 provider、0006/0007 迁移和跨实例/并发测试已提交 | 配置身份/参数恢复已修复；HTTP/MCP/CLI 可信入口、bootstrap、后续取数接入尚未完成 |
+| 4 运行配置 | provider/迁移已提交；可信入口、bootstrap、confirm_source 和后续物化已有未提交接入，5 项 PG /261 项定点回归通过 | 先修两项 Important：可编辑执行状态越界、实时目录覆盖发布元数据；再完成类型检查、应用装配和真实入口恢复验收 |
 | 5–10 | 未实施 | 页面、知识库、索引、报告引用、部署及独立验收 |
 
 **下一执行批次固定为：**
 
-1. 已完成 Task 2 配置哈希、Task 3 执行参数保真和 Task 4 恢复断言，21 项定点集成与只读复核通过，提交 `ef08213b`。补旧配置 dry-run 逐源提示，不重做已存在的同步/导入/provider。
-2. 以已有持久化基础完成 Task 4.2–4.4：可信入口 → 运行登记/恢复授权 → confirm_source → 后续实际取数；database 模式未达到此闭环前不启用。
-3. 补齐 Task 2 页面所需 API，再完成 Task 5 的数据源管理闭环；之后顺序推进知识库和报告集成。
+1. 先在 Task 4 固定两项审查反例，再最小修复：真实引用不允许可编辑 state 扩大表/列/Profile 范围；实时 Catalog 不覆盖发布元数据。定点验证并只读复核，不重建已有 provider。
+2. 收口 Task 4 的 bootstrap 类型错误及应用装配探针，完成可信入口 → 运行登记/恢复授权 → confirm_source → 后续实际取数的真实入口验证；未闭环前不启用 database 部署。现存 5/261 项测试不含上述新反例，不能代替修复验证。
+3. 补旧配置 dry-run 逐源提示和 Task 2 页面所需 API，再完成 Task 5 的数据源管理闭环；之后顺序推进知识库和报告集成。
 
-各 Task 复选框表示完整交付条件，部分后端存在不等于整项完成。已有证据：管理存储 JUnit 为 37 项、HTTP 回归 JUnit 为 43 项，均无失败/跳过；另有 26 项元数据/Profile 回归的交接记录。历史批次未覆盖上述两项问题；新增 21 项定点结果已覆盖修复，但仍未证明页面、真实数仓、知识或上线完成。完整记录见同目录 `2026-11-05-data-source-knowledge-management-progress.md`。
+各 Task 复选框表示完整交付条件，部分后端存在不等于整项完成。已有存储/HTTP/配置保真批次与本批报告接入 5/261 项结果分别记账，不累计为独立验收数；本批没有真实 StarRocks、完整 AgentOS HTTP/MCP 恢复、页面、知识或上线证据。完整记录见同目录 `2026-11-05-data-source-knowledge-management-progress.md`。
 
 ## 实施任务
 
@@ -393,11 +396,11 @@ assert second["changed"] is False
 
 ### Task 4：持久化运行配置、可信组织与恢复
 
-**Files:** 完善已有 `smart_reporting/management/runtime.py`，不另建 `data_sources/provider.py`；修改 `management/repository.py`，新增迁移 `management/migrations/versions/0006_runtime_snapshots.py`；修改 `reporting/bootstrap.py`、`reporting/workflow/runtime/{base,planning,datasets}.py`、`runtime/settings.py`、`http/identity.py`、`reporting_mcp/identity.py`、`reporting/workflow/scope.py`，并核对 `prepare_run/start_run` 的实际落点；新增 `reporting/tests/test_managed_source_runtime.py`，扩展 `tests/test_managed_runtime.py` 和 `tests/test_management_migration.py`。
+**Files:** 完善已有 `smart_reporting/management/runtime.py`，不另建 `data_sources/provider.py`；沿用已提交 `management/repository.py` 和 `management/migrations/versions/0006_runtime_snapshots.py`，不重复迁移；新增 `reporting/workflow/identity.py`；修改 `app.py`、`http/identity.py`、`reporting/{bootstrap,cli}.py`、`reporting/workflow/runtime/{base,planning,datasets}.py`、`reporting/workflow/query_pipeline.py`、`runtime/settings.py`；复核 `reporting/workflow/scope.py` 的范围契约。新增 `reporting/tests/test_managed_source_runtime.py`、`tests/test_verified_reporting_identity.py`、`tests/test_reporting_configuration_bootstrap.py`，扩展 `tests/test_reporting_request_identity.py`、`tests/test_settings.py` 及必要的原生 session 路由恢复测试。
 
-**当前基础与缺口：** 已提交的 provider 已移除内存权威缓存，具有 `register_run/assert_identity/freeze/load_pinned`、当前发布指针选版、目录/Profile/凭据核对和持久化快照；已有跨实例/并发定点测试。它尚未接入报告入口与实际后续取数，配置哈希和执行参数恢复已修复；不能据此启用 database 模式。
+**当前基础与缺口：** provider 的 `register_run/assert_identity/freeze/load_pinned`、快照迁移和配置保真修复已提交。未提交接入已覆盖可信入口上下文、运行登记/恢复、file/database 装配、confirm_source 和实际宿主文件物化；5 项真实 PG /261 项定点回归通过，但数仓 I/O 受控替换。只读审查仍有两项 Important；`bootstrap.py` 还有 AsyncBaseDb 未声明 `db_engine` 的类型错误；应用导入探针因缺少公开下载基址尚未通过。先修复与验证，不能把当前状态标为可部署。
 
-**Interfaces：** 沿用已有 `register_run(run_id, scope, *, user_id, thread_id, entrypoint)`、`assert_identity(run_id, scope, *, user_id, thread_id)`、`freeze(run_id, scope, source_ids=None) -> ManagedRunSnapshot` 和 `load_pinned(scope, references) -> ManagedRunSnapshot`。`ManagedRunSnapshot` 包含服务端 sources、有效 profile、已发布 metadata 和 `references`；`public_state()` 只返回组织、公开展示及 references。file 模式沿用原 registry/Profile 加载路径，不强制为其复制数据库生命周期。
+**Interfaces：** 沿用已有 `register_run(run_id, scope, *, user_id, thread_id, entrypoint)`、`assert_identity(run_id, scope, *, user_id, thread_id)`、`freeze(run_id, scope, source_ids=None) -> ManagedRunSnapshot` 和 `load_pinned(scope, references) -> ManagedRunSnapshot`。`ManagedRunSnapshot` 包含服务端 sources、有效 profile、已发布 metadata 和 `references`；`public_state()` 只返回组织、公开展示及 references。入口使用 `VerifiedReportingIdentity(database, company_id, user_id, thread_id, entrypoint)`、内部 `bind_verified_reporting_identity(identity)` 和 `require_verified_reporting_identity()`；HTTP 包装为 `verified_report_request(...)`，MCP 只读验签后的 token claims。file 模式沿用原 registry/Profile 加载路径，不强制为其复制数据库生命周期。
 
 **持久化契约：** `runtime_snapshots` 唯一键 `(scope_id, run_id)`，保存经验证的入口绑定、版本引用、引用摘要与创建时间。`start_run` 从服务端已核验身份登记运行；配置引用初始为空，仅首次 freeze 可原子写入，之后禁止改写。references 包含 runId、各 sourceId/revision/contentHash、credentialRevision、Profile 版本/继承闭包/哈希及 metadata 版本/哈希；不包含 DSN、密码、会话或 capability token。`load_pinned` 必须先找到该运行的可信记录，再核对传入引用完全一致，不能把可编辑 Workflow state 当作授权或版本选择的权威。
 
@@ -433,13 +436,18 @@ assert second.source_versions == {"operations": 2}
 
 - [ ] 增加部署级 `file/database` 选择并在 bootstrap 注入 provider；database 模式不调用文件加载器，也不因空库、连接失败或缺少发布依赖回退文件。
 - [ ] `confirm_source` 冻结配置成功后将公开引用写入现有持久化状态；数据库模式读取已发布 metadata，不临时调用实时 metadata 替换其业务口径。实时 Catalog 只发现差异，不能扩大允许表范围。
+- [ ] **先固定并修复实时目录覆盖反例：** `planning.py::confirm_source` 的 database 分支不沿用会覆盖字段属性的原 resolver 行为。发布 `amount DECIMAL(18,2) NOT NULL` 后，实时 Catalog 返回 `VARCHAR(32)`、可空且说明变化：报告保留发布字段和 hash，返回具体漂移告警；缺表/列导致无法取数时返回具体取数错误，不静默采用新结构。file 分支兼容原行为。
 - [ ] 检索 `_source`、`_sources`、`_resolve_profile`、`_adapter` 及 `self.registry/self.profiles` 的真实调用点，为运行显式传递配置/上下文；需要异步加载时同步修改调用链。共享 runtime 不保存“当前运行”或覆盖共享 registry；内存缓存最多是优化，清空缓存仍能恢复。
+- [ ] **先固定并修复可编辑状态越界反例：** 不把 `report_schema_snapshots`、`report_effective_profile` 或 state 自带的 hash 当权威。database 模式从持久化 references 对应的 metadata/Profile 重建执行依据；请求选表只能缩小已发布范围，不能增加字段或移除固定的组织过滤。覆盖画像、SQL 规划、adapter 和实际物化，不能只保护 `_sources`；不得用全局关闭 Agno session 编辑掩盖缺口。
 - [ ] 缺少依赖、可信组织或持久化失败均为取数前错误；这不改变报告产物签发软告警契约。存在可读历史成稿时仍按原授权读取，不为查看重跑取数。
 
 #### 4.4 定点验收并提交
 
 - [ ] 覆盖新运行用新版本、旧运行跨实例恢复旧版本、发布竞争只得到完整旧组合或新组合、跨组织拒绝、篡改引用拒绝、多源不兼容 Profile 拒绝、停用、旧凭据失效、数据库失败无文件回退，以及 file 模式兼容。
 - [ ] 在 `confirm_source` 及后续实际物化调用上验证使用冻结连接和目录；只测试 provider 返回对象不算报告接入验收。运行状态、公开 API 和审计均检查没有明文凭据。
+- [ ] 在已安装锁定 Agno 的实际 session 路由测试中执行“合法用户暂停 → PATCH session_state → 恢复”：保留真实 references，分别加入 `warehouse.payroll`、未发布字段及移除 Profile 组织过滤。服务端必须仍使用固定版本；越界查询在数仓 I/O 前被拒绝。恢复后合法的原查询仍可执行，避免用拒绝一切恢复取巧。
+- [ ] 分别验证实时 Catalog 的类型、可空性、说明漂移：发布 metadata/报告 schema hash 不变，漂移原因可读；再验证缺表/缺列的具体失败。保存新红绿证据，现存 5 项 PG 不包含这些反例。
+- [ ] 收口类型与装配：在 bootstrap 用可核验的 AsyncEngine 获取方式解决 `AsyncBaseDb.db_engine` 类型错误，不扩大 ignore；运行 5 个改动模块的定点 mypy 与 bootstrap 测试。应用导入探针显式提供 `AGENT_REPORT_PUBLIC_BASE_URL` 后，断言 provider 存在、registry/profiles 为 None；导入成功只证明装配，不计为 lifespan、真实模型或数仓验收。数据库模式全局 diagnostics 尚无管理源连接视角，不能用空源诊断自证健康。
 - [ ] 执行普通定点回归 `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_report_data_sources.py`；真实存储用 `REPORTING_MANAGEMENT_TEST_DB_URL` 显式执行 `.venv/bin/python -m pytest -q -m integration smart_reporting/tests/test_managed_runtime.py smart_reporting/tests/test_management_migration.py smart_reporting/reporting/tests/test_managed_source_runtime.py`，按文件实际 mark 拆分单元/集成用例，不能漏跑或以 skip 计通过。保存结果后仅提交本任务文件。
 
 **验收：** 两个独立 provider 实例及报告后续取数均保持版本固定；新运行无需重启即可读取新发布配置；伪造范围和公开引用不能选择数据库资源。
@@ -596,6 +604,8 @@ bash scripts/check_agentos.sh
 | A4 | admin 不影响既有报告授权 | 现有有效下载 grant、编辑 session、MCP 身份回归通过；这些凭据访问管理 API 仍不获得权限 | 1、10 |
 | D1 | 发布配置与运行快照一致 | 真实 PostgreSQL 并发发布/取快照的双连接测试；记录旧运行和新运行各自的配置、Profile、目录哈希 | 2–4 |
 | D2 | 迁移后执行参数与计算口径一致 | 独立读取原文件 parser 结果和数据库发布快照，对照完整 QueryLimits/Profile/目录；同一冻结数据计算对账；仅修改执行参数必须改变源版本，旧运行不漂移 | 2–4、10 |
+| D3 | 会话编辑不能扩大取数范围 | 实际 Agno session PATCH 后恢复，保留真实引用并篡改表/字段/Profile；检查数仓调用记录中没有越界 SQL，原合法查询仍可执行 | 4 |
+| D4 | 实时结构漂移不改写发布口径 | 独立读取发布 metadata，对照发生类型/可空性/说明变化后的报告快照与 hash；保留具体告警及缺表/列失败记录 | 3、4 |
 | K1 | 索引完整且可恢复 | chunk manifest 与向量库读回的 ID/哈希/维度集合相等；进程中止、租约恢复后只激活一次正确 generation | 6、7 |
 | K2 | 搜索有来源且状态真实 | 固定资料集、固定问题及期望定位；真实 embedding/pgvector 结果保存；查询故障不能显示“正常未命中” | 7、8 |
 | R1 | 旧报告引用不漂移 | 更新/撤回原文后读取原报告：冻结文本、位置和哈希不变；原文失效有明确说明 | 9 |
