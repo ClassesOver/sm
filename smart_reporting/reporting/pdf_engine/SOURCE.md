@@ -18,7 +18,7 @@ LOCAL-SHA256.json records every current TS/MJS source and test, local package ma
 
 The bridge reads a JSON request file at argv[2], returns one JSON receipt on the last stdout line, and writes errors to stderr with a nonzero status. inspect requests are `{kind:"inspect",input}`; patch requests are `{kind:"patch",input,output,sourceSha256,operations}`. It calls upstream applySaveRequest, takes the returned bytes and writes a new destination using exclusive creation (`wx`); existing output files, source aliases, hard links and symbolic links are not overwritten. It never calls savePdfToPath or its verification-before-write path.
 
-At most 500 operations are accepted. Only highlight, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
+At most 500 operations are accepted. Only highlight, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
 
 Page IDs are `sha256:<source SHA-256>:page:<original zero-based index>`. The source digest is required at patch request level; optional per-operation sourceSha256 must agree if present. IDs are stable within one immutable source; after saving, inspect the new bytes to obtain new IDs. Operations reference original source page IDs. An optional single reorderPages must list every surviving page exactly once, even when deletePage appears later in the list. A page cannot be both deleted and otherwise edited in one request. Multiple rotatePage deltas on one retained page accumulate via upstream order. Empty operation lists return the exact original bytes.
 
@@ -131,3 +131,19 @@ PDF serializer or redaction. Browser display margins are converted with PDF.js.
 See `report_editor/NATIVE_PDF_CROP_ACCEPTANCE.md` for independent pypdf, browser,
 ASGI and Node22 boundaries. Vendor and SOURCE hashes are unchanged. Local SHA
 audit refreshes the bridge and one historical stale existing-test record.
+
+
+## Five-preset paper size (2026-11-06)
+
+Strict setPageSize accepts preset A3/A4/A5/Letter/Legal and calls the unchanged
+upstream setPageSizeBytes after other source-coordinate edits and final order/
+deletions. Only one is accepted; cropPage/replaceText mixtures reject. Inspection
+provides pageSize/pageSizeReason: UserUnit other than1, signatures/unsupported
+fields/XFA, outline/destination/name catalogs, auxiliary print boxes, non-quarter
+rotations and unmodeled annotation kinds are conservatively readonly for size.
+The source writer's already-matching-page skip and changed-page crop reset are
+retained. Output identity is included in the size preview digest; the native
+service returns a receipt even when the independent text feature is disabled.
+No vendor or upstream hash change. See
+`report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md` for raw UserUnit limitation,
+actual files/browser/service/Node22 evidence and exact restrictions.

@@ -275,3 +275,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Connect the pinned CropDialog all-visible-pages checkbox as all surviving original IDs, preserving individual CropBoxes/rotations/UserUnit and earlier drafts. Prepare before one history commit; retain no-op/budget/error/cancel/source/readonly guards and prevent reopening during pending preparation.
 - [x] Ten new frontend cases and 18 affected crop cases pass across focused runs; production-static Chromium mixed-size/mixed-direction/UserUnit1/2/3 batch, cancellation/forced reopen, actual download/pypdf and revision2 reopen pass, as do final builds/budget checks. Evidence: `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`. This supersedes the crop-all open item in the preceding checkpoint.
 - [ ] Image drag handles, Page Size, extract/insert/replace, split/merge, Form Design, full source/context parity and desktop/deployed/full-image acceptance remain open. Backend and flags unchanged; Tasks 2–6 remain incomplete.
+
+
+### PDF five-preset paper-size continuation (2026-11-06)
+
+- [x] Connect source page.size to unchanged pinned setPageSizeBytes using strict A3/A4/A5/Letter/Legal records. Source capability rejects unmodeled units/navigation/printing/signature/annotation structures; preserve raw UserUnit2 counterexample. One final paper transform composes with ordinary rotation/delete/reorder/form edits; crop/text mixtures reject.
+- [x] Render actual output preview with output bounds and correct reordered indices; preserve original-coordinate editing, history/reload and independent text feature flag. No new manual confirmation or signing policy.
+- [x] 35 distinct new file cases, 40 affected file cases, 7 new frontend +46 affected checks, one new service+three existing text-service cases, actual Chromium preview/download/pypdf/reopen and two final Node22 readonly/offline cases pass. Final builds/budgets and 32-item local SHA check pass; standalone bridge typing retains only six baseline desktop diagnostics. Details: `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`.
+- [ ] Unsafe-source adaptations/custom paper sizes/crop-text combinations, image crop handles, extract/insert/replace, split/merge, Form Design and full desktop/deployed/image acceptance remain open. Flags off; Tasks 2–6 incomplete.

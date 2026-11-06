@@ -151,3 +151,8 @@ All-page crop/image drag UI, resize, extract/insert/replace, split/merge, Form
 Design and other source commands remain open. No signed-PDF validity, desktop
 viewer compatibility, real tenant/SQL/deployed network, distributed worker or
 full application-image proof is claimed. Tasks 2–6 remain open; flags stay off.
+
+
+Later paper-size status: the five-preset bounded source path is now accepted in
+`NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`. Historical Page Size open items above are
+superseded only within that record's explicit source and composition limits.

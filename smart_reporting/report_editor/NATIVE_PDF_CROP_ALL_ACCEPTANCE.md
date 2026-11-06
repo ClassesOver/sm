@@ -95,3 +95,8 @@ bytes, not a model-only preview. Feature flags stay off.
 Image crop drag handles, Page Size, extract/insert/replace, split/merge, Form
 Design and remaining source command/context parity remain open; Tasks 2–6 are
 still incomplete. Archive: `/workspace/scratch/pr190-pdf-crop-all-evidence.zip`.
+
+
+Later paper-size status: the five-preset bounded source path is now accepted in
+`NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`. Historical Page Size open items above are
+superseded only within that record's explicit source and composition limits.

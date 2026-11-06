@@ -124,5 +124,10 @@ Node22 只读断网验收见 `NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`
 PDF 当前页裁切已接通：按显示方向输入四边百分比，支持旋转、重复裁切、
 撤销/重做、刷新和重排/删页组合。裁切仅改变可见 CropBox，保留底层文字、
 表单和批注，不能用于删除敏感信息；裁切全部保留页也已接通，各页使用自身显示方向和可见范围，整批单步撤销；
-页面尺寸变更仍未接通，批量验收见 `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`。
+批量验收见 `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`。
 下载、独立回读及分层证据见 `NATIVE_PDF_CROP_ACCEPTANCE.md`。
+
+PDF 页面尺寸现支持受限来源的 A3/A4/A5/Letter/Legal，复用固定上游等比缩放
+与居中实现，并显示真实写回预览。非默认 UserUnit、签名、导航坐标、印刷
+框及未建模批注来源禁用；不与裁切/原位改字混用。尺寸不同的页重置裁切，
+尺寸已匹配的页保持原样。验收见 `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`。

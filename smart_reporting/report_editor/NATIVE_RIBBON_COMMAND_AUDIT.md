@@ -202,3 +202,13 @@ one draft history step. Per-page current bounds and rotation are retained;
 async preparation is atomic and the opener is guarded during pending work.
 `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md` supersedes the earlier all-pages UI gap.
 Image drag handles and the separate Page Size command remain unavailable.
+
+
+## PDF paper-size bounded closure (2026-11-06)
+
+The earlier Page Size disabled inventory is superseded for capability-approved
+sources: five pinned presets now call the unmodified upstream byte writer, with
+actual-output preview and strict source/mixing gates. The UserUnit2 raw source
+counterexample remains reproducible and unsupported sources stay readonly for
+size. See `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`; arbitrary-source/desktop parity
+and remaining Page/Form Design families are not closed.

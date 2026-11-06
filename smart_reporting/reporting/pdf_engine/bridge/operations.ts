@@ -1,12 +1,27 @@
 import { createHash } from 'node:crypto'
-import { PDFCheckBox, PDFDocument, PDFDropdown, PDFOptionList, PDFRadioGroup, PDFSignature, PDFTextField } from 'pdf-lib'
+import { PDFArray, PDFDict, PDFName, PDFNumber, PDFCheckBox, PDFDocument, PDFDropdown, PDFOptionList, PDFRadioGroup, PDFSignature, PDFTextField } from 'pdf-lib'
 import { z } from 'zod'
-import { applySaveRequest } from '../src/main/save-pdf'
+import { applySaveRequest, setPageSizeBytes } from '../src/main/save-pdf'
 import { inspectNativeText, prepareTextEdits, textResourcesIdentity } from './text-operations'
 import type { SkippedOperation } from './text-operations'
 import type { SavePdfRequest } from '../src/shared/ipc'
 
 export const sha256 = (content: Uint8Array): string => createHash('sha256').update(content).digest('hex')
+const paperSizes = { A3: [842, 1191], A4: [595, 842], A5: [420, 595], Letter: [612, 792], Legal: [612, 1008] } as const
+function pageSizeAvailability(document: PDFDocument, signedOrUnsupported: boolean) {
+  try {
+    const safe = !signedOrUnsupported && !document.getForm().hasXFA()
+      && !['Outlines', 'Dests', 'Names'].some(name => document.catalog.has(PDFName.of(name)))
+      && document.getPages().every(page => {
+        const unit = page.node.get(PDFName.of('UserUnit'))
+        if (unit !== undefined && (!(unit instanceof PDFNumber) || unit.asNumber() !== 1)) return false
+        if (page.getRotation().angle % 90 !== 0 || ['BleedBox', 'TrimBox', 'ArtBox'].some(name => page.node.getInheritableAttribute(PDFName.of(name)) !== undefined)) return false
+        const annotations = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray)
+        return !annotations || Array.from({ length: annotations.size() }, (_, index) => annotations.lookup(index, PDFDict)).every(annotation => ['Text', 'Widget', 'Highlight', 'Underline', 'StrikeOut', 'Squiggly'].includes(String(annotation.get(PDFName.of('Subtype'))).slice(1)))
+      })
+    return { pageSize: safe, pageSizeReason: safe ? null : '来源含非默认单位、签名、坐标导航、印刷框或未支持批注，暂不能安全变更页面尺寸' }
+  } catch { return { pageSize: false, pageSizeReason: '来源页面结构尚不能安全变更尺寸' } }
+}
 const identity = { sourceSha256: z.string().regex(/^[a-f0-9]{64}$/).optional() }
 const page = { ...identity, pageId: z.string().min(1) }
 const color = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1)])
@@ -17,6 +32,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('replaceText'), ...page, objectId: z.string().min(1).max(256), expectedTextSha256: z.string().regex(/^[a-f0-9]{64}$/), newText: z.string().max(4000) }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, rect, text: z.string().trim().min(1).max(10000), color: color.optional() }).strict(),
+  z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
   z.object({ kind: z.literal('rotatePage'), ...page, delta: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),
   z.object({ kind: z.literal('deletePage'), ...page }).strict(),
@@ -51,7 +67,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, ...pageSizeAvailability(document, formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
@@ -59,6 +75,9 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const hasText = ops.some(op => op.kind === 'replaceText')
   const model = await inspectPdf(content, hasText)
   if (expectedSha256 !== model.sourceSha256) throw new Error('PDF 来源摘要不匹配')
+  const sizeOps = ops.filter(op => op.kind === 'setPageSize')
+  if (sizeOps.length > 1 || (sizeOps.length && ops.some(op => ['cropPage', 'replaceText'].includes(op.kind)))) throw new Error('PDF 页面尺寸不能重复或与裁切、原位改字混用；请先保存重开')
+  if (sizeOps.length && !model.capabilities.pageSize) throw new Error(model.capabilities.pageSizeReason ?? 'pdf_page_size_source_unsupported')
   const byId = new Map(model.pages.map((page) => [page.pageId, page]))
   const crops = new Map<string, [number, number, number, number]>()
   const deleted = new Set<string>()
@@ -94,6 +113,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   for (const op of ops) {
     if (op.kind === 'setFormValue') continue
     if (op.sourceSha256 !== undefined && op.sourceSha256 !== model.sourceSha256) throw new Error('PDF 操作来源摘要不匹配')
+    if (op.kind === 'setPageSize') continue
     if (op.kind === 'reorderPages') {
       if (reordered || new Set(op.pageIds).size !== op.pageIds.length || op.pageIds.some((id) => !byId.has(id))) throw new Error('PDF 页面排序无效')
       reordered = true
@@ -143,7 +163,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const skippedOperations = [...prepared.skipped]
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = content
-  if (remaining.some(op => op.kind !== 'cropPage')) {
+  if (remaining.some(op => !['cropPage', 'setPageSize'].includes(op.kind))) {
     const result = await applySaveRequest(content, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
@@ -162,6 +182,11 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     }
     bytes = await output.save({ useObjectStreams: false, updateFieldAppearances: false })
   }
+  const sizeOp = sizeOps[0]
+  if (sizeOp) {
+    const [width, height] = paperSizes[sizeOp.preset]
+    bytes = await setPageSizeBytes(bytes, width, height)
+  }
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,
   // runtime WASM identity, requested operations and all application decisions.
@@ -172,8 +197,9 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     if (!field || field.value !== expected) throw new Error('PDF 表单字段写回后复读不一致')
   }
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
+  const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

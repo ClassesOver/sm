@@ -334,3 +334,13 @@ PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步�
 混合尺寸/方向/UserUnit 与实际下载、pypdf 回读见
 `report_editor/NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`；不累计前阶段后端验收为新增，
 其他 Page 命令、桌面和完整镜像仍未完成，开关关闭。
+
+
+2026-11-06 PDF 五档页面尺寸：严格 preset 操作复用未改的 setPageSizeBytes，
+全局等比缩放/居中放在其他来源操作之后；源单位、导航、印刷框、签名及
+未建模批注保守只读，不与裁切/改字混用。原始 UserUnit2 物理尺寸偏差
+探针保留。真实写回预览使用输出页边界，服务不依赖文字开关；签发代码
+未改。35个新文件用例、40个受影响文件用例、53个PDF前端检查、新服务
+及既有文字服务检查、浏览器下载/pypdf、Node22两例和最终构建预算通过。
+详见 `report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`；独立bridge tsc仍
+有六项基线桌面声明问题，零新增，不视作完整镜像/桌面验收，开关关闭。
