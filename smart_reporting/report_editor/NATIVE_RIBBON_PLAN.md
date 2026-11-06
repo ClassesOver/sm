@@ -319,3 +319,10 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Bind existing safe Text note contents/deletion to original annotation identity and dictionary digest. Preserve object on edit, stage deterministic UTC M, replace pending edits/drop restored originals, support Apply/Cancel, history/reload and actual preview/download/reopen. Linked/rich/locked/shared/protected sources stay readonly.
 - [x] Correct raw-XFA census before pdf-lib getForm deletes it in memory; preserve original protection for notes/markup removal/page size/form editability. 23 new file cases,7 affected file cases,4 new +34 affected frontend cases,new +2 existing service cases,Chromium/pypdf,final golden download replay and4 Node22 readonly/offline cases pass across focused runs. Two builds/budgets,Ruff,33 hashes and zero new bridge diagnostics pass; six baseline desktop diagnostics remain. Evidence: `NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`.
 - [ ] Pending newly added note mutation,replies/threads,complex sources,full sidebar/popups,whole PDF and desktop/image/deployed acceptance remain open. Flags off.
+
+
+### PDF pending sticky-note continuation (2026-11-06)
+
+- [x] Edit/delete pending notes by updating/removing their existing addition records, preserving location/color/order. Bind controls to full draft snapshot+index, reject stale callbacks even after an identical note shifts, reuse Apply/Cancel and whole-history/reload semantics. Validate restored records against the existing server contract.
+- [x] 13 new +38 affected frontend cases,new Chromium pointer-placement/identical-stale-control/readonly/page-history/save/reopen scenario,affected saved-note browser scenario and independent pypdf preservation checks pass. Final Standard/Slides builds,actual budgets,syntax/diff pass. Backend/runtime/protocol unchanged; no old runtime checks recounted. See `NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`.
+- [ ] Pending-only actual-output preview/creation-time binding,threads/replies/complex sources/full sidebar and whole PDF/desktop/image/deployed acceptance remain open. This supersedes the preceding pending-note mutation gap only; flags off.

@@ -1,4 +1,4 @@
-import { validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
+import { validatePendingPdfNote, validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
 import { validatePdfMarkup, type SavedPdfMarkup } from './pdf-markup'
 import type { NativeOperation } from './native-draft'
 import type { PDFPageProxy } from 'pdfjs-dist'
@@ -47,6 +47,9 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (deleted.has(page.pageId)) throw new Error('裁切不能引用已删除页面')
       const rect = validatedPdfCrop(operation.rect, page.cropBox)
       page.cropBox = { x: rect[0], y: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] }
+    } else if (operation.kind === 'addTextAnnotation') {
+      if (deleted.has(page.pageId)) throw new Error('便签不能引用已删除页面')
+      validatePendingPdfNote(operation, page)
     } else if (operation.kind === 'editNote' || operation.kind === 'removeNote') {
       if (deleted.has(page.pageId)) throw new Error('便签不能引用已删除页面')
       const note = validatePdfNoteOperation(operation, pages.find(item => item.pageId === page.pageId)!)

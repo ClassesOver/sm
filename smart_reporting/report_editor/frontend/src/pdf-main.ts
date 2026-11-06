@@ -24,7 +24,7 @@ import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupTyp
 
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
-import { stagePdfNote, type SavedPdfNote } from './pdf-notes'
+import { stagePdfNote, stagePendingPdfNote, type PendingPdfNoteReference, type SavedPdfNote } from './pdf-notes'
 
 import { PDF_ZOOM_STEPS, clampPdfZoom, stepPdfZoom, capturePdfZoomAnchor, restorePdfZoomAnchor, type PdfZoomAnchor } from './pdf-view-state'
 
@@ -582,12 +582,21 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     pdfPageState(model.pages, next); draft.setOperations(next); await refresh()
   }
   async function editSavedNote(pageId: string, note: SavedPdfNote) {
-    if (locked || previewing || previewDocument || !response.editingEnabled || draft.closed || !note.editable) throw new Error('当前便签只读')
+    if (!note.editable) throw new Error('当前便签只读')
+    await editNoteContents(note.contents, value => changeSavedNote(pageId, note.annotationId, value))
+  }
+  async function changePendingNote(reference: PendingPdfNoteReference, contents: string | null) {
+    if (locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled) throw new Error('当前修订不支持修改待保存便签')
+    const next = stagePendingPdfNote(model.pages, draft.operations, reference, contents)
+    pdfPageState(model.pages, next); draft.setOperations(next); await refresh()
+  }
+  async function editNoteContents(contents: string, applyContents: (value: string) => Promise<void>) {
+    if (locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed) throw new Error('当前便签只读')
     const snapshot = JSON.stringify(draft.operations)
     const dialog = documentElement('dialog', 'pdf-note-edit-dialog'), form = documentElement('form')
     form.method = 'dialog'
     const label = documentElement('label'); label.textContent = '便签正文'
-    const input = documentElement('textarea'); input.value = note.contents; input.maxLength = 10000; input.required = true; input.setAttribute('aria-label', '编辑便签正文'); label.append(input)
+    const input = documentElement('textarea'); input.value = contents; input.maxLength = 10000; input.required = true; input.setAttribute('aria-label', '编辑便签正文'); label.append(input)
     const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = '应用便签修改'
     const cancel = documentElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.addEventListener('click', () => dialog.close())
     form.append(label, apply, cancel); dialog.append(form); root.append(dialog)
@@ -600,7 +609,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       })
       if (value === null || disposed) return
       if (JSON.stringify(draft.operations) !== snapshot) throw new Error('草稿已变化，请重新编辑便签')
-      await changeSavedNote(pageId, note.annotationId, value)
+      await applyContents(value)
     } finally { dialog.remove() }
   }
   function state() { return pdfPageState(model.pages, draft.operations) }
@@ -987,6 +996,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     tasks.clear(); textLayers.clear(); visible.clear(); pageNodes.clear()
     viewport.replaceChildren(); thumbs.replaceChildren(); outlinePanel.replaceChildren()
     const pages = state()
+    const pendingOperations = draft.operations, pendingSnapshot = JSON.stringify(pendingOperations)
     if (!pages.some(page => page.pageId === activeId)) activeId = pages[0].pageId
     const render = (pageId: string) => {
       const page = pages.find(item => item.pageId === pageId), node = pageNodes.get(pageId)
@@ -1029,6 +1039,26 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         }
         if (details.open && !previewDocument) { const pending = documentElement('p'); pending.textContent = '便签修改待保存；校验当前修改可查看实际 PDF。'; details.append(pending) }
         card.append(details)
+      }
+      if (!previewDocument) {
+        const pendingNotes = pendingOperations.map((operation, index) => ({ operation, index })).filter(({ operation }) => operation.kind === 'addTextAnnotation' && operation.pageId === page.pageId)
+        if (pendingNotes.length) {
+          const details = documentElement('details', 'pdf-pending-comments'), summary = documentElement('summary')
+          summary.textContent = `待保存便签（${pendingNotes.length}）`; details.open = true; details.append(summary)
+          for (const { operation, index } of pendingNotes) {
+            const reference: PendingPdfNoteReference = { index, snapshot: pendingSnapshot }
+            const article = documentElement('article', 'pdf-pending-note'); article.dataset.operationIndex = String(index)
+            const text = documentElement('p'); text.textContent = String(operation.text); article.append(text)
+            for (const [label, action] of [['编辑便签', () => editNoteContents(String(operation.text), value => changePendingNote(reference, value))], ['删除便签', () => changePendingNote(reference, null)]] as const) {
+              const control = documentElement('button', 'pdf-tool'); control.type = 'button'; control.textContent = label; control.dataset.pdfNoteEditable = 'true'
+              control.disabled = locked || previewing || printing || !response.editingEnabled || draft.closed
+              control.title = label
+              control.addEventListener('click', () => { void Promise.resolve().then(action).catch(showError) }); article.append(control)
+            }
+            details.append(article)
+          }
+          card.append(details)
+        }
       }
       viewport.append(card); pageNodes.set(page.pageId, card)
       card.classList.toggle('is-active', activeId === page.pageId)

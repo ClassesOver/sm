@@ -262,3 +262,13 @@ modal Apply/Cancel, original-object Contents/M updates and actual preview/downlo
 This closes a bounded existing-note gap; it does not credit pending-note/reply/thread
 commands or full comment/sidebar UX. Raw XFA is censused before pdf-lib getForm's
 side effect. See `NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`.
+
+
+## PDF pending sticky-note follow-up
+
+Pending setNoteContents/removeDrawing source behavior now maps to updating/removing
+the exact existing native addition record. The local adaptation binds the entire
+draft snapshot plus index rather than introducing a backend/local-ID protocol.
+Per-page pending controls support history and reopening as saved notes; threaded
+context/sidebar and pending-only actual preview are not credited. Evidence:
+`NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`.

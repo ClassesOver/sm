@@ -1,5 +1,9 @@
 # Native PDF saved sticky-note editing/deletion acceptance
 
+**Follow-up:** pending-note edit/delete is now accepted in
+`NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`; the statements below record the original
+saved-note checkpoint and its then-open pending-note scope.
+
 2026-11-06. Safe existing Text notes now support content editing and deletion.
 Replies, threads, rich text and full comment/sidebar parity remain incomplete.
 
