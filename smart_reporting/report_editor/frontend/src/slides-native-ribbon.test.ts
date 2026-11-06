@@ -337,7 +337,14 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(timingGroup.querySelector('[data-command="transitionDuration"]')).toBeNull()
   expect(timingGroup.querySelector('[data-command="transitionSound"]')).toBeNull()
   expect(applyAll.disabled).toBe(true)
-  expect(applyAll.dataset.unavailable).toBe('true')
+  expect(applyAll.dataset.unavailable).toBeUndefined()
+  ribbon.setTransitionApplyAllEnabled(true)
+  expect(applyAll.disabled).toBe(false)
+  applyAll.click()
+  expect(onAction).toHaveBeenCalledWith('applyTransitionAll')
+  ribbon.setLocked(true); expect(applyAll.disabled).toBe(true)
+  ribbon.setLocked(false); expect(applyAll.disabled).toBe(false)
+  ribbon.setTransitionApplyAllEnabled(false); expect(applyAll.disabled).toBe(true)
 
   animationTab.click()
   const animationPanel = host.querySelector<HTMLElement>('[data-ribbon-panel="animations"]')!

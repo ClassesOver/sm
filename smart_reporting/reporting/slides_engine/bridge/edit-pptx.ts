@@ -1,3 +1,5 @@
+import { XMLParser } from 'fast-xml-parser'
+import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
@@ -99,6 +101,36 @@ const textOf = (element: (typeof opened.deck.slides)[number]['elements'][number]
   ).join('\n')
 }
 
+const transitionParser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, processEntities: false })
+function transitionApplyAllState(slide: (typeof opened.deck.slides)[number]) {
+  const unsafe = { transitionApplyAllSafe: false, transitionApplyAllReason: 'pptx_transition_additional_settings' }
+  try {
+  const suffix = slide.bodySuffix
+  if (/<(?:[\w.]+:)?AlternateContent\b/.test(suffix)) return unsafe
+  if (/<(?!p:)[\w.]+:transition\b/.test(suffix)) return unsafe
+  const blocks = suffix.match(/<p:transition\b[^>]*\/>|<p:transition\b[^>]*>[\s\S]*?<\/p:transition>/g) ?? []
+  if (!blocks.length) return /<p:transition\b/.test(suffix) ? unsafe : { transitionApplyAllSafe: true, transitionApplyAllReason: null }
+  // AlternateContent or repeated containers need a separate preservation contract.
+  if (blocks.length !== 1 || /<!--|<!\[CDATA\[|<\?/.test(blocks[0]!)) return unsafe
+  const parsed = transitionParser.parse(blocks[0]!)?.[0]
+  const attributes = parsed?.[':@'] ?? {}
+  if (Object.keys(attributes).some(key => key !== '@_advTm') || (attributes['@_advTm'] !== undefined && (!/^\d+$/.test(String(attributes['@_advTm'])) || !Number.isSafeInteger(Number(attributes['@_advTm'])) || Number(attributes['@_advTm']) > 4294967295))) return unsafe
+  const effect = parsed?.['p:transition'] ?? []
+  const kind = getSlideTransition(slide)
+  if (kind === 'none') return effect.length ? unsafe : { transitionApplyAllSafe: true, transitionApplyAllReason: null }
+  const canonical = patchSlideTransitionXml('</p:cSld>', kind).match(/<p:transition\b[^>]*>[\s\S]*?<\/p:transition>/)?.[0]
+  const expected = canonical ? transitionParser.parse(canonical)?.[0]?.['p:transition'] : undefined
+  if (effect.length !== 1 || !expected || expected.length !== 1) return unsafe
+  const name = Object.keys(effect[0]).find(key => key !== ':@')
+  const expectedName = Object.keys(expected[0]).find(key => key !== ':@')
+  if (name !== expectedName || !name || effect[0][name]?.length) return unsafe
+  const effectAttributes = effect[0][':@'] ?? {}
+  // Only a generic kind or the pinned writer's default variant is modeled.
+  if (Object.keys(effectAttributes).length && JSON.stringify(effectAttributes) !== JSON.stringify(expected[0][':@'] ?? {})) return unsafe
+  return { transitionApplyAllSafe: true, transitionApplyAllReason: null }
+  } catch { return unsafe }
+}
+
 if (request.action === 'inspect') {
   process.stdout.write(JSON.stringify({
     size: opened.deck.size,
@@ -109,6 +141,7 @@ if (request.action === 'inspect') {
       background: slide.background?.type === 'solid' ? slide.background.color : null,
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
+      ...transitionApplyAllState(slide),
       animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset }) => ({
         spid,
         elementId: slide.elements.find((element) => elementSpid(element) === spid)?.id ?? '',

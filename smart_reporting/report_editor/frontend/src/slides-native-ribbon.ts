@@ -1,3 +1,4 @@
+import { SLIDE_TRANSITIONS } from './slides-transitions'
 import { BULLET_GLYPHS, BULLET_GLYPH_LABELS, BULLET_SYMBOLS, NUMBER_TYPES, BULLET_COLORS, PARAGRAPH_LIST_COMMANDS } from './slides-paragraph'
 import { ArrowDown, ArrowUp, Bold, Download, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
 import { createElement as reactElement, type ComponentType } from 'react'
@@ -21,6 +22,7 @@ export interface NativeSlidesRibbon {
   setTextFormatEnabled(enabled: boolean): void
   setListTargets(state: { bullets: boolean; numbers: boolean; hanging: boolean }): void
   setSlideOrientationEnabled(enabled: boolean): void
+  setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
   setLocked(locked: boolean): void
   dispose(): void
 }
@@ -153,8 +155,8 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'transitions', label: 'Transitions', groups: [
-    { label: 'Transition to This Slide', controls: [{ id: 'transition', label: 'Effect', kind: 'select', sourceActionId: 'onTransition', options: ['none', 'morph', 'fade', 'push', 'wipe', 'split', 'circle', 'cover', 'pull', 'dissolve', 'zoom', 'random'] }] },
-    { label: 'Timing', controls: [{ id: 'applyTransitionAll', label: 'Apply to All', sourceActionId: 'onTransition', unavailable: noWrite('将转场应用到全部幻灯片') }] },
+    { label: 'Transition to This Slide', controls: [{ id: 'transition', label: 'Effect', kind: 'select', sourceActionId: 'onTransition', options: [...SLIDE_TRANSITIONS] }] },
+    { label: 'Timing', controls: [{ id: 'applyTransitionAll', label: 'Apply to All', sourceActionId: 'onTransition' }] },
   ] },
   { id: 'animations', label: 'Animations', groups: [
     { label: 'Preview', controls: [{ id: 'animationPreview', label: 'Preview', sourceActionId: 'onAnimPreview', unavailable: noWrite('动画预览') }] },
@@ -234,6 +236,14 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let hasWritableSlideSize = false
   const clipboardLocale = genOfficeHomeClipboardLocale(document.documentElement.lang)
 
+  let transitionApplyAllReady = false
+  let transitionApplyAllReason: string | undefined
+  const updateTransitionApplyAll = () => {
+    for (const button of controls.get('applyTransitionAll') ?? []) {
+      ;(button as HTMLButtonElement).disabled = locked || !transitionApplyAllReady
+      button.title = transitionApplyAllReady ? '将当前页转场效果应用到全部保留页面；各页自动换片时间保留' : transitionApplyAllReason ?? '请先打开可编辑的演示文稿；一次最多支持 500 页'
+    }
+  }
   const selectTab = (id: string) => {
     activeTab = id
     for (const tab of tabs) {
@@ -377,6 +387,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   selectTab(activeTab)
   updateTextFormattingState()
   updateSlideOrientationState()
+  updateTransitionApplyAll()
 
   return {
     setContext(context) {
@@ -398,6 +409,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       hasTextTarget = enabled
       updateTextFormattingState()
     },
+    setTransitionApplyAllEnabled(enabled, reason) { transitionApplyAllReady = enabled; transitionApplyAllReason = reason; updateTransitionApplyAll() },
     setSlideOrientationEnabled(enabled) {
       hasWritableSlideSize = enabled
       updateSlideOrientationState()
@@ -462,6 +474,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       if (direction) direction.disabled = locked || !['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(currentAnimationEffect)
       updateTextFormattingState()
       updateSlideOrientationState()
+      updateTransitionApplyAll()
     },
     dispose() { root.remove() },
   }

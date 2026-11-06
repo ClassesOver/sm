@@ -6,7 +6,7 @@ import { NativeDraft, type NativeDraftIdentity, type NativeSaveRequest } from '.
 import type { NativeContextResponse } from './native-api'
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks() })
-const deck = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [{ slideIndex: 0, animations: [], elements: [{ id: 'title', type: 'text', name: 'title', text: '原文', editable: true, geometry: { x: 10, y: 20, width: 300, height: 80 } }] }] }
+const deck = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [{ slideIndex: 0, transitionApplyAllSafe: true, animations: [], elements: [{ id: 'title', type: 'text', name: 'title', text: '原文', editable: true, geometry: { x: 10, y: 20, width: 300, height: 80 } }] }] }
 it('native PPTX skips unsupported AI requests and retains draft until registration, then offers explicit reopen', async () => {
   document.body.innerHTML = '<main id="app"></main>'
   const shell = createEditorShell(document.querySelector('#app')!, 'full', 'pptx')
@@ -650,4 +650,101 @@ it('refuses the 501st real paragraph edit without changing persistence or histor
   const reopened = await openDraft(recovered, api)
   expect(JSON.stringify(recovered.operations)).toBe(snapshot)
   reopened.view.dispose()
+})
+
+
+it('applies the current source/pending transition once to source identities across reorder and recovery', async () => {
+  const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
+  draft.setOperations([{ kind: 'editSlides', order: [2, 0, 1], transitions: [{ slideIndex: 0, kind: 'wipe' }] }])
+  const source = { ...deck, slides: [
+    { ...deck.slides[0], transition: 'fade' },
+    { ...deck.slides[0], slideIndex: 1, transition: 'push' },
+    { ...deck.slides[0], slideIndex: 2, transition: 'none' },
+  ] }
+  const api = { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })),
+    save: vi.fn(async (_request: NativeSaveRequest) => ({ revision: 2, revisionRegistered: true, artifacts: {}, validation: { issues: [] } })) }
+  let opened = await openDraft(draft, api)
+  const command = opened.shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!
+  expect(command.disabled).toBe(false)
+  command.click(); command.click()
+  expect(draft.operations[0]).toMatchObject({ order: [2, 0, 1], transitions: [{ slideIndex: 2, kind: 'wipe' }, { slideIndex: 0, kind: 'wipe' }, { slideIndex: 1, kind: 'wipe' }] })
+  opened.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations[0].transitions).toEqual([{ slideIndex: 0, kind: 'wipe' }])
+  opened.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  opened.view.dispose!()
+  const recovered = new NativeDraft(draftIdentity, store)
+  opened = await openDraft(recovered, api)
+  expect(opened.shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!.value).toBe('wipe')
+  opened.shell.save.click(); await vi.waitFor(() => expect(api.save).toHaveBeenCalledOnce())
+  expect(api.save.mock.calls[0][0].operations[0].transitions).toEqual([{ slideIndex: 2, kind: 'wipe' }, { slideIndex: 0, kind: 'wipe' }, { slideIndex: 1, kind: 'wipe' }])
+  expect(opened.shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!.disabled).toBe(true)
+  opened.view.dispose!()
+})
+it('copies the actual source transition without a pending effect or an editable text target', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const source = { ...deck, slides: [{ slideIndex: 0, transitionApplyAllSafe: true, transition: 'push', elements: [], animations: [] }, { slideIndex: 1, transitionApplyAllSafe: true, transition: 'fade', elements: [], animations: [] }] }
+  const { shell, view } = await openDraft(draft, { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!.click()
+  expect(draft.operations[0].transitions).toEqual([{ slideIndex: 0, kind: 'push' }, { slideIndex: 1, kind: 'push' }])
+  view.dispose!()
+})
+it.each([
+  { transitions: [{ slideIndex: 0, kind: 'bad' }] }, { transitions: [{ slideIndex: 8, kind: 'wipe' }] }, { transitions: [{ slideIndex: 0, kind: 'fade', duration: 100 }] },
+])('refuses invalid restored transition records while preserving storage %#', async ({ transitions }) => {
+  const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
+  draft.setOperations([{ kind: 'editSlides', transitions }])
+  const recovered = new NativeDraft(draftIdentity, store)
+  await expect(openDraft(recovered, { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) })).rejects.toThrow(/转场草稿/)
+  expect(new NativeDraft(draftIdentity, store).operations).toEqual(draft.operations)
+})
+
+it.each([{ order: [0] }, { order: [0, 0, 1] }, { order: [0, -1, 2] }, { order: [] }])('refuses an invalid restored source permutation without clearing storage %#', async ({ order }) => {
+  const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
+  draft.setOperations([{ kind: 'editSlides', order }])
+  const source = { ...deck, slides: [deck.slides[0], { ...deck.slides[0], slideIndex: 1 }, { ...deck.slides[0], slideIndex: 2 }] }
+  await expect(openDraft(new NativeDraft(draftIdentity, store), { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })).rejects.toThrow(/草稿页面顺序/)
+  expect(new NativeDraft(draftIdentity, store).operations).toEqual(draft.operations)
+})
+
+it('bounds Apply to All at 500 pages without clearing earlier changes on an invalid request', async () => {
+  const { applyTransitionToAll, restoredTransitions } = await import('./slides-transitions')
+  const changes = new Map<number, import('./slides-transitions').SlideTransition>([[9, 'wipe']])
+  expect(() => applyTransitionToAll(Array.from({ length: 501 }, (_, i) => i), 'fade', changes)).toThrow()
+  expect([...changes]).toEqual([[9, 'wipe']])
+  expect(applyTransitionToAll(Array.from({ length: 500 }, (_, i) => i), 'fade', changes)).toBe(true)
+  expect(changes.size).toBe(500)
+  expect(applyTransitionToAll(Array.from({ length: 500 }, (_, i) => i), 'fade', changes)).toBe(false)
+  const records = [...changes].map(([slideIndex, kind]) => ({ slideIndex, kind }))
+  expect(restoredTransitions(records, 500)).toHaveLength(500)
+  expect(() => restoredTransitions([...records, { slideIndex: 500, kind: 'fade' }], 501)).toThrow()
+})
+
+it('restores ordered absolute transition records with last-write semantics without rewriting storage', async () => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const transitions = [{ slideIndex: 0, kind: 'fade' }, { slideIndex: 0, kind: 'wipe' }]
+  draft.setOperations([{ kind: 'editSlides', transitions }])
+  const source = { ...deck, slides: [deck.slides[0], { ...deck.slides[0], slideIndex: 1, transition: 'push' }] }
+  const { shell, view } = await openDraft(draft, { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!.value).toBe('wipe')
+  expect(draft.operations[0].transitions).toEqual(transitions)
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!.click()
+  expect(draft.operations[0].transitions).toEqual([{ slideIndex: 0, kind: 'wipe' }, { slideIndex: 1, kind: 'wipe' }])
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations[0].transitions).toEqual(transitions)
+  view.dispose!()
+})
+
+it.each([false, undefined])('disables and refuses Apply to All when any source page has unsafe or unverified metadata %s', async transitionApplyAllSafe => {
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const original = { kind: 'editSlides', transitions: [{ slideIndex: 0, kind: 'wipe' }] }
+  draft.setOperations([original])
+  const source = { ...deck, slides: [deck.slides[0], { ...deck.slides[0], slideIndex: 1, transitionApplyAllSafe }] }
+  const { shell, view } = await openDraft(draft, { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })
+  const button = shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!
+  expect(button.disabled).toBe(true)
+  expect(button.title).toMatch(/声音或效果变体/)
+  button.dispatchEvent(new Event('click', { bubbles: true }))
+  expect(draft.operations).toEqual([original])
+  expect(shell.editor.textContent).toMatch(/未支持的转场/)
+  view.dispose!()
 })

@@ -1,3 +1,4 @@
+import { applyTransitionToAll, restoredTransitions, SLIDE_TRANSITIONS, type SlideTransition } from './slides-transitions'
 import { PARAGRAPH_LIST_COMMANDS, BULLET_GLYPHS, paragraphCommandPatch, projectParagraphs, uniformParagraphValue, type ParagraphFormatting, type ParagraphSourceFormatting, type ParagraphList } from './slides-paragraph'
 import { createElement, ArrowDown, ArrowUp, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
 import './slides.css'
@@ -11,10 +12,9 @@ import { openSlidesSizeDialog } from './slides-size-dialog'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
 type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
-type SlideTransition = 'none' | 'morph' | 'fade' | 'push' | 'wipe' | 'split' | 'circle' | 'cover' | 'pull' | 'dissolve' | 'zoom' | 'random'
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
-type DeckSlide = { slideIndex: number; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; animations?: Animation[]; elements: DeckElement[] }
+type DeckSlide = { slideIndex: number; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
 type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
 type Edit = {
   slideIndex: number
@@ -281,6 +281,8 @@ function restoreNativeDraft() {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
   }
   const changes = (operations[0] ?? {}) as SlideChanges
+  const transitions = restoredTransitions(changes.transitions, deck.slides.length)
+  if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== deck.slides.length || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length))) throw new Error('草稿页面顺序无效；原草稿已保留')
   // Validate every step before mutating the recovered view or the persisted history.
   try {
     if ((changes.paragraphFormatting?.length ?? 0) > 500) throw new Error('段落格式操作超过 500 条；请分批保存')
@@ -301,7 +303,7 @@ function restoreNativeDraft() {
   }
   // Older drafts already stored an array: retain every record, including noncommuting list commands.
   paragraphFormattingEdits.push(...(changes.paragraphFormatting ?? []).map(format => ({ ...format })))
-  for (const transition of changes.transitions ?? []) transitionEdits.set(transition.slideIndex, transition.kind)
+  for (const transition of transitions) transitionEdits.set(transition.slideIndex, transition.kind)
   for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
   for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
   for (const deletion of changes.deletions ?? []) {
@@ -373,6 +375,12 @@ function move(position: number, direction: -1 | 1) {
   markDirty()
 }
 
+function transitionApplyAllUnavailable(): string | null {
+  if (!order.length || order.length > 500 || !order.includes(selectedSlide)) return '请先打开可编辑的演示文稿；一次最多支持 500 页'
+  if (order.some(index => deck.slides[index]?.transitionApplyAllSafe !== true)) return '部分页面含未支持的转场速度、换片、声音或效果变体设置，暂不能全部应用；原文件保持不变'
+  return null
+}
+
 function renderInspector() {
   renderCanvas()
   const elements = deck.slides[selectedSlide]!.elements.filter(item => (item.editable || item.deletable) && !deletions.has(editKey(selectedSlide, item.id)))
@@ -426,6 +434,7 @@ function renderInspector() {
   root.querySelector('.inspector-heading')!.textContent = `对象 · 第 ${order.indexOf(selectedSlide) + 1} 页`
   nativeRibbon?.setValue('theme', selectedTheme ?? '')
   nativeRibbon?.setValue('transition', transitionSelect.value)
+  nativeRibbon?.setTransitionApplyAllEnabled(transitionApplyAllUnavailable() === null, transitionApplyAllUnavailable() ?? undefined)
   nativeRibbon?.setValue('layout', layoutSelect.value)
   const size = slideSizeEdit ?? deck.size
   nativeRibbon?.setValue('slideSize', matchSlideSizePreset(size) ?? '')
@@ -549,7 +558,16 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         selectedTheme = value ? value as BusinessTheme : undefined
         markDirty()
         break
-      case 'transition': transitionEdits.set(selectedSlide, value as SlideTransition); markDirty(); break
+      case 'transition':
+        if (SLIDE_TRANSITIONS.includes(value as SlideTransition) && order.includes(selectedSlide)) { transitionEdits.set(selectedSlide, value as SlideTransition); markDirty() }
+        break
+      case 'applyTransitionAll': {
+        const effect = transitionEdits.get(selectedSlide) ?? deck?.slides[selectedSlide]?.transition ?? 'none'
+        const unavailable = transitionApplyAllUnavailable()
+        if (unavailable) { statusMessage.textContent = unavailable; break }
+        if (applyTransitionToAll(order, effect, transitionEdits)) markDirty()
+        break
+      }
       case 'layout':
         if (typeof value === 'string' && value) { layoutEdits.set(selectedSlide, value); markDirty() }
         break
