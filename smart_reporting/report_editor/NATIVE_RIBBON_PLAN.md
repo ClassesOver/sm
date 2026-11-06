@@ -298,3 +298,10 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Source bitmap-only night filter/pressed state,18-step10–800% zoom, Home/View/status controls and Ctrl/Meta wheel coefficient are connected. Native DOM anchors preserve content with fixed headings/gutters, including readonly viewing; no edit/file identity changes.
 - [x] Five new anchor/step checks and two affected View checks, real production-static Chromium readonly/night/zoom/wheel/print-media/source-byte identity proof pass. Standard/Slides builds and actual budgets pass. Evidence: `NATIVE_PDF_VIEW_ACCEPTANCE.md`. Backend/runtime unchanged.
 - [ ] Source review corrects three omitted View controls: comments/compare/attachments are now inventoried in order with explicit disabled reasons, not counted as completed. Reading-position persistence/full shortcuts and source fit row semantics remain open; whole-PDF status remains incomplete.
+
+
+### PDF saved-markup removal continuation (2026-11-06)
+
+- [x] Match fixed source pending-first/one-saved toggle semantics; strict immutable annotation identity removes only its original page slot before pinned text/image rewrites. Copy shared Annots arrays. Safe four-type sources support history/reload, pending outlines, actual preview and downloaded reopen.
+- [x] 18 new file cases,3 new +31 affected frontend checks,new +prior markup service cases,two affected source cases,Chromium revision2→3 and independent content/form/AP readback pass across focused runs. Standard/Slides builds,budgets,33 local hashes and zero new standalone bridge diagnostics pass; six baseline desktop diagnostics remain. Node22 readonly/offline passes removal,font-unavailable text skip preservation,and forged identity refusal. See `NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`.
+- [ ] Linked replies/popups/structure,direct objects,signed/XFA/incompletely read sources remain readonly. Arbitrary annotation editing/replies,desktop/full-image/deployed and whole PDF parity remain open; flags off. This supersedes earlier saved-markup-removal refusal only within the accepted source boundary.

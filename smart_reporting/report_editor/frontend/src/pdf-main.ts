@@ -536,7 +536,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       return { pw: page.cropBox.width * unit, ph: page.cropBox.height * unit, x0: page.cropBox.x, y0: page.cropBox.y, rot: page.rotation, userUnit: unit }
     }), scale)
     if (!quads) return
-    markupSelection = [...quads].map(([index, selected]) => ({ pageId: pages[index].pageId, quads: selected, saved: pages[index].markups ?? [] }))
+    markupSelection = [...quads].map(([index, selected]) => ({ pageId: pages[index].pageId, quads: selected, saved: model.pages.find(page => page.pageId === pages[index].pageId)?.markups ?? [] }))
     updateControls()
   }
   window.document.addEventListener('selectionchange', captureMarkupSelection, { signal: abort.signal })
@@ -546,6 +546,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || !model.capabilities?.selectionMarkup) return
     if (markupSelection.some(selection => !state().find(page => page.pageId === selection.pageId)?.markupReadSafe)) throw new Error('此页已有标注尚不能完整读取，原草稿已保留')
     const color = type === 'highlight' ? markupColor : MARKUP_COLORS[type]
+    const selectedState = markupSelectionState(markupSelection, draft.operations, type)
+    if (selectedState.active && selectedState.matches.some(match => match.pending < 0 && match.saved) && model.capabilities?.removeMarkup !== true) throw new Error('当前引擎未确认已保存标注移除能力；原草稿已保留')
     const next = togglePdfMarkup(markupSelection, draft.operations, type, color)
     pdfPageState(model.pages, next)
     draft.setOperations(next); await refresh()
@@ -611,10 +613,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     pageButtons.get('genoffice.pdf.page.reverse')!.disabled ||= !document || state().length <= 1
     for (const { button, type } of markupButtons) {
       const state = markupSelectionState(markupSelection, draft.operations, type)
-      const savedRemoval = state.active && state.matches.some(match => match.saved)
+      const savedRemoval = state.active && state.matches.some(match => match.pending < 0 && match.saved && (model.capabilities?.removeMarkup !== true || !match.saved.removable))
       button.disabled ||= !document || model.capabilities?.selectionMarkup !== true || !markupSelection.length || markupSelection.some(selection => !model.pages.find(page => page.pageId === selection.pageId)?.markupReadSafe) || savedRemoval
       button.setAttribute('aria-pressed', String(state.active))
-      button.title = !document ? '请先打开 PDF' : !response.editingEnabled || draft.closed ? '当前修订为只读' : model.capabilities?.selectionMarkup !== true ? '当前引擎未确认文字选区标注能力' : markupSelection.some(selection => !model.pages.find(page => page.pageId === selection.pageId)?.markupReadSafe) ? '此页已有文字标注尚不能完整读取' : savedRemoval ? '此选区已有保存的同类标注，移除尚未接通' : '选择页面文字后添加；再次点击可移除本次草稿标注'
+      button.title = !document ? '请先打开 PDF' : !response.editingEnabled || draft.closed ? '当前修订为只读' : model.capabilities?.selectionMarkup !== true ? '当前引擎未确认文字选区标注能力' : markupSelection.some(selection => !model.pages.find(page => page.pageId === selection.pageId)?.markupReadSafe) ? '此页已有文字标注尚不能完整读取' : savedRemoval ? state.matches.find(match => match.saved && !match.saved.removable)?.saved?.removalReason || '当前引擎或来源不支持移除已保存标注' : '选择页面文字后添加；再次点击移除同类标注。移除结果请查看实际 PDF 预览'
     }
     status.dataset.dirty = String(draft.dirty)
   }
@@ -661,9 +663,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function overlays(holder: HTMLElement, page: PdfPageIdentity, pdfViewport: ReturnType<PDFPageProxy['getViewport']>) {
     const layer = documentElement('div', 'pdf-draft-overlays')
-    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'highlight', 'addTextAnnotation'].includes(op.kind))) {
-      const type = operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
-      const rects = operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
+    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'removeMarkup', 'highlight', 'addTextAnnotation'].includes(op.kind))) {
+      const type = operation.kind === 'removeMarkup' ? 'removal' : operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
+      const rects = operation.kind === 'removeMarkup' ? (model.pages.find(item => item.pageId === page.pageId)?.markups?.find(mark => mark.annotationId === operation.annotationId)?.quads ?? []).map(quadToRect) : operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
       for (const rect of rects) {
         const converted = [...pdfViewport.convertToViewportPoint(rect[0], rect[1]), ...pdfViewport.convertToViewportPoint(rect[2], rect[3])]
         const overlay = documentElement('span', type === 'highlight' ? 'pdf-highlight' : type === 'note' ? 'pdf-note' : `pdf-pending-markup pdf-${type}`)
@@ -672,6 +674,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         overlay.style.color = `rgb(${rgb})`
         if (type === 'highlight') overlay.style.backgroundColor = `rgba(${rgb},.4)`
         if (type === 'squiggly') overlay.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='8' height='4'><path d='M0 2 Q2 0 4 2 T8 2' fill='none' stroke='rgb(${rgb})'/></svg>`)}")`
+        if (type === 'removal') { overlay.style.outline = '2px dashed #c33'; overlay.title = '待移除标注；校验当前修改可查看实际结果' }
         if (type === 'note') { overlay.textContent = '▤'; overlay.title = String(operation.text) }
         layer.append(overlay)
       }
@@ -813,7 +816,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -830,7 +833,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -865,7 +868,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function refresh() {
     if (disposed || !document) return
-    const structureKey = JSON.stringify(draft.operations.filter(op => op.kind !== 'addMarkup'))
+    const structureKey = JSON.stringify(draft.operations.filter(op => !['addMarkup', 'removeMarkup'].includes(op.kind)))
     if (markupStructureKey !== structureKey) { markupStructureKey = structureKey; markupSelection = [] }
     const operationsKey = JSON.stringify(draft.operations)
     if (lastOperationsKey !== operationsKey) { lastOperationsKey = operationsKey; textSelectionPage = '' }
@@ -1006,6 +1009,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
     } catch (error) { textLoadWarning = `原位改字暂不可用，仍可查看、标注与下载 PDF：${error instanceof Error ? error.message : '文字对象读取失败'}` }
   }
+  if (draft.operations.some(operation => operation.kind === 'removeMarkup') && model.capabilities?.removeMarkup !== true) throw new Error('当前引擎未确认已保存标注移除能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'setPageSize') && model.capabilities?.pageSize !== true) throw new Error('当前来源未确认尺寸变更能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'cropPage') && model.capabilities?.cropPage !== true) throw new Error('当前 PDF 引擎未确认裁切能力；原草稿已保留')
   void rebuildTextIndex().catch(showError)

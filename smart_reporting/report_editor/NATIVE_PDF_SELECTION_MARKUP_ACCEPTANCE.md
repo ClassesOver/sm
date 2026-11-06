@@ -1,5 +1,9 @@
 # Native PDF selected-text markup acceptance
 
+**Follow-up:** bounded saved removal is now accepted in
+`NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`. Statements below describe the original
+addition checkpoint and its then-current refusal behavior.
+
 2026-11-06. Connects fixed-source Highlight/Underline/Squiggly/StrikeOut additions
 and pending-markup toggles. Saved-markup removal remains explicitly unavailable;
 this is not complete Markup or whole-PDF parity. See `NATIVE_PDF_ALIGNMENT_STATUS.md`.

@@ -56,3 +56,28 @@ it('rejects restored markup outside current bounds or after source-page deletion
   expect(() => pdfPageState(pages, [{ ...mark, quads: [[0, 600, 100, 600, 0, 580, 100, 580]] }])).toThrow()
   expect(() => pdfPageState(pages, [{ kind: 'deletePage', pageId: 'source:0' }, mark])).toThrow(/已删除/)
 })
+
+const removable = { markupType: 'underline' as const, quads: q, color: MARKUP_COLORS.underline, annotationId: 'a'.repeat(64), expectedAnnotationSha256: 'b'.repeat(64), removable: true }
+it('toggles saved identity and subsequent pending additions without mutating source', () => {
+  const selection = [{ ...selected[0], saved: [removable] }]
+  const next = togglePdfMarkup(selection, [], 'underline', MARKUP_COLORS.underline)
+  expect(next).toEqual([{ kind: 'removeMarkup', pageId: selected[0].pageId, annotationId: removable.annotationId, expectedAnnotationSha256: removable.expectedAnnotationSha256 }])
+  expect(markupSelectionState(selection, next, 'underline').active).toBe(false)
+  const added = togglePdfMarkup(selection, next, 'underline', MARKUP_COLORS.underline)
+  expect(added.map(op => op.kind)).toEqual(['removeMarkup', 'addMarkup'])
+  expect(togglePdfMarkup(selection, added, 'underline', MARKUP_COLORS.underline)).toEqual(next)
+  expect(selection[0].saved).toEqual([removable])
+})
+it('removes pending before identical saved marks and refuses mixed readonly batch atomically', () => {
+  const selection = [{ ...selected[0], saved: [removable] }]
+  const pending = [{ kind: 'addMarkup', pageId: selected[0].pageId, markupType: 'underline', quads: q, color: MARKUP_COLORS.underline }]
+  expect(togglePdfMarkup(selection, pending, 'underline', MARKUP_COLORS.underline)).toEqual([])
+  expect(() => togglePdfMarkup([...selection, { ...selected[1], saved: [{ ...removable, removable: false, removalReason: '关联回复' }] }], [], 'underline', MARKUP_COLORS.underline)).toThrow(/关联回复/)
+})
+it('validates restored removal and virtual markups without editing immutable model', () => {
+  const page = { pageId: selected[0].pageId, index: 0, rotation: 0, mediaBox: { x: 0, y: 0, width: 400, height: 500 }, cropBox: { x: 0, y: 0, width: 400, height: 500 }, markupReadSafe: true, markups: [removable] }
+  const operation = togglePdfMarkup([{ ...selected[0], saved: [removable] }], [], 'underline', MARKUP_COLORS.underline)[0]
+  expect(pdfPageState([page], [operation])[0].markups).toEqual([])
+  expect(page.markups).toHaveLength(1)
+  for (const operations of [[operation, operation], [{ ...operation, annotationId: 'c'.repeat(64) }], [{ ...operation, expectedAnnotationSha256: 'c'.repeat(64) }], [{ ...operation, rect: [1, 2, 3, 4] }]]) expect(() => pdfPageState([page], operations)).toThrow(/身份/)
+})

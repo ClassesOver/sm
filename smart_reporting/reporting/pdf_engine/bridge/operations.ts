@@ -1,3 +1,4 @@
+import { markupRemovalLinks, markupRemovalIdentity, removeSourceMarkups, type MarkupRemoval } from './markup-delete'
 import { createHash } from 'node:crypto'
 import { PDFArray, PDFDict, PDFName, PDFNumber, PDFCheckBox, PDFDocument, PDFDropdown, PDFOptionList, PDFRadioGroup, PDFSignature, PDFTextField } from 'pdf-lib'
 import { z } from 'zod'
@@ -30,6 +31,7 @@ const fieldIdentity = { fieldId: z.string().regex(/^[a-f0-9]{64}$/), expectedFie
 const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('setFormValue'), ...fieldIdentity, value: z.string().max(4000).optional(), checked: z.boolean().optional() }).strict(),
   z.object({ kind: z.literal('replaceText'), ...page, objectId: z.string().min(1).max(256), expectedTextSha256: z.string().regex(/^[a-f0-9]{64}$/), newText: z.string().max(4000) }).strict(),
+  z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, rect, text: z.string().trim().min(1).max(10000), color: color.optional() }).strict(),
@@ -62,13 +64,14 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     const expectedFieldSha256 = sha256(Buffer.from(JSON.stringify(model)))
     return { ...model, fieldId: sha256(Buffer.from(`${sourceSha256}:${name}:${kind}`)), expectedFieldSha256 }
   })
+  const removalLinks = markupRemovalLinks(document, formFields.some(field => field.kind === 'signature') || form.hasXFA() || document.catalog.has(PDFName.of('Perms')))
   const pages = document.getPages().map((page, index) => ({
     pageId: `sha256:${sourceSha256}:page:${index}`, index,
     ...(textPages ? { textObjects: textPages[index] } : {}),
     ...(() => {
       try {
         const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray)
-        const markups = annots ? Array.from({ length: annots.size() }, (_, i) => annots.lookup(i, PDFDict)).flatMap(annotation => {
+        const markups = annots ? Array.from({ length: annots.size() }, (_, i) => annots.lookup(i, PDFDict)).flatMap((annotation, i) => {
           const subtype = String(annotation.get(PDFName.of('Subtype'))).slice(1)
           const type = ({ Highlight: 'highlight', Underline: 'underline', Squiggly: 'squiggly', StrikeOut: 'strikeout' } as Record<string, string>)[subtype]
           if (!type) return []
@@ -76,7 +79,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
           if (!q.length || q.length % 8 || !q.every(Number.isFinite)) throw new Error('unreadable_source_markup')
           const quads = Array.from({ length: q.length / 8 }, (_, i) => q.slice(i * 8, i * 8 + 8))
           const c = annotation.lookupMaybe(PDFName.of('C'), PDFArray)?.asArray().map(value => Number(String(value))) ?? []
-          return [{ markupType: type, quads, color: c }]
+          return [{ markupType: type, quads, color: c, ...markupRemovalIdentity(sourceSha256, index, i, annots!.get(i)!, annotation, removalLinks) }]
         }) : []
         return { markups, markupReadSafe: true }
       } catch { return { markups: [], markupReadSafe: false } }
@@ -84,7 +87,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, ...pageSizeAvailability(document, formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, ...pageSizeAvailability(document, formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
@@ -97,6 +100,8 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   if (sizeOps.length && !model.capabilities.pageSize) throw new Error(model.capabilities.pageSizeReason ?? 'pdf_page_size_source_unsupported')
   const byId = new Map(model.pages.map((page) => [page.pageId, page]))
   const crops = new Map<string, [number, number, number, number]>()
+  const removals: MarkupRemoval[] = []
+  const removedIds = new Set<string>()
   const deleted = new Set<string>()
   const touched = new Set<string>()
   let reordered = false
@@ -155,6 +160,13 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       continue
     }
     if (op.kind === 'replaceText') continue
+    if (op.kind === 'removeMarkup') {
+      const markup = target.markups.find(mark => mark.annotationId === op.annotationId)
+      if (!target.markupReadSafe || !markup || !markup.removable || markup.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_markup_identity_invalid_or_readonly')
+      removedIds.add(op.annotationId)
+      removals.push({ pageIndex: target.index, annotationId: op.annotationId, expectedAnnotationSha256: op.expectedAnnotationSha256 })
+      continue
+    }
     if (op.kind === 'addMarkup') {
       if (!target.markupReadSafe) throw new Error('pdf_source_markup_unreadable')
       const current = crops.get(op.pageId), b = target.cropBox
@@ -190,13 +202,13 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   request.textEdits = prepared.edits
   const skippedOperations = [...prepared.skipped]
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
-  let bytes = content
-  if (remaining.some(op => !['cropPage', 'setPageSize'].includes(op.kind))) {
-    const result = await applySaveRequest(content, request)
+  let bytes = await removeSourceMarkups(content, model.sourceSha256, removals)
+  if (remaining.some(op => !['removeMarkup', 'cropPage', 'setPageSize'].includes(op.kind))) {
+    const result = await applySaveRequest(bytes, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
       request.textEdits = []
-      bytes = ops.some(op => op.kind !== 'replaceText') ? (await applySaveRequest(content, request)).bytes : content
+      bytes = ops.some(op => !['replaceText', 'removeMarkup'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
     } else bytes = result.bytes
   }
   if (crops.size) {
@@ -227,7 +239,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => op.kind === 'addMarkup') ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

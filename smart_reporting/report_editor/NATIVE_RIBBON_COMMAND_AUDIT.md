@@ -234,3 +234,13 @@ reading and18-step10–800% zoom/status/wheel/DOM-anchor behavior are accepted i
 `NATIVE_PDF_VIEW_ACCEPTANCE.md`; those three families, reading-position persistence,
 complete shortcuts and every source fit/layout rule remain open. No whole-View
 completion or disabled-control parity credit is claimed.
+
+
+## PDF saved-markup toggle follow-up
+
+Home/Annotate now follow pinned pending-first then one-saved match semantics.
+Safe four-type saved marks can be removed with immutable source/page/ordinal ID
+and dictionary digest, history and actual preview/download. The original disabled
+removal checkpoint is superseded only for these bounded sources. Linked replies/
+popups/structure, direct objects, signed/XFA and unreadable sources stay readonly;
+arbitrary annotation commands are not credited. Evidence: `NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`.

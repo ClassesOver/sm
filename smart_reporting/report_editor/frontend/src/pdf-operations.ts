@@ -18,7 +18,7 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
 export interface PdfBox { x: number; y: number; width: number; height: number }
 export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
@@ -27,6 +27,7 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
   validatePdfSizeOperations(operations)
   const byId = new Map(pages.map(page => [page.pageId, { ...page }]))
   const deleted = new Set<string>()
+  const removed = new Set<string>()
   let order = pages.map(page => page.pageId)
   for (const operation of operations) {
     if (operation.kind === 'reorderPages') {
@@ -45,6 +46,13 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (deleted.has(page.pageId)) throw new Error('裁切不能引用已删除页面')
       const rect = validatedPdfCrop(operation.rect, page.cropBox)
       page.cropBox = { x: rect[0], y: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] }
+    } else if (operation.kind === 'removeMarkup') {
+      if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
+      const source = pages.find(item => item.pageId === page.pageId)!
+      const mark = source.markups?.find(item => item.annotationId === operation.annotationId)
+      if (Object.keys(operation).some(key => !['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256'].includes(key)) || typeof operation.annotationId !== 'string' || !/^[a-f0-9]{64}$/.test(operation.annotationId) || !source.markupReadSafe || !mark?.removable || mark.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || removed.has(operation.annotationId)) throw new Error('标注身份已过期或暂不支持移除；原草稿已保留')
+      removed.add(operation.annotationId)
+      page.markups = page.markups?.filter(item => item.annotationId !== operation.annotationId)
     } else if (operation.kind === 'addMarkup') {
       if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
       validatePdfMarkup(operation)

@@ -362,3 +362,14 @@ Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行�
 检查、只读Chromium视图/真实滚轮/打印媒体隔离/源字节相等与两份构建预算
 通过，详见 `report_editor/NATIVE_PDF_VIEW_ACCEPTANCE.md`。阅读位置持久化、
 完整快捷键/行布局及整体源功能仍未完成，开关关闭。
+
+
+2026-11-06 PDF 已保存四类文字标注移除：固定源 pending-first/单一 saved 匹配
+与先删除后改字顺序接通，使用独立来源页/原标注序号身份及字典SHA，
+只解除该页引用并复制共享Annots数组；未修改vendor删除writer或增加几何
+回退。关联/签名/复杂来源只读，实际预览和新修订可回读。18个新文件、
+34个相关前端、2个服务、2个受影响来源用例及Chromium/pypdf通过；Node22
+断网只读验证移除、无字体时改字跳过仍保留移除、伪造请求无产物。两份
+构建和预算、33项本地SHA通过；独立bridge仍有六项基线诊断。证据见
+`report_editor/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`，保留失败迭代，
+不声称完整镜像/桌面/生产或全PDF对齐；开关关闭。
