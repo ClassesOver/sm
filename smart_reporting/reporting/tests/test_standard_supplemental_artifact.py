@@ -166,7 +166,7 @@ async def test_concurrent_identical_artifact_is_reused_and_not_claimed_as_create
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('mode', ['single', 'proof_thread', 'batch_checks', 'query_scope', 'ratio', 'ratio_period', 'batch', 'batch_failure', 'disabled',
+@pytest.mark.parametrize('mode', ['single', 'proof_thread', 'proof_failure', 'proof_batch_failure', 'batch_checks', 'query_scope', 'ratio', 'ratio_period', 'batch', 'batch_failure', 'disabled',
                                   'series', 'previous_baseline', 'absolute_baseline', 'mean_baseline', 'median_baseline', 'cross_period',
                                   'comparison', 'comparison_period', 'comparison_ungrouped', 'comparison_cross', 'comparison_drift', 'comparison_current_hash',
                                   'comparison_baseline_hash', 'comparison_current_missing_hash',
@@ -198,6 +198,16 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
             return original_proof(**kwargs)
 
         monkeypatch.setattr(analysis_module, 'build_standard_population_proof', tracked_proof)
+
+    if mode in {'proof_failure', 'proof_batch_failure'}:
+        original_proof = analysis_module.build_standard_population_proof
+
+        def broken_proof(**kwargs):
+            if kwargs['request'].measure_field == 'actual_equipment':
+                raise ValueError('injected proof failure with private detail')
+            return original_proof(**kwargs)
+
+        monkeypatch.setattr(analysis_module, 'build_standard_population_proof', broken_proof)
 
     workspace = _MemoryWorkspace()
     extended = mode in {'series', 'previous_baseline', 'absolute_baseline', 'mean_baseline', 'median_baseline', 'cross_period'}
@@ -241,6 +251,13 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                                  dataset_id='dataset_001', dataset_sha256=identity['sha256'],
                                  **{'period_values': [SimpleNamespace(period='2025-01', value=10),
                                                      SimpleNamespace(period='2025-02', value=20)]})
+        if mode in {'proof_failure', 'proof_batch_failure'}:
+            parent.unit = '元'
+            parent.field = 'actual_equipment'
+            parent.period_field = 'period'
+            parent.period_granularity = 'month'
+            parent.aggregation = parent.period_aggregation = 'sum'
+            parent.cumulative_policy = None
         dataset = {'datasetId': 'dataset_001', **identity,
                    'columns': ['period', 'department', 'actual_equipment', 'visits']}
         if mode == 'comparison_cross':
@@ -358,10 +375,12 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
                 'ratio_fact_id': ratio_fact.fact_id,
                 'group_by_period': mode == 'ratio_period',
             })
-        elif mode in {'batch', 'batch_failure'}:
+        elif mode in {'batch', 'batch_failure', 'proof_batch_failure'}:
             second = spec.model_copy(update={'measure_field': 'visits', 'parent_fact_id': 'fact-bbbbbbbbbbbbbbbb'})
             other_parent = SimpleNamespace(**vars(parent))
             other_parent.fact_id = second.parent_fact_id
+            if mode == 'proof_batch_failure':
+                other_parent.field = 'visits'
             other_parent.period_values = [SimpleNamespace(period='2025-01', value=3),
                                           SimpleNamespace(period='2025-02', value=4)]
             state.facts.metrics.append(other_parent)
@@ -412,6 +431,22 @@ async def test_runtime_standard_callback_signs_evidence_without_script(monkeypat
     assert 'cost_total' in result['evidence'].findings[0]['metricCodes']
     if mode == 'proof_thread':
         assert proof_threads and all(thread != event_loop_thread for thread in proof_threads)
+    if mode in {'proof_failure', 'proof_batch_failure'}:
+        finding = result['evidence'].findings[0]
+        assert 'populationProof' not in finding
+        diagnostic = finding['populationVerification']
+        assert diagnostic['status'] == 'unverified'
+        issue, = diagnostic['issues']
+        assert issue['code'] == 'proof_error'
+        assert issue['tablePointer'] == '/findings/0'
+        assert issue['datasetId'] == 'dataset_001'
+        assert issue['periods'] == ['2025-01', '2025-02']
+        assert result['evidence'].warnings
+        assert 'private detail' not in workspace.files[result['evidenceFile'].path].decode()
+        if mode == 'proof_batch_failure':
+            other = result['evidence'].findings[1]
+            assert other['populationProof']['tablePointer'] == '/findings/1'
+            assert other['populationVerification']['status'] == 'verified'
     if mode == 'batch_checks':
         assert len(result['evidence'].findings) == 40
         checks = result['evidence'].reconciliations

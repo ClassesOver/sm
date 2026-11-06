@@ -4022,18 +4022,37 @@ class RuntimeAnalysisMixin:
                     _input_cache=parsed_input_cache,
                 )
                 population_proof = None
+                proof_issues: list[dict[str, Any]] = []
                 try:
                     population_proof = await asyncio.to_thread(
                         build_standard_population_proof,
                         csv_content=content, dataset_sha256=identity.sha256,
                         request=request, parent_fact=parent, finding=raw_payload["findings"][0],
                         _input_cache=parsed_input_cache,
+                        _issues=proof_issues,
                     )
                 except Exception as error:
                     logger.bind(analysis_id=state.instruction.get("currentAnalysisId"),
                                 error_type=type(error).__name__).warning("report_standard_population_proof_unavailable")
+                    proof_issues.append({"code": "proof_error", "message": "完整总体证明核验异常",
+                                         "errorType": type(error).__name__})
+                pointer = f"/findings/{len(combined['findings'])}"
+                for issue in proof_issues:
+                    issue.update(datasetId=request.dataset_id, outputName=request.output_name,
+                                 tablePointer=pointer)
+                    issue.setdefault("periods", list(request.current_periods))
+                    raw_payload["warnings"].append(
+                        f"{issue['code']}: {request.dataset_id}/{request.output_name} {pointer}: {issue['message']}"
+                    )
+                raw_payload["findings"][0]["populationVerification"] = {
+                    "status": "verified" if population_proof is not None else (
+                        "unverified" if proof_issues else "not_applicable"),
+                    "issues": proof_issues,
+                }
+                for issue in raw_payload["findings"][0].get("issues", ()):
+                    issue["tablePointer"] = pointer
                 if population_proof is not None:
-                    population_proof["tablePointer"] = f"/findings/{len(combined['findings'])}"
+                    population_proof["tablePointer"] = pointer
                     raw_payload["findings"][0]["populationProof"] = population_proof
                     population_proofs.append(population_proof)
                 combined["findings"].extend(raw_payload["findings"])

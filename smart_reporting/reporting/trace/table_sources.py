@@ -482,7 +482,7 @@ def _resolve_population(derivation: TableDerivationV1, sources: Mapping[str, byt
     if any(not isinstance(row, list) or len(row) != len(columns) for row in rows):
         return None
     labels = [row[dimension_index] for row in rows]
-    if (any(not isinstance(label, str) or not label for label in labels)
+    if (any(not isinstance(label, str) or not label.strip() for label in labels)
             or len(set(labels)) != len(labels) or sorted(labels) != proof.get('members')
             or len(labels) != proof.get('memberCount')
             or hashlib.sha256(json.dumps(sorted(labels), ensure_ascii=False,

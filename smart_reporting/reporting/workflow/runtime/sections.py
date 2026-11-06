@@ -2137,7 +2137,24 @@ def _verified_population_contexts(work_item: SectionWorkItem, sources: Mapping[s
                             or proof.get('scope') != request.get('scope')
                             or proof.get('periods') != request.get('currentPeriods')
                             or proof.get('completePopulation') is not True
-                            or proof.get('invalidRowCount') != 0):
+                            or proof.get('invalidRowCount') != 0
+                            or not isinstance(proof.get('members'), list)
+                            or not proof['members']
+                            or any(not isinstance(member, str) or not member.strip()
+                                   for member in proof['members'])):
+                        continue
+                    columns, rows = table.get('columns'), table.get('rows')
+                    dimension = proof.get('dimensionField')
+                    if (not isinstance(columns, list) or dimension not in columns
+                            or not isinstance(rows, list) or not rows
+                            or any(not isinstance(row, list) or len(row) != len(columns) for row in rows)):
+                        continue
+                    labels = [row[columns.index(dimension)] for row in rows]
+                    if (any(not isinstance(label, str) or not label.strip() for label in labels)
+                            or len(set(labels)) != len(labels) or sorted(labels) != proof['members']
+                            or len(labels) != proof.get('memberCount')
+                            or hashlib.sha256(json.dumps(sorted(labels), ensure_ascii=False,
+                                separators=(',', ':')).encode()).hexdigest() != proof.get('membersSha256')):
                         continue
                     key = (resource, pointer)
                     previous = contexts.get(resource, {}).get(pointer)

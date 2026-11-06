@@ -206,6 +206,12 @@ class QuantityCatalog:
             semantics = table_semantics(document, node)
             resource_context = self._table_contexts.get(resource, {})
             trusted = resource_context.get(pointer, resource_context)
+            # 旧登记也须重新检查实际标签；失格只撤回总体资格，表格仍可读取。
+            dimension = trusted.get('dimensionField') if trusted else None
+            if trusted and (not complete or dimension in columns and any(
+                    not isinstance(row[columns.index(dimension)], str)
+                    or not row[columns.index(dimension)].strip() for row in rows)):
+                trusted = {}
             if trusted:
                 scope = trusted.get('scope')
                 periods = _structured_periods({**trusted, 'periodGranularity':

@@ -472,9 +472,11 @@ def run_standard_supplemental(
 
     frame = scoped_frame(csv_content, authorized_fields, request.query_bound_scope_fields, authorized_query_scope)
 
+    issues: list[dict[str, Any]] = []
     rows, warnings = _read_rows(
         frame, request,
         periods=request.current_periods if request.baseline_dataset_id is not None else None,
+        _issues=issues,
     )
     baseline_rows = None
     if request.baseline_dataset_id is not None:
@@ -484,9 +486,13 @@ def run_standard_supplemental(
             baseline_csv_content, baseline_authorized_fields,
             request.baseline_query_bound_scope_fields, baseline_authorized_query_scope,
         )
+        baseline_issues: list[dict[str, Any]] = []
         baseline_rows, baseline_warnings = _read_rows(
-            baseline_frame, request, periods=request.baseline_periods,
+            baseline_frame, request, periods=request.baseline_periods, _issues=baseline_issues,
         )
+        for issue in baseline_issues:
+            issue["datasetId"] = request.baseline_dataset_id
+        issues.extend(baseline_issues[:100 - len(issues)])
         warnings.extend(baseline_warnings)
     elif baseline_csv_content is not None:
         raise ValueError("独立对照 CSV 必须绑定 baselineDatasetId")
@@ -528,7 +534,7 @@ def run_standard_supplemental(
             invalid = True
             warnings.append("集中度总额非正，CR5、HHI 保留为空")
         top5_amount = math.fsum(value for _, value in ordered[:5])
-        cr5 = top5_amount / total if not invalid else None
+        cr5 = _finite_share(top5_amount, total, warnings) if not invalid else None
         negative = any(value < 0 for _, value in ordered)
         if negative:
             warnings.append("存在负净额分组，CR5 按原始净额计算；经典 HHI 不适用，保留为空")
@@ -786,6 +792,10 @@ def run_standard_supplemental(
             primaryScope="row_period_primary" if request.group_by_period else "window_primary",
             primaryRankBy=request.rank_by, contributionScope="window_total_change",
         )
+    if issues:
+        finding["issues"] = issues
+    if request.operation == "group_ratio":
+        finding["operandAggregation"] = "independent_valid_sums"
     return {
         "findings": [finding],
         "reconciliations": compact_standard_reconciliations(reconciliations, request.output_name + "_checks"),
@@ -823,6 +833,7 @@ def build_standard_population_proof(
     *, csv_content: bytes, dataset_sha256: str, request: StandardSupplementalRequest,
     parent_fact: Any, finding: dict[str, Any],
     _input_cache: BatchAnalysisInputCache | None = None,
+    _issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """从身份已核验的全量CSV复算成员；无效/遗漏行或父事实不一致不签完整性。
 
@@ -830,8 +841,9 @@ def build_standard_population_proof(
     声明的 request/parent 当作可信输入。金额闭合仅是附加一致性检查。
     """
     if (request.operation != "group_summary" or not request.measure_unit
-            or request.query_bound_scope_fields
-            or hashlib.sha256(csv_content).hexdigest() != dataset_sha256
+            or request.query_bound_scope_fields):
+        return None
+    if (hashlib.sha256(csv_content).hexdigest() != dataset_sha256
             or getattr(parent_fact, "dataset_sha256", None) != dataset_sha256
             or getattr(parent_fact, "dataset_id", None) != request.dataset_id
             or getattr(parent_fact, "field", None) != request.measure_field
@@ -843,29 +855,38 @@ def build_standard_population_proof(
             or getattr(parent_fact, "period_aggregation", None) != "sum"
             or getattr(parent_fact, "cumulative_policy", None) is not None
             or not getattr(parent_fact, "fact_id", None)):
+        _append_standard_issue(_issues, request, "identity_mismatch", "输入身份或冻结父事实口径不一致")
         return None
     frame = read_analysis_csv(csv_content) if _input_cache is None else _input_cache.read(csv_content)
     parent_periods = tuple(item.period for item in getattr(parent_fact, "period_values", ()))
     if (len(parent_periods) != len(request.current_periods)
             or set(parent_periods) != set(request.current_periods)):
+        _append_standard_issue(_issues, request, "parent_period_mismatch", "父事实期间与请求不一致")
         return None
     fields = {request.measure_field, request.dimension_field, request.period_field, *request.scope}
     if fields - set(frame.columns):
+        _append_standard_issue(_issues, request, "missing_field", "原始输入缺少证明所需字段")
         return None
     scoped = apply_metric_scope(frame, request.scope)
-    rows, warnings = _read_rows(scoped, request)
+    rows, warnings = _read_rows(scoped, request, _issues=_issues)
     if warnings:
         return None
     selected = [row for row in rows if row["period"] in request.current_periods]
+    if {row["period"] for row in selected} != set(request.current_periods):
+        _append_standard_issue(_issues, request, "missing_period", "范围内原始有效行未覆盖全部请求期间")
+        return None
     computed, total, _ = _group_rows(selected, [])
     if (not computed or finding.get("columns") != list(standard_output_columns(request))
             or finding.get("rows") != computed
             or finding.get("scope") != request.scope
             or finding.get("periods") != list(request.current_periods)
-            or finding.get("columnMeta", {}).get("value", {}).get("unit") != request.measure_unit
-            or request.parent_total != frozen_period_total(parent_fact, request.current_periods)
-            or not reconciliation_passes(total, frozen_period_total(parent_fact, request.current_periods),
-                                         absolute_tolerance=1e-9, relative_tolerance=1e-12)):
+            or finding.get("columnMeta", {}).get("value", {}).get("unit") != request.measure_unit):
+        _append_standard_issue(_issues, request, "output_mismatch", "输出表与原始输入复算不一致")
+        return None
+    parent_total = frozen_period_total(parent_fact, request.current_periods)
+    if (request.parent_total != parent_total or not reconciliation_passes(
+            total, parent_total, absolute_tolerance=1e-9, relative_tolerance=1e-12)):
+        _append_standard_issue(_issues, request, "reconciliation_failed", "输入或请求总额与冻结父事实不闭合")
         return None
     members = sorted(row[0] for row in computed)
     encoded = json.dumps(members, ensure_ascii=False, separators=(",", ":")).encode()
@@ -882,9 +903,26 @@ def build_standard_population_proof(
     }
 
 
+def _append_standard_issue(
+    issues: list[dict[str, Any]] | None, request: StandardSupplementalRequest,
+    code: str, message: str, *, period: str | None = None,
+    periods: Sequence[str] | None = None,
+) -> None:
+    """只记录稳定原因与定位，不收集原始敏感行；沿用证据最多100项的边界。"""
+    if issues is None or len(issues) >= 100:
+        return
+    issue = {"code": code, "message": message, "datasetId": request.dataset_id,
+             "outputName": request.output_name,
+             "periods": [period] if period is not None else list(
+                 request.current_periods if periods is None else periods)}
+    if issue not in issues:
+        issues.append(issue)
+
+
 def _read_rows(
     frame: pl.DataFrame, request: StandardSupplementalRequest,
     *, periods: Sequence[str] | None = None,
+    _issues: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     warnings: list[str] = []
     # 同一 select 中按角色投影，不在原 frame 上覆盖可能同名的合法源字段。
@@ -914,19 +952,33 @@ def _read_rows(
         denominator = item.get("__denominator")
         if period is None:
             warnings.append("期间为空的行已跳过")
+            _append_standard_issue(_issues, request, "invalid_period", "原始行期间为空",
+                                   periods=tuple(selected_periods.values()))
             continue
         key = metric_period_key(str(period), request.period_granularity)
         if key is None:
             warnings.append("期间无法按冻结指标粒度解析的行已跳过")
+            _append_standard_issue(_issues, request, "invalid_period", "原始行期间无法按冻结粒度解析",
+                                   periods=tuple(selected_periods.values()))
             continue
         period = selected_periods.get(key)
         if period is None:
             continue
+        if ((request.dimension_field is not None and (dimension is None or not str(dimension).strip()))
+                or (request.secondary_dimension_field is not None
+                    and (secondary_dimension is None or not str(secondary_dimension).strip()))):
+            _append_standard_issue(_issues, request, "invalid_member", "分组缺少有效归属，原标签和金额保留",
+                                   period=period)
         if dimension is None:
             warnings.append("分组为空的行保留在 null 分组")
+        elif request.dimension_field is not None and not str(dimension).strip():
+            warnings.append("分组仅含空白的行保留原标签和金额，不能证明完整归属")
         if request.secondary_dimension_field is not None and secondary_dimension is None:
             warnings.append("交叉分组为空的行保留在 null 分组")
+        elif request.secondary_dimension_field is not None and not str(secondary_dimension).strip():
+            warnings.append("交叉分组仅含空白的行保留原标签和金额，不能证明完整归属")
         if value is None or not math.isfinite(float(value)):
+            _append_standard_issue(_issues, request, "invalid_numeric", "分子包含无效数值", period=period)
             warnings.append(f"分组 {dimension if dimension is not None else 'null'} 存在不可解析分子")
             if request.operation != "group_ratio":
                 continue
@@ -934,6 +986,7 @@ def _read_rows(
         if request.denominator_field is not None and (
             denominator is None or not math.isfinite(float(denominator))
         ):
+            _append_standard_issue(_issues, request, "invalid_numeric", "分母包含无效数值", period=period)
             warnings.append(
                 f"分组 {dimension if dimension is not None else 'null'} 存在不可解析分母，已跳过分母值"
             )
@@ -986,7 +1039,7 @@ def _period_group_rows(
         previous_period = labels.get(metric_comparison_period_key(period, request.period_granularity, "mom"))
         previous_groups = grouped_periods[previous_period][0] if previous_period is not None else {}
         for index, (dimension, value) in enumerate(ordered, start=1):
-            item = [period, dimension, value, index, value / total if total else None]
+            item = [period, dimension, value, index, _finite_share(value, total, warnings)]
             if request.include_period_change:
                 previous = previous_groups.get(dimension)
                 change = value - previous if previous is not None else None
@@ -1035,12 +1088,12 @@ def _cross_group_rows(
     secondary_sums = {key: math.fsum(values) for key, values in secondary_totals.items()}
     result: list[list[Any]] = []
     for index, (primary, secondary, value) in enumerate(ordered, start=1):
-        item = [primary, secondary, value, index, value / total if total else None]
+        item = [primary, secondary, value, index, _finite_share(value, total, warnings)]
         if include_marginal_shares:
             primary_total = primary_sums[primary]
             secondary_total = secondary_sums[secondary]
-            item.extend((primary_total, value / primary_total if primary_total else None,
-                         secondary_total, value / secondary_total if secondary_total else None))
+            item.extend((primary_total, _finite_share(value, primary_total, warnings),
+                         secondary_total, _finite_share(value, secondary_total, warnings)))
             if primary_total == 0 or secondary_total == 0:
                 warnings.append("交叉分组的边际合计为零，对应占比保留为空")
         result.append(item)
@@ -1165,7 +1218,12 @@ def _ratio_rows(
                 warnings.append(
                     f"分组 {dimension if dimension is not None else 'null'} 比率结果不可表示，派生值保留为空"
                 )
-                scaled_denominator = difference = ratio = None
+                # 各派生值独立判断：比率溢出不能抹去有限分母或仍可表示的差额。
+                scaled_denominator = scaled_denominator if math.isfinite(scaled_denominator) else None
+                difference = difference if math.isfinite(difference) else None
+                ratio = ratio if (
+                    scaled_denominator is not None and ratio is not None and math.isfinite(ratio)
+                ) else None
             elif scaled_denominator == 0:
                 warnings.append(
                     f"分组 {dimension if dimension is not None else 'null'} 分母为零，ratio 保留为空"
@@ -1174,11 +1232,19 @@ def _ratio_rows(
     return result, numerator_total, denominator_total
 
 
+def _finite_share(value: float, total: float, warnings: list[str]) -> float | None:
+    share = value / total if total else None
+    if share is not None and not math.isfinite(share):
+        warnings.append("占比超出有限数值范围，保留金额且占比为空")
+        return None
+    return share
+
+
 def _group_rows(rows: Iterable[dict[str, Any]], warnings: list[str]) -> tuple[list[list[Any]], float, float]:
     grouped, total = _group_totals(rows)
     ordered = sorted(grouped.items(), key=lambda item: (-item[1], item[0] is None, item[0] or ""))
     result = [
-        [dimension, value, index, value / total if total else None]
+        [dimension, value, index, _finite_share(value, total, warnings)]
         for index, (dimension, value) in enumerate(ordered, start=1)
     ]
     return result, total, math.fsum(item[1] for item in ordered)
