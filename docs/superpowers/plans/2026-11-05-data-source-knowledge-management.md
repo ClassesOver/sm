@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. 默认在当前执行会话中顺序实施；本计划不要求启动子 agent。
 
-**Goal:** 建设自己的数据源和业务知识库管理页面及配置存储，通过本地 admin 登录维护数据源与知识库，并让报告使用可追溯的数据与知识版本。
+**Goal:** 在现有 Reporting 服务内交付一个可运营、可恢复、可验证的企业管理闭环：admin 登录后维护 StarRocks 数据源、业务口径和版本化知识库，报告按已验证组织冻结数据与知识依据；首版不扩展为通用 BI 平台。
 
 **Architecture:** 在现有 FastAPI / AgentOS 单体服务内增加管理模块，复用 PostgreSQL 和 SQLAlchemy。前端增加独立 React 管理入口；知识解析、分块、向量检索复用 Agno Knowledge / PgVector，原始文件使用持久化目录。配置按运行冻结，文档按版本发布，后台任务持久化恢复。
 
@@ -10,12 +10,65 @@
 
 **Spec:** 本文件“已确认范围”和“关键设计”是本次实施的需求基线，来自本轮对话。
 
-**Revision:** 2026-11-06，补充 admin 登录；按源码证据深化设计，删除首版 SSO、多角色和资源 ACL。本文是待实施计划，源码核对不等于运行验收。
+**Revision:** 2026-11-06，按“深入而不是更大”修订。保留专家方法、原始材料、具体工具、独立验收证据及重写题目；本次按隔离分支当前源码和现存 JUnit 校正基线，把配置规范化哈希、既有执行参数保真两项审查问题纳入 Task 2/3/4 的前置修复。计划描述目标，进度文件记录实施与证据边界；计划修订后续做的配置基础与审查修复已提交为 `ef08213b`；尚未启用 database 报告模式或执行上线验收。
+
+## 先回答“深入而不是更大”
+
+### 顶尖专家会额外做什么
+
+专家不会只增加页面字段。他们会先把“谁能看什么、哪一版配置生效、报告引用了什么”变成可检查的不变量，再设计页面：
+
+1. **做边界建模**：明确本系统是 Reporting 的管理与证据控制面，不承担 BI 的自助指标探索、仪表盘编排、OLAP 加速或经营驾驶舱职责。
+2. **做身份与权限威胁建模**：区分 admin 管理会话、报告调用身份、编辑会话和公开下载授权，验证一个凭据不能横向升级到另一个入口。
+3. **做版本与溯源建模**：把数据源、Profile、目录、知识文档、索引代次、报告运行和引用快照串成可回放的版本链，而不是只存“当前配置”。
+4. **做失败语义设计**：区分“未命中”“索引未完成”“索引不可用”“内容不适用”和“原文身份失效”，用软告警保留可用产物，不把失败伪装成成功。
+5. **做迁移和恢复演练**：验证数据库、原文文件、向量索引和加密密钥必须一起备份恢复；验证服务重启、任务租约过期和旧版本回读。
+6. **做可观测性与审计最小集**：记录谁在何时发布了哪一个版本、测试针对哪个草稿、报告冻结了哪些依据；不记录密码、DSN、Cookie 或原文敏感内容。
+7. **做反例验收**：刻意测试并发发布、改密竞态、伪造组织范围、跨组织同文档、部分向量写入、失效文档和异常下载链路，而不只演示一条成功路径。
+
+这些工作增加的是可证明性和故障边界，不增加首版业务模块；因此首版继续排除 SSO、多角色 ACL、OCR、网页抓取、指标建模和通用 BI 看板。
+
+### 他们会从哪些最原始的素材入手
+
+不以“已经整理好的需求表”作为唯一输入，而以以下可复核素材建立事实基线：
+
+| 素材 | 取法 | 用途 |
+| --- | --- | --- |
+| 真实 FastAPI 路由表和中间件 | 静态枚举注册路由、依赖和异常映射 | 生成管理 API 访问矩阵，防止漏保护 |
+| 现有会话、Cookie、CSRF 和授权实现 | 阅读 `report_editor` grant/session/repository/api | 复用已验证的令牌哈希、期限和写请求保护方式 |
+| 现有数据源/Profile JSON、DDL、元数据响应 | 使用脱敏配置、真实目录快照和 schema hash | 定义导入、继承、发布和运行冻结的真实契约 |
+| 真实 StarRocks 连接与失败响应 | 独立测试库中的连接、超时、权限和目录变化 | 证明连接测试与元数据同步不是只验证格式 |
+| 原始 PDF、DOCX、Markdown、TXT 文件 | 小型脱敏资料集，保留页码、标题、行号和前后版本 | 校验解析定位、版本保留、检索引用和原文哈希 |
+| PostgreSQL/pgvector 数据库与迁移日志 | 并发事务、部分提交、重启、恢复库 | 验证版本指针、索引 manifest、租约和备份一致性 |
+| 已生成 PDF/Word 及其 SHA-256 | 故障注入和直接 HTTP 下载 | 证明验收告警不会错误阻断可核验产物签发 |
+| 真实浏览器操作和网络记录 | Playwright 桌面/窄屏、登录过期、409 冲突 | 证明页面行为与 API 契约一致，而非只通过组件单测 |
+
+### 具体方法和工具
+
+- **契约方法**：先写访问矩阵、状态机、不变量和版本引用结构，再实现 API；用 JSON Schema/Pydantic 约束公开输入，公开输出使用字段白名单，并检查日志脱敏。
+- **代码与接口**：`rg`/静态路由枚举、pytest、HTTPX/ASGI client、SQLAlchemy 事务测试、可注入时钟和故障注入 fixture。
+- **安全**：Argon2id（pwdlib）、随机 session + SHA-256 哈希、Origin/CSRF、密码/DSN/Cookie 负向断言；不把 admin Cookie 传给报告授权路径。
+- **数据与检索**：Agno Reader/Chunking/Knowledge/PgVector，确定性 embedding fixture + 少量真实中文 embedding 验收；manifest、chunk hash、向量维度和定位回读。
+- **浏览器与部署**：Playwright、Docker Compose、独立 PostgreSQL/pgvector、迁移演练、容器重启和独立恢复环境；前端仅构建独立 management bundle。
+- **证据产出**：JUnit、脱敏 HTTP 摘要、页面截图、文件 SHA-256 对账、恢复记录和 `manifest.json`，明确 `passed/failed/skipped/not_run`，不把跳过当通过。
+
+### 除了我们之外，什么可以证明结果正确
+
+正确性不由模型或开发者口头判断，而由四类外部证据共同证明：
+
+1. **独立系统证据**：真实 PostgreSQL/pgvector、真实 StarRocks 连接、真实文件系统和直接 HTTP 下载结果。
+2. **独立实现证据**：用 `python-docx`/`lxml`、PDF 文本工具、SHA-256、数据库查询和向量 manifest 回读检查输出，不调用被测业务函数自证。
+3. **独立人员证据**：另一位工程师依据 runbook 和资料集复现访问矩阵、版本对账、检索定位及恢复步骤；不能只看作者测试报告。
+4. **独立运行证据**：容器重启、任务中止、数据库恢复、密码重置和失效会话重放后的结果；所有结果带版本、时间和配置 hash。
+
+### 重写后的题目
+
+> 请在现有 smart_reporting 项目内，设计并分阶段实施一个不过度扩张的企业级 Reporting 管理控制面：提供单一 `admin` 登录和服务端会话，管理 StarRocks 数据源、现有 Profile/元数据及其不可变版本，建设支持 PDF/DOCX/Markdown/TXT 的业务知识库和可恢复索引任务，并将已验证的数据配置与知识引用冻结到报告运行中。方案必须明确与 BI 的边界，不增加负责人或可配置查询限额，不引入首版 SSO、多角色 ACL、OCR、网页抓取或通用仪表盘；必须从真实路由、现有认证实现、脱敏配置/DDL、原始文档、数据库与渲染产物入手，说明具体方法和工具，并用独立的安全、并发、故障注入、浏览器、备份恢复和 PDF/Word 下载证据证明结果正确。请输出可执行的分阶段计划、接口和数据不变量、验收资料集、证据 manifest 及明确的未覆盖边界。
 
 ## 全局约束
 
 - 用户要求：“企业级的方案计划，也不要过于复杂”“建设自己的管理页面和配置存储”“知识库也加上”“查询限额 负责人 不要”“需要有admin 用户登陆控制”。
-- 不提供负责人字段，不新增查询限额管理字段、表单或 API；现有取数执行契约不在本次拆改范围。
+- 不提供负责人字段，不新增查询限额管理字段、表单或 API；现有取数执行契约不在本次拆改范围。原文件已有的 `QueryLimits` 作为内部兼容快照保留、参与版本身份并在取数时恢复，不成为管理页面或公开写入 API 的可编辑能力。
 - 应用代码日志系统使用 Loguru。
 - 优先复用 Agno，禁止为解析、分块、向量检索另造框架。
 - 禁止重复完整测试；任务执行定点验证，收尾只执行一次完整检查。
@@ -26,7 +79,7 @@
 
 ## 原始证据与设计取舍
 
-2026-11-06 只读核对下列源码。这里的“已核对”指静态实现事实；本次没有创建账号、执行迁移、启动数据库、调用模型或生成报告。README 和旧计划只用于定位，不作为验收证据。
+初版于 2026-11-06 只读核对下列源码。本次修订读取隔离分支提交、未提交管理模块、只读审查结论及现存 JUnit；未重跑应用测试、执行迁移、调用模型或生成报告。续做阶段已有的测试结果在进度文件单列，不当作本次重跑或端到端签收。README 和旧计划只用于定位，不作为验收证据。
 
 | 原始素材及定位 | 已核对事实 | 对计划的影响 |
 | --- | --- | --- |
@@ -131,9 +184,11 @@
 | 数据组 | 主要保存内容 |
 | --- | --- |
 | admin_account / admin_sessions / login_attempts | 单例 admin、密码哈希、authVersion、会话哈希、登录节流计数 |
-| sources / source_versions | 稳定 sourceId、启停、草稿、发布版本、连接配置、凭据引用 |
+| runtime_snapshots | 组织、runId、服务端核验的入口身份绑定、不可变配置引用、引用摘要及创建时间；不存明文连接信息 |
+| sources / source_versions | 稳定 sourceId、启停、草稿、发布版本、连接配置、凭据引用和内部既有执行参数快照 |
 | profiles / profile_versions | 原始 Profile JSON、修订号、依赖、内容哈希 |
 | tenant_settings | 默认 sourceIds、默认知识库 IDs |
+| runtime_snapshots | 可信运行身份、不可变配置引用及摘要；不保存明文凭据 |
 | knowledge_bases / documents / document_versions | 分类标签、适用范围、原文身份、解析内容、索引代次、生效期间和发布版本 |
 | processing_jobs | 类型、版本、步骤、状态、尝试次数、租约、错误和进度 |
 | audit_events | 操作者、操作、目标资源、时间、脱敏变更摘要 |
@@ -153,7 +208,7 @@
 
 - 增加 `file` / `database` 两种显式配置模式。部署迁移后选择 `database`，配置只读数据库；数据库为空或不可用时不得偷偷退回文件配置。
 - 保留 `file` 模式供已有 CLI 和部署兼容。模式不在每次请求中由调用方选择。
-- 文件导入通过现有严格 parser 校验，预先获取并核对目录和凭据，再按组织原子导入；导入包含 Profile 继承闭包、完整源发布版本和默认源配置，外部预检失败不提交部分配置。重复导入同内容且目录/口径/凭据版本一致返回无变更。
+- 文件导入通过现有严格 parser 校验，预先获取并核对目录和凭据，再按组织原子导入；导入包含 Profile 继承闭包、完整源发布版本、既有 `QueryLimits` 和默认源配置，外部预检失败不提交部分配置。重复导入同内容且目录/口径/凭据/执行参数一致返回无变更；仅执行参数变化也创建新版本。
 - 管理页面同步现有 metadata 服务的 DDL/terms/measureSemantics，再与真实 Catalog 校对；同步结果形成独立元数据版本。管理后台维护连接配置，现有 metadata 服务继续维护业务目录定义。
 - 数据库模式下，报告使用已发布的元数据版本；页面显示目录同步时间和结构差异。真实 Catalog 校验只用于发现变化，不静默扩大可用表范围。
 - Profile 继续使用现有模型和继承解析器。首版支持 JSON 导入、验证、预览、发布及绑定，不增加第二套指标口径 DSL。
@@ -199,6 +254,8 @@
 | 改密后旧会话无效 | 旧密码验证完成后，新密码事务先提交 | 登录重查 authVersion，不签发旧凭据 session；用两个数据库连接控制顺序 |
 | 发布版本指针和审计一致 | 更新指针后、事务提交前失败 | 全部回滚；重试一次只产生一个发布版本/审计事件 |
 | 运行固定同一配置组合 | 读默认源时另一事务发布新 Profile | 一致性事务读取旧组合或新组合，不能拼接混合版本 |
+| 配置身份可重建 | 名称含首尾空格、数据库名大小写不同 | 先按现有 parser 规范化，再用同一内容落库/哈希/恢复；合法配置发布后可 freeze |
+| 导入不改变执行语义 | 非默认 QueryLimits 导入、改值、历史恢复 | 文件解析对象与数据库恢复对象逐字段相等；改值生成新版本，旧运行仍保留旧值 |
 | 文件可读才登记处理任务 | 文件落盘后 DB 事务失败 | 无可见文档/任务；受控重试清理该次临时对象，不能把孤立文件当发布文档 |
 | 索引完整才 ready | 部分 batch 提交后 worker 退出 | 发布仍指向旧版本；读回不匹配 manifest，不置 ready |
 | 过期 worker 不能激活结果 | 租约过期后新 attempt 已领取 | 提交时 CAS attempt/generation/lease；旧 worker 结果不激活 |
@@ -212,7 +269,8 @@
 | 路径 | 职责 |
 | --- | --- |
 | `smart_reporting/management/` | 新增管理身份、会话、审计、设置、路由和迁移入口 |
-| `smart_reporting/management/data_sources/` | 新增连接配置、发布版本、Profile/元数据存储及导入 |
+| `smart_reporting/management/data_sources/` | 连接配置、发布版本和加密凭据 |
+| `smart_reporting/management/{profiles,catalog,importer,runtime}.py` | 延续隔离分支已有落点，维护 Profile、元数据、导入和运行快照；不另建同职责模块 |
 | `smart_reporting/business_knowledge/` | 新增业务知识库、文件存储、Agno 适配、任务处理及引用 |
 | `smart_reporting/report_editor/frontend/src/management/` | 新增独立管理 React 入口和页面；复用现有 npm 构建环境 |
 | `smart_reporting/report_editor/frontend/vite.management.config.ts` | 新增管理入口独立构建，避免引入 Office 编辑器依赖 |
@@ -228,11 +286,31 @@
 
 自建 API 使用 `/management/api/v1/*`。现有报告入口、编辑器 API 和公开下载 URL 契约保持兼容。
 
+## 当前执行基线与续做顺序
+
+本轮计划修订以隔离 worktree `/home/junge/.codex/worktrees/dc7b/smart_reporting`、分支 `feat/data-source-knowledge-management` 为实现基线；当前主工作区没有这些管理模块，不能据此声称主工作区已具备后台。主工作区已有 Office 修改不纳入本计划提交。
+
+| 任务 | 实际状态 | 仍需完成的可验收闭环 |
+| --- | --- | --- |
+| 1 admin | 核心后端已提交 `1ae7200d`；统一业务路由认证补充已提交 | 应用启动、实际路由全覆盖、浏览器登录及部署验收 |
+| 2 数据源 | 草稿/发布/凭据已提交；依赖校验与发布幂等补充已提交 | 规范化哈希已修复；连接测试、列表/详情、启停/默认源、差异与历史复制接口 |
+| 3 Profile/目录/导入 | 存储/API 已提交 `f3dc0cff`；完整同步、原子导入、CLI、固定祖先闭包补充已提交 | 既有执行参数保真已修复；补旧配置 dry-run 逐源提示；受控外部响应不算真实 StarRocks 验收 |
+| 4 运行配置 | 持久化 provider、0006/0007 迁移和跨实例/并发测试已提交 | 配置身份/参数恢复已修复；HTTP/MCP/CLI 可信入口、bootstrap、后续取数接入尚未完成 |
+| 5–10 | 未实施 | 页面、知识库、索引、报告引用、部署及独立验收 |
+
+**下一执行批次固定为：**
+
+1. 已完成 Task 2 配置哈希、Task 3 执行参数保真和 Task 4 恢复断言，21 项定点集成与只读复核通过，提交 `ef08213b`。补旧配置 dry-run 逐源提示，不重做已存在的同步/导入/provider。
+2. 以已有持久化基础完成 Task 4.2–4.4：可信入口 → 运行登记/恢复授权 → confirm_source → 后续实际取数；database 模式未达到此闭环前不启用。
+3. 补齐 Task 2 页面所需 API，再完成 Task 5 的数据源管理闭环；之后顺序推进知识库和报告集成。
+
+各 Task 复选框表示完整交付条件，部分后端存在不等于整项完成。已有证据：管理存储 JUnit 为 37 项、HTTP 回归 JUnit 为 43 项，均无失败/跳过；另有 26 项元数据/Profile 回归的交接记录。历史批次未覆盖上述两项问题；新增 21 项定点结果已覆盖修复，但仍未证明页面、真实数仓、知识或上线完成。完整记录见同目录 `2026-11-05-data-source-knowledge-management-progress.md`。
+
 ## 实施任务
 
-任务顺序为 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10。前五项形成可用的数据源后台；第六至八项形成可独立验收的知识库；第九项完成报告接入；第十项上线验收。
+目标依赖顺序为 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10，续做按上面的实际基线补齐缺口。前五项形成可用的数据源后台；第六至八项形成可独立验收的知识库；第九项完成报告接入；第十项上线验收。
 
-每项先写关键行为测试，再完成最小实现；以下代码是拟定的接口和行为断言，不表示功能已经存在。使用仓库现有 `pytest.mark.anyio` 模式，不新增另一套异步测试插件。
+新增或修正行为先写失败测试，再完成最小实现；以下代码表示目标契约，已存在能力以当前 service 签名为准，尚未满足的目标在任务中继续收口。使用仓库现有 `pytest.mark.anyio` 模式，不新增另一套异步测试插件。
 
 ### Task 1：admin 登录、会话、数据库迁移与审计
 
@@ -245,7 +323,7 @@
 - [ ] 使用 pwdlib[argon2] 保存/验证密码哈希；CLI 无密码命令行参数、无密码日志。session 使用 secrets 随机值和 SHA-256 哈希，参考编辑器实现但不直接导入其报告授权服务。
 - [ ] 按生命周期表实现会话及事务撤销；认证状态、配置写入和审计持久化错误返回具体失败，日志只记录动作和稳定错误码。密码哈希开销在部署机器验证，不阻塞 async 事件循环。
 - [ ] API 的 login 公开但检查 Origin 和节流，logout 按矩阵允许失效会话幂等清除；password/me 和全部业务路由带 `require_admin`。已登录写入检查 CSRF。提供账号锁定恢复和数据库恢复后全会话撤销的 CLI 流程。
-- [ ] 执行 `.venv/bin/python -m pytest -q smart_reporting/tests/test_management_access.py smart_reporting/tests/test_management_persistence.py`；真实事务和并发验证标记 integration，在独立 PostgreSQL 显式执行。
+- [ ] 执行 `.venv/bin/python -m pytest -q -m integration smart_reporting/tests/test_management_access.py smart_reporting/tests/test_management_persistence.py`；真实事务和并发验证标记 integration，在独立 PostgreSQL 显式执行。
 
 ```python
 # 同文件 fixture 提供 auth、已初始化 admin 和可推进的 clock。
@@ -266,68 +344,105 @@ assert (await auth.login("admin", new_password, "127.0.0.1")).raw_token
 
 **Files:** 新增 `smart_reporting/management/data_sources/{__init__,models,repository,secrets,service,api}.py`；新增该模块数据库迁移；新增 `smart_reporting/tests/test_management_sources.py`。
 
-**Interfaces:** `SourceDraft` 只包含 sourceId、name、type、database、credentialRef/连接写入参数、reportingProfileVersionId、metadataVersionId；`SourceVersion` 增加 revision、contentHash、publishedAt。`SourceService.create_draft(actor, payload)`、`save_draft(actor, source_id, payload, expected_version)`、`publish(actor, source_id, expected_version)` 返回不带凭据的公开对象；`resolve_credentials(scope, source_id, revision)` 只供服务端调用。Task 2 测试使用已登记的 Profile/目录版本 fixture，真实版本导入与页面操作由 Task 3 完成。
+**Interfaces:** 沿用现有 `SourceService.create_draft(raw_session, scope, source_id, payload)`、`save_draft(raw_session, scope, source_id, payload, expected_version)`、`publish(raw_session, scope, source_id, expected_version)`，返回脱敏字典；不为统一示例批量改写现有接口。`SourceDraft` 只包含 sourceId、name、type、database、credentialRef/连接写入参数、reportingProfileVersionId、metadataVersionId；`SourceVersion` 增加 revision、contentHash、publishedAt。`resolve_credentials(scope, source_id, revision)` 只供服务端调用。Task 2 测试使用已登记的 Profile/目录版本 fixture，真实版本导入与页面操作由 Task 3 完成。
 
 ```python
-# service、actor 和 payload 由本文件 fixture 创建；service 使用测试 repository。
-draft = await service.create_draft(actor, payload)
-published = await service.publish(actor, draft.source_id, expected_version=draft.version)
-assert published.revision == 1
-assert "password" not in published.model_dump()
-assert published.content_hash
+# 已登记 scope，payload 绑定同组织已发布的 Profile 与目录；fixture 使用真实独立 PG。
+draft = await service.create_draft(raw_session, scope, "operations", payload)
+published = await service.publish(raw_session, scope, "operations", draft["version"])
+assert published["revision"] == 1
+assert "credential_ref" not in published
+assert published["contentHash"]
 ```
 
 - [ ] 写出上面的发布行为测试，并增加旧版本不变、CAS 冲突及版本恢复生成新 revision 的用例。
 - [ ] 实现 StarRocks 配置校验，复用现有 adapter/parser；连接凭据只在 adapter 初始化时解析。使用 cryptography.Fernet/MultiFernet 和外置密钥，支持按 key ID 轮换并保留解密旧版本所需密钥。
 - [ ] 实现草稿保存、版本差异、发布和启停；加密值不参与公开哈希，使用凭据版本引用参与配置身份。发布指针和审计在同一事务。
-- [ ] 实现连接测试，调用现有连接与 Catalog 接口，关闭连接；只返回状态、耗时、对应草稿版本和脱敏原因。
-- [ ] 执行 `.venv/bin/python -m pytest -q smart_reporting/tests/test_management_sources.py`，通过后提交对应文件。
+- [ ] **先修复已确认的规范化哈希问题：** `name=" 数仓 "`、`database="WAREHOUSE"` 保存和发布后必须可以 freeze/load_pinned；规范化必须先于存储与哈希，并复用同一内容构造规则。对正常配置、大小写/空白输入、导入/管理 API 两种入口逐项断言恢复结果与内容哈希一致。历史发布记录不原地重写、不绕过身份校验；无法从已存内容验证的旧版本在 dry-run 中明确列出，经管理员复制为新草稿重新发布后才用于新运行；已有快照保留并明确返回恢复失败原因。
+- [ ] 源发布时在同一事务验证 Profile、目录和凭据引用属于同组织、同数据源且确已发布；多源报告必须绑定兼容的同一有效 Profile。缺少依赖的草稿可保存，发布返回 422，不产生新 revision/指针/审计；更新 Profile 或目录必须显式发布新源版本。
+- [ ] 补齐受保护的列表/详情、分页版本记录、启停、默认源、版本差异和从历史复制草稿接口；默认源更新做 CAS，并校验同组织已启用、已发布的 sourceId。复制历史版本后仍经草稿发布，不覆盖原版本。
+- [ ] 实现连接测试，调用草稿的实际连接与 Catalog 接口并关闭连接；只返回状态、耗时、对应草稿版本和脱敏原因。测试完成前草稿已变化时，保留测试对应版本，不显示为新草稿已通过。
+- [ ] 执行 `.venv/bin/python -m pytest -q -m integration smart_reporting/tests/test_management_sources.py`，通过后提交对应文件。
 
 **验收：** 页面未来可完成一次连接配置发布；业务模型、API 和数据库字段均没有负责人或可编辑查询限额。
 
 ### Task 3：元数据、Profile 与现有配置导入
 
-**Files:** 新增 `smart_reporting/management/data_sources/{catalog,profiles,importer}.py`；扩展前述 repository/api 和迁移；修改 `smart_reporting/reporting/profile/registry.py` 以复用内存解析；新增 `smart_reporting/tests/test_management_source_import.py`、`test_management_catalog.py`。
+**Files:** 延续已存在的 `smart_reporting/management/{catalog,profiles,importer}.py` 及 `{catalog_api,profile_api,import_api}.py`；扩展前述 repository/api；为内部执行参数快照补管理迁移（接在已有 `0006_runtime_snapshots` 后），不为目录 JSON 包装单独建迁移；修改 `smart_reporting/reporting/profile/registry.py` 以复用内存解析；新增 `smart_reporting/tests/test_management_source_import.py`、`test_management_catalog.py`。
 
-**Interfaces:** `import_configuration(actor, config_dir, dry_run)` 返回导入差异；`sync_catalog(actor, source_id, expected_draft_version)` 使用草稿连接返回未发布的元数据版本；`publish_catalog(actor, source_id, catalog_revision)` 发布目录；`publish_profile(actor, document, expected_version)` 复用 `ReportingProfileDocument` 和现有继承校验。草稿允许暂未绑定目录/Profile，源发布要求引用已有效，避免“发布源才可同步目录”的循环依赖。
+**Interfaces:** 沿用 `ConfigurationImporter.import_configuration(raw_session, scope, directory, dry_run, environ)` 返回脱敏差异字典；`CatalogService.synchronize(raw_session, scope, source_id, expected_draft_version)` 使用草稿连接返回未发布的元数据版本，`publish(raw_session, scope, source_id, revision)` 发布目录；`ProfileService.preview(raw_session, scope, payload)`、`save_draft(raw_session, scope, payload, expected_version)`、`publish(raw_session, scope, profile_id, expected_version)` 复用现有模型与继承校验。草稿允许暂未绑定目录/Profile，源发布要求引用已有效，避免“发布源才可同步目录”的循环依赖。
 
 ```python
-first = await importer.import_configuration(actor, config_dir, dry_run=False)
-second = await importer.import_configuration(actor, config_dir, dry_run=False)
-assert first.created_sources == 1
-assert second.changed is False
-assert await repository.published_defaults(actor.scope) == ("operations",)
+first = await importer.import_configuration(raw_session, scope, config_dir, False, environ)
+second = await importer.import_configuration(raw_session, scope, config_dir, False, environ)
+assert first["changed"] is True
+assert second["changed"] is False
+# 独立 SQL 读回 source_versions、默认源和绑定引用，不能仅断言返回值。
 ```
 
 - [ ] 为配置导入准备脱敏临时 JSON 和完整 Profile 父子示例，验证幂等、默认源解析和整批事务；测试元数据同步失败时现有发布目录不变。
 - [ ] CLI 增加 `import-config --dry-run` 和正式导入；先校验所有源、Profile 继承依赖和默认源，再预检元数据/Catalog、解析凭据，最后一次提交目录、Profile、源版本和默认源。dry-run 不写入或返回凭据；正式导入重新预检，失败不留下半批发布配置。
-- [ ] 使用现有 `ReportingMetadataClient` 同步 DDL/terms/measureSemantics，校对 Catalog 后存储版本；展示新增、删除、类型变化及同步时间，不自动扩大已发布目录。
-- [ ] 提供 Profile JSON 上传/校验/生效结果预览/发布，发布时固定父 Profile 的版本闭包；数据源绑定明确的 Profile 版本。一次报告所选源仍遵守相同 Profile 约束。
-- [ ] 执行 `.venv/bin/python -m pytest -q smart_reporting/tests/test_management_source_import.py smart_reporting/tests/test_management_catalog.py smart_reporting/reporting/tests/test_profile_v1.py`，通过后提交对应文件。
+- [ ] 同步 API 由服务端用指定草稿连接调用现有 `ReportingMetadataClient` 与真实 Catalog，不能把浏览器上传的 `catalog` 列表视作已完成真实同步。外部 I/O 在写事务之外，提交前 CAS 再查草稿版本，保存同步所针对的版本和差异。
+- [ ] 目录版本复用已有 JSON 列，保存 `{tables, metadata, sourceDraftVersion}`，其中 metadata 为完整 `ModelTermsResponse`；内容哈希排除仅用于并发校验的 sourceDraftVersion。旧 list 格式可展示，但发布/运行前必须重新同步完整元数据，不伪造空口径；不为此新增表或迁移。展示结构差异与同步时间，不自动扩大表范围。
+- [ ] 导入不能只创建源草稿或跳过所有同名资源：同内容且依赖/凭据一致为无变更；内容变化创建新版本；Profile 按继承依赖拓扑预检并固定父版本闭包。预检所有连接和元数据后一次提交发布版本、引用、默认源与审计，任一失败全部不生效；dry-run 同样先校验 admin 和组织。
+- [ ] **先修复已确认的导入保真问题：** 将现有 parser 得到的完整 `QueryLimits` 作为内部 JSON 快照保存在草稿/发布版本，纳入同一内容哈希，并由 provider 原样传回 parser。管理 API 不接收可编辑限额；编辑其他字段、历史复制时保留内部值，新建源采用 parser 默认值。测试导入 `statementTimeoutSeconds=9,maxRows=100,maxBytes=2048` 后恢复值逐字段相等；只改其中一项必须生成新版本，重复相同文件不变，旧运行恢复旧值。旧记录缺失自定义值时不猜测：迁移明确标记来源，切换前从原文件重新导入并对账；不得把缺失值静默写成已验证兼容。
+- [ ] 提供 Profile JSON 上传/校验/生效结果预览/发布，发布时固定父 Profile 的版本闭包；数据源绑定明确的 Profile 版本。祖先独立发布不得改变固定父版本闭包，冲突明确拒绝。一次报告所选源仍遵守相同 Profile 约束。
+- [ ] 执行 `.venv/bin/python -m pytest -q -m integration smart_reporting/tests/test_management_source_import.py smart_reporting/tests/test_management_catalog.py smart_reporting/tests/test_management_profiles.py`，另跑普通回归 `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_reporting_profile_source_binding.py`，通过后提交对应文件。
 
 **验收：** 当前部署配置可以先预览再导入；旧业务口径模型继续生效，目录和 Profile 都有可追溯版本。
 
-### Task 4：按报告运行读取和冻结数据库配置
+### Task 4：持久化运行配置、可信组织与恢复
 
-**Files:** 新增 `smart_reporting/management/data_sources/provider.py`；修改 `smart_reporting/reporting/{bootstrap,contract}.py`、`smart_reporting/reporting/workflow/runtime/{base,planning,datasets}.py`、`smart_reporting/runtime/settings.py`、`smart_reporting/http/identity.py`、`smart_reporting/reporting_mcp/identity.py`、`smart_reporting/reporting/workflow/scope.py`；新增 `smart_reporting/reporting/tests/test_managed_source_runtime.py`。
+**Files:** 完善已有 `smart_reporting/management/runtime.py`，不另建 `data_sources/provider.py`；修改 `management/repository.py`，新增迁移 `management/migrations/versions/0006_runtime_snapshots.py`；修改 `reporting/bootstrap.py`、`reporting/workflow/runtime/{base,planning,datasets}.py`、`runtime/settings.py`、`http/identity.py`、`reporting_mcp/identity.py`、`reporting/workflow/scope.py`，并核对 `prepare_run/start_run` 的实际落点；新增 `reporting/tests/test_managed_source_runtime.py`，扩展 `tests/test_managed_runtime.py` 和 `tests/test_management_migration.py`。
 
-**Interfaces:** `ReportConfigurationProvider.resolve(scope, source_ids)` 返回 `PinnedReportConfiguration`；该对象包含 registry、有效 Profile、已发布 metadata 和公开版本引用。`load_pinned(scope, references)` 重建对应服务端配置。`file` provider 包装原加载器；`database` provider 查询已发布版本。
+**当前基础与缺口：** 已提交的 provider 已移除内存权威缓存，具有 `register_run/assert_identity/freeze/load_pinned`、当前发布指针选版、目录/Profile/凭据核对和持久化快照；已有跨实例/并发定点测试。它尚未接入报告入口与实际后续取数，配置哈希和执行参数恢复已修复；不能据此启用 database 模式。
+
+**Interfaces：** 沿用已有 `register_run(run_id, scope, *, user_id, thread_id, entrypoint)`、`assert_identity(run_id, scope, *, user_id, thread_id)`、`freeze(run_id, scope, source_ids=None) -> ManagedRunSnapshot` 和 `load_pinned(scope, references) -> ManagedRunSnapshot`。`ManagedRunSnapshot` 包含服务端 sources、有效 profile、已发布 metadata 和 `references`；`public_state()` 只返回组织、公开展示及 references。file 模式沿用原 registry/Profile 加载路径，不强制为其复制数据库生命周期。
+
+**持久化契约：** `runtime_snapshots` 唯一键 `(scope_id, run_id)`，保存经验证的入口绑定、版本引用、引用摘要与创建时间。`start_run` 从服务端已核验身份登记运行；配置引用初始为空，仅首次 freeze 可原子写入，之后禁止改写。references 包含 runId、各 sourceId/revision/contentHash、credentialRevision、Profile 版本/继承闭包/哈希及 metadata 版本/哈希；不包含 DSN、密码、会话或 capability token。`load_pinned` 必须先找到该运行的可信记录，再核对传入引用完全一致，不能把可编辑 Workflow state 当作授权或版本选择的权威。
+
+#### 4.1 复核已有持久化基础与补充兼容断言
+
+- [ ] 复用已有真实 PG 的跨实例/并发 fixture；新增规范化配置和非默认执行参数的恢复反例后再修复，不重复创建 provider。以下用例是已有能力的目标契约，增加新断言时仅重跑受影响用例。
 
 ```python
-pinned = await provider.resolve(scope, ("operations",))
-await source_service.publish(actor, "operations", expected_version=next_version)
-restored = await provider.load_pinned(scope, pinned.references)
-assert restored.references == pinned.references
-assert restored.profile.effective_profile_hash == pinned.profile.effective_profile_hash
+# fixture 注册可信 run-1，并为 run-2 提供同一组织的合法调用身份。
+first = await provider.freeze("run-1", scope)
+await publish_second_source_revision()  # fixture 明确发布 revision=2，连接与目录均变化
+restarted = ManagedConfigurationProvider(scopes, vault)
+restored = await restarted.load_pinned(scope, first.references)
+assert restored.references == first.references
+assert restored.source_versions == {"operations": 1}
+assert restored.sources["operations"].connection_dsn() == original_dsn
+second = await restarted.freeze("run-2", scope)
+assert second.source_versions == {"operations": 2}
+# 独立 SQL 读取 runtime_snapshots，逐字段检查引用/哈希且没有 original_dsn/密码。
 ```
 
-- [ ] 用 fixture 提供两个正常组织的不同配置、同一源的前后版本，验证各运行独立解析、旧任务恢复使用原版本、新任务使用新版本、database 模式不会回退文件。
-- [ ] 在 `confirm_source` 中取 scope、选源并冻结配置，存入现有持久化工作流状态；运行快照只包含版本引用及允许公开的信息；另在服务端持久化经验证的入口来源，恢复读取该可信记录，不能接受请求体伪装的验证标记。
-- [ ] 更新实际读取 `self.registry` / `self.profiles` 的取数和恢复路径，让它们使用本次运行配置；禁止逐次覆盖共享 runtime 成员。凭据仍由服务端加载，不进入 Workflow state。
-- [ ] 缺少源、未发布目录、组织身份不可用时返回明确的取数前错误；已存在的冻结数据不因配置更新而重算。未启用 database 模式时继续走原 file provider。
-- [ ] 执行 `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_managed_source_runtime.py smart_reporting/reporting/tests/test_report_data_sources.py`，覆盖普通 Console default 值不得自动取得数据库配置，以及受控 CLI 显式组织的行为；通过后提交对应文件。
+- [ ] 保留已有 `0006_runtime_snapshots` 及保留账号/会话/旧目录的升级测试；内部执行参数迁移接在其后，迁移 head 断言跟随实际新迁移。增加发布版本和运行引用不被重写的断言；重复 upgrade 不变。测试库使用项目 `psycopg` 驱动。
+- [ ] freeze 在管理配置写事务同一锁顺序下读取默认源、当前发布指针及全部不可变依赖，并持久化；目前写事务使用同一 advisory lock，先沿用以保证一致性，不额外设计锁服务。外部取数不占用该事务；未来放松锁时必须保留并发一致性测试。
+- [ ] 同 run 重试读回原记录；换源参数与原引用冲突时明确报错，不覆盖。同组织多运行、同 sourceId 跨组织和两个实例并发首次 freeze 均不串配置。恢复验证每个版本和哈希，缺失或不匹配时返回明确错误，不选择“最新”补位。
 
-**验收：** 发布配置不需要重启服务；并发报告不串配置；恢复不会把旧任务切换到新口径。
+#### 4.2 可信入口与恢复授权
+
+- [ ] HTTP 只从已验签 capability 的服务端上下文取得组织/用户/thread；MCP 从验证后的 token claims 取得；受控 CLI 从主机配置显式取得组织。由这些入口写入服务端运行身份记录，客户端 JSON、dependencies 或 `verified=true` 不能创建可信记录。
+- [ ] 恢复必须同时匹配可信运行记录和当前合法调用身份/既有运行访问契约；工作流后台续跑按已接受的服务端运行记录执行。普通 Console 的 `default/default`、伪造组织字符串、admin Cookie 均不能授权 database 模式取数。
+- [ ] load_pinned 只重建原记录对应的配置；停用后禁止新运行选源，恢复如需新增取数重新检查启停/范围，已物化数据继续沿用原身份；旧凭据失效明确报错，不改用新凭据。
+
+#### 4.3 接入所有实际取数路径
+
+- [ ] 增加部署级 `file/database` 选择并在 bootstrap 注入 provider；database 模式不调用文件加载器，也不因空库、连接失败或缺少发布依赖回退文件。
+- [ ] `confirm_source` 冻结配置成功后将公开引用写入现有持久化状态；数据库模式读取已发布 metadata，不临时调用实时 metadata 替换其业务口径。实时 Catalog 只发现差异，不能扩大允许表范围。
+- [ ] 检索 `_source`、`_sources`、`_resolve_profile`、`_adapter` 及 `self.registry/self.profiles` 的真实调用点，为运行显式传递配置/上下文；需要异步加载时同步修改调用链。共享 runtime 不保存“当前运行”或覆盖共享 registry；内存缓存最多是优化，清空缓存仍能恢复。
+- [ ] 缺少依赖、可信组织或持久化失败均为取数前错误；这不改变报告产物签发软告警契约。存在可读历史成稿时仍按原授权读取，不为查看重跑取数。
+
+#### 4.4 定点验收并提交
+
+- [ ] 覆盖新运行用新版本、旧运行跨实例恢复旧版本、发布竞争只得到完整旧组合或新组合、跨组织拒绝、篡改引用拒绝、多源不兼容 Profile 拒绝、停用、旧凭据失效、数据库失败无文件回退，以及 file 模式兼容。
+- [ ] 在 `confirm_source` 及后续实际物化调用上验证使用冻结连接和目录；只测试 provider 返回对象不算报告接入验收。运行状态、公开 API 和审计均检查没有明文凭据。
+- [ ] 执行普通定点回归 `.venv/bin/python -m pytest -q smart_reporting/reporting/tests/test_report_data_sources.py`；真实存储用 `REPORTING_MANAGEMENT_TEST_DB_URL` 显式执行 `.venv/bin/python -m pytest -q -m integration smart_reporting/tests/test_managed_runtime.py smart_reporting/tests/test_management_migration.py smart_reporting/reporting/tests/test_managed_source_runtime.py`，按文件实际 mark 拆分单元/集成用例，不能漏跑或以 skip 计通过。保存结果后仅提交本任务文件。
+
+**验收：** 两个独立 provider 实例及报告后续取数均保持版本固定；新运行无需重启即可读取新发布配置；伪造范围和公开引用不能选择数据库资源。
 
 ### Task 5：管理前端和数据源页面
 
@@ -443,7 +558,7 @@ assert replayed.context_hash == first.context_hash
 
 **Files:** 新增 `docs/runbooks/data-source-knowledge-management.md`、`scripts/check_management.sh`；完善 `Dockerfile`、`docker-compose.yml`、`README.md`、`smart_reporting/README.md`；新增 `smart_reporting/tests/test_management_postgres.py` 和管理后台浏览器冒烟脚本。
 
-**Interfaces:** Runbook 规定迁移、导入、切换、备份和恢复顺序；`scripts/check_management.sh` 默认执行本功能定点检查，显式 integration 参数才连接 `REPORTING_TEST_DB_URL` 指向的独立测试库。
+**Interfaces:** Runbook 规定迁移、导入、切换、备份和恢复顺序；`scripts/check_management.sh` 默认执行本功能定点检查，显式 integration 参数才连接 `REPORTING_MANAGEMENT_TEST_DB_URL` 指向的独立测试库。
 
 ```bash
 # 本节命令在实施收尾执行；本次仅出计划，不运行这些检查。
@@ -471,7 +586,7 @@ bash scripts/check_agentos.sh
 
 ## 独立验收证据与复现方式
 
-所有新增功能下表当前状态均为**待实施、未执行**。任务内的测试代码和命令是未来验收要求，不是本次已通过的结果。
+下表是端到端签收标准，**目前均未完成独立签收**。Task 1–4 的部分后端及定点存储测试已存在，详见进度文件；不得将这些局部证据升级为整行验收通过。本次更新只核对源码、审查结论和现存 JUnit，未重跑应用测试。
 
 | 编号 | 要证明的结论 | 独立于实现者判断的证据 | 对应任务 |
 | --- | --- | --- | --- |
@@ -480,7 +595,7 @@ bash scripts/check_agentos.sh
 | A3 | 会话过期与重启符合契约 | 注入时钟验证 30 分钟/8 小时边界；重启服务后未过期 session 仍可用且绝对期限不延长 | 1、10 |
 | A4 | admin 不影响既有报告授权 | 现有有效下载 grant、编辑 session、MCP 身份回归通过；这些凭据访问管理 API 仍不获得权限 | 1、10 |
 | D1 | 发布配置与运行快照一致 | 真实 PostgreSQL 并发发布/取快照的双连接测试；记录旧运行和新运行各自的配置、Profile、目录哈希 | 2–4 |
-| D2 | 迁移后计算口径一致 | 同一份冻结数据、同一 Profile 的确定性计算结果对账；不以两次模型成稿的文字相等作为标准 | 3、10 |
+| D2 | 迁移后执行参数与计算口径一致 | 独立读取原文件 parser 结果和数据库发布快照，对照完整 QueryLimits/Profile/目录；同一冻结数据计算对账；仅修改执行参数必须改变源版本，旧运行不漂移 | 2–4、10 |
 | K1 | 索引完整且可恢复 | chunk manifest 与向量库读回的 ID/哈希/维度集合相等；进程中止、租约恢复后只激活一次正确 generation | 6、7 |
 | K2 | 搜索有来源且状态真实 | 固定资料集、固定问题及期望定位；真实 embedding/pgvector 结果保存；查询故障不能显示“正常未命中” | 7、8 |
 | R1 | 旧报告引用不漂移 | 更新/撤回原文后读取原报告：冻结文本、位置和哈希不变；原文失效有明确说明 | 9 |
@@ -491,7 +606,7 @@ bash scripts/check_agentos.sh
 
 **工具与输出：** pytest/HTTPX 记录接口断言；真实 PostgreSQL 记录事务结果；Playwright 记录桌面/窄屏操作及截图；SHA-256 对账文件和片段；容器重启与独立库恢复验证持久化。统一保存到 `/tmp/smart-reporting-management-acceptance/<run-id>/`，含 `manifest.json`、测试 JUnit、脱敏 HTTP 摘要、资料集版本、embedding 模型/维度、迁移版本、前端构建版本和恢复记录。manifest 明确 passed/failed/skipped/not_run 及原因，不保存密码、Cookie 或连接字符串。
 
-**执行分层：** 各任务只运行自己的定点测试；PostgreSQL 测试使用 `REPORTING_TEST_DB_URL` 指向独立库并显式 `-m integration`；正常 pytest 默认排除 integration，不能据此宣称数据库验收完成。最后按任务清单合并定点结果，再执行一次 `bash scripts/check_agentos.sh`；不重复完整测试。真实模型报告验证使用本项目 `smart-reporting-real-os-test` 技能规定的原生运行方式，并记录实际执行结果。
+**执行分层：** 各任务只运行自己的定点测试；管理模块 PostgreSQL 测试统一使用 `REPORTING_MANAGEMENT_TEST_DB_URL` 指向专用可清空独立库；SQLAlchemy URL 使用 `postgresql+psycopg://`，不切换为 asyncpg。知识模块集成 fixture 沿用同一测试变量并显式 `-m integration`；正常 pytest 默认排除 integration，不能据此宣称数据库验收完成。最后按任务清单合并定点结果，再执行一次 `bash scripts/check_agentos.sh`；不重复完整测试。真实模型报告验证使用本项目 `smart-reporting-real-os-test` 技能规定的原生运行方式，并记录实际执行结果。
 
 **迁移回退：** 在新环境预演，确认 pgvector、schema 与旧服务兼容后才切换 database 模式。保留原文件配置和切换点备份；切换失败时停止接收新数据库模式任务，保存故障现场并恢复旧服务及 file 模式。数据库模式已经开始的运行不改写为文件模式运行，留待恢复数据库 provider 后继续。数据库账号/文件恢复使用同一备份窗口，恢复出来的管理会话一律撤销。本文未声称回退或恢复演练已通过。
 
@@ -510,7 +625,7 @@ bash scripts/check_agentos.sh
 - [ ] 管理页面和 API 没有负责人或查询限额配置项。
 - [ ] 数据源配置、Profile 和文档发布版本可读取、可对比、可追溯。
 - [ ] 全部管理 API 均检查有效 admin 会话；报告资源范围来自服务端验证的调用身份，不能借用 admin 会话或自动补出的 default 值。
-- [ ] 数据库模式只有一个配置权威来源，页面发布不依赖服务重启。
+- [ ] 数据库模式只有一个配置权威来源，页面发布不依赖服务重启；规范化输入能重建配置身份，迁移保留现有执行参数且不增加可编辑限额。
 - [ ] 文档索引失败不影响上一发布版本；任务重启恢复不会重复激活错误代次。
 - [ ] 中文业务问题能够命中预期文档，并显示可靠的页码/章节来源。
 - [ ] 恢复报告沿用冻结的数据配置、知识片段和版本，不重新解释历史依据。
