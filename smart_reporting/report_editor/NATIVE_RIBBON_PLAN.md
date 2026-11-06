@@ -312,3 +312,10 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Replace page-only lookup with pinned index/case-fold/whole-word algorithms, per-occurrence boxes/current count and cyclic navigation. Preserve source1000 cap/200ms debounce and original-page identities across deletion/reorder and actual-output preview. Query shortcuts, readonly and disposal are connected.
 - [x] Eight new focused cases and seven affected View/zoom cases pass across selected runs; production-static Chromium validates actual PDF.js matching/navigation, draft/source invariance and packed-engine preview. Standard/Slides typing/builds and actual budgets pass. Evidence: `NATIVE_PDF_SEARCH_ACCEPTANCE.md`. Backend/runtime unchanged; no old runtime checks recounted.
 - [ ] OCR/auto-OCR, floating search UI/context, complex-glyph exact geometry, complete shortcuts and whole PDF/desktop/image/deployed acceptance remain open. Flags off.
+
+
+### PDF saved sticky-note continuation (2026-11-06)
+
+- [x] Bind existing safe Text note contents/deletion to original annotation identity and dictionary digest. Preserve object on edit, stage deterministic UTC M, replace pending edits/drop restored originals, support Apply/Cancel, history/reload and actual preview/download/reopen. Linked/rich/locked/shared/protected sources stay readonly.
+- [x] Correct raw-XFA census before pdf-lib getForm deletes it in memory; preserve original protection for notes/markup removal/page size/form editability. 23 new file cases,7 affected file cases,4 new +34 affected frontend cases,new +2 existing service cases,Chromium/pypdf,final golden download replay and4 Node22 readonly/offline cases pass across focused runs. Two builds/budgets,Ruff,33 hashes and zero new bridge diagnostics pass; six baseline desktop diagnostics remain. Evidence: `NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`.
+- [ ] Pending newly added note mutation,replies/threads,complex sources,full sidebar/popups,whole PDF and desktop/image/deployed acceptance remain open. Flags off.

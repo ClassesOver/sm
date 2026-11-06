@@ -18,11 +18,11 @@ LOCAL-SHA256.json records every current TS/MJS source and test, local package ma
 
 The bridge reads a JSON request file at argv[2], returns one JSON receipt on the last stdout line, and writes errors to stderr with a nonzero status. inspect requests are `{kind:"inspect",input}`; patch requests are `{kind:"patch",input,output,sourceSha256,operations}`. It calls upstream applySaveRequest, takes the returned bytes and writes a new destination using exclusive creation (`wx`); existing output files, source aliases, hard links and symbolic links are not overwritten. It never calls savePdfToPath or its verification-before-write path.
 
-At most 500 operations are accepted. Only highlight, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
+At most 500 operations are accepted. Only highlight, addMarkup, removeMarkup, editNote, removeNote, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
 
 Page IDs are `sha256:<source SHA-256>:page:<original zero-based index>`. The source digest is required at patch request level; optional per-operation sourceSha256 must agree if present. IDs are stable within one immutable source; after saving, inspect the new bytes to obtain new IDs. Operations reference original source page IDs. An optional single reorderPages must list every surviving page exactly once, even when deletePage appears later in the list. A page cannot be both deleted and otherwise edited in one request. Multiple rotatePage deltas on one retained page accumulate via upstream order. Empty operation lists return the exact original bytes.
 
-The schema cannot pass image edits, annotation deletion, redaction, arbitrary upstream text-edit fields, inserted content text, encryption, arbitrary file paths or other upstream request fields. Upstream image-edit/annot-delete modules are intentionally absent; image-edit imports Electron. The local save-pdf adaptation explicitly rejects their requests, and they are unreachable through this bridge's whitelist. This is a documented subset, not a promise that arbitrary upstream save requests work.
+The schema cannot pass image edits, generic annotation deletion, redaction, arbitrary upstream text-edit fields, inserted content text, encryption, arbitrary file paths or other upstream request fields. Upstream image-edit/annot-delete modules are intentionally absent; image-edit imports Electron. The local save-pdf adaptation explicitly rejects their requests, and they are unreachable through this bridge's whitelist. This is a documented subset, not a promise that arbitrary upstream save requests work.
 
 ## Development, bundle and deployment assets
 
@@ -163,5 +163,22 @@ feature flag, binding the preview digest to markup output SHA as well as intent.
 The renderer annotations helper is separately adapted with source/current SHA,
 local type import/content-box selector and prominent notice under frontend/src.
 No Node vendor or upstream SOURCE hash changed. See
-`report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`; saved annotation
-delete/edit is not implemented and is never disguised as a successful toggle.
+`report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`; safe saved-markup removal is now implemented by a strict source adapter; see
+`report_editor/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`. Generic vendor deletion
+requests remain unsupported.
+
+
+## Existing sticky-note continuation (2026-11-06)
+
+Strict editNote/removeNote records use immutable source/page/annotation identities
+and dictionary hashes. The native adapter applies the source Contents/M primitives
+without geometry fallback or fail-soft skips, preserving the edited object and
+copying Annots arrays for deletion. A staged UTC modifiedAt makes repeated preview
+and save deterministic. The vendor writer is unchanged. Replies/popups/rich text/
+locked/shared/direct/protected or unreadable sources remain readonly.
+
+Raw AcroForm/XFA must be captured before pdf-lib getForm(), which deletes XFA in
+its memory model. That source flag now protects note/markup mutations, size and
+form-field editability. This does not certify arbitrary XFA operations. Tests,
+artifact identities, original-source references and runtime evidence are in
+`report_editor/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`; whole PDF parity remains open.

@@ -62,3 +62,32 @@ async def test_saved_markup_removal_preview_download_and_stale_identity_without_
     assert content == actual['content']
     assert not inspect_pdf(content)['pages'][0]['markups']
     assert PdfReader(BytesIO(content)).pages[0].extract_text() == PdfReader(BytesIO(source)).pages[0].extract_text()
+
+
+@pytest.mark.anyio
+async def test_saved_note_edit_preview_save_and_download_without_text_flag(tmp_path):
+    import hashlib
+
+    from smart_reporting.report_editor.native import bind_native_workspace
+    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+    from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf
+    from smart_reporting.reporting.tests.test_pdf_saved_notes import note_operation
+
+    editor, context, source, downloads = await fixture(tmp_path, text_enabled=False)
+    page_id = inspect_pdf(source)['pages'][0]['pageId']
+    source = patch_pdf(source, [{'kind': 'addTextAnnotation', 'pageId': page_id, 'rect': [30, 100, 50, 118], 'text': 'original note'}])
+    await editor.workspace.awrite_bytes(bind_native_workspace(editor.workspace, context.scope), 'native/note-source.pdf', source)
+    context = context.model_copy(update={'source_file': ArtifactFile(path='native/note-source.pdf', size=len(source), sha256=hashlib.sha256(source).hexdigest(), mediaType='application/pdf')})
+    operation = note_operation(source)
+    preview = await editor.preview(context, expected_sha256=context.source_file.sha256, operations=[operation])
+    assert preview['appliedOperationIndices'] == [0] and preview['previewDigest']
+    actual = await editor.preview_file(context, expected_sha256=context.source_file.sha256, operations=[operation], expected_preview_digest=preview['previewDigest'])
+    with pytest.raises(ReportingError):
+        await editor.preview_file(context, expected_sha256=context.source_file.sha256, operations=[{**operation, 'contents': 'changed'}], expected_preview_digest=preview['previewDigest'])
+    result = await editor.save(context, expected_sha256=context.source_file.sha256, operations=[operation], request_id='saved-note-edit')
+    assert result['revisionRegistered'] and not result['validation']['ok']
+    _, chunks = await downloads.stream(result['artifacts']['pdf']['downloadUrl'].split('/')[-2], artifact='pdf')
+    content = b''.join([chunk async for chunk in chunks])
+    assert content == actual['content']
+    assert inspect_pdf(content)['pages'][0]['notes'][0]['contents'] == operation['contents']
+    assert PdfReader(BytesIO(content)).pages[0].extract_text() == PdfReader(BytesIO(source)).pages[0].extract_text()

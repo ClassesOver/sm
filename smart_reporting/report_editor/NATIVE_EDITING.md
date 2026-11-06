@@ -151,3 +151,10 @@ PDF 搜索现复用固定源索引/匹配与Unicode辅助算法，按逐处匹�
 支持大小写/全词、跨文本片段、Enter/Shift+Enter/Escape及Ctrl/Meta+F。
 原稿与实际写回预览分别缓存索引，删页/重排保持来源身份；不改变草稿和文件。
 定位框沿用源按字符比例的近似几何，未接通OCR，详见 `NATIVE_PDF_SEARCH_ACCEPTANCE.md`。
+
+
+安全来源的既有 PDF 便签可原位修改正文或删除，支持应用/取消、恢复原文、
+撤销重做、刷新、实际预览及下载重开。修改时间绑定草稿使预览与保存字节
+一致；关联回复/弹窗、富文本/锁定/共享引用、签名/XFA/读取不完整来源只读。
+原始XFA在pdf-lib getForm之前检查；普通操作的保真证据与边界见
+`NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`，未接通完整线程/侧栏。

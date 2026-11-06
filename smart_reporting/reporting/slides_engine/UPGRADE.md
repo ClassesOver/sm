@@ -381,3 +381,14 @@ Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行�
 浏览器检查，八个新定向/七个受影响前端检查通过；后端和运行包未变。
 详见 `report_editor/NATIVE_PDF_SEARCH_ACCEPTANCE.md`，不把OCR、浮动栏、
 复杂字形精确几何或完整镜像/桌面/生产对齐计作完成，开关关闭。
+
+
+2026-11-06 PDF 既有便签：严格editNote/removeNote使用来源标注身份/字典SHA，
+原位Contents/M及复制数组解除引用，UTC修改时间固定在草稿中；应用/取消、
+恢复原文、历史/刷新、实际预览及修订下载重开接通。发现并修复pdf-lib
+getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便签/标注移除、
+尺寸和表单。23新文件/7受影响文件、38前端、3服务、Chromium/独立pypdf、
+最终字节重放和Node22断网只读4场景通过；两份构建/预算、33项SHA及Ruff
+通过，独立bridge六项基线诊断无新增。证据见
+`report_editor/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`，线程/回复/复杂源和
+完整镜像/桌面/生产仍未完成，开关关闭。

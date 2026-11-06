@@ -253,3 +253,12 @@ modifiers and counts; View search and Ctrl/Meta+F focus Home search. Pinned
 search.ts and ui/find-text.ts algorithms/hash manifests are retained. The inline
 search adapts the floating source bar; OCR and full contextual/layout parity are
 not credited. Details: `NATIVE_PDF_SEARCH_ACCEPTANCE.md`.
+
+
+## PDF existing sticky-note follow-up
+
+Safe saved Text notes gain per-page edit/delete controls with strict source identity,
+modal Apply/Cancel, original-object Contents/M updates and actual preview/download.
+This closes a bounded existing-note gap; it does not credit pending-note/reply/thread
+commands or full comment/sidebar UX. Raw XFA is censused before pdf-lib getForm's
+side effect. See `NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`.

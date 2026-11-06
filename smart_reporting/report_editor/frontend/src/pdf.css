@@ -27,3 +27,9 @@
 .pdf-search-match { position: absolute; background: #ffad4666; }
 .pdf-search-match.is-current { background: #ff8c0088; outline: 1px solid #ad5700; }
 .pdf-search-count { font-size: 12px; min-width: 45px; }
+
+.pdf-note-edit-dialog { width: min(90vw, 520px); border: 1px solid #b8c5d8; border-radius: 8px; padding: 18px; }
+.pdf-note-edit-dialog::backdrop { background: #0006; }
+.pdf-note-edit-dialog textarea { display: block; width: 100%; min-height: 140px; margin: 8px 0; font: inherit; }
+.pdf-saved-note { border-top: 1px solid #e0d2a8; padding: 6px 0; }
+.pdf-saved-note button { margin-right: 6px; }

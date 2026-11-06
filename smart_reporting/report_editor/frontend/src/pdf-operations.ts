@@ -1,3 +1,4 @@
+import { validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
 import { validatePdfMarkup, type SavedPdfMarkup } from './pdf-markup'
 import type { NativeOperation } from './native-draft'
 import type { PDFPageProxy } from 'pdfjs-dist'
@@ -16,9 +17,9 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
   return result
 }
 export interface PdfBox { x: number; y: number; width: number; height: number }
-export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean }
+export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; notes?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
@@ -46,6 +47,12 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (deleted.has(page.pageId)) throw new Error('裁切不能引用已删除页面')
       const rect = validatedPdfCrop(operation.rect, page.cropBox)
       page.cropBox = { x: rect[0], y: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] }
+    } else if (operation.kind === 'editNote' || operation.kind === 'removeNote') {
+      if (deleted.has(page.pageId)) throw new Error('便签不能引用已删除页面')
+      const note = validatePdfNoteOperation(operation, pages.find(item => item.pageId === page.pageId)!)
+      if (removed.has(note.annotationId)) throw new Error('同一便签不能重复编辑或删除')
+      removed.add(note.annotationId)
+      page.notes = operation.kind === 'removeNote' ? page.notes?.filter(item => item.annotationId !== note.annotationId) : page.notes?.map(item => item.annotationId === note.annotationId ? { ...item, contents: String(operation.contents) } : item)
     } else if (operation.kind === 'removeMarkup') {
       if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
       const source = pages.find(item => item.pageId === page.pageId)!

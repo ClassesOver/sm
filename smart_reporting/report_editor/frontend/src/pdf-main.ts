@@ -24,6 +24,8 @@ import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupTyp
 
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
+import { stagePdfNote, type SavedPdfNote } from './pdf-notes'
+
 import { PDF_ZOOM_STEPS, clampPdfZoom, stepPdfZoom, capturePdfZoomAnchor, restorePdfZoomAnchor, type PdfZoomAnchor } from './pdf-view-state'
 
 GlobalWorkerOptions.workerSrc = workerUrl
@@ -574,6 +576,33 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const element = window.document.createElement(tag); element.className = className; return element
   }
   function showError(error: unknown) { if (!disposed) status.textContent = error instanceof Error ? error.message : 'PDF 操作失败，请重试' }
+  async function changeSavedNote(pageId: string, annotationId: string, contents: string | null) {
+    if (locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || model.capabilities?.notes !== true) throw new Error('当前修订或引擎不支持修改已有便签')
+    const next = stagePdfNote(model.pages, draft.operations, pageId, annotationId, contents)
+    pdfPageState(model.pages, next); draft.setOperations(next); await refresh()
+  }
+  async function editSavedNote(pageId: string, note: SavedPdfNote) {
+    if (locked || previewing || previewDocument || !response.editingEnabled || draft.closed || !note.editable) throw new Error('当前便签只读')
+    const snapshot = JSON.stringify(draft.operations)
+    const dialog = documentElement('dialog', 'pdf-note-edit-dialog'), form = documentElement('form')
+    form.method = 'dialog'
+    const label = documentElement('label'); label.textContent = '便签正文'
+    const input = documentElement('textarea'); input.value = note.contents; input.maxLength = 10000; input.required = true; input.setAttribute('aria-label', '编辑便签正文'); label.append(input)
+    const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = '应用便签修改'
+    const cancel = documentElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.addEventListener('click', () => dialog.close())
+    form.append(label, apply, cancel); dialog.append(form); root.append(dialog)
+    try {
+      const value = await new Promise<string | null>(resolve => {
+        form.addEventListener('submit', event => { event.preventDefault(); if (!input.value.trim()) { input.setCustomValidity('请输入便签正文'); input.reportValidity(); return }; dialog.close('apply'); resolve(input.value.trim()) })
+        input.addEventListener('input', () => input.setCustomValidity(''))
+        dialog.addEventListener('close', () => resolve(null), { once: true })
+        dialog.showModal(); input.focus()
+      })
+      if (value === null || disposed) return
+      if (JSON.stringify(draft.operations) !== snapshot) throw new Error('草稿已变化，请重新编辑便签')
+      await changeSavedNote(pageId, note.annotationId, value)
+    } finally { dialog.remove() }
+  }
   function state() { return pdfPageState(model.pages, draft.operations) }
   function jumpToPageForIdentity(pageId: string) {
     const page = state().find(candidate => candidate.pageId === pageId)
@@ -599,6 +628,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     sizeOptions.disabled = sizeApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     cropFields.disabled = cropApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     undo.disabled ||= !draft.canUndo; redo.disabled ||= !draft.canRedo
+    for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-note-editable]')) control.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed || control.dataset.pdfNoteEditable !== 'true'
     noteInput.disabled = locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
     textObjects.disabled = replacement.disabled = stageText.disabled = draft.operations.some(op => op.kind === 'setPageSize') || locked || previewing || !!previewDocument || draft.closed
     for (const control of formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')) control.disabled = control.dataset.pdfEditable !== 'true' || locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
@@ -887,7 +917,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -904,7 +934,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -980,12 +1010,24 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       heading.addEventListener('click', () => { activeId = page.pageId; updateControls(); renderTextPanel(); for (const node of pageNodes.values()) node.classList.toggle('is-active', node === card) })
       card.addEventListener('pointerdown', () => { activeId = page.pageId; updateControls(); renderTextPanel() })
       card.append(heading, content)
-      const savedAnnotations = await original.getAnnotations()
-      const comments = savedAnnotations.filter(item => item.subtype === 'Text' && item.contentsObj?.str)
-      if (comments.length) {
+      let comments = page.notes ?? []
+      if (!page.notesReadSafe && !comments.length) comments = (await original.getAnnotations()).filter(item => item.subtype === 'Text' && item.contentsObj?.str).map((item, index) => ({ annotationId: `readonly:${index}`, expectedAnnotationSha256: '', contents: item.contentsObj.str, editable: false, removable: false, removalReason: '当前便签来源身份未完整读取，仅可查看' }))
+      if (comments.length || draft.operations.some(op => op.pageId === page.pageId && ['editNote', 'removeNote'].includes(op.kind))) {
         const details = documentElement('details', 'pdf-saved-comments'), summary = documentElement('summary')
         summary.textContent = `已保存批注（${comments.length}）`; details.append(summary)
-        for (const comment of comments) { const text = documentElement('p'); text.textContent = comment.contentsObj.str; details.append(text) }
+        details.open = draft.operations.some(op => op.pageId === page.pageId && ['editNote', 'removeNote'].includes(op.kind))
+        for (const comment of comments) {
+          const article = documentElement('article', 'pdf-saved-note'); article.dataset.noteId = comment.annotationId
+          const text = documentElement('p'); text.textContent = comment.contents; article.append(text)
+          const canEdit = response.editingEnabled && !draft.closed && !locked && !previewing && !previewDocument && model.capabilities?.notes === true && page.notesReadSafe && comment.editable
+          for (const [label, action] of [['编辑便签', () => editSavedNote(page.pageId, comment)], ['删除便签', () => changeSavedNote(page.pageId, comment.annotationId, null)]] as const) {
+            const control = documentElement('button', 'pdf-tool'); control.type = 'button'; control.textContent = label; control.disabled = !canEdit; control.dataset.pdfNoteEditable = String(model.capabilities?.notes === true && page.notesReadSafe === true && comment.editable)
+            control.title = canEdit ? label : comment.removalReason || '当前修订、预览或引擎不支持编辑已有便签'
+            control.addEventListener('click', () => { void Promise.resolve().then(action).catch(showError) }); article.append(control)
+          }
+          details.append(article)
+        }
+        if (details.open && !previewDocument) { const pending = documentElement('p'); pending.textContent = '便签修改待保存；校验当前修改可查看实际 PDF。'; details.append(pending) }
         card.append(details)
       }
       viewport.append(card); pageNodes.set(page.pageId, card)
@@ -1068,7 +1110,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const sourceModel = await api.preview<PdfModel>({ expectedSha256: actualSha256, operations: [] }, abort.signal)
       if (sourceModel.sourceSha256 !== actualSha256 || sourceModel.model.sourceSha256 !== actualSha256) throw new Error('PDF 字段与文字对象来源不匹配')
       model.capabilities = sourceModel.model.capabilities
-      for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true }
+      for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true; page.notes = source?.notes ?? []; page.notesReadSafe = source?.notesReadSafe === true }
       model.formFields = sourceModel.model.formFields ?? []
       renderFormControls(model.formFields)
       if (textEnabled) {
@@ -1081,6 +1123,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
     } catch (error) { textLoadWarning = `原位改字暂不可用，仍可查看、标注与下载 PDF：${error instanceof Error ? error.message : '文字对象读取失败'}` }
   }
+  if (draft.operations.some(operation => ['editNote', 'removeNote'].includes(operation.kind)) && model.capabilities?.notes !== true) throw new Error('当前引擎未确认已有便签修改能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'removeMarkup') && model.capabilities?.removeMarkup !== true) throw new Error('当前引擎未确认已保存标注移除能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'setPageSize') && model.capabilities?.pageSize !== true) throw new Error('当前来源未确认尺寸变更能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'cropPage') && model.capabilities?.cropPage !== true) throw new Error('当前 PDF 引擎未确认裁切能力；原草稿已保留')
