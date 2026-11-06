@@ -24,6 +24,10 @@ from .http.request_limits import (
 from .http.security import CapabilityError, verify_capability
 from .integrations.agno_function_arguments import install_agno_function_argument_decoder
 from .integrations.dingyi_process import DingyiProcessAdapter, mount_process_routes
+from .management.api import create_management_router
+from .management.auth import AdminAuthService
+from .management.repository import AdminRepository
+from .management.settings import ManagementSettings
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
@@ -157,6 +161,8 @@ def _request_thread(request: Request) -> str:
 
 
 def _request_limit(path: str, method: str) -> int | None:
+    if path.startswith("/management/api/v1/") and method.upper() in {"POST", "PUT", "PATCH"}:
+        return 64 * 1024
     return agentos_run_request_limit(path, method) or report_editor_write_request_limit(
         path, method
     )
@@ -358,6 +364,11 @@ router.include_router(
 def create_base_app(context: ApplicationContext) -> FastAPI:
     application = FastAPI(title="开发智能体服务")
     application.state.agentos_context = context
+    management_auth = AdminAuthService(AdminRepository(agent_database.async_engine))
+    application.state.management_auth = management_auth
+    application.include_router(
+        create_management_router(management_auth, ManagementSettings.from_environment())
+    )
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
