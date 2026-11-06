@@ -106,6 +106,17 @@ profile_versions = Table(
     Column("parent_versions", JSON, nullable=False),
     Column("published_at", DateTime(timezone=True), nullable=False),
 )
+catalog_versions = Table(
+    "catalog_versions",
+    metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("source_id", String(64), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    Column("status", String(16), nullable=False),
+    Column("catalog", JSON, nullable=False),
+    Column("content_hash", String(64), nullable=False),
+    Column("synced_at", DateTime(timezone=True), nullable=False),
+)
 
 
 def token_hash(raw: str) -> str:

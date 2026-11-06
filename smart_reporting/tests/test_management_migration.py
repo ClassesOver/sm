@@ -47,7 +47,7 @@ async def test_management_migration_is_repeatable_and_preserves_account():
             revision = await connection.scalar(
                 text("SELECT version_num FROM reporting_management.alembic_version")
             )
-            assert revision == "0004_profiles"
+            assert revision == "0005_catalog"
         from smart_reporting.management.auth import AdminAuthService
         from smart_reporting.management.repository import AdminRepository
 

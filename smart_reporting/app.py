@@ -30,6 +30,8 @@ from .management.repository import AdminRepository
 from .management.settings import ManagementSettings
 from .management.data_sources.api import create_source_router
 from .management.data_sources.secrets import CredentialVault
+from .management.catalog_api import create_catalog_router
+from .management.import_api import create_import_router
 from .management.profile_api import create_profile_router
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
@@ -379,8 +381,10 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     from .management.scopes import ScopeService
     management_scopes = ScopeService(management_auth)
     application.include_router(create_profile_router(management_scopes))
+    application.include_router(create_catalog_router(management_scopes))
     if source_vault is not None:
         application.include_router(create_source_router(management_scopes, source_vault))
+        application.include_router(create_import_router(management_scopes, source_vault))
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
