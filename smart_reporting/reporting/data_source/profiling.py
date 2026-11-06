@@ -6,6 +6,7 @@ from datetime import date
 from typing import Any
 
 import anyio
+from sqlglot import exp
 
 from ..models import ReportingError
 from ..type_normalization import normalize_data_type
@@ -44,13 +45,17 @@ async def collect_data_shape(
     metadata_revision: str,
     schema_hash: str,
     global_limiter: anyio.CapacityLimiter | None = None,
+    scope_filters: Mapping[str, Mapping[str, str]] | None = None,
+    preserve_metadata: bool = False,
 ) -> DataShape:
     if period_start > period_end:
         raise ReportingError("report_period_invalid", "报表期间无效。")
     try:
         catalog = await adapter.catalog()
         _validate_catalog(adapter, catalog)
-        catalog = _catalog_scope(adapter, catalog, catalog_scope)
+        catalog = _catalog_scope(
+            adapter, catalog, catalog_scope, preserve_metadata=preserve_metadata
+        )
         for table in catalog:
             period_column = period_columns.get(table.qualified_name)
             if not period_column or period_column not in {item.name for item in table.columns}:
@@ -70,6 +75,7 @@ async def collect_data_shape(
             results[index] = await _profile_table(
                 adapter,
                 table,
+                scope_filters=(scope_filters or {}).get(table.qualified_name, {}),
                 period_column=period_columns[table.qualified_name],
                 period_granularity=(period_granularities or {}).get(table.qualified_name, "date"),
                 period_start=period_start,
@@ -109,6 +115,7 @@ async def _profile_table(
     adapter: DataSourceAdapter,
     table: CatalogTable,
     *,
+    scope_filters: Mapping[str, str],
     period_column: str,
     period_granularity: PeriodGranularity,
     period_start: date,
@@ -131,6 +138,18 @@ async def _profile_table(
         period_end,
         data_type=columns[period_column].data_type,
     )
+    column_names = {name.lower(): name for name in columns}
+    if {name.lower() for name in scope_filters} - set(column_names):
+        raise ReportingError(
+            "report_profile_scope_filter_invalid", "画像范围过滤引用了未发布字段。"
+        )
+    scope_filter = " AND ".join(
+        f"{_identifier(column_names[column.lower()])} = {exp.Literal.string(value).sql(dialect='starrocks')}"
+        for column, value in sorted(scope_filters.items())
+    )
+    scoped_period_filter = (
+        f"({scope_filter}) AND ({period_filter})" if scope_filter else period_filter
+    )
     qualified = f"{_identifier(table.database)}.{_identifier(table.name)}"
     base_aliases = (
         "total_row_count",
@@ -148,7 +167,7 @@ async def _profile_table(
         f"COUNT_IF({period_identifier} IS NULL) AS period_null_count, "
         f"MIN(IF({period_filter}, {period_identifier}, NULL)) AS first_effective_date, "
         f"MAX(IF({period_filter}, {period_identifier}, NULL)) AS last_effective_date "
-        f"FROM {qualified}"
+        f"FROM {qualified}" + (f" WHERE {scope_filter}" if scope_filter else "")
     )
     base = _single_row(
         await _limited_query(adapter, base_sql, source_limiter, global_limiter), base_aliases
@@ -183,7 +202,7 @@ async def _profile_table(
             expressions = _column_aggregates(column, index, distinct_mode)
             aggregates.extend(expression for _, expression in expressions)
             aliases.extend(alias for alias, _ in expressions)
-        sql = f"SELECT {', '.join(aggregates)} FROM {qualified} WHERE {period_filter}"
+        sql = f"SELECT {', '.join(aggregates)} FROM {qualified} WHERE {scoped_period_filter}"
         batches.append((tuple(aliases), sql))
 
     batch_values: list[tuple[Any, ...] | None] = [None] * len(batches)
@@ -197,7 +216,7 @@ async def _profile_table(
     if period_granularity == "year":
         coverage_sql = (
             f"SELECT {normalized_period} AS year, "
-            f"COUNT(*) AS year_count FROM {qualified} WHERE {period_filter} "
+            f"COUNT(*) AS year_count FROM {qualified} WHERE {scoped_period_filter} "
             "GROUP BY year ORDER BY year"
         )
         coverage_columns = ("year", "year_count")
@@ -208,7 +227,7 @@ async def _profile_table(
         coverage_sql = (
             f"SELECT CONCAT(SUBSTRING({normalized_period}, 1, 4), '-', "
             f"SUBSTRING({normalized_period}, 5, 2)) AS month, "
-            f"COUNT(*) AS month_count FROM {qualified} WHERE {period_filter} "
+            f"COUNT(*) AS month_count FROM {qualified} WHERE {scoped_period_filter} "
             "GROUP BY month ORDER BY month"
         )
         coverage_columns = ("month", "month_count")
@@ -259,7 +278,7 @@ async def _profile_table(
         identifier = _identifier(table.columns[index].name)
         top_sql = (
             f"SELECT {identifier} AS value, COUNT(*) AS value_count FROM {qualified} "
-            f"WHERE {period_filter} AND {identifier} IS NOT NULL GROUP BY {identifier} "
+            f"WHERE {scoped_period_filter} AND {identifier} IS NOT NULL GROUP BY {identifier} "
             f"ORDER BY value_count DESC, value LIMIT {adapter.config.limits.top_values_limit}"
         )
         top_results[position] = _top_values(
@@ -492,6 +511,8 @@ def _catalog_scope(
     adapter: DataSourceAdapter,
     catalog: tuple[CatalogTable, ...],
     requested: tuple[CatalogTable, ...],
+    *,
+    preserve_metadata: bool = False,
 ) -> tuple[CatalogTable, ...]:
     actual = {table.qualified_name.lower(): table for table in catalog}
     seen: set[str] = set()
@@ -508,6 +529,17 @@ def _catalog_scope(
         current = actual.get(qualified)
         if current is None:
             raise ReportingError("report_catalog_drift", "实时 catalog 缺少结构快照数据表。")
+        if preserve_metadata:
+            current_names = {column.name.lower() for column in current.columns}
+            expected_names = [column.name.lower() for column in expected.columns]
+            if (
+                len(expected_names) != len(set(expected_names))
+                or set(expected_names) - current_names
+            ):
+                raise ReportingError("report_catalog_drift", "实时 catalog 缺少结构快照字段。")
+            scoped.append(expected)
+            seen.add(qualified)
+            continue
         if current.description and current.description != expected.description:
             raise ReportingError("report_catalog_drift", "实时 catalog 与结构快照注释不一致。")
         current_columns = {column.name.lower(): column for column in current.columns}

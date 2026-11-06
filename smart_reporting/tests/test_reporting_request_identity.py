@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from smart_reporting.http.identity import (
     apply_report_identity,
     requires_workspace_capability,
+    verified_report_request,
 )
 from smart_reporting.http.security import CapabilityError, verify_capability
 
@@ -78,14 +79,14 @@ def _app() -> FastAPI:
             claims = verify_capability(capability, SECRET, thread)
         except CapabilityError as error:
             return JSONResponse({"error": str(error)}, status_code=401)
-        apply_report_identity(
+        with verified_report_request(
             request,
             user_id=str(claims.user),
             thread_id=thread,
             database=claims.database,
             company_id=str(claims.company),
-        )
-        return await call_next(request)
+        ):
+            return await call_next(request)
 
     @application.post("/agents/smart-reporting/runs")
     async def report_run(request: Request):
@@ -102,6 +103,12 @@ def _app() -> FastAPI:
     @application.get("/agents/smart-reporting/runs/run-1/resume")
     async def resume_report_run(request: Request):
         async def body():
+            from smart_reporting.reporting.workflow.identity import (
+                require_verified_reporting_identity,
+            )
+
+            identity = require_verified_reporting_identity()
+            assert identity.user_id == request.state.user_id
             yield f"{request.state.user_id}:{request.state.session_id}"
 
         return StreamingResponse(body())
@@ -110,7 +117,54 @@ def _app() -> FastAPI:
     async def ready():
         return {"ok": True}
 
+    @application.post("/agents/smart-reporting/verified")
+    async def verified_identity():
+        from smart_reporting.reporting.models import ReportingError
+        from smart_reporting.reporting.workflow.identity import require_verified_reporting_identity
+
+        try:
+            identity = require_verified_reporting_identity()
+        except ReportingError:
+            return JSONResponse({"error": "unverified"}, status_code=401)
+        return {
+            "database": identity.database,
+            "companyId": identity.company_id,
+            "userId": identity.user_id,
+            "threadId": identity.thread_id,
+            "entrypoint": identity.entrypoint,
+        }
+
     return application
+
+
+@pytest.mark.anyio
+async def test_verified_http_identity_is_scoped_to_verified_request():
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app()), base_url="https://reports.test"
+    ) as client:
+        verified = await client.post(
+            "/agents/smart-reporting/verified",
+            headers={
+                "X-Workspace-Thread": "thread-1",
+                "X-Workspace-Capability": _capability(),
+            },
+        )
+        assert verified.json() == {
+            "database": "odoo",
+            "companyId": "3",
+            "userId": "7",
+            "threadId": "thread-1",
+            "entrypoint": "http-capability",
+        }
+        anonymous = await client.post(
+            "/agents/smart-reporting/verified", json={"verified": True, "database": "odoo"}
+        )
+        assert anonymous.status_code == 401
+        invalid = await client.post(
+            "/agents/smart-reporting/verified",
+            headers={"X-Workspace-Thread": "thread-1", "X-Workspace-Capability": "forged"},
+        )
+        assert invalid.status_code == 401
 
 
 @pytest.mark.anyio
@@ -169,13 +223,18 @@ def test_all_report_download_formats_do_not_require_workspace_capability(path: s
     assert requires_workspace_capability(path, has_thread=False, has_capability=False) is False
 
 
-@pytest.mark.parametrize("has_thread,has_capability", [(False, False), (True, False), (False, True), (True, True)])
+@pytest.mark.parametrize(
+    "has_thread,has_capability", [(False, False), (True, False), (False, True), (True, True)]
+)
 def test_process_uses_agentos_auth_instead_of_workspace_capability(has_thread, has_capability):
-    assert requires_workspace_capability(
-        "/extensions/dingyi/process/v1/capabilities",
-        has_thread=has_thread,
-        has_capability=has_capability,
-    ) is False
+    assert (
+        requires_workspace_capability(
+            "/extensions/dingyi/process/v1/capabilities",
+            has_thread=has_thread,
+            has_capability=has_capability,
+        )
+        is False
+    )
 
 
 @pytest.mark.anyio

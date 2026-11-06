@@ -1,7 +1,12 @@
 """Reporting HTTP 请求的 capability 保护与 AgentOS 身份覆盖。"""
 
+from contextlib import contextmanager
 from typing import Any
 
+from ..reporting.workflow.identity import (
+    VerifiedReportingIdentity,
+    bind_verified_reporting_identity,
+)
 from ..reporting.workflow.scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
 
 
@@ -36,3 +41,17 @@ def apply_report_identity(
             "companyId": company_id,
         }
     }
+
+
+@contextmanager
+def verified_report_request(
+    request: Any, *, user_id: str, thread_id: str, database: str, company_id: str
+):
+    """只在 capability 验签成功后调用，同时覆盖 AgentOS 身份与任务上下文。"""
+    apply_report_identity(
+        request, user_id=user_id, thread_id=thread_id, database=database, company_id=company_id
+    )
+    with bind_verified_reporting_identity(
+        VerifiedReportingIdentity(database, company_id, user_id, thread_id, "http-capability")
+    ):
+        yield

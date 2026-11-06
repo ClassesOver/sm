@@ -38,6 +38,7 @@ from pydantic import (
 
 from ....async_utils import complete_cleanup
 from ....context_management import TaskExecutionContextHardLimitError
+from ....management.models import ManagementError, ManagementScope
 from ....model_routing import TaskComplexity
 from ....quality_warnings.service import QualityWarningService
 from ....task_execution import (
@@ -209,6 +210,7 @@ from ..execution import (
     MAX_REPORT_INSTRUCTION_BYTES,
     ReportingTaskCoordinator,
 )
+from ..identity import require_verified_reporting_identity
 from ..orchestration import (
     PlannerRequestRecorder,
     bind_planner_request_recorder,
@@ -259,6 +261,7 @@ from .models import (
 from .reference_materials import prepare_reference_materials
 
 if TYPE_CHECKING:
+    from ....management.runtime import ManagedConfigurationProvider, ManagedRunSnapshot
     from ..answer_registration import AnswerReviewPlanProvider
 
 logger = loguru_logger
@@ -742,8 +745,8 @@ class _ReportWorkflowRuntimeBase:
         knowledge_index: ReportingKnowledgeIndex | None = None,
         lsp_manager: Any | None = None,
         coding_task_registry: ReportingCodingTaskRegistry | None = None,
-        registry: ReportSourceRegistryConfig,
-        profiles: ReportingProfileRegistry,
+        registry: ReportSourceRegistryConfig | None,
+        profiles: ReportingProfileRegistry | None,
         planner_enable_thinking: bool,
         planner_reasoning_effort: ReportingReasoningEffort = "high",
         planner_thinking_budget: int = 8192,
@@ -764,6 +767,7 @@ class _ReportWorkflowRuntimeBase:
         standard_supplemental_enabled: bool = True,
         visualization_section_deadline_seconds: int = VISUALIZATION_SECTION_DEADLINE_SECONDS,
         visualization_total_deadline_seconds: int = VISUALIZATION_TOTAL_DEADLINE_SECONDS,
+        configuration_provider: ManagedConfigurationProvider | None = None,
     ):
         if (download_grants is None) != (artifact_persistence is None):
             raise ValueError("下载授权和产物持久化服务必须同时配置")
@@ -793,6 +797,7 @@ class _ReportWorkflowRuntimeBase:
         self._host_workspaces: dict[str, HostReportingWorkspace] = {}
         self.registry = registry
         self.profiles = profiles
+        self.configuration_provider = configuration_provider
         self.metadata_client = metadata_client
         self.download_grants = download_grants
         self.editor_grants = editor_grants
@@ -1471,6 +1476,8 @@ class _ReportWorkflowRuntimeBase:
         if len(profile_ids) != 1:
             raise ReportingError("report_profile_conflict", "本次数据源未绑定同一个报表 Profile。")
         try:
+            if self.profiles is None:
+                raise ValueError("file 模式未配置 Profile registry")
             profile = resolve_reporting_profile(self.profiles, next(iter(profile_ids)))
             return bind_reporting_profile_sources(
                 profile, {source.id: source.database for source in sources}
@@ -1478,10 +1485,116 @@ class _ReportWorkflowRuntimeBase:
         except ValueError as error:
             raise ReportingError("report_profile_invalid", "报表 Profile 无效。") from error
 
-    def _sources(self, run_context: RunContext) -> tuple[StarRocksSourceConfig, ...]:
-        return tuple(self._source(item) for item in self._envelope(run_context).source_ids or ())
+    async def _managed_snapshot(
+        self,
+        run_context: RunContext,
+        *,
+        freeze: bool = False,
+        source_ids: tuple[str, ...] | None = None,
+    ) -> ManagedRunSnapshot:
+        provider = getattr(self, "configuration_provider", None)
+        if provider is None:
+            raise ReportingError("report_configuration_snapshot_missing", "未配置数据库运行快照。")
+        scope = self._scope(run_context)
+        resource_scope = ManagementScope(scope["database"], scope["companyId"])
+        run_id = str(run_context.run_id)
+        try:
+            await provider.assert_identity(
+                run_id, resource_scope, user_id=scope["userId"], thread_id=scope["callerThreadId"]
+            )
+            state = self._state(run_context)
+            saved = state.get("report_managed_configuration")
+            if freeze:
+                snapshot = await provider.freeze(run_id, resource_scope, source_ids)
+                if saved is not None and saved != snapshot.public_state():
+                    raise ReportingError(
+                        "management_runtime_reference_mismatch", "报告配置引用与已冻结版本不一致。"
+                    )
+                state["report_managed_configuration"] = snapshot.public_state()
+            else:
+                if not isinstance(saved, dict) or not isinstance(saved.get("references"), dict):
+                    raise ReportingError(
+                        "report_configuration_snapshot_missing", "报告尚未冻结数据源配置。"
+                    )
+                if saved["references"].get("runId") != run_id:
+                    raise ReportingError(
+                        "management_runtime_reference_mismatch", "配置引用不属于当前运行。"
+                    )
+                snapshot = await provider.load_pinned(resource_scope, saved["references"])
+                self._validate_managed_execution_state(snapshot, run_context)
+            return snapshot
+        except ManagementError as error:
+            raise ReportingError(error.code, error.message) from error
 
-    def _source(self, source_id: str) -> StarRocksSourceConfig:
+    def _validate_managed_execution_state(
+        self,
+        managed: ManagedRunSnapshot,
+        run_context: RunContext,
+    ) -> None:
+        """公开 session state 可编辑；执行权限始终由持久发布版本决定。"""
+        from .planning import _apply_profile_scope_filters_to_snapshots
+
+        mismatch = ReportingError(
+            "management_runtime_execution_mismatch",
+            "报告执行结构或 Profile 与已冻结发布版本不一致。",
+        )
+        if self._profile(run_context) != managed.profile:
+            raise mismatch
+        envelope = self._envelope(run_context).model_copy(update={"schema_input": None})
+        expected = _apply_profile_scope_filters_to_snapshots(
+            tuple(
+                resolve_schema_snapshot(
+                    envelope,
+                    source=source,
+                    metadata=managed.metadata[source_id],
+                    catalog=managed.metadata[source_id].tables,
+                    profile_measure_semantics=managed.profile.measure_semantics,
+                    preserve_metadata=True,
+                )
+                for source_id, source in managed.sources.items()
+            ),
+            managed.profile,
+        )
+        actual = self._snapshots(run_context)
+        if len(actual) != len(expected):
+            raise mismatch
+        for current, published in zip(actual, expected, strict=True):
+            if current.model_dump(exclude={"measure_semantics"}) != published.model_dump(
+                exclude={"measure_semantics"}
+            ):
+                raise mismatch
+            semantics = {item.field_ref.lower(): item for item in current.measure_semantics}
+            if any(
+                semantics.get(item.field_ref.lower()) != item
+                for item in published.measure_semantics
+            ):
+                raise mismatch
+        # 人工审核可补充缺少的语义，但不能去掉发布 Profile 的固定组织过滤。
+        if _apply_profile_scope_filters_to_snapshots(actual, managed.profile) != actual:
+            raise mismatch
+
+    async def _ensure_managed_execution_state(self, run_context: RunContext) -> None:
+        if getattr(self, "configuration_provider", None) is not None:
+            await self._managed_snapshot(run_context)
+
+    async def _sources(self, run_context: RunContext) -> tuple[StarRocksSourceConfig, ...]:
+        if getattr(self, "configuration_provider", None) is not None:
+            return tuple((await self._managed_snapshot(run_context)).sources.values())
+        return tuple(
+            [
+                await self._source(item, run_context)
+                for item in self._envelope(run_context).source_ids or ()
+            ]
+        )
+
+    async def _source(self, source_id: str, run_context: RunContext) -> StarRocksSourceConfig:
+        if getattr(self, "configuration_provider", None) is not None:
+            snapshot = await self._managed_snapshot(run_context)
+            if source_id not in snapshot.sources:
+                raise ReportingError("report_source_not_allowed", "数据源不属于本次冻结配置。")
+            return snapshot.sources[source_id]
+        if self.registry is None:
+            raise ReportingError("report_configuration_missing", "file 模式未配置数据源 registry。")
         return self._starrocks_source(require_sources(self.registry.sources, (source_id,))[0])
 
     def _adapter(
@@ -1661,6 +1774,10 @@ class _ReportWorkflowRuntimeBase:
             user_id=user_id,
             dependencies=dependencies,
         )
+        if getattr(self, "configuration_provider", None) is not None:
+            require_verified_reporting_identity().require_scope(
+                scope.database, scope.company_id, scope.user_id, scope.caller_thread_id,
+            )
         entrypoint = _validated_entrypoint(
             (dependencies or {}).get(REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY) or "agentos"
         )
@@ -1681,6 +1798,17 @@ class _ReportWorkflowRuntimeBase:
             stored_scope=value,
         )
         entrypoint = _validated_entrypoint(session_state.get(REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY))
+        provider = getattr(self, "configuration_provider", None)
+        if provider is not None:
+            identity = require_verified_reporting_identity()
+            identity.require_scope(scope.database, scope.company_id, scope.user_id, scope.caller_thread_id)
+            try:
+                await provider.register_run(
+                    run_id, ManagementScope(scope.database, scope.company_id),
+                    user_id=scope.user_id, thread_id=scope.caller_thread_id, entrypoint=identity.entrypoint,
+                )
+            except ManagementError as error:
+                raise ReportingError(error.code, error.message) from error
         self._bind_workspace(scope)
         has_external_caller = (
             scope.external_run_id != run_id or scope.caller_thread_id != scope.session_id
@@ -1722,6 +1850,17 @@ class _ReportWorkflowRuntimeBase:
             raise ReportingError(
                 "report_workflow_not_paused", "Reporting Workflow 不处于暂停状态。"
             )
+        provider = getattr(self, "configuration_provider", None)
+        if provider is not None:
+            identity = require_verified_reporting_identity()
+            identity.require_scope(str(run["database"]), str(run["company_id"]), str(run["owner_user_id"]), str(run["thread_id"]))
+            try:
+                await provider.assert_identity(
+                    run_id, ManagementScope(identity.database, identity.company_id),
+                    user_id=identity.user_id, thread_id=identity.thread_id,
+                )
+            except ManagementError as error:
+                raise ReportingError(error.code, error.message) from error
         keys = reporting_scope_keys(
             database=str(run["database"]),
             company_id=str(run["company_id"]),

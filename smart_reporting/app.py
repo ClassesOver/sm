@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from os import getenv
 from pathlib import Path
 
@@ -9,8 +10,8 @@ from starlette.concurrency import run_in_threadpool
 
 from .context_management import validate_configured_tiktoken_cache
 from .http.identity import (
-    apply_report_identity,
     requires_workspace_capability,
+    verified_report_request,
 )
 from .http.request_limits import (
     RequestBodyLimitError,
@@ -205,8 +206,9 @@ async def require_workspace_capability(request: Request, call_next):
             return JSONResponse({"error": error.code}, status_code=error.status_code)
     # AgentOS 原生 run 表单允许调用方提交 user_id/session_id。这里用已验签的
     # Odoo 身份覆盖它们，避免合法 capability 被用于访问其他用户或 thread。
+    identity_context = nullcontext()
     if capability_required:
-        apply_report_identity(
+        identity_context = verified_report_request(
             request,
             user_id=str(request.state.capability.user),
             thread_id=thread,
@@ -214,7 +216,8 @@ async def require_workspace_capability(request: Request, call_next):
             company_id=str(request.state.capability.company),
         )
     try:
-        response = await call_next(request)
+        with identity_context:
+            response = await call_next(request)
     except (RequestBodyLimitError, BaseExceptionGroup) as error:
         limit_error = request_body_limit_error(error)
         if limit_error is None:
@@ -356,7 +359,7 @@ report_agent = create_report_agent(
 reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
     sources=tuple(
         source
-        for source in report_runtime.registry.sources.values()
+        for source in (report_runtime.registry.sources.values() if report_runtime.registry is not None else ())
         if isinstance(source, StarRocksSourceConfig)
     ),
     metadata_client=report_runtime.metadata_client,

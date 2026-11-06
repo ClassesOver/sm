@@ -5095,7 +5095,8 @@ async def test_sql_planner_budget_exhaustion_falls_back_to_compiler(monkeypatch)
         _snapshots=lambda _context: (),
         _envelope=lambda _context: envelope,
         _feedback=lambda _step_input: None,
-        _sources=lambda _context: (),
+        _sources=AsyncMock(return_value=()),
+        _ensure_managed_execution_state=AsyncMock(return_value=None),
         _run_planner=exhausted_planner,
         _sql_agent=object(),
     )
@@ -5137,7 +5138,8 @@ async def test_sql_planner_receives_requirement_scoped_period_windows() -> None:
     runtime = SimpleNamespace(
         _state=lambda _context: state, _data_shapes=lambda _context: (),
         _snapshots=lambda _context: (), _envelope=lambda _context: envelope,
-        _feedback=lambda _input: None, _sources=lambda _context: (),
+        _feedback=lambda _input: None, _sources=AsyncMock(return_value=()),
+        _ensure_managed_execution_state=AsyncMock(return_value=None),
         _run_planner=inspect_payload, _sql_agent=object(),
     )
     with pytest.raises(ReportingError, match='已检查'):
@@ -5170,6 +5172,7 @@ async def test_measure_semantic_batches_keep_all_fields_and_fail_without_partial
     runtime = SimpleNamespace(
         _snapshots=lambda _: (), _data_understanding=lambda _: object(),
         _profile=lambda _: object(), _propose_measure_semantic_batch=propose_batch,
+        _ensure_managed_execution_state=AsyncMock(return_value=None),
     )
     context = RunContext(run_id='run-1', session_id='s-1', session_state=state)
     result = await reporting_planning.RuntimePlanningMixin.propose_measure_semantics(
@@ -5441,6 +5444,7 @@ def _outline_runtime(monkeypatch, planner):
         _envelope=lambda _context: envelope,
         _feedback=lambda _step_input: None,
         _record_outline_feedback=lambda _state, _feedback: None,
+        _ensure_managed_execution_state=AsyncMock(return_value=None),
         _assert_state_safe=lambda _state: None,
         _run_planner=planner,
         _outline_agent=object(),

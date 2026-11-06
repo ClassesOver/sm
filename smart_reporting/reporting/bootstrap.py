@@ -5,7 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from agno.agent import Agent
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ..management.auth import AdminAuthService
+from ..management.data_sources.secrets import CredentialVault
+from ..management.models import ManagementError
+from ..management.repository import AdminRepository
+from ..management.runtime import ManagedConfigurationProvider
+from ..management.scopes import ScopeService
 from ..model_routing import build_model_profiles
 from ..quality_warnings.service import QualityWarningService
 from ..report_editor import ReportEditorGrantService
@@ -19,6 +26,7 @@ from .agent import (
 )
 from .code_agent.context import ReportingCodingTaskRegistry
 from .data_source import load_configured_report_source_registry
+from .data_source.models import ReportSourceRegistryConfig
 from .delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
@@ -29,6 +37,7 @@ from .instructions import HOSPITAL_REPORT_WRITING_INSTRUCTIONS
 from .knowledge import ReportingKnowledgeIndex
 from .metadata import ReportingMetadataClient
 from .profile import load_configured_reporting_profiles
+from .profile.models import ReportingProfileRegistry
 from .vision import ReportVisionReviewer
 from .workflow.execution import ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
@@ -136,6 +145,38 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
 )
 
 
+def _configuration_sources(
+    context: ExecutionContext,
+    settings: AgentSettings,
+) -> tuple[
+    ReportSourceRegistryConfig | None,
+    ReportingProfileRegistry | None,
+    ManagedConfigurationProvider | None,
+]:
+    if settings.report_configuration_mode == "file":
+        return (
+            load_configured_report_source_registry(settings.report_data_sources_dir),
+            load_configured_reporting_profiles(settings.report_data_sources_dir),
+            None,
+        )
+    vault = CredentialVault()
+    if not vault.active_key_id:
+        raise ManagementError(
+            "management_secrets_unavailable", "数据库配置模式必须配置数据源加密密钥。", 503
+        )
+    engine = getattr(context.database, "db_engine", None)
+    if not isinstance(engine, AsyncEngine):
+        raise ManagementError(
+            "management_database_unavailable", "数据库配置模式必须使用 PostgreSQL 异步连接。", 503
+        )
+    repository = AdminRepository(engine)
+    return (
+        None,
+        None,
+        ManagedConfigurationProvider(ScopeService(AdminAuthService(repository)), vault),
+    )
+
+
 def create_report_runtime(
     context: ExecutionContext,
     settings: AgentSettings,
@@ -200,6 +241,7 @@ def create_report_runtime(
             strong_model_id=settings.model_strong_id,
         ),
     )
+    registry, profiles, configuration_provider = _configuration_sources(context, settings)
     runtime = ReportWorkflowRuntime(
         db=context.database,
         reporting_agent_template=reporting_agent_template,
@@ -216,8 +258,9 @@ def create_report_runtime(
         knowledge_index=knowledge_index,
         lsp_manager=lsp_manager,
         coding_task_registry=coding_task_registry,
-        registry=load_configured_report_source_registry(settings.report_data_sources_dir),
-        profiles=load_configured_reporting_profiles(settings.report_data_sources_dir),
+        registry=registry,
+        profiles=profiles,
+        configuration_provider=configuration_provider,
         planner_enable_thinking=settings.report_enable_thinking,
         planner_reasoning_effort=settings.report_planner_reasoning_effort,
         planner_thinking_budget=settings.report_planner_thinking_budget,

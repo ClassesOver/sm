@@ -76,33 +76,40 @@ JUnit 目录：`/tmp/smart-reporting-management-acceptance/2026-11-06-storage-fo
 - 扩大 Ruff 扫描到未修改文件时，`data_sources/secrets.py` 和 `test_management_scopes.py` 有 4 项既有 import-order 问题，本次未顺带改动，不能称全管理目录 Ruff 全绿。
 - 新证据：`/tmp/smart-reporting-management-acceptance/2026-11-06-config-fidelity/{management.xml,manifest.json}`。manifest 记录提交、源文件/JUnit hash、检查范围和 A1–O1 的 not_run；21 项结果不等于端到端验收。
 
-## 报告接入：未提交实现与现存证据
+## Task 4 报告接入与本次边界修复
 
-- 新增 `reporting/workflow/identity.py`，使用任务隔离的 ContextVar；HTTP 只在 capability 验签后绑定，MCP 只读已验证 token claims，CLI 在 database 模式要求显式组织。JSON 的 `verified=true`、请求组织字符串和 admin Cookie 不能自行生成可信报告身份。
-- 新增 `AGENT_REPORT_CONFIGURATION_MODE=file|database`，默认 file；database 分支不加载文件 registry/Profile，缺密钥明确失败。运行登记、恢复检查、confirm_source、画像/SQL 与数据物化已有接入，配置公开状态不含明文凭据。
-- 后续物化测试使用真实 PostgreSQL、ReportingWorkspaceRegistry/Router 和宿主文件；重建 provider、发布新 DSN 后，旧运行仍使用原连接，并读回实际 CSV `amount\n100\n`。StarRocks 网络 I/O 被受控替换，不代表真实数仓通过。
-- 现存 `runtime.xml`：**5 passed，0 failed/error/skipped**；`regressions.xml`：**261 passed，0 failed/error/skipped**。本次直接解析 JUnit 核对计数；没有重跑这些测试，也没有把重复覆盖相加为独立验收数。回归包含身份上下文/流式生命周期、CLI、设置、bootstrap、工作流生命周期和宿主取数等路径。
-- 证据目录：`/tmp/smart-reporting-management-acceptance/2026-11-06-report-configuration/`。`runtime.xml` SHA-256 为 `6e93cc99fed906bd7949e4a17e3c46500600ce9bd5871c04fb7356fd1c2d1919`，`regressions.xml` 为 `eb5c08743bee19107bd05fe7e3224fda65bcb364f32052ff2d383a16f5f3f737`。运行接入的完整验收 manifest 尚待两项修复及新证据收口。
-- 上次定点 mypy 在 `reporting/bootstrap.py:156` 报 `AsyncBaseDb` 无 `db_engine` 属性，不能声称静态检查全绿。应用导入探针因未配置公开下载基址失败；补齐 `AGENT_REPORT_PUBLIC_BASE_URL` 后待重跑。该失败未证明 provider 装配错误，也未证明应用可启动。
-- database 模式的全局 diagnostics 目前传入空文件源列表；它没有覆盖管理源真实连通性，不能当完整健康证据。连接测试仍按 Task 2 补齐。
+已实现部署级 file/database 选择；database 不调用文件加载器。HTTP capability 验签后绑定可信身份，MCP 读已验证 token claims，CLI 要求显式组织。运行登记与恢复绑定用户/组织/thread；配置引用持久固定，后续画像、规划和物化从原发布版本重建校验，不以可编辑 session_state 作为授权。
 
-## 报告接入审查：两项 Important 待修复
+三项 Important 已按反例修复：
 
-只读审查者报告未发现 Critical，仍有以下两项 Important。已有 5/261 项结果未覆盖它们，不能以局部绿灯关闭问题。
+- 保留真实 references 篡改表/字段/Profile/语义不能扩大取数范围。实际 Agno session PATCH 和原生 pause→PATCH→重建实例→continue 均覆盖；SQL 与 hash 同时篡改、通配投影和移除组织过滤在数仓 I/O 前拒绝，合法原查询可物化 CSV。
+- database confirm 与画像保留发布 metadata/schema hash，实时类型/可空性/说明变化返回具体告警，缺表/列不能继续取数。file 保留原目录匹配方式。告警写入确认步骤和运行状态，本次不改签发链路。
+- 全部画像 SQL 应用冻结 Profile 的组织过滤；总计只加组织条件，期间内统计/覆盖/Top-K 叠加期间条件。DuckDB 实际执行经 SQLGlot 转译的 StarRocks SQL，检查两个组织、外期/NULL 计数、含引号及反斜杠的值；复核发现混合大小写字段校验不一致，补失败反例后用发布列名映射修复。
 
-| 问题 | 原始证据与可复核反例 | 最小修复与验收 |
-| --- | --- | --- |
-| 可编辑 session state 扩大取数范围 | `runtime/base.py::_managed_snapshot` 只核对 references；`_adapter` 从可改的 `report_schema_snapshots` 生成允许表，`_profile` 同样直接读取 state。Agno 原生 PATCH session 路由保存 state，恢复时重新加载。纯函数探针将快照替换为 `warehouse.payroll` 后，adapter 允许表随之变化 | 从持久固定的 metadata/Profile 重建执行依据；请求只能缩小范围。实际 session PATCH→恢复反例分别覆盖未发布表、额外字段、移除组织过滤；数仓不得收到越界 SQL，合法查询仍能执行 |
-| 实时 Catalog 静默覆盖已发布元数据 | `planning.py:1031` 继续调用 `query_pipeline.py::resolve_schema_snapshot`，该路径覆盖类型、可空性和描述。纯函数探针把发布 `amount DECIMAL(18,2) NOT NULL` 改为实时 `VARCHAR(32)`/可空，报告 schema hash 随之变化且没有漂移告警 | database 分支保留发布 metadata/schema hash，实时 Catalog 仅报告差异；不能执行的缺表/列明确返回取数错误。验证类型、可空性、说明漂移，保持 file 分支兼容 |
+bootstrap 使用有效 AsyncEngine，缺失或错误引擎明确失败；database 应用导入探针断言 provider 存在且 registry/profiles 为 None，通过。仅证明导入装配，未验证 lifespan、真实模型或真实数仓。
 
-证据边界：上述发现来自已安装 Agno 源码与无数据库纯函数探针；审查者未实际执行完整 HTTP PATCH→恢复→StarRocks 查询，没有清测试 schema、调用真实模型或修改文件。计划新增 D3、D4 验收行，均未签收。即使取数因越界或结构不兼容失败，已有且身份可核验 PDF/Word 仍按原契约签发下载。
+### 分批验证与限制
+
+证据目录 `/tmp/smart-reporting-management-acceptance/2026-11-06-runtime-boundaries/`，计数不累加为独立验收：
+
+| 批次 | 结果与说明 |
+| --- | --- |
+| 接入集成 runtime.xml | 24 passed，0 skip；真实 PG，数仓网络受控，Agno session 存储用 SQLite |
+| 受影响普通回归 regressions.xml | 首次 487 passed / 5 failed / 5 skipped；失败均为旧 fixture 没有新增异步接口，补适配后 planner-adapters.xml 的 5 项定点通过 |
+| 工作流画像过滤 profile-runtime.xml | 2 passed；真实 PG 发布/冻结，验证过滤传入画像与非法选表在 Catalog I/O 前拒绝 |
+| 画像/metadata/type profile-scope.xml | 23 passed；含初版画像两例和描述漂移，之后字段大小写反例另有最终文件 |
+| 画像最终 profile-scope-final.xml | 5 passed；组织值/字段大小写四组合及发布结构保留 |
+| bootstrap | 3 passed；包括无引擎/错误引擎反例，先红后绿 |
+| 生命周期 lifecycle.xml → lifecycle-fixed.xml | 局部类型修复曾使缺省 provider 的旧 fixture 7 项失败；恢复原 getattr 兼容方式后 7 passed |
+| 定点 mypy | identity/http/bootstrap/cli/settings/base/datasets/profiling 共 8 模块通过；planning 仍有两项既有 arg-type（ReportEditorContext 字典、Column 列表追加 Alias），未声称全目录通过 |
+
+普通回归的 5 skip 是既有 V1 上传、旧分析预算/日期环境与旧 thinking 契约，不能当通过。Ruff 改动代码检查及 diff 检查另记录；planner 契约测试文件有未改动的既有 import-order 问题。不重跑完整测试。
+
+外部证据边界：只读复核确认原两项直接路径修复，并发现/复核画像组织过滤；画像结果由独立 SQL 引擎计算，而非 mock 预设统计。仍没有真实 StarRocks、真实 embedding、浏览器、完整部署 HTTP/MCP 启停、报告生成下载或备份恢复签收。database 全局 diagnostics 仍不是管理源真实连通性证明。
 
 ## 下一执行批次
 
-1. 先为两项 Important 写失败回归，再最小修复，检查画像、SQL 规划、adapter 和物化均使用冻结依据；不得只保护 `_sources` 或禁用原生 session 编辑。运行新反例与受影响定点回归，再只读复核。
-2. 修 bootstrap 的 AsyncEngine 类型访问，定点 mypy；补公开下载基址重跑应用装配探针。完善实际 HTTP/MCP 的启动、暂停和恢复验证后保存 manifest，再提交 Task 4；不把导入探针当真实报告验收，不提前切换 database 部署。
-3. 补旧配置 dry-run 逐源提示，并以原文件重新导入对账；不改写旧发布 hash。补齐数据源页面所需列表/详情、分页版本、启停/默认源 CAS、差异/历史复制和真实草稿连接测试 API，再完成 Task 5。
-4. 顺序推进 Task 6–9 知识库、Agno 索引/可恢复 worker、管理检索与报告引用，不增加原范围之外的子系统。
-5. Task 10 按 A1–O1（含 D3、D4）留存真实证据：操作页面、真实取数、知识检索、生成报告、直接下载核验和独立恢复；最后一次完整检查。未执行项明确标为 not_run。
-
-继续保持：单 admin、StarRocks、现有 Profile、PDF/DOCX/Markdown/UTF-8 TXT、Agno 优先、无负责人、无可编辑查询限额、无首版 SSO/多角色 ACL/OCR/网页抓取/通用 BI。知识异常与报告验收失败不阻断已生成且身份可核验 PDF/Word 的下载签发。
+1. 提交 Task 4 本任务文件与证据记录，不标整个任务或上线验收完成。
+2. 补旧配置 dry-run 逐源提示，保留旧发布 hash/运行引用；补连接测试、列表/详情、分页版本、启停/默认源 CAS、差异和历史复制 API，完成 React 管理页面。
+3. 顺序推进知识原文/版本、Agno 索引与可恢复 worker、管理检索、报告冻结引用；不增加负责人或可编辑查询限额。
+4. 按 A1–O1（含 D3、D4）补真实证据；知识异常与验收失败不阻断已生成且身份可核验 PDF/Word 的下载签发。未执行项明确 not_run，最终一次完整检查。

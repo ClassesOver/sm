@@ -316,6 +316,7 @@ def resolve_schema_snapshot(
     metadata: ModelTermsResponse | None,
     catalog: tuple[ModelTable, ...],
     profile_measure_semantics: tuple[MeasureSemantic, ...] = (),
+    preserve_metadata: bool = False,
 ) -> SourceSchemaSnapshot:
     ddl_tables: tuple[ModelTable, ...] | None = None
     if envelope.schema_input and envelope.schema_input.ddl:
@@ -400,6 +401,8 @@ def resolve_schema_snapshot(
             f"{table.database.lower()}.{table.name.lower()}" for table in snapshot.tables
         ),
     )
+    if preserve_metadata:
+        return snapshot
     return snapshot.model_copy(
         update={"tables": resolved_tables, "schema_hash": schema_hash(resolved_tables)}
     )
@@ -840,6 +843,8 @@ def _validate_query_contract(
 
 
 def _validate_scope_columns(scope: Scope, *, alias: str, table: ModelTable) -> None:
+    if any(projection.unalias().is_star for projection in scope.expression.selects):
+        raise ReportingError("report_query_scope_invalid", "SQL 必须显式选择结构快照内的字段，不能使用通配投影。")
     allowed = {column.name.lower() for column in table.columns}
     qualifiers = {"", alias.lower(), table.name.lower()}
     for column in scope.columns:

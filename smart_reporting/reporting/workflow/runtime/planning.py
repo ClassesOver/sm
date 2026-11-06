@@ -994,22 +994,34 @@ class RuntimePlanningMixin:
             if step_input.previous_step_content is not None
             else step_input.input
         )
-        source_ids = envelope.source_ids or self.registry.require_defaults()
-        configured = require_sources(self.registry.sources, source_ids)
-        sources = tuple(self._starrocks_source(item) for item in configured)
-        profile = self._resolve_profile(sources)
+        managed = None
         metadata = None
-        selected_agent = None
-        if self.metadata_client is not None:
-            selected_agent = await self.metadata_client.query_agent()
-            metadata = await self.metadata_client.query_model(
-                agent_id=selected_agent.code,
-                sources=configured,
+        if getattr(self, "configuration_provider", None) is not None:
+            managed = await self._managed_snapshot(
+                run_context, freeze=True, source_ids=envelope.source_ids
             )
+            sources = tuple(managed.sources.values())
+            profile = managed.profile
+            default_source_ids = tuple(managed.sources)
+        else:
+            source_ids = envelope.source_ids or self.registry.require_defaults()
+            configured = require_sources(self.registry.sources, source_ids)
+            sources = tuple(self._starrocks_source(item) for item in configured)
+            profile = self._resolve_profile(sources)
+            default_source_ids = self.registry.default_source_ids
+            if self.metadata_client is not None:
+                selected_agent = await self.metadata_client.query_agent()
+                metadata = await self.metadata_client.query_model(
+                    agent_id=selected_agent.code,
+                    sources=configured,
+                )
 
         snapshots: list[SourceSchemaSnapshot] = []
         previews: list[dict[str, Any]] = []
+        configuration_warnings: list[dict[str, str]] = []
         for source in sources:
+            if managed is not None:
+                metadata = managed.metadata[source.id]
             scope_tables = _schema_scope_tables(envelope, source=source, metadata=metadata)
             allowed_tables = tuple(
                 f"{table.database.lower()}.{table.name.lower()}" for table in scope_tables
@@ -1025,7 +1037,39 @@ class RuntimePlanningMixin:
                 metadata=metadata,
                 catalog=catalog,
                 profile_measure_semantics=profile.measure_semantics,
+                preserve_metadata=managed is not None,
             )
+            if managed is not None:
+                actual = {(table.database.lower(), table.name.lower()): table for table in catalog}
+                for table in snapshot.tables:
+                    current = actual[(table.database.lower(), table.name.lower())]
+                    columns = {column.name.lower(): column for column in current.columns}
+                    differences = []
+                    if table.description != current.description:
+                        differences.append(f"{table.database}.{table.name} 的说明")
+                    for column in table.columns:
+                        live = columns[column.name.lower()]
+                        fields = [
+                            label
+                            for attr, label in (
+                                ("data_type", "类型"),
+                                ("nullable", "可空性"),
+                                ("description", "说明"),
+                            )
+                            if getattr(column, attr) != getattr(live, attr)
+                        ]
+                        if fields:
+                            differences.append(
+                                f"{table.database}.{table.name}.{column.name} 的{'、'.join(fields)}"
+                            )
+                    if differences:
+                        configuration_warnings.append(
+                            {
+                                "code": "report_catalog_drift",
+                                "sourceId": source.id,
+                                "message": f"实时目录与发布版本存在差异：{'；'.join(differences)}。本次仍使用已发布元数据。",
+                            }
+                        )
             snapshots.append(snapshot)
             previews.append(
                 {
@@ -1043,19 +1087,21 @@ class RuntimePlanningMixin:
         snapshots = list(_apply_profile_scope_filters_to_snapshots(tuple(snapshots), profile))
         _validate_reporting_profile_schema(profile, tuple(snapshots))
         state = self._state(run_context)
-        workflow_input = envelope.workflow_payload(
-            default_source_ids=self.registry.default_source_ids
-        )
+        workflow_input = envelope.workflow_payload(default_source_ids=default_source_ids)
         workflow_input.pop("schemaInput", None)
         state[REPORT_WORKFLOW_INPUT_STATE_KEY] = workflow_input
         state[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in snapshots
         ]
         state[REPORT_EFFECTIVE_PROFILE_STATE_KEY] = profile.model_dump(mode="json", by_alias=True)
+        if managed is not None:
+            state["report_configuration_warnings"] = configuration_warnings
         # 元数据 Agent 只用于本步服务端查询；report_workflow_input 是后续各步
         # 反序列化的公开请求契约，不能写入未声明的 agentId 等内部字段。
         self._assert_state_safe(state)
-        return StepOutput(content={"sources": previews})
+        return StepOutput(
+            content={"sources": previews, "configurationWarnings": configuration_warnings}
+        )
 
     def _budgeted_data_scope_schemas(
         self,
@@ -1098,6 +1144,7 @@ class RuntimePlanningMixin:
         return schemas
 
     async def plan_data_scope(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         envelope = self._envelope(run_context)
         snapshots = self._snapshots(run_context)
         base_payload = {
@@ -1176,8 +1223,14 @@ class RuntimePlanningMixin:
         return StepOutput(content=profile_content)
 
     async def profile_source(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         envelope = self._envelope(run_context)
         snapshots = self._snapshots(run_context)
+        if getattr(self, "configuration_provider", None) is not None and _semantic_data_understanding_issues(
+            self._data_understanding(run_context).model_dump(mode="json", by_alias=True), snapshots
+        ):
+            raise ReportingError("report_data_understanding_invalid", "画像范围不属于已冻结目录。")
+        profile_filters = _profile_scope_filters_by_table(self._profile(run_context), snapshots)
         selected_source_ids = {
             item.source_id for item in self._data_understanding(run_context).tables
         }
@@ -1186,7 +1239,7 @@ class RuntimePlanningMixin:
             for snapshot in snapshots
             if snapshot.tables[0].source_id in selected_source_ids
         )
-        sources = tuple(self._source(source_id) for source_id, _snapshot in inputs)
+        sources = tuple([await self._source(source_id, run_context) for source_id, _snapshot in inputs])
         global_limiter = anyio.CapacityLimiter(
             min(source.limits.profile_concurrency for source in sources)
         )
@@ -1215,6 +1268,13 @@ class RuntimePlanningMixin:
                 shapes[index] = await collect_data_shape(
                     adapter,
                     catalog_scope=_catalog_scope(selected_tables),
+                    preserve_metadata=getattr(self, "configuration_provider", None) is not None,
+                    scope_filters={
+                        table.qualified_name: profile_filters.get(
+                            (source.id.lower(), table.database.lower(), table.name.lower()), {}
+                        )
+                        for table in _catalog_scope(selected_tables)
+                    },
                     period_start=envelope.period.start,
                     period_end=envelope.period.end,
                     period_columns={item.table: item.period_column for item in selected},
@@ -1250,6 +1310,7 @@ class RuntimePlanningMixin:
     async def propose_measure_semantics(
         self, step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         snapshots = self._snapshots(run_context)
         plan = self._data_understanding(run_context)
         profile = self._profile(run_context)
@@ -1416,6 +1477,7 @@ class RuntimePlanningMixin:
     async def commit_measure_semantics(
         self, step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         try:
             proposal = MeasureSemanticProposal.model_validate(step_input.previous_step_content)
         except Exception as error:
@@ -1458,6 +1520,7 @@ class RuntimePlanningMixin:
     async def resolve_capabilities(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         capabilities = resolve_profile_capabilities(
             self._profile(run_context),
             self._snapshots(run_context),
@@ -1469,6 +1532,7 @@ class RuntimePlanningMixin:
         return StepOutput(content=capabilities)
 
     async def generate_outline(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         state = self._state(run_context)
         envelope = self._envelope(run_context)
         if envelope.report_type is None:
@@ -1667,6 +1731,7 @@ class RuntimePlanningMixin:
     async def generate_analysis_plan(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         state = self._state(run_context)
         snapshots = self._snapshots(run_context)
         data_shapes = self._data_shapes(run_context)
@@ -1926,6 +1991,7 @@ class RuntimePlanningMixin:
     async def generate_query_candidates(
         self, step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
+        await self._ensure_managed_execution_state(run_context)
         state = self._state(run_context)
         data_shapes = self._data_shapes(run_context)
         requirements = tuple(
@@ -1964,7 +2030,7 @@ class RuntimePlanningMixin:
                 for requirement_id in row_preserving_ids
             ],
         }
-        sources = {item.id: item for item in self._sources(run_context)}
+        sources = {item.id: item for item in await self._sources(run_context)}
         snapshots = self._snapshots(run_context)
         validation_feedback: dict[str, Any] | None = None
         approved: tuple[ApprovedQuery, ...] | None = None
