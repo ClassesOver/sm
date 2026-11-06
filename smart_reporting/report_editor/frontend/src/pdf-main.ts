@@ -11,7 +11,7 @@ import type { NativeContextResponse, createNativeApi } from './native-api'
 import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
-import { deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -215,7 +215,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (!page || !original) return
     const availableWidth = Math.max(1, viewport.clientWidth - 36)
     const availableHeight = Math.max(1, viewport.clientHeight - 36)
-    const unit = original.getViewport({ scale: 1, rotation: page.rotation })
+    const unit = pdfPageViewport(original, page, 1)
     scale = Math.min(availableWidth / unit.width, mode === 'page' ? availableHeight / unit.height : Number.POSITIVE_INFINITY, 4)
     let option = [...homeZoom.options].find(item => Number(item.value) === scale)
     if (!option) { option = documentElement('option'); option.value = String(scale); option.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(option) }
@@ -354,8 +354,45 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     { id: 'annotate.protection.protect', label: '保护 PDF', reason: '加密权限修改尚未接入新修订输出与权限复读' },
     { id: 'annotate.signature.signaturePanel', label: '数字签名面板', reason: '数字签名列表与验证状态尚未接入原生 PDF 服务' },
   ])
+  const cropDialog = documentElement('dialog', 'pdf-crop-dialog')
+  cropDialog.setAttribute('aria-label', '裁切当前页面')
+  const cropTitle = documentElement('h3'); cropTitle.textContent = '裁切当前页面'
+  const cropHelp = documentElement('p'); cropHelp.textContent = '按当前显示方向输入四边裁去的百分比。只隐藏边缘内容，文字、表单和批注仍保留；裁切不能用于删除敏感信息。'
+  const cropError = documentElement('p', 'pdf-crop-error'); cropError.setAttribute('role', 'alert')
+  const cropFields = documentElement('fieldset')
+  const cropInputs = ['左侧裁去 (%)', '顶部裁去 (%)', '右侧裁去 (%)', '底部裁去 (%)'].map(label => {
+    const row = documentElement('label'); row.textContent = label
+    const input = documentElement('input'); input.type = 'number'; input.min = '0'; input.max = '99.99'; input.step = 'any'; input.value = '0'; input.setAttribute('aria-label', label)
+    row.append(input); cropFields.append(row); return input
+  })
+  const cropApply = documentElement('button'); cropApply.type = 'button'; cropApply.textContent = '应用裁切'
+  const cropCancel = documentElement('button'); cropCancel.type = 'button'; cropCancel.textContent = '取消'
+  cropFields.append(cropApply, cropCancel); cropDialog.append(cropTitle, cropHelp, cropError, cropFields); root.append(cropDialog)
+  let cropPageId = ''
+  cropCancel.addEventListener('click', () => cropDialog.close())
+  cropApply.addEventListener('click', () => { void applyCrop().catch(error => { cropError.textContent = error instanceof Error ? error.message : String(error); showError(error) }) })
+  async function openCrop() {
+    if (!document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || model.capabilities?.cropPage !== true) return
+    const page = state().find(item => item.pageId === activeId)
+    if (!page) return
+    cropError.textContent = ''; cropPageId = page.pageId; cropInputs.forEach(input => { input.value = '0' })
+    cropDialog.showModal()
+  }
+  async function applyCrop() {
+    if (!cropDialog.open || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || model.capabilities?.cropPage !== true) return
+    const page = state().find(item => item.pageId === cropPageId)
+    if (!page) throw new Error('裁切目标页面已变化，请重新选择')
+    const key = JSON.stringify(draft.operations)
+    const original = await sourcePage(page.index)
+    if (locked || previewing || printing || previewDocument || draft.closed || key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新选择裁切范围')
+    if (cropInputs.some(input => input.value.trim() === '')) throw new Error('请填写全部四个裁切边距')
+    const rect = pdfCropFromMargins(pdfPageViewport(original, page, 1), page.cropBox, cropInputs.map(input => Number(input.value)))
+    draft.setOperations(cropPdfPage(model.pages, draft.operations, page.pageId, rect))
+    cropDialog.close(); await refresh()
+  }
   const pageButtons = new Map<string, HTMLButtonElement>()
   const pageActions: Record<string, () => void | Promise<void>> = {
+    'genoffice.pdf.page.crop': openCrop,
     'genoffice.pdf.page.rotateLeft': () => append({ kind: 'rotatePage', pageId: activeId, delta: 270 }),
     'genoffice.pdf.page.rotateRight': () => append({ kind: 'rotatePage', pageId: activeId, delta: 90 }),
     'genoffice.pdf.page.rotateAll': async () => {
@@ -433,6 +470,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [highlight, 'highlight'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)) }
   function updateControls() {
     for (const button of editableButtons) button.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
+    cropFields.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     undo.disabled ||= !draft.canUndo; redo.disabled ||= !draft.canRedo
     noteInput.disabled = locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
     textObjects.disabled = replacement.disabled = stageText.disabled = locked || previewing || !!previewDocument || draft.closed
@@ -451,6 +489,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       for (const total of root.querySelectorAll('.pdf-view-page-row span')) total.textContent = ` / ${pages.length}`
     }
     for (const id of ['genoffice.pdf.page.rotateLeft', 'genoffice.pdf.page.rotateRight']) pageButtons.get(id)!.disabled ||= !activeId
+    const crop = pageButtons.get('genoffice.pdf.page.crop')!
+    crop.disabled ||= !document || !activeId || model.capabilities?.cropPage !== true || draft.operations.length >= 500
+    crop.title = document && model.capabilities?.cropPage === true ? '裁切当前页的可见范围，保留底层内容；不能用于删除敏感信息' : '当前 PDF 引擎未确认裁切写回能力'
     const rotateAll = pageButtons.get('genoffice.pdf.page.rotateAll')!
     const rotateAllOverBudget = !!document && draft.operations.length + state().length > 500
     rotateAll.disabled ||= !document || rotateAllOverBudget
@@ -516,7 +557,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   async function renderPage(page: PdfPageIdentity, holder: HTMLElement, renderGeneration: number) {
     const original = await sourcePage(page.index)
     if (disposed || renderGeneration !== generation || !visible.has(page.pageId)) return
-    const pdfViewport = original.getViewport({ scale, rotation: page.rotation })
+    const pdfViewport = pdfPageViewport(original, page, scale)
     const dpr = Math.min(window.devicePixelRatio || 1, 2, Math.sqrt(MAX_PAGE_PIXELS / (pdfViewport.width * pdfViewport.height)))
     const canvas = documentElement('canvas')
     canvas.width = Math.max(1, Math.floor(pdfViewport.width * dpr)); canvas.height = Math.max(1, Math.floor(pdfViewport.height * dpr))
@@ -648,7 +689,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', reorderPages: '页面重排' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', reorderPages: '页面重排', cropPage: '裁切页面' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -730,7 +771,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const [position, page] of pages.entries()) {
       const original = await sourcePage(page.index)
       if (disposed || renderGeneration !== generation) return
-      const dimensions = original.getViewport({ scale, rotation: page.rotation })
+      const dimensions = pdfPageViewport(original, page, scale)
       const card = documentElement('section', 'pdf-page'); card.dataset.pageId = page.pageId
       card.setAttribute('aria-label', `第 ${position + 1} 页`)
       const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
@@ -751,7 +792,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       if (observer) observer.observe(card)
       else { visible.add(page.pageId); render(page.pageId) }
       const thumbnail = documentElement('button', 'pdf-thumbnail'); thumbnail.type = 'button'; thumbnail.setAttribute('aria-label', `跳转第 ${position + 1} 页`)
-      const thumbCanvas = documentElement('canvas'); const thumbViewport = original.getViewport({ scale: .15, rotation: page.rotation })
+      const thumbCanvas = documentElement('canvas'); const thumbViewport = pdfPageViewport(original, page, .15)
       thumbCanvas.width = Math.ceil(thumbViewport.width); thumbCanvas.height = Math.ceil(thumbViewport.height)
       const thumbTask = original.render({ canvas: thumbCanvas, viewport: thumbViewport, annotationMode: AnnotationMode.ENABLE })
       tasks.add(thumbTask); void thumbTask.promise.catch(() => {}).finally(() => tasks.delete(thumbTask))
@@ -824,6 +865,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const sourceModel = await api.preview<PdfModel>({ expectedSha256: actualSha256, operations: [] }, abort.signal)
       if (sourceModel.sourceSha256 !== actualSha256 || sourceModel.model.sourceSha256 !== actualSha256) throw new Error('PDF 字段与文字对象来源不匹配')
+      model.capabilities = sourceModel.model.capabilities
       model.formFields = sourceModel.model.formFields ?? []
       renderFormControls(model.formFields)
       if (textEnabled) {
@@ -836,6 +878,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
     } catch (error) { textLoadWarning = `原位改字暂不可用，仍可查看、标注与下载 PDF：${error instanceof Error ? error.message : '文字对象读取失败'}` }
   }
+  if (draft.operations.some(operation => operation.kind === 'cropPage') && model.capabilities?.cropPage !== true) throw new Error('当前 PDF 引擎未确认裁切能力；原草稿已保留')
   void rebuildTextIndex().catch(showError)
   locked = false
   await refresh()

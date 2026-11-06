@@ -39,7 +39,7 @@ export const PDF_PAGE_RIBBON_GROUPS: PdfPageRibbonGroup[] = [
   {
     title: 'Crop & Resize',
     commands: [
-      unavailable('page.crop', '裁切页面', 'PDF bridge 尚未提供裁切页面操作'),
+      { id: 'genoffice.pdf.page.crop', label: '裁切页面', enabled: true },
       unavailable('page.size', '页面尺寸', 'PDF bridge 尚未提供页面尺寸变更操作'),
     ],
   },

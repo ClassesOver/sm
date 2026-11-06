@@ -17,6 +17,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('replaceText'), ...page, objectId: z.string().min(1).max(256), expectedTextSha256: z.string().regex(/^[a-f0-9]{64}$/), newText: z.string().max(4000) }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, rect, text: z.string().trim().min(1).max(10000), color: color.optional() }).strict(),
+  z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
   z.object({ kind: z.literal('rotatePage'), ...page, delta: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),
   z.object({ kind: z.literal('deletePage'), ...page }).strict(),
   z.object({ kind: z.literal('reorderPages'), ...identity, pageIds: z.array(z.string()).min(1).max(10000) }).strict(),
@@ -50,7 +51,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, coordinates: 'unrotated-pdf-user-space' } }
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
@@ -59,6 +60,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const model = await inspectPdf(content, hasText)
   if (expectedSha256 !== model.sourceSha256) throw new Error('PDF 来源摘要不匹配')
   const byId = new Map(model.pages.map((page) => [page.pageId, page]))
+  const crops = new Map<string, [number, number, number, number]>()
   const deleted = new Set<string>()
   const touched = new Set<string>()
   let reordered = false
@@ -117,8 +119,14 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     }
     if (op.kind === 'replaceText') continue
     const [x1, y1, x2, y2] = op.rect
-    const box = target.cropBox
+    const previousCrop = crops.get(op.pageId)
+    const box = previousCrop ? { x: previousCrop[0], y: previousCrop[1], width: previousCrop[2] - previousCrop[0], height: previousCrop[3] - previousCrop[1] } : target.cropBox
     if (x1 >= x2 || y1 >= y2 || x1 < box.x || y1 < box.y || x2 > box.x + box.width || y2 > box.y + box.height) throw new Error('PDF 坐标超出页面范围')
+    if (op.kind === 'cropPage') {
+      if (x2 - x1 < .5 || y2 - y1 < .5) throw new Error('PDF 裁切范围过小')
+      crops.set(op.pageId, op.rect)
+      continue
+    }
     if (op.kind === 'highlight') {
       request.markups.push({ pageIndex: target.index, type: 'highlight', color: op.color ?? [1, 0.85, 0], quads: [[x1, y2, x2, y2, x1, y1, x2, y1]] })
     } else {
@@ -135,13 +143,24 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const skippedOperations = [...prepared.skipped]
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = content
-  if (remaining.length) {
+  if (remaining.some(op => op.kind !== 'cropPage')) {
     const result = await applySaveRequest(content, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
       request.textEdits = []
       bytes = ops.some(op => op.kind !== 'replaceText') ? (await applySaveRequest(content, request)).bytes : content
     } else bytes = result.bytes
+  }
+  if (crops.size) {
+    // Same CropBox primitive as pinned cropPagesBytes; absolute source-space
+    // bounds keep ordered crop/rotation commands stable through final reorder.
+    const output = await PDFDocument.load(bytes, { updateMetadata: false })
+    const order = request.pageOrder ?? survivors.map(page => page.index)
+    for (const [pageId, [x1, y1, x2, y2]] of crops) {
+      const sourceIndex = byId.get(pageId)!.index
+      output.getPage(order.indexOf(sourceIndex)).setCropBox(x1, y1, x2 - x1, y2 - y1)
+    }
+    bytes = await output.save({ useObjectStreams: false, updateFieldAppearances: false })
   }
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,

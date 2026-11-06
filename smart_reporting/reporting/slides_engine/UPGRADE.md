@@ -316,3 +316,13 @@ sound/ext、音频及关系字节。vendor 未改。普通来源及固定 Morph 
 浏览器下载独立读取，以及 Node22 只读断网包三个定向用例通过；两份生产
 构建和预算通过。详见 `report_editor/NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`。
 原 upstream setter 的历史丢失探针仍有效；未声称桌面/播放/完整镜像通过。
+
+
+2026-11-06 PDF 当前页裁切：bridge 增加严格 cropPage 和明确能力标记，复用
+pdf-lib CropBox 原语与 PDF.js 逆变换；不改 vendor。绝对来源坐标支持重复
+裁切/旋转/删页/重排及表单组合，保留内容流。浏览器四种旋转和 UserUnit2、
+实际下载/pypdf、ASGI组合、Node22断网只读与两份生产构建通过。32项本地
+SHA核对中同时校正一条历史测试过期记录；SOURCE清单不变。独立bridge tsc
+仍有六项已有桌面类型声明缺失，与HEAD对照零新增，不记作干净通过。详见
+`report_editor/NATIVE_PDF_CROP_ACCEPTANCE.md`；全页裁切/其他Page命令和桌面/
+完整镜像/生产身份仍未验收，开关关闭。

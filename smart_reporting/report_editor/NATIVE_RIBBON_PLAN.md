@@ -260,3 +260,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Inspect and UI/draft/backend gates refuse unsupported compatibility sources; pinned Morph branches retain individual metadata. Keep the separate conservative bulk gate.
 - [x] 29 distinct new actual-file cases, 20 affected existing cases, four new frontend checks plus one affected check, strict types, browser history/reload/save/download/reopen and three production-packed Node22 readonly/offline checks pass. Both production builds and budget checks pass. Evidence: `NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`.
 - [ ] Arbitrary compatibility markup, playback/audio/desktop, remaining source command/context parity and full application image/deployed acceptance remain open. Tasks 2–6 remain incomplete; flags off.
+
+
+### PDF current-page crop continuation (2026-11-06)
+
+- [x] Connect source page.crop with display-relative margins, immutable source ID and unrotated bounds; use PDF.js transforms and pdf-lib CropBox primitive. Repeated crop/rotation/reorder/delete remain ordered; one draft history step, reload, no-op/budget/readonly/source guards. Canvas/text/overlays/thumbnails/fit share the cropped viewport.
+- [x] Preserve MediaBox/content/UserUnit/forms/annotations; dialog explains hidden content remains and shows invalid input inside the modal. Old engines need an explicit crop capability. Vendor unchanged.
+- [x] 27 distinct new file cases, 13 affected existing file cases, 18 new frontend checks and 18 affected inventory/operation checks pass across focused runs. Production-static Chromium four rotations/UserUnit2/save/download/reopen, one actual-engine ASGI crop combination and two Node22 readonly/offline cases pass. Final builds/budgets and 32-item local SHA audit pass; standalone bridge tsc retains identical baseline desktop-type diagnostics. Details: `NATIVE_PDF_CROP_ACCEPTANCE.md`.
+- [ ] Crop-all/image handles, size, extraction/insertion/replacement, splitting/merging and Form Design remain open. This closes one bounded command, not Task 5 or deployment/desktop/full-image acceptance. Flags off.

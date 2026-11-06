@@ -183,3 +183,13 @@ formatter metadata-loss case remains valid historical evidence; the native bridg
 now preserves supported-source metadata through a thin adapter. See
 `NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md` for actual-file/browser proof
 and readonly boundaries. The bulk gate and incomplete overall inventory remain.
+
+
+## PDF current-page crop closure (2026-11-06)
+
+The formerly disabled `genoffice.pdf.page.crop` now opens four displayed margin
+percentages for the current source page. Strict crop operations and PDF.js
+viewports preserve source-space identity through rotations and reorder. Actual
+file/browser/history/ASGI/Node22 evidence and remaining source all-pages/image UI
+boundaries are in `NATIVE_PDF_CROP_ACCEPTANCE.md`. The Page Size command remains
+disabled; this is not a complete Crop & Resize group or Task 5 closure.

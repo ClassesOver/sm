@@ -114,7 +114,11 @@ def ribbon_operations(format, model):
              "href": "https://example.test/report?source=word&mode=review"},
         ]
     if format == "pdf":
-        return [{"kind": "reorderPages", "pageIds": [page["pageId"] for page in reversed(model["pages"])]}]
+        return [
+            {"kind": "cropPage", "pageId": model["pages"][0]["pageId"], "rect": [18, 24, 590, 760]},
+            {"kind": "rotatePage", "pageId": model["pages"][0]["pageId"], "delta": 90},
+            {"kind": "reorderPages", "pageIds": [page["pageId"] for page in reversed(model["pages"])]},
+        ]
     if format == "xlsx":
         return [{"kind": "applyCellEdits", "edits": [
             {"sheetName": "Sheet", "row": 1, "column": 0, "writeValue": True, "cell": {"value": 3}},
@@ -160,7 +164,10 @@ def assert_file_readback(format, content):
         assert (section.page_width.twips, section.page_height.twips) == (16838, 11906)
         assert int(section._sectPr.find(qn("w:cols")).get(qn("w:num"))) == 2
     elif format == "pdf":
-        assert [(float(page.mediabox.width), float(page.mediabox.height)) for page in PdfReader(stream).pages] == [(500, 400), (612, 792)]
+        reader = PdfReader(stream)
+        assert [(float(page.mediabox.width), float(page.mediabox.height)) for page in reader.pages] == [(500, 400), (612, 792)]
+        assert list(reader.pages[1].cropbox) == [18, 24, 590, 760]
+        assert reader.pages[1].get("/Rotate") == 90
     elif format == "xlsx":
         sheet = load_workbook(stream).active
         assert sheet["A2"].value == 3

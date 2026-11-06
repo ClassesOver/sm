@@ -4,7 +4,7 @@ import type { PDFPageProxy } from 'pdfjs-dist'
 export interface PdfBox { x: number; y: number; width: number; height: number }
 export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[] }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[] }
+export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
@@ -26,12 +26,53 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
     else if (operation.kind === 'rotatePage') {
       if (![90, 180, 270].includes(Number(operation.delta))) throw new Error('页面旋转无效')
       page.rotation = (page.rotation + Number(operation.delta)) % 360
+    } else if (operation.kind === 'cropPage') {
+      if (deleted.has(page.pageId)) throw new Error('裁切不能引用已删除页面')
+      const rect = validatedPdfCrop(operation.rect, page.cropBox)
+      page.cropBox = { x: rect[0], y: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] }
     } else if (!['highlight', 'addTextAnnotation', 'replaceText'].includes(operation.kind)) throw new Error('不支持的 PDF 操作')
   }
   const remaining = order.filter(id => !deleted.has(id))
   if (remaining.length !== pages.length - deleted.size) throw new Error('页面排序必须包含所有保留页面')
   if (!remaining.length) throw new Error('不能删除全部页面')
   return remaining.map(id => byId.get(id)!)
+}
+
+
+/** Native crop stores unrotated PDF coordinates, never a displayed page index. */
+export function validatedPdfCrop(value: unknown, box: PdfBox): PdfRect {
+  if (!Array.isArray(value) || value.length !== 4 || !value.every(item => typeof item === 'number' && Number.isFinite(item))) throw new Error('裁切范围无效')
+  const [x1, y1, x2, y2] = value
+  if (x2 - x1 < .5 || y2 - y1 < .5 || x1 < box.x || y1 < box.y || x2 > box.x + box.width || y2 > box.y + box.height) throw new Error('裁切范围必须在当前页面内，且宽高至少为 0.5 PDF 单位')
+  return [x1, y1, x2, y2]
+}
+
+/** Reuse PDF.js PageViewport construction for CropBox/UserUnit/rotation transforms. */
+export function pdfPageViewport(page: PDFPageProxy, identity: PdfPageIdentity, scale: number) {
+  const base = page.getViewport({ scale, rotation: identity.rotation })
+  const box = identity.cropBox
+  const viewBox = [box.x, box.y, box.x + box.width, box.y + box.height]
+  if (viewBox.every((value, index) => value === base.viewBox[index])) return base
+  // PDF.js exposes viewport instances through getViewport, but not its class export.
+  const Viewport = base.constructor as new (params: { viewBox: number[]; userUnit: number; scale: number; rotation: number }) => typeof base
+  return new Viewport({ viewBox, userUnit: page.userUnit, scale, rotation: identity.rotation })
+}
+
+export function cropPdfPage(pages: PdfPageIdentity[], operations: NativeOperation[], pageId: string, rect: unknown): NativeOperation[] {
+  const page = pdfPageState(pages, operations).find(item => item.pageId === pageId)
+  if (!page) throw new Error('页面不存在')
+  const bounds = validatedPdfCrop(rect, page.cropBox)
+  if (bounds.every((value, index) => value === [page.cropBox.x, page.cropBox.y, page.cropBox.x + page.cropBox.width, page.cropBox.y + page.cropBox.height][index])) return structuredClone(operations)
+  if (operations.length >= 500) throw new Error('裁切将超过 500 条修改；请先保存当前修改')
+  return [...structuredClone(operations), { kind: 'cropPage', pageId, rect: bounds }]
+}
+
+export function pdfCropFromMargins(viewport: PdfViewportInverse, box: PdfBox, margins: number[]): PdfRect {
+  if (margins.length !== 4 || !margins.every(value => Number.isFinite(value) && value >= 0 && value < 100)) throw new Error('裁切边距须为 0–100% 之间的数值')
+  const [left, top, right, bottom] = margins
+  if (left + right >= 100 || top + bottom >= 100) throw new Error('裁切边距不能覆盖整个页面')
+  const bounds = { left: 0, top: 0, width: viewport.width, height: viewport.height }
+  return validatedPdfCrop(pdfRectFromClient(viewport, bounds, [viewport.width * left / 100, viewport.height * top / 100], [viewport.width * (1 - right / 100), viewport.height * (1 - bottom / 100)], box), box)
 }
 
 export function pdfPrintPages(pages: PdfPageIdentity[], operations: NativeOperation[]): PdfPageIdentity[] {
