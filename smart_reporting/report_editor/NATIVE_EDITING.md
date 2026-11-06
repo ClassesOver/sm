@@ -138,3 +138,9 @@ AP 写回；本次草稿可叠加/切换，高亮可自选颜色。已保存标�
 `NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体仍未全面对齐，当前功能族
 差异见 `NATIVE_PDF_ALIGNMENT_STATUS.md`，证书服务前置条件和 Web 设计见
 `NATIVE_PDF_SIGNING_WEB_DESIGN.md`。
+
+PDF 夜间阅读现只反转页面位图，不改文件/草稿，打印保持原色；Home/View/
+状态栏支持固定源18阶梯、10%–800%、滑块与Ctrl/Meta滚轮，缩放保留内容
+锚点。只读也可使用。打印媒体隔离和源字节一致性见
+`NATIVE_PDF_VIEW_ACCEPTANCE.md`；批注侧栏/比较/附件、完整快捷键与阅读位置
+持久化仍未接通，不代表整个View功能族完成。

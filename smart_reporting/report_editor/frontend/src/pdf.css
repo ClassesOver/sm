@@ -13,3 +13,11 @@
 .pdf-underline { border-bottom: 1.5px solid currentColor; }
 .pdf-strikeout::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1.5px solid currentColor; }
 .pdf-squiggly { background-repeat: repeat-x; background-position: left bottom; background-size: 8px 4px; }
+
+/* Fixed GenOffice styles.css night-reading rules; only the page bitmap is inverted. */
+.pdf-night .pdf-page-content canvas { filter: invert(1) hue-rotate(180deg); }
+.native-pdf-editor .pdf-document-pages.pdf-night { background: #1e1e1e; }
+.pdf-night .pdf-page { box-shadow: 0 1px 4px rgb(0 0 0 / 55%); }
+.pdf-view-status { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 6px 14px; flex: none; background: white; border-top: 1px solid #d9e0ea; font-size: 12px; }
+.pdf-view-status input { width: 150px; }
+.pdf-view-status button { border: 1px solid #ccd5e2; border-radius: 4px; background: white; min-width: 24px; }

@@ -22,6 +22,8 @@ import { pdfRibbonLabel } from './pdf-ribbon-locales'
 import { MARKUP_COLORS, quadToRect, selectionQuadsByPage } from './genoffice-pdf-annotations'
 import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
 
+import { PDF_ZOOM_STEPS, clampPdfZoom, stepPdfZoom, capturePdfZoomAnchor, restorePdfZoomAnchor, type PdfZoomAnchor } from './pdf-view-state'
+
 GlobalWorkerOptions.workerSrc = workerUrl
 const ASSET_BASE = '/reports/v1/editor/assets/pdfjs/'
 const MAX_PAGE_PIXELS = 48_000_000
@@ -45,6 +47,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   let reportedSelectionPage = ''
   let textSelectionPage = '', selectedTextId = '', lastOperationsKey = JSON.stringify(draft.operations)
   let scale = 1
+  let pendingZoomAnchor: PdfZoomAnchor | null = null
   let markupColor: [number, number, number] = [...MARKUP_COLORS.highlight]
   let markupSelection: PdfMarkupSelection[] = []
   let markupStructureKey = ''
@@ -213,8 +216,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup.append(homePageInput.row)
   const homeZoom = documentElement('select', 'pdf-zoom')
   homeZoom.setAttribute('aria-label', '页面缩放')
-  for (const value of [.5, .75, 1, 1.25, 1.5, 2]) { const option = documentElement('option'); option.value = String(value); option.textContent = `${value * 100}%`; homeZoom.append(option) }
-  homeZoom.value = '1'; homeZoom.addEventListener('change', () => { scale = Number(homeZoom.value); void refresh().catch(showError) }); commandGroup.append(homeZoom)
+  for (const value of PDF_ZOOM_STEPS) { const option = documentElement('option'); option.value = String(value); option.textContent = `${Math.round(value * 100)}%`; homeZoom.append(option) }
+  homeZoom.value = '1'; homeZoom.addEventListener('change', () => setZoom(Number(homeZoom.value))); commandGroup.append(homeZoom)
   const fitScale = (mode: 'width' | 'page') => {
     const page = state().find(item => item.pageId === activeId)
     const original = page && pagesCached.get(previewDocument ? state().findIndex(item => item.index === page.index) : page.index)
@@ -222,12 +225,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const availableWidth = Math.max(1, viewport.clientWidth - 36)
     const availableHeight = Math.max(1, viewport.clientHeight - 36)
     const unit = displayViewport(original, page, 1)
-    scale = Math.min(availableWidth / unit.width, mode === 'page' ? availableHeight / unit.height : Number.POSITIVE_INFINITY, 4)
-    let option = [...homeZoom.options].find(item => Number(item.value) === scale)
-    if (!option) { option = documentElement('option'); option.value = String(scale); option.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(option) }
-    homeZoom.value = option.value
-    void refresh().catch(showError)
+    setZoom(Math.min(availableWidth / unit.width, mode === 'page' ? availableHeight / unit.height : Number.POSITIVE_INFINITY))
   }
+  const homeZoomOut = button('缩小', () => setZoom(stepPdfZoom(scale, -1)), false)
+  const homeZoomIn = button('放大', () => setZoom(stepPdfZoom(scale, 1)), false)
+  sourceCommand(homeZoomOut, 'home.pageZoom.zoomOut'); sourceCommand(homeZoomIn, 'home.pageZoom.zoomIn')
   sourceCommand(button('适合宽度', () => fitScale('width'), false), 'home.pageZoom.fitWidth')
   sourceCommand(button('适合页面', () => fitScale('page'), false), 'home.pageZoom.fitPage')
   commandGroup = ribbon.group('home', 'Search, Print & Properties')
@@ -285,25 +287,52 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     pageSpreadToggle.setAttribute('aria-pressed', String(twoPageView))
   }, false)
   sourceCommand(pageSpreadToggle, 'view.navigation.pageSpread')
+  const nightToggle = button('夜间模式', () => {
+    const enabled = !viewport.classList.contains('pdf-night')
+    viewport.classList.toggle('pdf-night', enabled); nightToggle.setAttribute('aria-pressed', String(enabled))
+  }, false)
+  sourceCommand(nightToggle, 'view.navigation.nightMode'); nightToggle.setAttribute('aria-pressed', 'false')
   unavailableSourceGroup('view', 'Navigation', PDF_VIEW_RIBBON_GROUPS[0].commands.filter(item => !item.enabled).map(item => ({ id: item.id.replace('genoffice.pdf.', ''), label: item.label, reason: item.reason! })), viewNavigation)
+  for (const command of PDF_VIEW_RIBBON_GROUPS[0].commands) { const control = [...viewNavigation.querySelectorAll<HTMLElement>('[data-source-command-id]')].find(node => node.dataset.sourceCommandId === command.id); if (control) viewNavigation.append(control) }
   const viewZoomGroup = ribbon.group('view', 'Page & Zoom')
   const viewPageInput = createPageInput('view.pageZoom.goToPage')
   viewZoomGroup.append(viewPageInput.row)
   commandGroup = viewZoomGroup
-  const setZoom = (value: number) => {
-    scale = Math.max(.25, Math.min(4, value))
+  const setZoom = (value: number, vx = 0, vy = 0) => {
+    let next: number
+    try { next = clampPdfZoom(value) } catch (error) { showError(error); return }
+    if (next === scale) return
+    pendingZoomAnchor ??= capturePdfZoomAnchor(viewport, scale, vx, vy)
+    scale = next
     const option = [...homeZoom.options].find(item => Number(item.value) === scale)
     if (!option) { const added = documentElement('option'); added.value = String(scale); added.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(added) }
     homeZoom.value = String(scale)
+    zoomSlider.value = String(Math.round(scale * 100)); zoomValue.textContent = `${Math.round(scale * 100)}%`
     void refresh().catch(showError)
   }
-  const zoomOut = button('缩小', () => setZoom(scale / 1.2), false)
-  const zoomIn = button('放大', () => setZoom(scale * 1.2), false)
+  const zoomOut = button('缩小', () => setZoom(stepPdfZoom(scale, -1)), false)
+  const zoomIn = button('放大', () => setZoom(stepPdfZoom(scale, 1)), false)
   sourceCommand(zoomOut, 'view.pageZoom.zoomOut'); sourceCommand(zoomIn, 'view.pageZoom.zoomIn')
   const viewFitWidth = button('适合宽度', () => fitScale('width'), false)
   const viewFitPage = button('适合页面', () => fitScale('page'), false)
   sourceCommand(viewFitWidth, 'view.pageZoom.fitWidth'); sourceCommand(viewFitPage, 'view.pageZoom.fitPage')
   viewZoomGroup.append(zoomOut, zoomIn, viewFitWidth, viewFitPage)
+  const zoomStatus = documentElement('footer', 'pdf-view-status')
+  const statusZoomOut = documentElement('button'); statusZoomOut.type = 'button'; statusZoomOut.textContent = '−'; statusZoomOut.setAttribute('aria-label', '缩小页面')
+  const statusZoomIn = documentElement('button'); statusZoomIn.type = 'button'; statusZoomIn.textContent = '+'; statusZoomIn.setAttribute('aria-label', '放大页面')
+  const zoomSlider = documentElement('input'); zoomSlider.type = 'range'; zoomSlider.min = '10'; zoomSlider.max = '800'; zoomSlider.step = '5'; zoomSlider.value = '100'; zoomSlider.setAttribute('aria-label', '页面缩放滑块')
+  const zoomValue = documentElement('span'); zoomValue.textContent = '100%'
+  statusZoomOut.addEventListener('click', () => setZoom(stepPdfZoom(scale, -1)))
+  statusZoomIn.addEventListener('click', () => setZoom(stepPdfZoom(scale, 1)))
+  zoomSlider.addEventListener('input', () => setZoom(Number(zoomSlider.value) / 100))
+  sourceCommand(statusZoomOut, 'view.status.zoomOut'); sourceCommand(statusZoomIn, 'view.status.zoomIn'); sourceCommand(zoomSlider, 'view.status.zoomSlider')
+  zoomStatus.append(statusZoomOut, zoomSlider, statusZoomIn, zoomValue); root.append(zoomStatus)
+  viewport.addEventListener('wheel', event => {
+    if ((!event.ctrlKey && !event.metaKey) || !document || event.deltaY === 0) return
+    event.preventDefault()
+    const box = viewport.getBoundingClientRect()
+    setZoom(scale - event.deltaY * .006, event.clientX - box.left, event.clientY - box.top)
+  }, { passive: false, signal: abort.signal })
   const formGroup = ribbon.group('fillForm', '填写可填写域')
   const formControls = documentElement('div', 'pdf-form-controls')
   formGroup.append(formControls)
@@ -559,7 +588,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.disabled = locked || previewing
     confirmPreview.disabled = locked || previewing || draft.closed
     for (const input of pageInputs) input.disabled = !document
-    zoomOut.disabled = zoomIn.disabled = viewFitWidth.disabled = viewFitPage.disabled = !document
+    homeZoom.disabled = homeZoomOut.disabled = homeZoomIn.disabled = zoomOut.disabled = zoomIn.disabled = statusZoomOut.disabled = statusZoomIn.disabled = zoomSlider.disabled = nightToggle.disabled = viewFitWidth.disabled = viewFitPage.disabled = !document
     if (document) {
       const pages = state()
       const current = String(Math.max(1, pages.findIndex(page => page.pageId === activeId) + 1))
@@ -904,6 +933,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       link.addEventListener('click', () => jumpToPageForIdentity(page.pageId))
       outlinePanel.append(link)
     }
+    if (pendingZoomAnchor) { restorePdfZoomAnchor(viewport, pendingZoomAnchor, scale); pendingZoomAnchor = null }
     status.textContent = previewDocument ? '正在显示实际写回的 PDF 预览；未执行的修改仍保留原文。返回原稿后可继续调整。' : draft.persistenceError ?? (draft.dirty ? `有 ${draft.operations.length} 项未保存修改；保存会创建新修订。` : response.editingEnabled ? `选择页面文字可添加或切换本次高亮、下划线、波浪线和删除线；文字批注为便签。${textEnabled ? '原位改字需核对实际预览后保存。' : '原位改字尚未开放。'}` : '当前为只读，原生编辑尚未开放；可下载文件。')
     if (textLoadWarning) status.textContent += ` ${textLoadWarning}`
     renderTextPanel(); updateControls(); onDraftChange?.()

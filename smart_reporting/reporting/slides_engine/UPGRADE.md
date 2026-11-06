@@ -354,3 +354,11 @@ PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步�
 详见 `report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体差异
 与真实签名依赖分别见 ALIGNMENT_STATUS 和 SIGNING_WEB_DESIGN 文档，不将
 禁用项、设计或缺服务的路径算作完成。开关关闭。
+
+
+2026-11-06 PDF 纯阅读补缺：源位图夜间滤镜、18阶梯/10–800%缩放、状态滑块、
+Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行包不变。源码
+核对补列遗漏的批注侧栏/比较/附件并明确禁用，不计完成。7项定向前端
+检查、只读Chromium视图/真实滚轮/打印媒体隔离/源字节相等与两份构建预算
+通过，详见 `report_editor/NATIVE_PDF_VIEW_ACCEPTANCE.md`。阅读位置持久化、
+完整快捷键/行布局及整体源功能仍未完成，开关关闭。

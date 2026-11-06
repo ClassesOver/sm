@@ -223,3 +223,14 @@ underline/squiggly/strikeout addition entries, not the complete source toggle/
 delete behavior. See `NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md` and the separate
 family-level `NATIVE_PDF_ALIGNMENT_STATUS.md`; neither disabled controls nor206
 mechanical App callback nodes are counted as completed source parity.
+
+
+## PDF View source audit correction and reading closure
+
+Fixed App viewNavGroup also has comments, comparison and attachments. Their
+previous omission means the five-entry native list was not a complete source
+inventory; all three are now explicit disabled controls in source order. Night
+reading and18-step10–800% zoom/status/wheel/DOM-anchor behavior are accepted in
+`NATIVE_PDF_VIEW_ACCEPTANCE.md`; those three families, reading-position persistence,
+complete shortcuts and every source fit/layout rule remain open. No whole-View
+completion or disabled-control parity credit is claimed.
