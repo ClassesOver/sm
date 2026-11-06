@@ -1,14 +1,13 @@
 # 数据源与知识库管理实施进度
 
-对应计划：[实施计划](2026-11-05-data-source-knowledge-management.md)。2026-11-06 更新：已提交配置发布、原子导入和持久化运行快照基础；Task 4 报告接入已有未提交实现和定点结果，但审查仍有两项 Important。本次只更新计划/进度，读取现存 JUnit、源码及审查结论，没有重跑应用测试；以下区分已提交、未提交、局部证据和未完成验收。
+对应计划：[实施计划](2026-11-05-data-source-knowledge-management.md)。2026-11-06 更新：管理后端、配置发布/导入和冻结配置报告接入已提交；执行状态越界、目录漂移与画像组织过滤问题已修复并复核。管理前端、知识库及真实部署验收仍待完成。定点验证与未执行项见下文，不表示整个计划完成。
 
 ## 工作区与版本基线
 
-- 主工作区：`/home/junge/pros/smart_reporting`；已有 Office 编辑器修改，本次未修改这些应用文件。主工作区尚无管理应用模块。
-- 功能 worktree：`/home/junge/.codex/worktrees/dc7b/smart_reporting`，分支 `feat/data-source-knowledge-management`，起点 `4b543a53`；最新应用提交 `ef08213b`，本次文档更新前 HEAD `0aac2a93`（文档提交）。
-- 两个工作区仅同步本计划和进度文档；管理应用代码仍在功能 worktree，不表示已合并。
-- 已有提交：`1ae7200d` admin/迁移；`408a4b0d` 组织/数据源/Profile；`f3dc0cff` Catalog/导入初版。
-- 配置存储与运行快照基础已提交 `ef08213b`；14 个报告接入应用/测试文件尚未提交，不能称 Task 4 完成。功能 worktree 有独立 `.venv`；已有验证使用专用 PostgreSQL 18 测试容器 `reporting-management-test-db`，端口 `55439`，库与用户均为 `management_test`。本次文档更新未检查容器状态，凭据不写入文档。
+- 主工作区：`/home/junge/pros/smart_reporting`；已有 Office 编辑器修改，不纳入本分支。两个工作区仅同步本计划和进度文档，管理代码尚未合并。
+- 功能 worktree：`/home/junge/.codex/worktrees/dc7b/smart_reporting`，分支 `feat/data-source-knowledge-management`，起点 `4b543a53`。
+- 已有提交：`1ae7200d` admin/迁移；`408a4b0d` 组织/数据源/Profile；`f3dc0cff` Catalog/导入初版；`ef08213b` 配置保真与运行快照；`fe3c20c3` 报告接入与取数边界；`817a02c2` 旧源导入对账。
+- 已有验证使用独立 `.venv` 和专用 PostgreSQL 18 测试容器 `reporting-management-test-db`；integration fixture 可重建测试 schema，数据库测试串行执行。本次创建 PR 不重复完整测试。
 
 ## 任务状态
 
@@ -16,8 +15,8 @@
 | --- | --- | --- |
 | 1 admin | 核心后端已提交；统一业务路由认证已补充 | 完整应用启动、实际路由矩阵、浏览器和部署验收 |
 | 2 数据源 | 草稿/发布/凭据已提交；依赖检查、发布重试幂等已提交 | 规范化哈希已修复；连接测试、列表/详情、启停/默认源、差异/历史复制闭环 |
-| 3 目录/Profile/导入 | 完整 metadata 快照、服务端同步、原子导入、CLI、固定 Profile 祖先闭包已提交 | 既有执行参数丢失已修复并复核；仍需旧配置导入差异提示、真实 StarRocks/metadata 验收 |
-| 4 运行配置 | provider/迁移已提交；入口上下文、bootstrap、确认数据源及后续物化已有未提交实现；5 项 PG /261 项定点回归通过 | 先修会话状态越界和实时目录覆盖两项 Important；类型检查及应用装配尚未收口；完整 HTTP/MCP 恢复和真实 StarRocks 未验收 |
+| 3 目录/Profile/导入 | 完整 metadata 快照、服务端同步、原子导入、CLI、固定 Profile 祖先闭包已提交 | 既有执行参数丢失已修复并复核；旧配置导入差异提示已补；真实 StarRocks/metadata 验收待完成 |
+| 4 运行配置 | 冻结配置、可信入口、画像组织过滤和原生恢复已提交 fe3c20c3；应用导入装配通过 | 完整部署 HTTP/MCP、真实 StarRocks/模型验收待完成；planning 两项既有类型错误单列 |
 | 5 管理前端 | 未开始 | 独立 React 入口、页面操作及真实后端闭环 |
 | 6 文档存储 | 未开始 | 原文文件、版本、受控访问、任务登记 |
 | 7 Agno 索引/worker | 未开始 | 锁定版本核对、manifest 读回、租约/attempt/generation 恢复 |
@@ -45,7 +44,7 @@ Task 复选框表示整项交付，不按局部测试通过自动勾选。M1、M
 | 合法输入的配置哈希不可重建 | `data_sources/service.py` 在 hash 后才 strip 名称/lower 数据库；`runtime.py` 用落库值重算。`name=" 数仓 "`、`database="WAREHOUSE"` 可发布但 freeze 返回配置身份不匹配 | Task 2 先统一规范化内容，再落库/哈希/恢复；覆盖管理保存与导入。历史异常版本不原地改 hash、不跳过验证，列入迁移对账并复制草稿重新发布 |
 | 导入丢失既有执行参数 | `importer.py` 不保存文件 QueryLimits；`runtime.py` 恢复 parser 时使用默认值。文件 `(9,100,2048)` 会成为 `(30,1000000,268435456)`，只改这些值可能仍被视为无变更 | Task 3 保存内部快照、纳入版本 hash，Task 4 原样恢复；只改一项产生新版本，旧运行保持旧值。管理页面/公开写入 API 不增加限额字段；旧缺失记录从原文件重新导入对账 |
 
-已先在真实 PG 复现这两项失败，再完成修复；新反例测试通过。只读审查者再次核对和探针验证，未发现阻碍提交的 Critical/Important。旧记录迁移后保留 NULL 并明确要求重新导入，既有 hash/运行引用不改写；dry-run 对这些旧源逐项提示仍待补充。另修复源 HTTP 创建/编辑的 Pydantic alias 错误，实际 API 用例通过，并确认写入 maxRows 返回 422。
+已先在真实 PG 复现这两项失败，再完成修复；新反例测试通过。只读审查者再次核对和探针验证，未发现阻碍提交的 Critical/Important。旧记录迁移后保留 NULL 并明确要求重新导入，既有 hash/运行引用不改写；dry-run 对这些旧源逐项提示已在 817a02c2 补充。另修复源 HTTP 创建/编辑的 Pydantic alias 错误，实际 API 用例通过，并确认写入 maxRows 返回 422。
 
 ## 已有验证与证据边界
 

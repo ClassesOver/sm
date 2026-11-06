@@ -43,4 +43,3 @@ async def test_catalog_versions_publish_and_failed_sync_keeps_previous(auth_cont
     current = await catalogs.current(login.raw_token, scope, "operations")
     assert current["revision"] == 1
     assert current["status"] == "published"
-
