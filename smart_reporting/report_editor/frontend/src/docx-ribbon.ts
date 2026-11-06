@@ -1,3 +1,4 @@
+import { paragraphVerticalAlign, toggleParagraphVerticalAlign, verticalAlignTarget } from './docx-vertical'
 import { TABLE_ACTIONS, type DocxTableCommands } from './docx-tables'
 import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
@@ -410,6 +411,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       },
       onList: toggleList,
       onMark: applyMark,
+      onVerticalAlign: (kind: 'superscript' | 'subscript') => { toggleParagraphVerticalAlign(editor, anchors, kind) },
+      verticalAlign: selected ? paragraphVerticalAlign(selected.toJSON()) : undefined,
+      verticalAlignAvailable: !!verticalAlignTarget(editor, anchors),
       onFontSize: adjustFontSize,
       onFontFamily: (fontFamily: string) => { if (fontFamily) applyTextStyle({ fontFamily }) },
       onFontSizeValue: (fontSize: number) => applyTextStyle({ fontSize }),

@@ -10,6 +10,9 @@ import { homeRibbonZh as zh } from './vendor/genoffice-docs/apps/docs/src/render
 
 type Props = {
   editable: boolean
+  onVerticalAlign?: (kind: 'superscript' | 'subscript') => void
+  verticalAlign?: string
+  verticalAlignAvailable?: boolean
   onMark: (name: 'bold' | 'italic' | 'underline' | 'strike') => void
   onFontSize: (delta: number) => void
   onFontFamily: (value: string) => void
@@ -41,7 +44,7 @@ const unavailable = '原版控件保留；当前 DOCX 原生操作协议未支�
  * recorded in SOURCE-SHA256.json). Its App callbacks are replaced by Native
  * Tiptap/DOCX operations; unsupported commands remain visible and disabled.
  */
-export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onParagraph }: Props) {
+export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable }: Props) {
   const [spacingOpen, setSpacingOpen] = useState(false)
   const spacingWrap = useRef<HTMLDivElement>(null)
   useDismissablePopover(spacingOpen, () => setSpacingOpen(false), {
@@ -83,7 +86,8 @@ export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onF
         {action('italic', zh.ribbonItalicTip, <i>I</i>, () => onMark('italic'))}
         {action('underline', zh.ribbonUnderlineTip, <u>U</u>, () => onMark('underline'))}
         {action('strike', zh.ribbonStrikethrough, <s>ab</s>, () => onMark('strike'))}
-        {disabled('subscript', zh.ribbonSubscript, <IconSubscript size={17} />)}{disabled('superscript', zh.ribbonSuperscript, <IconSuperscript size={17} />)}
+        {action('subscript', zh.ribbonSubscript, <IconSubscript size={17} />, () => onVerticalAlign?.('subscript'), verticalAlign === 'subscript', !!verticalAlignAvailable, '请先选择有来源锚点的非空正文段落；作用于整段')}
+        {action('superscript', zh.ribbonSuperscript, <IconSuperscript size={17} />, () => onVerticalAlign?.('superscript'), verticalAlign === 'superscript', !!verticalAlignAvailable, '请先选择有来源锚点的非空正文段落；作用于整段')}
         {disabled('highlight', zh.ribbonTextHighlightColor, <IconHighlight size={17} />)}
         <input className="rb-color-input" data-action="font-color" data-editable-action="true" type="color" aria-label={zh.ribbonFontColor} title={zh.ribbonFontColor} disabled={!editable} onInput={event => onColor(event.currentTarget.value.slice(1).toUpperCase())} />
       </div>

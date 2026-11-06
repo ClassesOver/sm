@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { readFile, writeFile, realpath, stat } from 'node:fs/promises'
 import { parseDocx, saveDocx, patchTableCellTexts, mergePPrFormat, readSections, readSectionSettings, type Block, type GeneratedBlock, type Run, type SaveBlock, type ParaFormat, type SectionSettings } from '@genoffice/docx-engine'
-import { mergeCellParaFormat, pPrWithIndLeft, pPrWithNumPr, PPR_CHILD_ORDER, splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate.ts'
+import { mergeCellParaFormat, pPrWithIndLeft, pPrWithNumPr, PPR_CHILD_ORDER, RPR_CHILD_ORDER, splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate.ts'
 
 type ObjectValue = Record<string, unknown>
 function fail(code: string): never { throw new Error(`docx_${code}`) }
@@ -156,6 +156,16 @@ function style(value: unknown): Partial<Run> {
   }
   return result
 }
+// Removing direct alignment can reveal inherited style alignment; baseline is explicit.
+function baselineRunProperties(raw = ''): string {
+  const originalOpen = /^<w:rPr\b(?:"[^"]*"|'[^']*'|[^'">])*?>/.exec(raw)?.[0]
+  const open = (originalOpen ?? '<w:rPr>').replace(/\/>$/, '>')
+  const children = raw.endsWith('</w:rPr>') ? splitXmlChildren(raw.slice(open.length, -'</w:rPr>'.length)).filter(child => child.name !== 'w:vertAlign') : []
+  const rank = RPR_CHILD_ORDER.indexOf('w:vertAlign')
+  const at = children.findIndex(child => RPR_CHILD_ORDER.indexOf(child.name) > rank)
+  children.splice(at < 0 ? children.length : at, 0, { name: 'w:vertAlign', xml: '<w:vertAlign w:val="baseline"/>' })
+  return `${open}${children.map(child => child.xml).join('')}</w:rPr>`
+}
 function generated(block: Block): GeneratedBlock {
   return { type: block.type as GeneratedBlock['type'], level: block.level, outlineOnly: block.outlineOnly,
     styleId: block.styleId, list: block.list, format: block.format, rawPPr: block.rawPPr,
@@ -279,6 +289,11 @@ if (request.kind === 'inspect') {
       if (op.position !== 'before' && op.position !== 'after') fail('operation_invalid')
       return { op, block, value: text(op.text) }
     }
+    if (op.kind === 'setParagraphVerticalAlign') {
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'value'])
+      if (!['baseline', 'superscript', 'subscript'].includes(op.value as string)) fail('vertical_align_invalid')
+      return { op, block }
+    }
     if (op.kind === 'formatParagraph') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'style'])
       return { op, block, formatting: style(op.style) }
@@ -382,7 +397,12 @@ if (request.kind === 'inspect') {
       state.cellValues.set(`${item.cell!.row}:${item.cell!.column}`, {row:item.cell!.row, column:item.cell!.column, text:item.value!})
     } else {
       const block = state.saved.kind === 'generated' ? state.saved.block : generated(item.block)
-      if (item.op.kind === 'formatParagraph') {
+      if (item.op.kind === 'setParagraphVerticalAlign') {
+        if (!block.runs.some(run => run.text.length)) fail('vertical_align_empty')
+        block.runs = block.runs.map(run => item.op.value === 'baseline'
+          ? { ...run, vertAlign: undefined, rawRPr: baselineRunProperties(run.rawRPr) }
+          : { ...run, vertAlign: item.op.value as 'superscript' | 'subscript' })
+      } else if (item.op.kind === 'formatParagraph') {
         block.runs = (block.runs.length ? block.runs : [{ text: '' }]).map(run => ({...run, ...item.formatting}))
       } else if (item.op.kind === 'setParagraphLink') {
         const range = linkRange(item.op, block.runs.map(run => run.text).join(''))

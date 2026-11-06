@@ -1,3 +1,4 @@
+import { paragraphVerticalAlign, withoutVerticalAlign, verticalAlignMap } from './docx-vertical'
 import { TABLE_KINDS, projectDocxTable, tableIntent } from './docx-tables'
 import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
@@ -256,8 +257,14 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       ops.push({ kind: 'setParagraphLink', ...baseOp(anchor), from, to, href })
       from = to
     }
-    if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(withoutLinks(node)), markSequence(withoutLinks(edited)))) {
-      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(withoutLinks(node)) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(withoutLinks(edited))
+    const oldVertical = paragraphVerticalAlign(node), newVertical = paragraphVerticalAlign(edited)
+    if (textOf(edited) && ((oldVertical !== newVertical && !(textOf(node) === '' && newVertical === 'baseline'))
+      || (oldVertical === undefined && newVertical === undefined && !same(verticalAlignMap(node), verticalAlignMap(edited))))) {
+      if (!newVertical) throw new Error('暂不支持局部上下标修改，请选择整个段落')
+      ops.push({ kind: 'setParagraphVerticalAlign', ...baseOp(anchor), value: newVertical })
+    }
+    if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(withoutVerticalAlign(withoutLinks(node))), markSequence(withoutVerticalAlign(withoutLinks(edited))))) {
+      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(withoutVerticalAlign(withoutLinks(node))) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(withoutVerticalAlign(withoutLinks(edited)))
       if (['color', 'fontFamily', 'fontSize'].some(key => key in old && !(key in next))) throw new Error('暂不支持清除段落字体、字号或颜色')
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => !same(value, old[key])))
       if (Object.keys(changed).length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: changed })
@@ -301,6 +308,18 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
         || !validDocxLinkRange(textOf(node), operation.from, operation.to)) throw new Error('草稿链接范围或对象身份无效')
       const href = operation.href === null ? null : safeDocxLink(operation.href)
       applyLink(node, Number(operation.from), Number(operation.to), href)
+    }
+    else if (operation.kind === 'setParagraphVerticalAlign') {
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'value'].includes(key))
+        || !['baseline', 'superscript', 'subscript'].includes(String(operation.value)) || !(node.content ?? []).some(run => run.type === 'text' && !!run.text)) throw new Error('草稿上下标字段或来源身份无效')
+      for (const run of node.content ?? []) {
+        if (run.type !== 'text') continue
+        const marks = run.marks ?? []
+        const old = marks.find(mark => ['docTextStyle', 'textStyle'].includes(mark.type))
+        const changed = { type: old?.type ?? 'docTextStyle', attrs: { ...old?.attrs, vertAlign: operation.value === 'baseline' ? null : operation.value } }
+        run.marks = old ? marks.map(mark => mark === old ? changed : mark) : [...marks, changed]
+      }
     }
     else if (operation.kind === 'replaceParagraph') replaceText(node, String(operation.text))
     else if (operation.kind === 'setParagraphIndent') {
