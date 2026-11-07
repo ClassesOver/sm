@@ -439,8 +439,19 @@ def test_docx_native_paragraph_spacing_roundtrips_source_values_and_preserves_ot
                 assert before.read(name) == after.read(name), name
 
 
+@pytest.mark.parametrize('twips', [0, 1, 735, 14400])
+def test_docx_native_paragraph_spacing_accepts_any_nonnegative_twip_spacing(content, twips):
+    inspect, patch = api()
+    target = paragraph(inspect(content))
+    result = patch(content, [operation(target, 'setParagraphSpacing', spaceBefore=twips, spaceAfter=twips)])
+    changed = next(item for item in Document(BytesIO(result)).paragraphs if item.text == target['text'])
+    assert changed.paragraph_format.space_before.twips == twips
+    assert changed.paragraph_format.space_after.twips == twips
+
+
 @pytest.mark.parametrize('values', [
-    {'spaceBefore': 120}, {'spaceAfter': -1}, {'lineSpacing': 1.2},
+    {'spaceBefore': 14401}, {'spaceBefore': 1.5}, {'spaceBefore': None},
+    {'spaceBefore': True}, {'spaceBefore': '120'}, {'spaceAfter': -1}, {'lineSpacing': 1.2},
     {'lineSpacing': 4}, {'spaceBeforeAuto': True}, {'lineRule': 'exact'},
 ])
 def test_docx_native_paragraph_spacing_rejects_unmodeled_or_out_of_source_values(content, values):
@@ -794,3 +805,207 @@ def test_docx_report_larger_than_ten_mib_can_open_within_product_limit(content):
     inspect, patch = api()
     assert inspect(source)['sourceSha256'] == hashlib.sha256(source).hexdigest()
     assert patch(source, []) == source
+
+
+# ---- 页眉/页脚部件编辑（setHeaderFooter）----
+
+
+def hf_model(model):
+    return model['headersFooters']
+
+
+def test_docx_native_header_footer_text_edit_rewrites_part_and_preserves_other_parts():
+    from lxml import etree
+    doc = Document()
+    doc.sections[0].header.paragraphs[0].text = '原始页眉'
+    doc.sections[0].footer.paragraphs[0].text = '原始页脚'
+    doc.add_paragraph('正文')
+    raw = BytesIO(); doc.save(raw); source = raw.getvalue()
+    inspect, patch = api()
+    model = inspect(source)
+    parts = hf_model(model)['parts']
+    header = parts['header.default']
+    assert header['text'] == '原始页眉'
+    assert header['expectedPartSha256'] == hashlib.sha256(
+        ZipFile(BytesIO(source)).read('word/header1.xml')).hexdigest()
+    edited = patch(source, [{
+        'kind': 'setHeaderFooter', 'sectionId': model['sections'][-1]['sectionId'],
+        'expectedSectionSha256': model['sections'][-1]['expectedSectionSha256'],
+        'part': 'header', 'variant': 'default', 'expectedPartSha256': header['expectedPartSha256'],
+        'text': '新页眉', 'pageNumber': False,
+    }])
+    with ZipFile(BytesIO(edited)) as archive:
+        root = etree.fromstring(archive.read('word/header1.xml'))
+        text = ''.join(root.itertext())
+        assert '新页眉' in text and '原始页眉' not in text
+        # 非目标部件保留：页脚 part 与正文原字节不动。
+        assert archive.read('word/footer1.xml') == ZipFile(BytesIO(source)).read('word/footer1.xml')
+        assert archive.read('word/document.xml') == ZipFile(BytesIO(source)).read('word/document.xml')
+    reopened = hf_model(inspect(edited))
+    assert reopened['parts']['header.default']['text'] == '新页眉'
+    assert reopened['parts']['footer.default']['text'] == '原始页脚'
+    assert patch(edited, []) == edited
+
+
+def test_docx_native_header_footer_page_number_field_lands_on_disk():
+    from lxml import etree
+    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+    doc = Document()
+    doc.add_paragraph('正文')
+    raw = BytesIO(); doc.save(raw); source = raw.getvalue()
+    inspect, patch = api()
+    model = inspect(source)
+    footer = hf_model(model)['parts']['footer.default']
+    assert footer['rId'] is None
+    edited = patch(source, [{
+        'kind': 'setHeaderFooter', 'sectionId': model['sections'][-1]['sectionId'],
+        'expectedSectionSha256': model['sections'][-1]['expectedSectionSha256'],
+        'part': 'footer', 'variant': 'default',
+        'expectedPartSha256': footer['expectedPartSha256'],
+        'text': '第\uE001页，共\uE000页', 'pageNumber': True,
+    }])
+    with ZipFile(BytesIO(edited)) as archive:
+        names = archive.namelist()
+        assert 'word/footer1.xml' in names
+        root = etree.fromstring(archive.read('word/footer1.xml'))
+        instructions = [node.text for node in root.xpath('.//w:instrText', namespaces=ns)]
+        assert instructions == [' PAGE ', ' NUMPAGES ']
+        # 引用与内容类型随新建 part 落盘。
+        rels = etree.fromstring(archive.read('word/_rels/document.xml.rels'))
+        assert any('footer' in (node.get('Target') or '') for node in rels)
+        content_types = archive.read('[Content_Types].xml').decode()
+        assert 'footer+xml' in content_types
+        sect_pr = etree.fromstring(archive.read('word/document.xml'))
+        assert sect_pr.xpath('.//w:footerReference', namespaces=ns)
+    reopened = hf_model(inspect(edited))
+    part = reopened['parts']['footer.default']
+    assert part['rId'] is not None and part['hasPageNumber'] is True
+    assert part['text'] == '第\uE001页，共\uE000页'
+
+
+def test_docx_native_header_footer_first_and_even_variants_follow_document_settings():
+    from lxml import etree
+    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+    doc = Document()
+    section = doc.sections[0]
+    section.different_first_page_header_footer = True
+    doc.add_paragraph('正文')
+    raw = BytesIO(); doc.save(raw); source = raw.getvalue()
+    inspect, patch = api()
+    model = inspect(source)
+    hf = hf_model(model)
+    assert hf['titlePg'] is True
+    first = hf['parts']['header.first']
+    # 文档未开启奇偶页不同：even 部件仍可编辑（引用落盘后由 settings 决定是否显示）。
+    edited = patch(source, [
+        {
+            'kind': 'setHeaderFooter', 'sectionId': model['sections'][-1]['sectionId'],
+            'expectedSectionSha256': model['sections'][-1]['expectedSectionSha256'],
+            'part': 'header', 'variant': 'first', 'expectedPartSha256': first['expectedPartSha256'],
+            'text': '首页页眉', 'pageNumber': False,
+        },
+        {
+            'kind': 'setHeaderFooter', 'sectionId': model['sections'][-1]['sectionId'],
+            'expectedSectionSha256': model['sections'][-1]['expectedSectionSha256'],
+            'part': 'header', 'variant': 'even',
+            'expectedPartSha256': hf['parts']['header.even']['expectedPartSha256'],
+            'text': '偶数页页眉', 'pageNumber': False, 'evenAndOddHeaders': True,
+        },
+    ])
+    with ZipFile(BytesIO(edited)) as archive:
+        document = etree.fromstring(archive.read('word/document.xml'))
+        types = {node.get('{%s}type' % ns['w']) for node in document.xpath('.//w:headerReference', namespaces=ns)}
+        assert types == {'first', 'even'}
+        settings = etree.fromstring(archive.read('word/settings.xml'))
+        assert settings.xpath('.//w:evenAndOddHeaders', namespaces=ns)
+    reopened = hf_model(inspect(edited))
+    assert reopened['evenAndOddHeaders'] is True
+    assert reopened['parts']['header.first']['text'] == '首页页眉'
+    assert reopened['parts']['header.even']['text'] == '偶数页页眉'
+    assert reopened['parts']['header.default']['text'] == ''
+
+
+def test_docx_native_header_footer_title_page_and_page_number_format_roundtrip():
+    from lxml import etree
+    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+    doc = Document()
+    doc.add_paragraph('正文')
+    raw = BytesIO(); doc.save(raw); source = raw.getvalue()
+    inspect, patch = api()
+    model = inspect(source)
+    header = hf_model(model)['parts']['header.default']
+    edited = patch(source, [{
+        'kind': 'setHeaderFooter', 'sectionId': model['sections'][-1]['sectionId'],
+        'expectedSectionSha256': model['sections'][-1]['expectedSectionSha256'],
+        'part': 'header', 'variant': 'default', 'expectedPartSha256': header['expectedPartSha256'],
+        'text': '\uE001', 'pageNumber': True, 'titlePg': True,
+        'pageNumberFmt': 'upperRoman', 'pageNumberStart': 3,
+    }])
+    with ZipFile(BytesIO(edited)) as archive:
+        document = etree.fromstring(archive.read('word/document.xml'))
+        assert document.xpath('.//w:titlePg', namespaces=ns)
+        fmt = document.xpath('.//w:pgNumType/@w:fmt', namespaces=ns)
+        start = document.xpath('.//w:pgNumType/@w:start', namespaces=ns)
+        assert fmt == ['upperRoman'] and start == ['3']
+    reopened = hf_model(inspect(edited))
+    assert reopened['titlePg'] is True
+    assert reopened['pageNumberFmt'] == 'upperRoman' and reopened['pageNumberStart'] == 3
+    # 只改其一：另一个字段沿用当前值。节锚属于每个来源字节，二次编辑取回读锚。
+    section_after = inspect(edited)['sections'][-1]
+    further = patch(edited, [{
+        'kind': 'setHeaderFooter', 'sectionId': section_after['sectionId'],
+        'expectedSectionSha256': section_after['expectedSectionSha256'],
+        'part': 'header', 'variant': 'default',
+        'expectedPartSha256': reopened['parts']['header.default']['expectedPartSha256'],
+        'text': '\uE001', 'pageNumber': True, 'pageNumberStart': 7,
+    }])
+    final = hf_model(inspect(further))
+    assert final['pageNumberFmt'] == 'upperRoman' and final['pageNumberStart'] == 7
+
+
+def test_docx_native_header_footer_rejects_stale_or_forged_anchors(content):
+    inspect, patch = api()
+    model = inspect(content)
+    section = model['sections'][-1]
+    header = hf_model(model)['parts']['header.default']
+    base = {'kind': 'setHeaderFooter', 'sectionId': section['sectionId'],
+            'expectedSectionSha256': section['expectedSectionSha256'], 'part': 'header',
+            'variant': 'default', 'text': '改动', 'pageNumber': False}
+    with pytest.raises(ValueError, match='hf_anchor_invalid'):
+        patch(content, [{**base, 'expectedPartSha256': 'forged'}])
+    with pytest.raises(ValueError, match='section_anchor_invalid'):
+        patch(content, [{**base, 'expectedPartSha256': header['expectedPartSha256'], 'sectionId': 'forged'}])
+    with pytest.raises(ValueError, match='hf_part_invalid'):
+        patch(content, [{**base, 'expectedPartSha256': header['expectedPartSha256'], 'part': 'sidebar'}])
+    with pytest.raises(ValueError, match='hf_part_invalid'):
+        patch(content, [{**base, 'expectedPartSha256': header['expectedPartSha256'], 'variant': 'odd'}])
+    with pytest.raises(ValueError, match='page_number_format_invalid'):
+        patch(content, [{**base, 'expectedPartSha256': header['expectedPartSha256'], 'pageNumberFmt': 'not-a-format'}])
+    with pytest.raises(ValueError, match='hf_batch_conflict'):
+        patch(content, [{**base, 'expectedPartSha256': header['expectedPartSha256']},
+                        {**base, 'expectedPartSha256': header['expectedPartSha256'], 'text': '再次改动'}])
+
+
+def test_docx_native_header_footer_anchor_tracks_part_changes(content):
+    inspect, patch = api()
+    model = inspect(content)
+    section = model['sections'][-1]
+    header = hf_model(model)['parts']['header.default']
+    first = patch(content, [{**base_hf_op(section, header), 'text': '第一版页眉'}])
+    # 每次保存后来源身份变化：旧节锚与旧部件锚都必须被拒绝，回读后才能再次编辑。
+    after_first = inspect(first)
+    stale = {**base_hf_op(after_first['sections'][-1], header), 'text': '旧部件锚页眉'}
+    with pytest.raises(ValueError, match='hf_anchor_invalid'):
+        patch(first, [stale])
+    with pytest.raises(ValueError, match='section_anchor_invalid'):
+        patch(first, [{**base_hf_op(section, hf_model(after_first)['parts']['header.default']), 'text': '旧节锚页眉'}])
+    updated = hf_model(after_first)['parts']['header.default']
+    second = patch(first, [{**base_hf_op(after_first['sections'][-1], updated), 'text': '第二版页眉'}])
+    assert hf_model(inspect(second))['parts']['header.default']['text'] == '第二版页眉'
+
+
+def base_hf_op(section, part_anchor, **overrides):
+    return {'kind': 'setHeaderFooter', 'sectionId': section['sectionId'],
+            'expectedSectionSha256': section['expectedSectionSha256'], 'part': 'header',
+            'variant': 'default', 'expectedPartSha256': part_anchor['expectedPartSha256'],
+            'text': '页眉', 'pageNumber': False, **overrides}

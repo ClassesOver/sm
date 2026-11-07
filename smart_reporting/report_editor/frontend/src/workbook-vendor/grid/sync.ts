@@ -177,7 +177,12 @@ export function readBack(runtime: UniverRuntime | null): ReadbackWorkbook {
   const empty: ReadbackWorkbook = { sheets: [] }
   const workbook = facadeOf(runtime)?.getActiveWorkbook()
   if (!workbook) return empty
-  const snapshot = workbook.getSnapshot() as {
+  return readBackSnapshot(workbook.getSnapshot())
+}
+
+/** Shared projection for save capture and preflight of official replacement payloads. */
+export function readBackSnapshot(data: unknown): ReadbackWorkbook {
+  const snapshot = data as {
     sheets?: Record<string, {
       name?: string
       cellData?: Record<number, Record<number, { v?: unknown; f?: string; s?: string } | undefined>>
@@ -334,16 +339,8 @@ export function activeSheetName(runtime: UniverRuntime | null): string | undefin
 /// `ui.operation.open-find-dialog` / `open-replace-dialog`). The operation's
 /// handler calls findReplaceService.start(), which lazily initializes the
 /// provider controller, so the panel appears on first use.
-export function openFindReplace(runtime: UniverRuntime | null, replace: boolean): void {
-  if (!runtime) return
-  const commandService = (
-    runtime.univerAPI as unknown as {
-      _commandService?: { executeCommand(id: string): Promise<boolean> }
-    }
-  )._commandService
-  if (!commandService) return
+export async function openFindReplace(runtime: UniverRuntime | null, replace: boolean): Promise<void> {
+  if (!runtime) throw new Error('工作簿尚未就绪')
   const operation = replace ? 'ui.operation.open-replace-dialog' : 'ui.operation.open-find-dialog'
-  void commandService.executeCommand(operation).catch(() => {
-    // preset not ready yet: next toolbar click will succeed
-  })
+  if (!await runtime.univerAPI.executeCommand(operation)) throw new Error('查找/替换面板未能打开，请重试')
 }

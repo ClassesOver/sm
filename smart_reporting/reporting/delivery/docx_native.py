@@ -11,9 +11,9 @@ from .office_engine import last_json_line, run_bridge
 
 _MAX_BYTES = 24 * 1024 * 1024
 _OPERATION_KINDS = frozenset({
-    'replaceParagraph', 'insertParagraph', 'deleteParagraph',
+    'replaceParagraph', 'insertParagraph', 'insertParagraphImage', 'deleteParagraph',
     'insertTableRow', 'deleteTableRow', 'insertTableColumn', 'deleteTableColumn',
-    'formatParagraph', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceCellText', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpacing', 'setSectionLayout',
+    'formatParagraph', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceCellText', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpacing', 'setParagraphStyle', 'setParagraphShading', 'setParagraphBorders', 'setSectionLayout', 'setHeaderFooter',
 })
 
 

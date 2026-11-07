@@ -13,7 +13,9 @@ const limits = {
 // boundaries. Formula evaluation, canvas rendering and grid commands have
 // separate bounded budgets; document entry and ordinary chunks keep theirs.
 const workbookLimits = {
-  'workbook-icons': 270 * KIB,
+  // 272 KiB (2026-11-07): the official sheets-filter preset's UI icons joined
+  // the shared icon chunk when native filtering was wired into the ribbon.
+  'workbook-icons': 274 * KIB,
   'workbook-engine': 390 * KIB,
   'workbook-core': 400 * KIB,
   'workbook-sheets': 430 * KIB,

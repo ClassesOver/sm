@@ -81,6 +81,34 @@ it('只读会话更新和直接调用保存均保持关闭，不发送请求', a
   controller.dispose()
 })
 
+it('flushes pending edits before snapshot confirmation and includes them in the save request', async () => {
+  const f = fixture(); f.controller.dispose()
+  const operation = { kind: 'setHeaderFooter', text: '未失焦的页眉' }
+  const view = { ...f.view,
+    flushPendingEdits: vi.fn(() => f.draft.setOperations([...f.draft.operations, operation])),
+    prepareSave: vi.fn(async () => { expect(f.draft.operations).toContainEqual(operation); return {} }),
+  }
+  const controller = bindNativeSession(f.shell, { draft: f.draft, api: f.api, format: 'docx', view })
+  await controller.save('save')
+  expect(f.api.save).toHaveBeenCalledOnce()
+  expect(f.api.save.mock.calls[0][0].operations).toContainEqual(operation)
+  expect(view.flushPendingEdits).toHaveBeenCalledOnce()
+  controller.dispose()
+})
+
+it('still rejects edits made during asynchronous confirmation after flushing', async () => {
+  const f = fixture(); f.controller.dispose()
+  const view = { ...f.view, flushPendingEdits: vi.fn(), prepareSave: vi.fn(async () => {
+    f.draft.setOperations([{ kind: 'replaceParagraph', text: '确认期间变化' }]); return {}
+  }) }
+  const controller = bindNativeSession(f.shell, { draft: f.draft, api: f.api, format: 'docx', view })
+  await controller.save('save')
+  expect(f.api.save).not.toHaveBeenCalled()
+  expect(f.shell.statusLabel.textContent).toContain('草稿已变化')
+  expect(f.draft.dirty).toBe(true)
+  controller.dispose()
+})
+
 it('保存前必须完成文字修改确认，拒绝确认时草稿保留且不发送保存', async()=>{
   const f=fixture();f.controller.dispose()
   const view={...f.view,prepareSave:vi.fn().mockRejectedValueOnce(new Error('请确认跳过项')).mockResolvedValue({confirmedPreviewDigest:'b'.repeat(64)})}

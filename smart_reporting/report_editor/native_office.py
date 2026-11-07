@@ -24,6 +24,8 @@ _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
     'applySheetEdits': {'plan'}, 'applyRowColumnOps': {'sheetName', 'ops'},
     'applyDvRules': {'rules'}, 'applyCfRules': {'rules'}, 'applySheetNotes': {'sheetName', 'notes'},
+    'patchSheetNotes': {'sheetName', 'sourceIdentity', 'changes'},
+    'applySheetFilter': {'sheetName', 'filter'},
     'addPivot': {'addition'}, 'applyColumnWidths': {'sheetName', 'entries'},
     'applyRowHeights': {'sheetName', 'entries'}, 'applyPageSetups': {'setups'},
     'applyTableAdditions': {'additions'}, 'refreshPivotCaches': set(),

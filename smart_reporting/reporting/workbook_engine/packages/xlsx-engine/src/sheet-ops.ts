@@ -35,7 +35,10 @@ import {
   type StructuralOp,
 } from './structural'
 import { setWorksheetCellText } from './workbook-write'
-import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
+import { shiftSheetNotes } from './notes'
+import { parseRange, parseAddress, formatAddress, columnIndex } from './cell-address'
+import { computeSortedRowOrder } from './sort-range'
+import { parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
 import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
 
 const RELS_PATH = 'xl/_rels/workbook.xml.rels'
@@ -325,7 +328,8 @@ export async function applyRowColumnOps(
 
   const targetXml = await source.readText(target.path)
   assertShiftable(targetXml)
-  let xml = targetXml
+  // Notes can belong to cells with no stored cell value or row record.
+  let xml = targetXml.replace(/<sheetData\b([^>]*)\/>/, '<sheetData$1></sheetData>')
   for (const op of ops) {
     xml = applyStructuralOp(xml, op, sheetName)
   }
@@ -359,9 +363,15 @@ export async function applyRowColumnOps(
     }
   }
 
+  // Notes and worksheet geometry are committed in a single package mutation.
+  const notePlan = await shiftSheetNotes(source, target.path, specs, xml)
+  for (const [path, content] of notePlan.replaced) replaced.set(path, content)
+  touchedEntries.push(...notePlan.touchedEntries)
+
   // VML Pict shapes (form controls) behind <legacyDrawing> shift their anchors
   for (const vmlPath of await relatedPartPaths(source, targetXml, target.path, 'legacyDrawing')) {
-    const vmlXml = await source.readText(vmlPath)
+    if (notePlan.removedEntries.includes(vmlPath)) continue
+    const vmlXml = replaced.get(vmlPath) ?? await source.readText(vmlPath)
     const shifted = shiftVmlObjectAnchors(vmlXml, specs)
     if (shifted !== vmlXml) {
       replaced.set(vmlPath, shifted)
@@ -416,9 +426,111 @@ export async function applyRowColumnOps(
     replaced,
     added: new Map(),
     addedBinary: new Map(),
-    removedEntries: [],
+    removedEntries: notePlan.removedEntries,
     addedEntries: [],
     touchedEntries,
+  }
+  return (await assemblePackage(sourceBytes, mutationPlan)).buffer
+}
+
+/// Full-fidelity range sort for the server path: permutes the raw <c> cell
+/// records (value, type marker and style index move together, matching the
+/// official grid reorder) instead of rewriting bare values. Row-level
+/// attributes (heights, formats) stay in place like Excel's sort. Formulas
+/// and notes make the call fail closed: formula text moved between rows
+/// would silently re-target relative references, and note relocation rides
+/// the grid path where the move payload preserves authors.
+export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
+  spec: { range: string; byColumn: string; ascending: boolean; hasHeader: boolean }): Promise<Uint8Array> {
+  const model = await readWorkbook(sourceBytes)
+  const sheet = model.sheets.find(entry => entry.name === sheetName)
+  if (!sheet) throw new Error(`workbook.xml 中找不到工作表 "${sheetName}"。`)
+  const bounds = parseRange(spec.range)
+  const keyColumn = columnIndex(spec.byColumn)
+  if (keyColumn < bounds.startColumn || keyColumn > bounds.endColumn) throw new Error(`Sort column ${spec.byColumn} is outside the range ${spec.range}.`)
+  const inRange = (row: number, column: number) => row >= bounds.startRow && row <= bounds.endRow && column >= bounds.startColumn && column <= bounds.endColumn
+  for (const [address, cell] of Object.entries(sheet.cells)) {
+    if (!cell.formula) continue
+    const { row, column } = parseAddress(address)
+    if (inRange(row, column)) throw new Error(`The sort range contains a formula at ${address} — sorting would silently re-target its references.`)
+  }
+  if (sheet.notes) for (const note of sheet.notes.notes) {
+    if (inRange(note.row, note.column)) throw new Error('排序范围包含批注；请改用网格排序以保留批注作者。')
+  }
+  const firstDataRow = bounds.startRow + (spec.hasHeader ? 1 : 0)
+  if (firstDataRow >= bounds.endRow) throw new Error('The sort range needs at least two data rows.')
+  const rows: (string | number | boolean | null)[][] = []
+  for (let row = firstDataRow; row <= bounds.endRow; row += 1) {
+    const cells: (string | number | boolean | null)[] = []
+    for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) cells.push(sheet.cells[formatAddress(row, column)]?.value ?? null)
+    rows.push(cells)
+  }
+  const order = computeSortedRowOrder(rows, keyColumn - bounds.startColumn, spec.ascending)
+
+  const source = await createBufferEntrySource(sourceBytes)
+  const workbookXml = await source.readText('xl/workbook.xml')
+  const parts = await sheetPartsOf(source, workbookXml)
+  const target = parts.find(part => part.name === sheetName)
+  if (!target) throw new Error(`workbook.xml 中找不到工作表 "${sheetName}"。`)
+  const worksheetXml = await source.readText(target.path)
+  const sheetData = worksheetXml.match(/([\s\S]*?<sheetData[^>]*>)([\s\S]*?)(<\/sheetData>[\s\S]*)/)
+  if (!sheetData?.[1] || sheetData[3] === undefined) throw new Error('Worksheet has no sheetData element.')
+  const cellPattern = /<c\b[^>]*?(?:\/>|>[\s\S]*?<\/c>)/g
+  const rowPattern = /<row\b[^>]*?(?:\/>|>[\s\S]*?<\/row>)/g
+  const rangeCells = new Map<number, Map<number, string>>()
+  const rangeRowXml = new Map<number, string>()
+  for (const rowMatch of sheetData[2]!.matchAll(rowPattern)) {
+    const rowXml = rowMatch[0]
+    const rowIndex = Number(rowXml.match(/\br="([0-9]+)"/)?.[1] ?? '0') - 1
+    if (rowIndex < firstDataRow || rowIndex > bounds.endRow) continue
+    rangeRowXml.set(rowIndex, rowXml)
+    const cells = new Map<number, string>()
+    const inner = rowXml.match(/^(<row\b[^>]*>)([\s\S]*?)(<\/row>)$/)?.[2]
+      ?? (/<row\b[^>]*\/>$/.test(rowXml) ? '' : rowXml)
+    for (const cellMatch of inner.matchAll(cellPattern)) {
+      const cellXml = cellMatch[0]
+      const address = cellXml.match(/\br="([A-Z]{1,3})([0-9]+)"/)
+      if (!address?.[1]) continue
+      const column = columnIndex(address[1])
+      if (column >= bounds.startColumn && column <= bounds.endColumn) cells.set(column, cellXml)
+    }
+    rangeCells.set(rowIndex, cells)
+  }
+  const renumberRow = (cellXml: string, row: number): string =>
+    cellXml.replace(/\br="([A-Z]{1,3})[0-9]+"/, (_full, letters: string) => `r="${letters}${row + 1}"`)
+  const columnNumberOf = (cellXml: string): number => columnIndex(cellXml.match(/\br="([A-Z]{1,3})[0-9]+"/)?.[1] ?? 'A')
+  const rebuiltRows = new Map<number, string>()
+  for (let row = firstDataRow; row <= bounds.endRow; row += 1) {
+    const moved = rangeCells.get(firstDataRow + order[row - firstDataRow]!) ?? new Map<number, string>()
+    const existing = rangeRowXml.get(row)
+    const rowMatch = existing?.match(/^(<row\b[^>]*>)([\s\S]*?)(<\/row>)$/)
+    const kept: string[] = []
+    if (rowMatch?.[2]) for (const cellMatch of rowMatch[2].matchAll(cellPattern)) {
+      const cellXml = cellMatch[0]
+      const column = columnIndex(cellXml.match(/\br="([A-Z]{1,3})[0-9]+"/)?.[1] ?? 'A')
+      if (column < bounds.startColumn || column > bounds.endColumn) kept.push(cellXml)
+    }
+    const pieces = [...kept]
+    for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) {
+      const cellXml = moved.get(column)
+      if (cellXml) pieces.push(renumberRow(cellXml, row))
+    }
+    pieces.sort((left, right) => columnNumberOf(left) - columnNumberOf(right))
+    if (rowMatch) rebuiltRows.set(row, `${rowMatch[1]}${pieces.join('')}${rowMatch[3]}`)
+    else if (pieces.length) rebuiltRows.set(row, `<row r="${row + 1}">${pieces.join('')}</row>`)
+  }
+  const body = sheetData[2]!.replace(rowPattern, rowXml => {
+    const rowIndex = Number(rowXml.match(/\br="([0-9]+)"/)?.[1] ?? '0') - 1
+    return rebuiltRows.get(rowIndex) ?? rowXml
+  })
+  // Rows the range must add (absent from sheetData) append in order.
+  const additions = [...rebuiltRows.entries()].filter(([row]) => !rangeRowXml.has(row) && row <= bounds.endRow)
+    .sort(([left], [right]) => left - right).map(([, xml]) => xml)
+  const nextBody = additions.length ? body.replace(/(<\/sheetData>)/, () => `${additions.join('')}$1`) : body
+  const mutationPlan: MutationPlan = {
+    replaced: new Map([[target.path, `${sheetData[1]}${nextBody}${sheetData[3]}`]]),
+    added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [],
+    touchedEntries: [target.path],
   }
   return (await assemblePackage(sourceBytes, mutationPlan)).buffer
 }

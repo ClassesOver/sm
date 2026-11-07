@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from openpyxl import Workbook, load_workbook
@@ -61,8 +63,15 @@ def source_file(format):
     stream = BytesIO()
     if format == "docx":
         document = Document()
+        report_style = document.styles.add_style("Report Accent", WD_STYLE_TYPE.PARAGRAPH)
+        report_style.base_style = document.styles["Normal"]
+        report_style.font.name = "Calibri"
+        report_style.font.size = Pt(18)
+        report_style.font.color.rgb = RGBColor.from_string("0B4F8A")
         document.add_paragraph("功能区原始正文")
-        document.add_paragraph("保留段落")
+        preserved = document.add_paragraph("保留段落")
+        preserved.runs[0].bold = True
+        preserved.paragraph_format.keep_with_next = True
         table = document.add_table(rows=2, cols=2)
         table.autofit = False
         table._tbl.tblPr.find(qn("w:tblW")).set(qn("w:type"), "dxa")
@@ -88,6 +97,9 @@ def source_file(format):
         workbook.active["A2"] = 2
         workbook.active["B1"] = "=SUM(A1:A2)"
         workbook.active.merge_cells("D1:E1")
+        workbook.active["F1"] = "alpha revenue"
+        workbook.active["F2"] = "alpha cost"
+        workbook.create_sheet("Details")["A1"] = "alpha detail"
         workbook.save(stream)
     else:
         presentation = Presentation()
@@ -104,14 +116,21 @@ def ribbon_operations(format, model):
         section = model["sections"][-1]
         table = next(block for block in model["blocks"] if block["type"] == "table")
         return [
+            {"kind": "setParagraphStyle", "blockId": model["blocks"][1]["blockId"],
+             "expectedObjectSha256": model["blocks"][1]["expectedObjectSha256"], "styleId": "ReportAccent"},
             {"kind": "insertTableColumn", "blockId": table["blockId"], "expectedObjectSha256": table["expectedObjectSha256"], "index": 1},
             {"kind": "replaceParagraph", **anchor, "text": "功能区保存正文"},
-            {"kind": "setParagraphSpacing", **anchor, "spaceBefore": 240, "spaceAfter": 240, "lineSpacing": 2},
+            {"kind": "setParagraphSpacing", **anchor, "spaceBefore": 251, "spaceAfter": 0, "lineSpacing": 2},
             {"kind": "setSectionLayout", "sectionId": section["sectionId"],
              "expectedSectionSha256": section["expectedSectionSha256"],
              "values": {"orientation": "landscape", "pageWidth": 16838, "pageHeight": 11906, "columns": 2}},
             {"kind": "setParagraphLink", **anchor, "from": 0, "to": 3,
              "href": "https://example.test/report?source=word&mode=review"},
+            {"kind": "setHeaderFooter", "sectionId": section["sectionId"],
+             "expectedSectionSha256": section["expectedSectionSha256"],
+             "part": "footer", "variant": "default",
+             "expectedPartSha256": model["headersFooters"]["parts"]["footer.default"]["expectedPartSha256"],
+             "text": "功能区页脚\uE001", "pageNumber": True},
         ]
     if format == "pdf":
         return [
@@ -121,9 +140,14 @@ def ribbon_operations(format, model):
         ]
     if format == "xlsx":
         return [{"kind": "applyCellEdits", "edits": [
+            {"sheetName": "Sheet", "row": 0, "column": 0, "writeValue": False, "cell": {"value": 1},
+             "style": {"numberFormat": "#,##0.0000"}},
             {"sheetName": "Sheet", "row": 1, "column": 0, "writeValue": True, "cell": {"value": 3}},
             {"sheetName": "Sheet", "row": 0, "column": 2, "writeValue": True,
              "cell": {"value": None, "formula": "=SUM(A1:A2)"}},
+            {"sheetName": "Sheet", "row": 0, "column": 5, "writeValue": True, "cell": {"value": "beta revenue"}},
+            {"sheetName": "Sheet", "row": 1, "column": 5, "writeValue": True, "cell": {"value": "beta cost"}},
+            {"sheetName": "Details", "row": 0, "column": 0, "writeValue": True, "cell": {"value": "beta detail"}},
         ]}]
     element = next(element for element in model["slides"][0]["elements"] if element["editable"] and element["text"])
     return [{"kind": "editSlides", "edits": [{"slideIndex": 0, "elementId": element["id"], "text": "功能区保存正文"}],
@@ -143,6 +167,10 @@ def assert_file_readback(format, content):
     if format == "docx":
         document = Document(stream)
         assert [paragraph.text for paragraph in document.paragraphs] == ["功能区保存正文", "保留段落"]
+        assert document.paragraphs[1].style.style_id == "ReportAccent"
+        assert document.paragraphs[1].runs[0].bold is True
+        assert document.paragraphs[1].paragraph_format.keep_with_next is True
+        assert document.styles["ReportAccent"].font.size.pt == 18
         table = document.tables[0]
         assert [[cell.text for cell in row.cells] for row in table.rows] == [["R0C0", "", "R0C1"], ["R1C0", "", "R1C1"]]
         assert [node.get(qn("w:w")) for node in table._tbl.tblGrid] == ["4500", "2250", "2250"]
@@ -158,22 +186,31 @@ def assert_file_readback(format, content):
         assert relationship.is_external
         assert relationship.target_ref == "https://example.test/report?source=word&mode=review"
         paragraph = document.paragraphs[0].paragraph_format
-        assert paragraph.space_before.twips == paragraph.space_after.twips == 240
+        assert paragraph.space_before.twips == 251
+        assert paragraph.space_after.twips == 0
         assert paragraph.line_spacing == 2
         section = document.sections[-1]
         assert (section.page_width.twips, section.page_height.twips) == (16838, 11906)
         assert int(section._sectPr.find(qn("w:cols")).get(qn("w:num"))) == 2
+        footer = section.footer.paragraphs[0]
+        assert "功能区页脚" in footer.text
+        assert footer._p.findall(qn("w:r") + "/" + qn("w:fldChar")) or footer._p.xpath('.//w:instrText')
+
     elif format == "pdf":
         reader = PdfReader(stream)
         assert [(float(page.mediabox.width), float(page.mediabox.height)) for page in reader.pages] == [(500, 400), (612, 792)]
         assert list(reader.pages[1].cropbox) == [18, 24, 590, 760]
         assert reader.pages[1].get("/Rotate") == 90
     elif format == "xlsx":
-        sheet = load_workbook(stream).active
+        workbook = load_workbook(stream)
+        sheet = workbook.active
         assert sheet["A2"].value == 3
         assert sheet["B1"].value == sheet["C1"].value == "=SUM(A1:A2)"
-        assert sheet["A1"].number_format == "0.000"
+        assert sheet["A1"].value == 1
+        assert sheet["A1"].number_format == "#,##0.0000"
         assert "D1:E1" in sheet.merged_cells
+        assert [sheet["F1"].value, sheet["F2"].value] == ["beta revenue", "beta cost"]
+        assert workbook["Details"]["A1"].value == "beta detail"
     else:
         deck = Presentation(stream)
         assert (deck.slide_width, deck.slide_height) == (9000000, 7200000)

@@ -23,3 +23,36 @@ callback contract is adapted; no desktop dispatcher is imported. Source files
 with unsupported row/column/default/named-XF rotation inheritance are gated
 readonly for these commands rather than advertising a clear operation that
 cannot be represented by the current source model.
+
+2026-11-06 native Find/Replace adapter: `grid/sync.ts` uses the public
+`FUniver.executeCommand` for the pinned preset's find/replace operations and
+exposes its existing snapshot projection for replacement budget preflight.
+The search/replacement algorithm remains in the official Univer 0.25.1 preset;
+no desktop command service or parallel replacement engine is imported.
+SOURCE-SHA256 remains unchanged; LOCAL-ADAPTATIONS-SHA256 records this adapter.
+
+2026-11-06 native custom number-format adapter: `core/style-map.ts` preserves
+an explicit Univer `n.pattern: 'General'` through readback so resetting a custom
+number format produces a format-only XLSX edit. Missing number formats remain
+inherited/unchanged. The ribbon validates codes with the existing pinned
+`numfmt` 3.2.6 parser; no format parser or full format dialog is vendored.
+LOCAL-ADAPTATIONS-SHA256 updates only the style-map entry for this correction.
+
+2026-11-06 strike/double-underline adapter: `core/style-map.ts` compares border
+objects by value in style deltas, so an untouched border no longer produces a
+pseudo-diff when a sibling font field (strike, double underline) changes.
+Without this, a strike-only toggle emitted a spurious border edit. The ribbon
+applies strike and single/double underline as style-only `FRange.setValue`
+patches (one official undo entry each); clearing underline writes `ul` only and
+leaves strike intact, instead of `setFontLine('none')` which clears both.
+LOCAL-ADAPTATIONS-SHA256 updates the style-map entry for this correction.
+
+2026-11-06 cell type marker adapter: `core/univer-data.ts` sets the Univer
+`CellValueType` marker (`t`) on projected value cells. Without it, grid
+features that branch on the type marker misbehave: the official
+`sheet.command.sort-range` compared numbers as strings (lexicographic order),
+so an ascending sort of a numeric column silently produced an identity
+reorder. The readback only consumes `v/f/s`, so the marker cannot create save
+diffs. Verified by a real-preset-stack regression (`workbook-sort-realstack`
+test: sort now moves 1234.567/28.125 correctly and the reorder order is
+non-identity). LOCAL-ADAPTATIONS-SHA256 adds the univer-data entry.

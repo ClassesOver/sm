@@ -4,7 +4,7 @@
 /// sheet-scoped `_xlnm.Print_Area` / `_xlnm.Print_Titles` defined names in
 /// workbook.xml. Untouched attributes and elements stay verbatim.
 
-import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
+import { parseSheetElements, resolveWorksheetPath, type SheetMarginsModel } from './workbook-read'
 import { assemblePackage, createBufferEntrySource } from './zip'
 
 export class PageSetupError extends Error {}
@@ -53,6 +53,24 @@ const MARGIN_PRESETS = {
   wide: { left: 1, right: 1, top: 1, bottom: 1, header: 0.5, footer: 0.5 },
   narrow: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
 } as const
+
+/// Maps a read-back margins set onto the writer's presets ('custom' when no
+/// preset matches — the writer only carries presets, so custom margins stay
+/// untouched unless a preset is picked).
+export function matchMarginPreset(
+  margins: SheetMarginsModel | undefined,
+): 'normal' | 'wide' | 'narrow' | 'custom' {
+  if (margins === undefined) return 'normal'
+  const entries: readonly (readonly ['normal' | 'wide' | 'narrow', SheetMarginsModel])[] = [
+    ['normal', MARGIN_PRESETS.normal], ['wide', MARGIN_PRESETS.wide], ['narrow', MARGIN_PRESETS.narrow],
+  ]
+  for (const [name, preset] of entries) {
+    if ((Object.keys(preset) as (keyof SheetMarginsModel)[]).every((key) => margins[key] === preset[key])) {
+      return name
+    }
+  }
+  return 'custom'
+}
 
 /// CT_Worksheet order: elements that may follow printOptions/pageMargins/
 /// pageSetup — inserting before the first of these keeps the schema valid.
