@@ -825,7 +825,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           if (!content) throw new Error('请先输入批注内容，再点击页面')
           const bounds = holder.getBoundingClientRect()
           const point = pdfViewport.convertToPdfPoint((event.clientX - bounds.left) * pdfViewport.width / bounds.width, (event.clientY - bounds.top) * pdfViewport.height / bounds.height)
-          void append({ kind: 'addTextAnnotation', pageId: page.pageId, rect: stickyNoteRect(point, page.cropBox), text: content }).catch(showError)
+          void append({ kind: 'addTextAnnotation', pageId: page.pageId, rect: stickyNoteRect(point, page.cropBox), text: content, createdMs: Date.now() }).catch(showError)
         }
       } catch (error) { showError(error) }
     }
@@ -943,7 +943,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -1021,10 +1021,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       card.addEventListener('pointerdown', () => { activeId = page.pageId; updateControls(); renderTextPanel() })
       card.append(heading, content)
       let comments = page.notes ?? []
-      if (!page.notesReadSafe && !comments.length) comments = (await original.getAnnotations()).filter(item => item.subtype === 'Text' && item.contentsObj?.str).map((item, index) => ({ annotationId: `readonly:${index}`, expectedAnnotationSha256: '', contents: item.contentsObj.str, editable: false, removable: false, removalReason: '当前便签来源身份未完整读取，仅可查看' }))
+      if (previewDocument || (!page.notesReadSafe && !comments.length)) comments = (await original.getAnnotations()).filter(item => item.subtype === 'Text' && item.contentsObj?.str).map((item, index) => ({ annotationId: `readonly:${index}`, expectedAnnotationSha256: '', contents: item.contentsObj.str, editable: false, removable: false, removalReason: '当前便签来源身份未完整读取，仅可查看' }))
       if (comments.length || draft.operations.some(op => op.pageId === page.pageId && ['editNote', 'removeNote'].includes(op.kind))) {
         const details = documentElement('details', 'pdf-saved-comments'), summary = documentElement('summary')
-        summary.textContent = `已保存批注（${comments.length}）`; details.append(summary)
+        summary.textContent = `${previewDocument ? '预览批注' : '已保存批注'}（${comments.length}）`; details.append(summary)
         details.open = draft.operations.some(op => op.pageId === page.pageId && ['editNote', 'removeNote'].includes(op.kind))
         for (const comment of comments) {
           const article = documentElement('article', 'pdf-saved-note'); article.dataset.noteId = comment.annotationId

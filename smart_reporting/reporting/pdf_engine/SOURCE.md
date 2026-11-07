@@ -182,3 +182,17 @@ its memory model. That source flag now protects note/markup mutations, size and
 form-field editability. This does not certify arbitrary XFA operations. Tests,
 artifact identities, original-source references and runtime evidence are in
 `report_editor/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`; whole PDF parity remains open.
+
+
+## Pending-note actual preview and creation time (2026-11-06)
+
+addTextAnnotation accepts optional integer createdMs0–253402300799999. The native
+bridge forwards the staged instant to the unchanged note/AP writer, then verifies
+base+markup+note counts and exact appended Text payload/round2 Rect before
+canonicalizing only new CreationDate/M to UTC. Legacy untimed additions omit
+unknown optional dates; existing source metadata is retained. This replaces the
+old save-time default for legacy new annotations without inventing a creation date.
+The actual output SHA now binds their preview receipt. No global TZ/clock override
+is used in product code. Source-writer cross-zone counterexample, guards, actual
+preview/save/download and legacy compatibility proof are documented in
+`report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`. Vendor SOURCE hashes unchanged.

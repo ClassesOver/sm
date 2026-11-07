@@ -1,5 +1,9 @@
 # Native PDF pending sticky-note editing/deletion acceptance
 
+**Follow-up:** pending-only actual preview and deterministic creation dates are now
+accepted in `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`. The limits below record the
+original pending-edit checkpoint.
+
 2026-11-06. Newly placed, unsaved sticky notes can now be edited or removed before
 saving. This closes the pending-note mutation gap in the saved-note checkpoint;
 threaded replies, full sidebar/popups and whole PDF parity remain incomplete.

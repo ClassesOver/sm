@@ -401,3 +401,13 @@ getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便�
 后端/运行包不变，未把旧Node22/SQL结果算新检查。详见
 `report_editor/NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`；pending-only实际预览/
 创建时间绑定、线程/回复和完整桌面/镜像/生产未完成，开关关闭。
+
+
+2026-11-07 PDF 新增便签实际预览/时间：createdMs在草稿中固定，未改AP writer；
+验证新增尾部数量/正文/源round2矩形后仅规范化新日期为UTC，旧草稿缺时间
+保持未知。服务/界面实际PDF预览及下载字节一致，保留原文/原便签/表单。
+14新文件+2受影响文件、2漂移守卫、57前端、5服务、Chromium/独立pypdf
+和Node22断网只读5场景、两份构建/预算/Ruff/35项SHA通过；bridge六项
+基线诊断无新增。上游同一瞬时在不同时区输出不同字节的反例保留，
+详见 `report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`。线程/回复、
+完整侧栏/桌面/镜像/生产仍未完成，开关关闭。

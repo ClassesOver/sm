@@ -66,7 +66,7 @@ try {
   await open(1); await zoomHalf()
   await place(1, 'same pending'); await waitPending(1)
   await place(1, 'same pending'); await waitPending(2)
-  const identical = await ops(); assert.deepEqual(identical[0], identical[1])
+  const identical = await ops(); assert.deepEqual(Object.fromEntries(Object.entries(identical[0]).filter(([key]) => key !== 'createdMs')), Object.fromEntries(Object.entries(identical[1]).filter(([key]) => key !== 'createdMs')))
   await pending.first().getByRole('button', { name: '删除便签' }).evaluate(node => { window.__stalePendingDelete = node })
   await pending.first().getByRole('button', { name: '删除便签' }).click(); await waitPending(1)
   const afterDelete = await ops(); await page.evaluate(() => window.__stalePendingDelete.dispatchEvent(new MouseEvent('click', { bubbles: true })))

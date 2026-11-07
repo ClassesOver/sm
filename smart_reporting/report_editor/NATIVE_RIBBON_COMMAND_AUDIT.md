@@ -272,3 +272,12 @@ draft snapshot plus index rather than introducing a backend/local-ID protocol.
 Per-page pending controls support history and reopening as saved notes; threaded
 context/sidebar and pending-only actual preview are not credited. Evidence:
 `NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`.
+
+
+## PDF pending-note actual preview/date follow-up
+
+Pending-only preview now renders actual output and actual PDF annotation contents.
+createdMs is staged once; verified appended note dates use canonical UTC and old
+untimed drafts retain unknown dates. Pinned AP/writer/round2 behavior is preserved,
+with explicit append-count/payload drift refusal. This closes the prior preview/
+time gap, not replies/threads/sidebar parity. Evidence: `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`.

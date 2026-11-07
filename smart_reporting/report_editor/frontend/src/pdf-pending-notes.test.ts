@@ -52,3 +52,15 @@ it.each([{ text: '' }, { text: 3 }, { color: [2, 0, 0] }, { rect: [1, 2, 3] }, {
   expect(() => validatePendingPdfNote({ ...note, ...change }, page)).toThrow()
   expect(() => pdfPageState([page], [{ ...note, ...change }])).toThrow()
 })
+
+it('preserves a fixed creation instant during edit/delete/legacy handling', () => {
+  const timed = { ...note, createdMs: 1793970000123 }
+  const edited = stagePendingPdfNote([page], [timed], pendingPdfNoteReference([timed], 0), 'updated')
+  expect(edited[0].createdMs).toBe(timed.createdMs)
+  expect(edited[0].rect).toEqual(note.rect)
+  expect(stagePendingPdfNote([page], edited, pendingPdfNoteReference(edited, 0), null)).toEqual([])
+  expect(stagePendingPdfNote([page], [note], pendingPdfNoteReference([note], 0), 'legacy')[0]).not.toHaveProperty('createdMs')
+})
+it.each([-1, .5, 253402300800000, 'invalid', null])('rejects invalid restored creation instant %s', createdMs => {
+  expect(() => validatePendingPdfNote({ ...note, createdMs }, page)).toThrow(/创建时间/)
+})

@@ -91,3 +91,30 @@ async def test_saved_note_edit_preview_save_and_download_without_text_flag(tmp_p
     assert content == actual['content']
     assert inspect_pdf(content)['pages'][0]['notes'][0]['contents'] == operation['contents']
     assert PdfReader(BytesIO(content)).pages[0].extract_text() == PdfReader(BytesIO(source)).pages[0].extract_text()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('created_ms', [1793970000123, None])
+async def test_pending_note_actual_preview_save_download_is_identical_across_timezones(tmp_path, monkeypatch, created_ms):
+    from smart_reporting.reporting.delivery.pdf_native import inspect_pdf
+
+    editor, context, source, downloads = await fixture(tmp_path, text_enabled=False)
+    operation = {'kind': 'addTextAnnotation', 'pageId': inspect_pdf(source)['pages'][0]['pageId'], 'rect': [30, 100, 50, 118], 'text': '实际预览 750 ✓', **({} if created_ms is None else {'createdMs': created_ms})}
+    monkeypatch.setenv('TZ', 'UTC')
+    preview = await editor.preview(context, expected_sha256=context.source_file.sha256, operations=[operation])
+    assert preview['previewDigest'] and preview['appliedOperationIndices'] == [0]
+    monkeypatch.setenv('TZ', 'Asia/Tokyo')
+    actual = await editor.preview_file(context, expected_sha256=context.source_file.sha256, operations=[operation], expected_preview_digest=preview['previewDigest'])
+    with pytest.raises(ReportingError):
+        await editor.preview_file(context, expected_sha256=context.source_file.sha256, operations=[{**operation, 'createdMs': 1793970001123}], expected_preview_digest=preview['previewDigest'])
+    monkeypatch.setenv('TZ', 'America/Los_Angeles')
+    result = await editor.save(context, expected_sha256=context.source_file.sha256, operations=[operation], request_id='pending-note-preview')
+    assert result['revisionRegistered'] and not result['validation']['ok']
+    _, chunks = await downloads.stream(result['artifacts']['pdf']['downloadUrl'].split('/')[-2], artifact='pdf')
+    content = b''.join([chunk async for chunk in chunks])
+    assert content == actual['content']
+    reader = PdfReader(BytesIO(content))
+    note = reader.pages[0]['/Annots'][-1].get_object()
+    assert note['/Contents'] == operation['text']
+    assert (note.get('/CreationDate') == 'D:20261106130000Z') if created_ms is not None else ('/CreationDate' not in note and '/M' not in note)
+    assert reader.pages[0].extract_text() == PdfReader(BytesIO(source)).pages[0].extract_text()

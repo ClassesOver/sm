@@ -1,3 +1,4 @@
+import { normalizeAddedNoteDates, type AddedNoteDate } from './note-timestamps'
 import { markupRemovalLinks, markupRemovalIdentity, removeSourceMarkups, type MarkupRemoval, type NoteContentEdit } from './markup-delete'
 import { createHash } from 'node:crypto'
 import { PDFArray, PDFDict, PDFString, PDFHexString, PDFRef, PDFName, PDFNumber, PDFCheckBox, PDFDocument, PDFDropdown, PDFOptionList, PDFRadioGroup, PDFSignature, PDFTextField } from 'pdf-lib'
@@ -36,7 +37,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
-  z.object({ kind: z.literal('addTextAnnotation'), ...page, rect, text: z.string().trim().min(1).max(10000), color: color.optional() }).strict(),
+  z.object({ kind: z.literal('addTextAnnotation'), ...page, rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
   z.object({ kind: z.literal('rotatePage'), ...page, delta: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),
@@ -126,6 +127,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const crops = new Map<string, [number, number, number, number]>()
   const removals: MarkupRemoval[] = []
   const noteEdits: NoteContentEdit[] = []
+  const addedNoteDates: AddedNoteDate[] = []
   const removedIds = new Set<string>()
   const deleted = new Set<string>()
   const touched = new Set<string>()
@@ -226,7 +228,8 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     } else {
       // 上游便签固定为 20×18pt；矩形只定位左上角，避免改变上游绘制器。
       if (x1 + 20 > box.x + box.width || y2 - 18 < box.y) throw new Error('PDF 文字批注超出页面范围')
-      request.drawings.push({ kind: 'note', pageIndex: target.index, at: [x1, y2], contents: op.text, color: op.color ?? [1, 0.85, 0] })
+      request.drawings.push({ kind: 'note', pageIndex: target.index, at: [x1, y2], contents: op.text, color: op.color ?? [1, 0.85, 0], createdMs: op.createdMs ?? 0 })
+      addedNoteDates.push({ pageIndex: target.index, contents: op.text, rect: [x1, y2 - 18, x1 + 20, y2].map(value => Math.round(value * 100) / 100), ...(op.createdMs === undefined ? {} : { createdMs: op.createdMs }) })
     }
   }
   const survivors = model.pages.filter((page) => !deleted.has(page.pageId))
@@ -237,6 +240,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const skippedOperations = [...prepared.skipped]
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = await removeSourceMarkups(content, model.sourceSha256, removals, noteEdits)
+  const annotationBaseBytes = bytes
   if (remaining.some(op => !['editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize'].includes(op.kind))) {
     const result = await applySaveRequest(bytes, request)
     if (result.skippedTextEdits.length) {
@@ -245,6 +249,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       bytes = ops.some(op => !['replaceText', 'editNote', 'removeNote', 'removeMarkup'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
     } else bytes = result.bytes
   }
+  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), request.pageOrder ?? survivors.map(page => page.index))
   if (crops.size) {
     // Same CropBox primitive as pinned cropPagesBytes; absolute source-space
     // bounds keep ordered crop/rotation commands stable through final reorder.
@@ -273,7 +278,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 
