@@ -15,6 +15,7 @@ export interface ReportDocument {
   sha256: string
   sourceRevision?: number
   csrfToken?: string
+  nativeFormats?: ('docx' | 'pdf')[]
   visualTheme?: ReportVisualTheme
   chartAiEnabled?: boolean
   tableAiEnabled?: boolean

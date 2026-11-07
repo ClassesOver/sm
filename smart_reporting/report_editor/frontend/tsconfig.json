@@ -17,7 +17,7 @@
       "vite/client",
       "vitest/globals"
     ],
-    "jsx": "react",
+    "jsx": "react-jsx",
     "esModuleInterop": true,
     "paths": {
       "@genoffice/pptx-render": [
@@ -25,8 +25,36 @@
       ],
       "@genoffice/pptx-engine/*": [
         "../../reporting/slides_engine/packages/pptx-engine/src/*.ts"
+      ],
+      "@genoffice/docx-engine": [
+        "../../reporting/slides_engine/packages/docx-engine/src/index.ts"
+      ],
+      "@genoffice/agent-core/*": [
+        "../../reporting/slides_engine/packages/agent-core/src/*.ts"
+      ],
+      "@genoffice/zip-gate": [
+        "../../reporting/slides_engine/packages/zip-gate/src/index.ts"
+      ],
+      "@genoffice/font-metrics": [
+        "./src/vendor/genoffice-docs/packages/font-metrics/src/browser.ts"
+      ],
+      "@genoffice/font-metrics/resolve": [
+        "./src/vendor/genoffice-docs/packages/font-metrics/src/resolve.ts"
+      ],
+      "@genoffice/font-metrics/word-faces.json": [
+        "./src/vendor/genoffice-docs/packages/font-metrics/word-faces.json"
+      ],
+      "@genoffice/i18n": [
+        "./src/vendor/genoffice-docs/packages/i18n/src/index.ts"
+      ],
+      "@genoffice/ui": [
+        "./src/vendor/genoffice-docs/packages/ui/src/browser.ts"
+      ],
+      "@genoffice/pptx-render/preset-geometry": [
+        "../../reporting/slides_engine/packages/pptx-render/src/preset-geometry.ts"
       ]
-    }
+    },
+    "resolveJsonModule": true
   },
   "include": [
     "src",

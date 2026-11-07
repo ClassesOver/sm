@@ -1,0 +1,1 @@
+{"name": "@genoffice/electron-utils", "version": "0.1.0", "type": "module", "exports": {"./atomic-write": "./src/atomic-write.ts"}}

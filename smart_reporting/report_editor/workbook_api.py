@@ -10,7 +10,12 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from ..reporting.delivery.publishing import content_disposition
 from ..reporting.models import ReportingError
-from ._api_helpers import read_editor_json, reporting_http_error, require_editor_csrf
+from ._api_helpers import (
+    read_editor_json,
+    reporting_editor_error,
+    reporting_http_error,
+    require_editor_csrf,
+)
 from .service import ReportEditorGrantService
 
 if TYPE_CHECKING:
@@ -40,7 +45,7 @@ def create_report_workbook_editor_router(
                 await workbooks.context_for_session(session)
             return session
         except ReportingError as error:
-            raise fail(error) from None
+            raise reporting_editor_error(error) from None
 
     def require_csrf(request: Request) -> None:
         require_editor_csrf(
@@ -65,7 +70,7 @@ def create_report_workbook_editor_router(
             raw_session, session = await grants.exchange(raw_grant)
             context = await workbooks.context_for_session(session)
         except ReportingError as error:
-            raise fail(error) from None
+            raise reporting_editor_error(error) from None
         path = f"/reports/v1/workbooks/{quote(context.report_id, safe='')}/{context.revision}"
         response = RedirectResponse(path, status_code=303, headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
         max_age = max(0, int((session.expires_at - datetime.now(UTC)).total_seconds()))
@@ -79,7 +84,7 @@ def create_report_workbook_editor_router(
             _, session = await grants.exchange(raw_grant)
             context, content = await workbooks.download_for_session(session)
         except ReportingError as error:
-            raise fail(error) from None
+            raise reporting_editor_error(error) from None
         return Response(content, media_type=_XLSX_TYPE, headers={"Cache-Control": "no-store", "Content-Disposition": content_disposition(context.xlsx_path or "report.xlsx", artifact="xlsx"), "X-Content-Type-Options": "nosniff"})
 
     @router.get("/reports/v1/workbooks/{report_id}/{revision}", include_in_schema=False)

@@ -488,6 +488,14 @@ function errorStatusLabel(error: unknown): string {
 
 try {
   const documentState = await client.load()
+  if (documentState.nativeFormats?.length) {
+    const { attachNativeLaunchActions } = await import('./native-launcher')
+    const actions = root.querySelector<HTMLElement>('.toolbar-group-output')
+    if (actions && documentState.csrfToken) attachNativeLaunchActions(actions, {
+      basePath, csrfToken: documentState.csrfToken, formats: documentState.nativeFormats,
+      onError: error => { shell.statusLabel.textContent = error.message },
+    })
+  }
   if (documentState.design && documentState.designSha256 && documentState.documentContext) {
     designState = { design: documentState.design, designSha256: documentState.designSha256, documentContext: documentState.documentContext }
     if (documentState.designEditable === false) shell.exportSettings.hidden = true

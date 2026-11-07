@@ -14,6 +14,12 @@ def reporting_http_error(error: ReportingError, *, status_code: int) -> HTTPExce
     )
 
 
+def reporting_editor_error(error: ReportingError) -> HTTPException:
+    return reporting_http_error(
+        error, status_code=403 if "permission_denied" in error.code else 409
+    )
+
+
 def require_editor_csrf(
     request: Request, grants: ReportEditorGrantService, *, session_cookie: str,
     csrf_cookie: str, error_code: str,

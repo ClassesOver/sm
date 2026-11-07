@@ -51,7 +51,7 @@ REPORT_ARTIFACT_CLEANUP_GRACE = timedelta(days=1)
 REPORT_ARTIFACT_CLEANUP_BATCH = 100
 _DOWNLOAD_ACCESS_PATH = re.compile(r"/reports/v1/download/[^?\s]+(?:\?[^\s]*)?")
 _EDITOR_ACCESS_PATH = re.compile(r"/reports/v1/editor/open/[^?\s]+(?:\?[^\s]*)?")
-_OFFICE_ACCESS_PATH = re.compile(r"(/reports/v1/(?:slides|workbooks)/(?:open|download))/[^?\s]+(?:\?[^\s]*)?")
+_OFFICE_ACCESS_PATH = re.compile(r"(/reports/v1/(?:slides|workbooks|native)/(?:open|download|artifacts))/[^?\s]+(?:\?[^\s]*)?")
 _PUBLICATION_LOCK_KEY = "report-download-publication-v2"
 _ARTIFACT_CHUNK_INSERT_BATCH = 8
 _metadata = MetaData()

@@ -4,9 +4,12 @@ type ChartTarget = { slideIndex: number; elementId: string; chartId: string; ava
 type ChartStatus = { candidateId: string; status: string; previewDataUrl?: string; error?: { message?: string } }
 type Request = <T>(path: string, init?: RequestInit) => Promise<T>
 
-export function createSlidesChartTools(host: HTMLElement, request: Request, changed: () => void) {
+export function createSlidesChartTools(host: HTMLElement, request: Request, changed: () => void, options: { enabled?: boolean } = {}) {
   const panel = document.createElement('section')
+  const enabled = options.enabled !== false
   panel.className = 'slides-chart-tools'
+  panel.hidden = !enabled
+  panel.inert = !enabled
   panel.setAttribute('aria-label', 'AI 改图')
   panel.innerHTML = `
     <form class="chart-form"><label>AI 改图 <select class="chart-target" aria-label="已登记数据图表"></select></label>
@@ -45,6 +48,7 @@ export function createSlidesChartTools(host: HTMLElement, request: Request, chan
   }
   panel.querySelector('form')!.addEventListener('submit', async event => {
     event.preventDefault()
+    if (!enabled) return
     const target = charts[Number(select.value)]
     if (!target || !target.available || !instruction.value.trim() || generate.disabled) return
     generate.disabled = true
@@ -106,7 +110,7 @@ export function createSlidesChartTools(host: HTMLElement, request: Request, chan
       status.textContent = error instanceof Error ? error.message : '图表编辑暂不可用。'
     }
   }
-  void load()
+  if (enabled) void load()
   return {
     pendingEdits: () => [...pending.values()].map(item => ({ candidateId: item.id })),
     hasPending: (slideIndex: number, elementId: string) => pending.has(`${slideIndex}:${elementId}`),

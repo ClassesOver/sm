@@ -71,6 +71,7 @@ from .chart_edits import (
 )
 from .design import ReportEditorDesignService
 from .design_preview import ReportDesignPreviewService
+from .native_models import EditorGrantContext
 from .render_preparation import prepare_editor_render
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
@@ -540,7 +541,7 @@ class ReportEditorGrantService:
         self.session_ttl = session_ttl
 
     async def issue(
-        self, context: ReportEditorContext, *, now: datetime | None = None,
+        self, context: EditorGrantContext, *, now: datetime | None = None,
         ttl: timedelta | None = None,
         capabilities: Mapping[str, Any] | None = None,
     ) -> tuple[str, datetime]:

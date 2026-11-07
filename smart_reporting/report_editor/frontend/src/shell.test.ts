@@ -7,6 +7,20 @@ describe('createEditorShell', () => {
     document.body.innerHTML = '<main id="app"></main>'
   })
 
+  it('offers native file actions without Markdown source controls', () => {
+    for (const format of ['docx', 'pdf'] as const) {
+      const root = document.querySelector<HTMLElement>('#app')!
+      const shell = createEditorShell(root, 'full', format)
+      expect(shell.save.hidden).toBe(false)
+      expect(shell.exportPdf.hidden).toBe(false)
+      expect(shell.exportWord.hidden).toBe(format === 'pdf')
+      expect(shell.sources.hidden).toBe(true)
+      expect(shell.history.hidden).toBe(true)
+      expect(shell.exportSettings.hidden).toBe(true)
+      expect(root.querySelector('.editor-surface')?.getAttribute('aria-label')).toBe(format === 'pdf' ? '报告 PDF' : '报告 Word 文档')
+    }
+  })
+
   it('keeps editing, save, PDF, and Word actions available on desktop', () => {
     const root = document.querySelector<HTMLElement>('#app')!
 

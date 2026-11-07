@@ -1,0 +1,392 @@
+import { paragraphVerticalAlign, withoutVerticalAlign, verticalAlignMap } from './docx-vertical'
+import { TABLE_KINDS, projectDocxTable, tableIntent } from './docx-tables'
+import type { Schema } from '@tiptap/pm/model'
+import type { NativeOperation } from './native-draft'
+import type { SectionSettings } from '@genoffice/docx-engine'
+export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean }
+export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
+export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
+export interface DocxSectionAnchor { sectionId: string; expectedSectionSha256: string; settings: SectionSettings }
+type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>>
+export function restoredDocxSectionOperation(operations: NativeOperation[], section?: DocxSectionAnchor) {
+  let values: SectionValues | undefined
+  const numericLimits: Record<string, [number, number]> = { pageWidth: [1440, 31680], pageHeight: [1440, 31680],
+    marginTop: [0, 14400], marginRight: [0, 14400], marginBottom: [0, 14400], marginLeft: [0, 14400], columns: [1, 3], headerDist: [0, 31680], footerDist: [0, 31680] }
+  for (const operation of operations) {
+    if (operation.kind !== 'setSectionLayout') continue
+    if (!section || operation.sectionId !== section.sectionId || operation.expectedSectionSha256 !== section.expectedSectionSha256) throw new Error('草稿页面设置的节身份与当前来源不一致')
+    const patch = operation.values
+    if (Object.keys(operation).some(key => !['kind', 'sectionId', 'expectedSectionSha256', 'values'].includes(key))
+      || !patch || typeof patch !== 'object' || Array.isArray(patch) || !Object.keys(patch).length) throw new Error('草稿页面设置无效')
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === 'orientation') { if (value !== 'portrait' && value !== 'landscape') throw new Error('草稿纸张方向无效') }
+      else {
+        const limit = numericLimits[key]
+        if (!limit || typeof value !== 'number' || !Number.isInteger(value) || value < limit[0] || value > limit[1]) throw new Error('草稿页面设置数值无效')
+      }
+    }
+    values = { ...values, ...patch }
+  }
+  if (!values || !section) return undefined
+  const settings = { ...section.settings, ...values }
+  if (settings.marginLeft + settings.marginRight >= settings.pageWidth || settings.marginTop + settings.marginBottom >= settings.pageHeight) throw new Error('草稿页边距超出纸张大小')
+  return { kind: 'setSectionLayout', sectionId: section.sectionId, expectedSectionSha256: section.expectedSectionSha256, values }
+}
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+const textOf = (node: DocxPmNode): string => node.text ?? (node.type === 'docHardBreak' ? '\n' : (node.content ?? []).map(textOf).join(''))
+const paragraph = (node: DocxPmNode) => ['docParagraph', 'docHeading', 'docListItem'].includes(node.type)
+const idOf = (node: DocxPmNode) => node.attrs?.docxIndex
+const baseOp = (a: DocxAnchor) => ({ blockId: a.blockId, expectedObjectSha256: a.expectedObjectSha256 })
+const withoutAlignment = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => key !== 'align'))
+const withoutIndent = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['indentLeft', 'indentRight'].includes(key)))
+const paragraphSpacingKeys = ['spaceBefore', 'spaceAfter', 'lineSpacing', 'lineRule', 'lineRawTwips', 'spaceBeforeAuto', 'spaceAfterAuto']
+const withoutParagraphSpacing = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !paragraphSpacingKeys.includes(key)))
+const withoutList = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['kind', 'numId', 'ilvl'].includes(key)))
+const listOf = (node: DocxPmNode) => node.type === 'docListItem' ? { kind: node.attrs?.kind, numId: node.attrs?.numId, ilvl: node.attrs?.ilvl } : null
+function structure(node: DocxPmNode, marks = true): unknown {
+  const content: unknown[] = []
+  for (const child of node.content ?? []) {
+    if (child.type === 'text' && !marks) continue
+    const shape = structure(child, marks)
+    if (child.type === 'text' && content.length && same(content[content.length - 1], shape)) continue
+    content.push(shape)
+  }
+  return { type: node.type, attrs: node.attrs, marks: marks ? node.marks : undefined, content }
+}
+function markSequence(node: DocxPmNode): unknown[] {
+  const result: unknown[] = []
+  for (const run of node.content ?? []) if (run.type === 'text') {
+    const marks = run.marks ?? []
+    if (!result.length || !same(result[result.length - 1], marks)) result.push(marks)
+  }
+  return result
+}
+export function safeDocxLink(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('请输入有效的链接地址')
+  const href = value.trim()
+  if (!href || href.length > 4096 || /[\s\u0000-\u001f\u007f]/u.test(href)) throw new Error('链接地址不能包含空白或控制字符')
+  let url: URL
+  try { url = new URL(href) } catch { throw new Error('仅支持完整的 http、https 或 mailto 链接') }
+  if (!['http:', 'https:', 'mailto:'].includes(url.protocol) || (url.protocol !== 'mailto:' && !/^https?:\/\//i.test(href)) || url.username || url.password
+    || (url.protocol === 'mailto:' && (!url.pathname || url.pathname.startsWith('//')))) throw new Error('仅支持安全的 http、https 或 mailto 链接')
+  return href
+}
+export function validDocxLinkRange(text: string, from: unknown, to: unknown): boolean {
+  const boundary = (at: number) => !(at > 0 && at < text.length && /[\uD800-\uDBFF]/.test(text[at - 1]) && /[\uDC00-\uDFFF]/.test(text[at]))
+  return typeof from === 'number' && typeof to === 'number' && Number.isInteger(from) && Number.isInteger(to)
+    && from >= 0 && to > from && to <= text.length && boundary(from) && boundary(to)
+}
+const withoutLinks = (node: DocxPmNode): DocxPmNode => ({ ...node, content: node.content?.map(run => ({ ...run, marks: (run.marks ?? []).filter(mark => mark.type !== 'link') })) })
+function linkMap(node: DocxPmNode): (string | null)[] {
+  return (node.content ?? []).flatMap(run => Array.from({ length: textOf(run).length }, () => {
+    const marks = (run.marks ?? []).filter(mark => mark.type === 'link')
+    if (marks.length > 1) throw new Error('链接标记无效')
+    return marks.length ? safeDocxLink(marks[0].attrs?.href) : null
+  }))
+}
+function linkMetadata(node: DocxPmNode) {
+  return (node.content ?? []).flatMap(run => Array.from({ length: textOf(run).length }, () => {
+    const attrs = run.marks?.find(mark => mark.type === 'link')?.attrs
+    return attrs ? { tooltip: attrs.tooltip ?? null, plain: attrs.plain ?? false } : undefined
+  }))
+}
+function compatibleLinkGroups(node: DocxPmNode) {
+  let previous: Record<string, unknown> | undefined
+  for (const run of node.content ?? []) {
+    const link = run.marks?.find(mark => mark.type === 'link')?.attrs
+    if (link && previous && link.href === previous.href && !(link.rId && previous.rId && link.rId !== previous.rId)) {
+      if ((link.tooltip ?? '') !== (previous.tooltip ?? '')) throw new Error('相邻同地址链接的提示不同，暂不支持此链接修改')
+      previous = { ...previous, rId: previous.rId ?? link.rId }
+    } else previous = link
+  }
+}
+/** Split only targeted text; keep every unrelated mark and link attribute unchanged. */
+function applyLink(node: DocxPmNode, from: number, to: number, href: string | null) {
+  if ((node.content ?? []).some(run => run.type !== 'text')) throw new Error('含复杂内联对象的段落暂不支持链接修改')
+  let offset = 0
+  node.content = (node.content ?? []).flatMap(run => {
+    const start = offset, end = offset += (run.text ?? '').length
+    const cuts = [start, ...[from, to].filter(at => at > start && at < end), end].sort((a, b) => a - b)
+    return cuts.slice(0, -1).map((at, index) => {
+      const next = { ...run, text: run.text!.slice(at - start, cuts[index + 1] - start) }
+      if (at >= from && at < to) next.marks = [...(run.marks ?? []).filter(mark => mark.type !== 'link'), ...(href === null ? [] : [{ type: 'link', attrs: { ...run.marks?.find(mark => mark.type === 'link')?.attrs, href, rId: null } }])]
+      return next
+    })
+  })
+  compatibleLinkGroups(node)
+}
+function styleOf(node: DocxPmNode): Record<string, unknown> {
+  const runs = (node.content ?? []).filter(child => child.type === 'text')
+  if (!runs.length) throw new Error('空段落暂不支持样式修改')
+  const styles = runs.map(run => {
+    const style: Record<string, unknown> = { bold: false, italic: false, underline: false, strike: false }
+    for (const mark of run.marks ?? []) {
+      if (['bold', 'italic', 'underline', 'strike'].includes(mark.type)) style[mark.type] = true
+      else if (mark.type === 'textStyle' || mark.type === 'docTextStyle') for (const [key, value] of Object.entries(mark.attrs ?? {})) {
+        if (value == null || value === false) continue
+        if (key === 'color') style.color = String(value).replace(/^#/, '')
+        else if (key === 'sizeHalfPoints' || key === 'fontSize') style.fontSize = key === 'sizeHalfPoints' ? Number(value) / 2 : Number(value)
+        else if (key === 'font' || key === 'fontFamily') style.fontFamily = value
+        else throw new Error('此文字样式暂不支持保存')
+      }
+      else throw new Error('此文字样式暂不支持保存')
+    }
+    return style
+  })
+  if (!styles.every(style => same(style, styles[0]))) throw new Error('暂不支持同段落内局部样式修改，请选择整个段落')
+  return styles[0]
+}
+/** 原始XML和资源路径从不进入保存协议；变化仅映射为后端允许操作。 */
+export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation, schema?: Schema): NativeOperation[] {
+  const before = original.content ?? [], after = current.content ?? []
+  const byIndex = new Map(anchors.map(anchor => [anchor.docxIndex, anchor]))
+  const retained = after.filter(node => idOf(node) != null)
+  const positions = retained.map(node => before.findIndex(item => idOf(item) === idOf(node)))
+  if (positions.some(index => index < 0) || new Set(retained.map(idOf)).size !== retained.length) throw new Error('文档锚点无效')
+  if (positions.some((value, index) => index > 0 && value <= positions[index - 1])) throw new Error('暂不支持改变原对象顺序')
+  const ops: NativeOperation[] = []
+  for (let index = 0; index < after.length; index++) {
+    const node = after[index]
+    if (idOf(node) != null) continue
+    if (node.attrs?.align != null) throw new Error('新增段落请保存后再修改对齐方式')
+    if (node.attrs?.indentLeft != null) throw new Error('新增段落请保存后再修改缩进')
+    if (node.type !== 'docParagraph' || (node.content ?? []).some(child => child.type !== 'text' || (child.marks ?? []).some(mark => mark.type !== 'textStyle' || Object.values(mark.attrs ?? {}).some(value => value != null && value !== false)))) throw new Error('新增段落暂只支持普通文字，请保存后再修改样式')
+    const next = after.slice(index + 1).find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
+    const previous = [...after.slice(0, index)].reverse().find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
+    const fallback = before.find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
+    const target = next ?? previous ?? fallback
+    if (!target) throw new Error('新增段落没有可编辑的锚点')
+    ops.push({ kind: 'insertParagraph', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', text: textOf(node) })
+  }
+  for (const node of before) {
+    const anchor = byIndex.get(Number(idOf(node)))
+    if (!anchor) throw new Error('文档锚点无效')
+    const edited = after.find(item => idOf(item) === idOf(node))
+    if (edited && same(node, edited)) continue
+    if (!edited) {
+      if (!anchor.editable || !paragraph(node)) throw new Error('只读对象不能删除')
+      ops.push({ kind: 'deleteParagraph', ...baseOp(anchor) }); continue
+    }
+    if (node.type === 'docTable' && edited.type === 'docTable') {
+      if (edited.attrs?.nativeTableStructure) {
+        const intent = tableIntent(edited.attrs.nativeTableStructure)
+        if (!same(edited, projectDocxTable(node, anchor, intent, schema))) throw new Error('表格结构修改后请先保存；同表文字、格式或第二次结构修改不能混用')
+        ops.push({ ...baseOp(anchor), ...intent }); continue
+      }
+      if (!same(node.attrs, edited.attrs) || node.content?.length !== edited.content?.length) throw new Error('暂不支持修改表格布局')
+      for (let row = 0; row < (node.content?.length ?? 0); row++) {
+        const left = node.content![row], right = edited.content![row]
+        if (!same(left.attrs, right.attrs) || left.content?.length !== right.content?.length) throw new Error('暂不支持修改表格布局')
+        for (let col = 0; col < (left.content?.length ?? 0); col++) {
+          const cell = left.content![col], changed = right.content![col]
+          if (same(cell, changed)) continue
+          const cellAnchor = anchor.cells?.[row]?.[col]
+          if (!cellAnchor?.editable) throw new Error('只读单元格不能修改')
+          if (!same(structure(cell), structure(changed))) throw new Error('暂不支持修改单元格结构或样式')
+          ops.push({ kind: 'replaceCellText', blockId: anchor.blockId, cellId: cellAnchor.cellId, expectedObjectSha256: cellAnchor.expectedObjectSha256, text: (changed.content ?? []).map(textOf).join('\n') })
+        }
+      }
+      continue
+    }
+    if (!anchor.editable) throw new Error('只读对象不能修改')
+    const beforeList = listOf(node), afterList = listOf(edited)
+    const listLevelChanged = node.type === 'docListItem' && edited.type === 'docListItem'
+      && beforeList?.kind === afterList?.kind && beforeList?.numId === afterList?.numId && beforeList?.ilvl !== afterList?.ilvl
+    const listChanged = !same(beforeList, afterList) && !listLevelChanged
+    if (listChanged) {
+      if (!['docParagraph', 'docListItem'].includes(node.type) || !['docParagraph', 'docListItem'].includes(edited.type)) throw new Error('暂不支持标题转换列表')
+      const list = edited.type === 'docListItem' ? edited.attrs?.kind : 'none'
+      if (!['none', 'bullet', 'ordered'].includes(String(list)) || (list !== 'none' && (edited.attrs?.numId !== `native-${list}` || edited.attrs?.ilvl !== 0))) throw new Error('此列表定义或级别暂不支持保存')
+      ops.push({ kind: 'setParagraphList', ...baseOp(anchor), list })
+    }
+    if (listLevelChanged) {
+      const ilvl = edited.attrs?.ilvl
+      if (typeof ilvl !== 'number' || !Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) throw new Error('此列表级别暂不支持保存')
+      ops.push({ kind: 'setParagraphListLevel', ...baseOp(anchor), ilvl })
+    }
+    const originalAttrs = node.type === 'docListItem' ? withoutList(node.attrs) : node.attrs
+    const editedAttrs = edited.type === 'docListItem' ? withoutList(edited.attrs) : edited.attrs
+    if ((!listChanged && node.type !== edited.type) || !same(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs))), withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs))))) throw new Error('暂不支持改变段落布局')
+    const changedSpacing: Record<string, number> = {}
+    for (const key of ['spaceBefore', 'spaceAfter'] as const) if (!same(node.attrs?.[key], edited.attrs?.[key])) {
+      const value = edited.attrs?.[key] ?? 0
+      if (typeof value !== 'number' || !Number.isInteger(value) || ![0, 240].includes(value)) throw new Error('此段前/段后间距暂不支持保存')
+      changedSpacing[key] = value
+    }
+    if (!same(node.attrs?.lineSpacing, edited.attrs?.lineSpacing) || !same(node.attrs?.lineRule, edited.attrs?.lineRule) || !same(node.attrs?.lineRawTwips, edited.attrs?.lineRawTwips)) {
+      const value = edited.attrs?.lineSpacing
+      if (typeof value !== 'number' || ![1, 1.15, 1.5, 2, 2.5, 3].includes(value)) throw new Error('此行距暂不支持保存')
+      if (edited.attrs?.lineRule != null || edited.attrs?.lineRawTwips != null) throw new Error('精确行距和至少行距暂不支持保存')
+      changedSpacing.lineSpacing = value
+    }
+    for (const [autoKey, valueKey] of [['spaceBeforeAuto', 'spaceBefore'], ['spaceAfterAuto', 'spaceAfter']] as const) {
+      if ((valueKey in changedSpacing && edited.attrs?.[autoKey] != null) || (!same(node.attrs?.[autoKey], edited.attrs?.[autoKey]) && !(valueKey in changedSpacing))) throw new Error('自动段前/段后间距暂不支持保存')
+    }
+    if (Object.keys(changedSpacing).length) ops.push({ kind: 'setParagraphSpacing', ...baseOp(anchor), ...changedSpacing })
+    if (!same(node.attrs?.indentLeft, edited.attrs?.indentLeft)) {
+      const twips = edited.attrs?.indentLeft ?? 0
+      if (!Number.isInteger(twips) || Number(twips) < 0 || Number(twips) > 14400 || Number(twips) % 720 !== 0 || edited.type === 'docListItem') throw new Error('此段落缩进暂不支持保存')
+      ops.push({ kind: 'setParagraphIndent', ...baseOp(anchor), twips })
+    }
+    if (!same(node.attrs?.indentRight, edited.attrs?.indentRight)) {
+      const twips = edited.attrs?.indentRight ?? 0
+      if (!Number.isInteger(twips) || Number(twips) < -14400 || Number(twips) > 14400) throw new Error('此段落右缩进值无效')
+      ops.push({ kind: 'setParagraphRightIndent', ...baseOp(anchor), twips })
+    }
+    if (!same(node.attrs?.align, edited.attrs?.align)) {
+      const alignment = edited.attrs?.align ?? (edited.attrs?.bidi === true || edited.attrs?.bidiInferred === true ? 'right' : 'left')
+      if (!['left', 'center', 'right', 'justify'].includes(String(alignment))) throw new Error('此段落对齐方式暂不支持保存')
+      ops.push({ kind: 'setParagraphAlignment', ...baseOp(anchor), alignment })
+    }
+    if (!same(structure(node, false), structure({ ...edited, type: node.type, attrs: node.attrs }, false))) throw new Error('暂不支持改变段落结构')
+    const oldLinks = linkMap(node), newLinks = linkMap(edited), textChanged = textOf(node) !== textOf(edited)
+    if (textChanged && oldLinks.some(Boolean)) throw new Error('含已有链接的段落请先单独修改链接；文字编辑暂不支持保留原链接元数据')
+    if (textChanged) ops.push({ kind: 'replaceParagraph', ...baseOp(anchor), text: textOf(edited) })
+    const beforeMetadata = textChanged ? [] : linkMetadata(node), afterMetadata = linkMetadata(edited)
+    if (afterMetadata.some((metadata, index) => metadata && !same(metadata, beforeMetadata[index] ?? { tooltip: null, plain: false }))) throw new Error('暂不支持修改链接提示或显示属性')
+    const comparison = textChanged ? newLinks.map(() => null) : oldLinks
+    const linkedPreview = textChanged ? withoutLinks(edited) : structuredClone(node)
+    for (let from = 0; from < newLinks.length;) {
+      if (newLinks[from] === comparison[from]) { from++; continue }
+      const href = newLinks[from]
+      let to = from + 1
+      while (to < newLinks.length && newLinks[to] === href && newLinks[to] !== comparison[to]) to++
+      if (!validDocxLinkRange(textOf(edited), from, to)) throw new Error('链接范围不能拆开 Unicode 字符')
+      if ((edited.content ?? []).some(run => run.type !== 'text')) throw new Error('含复杂内联对象的段落暂不支持链接修改')
+      applyLink(linkedPreview, from, to, href)
+      ops.push({ kind: 'setParagraphLink', ...baseOp(anchor), from, to, href })
+      from = to
+    }
+    const oldVertical = paragraphVerticalAlign(node), newVertical = paragraphVerticalAlign(edited)
+    if (textOf(edited) && ((oldVertical !== newVertical && !(textOf(node) === '' && newVertical === 'baseline'))
+      || (oldVertical === undefined && newVertical === undefined && !same(verticalAlignMap(node), verticalAlignMap(edited))))) {
+      if (!newVertical) throw new Error('暂不支持局部上下标修改，请选择整个段落')
+      ops.push({ kind: 'setParagraphVerticalAlign', ...baseOp(anchor), value: newVertical })
+    }
+    if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(withoutVerticalAlign(withoutLinks(node))), markSequence(withoutVerticalAlign(withoutLinks(edited))))) {
+      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(withoutVerticalAlign(withoutLinks(node))) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(withoutVerticalAlign(withoutLinks(edited)))
+      if (['color', 'fontFamily', 'fontSize'].some(key => key in old && !(key in next))) throw new Error('暂不支持清除段落字体、字号或颜色')
+      const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => !same(value, old[key])))
+      if (Object.keys(changed).length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: changed })
+    }
+  }
+  if (sectionOperation) ops.push(sectionOperation)
+  if (ops.length > 500) throw new Error('操作超过 500 条，请分批保存')
+  return ops
+}
+
+/** 从原文件恢复草稿，保持原 docxIndex 和对象身份。 */
+export function replayDocxOperations(original: DocxPmNode, operations: NativeOperation[], anchors: DocxAnchor[], section?: DocxSectionAnchor, schema?: Schema): DocxPmNode {
+  restoredDocxSectionOperation(operations, section)
+  const result = structuredClone(original), originalNodes = new Map((result.content ?? []).map(node => [Number(idOf(node)), node]))
+  const byId = new Map(anchors.map(anchor => [anchor.blockId, anchor])), afterCounts = new Map<string, number>()
+  const replaceText = (node: DocxPmNode, value: string) => {
+    let remaining = Array.from(value)
+    const runs = (node.content ?? []).filter(child => child.type === 'text')
+    if (!runs.length) { node.content = value ? [{ type: 'text', text: value }] : []; return }
+    runs.forEach((run, index) => { run.text = remaining.splice(0, index === runs.length - 1 ? remaining.length : Array.from(run.text ?? '').length).join('') })
+    node.content = node.content?.filter(child => child.type !== 'text' || child.text)
+  }
+  const structural = new Set<string>()
+  for (const operation of operations) if (TABLE_KINDS.includes(operation.kind as any)) {
+    const id = String(operation.blockId)
+    if (structural.has(id) || operations.some(other => other !== operation && other.blockId === id)) throw new Error('同表草稿不能混合文字或多次结构操作')
+    structural.add(id)
+  }
+  for (const operation of operations) {
+    if (operation.kind === 'setSectionLayout') continue
+    const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
+    if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
+    if (TABLE_KINDS.includes(operation.kind as any)) {
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'index'].includes(key)) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('草稿表格身份或字段无效')
+      const projected = projectDocxTable(node, anchor, { kind: operation.kind, index: operation.index }, schema)
+      Object.assign(node, projected)
+    }
+    else if (operation.kind === 'setParagraphLink') {
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'href'].includes(key))) throw new Error('草稿链接包含不支持的字段')
+      if (!anchor.editable || operation.expectedObjectSha256 !== anchor.expectedObjectSha256 || !paragraph(node)
+        || !validDocxLinkRange(textOf(node), operation.from, operation.to)) throw new Error('草稿链接范围或对象身份无效')
+      const href = operation.href === null ? null : safeDocxLink(operation.href)
+      applyLink(node, Number(operation.from), Number(operation.to), href)
+    }
+    else if (operation.kind === 'setParagraphVerticalAlign') {
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'value'].includes(key))
+        || !['baseline', 'superscript', 'subscript'].includes(String(operation.value)) || !(node.content ?? []).some(run => run.type === 'text' && !!run.text)) throw new Error('草稿上下标字段或来源身份无效')
+      for (const run of node.content ?? []) {
+        if (run.type !== 'text') continue
+        const marks = run.marks ?? []
+        const old = marks.find(mark => ['docTextStyle', 'textStyle'].includes(mark.type))
+        const changed = { type: old?.type ?? 'docTextStyle', attrs: { ...old?.attrs, vertAlign: operation.value === 'baseline' ? null : operation.value } }
+        run.marks = old ? marks.map(mark => mark === old ? changed : mark) : [...marks, changed]
+      }
+    }
+    else if (operation.kind === 'replaceParagraph') replaceText(node, String(operation.text))
+    else if (operation.kind === 'setParagraphIndent') {
+      const twips = operation.twips
+      if (!Number.isInteger(twips) || Number(twips) < 0 || Number(twips) > 14400 || Number(twips) % 720 !== 0) throw new Error('草稿段落缩进无效')
+      node.attrs = { ...node.attrs, indentLeft: twips || null }
+    }
+    else if (operation.kind === 'setParagraphRightIndent') {
+      const twips = operation.twips
+      if (!Number.isInteger(twips) || Number(twips) < -14400 || Number(twips) > 14400) throw new Error('草稿右缩进值无效')
+      node.attrs = { ...node.attrs, indentRight: twips || null }
+    }
+    else if (operation.kind === 'setParagraphList') {
+      const list = operation.list
+      if (!['none', 'bullet', 'ordered'].includes(String(list))) throw new Error('草稿列表类型无效')
+      node.type = list === 'none' ? 'docParagraph' : 'docListItem'
+      node.attrs = { ...withoutList(node.attrs), ...(list === 'none' ? {} : { kind: list, numId: `native-${list}`, ilvl: 0 }) }
+    }
+    else if (operation.kind === 'setParagraphListLevel') {
+      const ilvl = operation.ilvl
+      if (!Number.isInteger(ilvl) || Number(ilvl) < 0 || Number(ilvl) > 8 || node.type !== 'docListItem') throw new Error('草稿列表级别无效')
+      node.attrs = { ...node.attrs, ilvl: Number(ilvl) }
+    }
+    else if (operation.kind === 'setParagraphAlignment') {
+      if (!['left', 'center', 'right', 'justify'].includes(String(operation.alignment))) throw new Error('草稿段落对齐方式无效')
+      node.attrs = { ...node.attrs, align: operation.alignment }
+    }
+    else if (operation.kind === 'setParagraphSpacing') {
+      const values = operation as Record<string, unknown>
+      if (!['spaceBefore', 'spaceAfter', 'lineSpacing'].some(key => values[key] !== undefined)) throw new Error('草稿段落间距无效')
+      for (const key of ['spaceBefore', 'spaceAfter']) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || ![0, 240].includes(values[key] as number))) throw new Error('草稿段落间距无效')
+      if (values.lineSpacing !== undefined && (typeof values.lineSpacing !== 'number' || ![1, 1.15, 1.5, 2, 2.5, 3].includes(values.lineSpacing as number))) throw new Error('草稿行距无效')
+      node.attrs = { ...node.attrs,
+        ...(values.spaceBefore !== undefined ? { spaceBefore: values.spaceBefore, spaceBeforeAuto: null } : {}),
+        ...(values.spaceAfter !== undefined ? { spaceAfter: values.spaceAfter, spaceAfterAuto: null } : {}),
+        ...(values.lineSpacing !== undefined ? { lineSpacing: values.lineSpacing, lineRule: null, lineRawTwips: null } : {}),
+      }
+    }
+    else if (operation.kind === 'deleteParagraph') result.content = result.content?.filter(item => item !== node)
+    else if (operation.kind === 'insertParagraph') {
+      const index = result.content!.indexOf(node)
+      if (index < 0) throw new Error('草稿插入锚点已删除')
+      const offset = operation.position === 'after' ? (afterCounts.get(anchor.blockId) ?? 0) + 1 : 0
+      result.content!.splice(index + offset, 0, { type: 'docParagraph', attrs: { ...node.attrs, docxIndex: null }, ...(operation.text ? { content: [{ type: 'text', text: String(operation.text) }] } : {}) })
+      if (operation.position === 'after') afterCounts.set(anchor.blockId, offset)
+    } else if (operation.kind === 'formatParagraph') {
+      const style = operation.style as Record<string, unknown>
+      for (const run of node.content ?? []) {
+        if (run.type !== 'text') continue
+        run.marks = [...(run.marks ?? [])]
+        for (const key of ['bold', 'italic', 'underline', 'strike']) if (key in style) {
+          run.marks = run.marks.filter(mark => mark.type !== key)
+          if (style[key]) run.marks.push({ type: key })
+        }
+        for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font' })) if (key in style) {
+          let mark = run.marks.find(item => item.type === 'docTextStyle' || item.type === 'textStyle')
+          if (!mark) { mark = { type: 'docTextStyle', attrs: {} }; run.marks.push(mark) }
+          mark.attrs = { ...mark.attrs, [attr]: key === 'fontSize' ? Number(style[key]) * 2 : style[key] }
+        }
+      }
+    } else if (operation.kind === 'replaceCellText') {
+      const position = anchor.cells?.flatMap((row, r) => row.map((cell, c) => ({ ...cell, r, c }))).find(cell => cell.cellId === operation.cellId)
+      const cell = position && node.content?.[position.r].content?.[position.c]
+      if (!cell?.content?.length) throw new Error('草稿单元格身份无效')
+      replaceText(cell.content[0], String(operation.text))
+      for (const paragraph of cell.content.slice(1)) replaceText(paragraph, '')
+    } else throw new Error('Word 草稿包含不支持的操作')
+  }
+  return result
+}

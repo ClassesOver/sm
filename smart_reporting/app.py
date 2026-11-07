@@ -16,7 +16,9 @@ from .http.identity import (
 from .http.request_limits import (
     RequestBodyLimitError,
     agentos_run_request_limit,
+    install_streaming_body_limit,
     is_agentos_run_create,
+    native_import_request_limit,
     read_limited_body,
     report_editor_write_request_limit,
     request_body_limit_error,
@@ -54,6 +56,15 @@ from .report_editor import (
     create_report_workbook_editor_router,
 )
 from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
+from .report_editor.native import NativeEditorService
+from .report_editor.native_ai import create_native_ai_service
+from .report_editor.native_ai_api import create_native_ai_router
+from .report_editor.native_api import create_native_editor_router
+from .report_editor.native_import import NativeImportService
+from .report_editor.native_import_api import create_native_import_router
+from .report_editor.native_publication import NativePublicationService
+from .report_editor.native_readiness import native_readiness_checks
+from .report_editor.native_repository import NativeDocumentRepository
 from .report_editor.slides_chart_ai import ReportSlidesChartAIService
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
@@ -101,6 +112,10 @@ reporting_workspace_registry = ReportingWorkspaceRegistry(
     settings.reporting_host_workspace_root,
     secret=settings.workspace_hmac_secret,
 )
+native_workspace = ReportingWorkspaceRouter(ReportingWorkspaceRegistry(
+    Path(settings.reporting_host_workspace_root) / "native",
+    secret=settings.workspace_hmac_secret,
+))
 # 标准渲染证明签名复用工作区密钥（按用途派生子密钥），使模板演进后旧证明仍可核验。
 configure_render_proof_signing(settings.workspace_hmac_secret)
 reporting_code_mode_runtime = create_reporting_code_mode_runtime(
@@ -112,6 +127,7 @@ reporting_code_mode_runtime = create_reporting_code_mode_runtime(
 reporting_lsp_process_manager = ReportingLspProcessManager()
 report_download_repository = SqlAlchemyDownloadGrantRepository(agent_database.async_engine)
 report_editor_repository = SqlAlchemyReportEditorRepository(agent_database.async_engine)
+native_document_repository = NativeDocumentRepository(agent_database.async_engine)
 report_editor_grants = ReportEditorGrantService(
     report_editor_repository,
     secret=settings.workspace_hmac_secret,
@@ -129,6 +145,12 @@ report_downloads = ReportDownloadHttpService(
     report_download_grants,
     report_artifact_repository,
     workspace_service=ReportingWorkspaceRouter(reporting_workspace_registry),
+)
+native_artifact_persistence = ReportArtifactPersistenceService(
+    report_artifact_repository, native_workspace,
+)
+native_downloads = ReportDownloadHttpService(
+    report_download_grants, report_artifact_repository, workspace_service=native_workspace,
 )
 router = APIRouter()
 
@@ -196,6 +218,12 @@ async def require_workspace_capability(request: Request, call_next):
         except CapabilityError as error:
             return JSONResponse({"error": str(error)}, status_code=401)
     limit = _request_limit(path, request.method)
+    import_limit = native_import_request_limit(path, request.method)
+    if import_limit:
+        try:
+            install_streaming_body_limit(request, import_limit)
+        except RequestBodyLimitError as error:
+            return JSONResponse({"error": error.code}, status_code=error.status_code)
     body = await read_limited_body(request, limit) if limit else b""
     if body is None:
         return JSONResponse({"error": "request_too_large"}, status_code=413)
@@ -231,6 +259,7 @@ def _readiness_checks(context: ApplicationContext):
         "postgresql": False,
         "hmac": len(context.settings.workspace_hmac_secret.encode("utf-8")) >= 32,
     }
+    checks.update(native_readiness_checks(context.settings))
     try:
         check_database(context.database or context.settings.database_url)
         checks["postgresql"] = True
@@ -281,6 +310,22 @@ report_editor = ReportEditorService(
     lineage_drilldown_enabled=settings.report_lineage_drilldown_enabled,
     lineage_export_sources_enabled=settings.report_lineage_export_sources_enabled,
 )
+native_publication = NativePublicationService(
+    native_document_repository, native_workspace, report_download_grants, report_editor_grants,
+    artifact_persistence=native_artifact_persistence,
+    public_base_url=settings.report_public_base_url or "",
+)
+native_editor = NativeEditorService(
+    native_workspace, native_document_repository, report_editor_grants,
+    report_editor=report_editor, publication=native_publication,
+    docx_enabled=settings.native_docx_enabled, pdf_enabled=settings.native_pdf_enabled,
+    office_enabled=settings.native_upload_enabled,
+    pdf_text_enabled=settings.native_pdf_text_enabled,
+)
+native_ai = create_native_ai_service(
+    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+)
+native_import = NativeImportService(native_workspace, native_document_repository, report_editor_grants)
 report_slides_editor = ReportSlidesEditorService(
     state_repository=report_runtime.state_repository,
     workspace_registry=reporting_workspace_registry,
@@ -402,6 +447,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             ai=report_editor_ai,
             chart_ai=report_editor_chart_ai,
             table_ai=report_editor_table_ai,
+            native_editor=native_editor,
             cookie_secure=bool(
                 settings.report_public_base_url
                 and settings.report_public_base_url.startswith("https://")
@@ -414,6 +460,17 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
         settings.report_editor_static_dir
         or Path(__file__).with_name("report_editor") / "static"
     )
+    application.include_router(create_native_editor_router(
+        report_editor_grants, editor=native_editor, download_service=native_downloads,
+        ai_enabled=settings.native_ai_enabled,
+        static_dir=static_root, allowed_origin=settings.report_public_base_url,
+        cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
+    ))
+    application.include_router(create_native_ai_router(
+        report_editor_grants, editor=native_editor, ai=native_ai,
+        allowed_origin=settings.report_public_base_url,
+    ))
+    application.include_router(create_native_import_router(native_import, enabled=settings.native_upload_enabled))
     application.include_router(
         create_report_slides_editor_router(
             report_editor_grants,
@@ -447,9 +504,12 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     application.router.add_event_handler("startup", report_editor_repository.create_schema)
+    application.router.add_event_handler("startup", native_document_repository.create_schema)
     application.router.add_event_handler("startup", report_design_templates.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
     application.router.add_event_handler("shutdown", report_editor.aclose)
+    application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
+    application.router.add_event_handler("shutdown", native_ai.aclose)
     if report_editor_chart_ai is not None:
         application.router.add_event_handler("shutdown", report_editor_chart_ai.aclose)
     if report_editor_table_ai is not None:

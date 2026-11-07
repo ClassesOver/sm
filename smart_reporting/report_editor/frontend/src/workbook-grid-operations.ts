@@ -28,7 +28,7 @@ export function planGridSheets(names: readonly string[], snapshot: GridSnapshot)
 
 export function structuralMutation(id: string, params: unknown): { sheetId: string; op: StructuralOp } | undefined {
   const kinds: Record<string, StructuralOp['kind']> = {
-    'sheet.mutation.insert-row': 'insert-rows', 'sheet.mutation.remove-row': 'remove-rows',
+    'sheet.mutation.insert-row': 'insert-rows', 'sheet.mutation.remove-rows': 'remove-rows',
     'sheet.mutation.insert-col': 'insert-cols', 'sheet.mutation.remove-col': 'remove-cols',
   }
   const kind = kinds[id]

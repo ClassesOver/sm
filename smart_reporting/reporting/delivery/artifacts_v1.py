@@ -35,6 +35,8 @@ class ArtifactFile(StrictModel):
         "image/jpeg",
         "application/pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "application/json",
         "text/csv",
     ] = Field(alias="mediaType")
