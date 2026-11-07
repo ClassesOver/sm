@@ -139,5 +139,45 @@ Node22 只读断网验收见 `NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`
 PDF 当前页裁切已接通：按显示方向输入四边百分比，支持旋转、重复裁切、
 撤销/重做、刷新和重排/删页组合。裁切仅改变可见 CropBox，保留底层文字、
 表单和批注，不能用于删除敏感信息；裁切全部保留页也已接通，各页使用自身显示方向和可见范围，整批单步撤销；
-页面尺寸变更仍未接通，批量验收见 `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`。
+批量验收见 `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`。
 下载、独立回读及分层证据见 `NATIVE_PDF_CROP_ACCEPTANCE.md`。
+
+PDF 页面尺寸现支持受限来源的 A3/A4/A5/Letter/Legal，复用固定上游等比缩放
+与居中实现，并显示真实写回预览。非默认 UserUnit、签名、导航坐标、印刷
+框及未建模批注来源禁用；不与裁切/原位改字混用。尺寸不同的页重置裁切，
+尺寸已匹配的页保持原样。验收见 `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`。
+
+PDF Home/Annotate 的四类文字标注现按多行选区写入，复用固定源选区/匹配与
+AP 写回；本次草稿可叠加/切换，高亮可自选颜色。安全来源的已保存标注可按身份移除，支持历史/刷新和实际写回预览；
+关联回复/弹窗/结构、签名或不可读来源保持只读，详见
+`NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md` 及
+`NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体仍未全面对齐，当前功能族
+差异见 `NATIVE_PDF_ALIGNMENT_STATUS.md`，证书服务前置条件和 Web 设计见
+`NATIVE_PDF_SIGNING_WEB_DESIGN.md`。
+
+PDF 夜间阅读现只反转页面位图，不改文件/草稿，打印保持原色；Home/View/
+状态栏支持固定源18阶梯、10%–800%、滑块与Ctrl/Meta滚轮，缩放保留内容
+锚点。只读也可使用。打印媒体隔离和源字节一致性见
+`NATIVE_PDF_VIEW_ACCEPTANCE.md`；批注侧栏/比较/附件、完整快捷键与阅读位置
+持久化仍未接通，不代表整个View功能族完成。
+
+
+PDF 搜索现复用固定源索引/匹配与Unicode辅助算法，按逐处匹配计数和跳转，
+支持大小写/全词、跨文本片段、Enter/Shift+Enter/Escape及Ctrl/Meta+F。
+原稿与实际写回预览分别缓存索引，删页/重排保持来源身份；不改变草稿和文件。
+定位框沿用源按字符比例的近似几何，未接通OCR，详见 `NATIVE_PDF_SEARCH_ACCEPTANCE.md`。
+
+
+安全来源的既有 PDF 便签可原位修改正文或删除，支持应用/取消、恢复原文、
+撤销重做、刷新、实际预览及下载重开。修改时间绑定草稿使预览与保存字节
+一致；关联回复/弹窗、富文本/锁定/共享引用、签名/XFA/读取不完整来源只读。
+原始XFA在pdf-lib getForm之前检查；普通操作的保真证据与边界见
+`NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`，未接通完整线程/侧栏。
+
+
+未保存的 PDF 便签也可在“待保存便签”中编辑/删除，直接修改或移除原新增
+记录，不增加保存协议。完整草稿快照绑定防止相同便签移位后被旧控件误删；
+撤销重做/刷新/删页恢复及下载重开见 `NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`。
+新增便签现已支持实际写回预览与创建时间绑定，UTC规范化保证跨时区相同字节；
+旧草稿未知创建时间不补造，见 `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`。
+线程/回复及完整侧栏弹层仍未完成。

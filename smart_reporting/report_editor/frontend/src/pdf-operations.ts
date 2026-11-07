@@ -1,17 +1,34 @@
+import { validatePendingPdfNote, validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
+import { validatePdfMarkup, type SavedPdfMarkup } from './pdf-markup'
 import type { NativeOperation } from './native-draft'
 import type { PDFPageProxy } from 'pdfjs-dist'
 
+export const PDF_PAPER_SIZES = [{ label: 'A3', width: 842, height: 1191 }, { label: 'A4', width: 595, height: 842 }, { label: 'A5', width: 420, height: 595 }, { label: 'Letter', width: 612, height: 792 }, { label: 'Legal', width: 612, height: 1008 }] as const
+export function validatePdfSizeOperations(operations: NativeOperation[]) {
+  const sizes = operations.filter(op => op.kind === 'setPageSize')
+  if (sizes.length > 1 || sizes.some(op => !PDF_PAPER_SIZES.some(paper => paper.label === op.preset)) || (sizes.length && operations.some(op => ['cropPage', 'replaceText'].includes(op.kind)))) throw new Error('页面尺寸不能重复或与裁切、原位改字混用；请先保存重开')
+}
+export function setPdfPageSize(operations: NativeOperation[], preset: string): NativeOperation[] {
+  validatePdfSizeOperations(operations)
+  if (operations.some(op => op.kind === 'setPageSize' && op.preset === preset)) return structuredClone(operations)
+  const result = [...structuredClone(operations).filter(op => op.kind !== 'setPageSize'), { kind: 'setPageSize', preset }]
+  validatePdfSizeOperations(result)
+  if (result.length > 500) throw new Error('页面尺寸变更将超过 500 条修改，请先保存')
+  return result
+}
 export interface PdfBox { x: number; y: number; width: number; height: number }
-export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[] }
+export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean } }
+export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; notes?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
 /** 所有操作引用不可变来源索引；排序后的页面位置永远不能当作来源身份。 */
 export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperation[]): PdfPageIdentity[] {
+  validatePdfSizeOperations(operations)
   const byId = new Map(pages.map(page => [page.pageId, { ...page }]))
   const deleted = new Set<string>()
+  const removed = new Set<string>()
   let order = pages.map(page => page.pageId)
   for (const operation of operations) {
     if (operation.kind === 'reorderPages') {
@@ -19,7 +36,7 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       order = operation.pageIds as string[]
       continue
     }
-    if (operation.kind === 'setFormValue') continue
+    if (['setFormValue', 'setPageSize'].includes(operation.kind)) continue
     const page = byId.get(String(operation.pageId))
     if (!page) throw new Error('页面身份已过期，请重新打开文件')
     if (operation.kind === 'deletePage') deleted.add(page.pageId)
@@ -30,7 +47,27 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (deleted.has(page.pageId)) throw new Error('裁切不能引用已删除页面')
       const rect = validatedPdfCrop(operation.rect, page.cropBox)
       page.cropBox = { x: rect[0], y: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] }
-    } else if (!['highlight', 'addTextAnnotation', 'replaceText'].includes(operation.kind)) throw new Error('不支持的 PDF 操作')
+    } else if (operation.kind === 'addTextAnnotation') {
+      if (deleted.has(page.pageId)) throw new Error('便签不能引用已删除页面')
+      validatePendingPdfNote(operation, page)
+    } else if (operation.kind === 'editNote' || operation.kind === 'removeNote') {
+      if (deleted.has(page.pageId)) throw new Error('便签不能引用已删除页面')
+      const note = validatePdfNoteOperation(operation, pages.find(item => item.pageId === page.pageId)!)
+      if (removed.has(note.annotationId)) throw new Error('同一便签不能重复编辑或删除')
+      removed.add(note.annotationId)
+      page.notes = operation.kind === 'removeNote' ? page.notes?.filter(item => item.annotationId !== note.annotationId) : page.notes?.map(item => item.annotationId === note.annotationId ? { ...item, contents: String(operation.contents) } : item)
+    } else if (operation.kind === 'removeMarkup') {
+      if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
+      const source = pages.find(item => item.pageId === page.pageId)!
+      const mark = source.markups?.find(item => item.annotationId === operation.annotationId)
+      if (Object.keys(operation).some(key => !['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256'].includes(key)) || typeof operation.annotationId !== 'string' || !/^[a-f0-9]{64}$/.test(operation.annotationId) || !source.markupReadSafe || !mark?.removable || mark.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || removed.has(operation.annotationId)) throw new Error('标注身份已过期或暂不支持移除；原草稿已保留')
+      removed.add(operation.annotationId)
+      page.markups = page.markups?.filter(item => item.annotationId !== operation.annotationId)
+    } else if (operation.kind === 'addMarkup') {
+      if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
+      validatePdfMarkup(operation)
+      for (const q of operation.quads as number[][]) validatedPdfCrop([q[0], q[5], q[2], q[1]], page.cropBox)
+    } else if (!['addMarkup', 'highlight', 'addTextAnnotation', 'replaceText'].includes(operation.kind)) throw new Error('不支持的 PDF 操作')
   }
   const remaining = order.filter(id => !deleted.has(id))
   if (remaining.length !== pages.length - deleted.size) throw new Error('页面排序必须包含所有保留页面')
@@ -59,6 +96,7 @@ export function pdfPageViewport(page: PDFPageProxy, identity: PdfPageIdentity, s
 }
 
 export function cropPdfPage(pages: PdfPageIdentity[], operations: NativeOperation[], pageId: string, rect: unknown): NativeOperation[] {
+  if (operations.some(op => op.kind === 'setPageSize')) throw new Error('请先保存页面尺寸并重开，再裁切')
   const page = pdfPageState(pages, operations).find(item => item.pageId === pageId)
   if (!page) throw new Error('页面不存在')
   const bounds = validatedPdfCrop(rect, page.cropBox)

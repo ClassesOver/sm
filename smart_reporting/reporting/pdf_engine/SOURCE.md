@@ -18,11 +18,11 @@ LOCAL-SHA256.json records every current TS/MJS source and test, local package ma
 
 The bridge reads a JSON request file at argv[2], returns one JSON receipt on the last stdout line, and writes errors to stderr with a nonzero status. inspect requests are `{kind:"inspect",input}`; patch requests are `{kind:"patch",input,output,sourceSha256,operations}`. It calls upstream applySaveRequest, takes the returned bytes and writes a new destination using exclusive creation (`wx`); existing output files, source aliases, hard links and symbolic links are not overwritten. It never calls savePdfToPath or its verification-before-write path.
 
-At most 500 operations are accepted. Only highlight, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
+At most 500 operations are accepted. Only highlight, addMarkup, removeMarkup, editNote, removeNote, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
 
 Page IDs are `sha256:<source SHA-256>:page:<original zero-based index>`. The source digest is required at patch request level; optional per-operation sourceSha256 must agree if present. IDs are stable within one immutable source; after saving, inspect the new bytes to obtain new IDs. Operations reference original source page IDs. An optional single reorderPages must list every surviving page exactly once, even when deletePage appears later in the list. A page cannot be both deleted and otherwise edited in one request. Multiple rotatePage deltas on one retained page accumulate via upstream order. Empty operation lists return the exact original bytes.
 
-The schema cannot pass image edits, annotation deletion, redaction, arbitrary upstream text-edit fields, inserted content text, encryption, arbitrary file paths or other upstream request fields. Upstream image-edit/annot-delete modules are intentionally absent; image-edit imports Electron. The local save-pdf adaptation explicitly rejects their requests, and they are unreachable through this bridge's whitelist. This is a documented subset, not a promise that arbitrary upstream save requests work.
+The schema cannot pass image edits, generic annotation deletion, redaction, arbitrary upstream text-edit fields, inserted content text, encryption, arbitrary file paths or other upstream request fields. Upstream image-edit/annot-delete modules are intentionally absent; image-edit imports Electron. The local save-pdf adaptation explicitly rejects their requests, and they are unreachable through this bridge's whitelist. This is a documented subset, not a promise that arbitrary upstream save requests work.
 
 ## Development, bundle and deployment assets
 
@@ -131,3 +131,68 @@ PDF serializer or redaction. Browser display margins are converted with PDF.js.
 See `report_editor/NATIVE_PDF_CROP_ACCEPTANCE.md` for independent pypdf, browser,
 ASGI and Node22 boundaries. Vendor and SOURCE hashes are unchanged. Local SHA
 audit refreshes the bridge and one historical stale existing-test record.
+
+
+## Five-preset paper size (2026-11-06)
+
+Strict setPageSize accepts preset A3/A4/A5/Letter/Legal and calls the unchanged
+upstream setPageSizeBytes after other source-coordinate edits and final order/
+deletions. Only one is accepted; cropPage/replaceText mixtures reject. Inspection
+provides pageSize/pageSizeReason: UserUnit other than1, signatures/unsupported
+fields/XFA, outline/destination/name catalogs, auxiliary print boxes, non-quarter
+rotations and unmodeled annotation kinds are conservatively readonly for size.
+The source writer's already-matching-page skip and changed-page crop reset are
+retained. Output identity is included in the size preview digest; the native
+service returns a receipt even when the independent text feature is disabled.
+No vendor or upstream hash change. See
+`report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md` for raw UserUnit limitation,
+actual files/browser/service/Node22 evidence and exact restrictions.
+
+
+## Selected-text markups (2026-11-06)
+
+Strict addMarkup binds source/page identity, one of highlight/underline/squiggly/
+strikeout,1–200 canonical axis-aligned PDF-space quads and finite RGB. Current
+CropBox/deleted-target rules apply before the unchanged markups/AP writer runs.
+Inspection exposes readable source marks and markupReadSafe; malformed relevant
+QuadPoints make that page readonly for this new operation. Selection controls
+require selectionMarkup capability; old rectangle-highlight requests remain.
+The native service provides actual-output preview receipts without the text
+feature flag, binding the preview digest to markup output SHA as well as intent.
+
+The renderer annotations helper is separately adapted with source/current SHA,
+local type import/content-box selector and prominent notice under frontend/src.
+No Node vendor or upstream SOURCE hash changed. See
+`report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`; safe saved-markup removal is now implemented by a strict source adapter; see
+`report_editor/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`. Generic vendor deletion
+requests remain unsupported.
+
+
+## Existing sticky-note continuation (2026-11-06)
+
+Strict editNote/removeNote records use immutable source/page/annotation identities
+and dictionary hashes. The native adapter applies the source Contents/M primitives
+without geometry fallback or fail-soft skips, preserving the edited object and
+copying Annots arrays for deletion. A staged UTC modifiedAt makes repeated preview
+and save deterministic. The vendor writer is unchanged. Replies/popups/rich text/
+locked/shared/direct/protected or unreadable sources remain readonly.
+
+Raw AcroForm/XFA must be captured before pdf-lib getForm(), which deletes XFA in
+its memory model. That source flag now protects note/markup mutations, size and
+form-field editability. This does not certify arbitrary XFA operations. Tests,
+artifact identities, original-source references and runtime evidence are in
+`report_editor/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`; whole PDF parity remains open.
+
+
+## Pending-note actual preview and creation time (2026-11-06)
+
+addTextAnnotation accepts optional integer createdMs0–253402300799999. The native
+bridge forwards the staged instant to the unchanged note/AP writer, then verifies
+base+markup+note counts and exact appended Text payload/round2 Rect before
+canonicalizing only new CreationDate/M to UTC. Legacy untimed additions omit
+unknown optional dates; existing source metadata is retained. This replaces the
+old save-time default for legacy new annotations without inventing a creation date.
+The actual output SHA now binds their preview receipt. No global TZ/clock override
+is used in product code. Source-writer cross-zone counterexample, guards, actual
+preview/save/download and legacy compatibility proof are documented in
+`report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`. Vendor SOURCE hashes unchanged.

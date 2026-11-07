@@ -1,0 +1,24 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": [
+    {
+      "upstreamPath": "apps/pdf/src/renderer/search.ts",
+      "localPath": "genoffice-pdf-search.ts",
+      "upstreamSha256": "1ebe7106ab8f95726d86d570b0547864ded66ddbce268aa1aa049c3570d61eff",
+      "localSha256": "2760a821d793acfa786a4f91ce9694bb8521a58fde05c653b7082e815340fb4e",
+      "adaptations": [
+        "provenance notice added",
+        "UI helper import targets local pinned copy"
+      ]
+    },
+    {
+      "upstreamPath": "packages/ui/src/find-text.ts",
+      "localPath": "genoffice-find-text.ts",
+      "upstreamSha256": "f8e9fe09a74a1806be1e109e482a2ad2835d488e800e46b0459e7048c99831e2",
+      "localSha256": "a3b0401fa792614e349cfec0a7da4557ae50a3db92be4c829dcca3b3ed1c905a",
+      "adaptations": [
+        "provenance notice added"
+      ]
+    }
+  ]
+}

@@ -202,3 +202,82 @@ one draft history step. Per-page current bounds and rotation are retained;
 async preparation is atomic and the opener is guarded during pending work.
 `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md` supersedes the earlier all-pages UI gap.
 Image drag handles and the separate Page Size command remain unavailable.
+
+
+## PDF paper-size bounded closure (2026-11-06)
+
+The earlier Page Size disabled inventory is superseded for capability-approved
+sources: five pinned presets now call the unmodified upstream byte writer, with
+actual-output preview and strict source/mixing gates. The UserUnit2 raw source
+counterexample remains reproducible and unsupported sources stay readonly for
+size. See `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`; arbitrary-source/desktop parity
+and remaining Page/Form Design families are not closed.
+
+
+## PDF selected-text markup and whole-format status (2026-11-06)
+
+Home/Annotate four markup additions now share pinned selection/quads/matching and
+real AP writeback. Pending marks toggle; saved matches are not duplicated and
+saved removal remains explicitly unavailable. This supersedes earlier disabled
+underline/squiggly/strikeout addition entries, not the complete source toggle/
+delete behavior. See `NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md` and the separate
+family-level `NATIVE_PDF_ALIGNMENT_STATUS.md`; neither disabled controls nor206
+mechanical App callback nodes are counted as completed source parity.
+
+
+## PDF View source audit correction and reading closure
+
+Fixed App viewNavGroup also has comments, comparison and attachments. Their
+previous omission means the five-entry native list was not a complete source
+inventory; all three are now explicit disabled controls in source order. Night
+reading and18-step10–800% zoom/status/wheel/DOM-anchor behavior are accepted in
+`NATIVE_PDF_VIEW_ACCEPTANCE.md`; those three families, reading-position persistence,
+complete shortcuts and every source fit/layout rule remain open. No whole-View
+completion or disabled-control parity credit is claimed.
+
+
+## PDF saved-markup toggle follow-up
+
+Home/Annotate now follow pinned pending-first then one-saved match semantics.
+Safe four-type saved marks can be removed with immutable source/page/ordinal ID
+and dictionary digest, history and actual preview/download. The original disabled
+removal checkpoint is superseded only for these bounded sources. Linked replies/
+popups/structure, direct objects, signed/XFA and unreadable sources stay readonly;
+arbitrary annotation commands are not credited. Evidence: `NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`.
+
+
+## PDF occurrence search follow-up
+
+Home previous/next now address individual source matches, with case/whole-word
+modifiers and counts; View search and Ctrl/Meta+F focus Home search. Pinned
+search.ts and ui/find-text.ts algorithms/hash manifests are retained. The inline
+search adapts the floating source bar; OCR and full contextual/layout parity are
+not credited. Details: `NATIVE_PDF_SEARCH_ACCEPTANCE.md`.
+
+
+## PDF existing sticky-note follow-up
+
+Safe saved Text notes gain per-page edit/delete controls with strict source identity,
+modal Apply/Cancel, original-object Contents/M updates and actual preview/download.
+This closes a bounded existing-note gap; it does not credit pending-note/reply/thread
+commands or full comment/sidebar UX. Raw XFA is censused before pdf-lib getForm's
+side effect. See `NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`.
+
+
+## PDF pending sticky-note follow-up
+
+Pending setNoteContents/removeDrawing source behavior now maps to updating/removing
+the exact existing native addition record. The local adaptation binds the entire
+draft snapshot plus index rather than introducing a backend/local-ID protocol.
+Per-page pending controls support history and reopening as saved notes; threaded
+context/sidebar and pending-only actual preview are not credited. Evidence:
+`NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`.
+
+
+## PDF pending-note actual preview/date follow-up
+
+Pending-only preview now renders actual output and actual PDF annotation contents.
+createdMs is staged once; verified appended note dates use canonical UTC and old
+untimed drafts retain unknown dates. Pinned AP/writer/round2 behavior is preserved,
+with explicit append-count/payload drift refusal. This closes the prior preview/
+time gap, not replies/threads/sidebar parity. Evidence: `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`.

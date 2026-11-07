@@ -334,3 +334,80 @@ PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步�
 混合尺寸/方向/UserUnit 与实际下载、pypdf 回读见
 `report_editor/NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`；不累计前阶段后端验收为新增，
 其他 Page 命令、桌面和完整镜像仍未完成，开关关闭。
+
+
+2026-11-06 PDF 五档页面尺寸：严格 preset 操作复用未改的 setPageSizeBytes，
+全局等比缩放/居中放在其他来源操作之后；源单位、导航、印刷框、签名及
+未建模批注保守只读，不与裁切/改字混用。原始 UserUnit2 物理尺寸偏差
+探针保留。真实写回预览使用输出页边界，服务不依赖文字开关；签发代码
+未改。35个新文件用例、40个受影响文件用例、53个PDF前端检查、新服务
+及既有文字服务检查、浏览器下载/pypdf、Node22两例和最终构建预算通过。
+详见 `report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`；独立bridge tsc仍
+有六项基线桌面声明问题，零新增，不视作完整镜像/桌面验收，开关关闭。
+
+
+2026-11-06 PDF 文字选区标注：引入固定源 annotations.ts 的选区/匹配算法，
+以单独原始/适配 SHA 与变更通知保留来源；严格 addMarkup 复用未改 AP writer，
+支持四类型、多行、源颜色、待保存切换、回放与实际输出预览。已保存标注
+移除仍明确禁用，读取不完整来源拒绝。44新文件/40受影响文件、14新前端/
+52受影响前端、新服务/四既有服务、Chromium/pypdf及Node22两例通过；
+详见 `report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体差异
+与真实签名依赖分别见 ALIGNMENT_STATUS 和 SIGNING_WEB_DESIGN 文档，不将
+禁用项、设计或缺服务的路径算作完成。开关关闭。
+
+
+2026-11-06 PDF 纯阅读补缺：源位图夜间滤镜、18阶梯/10–800%缩放、状态滑块、
+Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行包不变。源码
+核对补列遗漏的批注侧栏/比较/附件并明确禁用，不计完成。7项定向前端
+检查、只读Chromium视图/真实滚轮/打印媒体隔离/源字节相等与两份构建预算
+通过，详见 `report_editor/NATIVE_PDF_VIEW_ACCEPTANCE.md`。阅读位置持久化、
+完整快捷键/行布局及整体源功能仍未完成，开关关闭。
+
+
+2026-11-06 PDF 已保存四类文字标注移除：固定源 pending-first/单一 saved 匹配
+与先删除后改字顺序接通，使用独立来源页/原标注序号身份及字典SHA，
+只解除该页引用并复制共享Annots数组；未修改vendor删除writer或增加几何
+回退。关联/签名/复杂来源只读，实际预览和新修订可回读。18个新文件、
+34个相关前端、2个服务、2个受影响来源用例及Chromium/pypdf通过；Node22
+断网只读验证移除、无字体时改字跳过仍保留移除、伪造请求无产物。两份
+构建和预算、33项本地SHA通过；独立bridge仍有六项基线诊断。证据见
+`report_editor/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`，保留失败迭代，
+不声称完整镜像/桌面/生产或全PDF对齐；开关关闭。
+
+
+2026-11-06 PDF 逐处搜索：固定search.ts与ui/find-text.ts算法独立复用，
+保留上游/本地SHA和变更声明；逐处框/计数、大小写/全词、循环导航、
+快捷键与原稿/实际预览页身份映射接通。删除/重排与异步预览重建有
+浏览器检查，八个新定向/七个受影响前端检查通过；后端和运行包未变。
+详见 `report_editor/NATIVE_PDF_SEARCH_ACCEPTANCE.md`，不把OCR、浮动栏、
+复杂字形精确几何或完整镜像/桌面/生产对齐计作完成，开关关闭。
+
+
+2026-11-06 PDF 既有便签：严格editNote/removeNote使用来源标注身份/字典SHA，
+原位Contents/M及复制数组解除引用，UTC修改时间固定在草稿中；应用/取消、
+恢复原文、历史/刷新、实际预览及修订下载重开接通。发现并修复pdf-lib
+getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便签/标注移除、
+尺寸和表单。23新文件/7受影响文件、38前端、3服务、Chromium/独立pypdf、
+最终字节重放和Node22断网只读4场景通过；两份构建/预算、33项SHA及Ruff
+通过，独立bridge六项基线诊断无新增。证据见
+`report_editor/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`，线程/回复/复杂源和
+完整镜像/桌面/生产仍未完成，开关关闭。
+
+
+2026-11-06 PDF 未保存便签：编辑/删除直接改变原新增记录，整份草稿快照+位置
+防止相同便签移位后旧回调误删；应用/取消、历史/刷新、删页撤销和重开
+接通。13新+38受影响前端检查、新浏览器指针放置/过期控件/只读/页历史/
+保存重开及已有便签浏览器回归、独立pypdf保真、两份构建/实际预算通过。
+后端/运行包不变，未把旧Node22/SQL结果算新检查。详见
+`report_editor/NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`；pending-only实际预览/
+创建时间绑定、线程/回复和完整桌面/镜像/生产未完成，开关关闭。
+
+
+2026-11-07 PDF 新增便签实际预览/时间：createdMs在草稿中固定，未改AP writer；
+验证新增尾部数量/正文/源round2矩形后仅规范化新日期为UTC，旧草稿缺时间
+保持未知。服务/界面实际PDF预览及下载字节一致，保留原文/原便签/表单。
+14新文件+2受影响文件、2漂移守卫、57前端、5服务、Chromium/独立pypdf
+和Node22断网只读5场景、两份构建/预算/Ruff/35项SHA通过；bridge六项
+基线诊断无新增。上游同一瞬时在不同时区输出不同字节的反例保留，
+详见 `report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`。线程/回复、
+完整侧栏/桌面/镜像/生产仍未完成，开关关闭。
