@@ -195,10 +195,11 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       try {
         const partAnchor = hfModel.parts[`${part}.${variant}`]
         if (!partAnchor) throw new Error('页眉/页脚部件不受当前保存协议支持')
-        const previous = headerFooterOperations().find(operation => operation.part === part && operation.variant === variant)
         const settings: DocxHfFlags = {}
-        for (const key of ['titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart'] as const) {
-          if (previous?.[key] !== undefined) Object.assign(settings, { [key]: previous[key] })
+        for (const previous of headerFooterOperations()) {
+          for (const key of ['titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart'] as const) {
+            if (previous[key] !== undefined) Object.assign(settings, { [key]: previous[key] })
+          }
         }
         const operation = docxHeaderFooterOperation(hfAnchor, partAnchor, part, variant, value, { ...settings, ...flags })
         draft.setOperations(operation ? mergeDocxHeaderFooterOperation(draft.operations, operation)

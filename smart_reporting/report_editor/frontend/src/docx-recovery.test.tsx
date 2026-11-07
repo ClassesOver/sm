@@ -287,6 +287,21 @@ it('DOCX header/footer controller removes a text draft when restored to the sour
   expect(controller.valueOf('header', 'default')?.value.text).toBe('原页眉')
 })
 
+it('DOCX header/footer text edits retain the latest global flags across parts', async () => {
+  const part = { rId: 'rId7', expectedPartSha256: 'part-sha', text: '原文', hasPageNumber: false, editable: true }
+  const f = await setup({ titlePg: false, evenAndOddHeaders: false, pageNumberFmt: null, pageNumberStart: null,
+    parts: { 'header.default': part, 'footer.default': { ...part, rId: 'rId8', expectedPartSha256: 'footer-sha' } } })
+  const opened = await f.open()
+  opened.shell.editor.querySelector<HTMLButtonElement>('[data-tab-id="headerFooter"]')!.click()
+  const controller = hfFixture.controller!
+  controller.onCommit('header', 'default', { text: '页眉' }, { titlePg: true })
+  controller.onCommit('footer', 'default', { text: '页脚' }, { titlePg: false, evenAndOddHeaders: true })
+  controller.onCommit('header', 'default', { text: '新页眉' })
+  expect(controller.model.titlePg).toBe(false)
+  expect(controller.model.evenAndOddHeaders).toBe(true)
+  expect(f.draft.operations.at(-1)).toMatchObject({ text: '新页眉', titlePg: false, evenAndOddHeaders: true })
+})
+
 it('DOCX recovery rejects a header/footer draft with a stale part anchor and preserves it', async () => {
   const f = await setup()
   const operation = { kind: 'setHeaderFooter', sectionId: f.section.sectionId, expectedSectionSha256: f.section.expectedSectionSha256,

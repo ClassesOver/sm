@@ -454,12 +454,19 @@ export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintS
         column >= item.startColumn && column <= item.endColumn)
       if (!merge) return ''
       if (merge.startRow !== row || merge.startColumn !== column) return 'skip'
-      return ` rowspan="${merge.endRow - merge.startRow + 1}" colspan="${merge.endColumn - merge.startColumn + 1}"`
+      let rows = 0, columns = 0
+      for (let index = merge.startRow; index <= merge.endRow; index += 1) if (rowHeightPt(index) > 0) rows += 1
+      for (let index = merge.startColumn; index <= merge.endColumn; index += 1) if (columnWidthPt(index) > 0) columns += 1
+      return ` rowspan="${rows}" colspan="${columns}"`
     }
     const titleColumnList: number[] = []
-    if (titleColumns !== null) for (let column = titleColumns.start; column <= titleColumns.end; column += 1) titleColumnList.push(column)
+    if (titleColumns !== null) for (let column = titleColumns.start; column <= titleColumns.end; column += 1) {
+      if (columnWidthPt(column) > 0) titleColumnList.push(column)
+    }
     const bodyColumnList: number[] = []
-    for (let column = page.colStart; column <= page.colEnd; column += 1) bodyColumnList.push(column)
+    for (let column = page.colStart; column <= page.colEnd; column += 1) {
+      if (columnWidthPt(column) > 0) bodyColumnList.push(column)
+    }
     const headingCell = (tag: 'th' | 'td', text: string, css: string): string =>
       `<${tag} class="${css}">${escapeHtml(text)}</${tag}>`
     const dataCell = (row: number, column: number): string => {

@@ -153,6 +153,29 @@ describe('print document', () => {
     expect(html).not.toContain('covered-')
   })
 
+  it('omits hidden columns from body and repeated titles instead of printing their contents', () => {
+    const source = sourceOf({ A1: { value: 'left' }, B1: { value: 'hidden-secret' }, C1: { value: 'right' } }, { hiddenColumns: new Set([1]) })
+    for (const printTitles of [null, 'A:B']) {
+      const html = buildSheetPrintHtml(source, { ...SETUP, printTitles, printHeadings: true })!
+      expect(html).not.toContain('hidden-secret')
+      expect(html).not.toContain('>B</th>')
+      const parsed = new DOMParser().parseFromString(html, 'text/html')
+      expect(parsed.querySelectorAll('td')).toHaveLength(2)
+    }
+  })
+
+  it('counts only visible rows and columns in printed merge spans', () => {
+    const html = buildSheetPrintHtml(sourceOf({ A1: { value: 'merged' }, C3: { value: 'covered' } }, {
+      hiddenRows: new Set([1]), hiddenColumns: new Set([1]),
+      merges: [{ startRow: 0, endRow: 2, startColumn: 0, endColumn: 2 }],
+    }), SETUP)!
+    const parsed = new DOMParser().parseFromString(html, 'text/html')
+    expect(parsed.querySelectorAll('td')).toHaveLength(1)
+    expect(parsed.querySelector('td')?.rowSpan).toBe(2)
+    expect(parsed.querySelector('td')?.colSpan).toBe(2)
+    expect(html).not.toContain('covered')
+  })
+
   it('rejects print coordinates beyond XLSX row and column limits', () => {
     expect(parsePrintRange('A1:XFE2')).toBeNull()
     expect(parsePrintRange('A1:A1048577')).toBeNull()

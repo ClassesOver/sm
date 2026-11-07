@@ -13,7 +13,7 @@
   "packages/xlsx-engine/tests/pivot-grouping.test.ts": "1d3e2f20ca433131fd8ba5c78ac22247cd7d7c489ec4031b690bad1987593345",
   "packages/xlsx-engine/tests/style-read-alignment.test.ts": "43792392a3102118fad847c02e8305b7c86cfd08d1824d79469620989e6d2389",
   "packages/xlsx-engine/tests/upstream-fixes.test.ts": "177a0cbdaa8c43ffa5dd4594f852e9cd49b1f11cf9155b9b89322fc898575f78",
-  "packages/xlsx-engine/tests/sort-rows.test.ts": "12c117e661ec37a9503e13b5418470850e1b2e15d43af148bc29ffd170b3a6a1",
+  "packages/xlsx-engine/tests/sort-rows.test.ts": "08966e8781f4fa1230ed57ffaca6a7125bf7cce11d28f5a0b38f853dd4b03c6a",
   "packages/xlsx-engine/src/filter-read.ts": "77030f9e244922e471f6359e8daea73c185a46593c5271c169e0821168a39f0c",
   "packages/xlsx-engine/src/filters.ts": "dc7ff31ba3679761dda1473ce7ca5a28db34c190f0717b89062790f616604779",
   "packages/xlsx-engine/tests/filters.test.ts": "1696a65cbcff80a3e33341f4a261fb06fa492364c2bccaba365781a17937dc94",
