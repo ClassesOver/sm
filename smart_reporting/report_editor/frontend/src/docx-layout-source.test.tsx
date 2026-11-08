@@ -59,7 +59,6 @@ it('keeps Header/Footer part and navigation controls identified but disabled wit
     ['header-edit', '页眉/页脚 part 编辑写回尚未接入'],
     ['header-remove', '页眉/页脚 part 删除与关系写回尚未接入'],
     ['footer-remove', '页眉/页脚 part 删除与关系写回尚未接入'],
-    ['footer-edit', '页眉/页脚 part 编辑写回尚未接入'],
     ['page-number', '页码字段与页眉/页脚关系写回尚未接入'],
     ['page-number-format', '页码格式设置写回尚未接入'],
     ['page-number-remove', '页码字段与页眉/页脚关系写回尚未接入'],
@@ -73,6 +72,8 @@ it('keeps Header/Footer part and navigation controls identified but disabled wit
     expect(control?.title).toContain(reason)
     expect(control?.getAttribute('aria-label')).toContain(reason)
   }
+  // 页眉与页脚编辑已合并为单一入口（header-edit）；未传入编辑回调时仍以契约原因禁用。
+  expect(host.querySelector('[data-source-action="footer-edit"]')).toBeNull()
   expect(host.querySelector<HTMLInputElement>('[data-source-action="header-distance"]')?.disabled).toBe(true)
   root.unmount()
 })

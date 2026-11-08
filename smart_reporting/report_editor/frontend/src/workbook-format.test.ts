@@ -123,10 +123,15 @@ it('renders mixed state, actual single-cell state, Chinese tabs, roving focus an
   expect(host.querySelector<HTMLInputElement>('[data-ribbon-control="fill"]')!.value).toBe('#abcdef')
   expect(host.querySelector('[data-ribbon-command="bold"]')!.getAttribute('aria-pressed')).toBe('true')
   const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
-  expect(tabs.map(tab => tab.tabIndex)).toEqual([0, -1, -1, -1, -1, -1, -1])
-  tabs[0]!.focus(); tabs[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+  // 固定源页签顺序以"文件"开头；激活页签仍是"开始"，roving tabindex 只落在它上面。
+  expect(tabs.map(tab => tab.dataset.ribbonTab)).toEqual(['File', 'Home', 'Insert', 'Page Layout', 'Formulas', 'Data', 'Review', 'View'])
+  expect(tabs.map(tab => tab.tabIndex)).toEqual([-1, 0, -1, -1, -1, -1, -1, -1])
+  tabs[1]!.focus(); tabs[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
   expect((document.activeElement as HTMLElement).dataset.ribbonTab).toBe('Insert')
   host.querySelector<HTMLElement>('[role="tablist"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+  // Home 键回到首个页签（文件）；数字格式命令位于"开始"页签，点回后再操作。
+  expect((document.activeElement as HTMLElement).dataset.ribbonTab).toBe('File')
+  host.querySelector<HTMLButtonElement>('[role="tab"][data-ribbon-tab="Home"]')!.click()
   const custom = host.querySelector<HTMLButtonElement>('[data-ribbon-command="format:custom-open"]')!
   custom.focus(); custom.click(); expect(command.mock.calls[0]![1]).toMatchObject({ row: 0, height: 1 })
   editable = false; ribbon.refreshState()

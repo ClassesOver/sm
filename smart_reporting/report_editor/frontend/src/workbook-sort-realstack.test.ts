@@ -1,49 +1,43 @@
 import { afterEach, expect, it } from 'vitest'
+import { Univer, UniverInstanceType, IUniverInstanceService, LocaleType } from '@univerjs/core'
+import { FUniver } from '@univerjs/core/lib/facade'
+import { UniverSheetsPlugin } from '@univerjs/sheets'
+import { UniverSheetsSortPlugin } from '@univerjs/sheets-sort'
+import '@univerjs/sheets/facade'
 import { applyCellEdits, createBlankWorkbook, readWorkbook } from '@sheets-web/xlsx-engine'
 import { withWorkbookNotes } from './workbook-notes'
 import { buildWorkbookData } from './workbook-vendor/core/univer-data'
-import { createUniver } from './workbook-vendor/grid/create-univer'
-import { LocaleType, mergeLocales } from '@univerjs/core'
-import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
-import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort'
-import CoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
-import SortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 
-// 复现浏览器生产组合：真实 create-univer + 核心/排序 preset（无 mock），
-// 验证官方 sort-range 在真实插件栈上是否真的移动值。
-const univers: { dispose(): void }[] = []
+// 真实 sheets + sheets-sort 插件（无 mock）：官方 sort-range 在报告工作簿投影
+// （含数值单元格类型标记 t 与公式格）上必须真的移动值。渲染层（create-univer
+// UI preset）依赖 canvas 2D 上下文，jsdom 不提供，故此处不挂载渲染层；
+// 排序命令与数据模型不依赖渲染。
+const univers: Univer[] = []
 afterEach(() => { for (const item of univers.splice(0)) item.dispose() })
 
-it('real preset stack: sort-range moves values', async () => {
+it('real sheets stack: sort-range moves values', async () => {
   const bytes = await applyCellEdits(await createBlankWorkbook(), [
     { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 1234.567 } },
     { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 28.125 } },
+    { sheetName: 'Sheet1', row: 2, column: 0, writeValue: true, cell: { value: 512 } },
     { sheetName: 'Sheet1', row: 2, column: 1, writeValue: true, cell: { value: null, formula: '=A1*2' } },
   ])
   const model = await readWorkbook(bytes)
-  const runtime = createUniver({
-    locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, SortZhCN) },
-    presets: [
-      UniverSheetsCorePreset({ container: 'workbook-grid', header: false, toolbar: false, contextMenu: false, formulaBar: false }),
-      UniverSheetsSortPreset(),
-    ],
-  })
-  univers.push(runtime.univer)
-  const api = runtime.univerAPI
-  const workbook = api.createWorkbook(withWorkbookNotes(buildWorkbookData(model, 'probe', 'probe'), model) as never)
+  const univer = new Univer({ locale: LocaleType.ZH_CN })
+  univers.push(univer)
+  univer.registerPlugin(UniverSheetsPlugin)
+  univer.registerPlugin(UniverSheetsSortPlugin)
+  univer.createUnit(UniverInstanceType.UNIVER_SHEET, withWorkbookNotes(buildWorkbookData(model, 'probe', 'probe'), model))
+  const api = FUniver.newAPI(univer)
+  const workbook = api.getActiveWorkbook()!
   const sheet = workbook.getActiveSheet()!
-  const fired: unknown[] = []
-  api.addEvent(api.Event.CommandExecuted, command => {
-    const info = command as unknown as { id: string; type: string; params?: unknown }
-    if (String(info.id).includes('reorder')) fired.push({ id: info.id, type: info.type, order: (info.params as { order?: unknown })?.order, range: (info.params as { range?: unknown })?.range })
-  })
-  const valuesBefore = sheet.getRange(0, 0, 3, 1).getValues().map(row => row[0])
-  const executed = api.syncExecuteCommand('sheet.command.sort-range', {
+  univer.__getInjector().get(IUniverInstanceService).focusUnit(workbook.getId())
+  expect(sheet.getRange(0, 0, 3, 1).getValues().map(row => row[0])).toEqual([1234.567, 28.125, 512])
+  const executed = await api.executeCommand('sheet.command.sort-range', {
     range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
     orderRules: [{ colIndex: 0, type: 'asc' }],
     unitId: workbook.getId(), subUnitId: sheet.getSheetId(), hasTitle: false,
   })
-  const valuesAfter = sheet.getRange(0, 0, 3, 1).getValues().map(row => row[0])
-  console.log(JSON.stringify({ valuesBefore, executed, valuesAfter, fired }))
   expect(executed).toBe(true)
+  expect(sheet.getRange(0, 0, 3, 1).getValues().map(row => row[0])).toEqual([28.125, 512, 1234.567])
 })

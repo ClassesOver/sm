@@ -3,8 +3,8 @@ import { applyCellEdits, applySheetNotes, createBlankWorkbook, readWorkbook, sor
 
 it('sortRangeRows permutes full cell records so styles move with values', async () => {
   let bytes = await applyCellEdits(await createBlankWorkbook(), [
-    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: '乙' }, style: { bold: true, fillColor: '#FFF2CC' } },
-    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: '甲' }, style: { italic: true, fontColor: '#0B4F8A' } },
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'b乙' }, style: { bold: true, fillColor: '#FFF2CC' } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 'a甲' }, style: { italic: true, fontColor: '#0B4F8A' } },
     { sheetName: 'Sheet1', row: 0, column: 1, writeValue: true, cell: { value: 20 }, style: { numberFormat: '#,##0.00' } },
     { sheetName: 'Sheet1', row: 1, column: 1, writeValue: true, cell: { value: 10 } },
     { sheetName: 'Sheet1', row: 3, column: 2, writeValue: true, cell: { value: 'range外' } },
@@ -12,8 +12,9 @@ it('sortRangeRows permutes full cell records so styles move with values', async 
   const before = (await readWorkbook(bytes)).sheets[0]!
   bytes = await sortRangeRows(bytes, 'Sheet1', { range: 'A1:B2', byColumn: 'A', ascending: true, hasHeader: false })
   const sheet = (await readWorkbook(bytes)).sheets[0]!
-  expect(sheet.cells.A1?.value).toBe('甲')
-  expect(sheet.cells.A2?.value).toBe('乙')
+  // 文本比较走宿主默认 locale（zh-CN 按拼音、en-US 按码位），ASCII 前缀使顺序与环境无关。
+  expect(sheet.cells.A1?.value).toBe('a甲')
+  expect(sheet.cells.A2?.value).toBe('b乙')
   expect(sheet.cells.B1?.value).toBe(10)
   expect(sheet.cells.B2?.value).toBe(20)
   // 样式随行整体迁移：甲的斜体/蓝色样式到第 1 行，乙的粗体/填充/千分位到第 2 行。
