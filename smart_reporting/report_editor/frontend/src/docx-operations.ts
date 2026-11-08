@@ -4,6 +4,7 @@ import { safeDocxShading } from './docx-shading'
 import { paragraphVerticalAlign, withoutVerticalAlign, verticalAlignMap } from './docx-vertical'
 import { TABLE_KINDS, projectDocxTable, tableIntent } from './docx-tables'
 import { newTableMatchesProjection, newTableNodeCells, newTableSize, projectNewDocxTable } from './docx-new-table'
+import { coverGroupMatchesProjection, coverGroupParas, isCoverEndNode, projectCoverNodes } from './docx-cover-page'
 import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
@@ -197,6 +198,22 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       const target = next ?? previous ?? fallback
       if (!target) throw new Error('新增图片没有可编辑的锚点段落')
       ops.push({ kind: 'insertParagraphImage', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', image: pastedImage })
+      continue
+    }
+    if (node.attrs?.nativeCoverPage != null) {
+      // 新增封面（docx-cover-page.ts）：必须位于文档开头，首段至分页结束段为一组，
+      // 按首段携带的预设规格 + 当前各段文字重算投影并完全一致。
+      if (!schema) throw new Error('新增封面需要编辑器结构信息')
+      const end = after.findIndex((item, at) => at >= index && isCoverEndNode(item))
+      if (index !== 0 || end < 0 || after.slice(index, end + 1).some(item => idOf(item) != null)) throw new Error('封面结构已改变，请删除后重新插入')
+      const group = after.slice(index, end + 1)
+      let paras: ReturnType<typeof coverGroupParas>
+      try { paras = coverGroupParas(group) } catch { throw new Error('封面结构已改变，请删除后重新插入') }
+      if (!coverGroupMatchesProjection(group, projectCoverNodes(paras, schema))) throw new Error('封面保存前只能修改占位文字；格式或段落修改请先保存')
+      const target = after.slice(end + 1).find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
+      if (!target) throw new Error('封面后没有可编辑的锚点段落')
+      ops.push({ kind: 'insertCoverPage', ...baseOp(byIndex.get(Number(idOf(target)))!), position: 'before', paras })
+      index = end
       continue
     }
     if (node.type === 'docTable') {
@@ -509,6 +526,14 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (operation.pageBreakBefore !== undefined && operation.pageBreakBefore !== true) throw new Error('草稿新增段落分页字段无效')
       result.content!.splice(index + offset, 0, { type: 'docParagraph', attrs: { ...node.attrs, docxIndex: null, pageBreakBefore: operation.pageBreakBefore === true }, ...(operation.text ? { content: [{ type: 'text', text: String(operation.text) }] } : {}) })
       if (operation.position === 'after') afterCounts.set(anchor.blockId, offset)
+    }
+    else if (operation.kind === 'insertCoverPage') {
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'position', 'paras'].includes(key)) || operation.position !== 'before'
+        || !anchor.editable || operation.expectedObjectSha256 !== anchor.expectedObjectSha256 || !schema) throw new Error('草稿封面字段或来源身份无效')
+      let cover: DocxPmNode[]
+      try { cover = projectCoverNodes(operation.paras as never, schema) } catch { throw new Error('草稿封面字段或来源身份无效') }
+      if (result.content!.indexOf(node) < 0) throw new Error('草稿插入锚点已删除')
+      result.content!.splice(0, 0, ...cover)
     }
     else if (operation.kind === 'insertTable') {
       if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'position', 'rows', 'cols', 'cells'].includes(key))

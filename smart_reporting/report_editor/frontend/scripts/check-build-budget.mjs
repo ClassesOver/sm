@@ -29,7 +29,10 @@ const workbookLimits = {
 // 原生编辑按固定引擎边界懒加载；正文入口与普通模块仍保持原预算。
 const nativeLimits = {
   'native-docx-engine': 420 * KIB,
-  'native-docx-render': 700 * KIB,
+  // 710 KiB (2026-11-08): the vendored GenOffice cover-page gallery
+  // (editor/cover-pages.ts presets) joined the Word render chunk with Insert ▸
+  // Cover Page; it is needed synchronously by the native save guard.
+  'native-docx-render': 710 * KIB,
   'native-pdfjs': 500 * KIB,
   'native-tiptap': 370 * KIB,
   'parse-worker': 700 * KIB,

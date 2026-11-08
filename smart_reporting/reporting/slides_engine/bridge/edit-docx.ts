@@ -172,6 +172,42 @@ function newWordTableXml(rows: number, cols: number, cells?: string[][]): string
   } as TableModel)
 }
 
+const COVER_PARA_KEYS = ['text', 'bold', 'italic', 'color', 'sizeHalfPoints', 'align', 'spaceBefore', 'spaceAfter', 'shadingFill', 'borders', 'indentLeft', 'indentRight']
+/** 封面段落规格（与前端 docx-cover-page.ts coverParaSpecs 同一受限 schema）→ 引擎生成块。 */
+function coverPageBlocks(value: unknown): GeneratedBlock[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 20) fail('cover_page_invalid')
+  const hex = (v: unknown) => typeof v === 'string' && /^[0-9A-Fa-f]{6}$/.test(v)
+  const int = (v: unknown, min: number, max: number) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max
+  const blocks: GeneratedBlock[] = (value as unknown[]).map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(key => !COVER_PARA_KEYS.includes(key))) fail('cover_page_invalid')
+    const p = item as ObjectValue
+    const valid = (p.bold === undefined || typeof p.bold === 'boolean') && (p.italic === undefined || typeof p.italic === 'boolean')
+      && (p.color === undefined || hex(p.color)) && (p.shadingFill === undefined || hex(p.shadingFill))
+      && (p.sizeHalfPoints === undefined || int(p.sizeHalfPoints, 2, 400))
+      && (p.align === undefined || ['left', 'center', 'right'].includes(p.align as string))
+      && (p.spaceBefore === undefined || int(p.spaceBefore, 0, 14400)) && (p.spaceAfter === undefined || int(p.spaceAfter, 0, 14400))
+      && (p.indentLeft === undefined || int(p.indentLeft, -31680, 31680)) && (p.indentRight === undefined || int(p.indentRight, -31680, 31680))
+      && (p.borders === undefined || (typeof p.borders === 'string' && /^(?!.*(.).*\1)[tblr]{1,4}$/.test(p.borders)))
+    if (!valid) fail('cover_page_invalid')
+    const value = p.text === undefined ? '' : text(p.text)
+    if (value.length > 2000) fail('cover_page_invalid')
+    const format: ParaFormat = {
+      ...(p.align ? { align: p.align as ParaFormat['align'] } : {}),
+      ...(p.spaceBefore !== undefined ? { spaceBefore: p.spaceBefore as number } : {}),
+      ...(p.spaceAfter !== undefined ? { spaceAfter: p.spaceAfter as number } : {}),
+      ...(p.shadingFill ? { shadingFill: (p.shadingFill as string).toUpperCase() } : {}),
+      ...(p.borders ? { borders: p.borders as string } : {}),
+      ...(p.indentLeft !== undefined ? { indentLeft: p.indentLeft as number } : {}),
+      ...(p.indentRight !== undefined ? { indentRight: p.indentRight as number } : {}),
+    }
+    const run: Run = { text: value, ...(p.bold ? { bold: true } : {}), ...(p.italic ? { italic: true } : {}),
+      ...(p.color ? { color: (p.color as string).toUpperCase() } : {}), ...(p.sizeHalfPoints !== undefined ? { sizeHalfPoints: p.sizeHalfPoints as number } : {}) }
+    return { type: 'paragraph', runs: value ? [run] : [], ...(Object.keys(format).length ? { format } : {}), ...(index === 0 ? { hiddenBookmarks: ['_GenOfficeCoverPage'] } : {}) }
+  })
+  blocks.push({ type: 'paragraph', runs: [], format: { pageBreakBefore: true }, hiddenBookmarks: ['_GenOfficeCoverPageEnd'] })
+  return blocks
+}
+
 /** Direct paragraph page-break-before patch（固定源 page-break.ts：分页符 = 段落
  *  pageBreakBefore）。开启写入 `<w:pageBreakBefore/>`（按 pPr schema 顺序），关闭移除
  *  直接设置；来源中带非 on/off 属性或非自闭合的元素拒绝而不是静默改写。 */
@@ -688,6 +724,13 @@ if (request.kind === 'inspect') {
       if (!block.originalXml || !/^<w:p[\s>/]/.test(block.originalXml)) fail('paragraph_page_break_unsupported')
       return { op, block, pageBreakBefore: op.value as boolean }
     }
+    if (op.kind === 'insertCoverPage') {
+      // 固定源 editor/cover-pages.ts：封面段落只用段落/文字基本格式；首段带 _GenOfficeCoverPage、
+      // 结尾分页空段带 _GenOfficeCoverPageEnd 隐藏书签（"删除当前封面"重开后可定位）。
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'paras'])
+      if (op.position !== 'before') fail('operation_invalid')
+      return { op, block, coverBlocks: coverPageBlocks(op.paras) }
+    }
     if (op.kind === 'insertTable') {
       // 固定源 insertTableAt + editor/new-table.ts wordTableModel：整宽、等分列、autofit window、
       // 单线 0.5pt 边框、单元格垂直居中且段落单倍行距无段后间距；与前端 docx-new-table.ts 同预算。
@@ -816,7 +859,10 @@ if (request.kind === 'inspect') {
   for (const item of operations) if (item.borders !== undefined && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_borders_batch_conflict')
   // 段前分页补丁与底纹/边框同规：同段同批次只允许一次分页操作。锚定在该段前/后的
   // 新段插入（空白页 = 新空段 + 后续段分页）只放入 before/after，不改写该段 XML，可共存。
-  const anchoredInsert = (kind: unknown) => kind === 'insertParagraph' || kind === 'insertParagraphImage' || kind === 'insertTable'
+  const anchoredInsert = (kind: unknown) => kind === 'insertParagraph' || kind === 'insertParagraphImage' || kind === 'insertTable' || kind === 'insertCoverPage'
+  // 封面恒在文档开头（固定源语义）：锚点必须是正文首个保留块，每批至多一个封面。
+  const covers = operations.filter(item => item.op.kind === 'insertCoverPage')
+  if (covers.length > 1) fail('cover_page_batch_conflict')
   for (const item of operations) if (item.pageBreakBefore !== undefined && operations.some(other => other.block === item.block && other.op !== item.op && !anchoredInsert(other.op.kind))) fail('paragraph_page_break_batch_conflict')
   const structuralTables = new Set<string>()
   for (const item of operations) if (item.tableStructure) {
@@ -871,6 +917,8 @@ if (request.kind === 'inspect') {
       state.tableStructure = item.tableStructure
     } else if (item.op.kind === 'insertParagraph') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'generated', block: {type: 'paragraph', runs: [{text:item.value!}], ...(item.op.pageBreakBefore === true ? { format: { pageBreakBefore: true } } : {})} })
+    } else if (item.op.kind === 'insertCoverPage') {
+      state.before.push(...item.coverBlocks!.map(block => ({ kind: 'generated' as const, block })))
     } else if (item.op.kind === 'insertTable') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'xml', xml: item.newTableXml! })
     } else if (item.op.kind === 'insertParagraphImage') {
@@ -952,6 +1000,10 @@ if (request.kind === 'inspect') {
       }
       state.saved = {kind:'generated', docxIndex:item.block.docxIndex!, block}
     }
+  }
+  for (const cover of covers) {
+    const at = cover.block ? blocks.indexOf(cover.block) : -1
+    if (at < 0 || blocks.slice(0, at).some(block => !states.get(blockId(block))!.deleted)) fail('cover_page_not_at_start')
   }
   for (const state of states.values()) if (state.styleId) {
     const original = state.block.originalXml ?? fail('paragraph_style_xml_invalid')

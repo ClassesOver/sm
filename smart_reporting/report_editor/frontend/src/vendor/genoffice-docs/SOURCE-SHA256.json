@@ -923,5 +923,9 @@
   "apps/docs/src/renderer/editor/new-table.ts": {
     "upstream": "apps/docs/src/renderer/editor/new-table.ts",
     "sha256": "b4454475492477aa835b1ac98e031236b17aa4989103cfe2bca9294a3619cb43"
+  },
+  "apps/docs/src/renderer/editor/cover-pages.ts": {
+    "upstream": "apps/docs/src/renderer/editor/cover-pages.ts",
+    "sha256": "d3b4fd06b80a5f6f34cc7238be6d9b6784b1ce0e74259c13628796baaf5a101b"
   }
 }

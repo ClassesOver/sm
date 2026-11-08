@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import { TextSelection } from '@tiptap/pm/state'
 import type { DocxAnchor } from './docx-operations'
+import { COVER_PRESETS, docxCoverUnavailable, docxHasCoverPage, insertDocxCoverPage, removeDocxCoverPage } from './docx-cover-page'
 import { NEW_TABLE_LIMITS, docxTableInsertUnavailable, insertDocxTable, newTableSize } from './docx-new-table'
 import { applyDocxLink, docxLinkSelection, linkSelectionUnavailable, type DocxLinkSelection } from './docx-links'
 import { IconDoc, IconCaret, IconPageBreak, IconTable, IconPicture, IconChart, IconShapes, IconTextBox, IconWordArt, IconLink, IconBook, IconRefresh, IconComment, IconHeader, IconFooter, IconPageNumber, IconSymbol, IconEquation } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
@@ -152,6 +153,11 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
   const link = editable ? docxLinkSelection(editor, anchors) : undefined
   const pageBreakReason = docxPageBreakUnavailable(editor, editable)
   const tableReason = docxTableInsertUnavailable(editor, editable)
+  const coverReason = docxCoverUnavailable(editor, editable)
+  const [coverError, setCoverError] = useState('')
+  const runCover = (action: () => boolean) => {
+    try { action(); setDropdown(null); setCoverError('') } catch (error) { setCoverError(error instanceof Error ? error.message : String(error)) }
+  }
   const [grid, setGrid] = useState({ r: 0, c: 0 })
   const [tableForm, setTableForm] = useState<{ rows: number; cols: number } | null>(null)
   const [tableError, setTableError] = useState('')
@@ -176,13 +182,21 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
       <div className="ribbon-group">
         <div className="ribbon-group-items">
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-cover-page" aria-label={t("ribbonCoverPageTip")}>
+            <button className="rb-big" disabled={!!coverReason} title={coverReason ?? t('ribbonCoverPageTip')} aria-description={coverReason} aria-haspopup="true" aria-expanded={dropdown === 'cover'} onMouseDown={event => event.preventDefault()} onClick={() => { setCoverError(''); setDropdown(current => current === 'cover' ? null : 'cover') }} data-action="insert-cover-page" aria-label={t("ribbonCoverPageTip")}>
               <span className="rb-big-icon">
                 <IconDoc size={BIG}/>
                 <IconCaret />
               </span>
               <span>{t('ribbonCoverPage')}</span>
             </button>
+            {dropdown === 'cover' && !coverReason && (<div data-rb-panel="" className="cover-gallery">
+                {/* 固定源 ribbon-insert-tab.tsx:729-755：预设封面卡片 + 删除当前封面 */}
+                {COVER_PRESETS.map(preset => (<button key={preset.id} type="button" className="cover-card" data-cover-preset={preset.id} onMouseDown={event => event.preventDefault()} onClick={() => runCover(() => insertDocxCoverPage(editor, preset.id))}>
+                    <span className="cover-card-name">{preset.name}</span>
+                  </button>))}
+                <button type="button" className="cover-gallery-remove" data-action="remove-cover-page" disabled={!docxHasCoverPage(editor)} onMouseDown={event => event.preventDefault()} onClick={() => runCover(() => removeDocxCoverPage(editor))}>删除当前封面</button>
+                {coverError && <p role="alert" className="table-picker-error">{coverError}</p>}
+              </div>)}
           </div>
           <button className="rb-big" disabled={!!blankPageReason} title={blankPageReason ?? t('ribbonBlankPageTip')} aria-description={blankPageReason} onMouseDown={event => event.preventDefault()} onClick={() => { if (!docxBlankPageUnavailable(editor, editable)) insertDocxBlankPage(editor) }} data-action="insert-blank-page" aria-label={t("ribbonBlankPageTip")}>
             <span className="rb-big-icon">
