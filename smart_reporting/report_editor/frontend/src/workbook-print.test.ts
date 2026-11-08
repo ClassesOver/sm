@@ -45,11 +45,15 @@ describe('print page setup resolution', () => {
     const source = printSourceFromSnapshotSheet({
       name: 'Sheet',
       cellData: { 0: { 0: { v: 'a' } }, 1: { 0: { v: 'b' } } },
-      columnData: { 1: { hidden: true } },
-      rowData: { 2: { height: 40, hidden: true } },
+      // Univer 0.25.1 快照键：w/h 像素，hd=1 隐藏。
+      columnData: { 1: { hd: 1 }, 3: { w: 90 } },
+      rowData: { 2: { h: 40, hd: 1 }, 4: { h: 30, hd: 0 } },
     })
     expect(source.hiddenColumns.has(1)).toBe(true)
     expect(source.hiddenRows.has(2)).toBe(true)
+    expect(source.hiddenRows.has(4)).toBe(false)
+    expect(source.columnWidths[3]).toBe(90)
+    expect(source.rowHeights[2]).toBe(40)
     expect(printSourceFromSnapshotSheet(undefined).cells).toEqual({})
   })
 })

@@ -11,7 +11,7 @@ import type { UniverStyleData } from '../core/style-map'
 import { fromUniverStyle, univerBorderStyleId } from '../core/style-map'
 import type { ReadbackWorkbook, ReadbackCell } from '../core/session-core'
 import type { UniverWorkbookData } from '../core/univer-data'
-import { engineCfToUniverRule } from '../core/univer-data'
+import { engineCfToUniverRule, type UniverColumnData, type UniverRowData } from '../core/univer-data'
 import { setSparklines } from './sparkline-render'
 import { setCharts } from './chart-render'
 import type { UniverRuntime } from './create-univer'
@@ -187,8 +187,8 @@ export function readBackSnapshot(data: unknown): ReadbackWorkbook {
       name?: string
       cellData?: Record<number, Record<number, { v?: unknown; f?: string; s?: string } | undefined>>
       mergeData?: Array<{ startRow: number; startColumn: number; endRow: number; endColumn: number }>
-      columnData?: Record<string, { width?: number | undefined; hidden?: boolean | undefined }>
-      rowData?: Record<string, { height?: number | undefined; hidden?: boolean | undefined }>
+      columnData?: Record<string, UniverColumnData | undefined>
+      rowData?: Record<string, UniverRowData | undefined>
     }>
     sheetOrder?: string[]
     styles?: Record<string, UniverStyleData>
@@ -232,11 +232,11 @@ export function readBackSnapshot(data: unknown): ReadbackWorkbook {
       }))
     const columnWidths: Record<number, number | undefined> = {}
     for (const [columnKey, column] of Object.entries(sheet.columnData ?? {})) {
-      if (column?.width !== undefined) columnWidths[Number(columnKey)] = column.width
+      if (column?.w !== undefined) columnWidths[Number(columnKey)] = column.w
     }
     const rowHeights: Record<number, number | undefined> = {}
     for (const [rowKey, row] of Object.entries(sheet.rowData ?? {})) {
-      if (row?.height !== undefined) rowHeights[Number(rowKey)] = row.height
+      if (row?.h !== undefined) rowHeights[Number(rowKey)] = row.h
     }
     return [{
       name: sheet.name,

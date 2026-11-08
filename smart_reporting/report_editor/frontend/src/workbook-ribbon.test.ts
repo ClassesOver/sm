@@ -310,7 +310,6 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   expect(getLabel('clear-contents')).toBe('清除内容')
   for (const [id, reason] of [
     ['format-cells', '完整单元格格式对话框'],
-    ['row-height-open', '行高对话框'], ['col-width-open', '列宽对话框'],
     ['autofit-row-height', '持久化自动行高'], ['autofit-col-width', '持久化自动列宽'],
     ['insert-cells', '插入并移动单元格'], ['delete-cells', '删除并移动单元格'],
   ]) {

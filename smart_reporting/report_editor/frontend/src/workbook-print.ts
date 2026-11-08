@@ -22,6 +22,7 @@
 
 import { fromUniverStyle, type LogicalStyle, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { formatNumericValue } from '@sheets-web/xlsx-engine'
+import { isHiddenAxisEntry, type UniverColumnData, type UniverRowData } from './workbook-vendor/core/univer-data'
 
 export interface PrintArea {
   readonly startRow: number
@@ -203,8 +204,8 @@ export function printSourceFromSnapshotSheet(sheet: unknown, styles: Readonly<Re
     name?: string
     cellData?: Record<number, Record<number, { v?: unknown; f?: string; s?: string | UniverStyleData } | undefined>>
     mergeData?: Array<{ startRow?: number; startColumn?: number; endRow?: number; endColumn?: number }>
-    columnData?: Record<string, { width?: number | undefined; hidden?: boolean | undefined }>
-    rowData?: Record<string, { height?: number | undefined; hidden?: boolean | undefined }>
+    columnData?: Record<string, UniverColumnData | undefined>
+    rowData?: Record<string, UniverRowData | undefined>
   }
   const cells: Record<string, PrintCell> = {}
   for (const [rowKey, row] of Object.entries(data.cellData ?? {})) {
@@ -234,15 +235,15 @@ export function printSourceFromSnapshotSheet(sheet: unknown, styles: Readonly<Re
   const hiddenColumns = new Set<number>()
   for (const [columnKey, column] of Object.entries(data.columnData ?? {})) {
     const index = Number(columnKey)
-    if (column?.hidden) hiddenColumns.add(index)
-    if (column?.width !== undefined) columnWidths[index] = column.width
+    if (isHiddenAxisEntry(column)) hiddenColumns.add(index)
+    if (column?.w !== undefined) columnWidths[index] = column.w
   }
   const rowHeights: Record<number, number | undefined> = {}
   const hiddenRows = new Set<number>()
   for (const [rowKey, row] of Object.entries(data.rowData ?? {})) {
     const index = Number(rowKey)
-    if (row?.hidden) hiddenRows.add(index)
-    if (row?.height !== undefined) rowHeights[index] = row.height
+    if (isHiddenAxisEntry(row)) hiddenRows.add(index)
+    if (row?.h !== undefined) rowHeights[index] = row.h
   }
   return { name: data.name ?? '', cells, merges, columnWidths, rowHeights, hiddenColumns, hiddenRows }
 }

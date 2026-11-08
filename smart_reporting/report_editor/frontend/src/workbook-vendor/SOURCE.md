@@ -56,3 +56,15 @@ reorder. The readback only consumes `v/f/s`, so the marker cannot create save
 diffs. Verified by a real-preset-stack regression (`workbook-sort-realstack`
 test: sort now moves 1234.567/28.125 correctly and the reorder order is
 non-identity). LOCAL-ADAPTATIONS-SHA256 adds the univer-data entry.
+
+2026-11-08 geometry snapshot keys: `core/univer-data.ts` and `grid/sync.ts`
+now project and read row/column geometry with Univer 0.25.1's real
+IRowData/IColumnData keys — `h`/`w` in pixels and `hd` (BooleanNumber, 1 =
+hidden) — as GenOffice `f8c17004` `apps/sheets/src/renderer/univer-sync.ts`
+does. The migrated sheets-web snapshot used `height`/`width`/`hidden`, which
+Univer ignores: file widths, heights and hidden rows/columns were not shown and
+grid resizes/hides never reached the save-side geometry diff. Pixel
+conversions are unchanged (`columnWidthToPixels`, `rowHeightToPixels`), so an
+untouched load still diffs nothing. `isHiddenAxisEntry` is shared with the
+filter visibility snapshot and the print source. LOCAL-ADAPTATIONS-SHA256
+records both files; SOURCE-SHA256 is unchanged.

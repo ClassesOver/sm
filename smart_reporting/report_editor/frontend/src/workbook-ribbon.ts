@@ -66,6 +66,8 @@ type RibbonCommand =
   | 'paste'
   | 'format-painter'
   | 'format-painter:dblclick'
+  | 'row-height-open'
+  | 'col-width-open'
   | `paste-special:${PasteSpecialKind}`
   | 'indent-step:increase'
   | 'indent-step:decrease'
@@ -356,8 +358,8 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('插入列', 'insert-col-here', 'insert-col-here'),
       action('删除列', 'delete-col-here', 'delete-col-here'),
       action('插入单元格', 'insert-cells'), action('删除单元格', 'delete-cells'),
-      action('行高', 'row-height-open'), action('自动调整行高', 'autofit-row-height'),
-      action('列宽', 'col-width-open'), action('自动调整列宽', 'autofit-col-width'),
+      action('行高', 'row-height-open', 'row-height-open'), action('自动调整行高', 'autofit-row-height'),
+      action('列宽', 'col-width-open', 'col-width-open'), action('自动调整列宽', 'autofit-col-width'),
       action('全部清除', 'clear-all', 'clear-all'), action('清除格式', 'clear-formats', 'clear-formats'),
       action('清除内容', 'clear-contents', 'clear-contents'),
     ] },
@@ -492,8 +494,6 @@ const disabledReasons: Record<string, string> = {
   'insert-cells': '尚无插入并移动单元格操作',
   'delete-cells': '尚无删除并移动单元格操作',
   'format-cells': '尚无完整单元格格式对话框；可使用数字组的自定义数字格式',
-  'row-height-open': '尚无行高对话框',
-  'col-width-open': '尚无列宽对话框',
   'autofit-row-height': '尚不能持久化自动行高',
   'autofit-col-width': '尚不能持久化自动列宽',
   'insert-checkbox': '尚未接入复选框绘图及文件回写',

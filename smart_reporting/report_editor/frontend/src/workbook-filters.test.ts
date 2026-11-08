@@ -11,7 +11,7 @@ import { independentPython } from './test-independent-python'
 /** Mimics the documented facade: getFilter/getCriteria from the pinned FFilter. */
 function facade(
   live: { range: [number, number, number, number]; columns: Record<number, { values?: string[]; blank?: boolean; customs?: { and?: boolean | number; customFilters: { val: string; operator?: string }[] } }> } | null,
-  options: { filteredOut?: number[]; snapshot?: { sheets: Record<string, { rowData?: Record<number, { hidden?: boolean }> }> } } = {},
+  options: { filteredOut?: number[]; snapshot?: { sheets: Record<string, { rowData?: Record<number, { hd?: number }> }> } } = {},
 ): FilterWorkbook {
   const sheet: FilterSheet = {
     getSheetId: () => 'sheet-0', getSheetName: () => 'Sheet1',
@@ -97,7 +97,7 @@ it('v2: declares grid row visibility (filter cache + manual hides) with the filt
   // 手动隐藏行 1（快照 rowData）＋网格筛选隐藏行 2 → 声明并集，保留手动隐藏。
   expect(workbookFilterOperations(cachedModel, facade(
     { range: [0, 0, 3, 1], columns: { 0: { values: ['甲'] } } },
-    { filteredOut: [2], snapshot: { sheets: { 'sheet-0': { rowData: { 1: { hidden: true } } } } } },
+    { filteredOut: [2], snapshot: { sheets: { 'sheet-0': { rowData: { 1: { hd: 1 } } } } } },
   ))).toEqual([
     { kind: 'applySheetFilter', sheetName: 'Sheet1', filter: { range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 }, columns: [{ colId: 0, values: ['甲'] }] }, hiddenRows: [1, 2] },
   ])
@@ -125,7 +125,7 @@ it('v2: removing the filter re-shows its cached hidden rows and keeps manual hid
     { kind: 'applySheetFilter', sheetName: 'Sheet1', filter: null, hiddenRows: [], visibilityRange: { startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 } },
   ])
   // 可见性未变化（源缓存隐藏行 1 仍在快照中）→ 维持 v1 的纯 filter: null。
-  expect(workbookFilterOperations(model, facade(null, { snapshot: { sheets: { 'sheet-0': { rowData: { 1: { hidden: true } } } } } }))).toEqual([
+  expect(workbookFilterOperations(model, facade(null, { snapshot: { sheets: { 'sheet-0': { rowData: { 1: { hd: 1 } } } } } }))).toEqual([
     { kind: 'applySheetFilter', sheetName: 'Sheet1', filter: null },
   ])
   // 无快照读取能力 → 退回 v1（不写可见性）。

@@ -36,11 +36,8 @@ export interface UniverSheetData {
   columnCount: number
   cellData: Record<number, Record<number, UniverCellData>>
   mergeData?: Array<{ startRow: number; startColumn: number; endRow: number; endColumn: number }>
-  columnData?: Record<
-    number,
-    { width?: number | undefined; hidden?: boolean | undefined }
-  >
-  rowData?: Record<number, { height?: number | undefined; hidden?: boolean | undefined }>
+  columnData?: Record<number, UniverColumnData>
+  rowData?: Record<number, UniverRowData>
   /// engine CF rules the loader feeds to Univer's conditional formatting
   cfRules?: ReadonlyArray<CfReadableRule>
   /// sparkline specs the render extension draws (x14, read back for display)
@@ -48,6 +45,15 @@ export interface UniverSheetData {
   /// anchored chart specs the render extension draws (column/bar/line/pie v1)
   charts?: ReadonlyArray<ChartReadSpec>
 }
+
+/// Univer 0.25.1 IColumnData / IRowData keys: width `w` and height `h` in
+/// pixels, hidden `hd` as BooleanNumber (1 = hidden). The sheets-web snapshot
+/// this file was migrated from wrote `width`/`height`/`hidden`, which Univer
+/// ignores — file geometry was not shown and grid resizes/hides never reached
+/// the save diff. GenOffice f8c17004 univer-sync.ts uses these real keys.
+export interface UniverColumnData { w?: number | undefined; hd?: number | undefined }
+export interface UniverRowData { h?: number | undefined; ia?: number | undefined; ah?: number | undefined; hd?: number | undefined }
+export const isHiddenAxisEntry = (entry: { hd?: number | undefined } | null | undefined): boolean => entry?.hd === 1
 
 export interface UniverWorkbookData {
   id: string
@@ -129,8 +135,8 @@ export function buildWorkbookData(
       if (column.width === undefined && !column.hidden) continue
       for (let index = column.start - 1; index < column.end && index < 200; index += 1) {
         columnData[index] = {
-          ...(column.width !== undefined ? { width: columnWidthToPixels(column.width) } : {}),
-          ...(column.hidden ? { hidden: true } : {}),
+          ...(column.width !== undefined ? { w: columnWidthToPixels(column.width) } : {}),
+          ...(column.hidden ? { hd: 1 } : {}),
         }
       }
     }
@@ -138,8 +144,8 @@ export function buildWorkbookData(
     for (const row of sheet.rows) {
       if (row.height === undefined && !row.hidden) continue
       rowData[row.row - 1] = {
-        ...(row.height !== undefined ? { height: rowHeightToPixels(row.height) } : {}),
-        ...(row.hidden ? { hidden: true } : {}),
+        ...(row.height !== undefined ? { h: rowHeightToPixels(row.height) } : {}),
+        ...(row.hidden ? { hd: 1 } : {}),
       }
     }
     if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {

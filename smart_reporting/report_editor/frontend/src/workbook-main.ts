@@ -32,6 +32,7 @@ import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot
 import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS } from './workbook-clipboard'
+import { applyAxisSize, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
 import { applyFormatPainterClick, formatPainterActive, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
   applyWorkbookRibbonCommand, selectedWorkbookRotation,
@@ -138,6 +139,14 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const editable = () => !loading && !saving && !saved && !disposed && !shell.editor.inert && !shell.editor.closest('[inert]')
   const formatWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as FormatWorkbook | null
   const formatState = () => selectedWorkbookFormat(formatWorkbook(), currentModel)
+  // 行高/列宽对话框：打开时冻结选区（同数字格式对话框），应用经 worksheet facade 写入网格，
+  // 保存时由既有 geometryChanges 差分写回 applyRowHeights/applyColumnWidths。
+  const axisDialog = createAxisSizeDialog(shell.editor, (target, value) => {
+    applyAxisSize(target, runtime.univerAPI.getActiveWorkbook() as never, value, editable())
+    markDirty()
+    ribbon.refreshState?.()
+    feedback.textContent = `${target.axis === 'row' ? '行高' : '列宽'}已更新，修改尚未保存。`
+  })
   const numberFormatDialog = createNumberFormatDialog(shell.editor, {
     initial: () => formatState().numberFormat,
     apply: (target, pattern) => {
@@ -583,6 +592,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           }
           return
         }
+        if (command === 'row-height-open' || command === 'col-width-open') {
+          const target = captureAxisTarget(runtime.univerAPI.getActiveWorkbook() as never, command === 'row-height-open' ? 'row' : 'col')
+          if (!target) throw new Error('请先选择单元格或区域')
+          axisDialog.open(target)
+          return
+        }
         if (command === 'format:custom-open') {
           const target = capturedTarget ?? captureNumberFormatTarget(formatWorkbook())
           if (!target) throw new Error('请先选择单元格或区域')
@@ -1007,5 +1022,5 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

@@ -1,5 +1,6 @@
 import type { WorkbookModel } from '@sheets-web/xlsx-engine'
 import type { WorkbookOperation } from './workbook-draft'
+import { isHiddenAxisEntry } from './workbook-vendor/core/univer-data'
 
 // 官方 pinned sheets-filter 的 FWorksheet.getFilter()/FFilter 投影。
 // 条件形状与桥 sheetFilterCriteriaSchema 对齐：colId 为范围首列起的偏移。
@@ -32,7 +33,7 @@ export interface FilterSheet {
 }
 export interface FilterWorkbook {
   getId(): string; getWorkbook(): unknown; getSheets(): FilterSheet[]; getSheetBySheetId?(id: string): FilterSheet | null
-  /// 快照 rowData.hidden：文件加载与手动隐藏的行（0 基键）。缺席＝调用方无法
+  /// 快照 rowData.hd（Univer BooleanNumber）：文件加载与手动隐藏的行（0 基键）。缺席＝调用方无法
   /// 读取网格行可见性，v2 可见性声明退回 v1（只写筛选条件）。
   getSnapshot?(): unknown
 }
@@ -61,12 +62,12 @@ const criteriaOf = (data: FilterCriteriaData, offset: number): FilterCriteria | 
 const snapshotHiddenRows = (workbook: FilterWorkbook, sheetId: string): Set<number> | undefined => {
   if (!workbook.getSnapshot) return undefined
   const snapshot = workbook.getSnapshot() as {
-    sheets?: Record<string, { rowData?: Record<string, { hidden?: boolean | undefined }> | undefined }>
+    sheets?: Record<string, { rowData?: Record<string, { hd?: number | undefined }> | undefined }>
   } | undefined
   const rowData = snapshot?.sheets?.[sheetId]?.rowData
   if (!rowData) return new Set()
   const hidden = new Set<number>()
-  for (const [key, row] of Object.entries(rowData)) if (row?.hidden === true) hidden.add(Number(key))
+  for (const [key, row] of Object.entries(rowData)) if (isHiddenAxisEntry(row)) hidden.add(Number(key))
   return hidden
 }
 
