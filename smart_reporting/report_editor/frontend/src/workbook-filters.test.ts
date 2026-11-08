@@ -173,8 +173,8 @@ it('dateGroups round-trips the bridge but front-end diffs refuse to overwrite it
   // 保留该条件——含日期分组的源筛选如实拒绝回写，而不是落盘时静默丢弃。
   expect(() => workbookFilterOperations(model, facade({ range: [0, 0, 3, 1], columns: {} })))
     .toThrow(/仅服务端路径可写 dateGroups/)
-  expect(() => workbookFilterOperations(model, facade(null)))
-    .toThrow(/仅服务端路径可写 dateGroups/)
+  // 该筛选不灌入网格：网格无筛选＝用户未触碰，保留文件筛选且不阻断无关修改的保存。
+  expect(workbookFilterOperations(model, facade(null))).toEqual([])
   // 桥层同样拒绝非法组合：日期分组与自定义条件同列、粒度链不完整。
   const range = { startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 }
   await expect(applyWorkbookOperations(bytes, [{

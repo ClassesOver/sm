@@ -31,14 +31,27 @@ export function docxHfTextOf(value: HeaderFooter): string {
     .join('\n')
 }
 
-/** 部件编辑 → 严格操作；无实际变化（文本与标记均未变且无设置位）返回 null，不写草稿。 */
-export function docxHeaderFooterOperation(anchor: DocxHfSectionAnchor, partAnchor: DocxHfPartAnchor, part: DocxHfPart, variant: DocxHfVariant, value: HeaderFooter, flags?: DocxHfFlags): NativeOperation | null {
+type HfAlign = 'left' | 'center' | 'right'
+
+/** 文本段的统一对齐：全部文本段同一 left/center/right 时返回之，混合或未设置为 undefined。
+ *  保存端 operation.align 会作用于部件的全部文本段，因此只承载统一对齐，避免压平混合对齐。 */
+export function docxHfUniformAlign(paras: HeaderFooter['paras'] | undefined): HfAlign | undefined {
+  const aligns = (paras ?? []).filter(para => !para.cells && !para.row && !para.box && !para.boxAnchored).map(para => para.align)
+  const first = aligns[0]
+  return aligns.length && HF_ALIGNMENTS.includes(first as string) && aligns.every(align => align === first) ? first as HfAlign : undefined
+}
+
+/** 部件编辑 → 严格操作；无实际变化（文本、标记、统一对齐均未变且无设置位）返回 null，不写草稿。
+ *  sourceParas 为来源部件段落：统一对齐与来源不同（如页码位置选左/右）时随操作写回 align。 */
+export function docxHeaderFooterOperation(anchor: DocxHfSectionAnchor, partAnchor: DocxHfPartAnchor, part: DocxHfPart, variant: DocxHfVariant, value: HeaderFooter, flags?: DocxHfFlags, sourceParas?: HeaderFooter['paras']): NativeOperation | null {
   const text = value.paras ? docxHfTextOf(value) : value.text
   const flagEntries = Object.entries(flags ?? {}).filter(([, flag]) => flag !== undefined)
-  if (text === partAnchor.text && !value.pageNumber === !partAnchor.hasPageNumber && !flagEntries.length) return null
+  const valueAlign = docxHfUniformAlign(value.paras)
+  const align = valueAlign !== undefined && valueAlign !== docxHfUniformAlign(sourceParas) ? valueAlign : undefined
+  if (text === partAnchor.text && !value.pageNumber === !partAnchor.hasPageNumber && !align && !flagEntries.length) return null
   return { kind: 'setHeaderFooter', sectionId: anchor.sectionId, expectedSectionSha256: anchor.expectedSectionSha256,
     part, variant, expectedPartSha256: partAnchor.expectedPartSha256, text, pageNumber: value.pageNumber ?? false,
-    ...Object.fromEntries(flagEntries) }
+    ...(align ? { align } : {}), ...Object.fromEntries(flagEntries) }
 }
 
 /** 新部件编辑并入草稿：替换同 (part, variant) 的旧操作，其余操作保持原顺序。 */

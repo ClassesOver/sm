@@ -132,36 +132,37 @@ export function workbookNoteOperations(model: WorkbookModel, workbook: NoteWorkb
     for (const note of current) if (original.get(noteKey(note.row, note.col))?.text === note.note) unchangedSource.add(noteKey(note.row, note.col))
     const sourcePool = source.notes.filter(n => !unchangedSource.has(noteKey(n.row, n.column))).sort((a, b) => a.row - b.row || a.column - b.column)
     const livePool = current.filter(n => !unchangedSource.has(noteKey(n.row, n.col))).sort((a, b) => a.row - b.row || a.col - b.col)
-    const changes: ({ row: number; column: number; text: string | null } | { fromRow: number; fromColumn: number; toRow: number; toColumn: number })[] = []
     const moveOfLive = new Map<number, number>()
     const takenSource = new Set<number>()
     for (const [liveIndex, note] of livePool.entries()) {
       const match = sourcePool.findIndex((candidate, index) => !takenSource.has(index) && candidate.text === note.note)
       if (match >= 0) { moveOfLive.set(liveIndex, match); takenSource.add(match) }
     }
-    const consumedKeys = new Set<string>()
-    for (const [liveIndex, sourceIndex] of moveOfLive) {
-      const from = sourcePool[sourceIndex]!, to = livePool[liveIndex]!
-      changes.push({ fromRow: from.row, fromColumn: from.column, toRow: to.row, toColumn: to.col })
-      consumedKeys.add(noteKey(from.row, from.column))
-      consumedKeys.add(noteKey(to.row, to.col))
-    }
-    for (const [liveIndex, note] of livePool.entries()) {
-      if (moveOfLive.has(liveIndex)) continue
-      if (original.has(noteKey(note.row, note.col))) continue // in-place text edit below
-      changes.push({ row: note.row, column: note.col, text: note.note })
-    }
-    for (const note of current) {
-      validateNoteText(note.note)
-      const key = noteKey(note.row, note.col)
-      if (consumedKeys.has(key)) continue
-      const sourceNote = original.get(key)
-      if (sourceNote && sourceNote.text !== note.note) changes.push({ row: note.row, column: note.col, text: note.note })
-    }
-    for (const [sourceIndex, note] of sourcePool.entries()) {
-      if (takenSource.has(sourceIndex)) continue
-      if (latest.has(noteKey(note.row, note.column))) continue // in-place text edit above
-      changes.push({ row: note.row, column: note.column, text: null })
+    for (const note of current) validateNoteText(note.note)
+    // Text pairing only proposes moves; the patch must reproduce the WHOLE
+    // final note collection. Simulate the engine's order-independent apply
+    // (frees, then move targets) and diff that against the live grid: every
+    // remaining mismatch becomes a plain edit/add/delete. The engine forbids
+    // a plain change on any move endpoint, so a move whose endpoint still
+    // needs a plain change (e.g. sort-swap A1/A2 then edit A1) is demoted to
+    // in-place edits and the diff recomputed — losing at most the moved
+    // author, never the visible text.
+    let moves = [...moveOfLive].map(([liveIndex, sourceIndex]) => ({ from: sourcePool[sourceIndex]!, to: livePool[liveIndex]! }))
+    let changes: ({ row: number; column: number; text: string | null } | { fromRow: number; fromColumn: number; toRow: number; toColumn: number })[]
+    for (;;) {
+      const state = new Map(source.notes.map(n => [noteKey(n.row, n.column), { row: n.row, column: n.column, text: n.text }]))
+      for (const { from } of moves) state.delete(noteKey(from.row, from.column))
+      for (const { from, to } of moves) state.set(noteKey(to.row, to.col), { row: to.row, column: to.col, text: from.text })
+      const plain: { row: number; column: number; text: string | null }[] = []
+      for (const note of current) if (state.get(noteKey(note.row, note.col))?.text !== note.note) plain.push({ row: note.row, column: note.col, text: note.note })
+      for (const [key, note] of state) if (!latest.has(key)) plain.push({ row: note.row, column: note.column, text: null })
+      const plainKeys = new Set(plain.map(change => noteKey(change.row, change.column)))
+      const kept = moves.filter(({ from, to }) => !plainKeys.has(noteKey(from.row, from.column)) && !plainKeys.has(noteKey(to.row, to.col)))
+      if (kept.length === moves.length) {
+        changes = [...moves.map(({ from, to }) => ({ fromRow: from.row, fromColumn: from.column, toRow: to.row, toColumn: to.col })), ...plain]
+        break
+      }
+      moves = kept
     }
     if (changes.length) operations.push({ kind: 'patchSheetNotes', sheetName: sheet.getSheetName(), sourceIdentity: source.sourceIdentity, changes })
   }

@@ -176,3 +176,30 @@ it('official Univer 0.25.1 resource loading and note commands perform actual Und
     expect(actual.sheets[0]!.notes!.notes[1]!.author).toBe('Bob')
   } finally { univer.dispose() }
 })
+
+it('sort-swapped notes followed by an edit on a move endpoint replay to exactly the visible notes', async () => {
+  // Codex 场景：A1=x、A2=y 排序互换后再把 A1 改为 z。旧差分只发出 A1→A2 移动，
+  // 丢掉 z 编辑；保存成功但回放结果与网格不一致。
+  const bytes = await applySheetNotes(await createBlankWorkbook(), 'Sheet1', [
+    { row: 0, column: 0, author: 'Alice', text: 'x' },
+    { row: 1, column: 0, author: 'Bob', text: 'y' },
+    { row: 4, column: 2, author: 'Carol', text: 'p' },
+    { row: 5, column: 2, author: 'Dan', text: 'q' },
+  ])
+  const model = await readWorkbook(bytes), grid = facade(model)
+  const note = (row: number, col: number, text: string): GridNote => ({ id: `n-${row}-${col}`, row, col, note: text, width: 240, height: 140, show: false })
+  // 第二对 C5/C6 只互换不编辑：仍按移动保存，作者随批注迁移。
+  grid.setNotes([note(0, 0, 'z'), note(1, 0, 'x'), note(4, 2, 'q'), note(5, 2, 'p')])
+  const operations = workbookNoteOperations(model, grid.workbook)
+  const reopened = await readWorkbook(await applyWorkbookOperations(bytes, operations))
+  expect(reopened.sheets[0]!.notes!.notes.map(({ row, column, text }) => ({ row, column, text }))).toEqual([
+    { row: 0, column: 0, text: 'z' }, { row: 1, column: 0, text: 'x' }, { row: 4, column: 2, text: 'q' }, { row: 5, column: 2, text: 'p' },
+  ])
+  expect(reopened.sheets[0]!.notes!.notes.filter(n => n.column === 2).map(n => n.author)).toEqual(['Dan', 'Carol'])
+  // 纯互换（无编辑）依旧只产生移动，不退化为文本改写。
+  grid.setNotes([note(0, 0, 'y'), note(1, 0, 'x'), note(4, 2, 'p'), note(5, 2, 'q')])
+  const [swap] = workbookNoteOperations(model, grid.workbook) as [{ changes: object[] }]
+  expect(swap.changes).toHaveLength(2)
+  expect(swap.changes).toEqual(expect.arrayContaining([{ fromRow: 0, fromColumn: 0, toRow: 1, toColumn: 0 }, { fromRow: 1, fromColumn: 0, toRow: 0, toColumn: 0 }]))
+  expect(swap.changes.every(change => 'fromRow' in change)).toBe(true)
+})

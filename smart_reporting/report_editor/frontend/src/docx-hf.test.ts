@@ -30,6 +30,21 @@ describe('header/footer part operations', () => {
     expect(flagged).toMatchObject({ titlePg: false })
   })
 
+  it('persists a page-number position that differs from the source alignment', () => {
+    const centered = [{ align: 'center' as const, runs: [{ text: PAGE_MARK }] }]
+    const pageAnchor = { ...partAnchor, text: PAGE_MARK, hasPageNumber: true }
+    const left = docxHeaderFooterOperation(anchor, pageAnchor, 'footer', 'default',
+      { text: PAGE_MARK, pageNumber: true, paras: [{ align: 'left', runs: [{ text: PAGE_MARK }] }] }, undefined, centered)
+    // 仅对齐变化也必须产生操作并携带 align，否则保存端沿用来源居中。
+    expect(left).toMatchObject({ text: PAGE_MARK, pageNumber: true, align: 'left' })
+    expect(docxHeaderFooterOperation(anchor, pageAnchor, 'footer', 'default',
+      { text: PAGE_MARK, pageNumber: true, paras: [{ align: 'center', runs: [{ text: PAGE_MARK }] }] }, undefined, centered)).toBeNull()
+    // 混合对齐不压平：未统一的段落不写 align。
+    const mixed = docxHeaderFooterOperation(anchor, partAnchor, 'header', 'default',
+      { text: '甲\n乙', paras: [{ align: 'left', runs: [{ text: '甲' }] }, { align: 'right', runs: [{ text: '乙' }] }] }, undefined, centered)
+    expect(mixed).not.toHaveProperty('align')
+  })
+
   it('merges edits per part+variant and preserves other draft operations', () => {
     const first = { kind: 'setHeaderFooter', sectionId: 'section-1', expectedSectionSha256: 'sect-sha', part: 'header', variant: 'default', expectedPartSha256: 'part-sha', text: '一版', pageNumber: false }
     const body = { kind: 'replaceParagraph', blockId: 'a', expectedObjectSha256: 'hash-a', text: '正文' }

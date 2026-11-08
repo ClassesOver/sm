@@ -2,7 +2,8 @@ import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note'
 import NoteZhCN from '@univerjs/preset-sheets-note/locales/zh-CN'
 import '@univerjs/preset-sheets-note/lib/index.css'
 import { adjacentNote, validateNoteCommand, captureNoteTarget, validateNoteTarget, noteSource, noteStructureReason, withWorkbookNotes, workbookNoteOperations, validateNoteBudget, createNoteDialog, type NoteWorkbook } from './workbook-notes'
-import { workbookFilterOperations, type FilterWorkbook } from './workbook-filters'
+import { withWorkbookFilters, workbookFilterOperations, type FilterWorkbook } from './workbook-filters'
+import { withWorkbookView } from './workbook-view'
 import { LocaleType, mergeLocales } from '@univerjs/core'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace'
@@ -653,7 +654,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         return
       }
       const sheetName = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
-      const reason = currentModel?.sheets.find(item => item.name === sheetName)?.filter?.readOnlyReason
+      const filter = currentModel?.sheets.find(item => item.name === sheetName)?.filter
+      // dateGroups 同样无法由网格承载（未灌入网格），拒绝网格内新建/改写以免覆盖。
+      const reason = filter?.readOnlyReason ?? (filter?.columns.some(column => column.dateGroups !== undefined)
+        ? '筛选含日期分组条件，网格暂不能编辑回写（仅服务端路径可写 dateGroups）' : undefined)
       if (reason) { command.cancel = true; feedback.textContent = reason }
       return
     }
@@ -823,7 +827,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     loading = true
     const bytes = ops.length ? await applyWorkbookOperations(original, ops) : original
     currentModel = await readWorkbook(bytes)
-    loadWorkbookData(runtime, withWorkbookNotes(buildWorkbookData(currentModel, 'report-workbook', '报告工作簿'), currentModel))
+    // 批注、筛选、视图状态随快照资源/工作表配置一并灌入，保存差分才有真实基线。
+    loadWorkbookData(runtime, withWorkbookView(withWorkbookFilters(withWorkbookNotes(buildWorkbookData(currentModel, 'report-workbook', '报告工作簿'), currentModel), currentModel), currentModel))
     selectionListener?.dispose()
     selectionListener = runtime.univerAPI.getActiveWorkbook()?.onSelectionChange?.(() => ribbon.refreshState?.())
     staged = structuredClone(ops)

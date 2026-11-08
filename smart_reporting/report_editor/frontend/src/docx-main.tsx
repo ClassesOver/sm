@@ -186,7 +186,9 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       const partAnchor = hfModel.parts[`${part}.${variant}`]
       if (!partAnchor) return null
       const operation = headerFooterOperations().find(value => value.part === part && value.variant === variant)
-      if (operation) return { value: { text: operation.text as string, paras: (operation.text as string).split('\n').map(text => ({ runs: [{ text }] })), pageNumber: operation.pageNumber as boolean }, anchor: partAnchor }
+      // 草稿重放携带已写入操作的统一对齐，后续再提交（切换选项/变体）不会丢失页码位置。
+      const align = operation?.align as 'left' | 'center' | 'right' | undefined
+      if (operation) return { value: { text: operation.text as string, paras: (operation.text as string).split('\n').map(text => ({ ...(align ? { align } : {}), runs: [{ text }] })), pageNumber: operation.pageNumber as boolean }, anchor: partAnchor }
       const info = partAnchor.rId ? parsed.hfParts?.[partAnchor.rId] : null
       return { value: { text: partAnchor.text, ...(info?.paras ? { paras: info.paras } : {}), pageNumber: partAnchor.hasPageNumber }, anchor: partAnchor }
     },
@@ -201,7 +203,8 @@ export async function createDocxEditorView(shell: EditorShell, options: {
             if (previous[key] !== undefined) Object.assign(settings, { [key]: previous[key] })
           }
         }
-        const operation = docxHeaderFooterOperation(hfAnchor, partAnchor, part, variant, value, { ...settings, ...flags })
+        const sourceParas = partAnchor.rId ? parsed.hfParts?.[partAnchor.rId]?.paras : undefined
+        const operation = docxHeaderFooterOperation(hfAnchor, partAnchor, part, variant, value, { ...settings, ...flags }, sourceParas)
         draft.setOperations(operation ? mergeDocxHeaderFooterOperation(draft.operations, operation)
           : draft.operations.filter(operation => !(operation.kind === 'setHeaderFooter' && operation.part === part && operation.variant === variant)))
         options.onDraftChange?.()
