@@ -13,6 +13,7 @@ import { applyWorkbookRibbonCommand, type RibbonWorkbook } from './workbook-ribb
 import { diffToEdits } from './workbook-vendor/core/session-core'
 import { buildWorkbookData } from './workbook-vendor/core/univer-data'
 import { readBackSnapshot } from './workbook-vendor/grid/sync'
+import { independentPython } from './test-independent-python'
 
 afterEach(() => document.body.replaceChildren())
 
@@ -75,7 +76,7 @@ it('clear-formats resets mixed styles to the default xf through the official com
     const dir = await mkdtemp(join(tmpdir(), 'xlsx-clearfmt-'))
     const file = resolve(dir, 'clear-formats.xlsx')
     await writeFile(file, await applyWorkbookOperations(original, [{ kind: 'applyCellEdits', edits }]))
-    const checked = spawnSync('/home/junge/pros/smart_reporting/.venv/bin/python', ['-I', '-c',
+    const checked = spawnSync(independentPython(), ['-I', '-c',
       "import json,openpyxl,sys; w=openpyxl.load_workbook(sys.argv[1],data_only=False); s=w.active; print(json.dumps({'a':[s['A1'].value,s['A1'].font.bold,s['A1'].fill.fill_type,s['A1'].number_format,s['A1'].border.bottom.style],'b':[s['B1'].value,s['B1'].font.italic],'c':[s['C1'].font.underline],'d':s['D1'].value}))", file], { encoding: 'utf8' })
     expect(checked.status, checked.stderr).toBe(0)
     expect(JSON.parse(checked.stdout)).toEqual({
@@ -116,7 +117,7 @@ it('clear-all empties values and formulas with the style reset, keeping the cell
     const dir = await mkdtemp(join(tmpdir(), 'xlsx-clearall-'))
     const file = resolve(dir, 'clear-all.xlsx')
     await writeFile(file, await applyWorkbookOperations(original, [{ kind: 'applyCellEdits', edits }]))
-    const checked = spawnSync('/home/junge/pros/smart_reporting/.venv/bin/python', ['-I', '-c',
+    const checked = spawnSync(independentPython(), ['-I', '-c',
       "import json,openpyxl,sys; s=openpyxl.load_workbook(sys.argv[1],data_only=False).active; print(json.dumps({'a':[s['A1'].value,s['A1'].font.bold],'b':s['B1'].value,'c':s['C1'].value,'d':s['D1'].value}))", file], { encoding: 'utf8' })
     expect(checked.status, checked.stderr).toBe(0)
     expect(JSON.parse(checked.stdout)).toEqual({ a: [null, false], b: null, c: null, d: 'plain' })

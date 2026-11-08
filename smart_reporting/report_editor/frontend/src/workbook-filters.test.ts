@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process'
 import { applyCellEdits, createBlankWorkbook, readWorkbook } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { workbookFilterOperations, type FilterCriteriaData, type FilterSheet, type FilterWorkbook } from './workbook-filters'
+import { independentPython } from './test-independent-python'
 
 /** Mimics the documented facade: getFilter/getCriteria from the pinned FFilter. */
 function facade(
@@ -144,7 +145,7 @@ it('v2: persists filter-hidden rows and survives an openpyxl row-visibility read
   const dir = await mkdtemp(join(tmpdir(), 'xlsx-filterrows-'))
   const file = resolve(dir, 'filter-rows.xlsx')
   await writeFile(file, bytes)
-  const checked = spawnSync('/home/junge/pros/smart_reporting/.venv/bin/python', ['-I', '-c',
+  const checked = spawnSync(independentPython(), ['-I', '-c',
     "import json,openpyxl,sys; w=openpyxl.load_workbook(sys.argv[1]); s=w.active; print(json.dumps({'filter': str(s.auto_filter.ref), 'hidden': [r for r,d in s.row_dimensions.items() if d.hidden]}))", file], { encoding: 'utf8' })
   expect(checked.status, checked.stderr).toBe(0)
   expect(JSON.parse(checked.stdout)).toEqual({ filter: 'A1:A3', hidden: [2, 3] })

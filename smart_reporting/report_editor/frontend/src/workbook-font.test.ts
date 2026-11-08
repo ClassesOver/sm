@@ -17,6 +17,7 @@ import { diffToEdits } from './workbook-vendor/core/session-core'
 import { buildWorkbookData } from './workbook-vendor/core/univer-data'
 import { fromUniverStyle, styleDelta, toUniverStyle, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { readBackSnapshot } from './workbook-vendor/grid/sync'
+import { independentPython } from './test-independent-python'
 
 afterEach(() => document.body.replaceChildren())
 
@@ -137,7 +138,7 @@ it('double underline uses actual Univer Undo/Redo, preserves strike, and survive
     for (const col of [0, 1]) expect(projected.styles[String(cells[0]![col]!.s)]).toMatchObject({ st: { s: 1 }, ul: { s: 1, t: 10 } })
     const dir = await mkdtemp(join(tmpdir(), 'xlsx-double-')), file = join(dir, 'double.xlsx')
     await writeFile(file, bytes)
-    const result = spawnSync('/home/junge/pros/smart_reporting/.venv/bin/python', ['-I', '-c', "import json,openpyxl,sys; s=openpyxl.load_workbook(sys.argv[1],data_only=False).active; print(json.dumps([[s[c].value,s[c].font.underline,s[c].font.strike] for c in ['A1','B1']]))", file], { encoding: 'utf8' })
+    const result = spawnSync(independentPython(), ['-I', '-c', "import json,openpyxl,sys; s=openpyxl.load_workbook(sys.argv[1],data_only=False).active; print(json.dumps([[s[c].value,s[c].font.underline,s[c].font.strike] for c in ['A1','B1']]))", file], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
     expect(JSON.parse(result.stdout)).toEqual([[1234.567, 'double', true], ['=A1*2', 'double', true]])
     console.info(`Independent openpyxl verified double underline XLSX: ${file}`)
@@ -223,7 +224,7 @@ it('uses official Univer style commands with undo/redo and roundtrips only strik
     const dir = await mkdtemp(join(tmpdir(), 'xlsx-strike-'))
     const file = resolve(dir, 'strike.xlsx')
     await writeFile(file, await applyWorkbookOperations(original, [{ kind: 'applyCellEdits', edits }]))
-    const checked = spawnSync('/home/junge/pros/smart_reporting/.venv/bin/python', ['-I', '-c', "import json,openpyxl,sys; w=openpyxl.load_workbook(sys.argv[1],data_only=False); s=w.active; print(json.dumps({'value':s['A1'].value,'formula':s['B1'].value,'strike':s['A1'].font.strike,'bold':s['A1'].font.bold,'italic':s['A1'].font.italic,'underline':s['A1'].font.underline,'size':s['A1'].font.sz,'family':s['A1'].font.name,'rotation':s['A1'].alignment.textRotation,'fill':s['A1'].fill.fgColor.rgb,'number_format':s['A1'].number_format}))", file], { encoding: 'utf8' })
+    const checked = spawnSync(independentPython(), ['-I', '-c', "import json,openpyxl,sys; w=openpyxl.load_workbook(sys.argv[1],data_only=False); s=w.active; print(json.dumps({'value':s['A1'].value,'formula':s['B1'].value,'strike':s['A1'].font.strike,'bold':s['A1'].font.bold,'italic':s['A1'].font.italic,'underline':s['A1'].font.underline,'size':s['A1'].font.sz,'family':s['A1'].font.name,'rotation':s['A1'].alignment.textRotation,'fill':s['A1'].fill.fgColor.rgb,'number_format':s['A1'].number_format}))", file], { encoding: 'utf8' })
     expect(checked.status, checked.stderr).toBe(0)
     expect(JSON.parse(checked.stdout)).toMatchObject({ value: 'label', formula: '=1+1', strike: true, bold: true, italic: true, underline: 'double', size: 14, family: 'Calibri', rotation: 45, fill: 'FFABCDEF', number_format: '0.000' })
     expect(fromUniverStyle(range.getCellStyleData()! as import('./workbook-vendor/core/style-map').UniverStyleData)).toMatchObject({ strikethrough: true })
