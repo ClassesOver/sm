@@ -26,11 +26,11 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
 
   expect(onCommand.mock.calls).toEqual([['bold'], ['font-family:Calibri'], ['decimal-inc'], ['autofn:SUM']])
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  // 剪贴板粘贴已接入官方命令；格式刷仍未接入，保留以原因禁用。
-  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="paste"]')!.dataset.unavailableReason).toBeUndefined()
-  const deferred = document.querySelector<HTMLButtonElement>('[data-ribbon-command="format-painter"]')!
+  // 剪贴板与格式刷已接入官方命令；上标仍缺引擎字段，保留以原因禁用。
+  for (const id of ['paste', 'format-painter']) expect(document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!.dataset.unavailableReason, id).toBeUndefined()
+  const deferred = document.querySelector<HTMLButtonElement>('[data-ribbon-command="superscript"]')!
   expect(deferred.disabled).toBe(true)
-  expect(deferred.title).toContain('格式刷')
+  expect(deferred.title).toContain('上标')
   const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
   expect(rotation.disabled).toBe(false)
   expect(rotation.title).not.toContain('does not capture text rotation')

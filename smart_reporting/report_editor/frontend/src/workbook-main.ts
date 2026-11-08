@@ -32,6 +32,7 @@ import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot
 import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS } from './workbook-clipboard'
+import { applyFormatPainterClick, formatPainterActive, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
   applyWorkbookRibbonCommand, selectedWorkbookRotation,
   mountWorkbookRibbon,
@@ -529,6 +530,19 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         void openFindReplace(runtime, command === 'replace').catch(error => { feedback.textContent = (error as Error).message })
         return
       }
+      if (command === 'format-painter' || command === 'format-painter:dblclick') {
+        // 固定源 ribbon-actions format-painter：单击刷一次、双击锁定、再次单击或 Esc 取消；
+        // 刷出的样式经 set-range-values 写入网格，保存时由样式差分写回。
+        if (!editable()) return
+        try {
+          const action = applyFormatPainterClick(runtime, command === 'format-painter' ? 1 : 2)
+          if (action === 'once') feedback.textContent = '已复制格式，选择目标区域即可应用（一次）。'
+          else if (action === 'lock') feedback.textContent = '格式刷已锁定，可连续应用；按 Esc 或再次点击取消。'
+          else if (action === 'cancel') feedback.textContent = '格式刷已取消。'
+        } catch (error) { feedback.textContent = (error as Error).message }
+        ribbon.refreshState?.()
+        return
+      }
       if (CLIPBOARD_COMMANDS[command]) {
         // 固定源 ribbon-actions：复制为只读安全命令；剪切/粘贴/选择性粘贴需可编辑态。
         // 粘贴经 Univer sheet 剪贴板（Clipboard API 不可用时回退内部复制缓存），写入走
@@ -612,6 +626,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     {
       rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null),
       editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
+      formatPainterActive: () => formatPainterActive(runtime),
       hasSelection: () => !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange(),
       captureTarget: () => captureNumberFormatTarget(formatWorkbook()),
       pageSetup: () => {
@@ -739,6 +754,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       markDirty()
     }
   })
+  // 格式刷状态镜像到功能区（aria-pressed），并绑定 Esc 取消；无 painter 服务的替身跳过。
+  let painterListener: { dispose(): void } | undefined
+  try { painterListener = installFormatPainter(runtime, () => ribbon.refreshState?.()) } catch { painterListener = undefined }
   const currentOperations = async (): Promise<WorkbookOperation[]> => {
     const readback = readBack(runtime)
     const workbook = runtime.univerAPI.getActiveWorkbook()
@@ -950,6 +968,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const save = async () => {
     if (saved || saving) return
     saving = true
+    // 保存期间网格不可编辑：解除单次/锁定格式刷，避免保存中或保存后继续刷写。
+    turnOffFormatPainter(runtime)
     ribbon.refreshState?.()
     shell.save.disabled = true
     shell.editor.inert = true
@@ -987,5 +1007,5 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { dispose() { disposed = true; selectionListener?.dispose(); numberFormatDialog.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

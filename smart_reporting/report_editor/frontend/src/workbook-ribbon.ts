@@ -64,6 +64,8 @@ type RibbonCommand =
   | 'copy'
   | 'cut'
   | 'paste'
+  | 'format-painter'
+  | 'format-painter:dblclick'
   | `paste-special:${PasteSpecialKind}`
   | 'indent-step:increase'
   | 'indent-step:decrease'
@@ -322,7 +324,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '编辑', actions: [action('撤销', 'undo', 'undo'), action('恢复', 'redo', 'redo')] },
   ],
   Home: [
-    { title: '剪贴板', actions: [action('paste', 'paste', 'paste'), action('cut', 'cut', 'cut'), action('copy', 'copy', 'copy'), action('format-painter', 'format-painter')] },
+    { title: '剪贴板', actions: [action('paste', 'paste', 'paste'), action('cut', 'cut', 'cut'), action('copy', 'copy', 'copy'), action('format-painter', 'format-painter', 'format-painter')] },
     { title: '字体', actions: [
       action('字体', 'font-family:Arial', 'font-family:Arial'), action('字号', 'font-size:12', 'font-size:12'),
       action('粗体', 'bold', 'bold'), action('斜体', 'italic', 'italic'), action('下划线', 'underline', 'underline'),
@@ -482,7 +484,6 @@ const COMMAND_GLYPHS: Record<string, string> = {
 }
 
 const disabledReasons: Record<string, string> = {
-  'format-painter': '尚未接入格式刷及多选区状态',
   'superscript': '当前引擎尚无单元格上标样式的读取和写回字段，不能保证保存',
   'subscript': '当前引擎尚无单元格下标样式的读取和写回字段，不能保证保存',
   'cf-open': '尚未接入条件格式草稿编辑',
@@ -703,6 +704,8 @@ export function mountWorkbookRibbon(
     noteReason?(command: string): string | undefined
     /// 缩进继承样式不可完整回读时的禁用原因（引擎 indentReadOnlyReason）。
     indentReason?(): string | undefined
+    /// 格式刷是否处于单次/锁定状态（aria-pressed 镜像）。
+    formatPainterActive?(): boolean
     captureTarget?(): NumberFormatTarget | undefined
     pageSetup?(): WorkbookPageSetupState | undefined
     definedNames?(): readonly string[]
@@ -750,6 +753,7 @@ export function mountWorkbookRibbon(
       const readOnlySafe = noteViewAction || id === 'copy'
       button.disabled = id === 'find' || id === 'print' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo'].includes(id))
       button.title = button.disabled ? !editable && !readOnlySafe ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
+      if (id === 'format-painter') button.setAttribute('aria-pressed', String(!!view.formatPainterActive?.()))
       if (id.startsWith('indent-step:') && !button.disabled) {
         const indentReason = view.indentReason?.()
         if (indentReason) { button.disabled = true; button.title = indentReason }
@@ -996,7 +1000,8 @@ export function mountWorkbookRibbon(
             const capture = () => { try { target = view?.captureTarget?.(); captureError = undefined } catch (error) { target = undefined; captureError = (error as Error).message; button.title = captureError } }
             button.addEventListener('focus', capture); button.addEventListener('pointerdown', capture)
           }
-          button.addEventListener('click', () => { if (!button.disabled && !captureError) { if (item.command === 'format:custom-open') onCommand(item.command, target); else onCommand(item.command!) } })
+          // 格式刷：固定源按 click detail 区分单击（刷一次）与双击（锁定）。
+          button.addEventListener('click', event => { if (!button.disabled && !captureError) { if (item.command === 'format:custom-open') onCommand(item.command, target); else if (item.command === 'format-painter') onCommand(event.detail >= 2 ? 'format-painter:dblclick' : 'format-painter'); else onCommand(item.command!) } })
         }
         section.append(button)
       }
