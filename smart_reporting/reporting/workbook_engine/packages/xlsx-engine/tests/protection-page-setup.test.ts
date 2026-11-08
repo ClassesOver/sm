@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { stripPrintReferenceSheetPrefix } from '../src/workbook-read'
 import {
   applyPageSetups,
   applyPageSetupState,
@@ -191,6 +192,15 @@ describe('page setup read model', () => {
     expect(sheet.colBreaks).toEqual([2])
     expect(sheet.printArea).toBe('A1:C9')
     expect(sheet.printTitles).toBe('1:2')
+  })
+
+  it('strips the sheet prefix from every print-area and print-title component', async () => {
+    // 多打印区域 / 行+列打印标题的每个分量都带 'Sheet'! 前缀；只剥第一个会让
+    // web 打印静默丢掉第二个区域或重复列标题。
+    // 引擎写入路径只产出单区域，多区域来自 Excel 等外部文件，故直接校验读侧归一化。
+    expect(stripPrintReferenceSheetPrefix("'Sheet1'!$A$1:$B$4,'Sheet1'!$D$1:$E$4")).toBe('A1:B4,D1:E4')
+    expect(stripPrintReferenceSheetPrefix("'Q1, 汇总!'!$A$1:$B$4,'Q1, 汇总!'!$D$1:$E$4")).toBe('A1:B4,D1:E4')
+    expect(stripPrintReferenceSheetPrefix('Sheet1!$1:$2,Sheet1!$A:$B')).toBe('1:2,A:B')
   })
 
   it('applies OOXML defaults when the sheet has no page-setup parts', async () => {

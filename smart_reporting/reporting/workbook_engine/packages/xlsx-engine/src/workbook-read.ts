@@ -233,12 +233,24 @@ export function readSheetPrintNames(
   return result
 }
 
-/// `'Sheet'!$A$1:$B$4[,…]` → `A1:B4,…`（去掉工作表前缀与绝对引用标记；
-/// 工作表名不能包含 "!"，按第一个 "!" 切分安全）。
+/// `'Sheet'!$A$1:$B$4,'Sheet'!$D$1:$E$4` → `A1:B4,D1:E4`：多打印区域、行+列打印
+/// 标题的每个逗号分量各自带工作表前缀，须逐个去掉前缀与绝对引用标记。分量按
+/// 引号外的逗号切分（带引号的工作表名可含逗号，'' 为转义引号）；单元格引用
+/// 本身不含 "!"，取分量最后一个 "!" 之后（工作表名允许含 "!"）。
 export function stripPrintReferenceSheetPrefix(reference: string): string {
-  const separator = reference.indexOf('!')
-  const body = separator === -1 ? reference : reference.slice(separator + 1)
-  return body.replaceAll('$', '')
+  const components: string[] = []
+  let current = ''
+  let quoted = false
+  for (const character of reference) {
+    if (character === "'") quoted = !quoted
+    if (character === ',' && !quoted) { components.push(current); current = ''; continue }
+    current += character
+  }
+  components.push(current)
+  return components.map(component => {
+    const separator = component.lastIndexOf('!')
+    return (separator === -1 ? component : component.slice(separator + 1)).replaceAll('$', '').trim()
+  }).join(',')
 }
 
 function parseGeometry(worksheetXml: string) {

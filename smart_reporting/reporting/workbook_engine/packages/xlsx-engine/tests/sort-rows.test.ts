@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest'
+import JSZip from 'jszip'
 import { applyCellEdits, applySheetNotes, createBlankWorkbook, readWorkbook, sortRangeRows } from '../src'
 
 it('sortRangeRows permutes full cell records so styles move with values', async () => {
@@ -42,4 +43,24 @@ it('sortRangeRows fails closed on formulas and notes inside the range', async ()
   // 范围外批注不阻塞。
   const outside = await applySheetNotes(noted, 'Sheet1', [{ row: 5, column: 5, author: 'Bob', text: 'outside' }])
   await expect(sortRangeRows(outside, 'Sheet1', { range: 'B1:C2', byColumn: 'B', ascending: true, hasHeader: false })).resolves.toBeInstanceOf(Uint8Array)
+})
+
+it('sortRangeRows splices rows absent from sheetData in ascending order instead of dropping them', async () => {
+  // A1 不存在于 sheetData；升序后 1 移到第 1 行（空白排最后）。旧实现在不含
+  // </sheetData> 的 body 中查找结束标签，新行被静默丢弃，值 1 丢失。
+  const bytes = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 1 } },
+    { sheetName: 'Sheet1', row: 2, column: 0, writeValue: true, cell: { value: 2 } },
+    { sheetName: 'Sheet1', row: 4, column: 0, writeValue: true, cell: { value: 'range外' } },
+  ])
+  const sorted = await sortRangeRows(bytes, 'Sheet1', { range: 'A1:A3', byColumn: 'A', ascending: true, hasHeader: false })
+  const sheet = (await readWorkbook(sorted)).sheets[0]!
+  expect(sheet.cells.A1?.value).toBe(1)
+  expect(sheet.cells.A2?.value).toBe(2)
+  expect(sheet.cells.A3).toBeUndefined()
+  expect(sheet.cells.A5?.value).toBe('range外')
+  const xml = await (await JSZip.loadAsync(sorted)).file('xl/worksheets/sheet1.xml')!.async('string')
+  const rows = [...xml.matchAll(/<row\b[^>]*\br="([0-9]+)"/g)].map(match => Number(match[1]))
+  expect(rows).toEqual([...rows].sort((left, right) => left - right))
+  expect(rows[0]).toBe(1)
 })

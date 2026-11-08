@@ -847,6 +847,35 @@ def test_docx_native_header_footer_text_edit_rewrites_part_and_preserves_other_p
     assert patch(edited, []) == edited
 
 
+def test_docx_native_header_footer_edit_with_text_bearing_layout_table_is_verified_on_editable_text():
+    # 页眉含带文字的布局表格：表格段不进重写集合、原字节保留；保存后回读校验只比较
+    # 可编辑文本段，不能把保留的表格文字计入期望而误报 hf_write_not_applied。
+    from lxml import etree
+    doc = Document()
+    header = doc.sections[0].header
+    header.paragraphs[0].text = '原始页眉'
+    layout = header.add_table(rows=1, cols=2, width=Inches(6))
+    layout.cell(0, 0).text = '布局左'
+    layout.cell(0, 1).text = '布局右'
+    doc.add_paragraph('正文')
+    raw = BytesIO()
+    doc.save(raw)
+    source = raw.getvalue()
+    inspect, patch = api()
+    model = inspect(source)
+    part = hf_model(model)['parts']['header.default']
+    edited = patch(source, [{
+        'kind': 'setHeaderFooter', 'sectionId': model['sections'][-1]['sectionId'],
+        'expectedSectionSha256': model['sections'][-1]['expectedSectionSha256'],
+        'part': 'header', 'variant': 'default', 'expectedPartSha256': part['expectedPartSha256'],
+        'text': '新页眉', 'pageNumber': False,
+    }])
+    with ZipFile(BytesIO(edited)) as archive:
+        text = ''.join(etree.fromstring(archive.read('word/header1.xml')).itertext())
+    assert '新页眉' in text and '原始页眉' not in text
+    assert '布局左' in text and '布局右' in text
+
+
 def test_docx_native_header_footer_page_number_field_lands_on_disk():
     from lxml import etree
     ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}

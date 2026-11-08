@@ -519,14 +519,18 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     if (rowMatch) rebuiltRows.set(row, `${rowMatch[1]}${pieces.join('')}${rowMatch[3]}`)
     else if (pieces.length) rebuiltRows.set(row, `<row r="${row + 1}">${pieces.join('')}</row>`)
   }
+  // Rows the range must add (absent from sheetData) are spliced in row order:
+  // before the first existing row with a higher index, else at the end of the
+  // sheetData body (which excludes the closing tag). OOXML requires ascending rows.
+  const additions = [...rebuiltRows.entries()].filter(([row]) => !rangeRowXml.has(row))
+    .sort(([left], [right]) => left - right)
   const body = sheetData[2]!.replace(rowPattern, rowXml => {
     const rowIndex = Number(rowXml.match(/\br="([0-9]+)"/)?.[1] ?? '0') - 1
-    return rebuiltRows.get(rowIndex) ?? rowXml
+    let inserted = ''
+    while (additions.length && additions[0]![0] < rowIndex) inserted += additions.shift()![1]
+    return inserted + (rebuiltRows.get(rowIndex) ?? rowXml)
   })
-  // Rows the range must add (absent from sheetData) append in order.
-  const additions = [...rebuiltRows.entries()].filter(([row]) => !rangeRowXml.has(row) && row <= bounds.endRow)
-    .sort(([left], [right]) => left - right).map(([, xml]) => xml)
-  const nextBody = additions.length ? body.replace(/(<\/sheetData>)/, () => `${additions.join('')}$1`) : body
+  const nextBody = body + additions.map(([, xml]) => xml).join('')
   const mutationPlan: MutationPlan = {
     replaced: new Map([[target.path, `${sheetData[1]}${nextBody}${sheetData[3]}`]]),
     added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [],

@@ -414,6 +414,12 @@ function expectedHfText(edit: HeaderFooterEdit): string {
   if (joined.includes('#')) return joined.replace('#', PAGE_MARK)
   return `${joined}${PAGE_MARK}`
 }
+/** 回读部件的可编辑文本投影：与 hfValueFromText 同口径，只取简单文本段（布局表格/浮动框
+ *  不进重写集合、由引擎原字节保留），避免把保留内容的文字计入期望比较。 */
+function editableHfText(info: HfPartInfo): string {
+  if (!info.paras) return info.text
+  return info.paras.filter(simpleHfPara).map(para => (para.runs ?? []).map(run => run.text).join('')).join('')
+}
 /** document.xml.rels 的 rId → 包内 part 路径（相对 word/ 解析）。 */
 function resolvePartPath(base: string, target: string): string {
   if (target.startsWith('/')) return target.slice(1)
@@ -906,7 +912,7 @@ if (request.kind === 'inspect') {
     for (const edit of hfEdits.values()) {
       const rId = (edit.part === 'header' ? reopenedSection.headerRefs : reopenedSection.footerRefs)[edit.variant]
       const info = rId ? reopened.hfParts?.[rId] : undefined
-      if (!info || info.text !== expectedHfText(edit)) fail('hf_write_not_applied')
+      if (!info || editableHfText(info) !== expectedHfText(edit)) fail('hf_write_not_applied')
     }
   }
   // A pStyle/shading/borders-only patch does not touch metadata or any other package entry.
