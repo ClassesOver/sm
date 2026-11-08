@@ -117,3 +117,19 @@ def test_page_break_rejects_unsupported_source_markup_without_rewriting():
     source = make_doc([f'<w:pageBreakBefore xmlns:w="{W}" w:val="1" w:rsid="00AB"/>'])
     with pytest.raises(ValueError, match="paragraph_page_break_unsupported"):
         patch_docx(source, [page_break_op(source, False)])
+
+
+def test_blank_page_inserts_an_empty_break_paragraph_and_breaks_the_anchor_in_one_batch():
+    # 空白页 = 锚定段前插入空段（分页）+ 该段分页；插入只进 before 队列，可与分页补丁共存。
+    source = make_doc()
+    anchor = block(source, 1)
+    patched = patch_docx(source, [
+        {"kind": "insertParagraph", "blockId": anchor["blockId"], "expectedObjectSha256": anchor["expectedObjectSha256"],
+         "position": "before", "text": "", "pageBreakBefore": True},
+        page_break_op(source, True),
+    ])
+    paragraphs = Document(BytesIO(patched)).paragraphs
+    assert [p.text for p in paragraphs] == ["first", "", "target keep", "untouched"]
+    assert [p.paragraph_format.page_break_before for p in paragraphs] == [None, True, True, None]
+    assert paragraphs[2].style.name == "List Bullet"
+    assert paragraphs[2].runs[1].bold is True

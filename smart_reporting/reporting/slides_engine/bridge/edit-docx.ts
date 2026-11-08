@@ -780,8 +780,10 @@ if (request.kind === 'inspect') {
   for (const item of operations) if (item.shading && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_shading_batch_conflict')
   // 段落边框补丁与底纹同规：同段同批次只允许一次边框操作。
   for (const item of operations) if (item.borders !== undefined && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_borders_batch_conflict')
-  // 段前分页补丁与底纹/边框同规：同段同批次只允许一次分页操作（插入新段携带的分页不受限）。
-  for (const item of operations) if (item.pageBreakBefore !== undefined && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_page_break_batch_conflict')
+  // 段前分页补丁与底纹/边框同规：同段同批次只允许一次分页操作。锚定在该段前/后的
+  // 新段插入（空白页 = 新空段 + 后续段分页）只放入 before/after，不改写该段 XML，可共存。
+  const anchoredInsert = (kind: unknown) => kind === 'insertParagraph' || kind === 'insertParagraphImage'
+  for (const item of operations) if (item.pageBreakBefore !== undefined && operations.some(other => other.block === item.block && other.op !== item.op && !anchoredInsert(other.op.kind))) fail('paragraph_page_break_batch_conflict')
   const structuralTables = new Set<string>()
   for (const item of operations) if (item.tableStructure) {
     const id = blockId(item.block)

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Editor } from '@tiptap/core'
+import { TextSelection } from '@tiptap/pm/state'
 import type { DocxAnchor } from './docx-operations'
 import { applyDocxLink, docxLinkSelection, linkSelectionUnavailable, type DocxLinkSelection } from './docx-links'
 import { IconDoc, IconCaret, IconPageBreak, IconTable, IconPicture, IconChart, IconShapes, IconTextBox, IconWordArt, IconLink, IconBook, IconRefresh, IconComment, IconHeader, IconFooter, IconPageNumber, IconSymbol, IconEquation } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
@@ -74,6 +75,13 @@ export function docxPageBreakUnavailable(editor: Editor, editable: boolean): str
   if ($from.parentOffset === 0 && $from.before($from.depth) === 0) return DOCX_PAGE_BREAK_AT_START
   return undefined
 }
+/** 空白页不受"文档开头"限制（空白段本身成为首页，后续段由段落分页承载）。 */
+export function docxBlankPageUnavailable(editor: Editor, editable: boolean): string | undefined {
+  if (!editable || !editor.isEditable) return '当前文档不可编辑或正在保存'
+  const { $from } = editor.state.selection
+  if (!$from.parent.isTextblock || $from.depth !== 1 || !('pageBreakBefore' in $from.parent.attrs)) return DOCX_PAGE_BREAK_NESTED
+  return undefined
+}
 export function insertDocxPageBreak(editor: Editor): boolean {
   const reason = docxPageBreakUnavailable(editor, true)
   if (reason) throw new Error(reason)
@@ -91,6 +99,48 @@ export function insertDocxPageBreak(editor: Editor): boolean {
   editor.view.focus()
   return true
 }
+/** 固定源 ribbon-tabs.tsx insertBlankPageAt（f8c17004）：插入一个自成一页的空段落，且仅当
+ *  后面还有内容时给后续块加分页（无条件插两个分页段会把 1 页文档变成 3 页）；后续块不能
+ *  承载分页（如表格）时补一个带分页的空段落。光标落在新空白页。本地在一次事务内完成并
+ *  沿用分页符的锚点规则：拆段后半段清空 docxIndex，新段落不带样式属性。 */
+export function insertDocxBlankPage(editor: Editor): boolean {
+  if (!editor.isEditable) throw new Error('当前文档不可编辑或正在保存')
+  const tr = editor.state.tr
+  if (!tr.selection.empty) tr.deleteSelection()
+  const $from = tr.selection.$from
+  if ($from.depth !== 1 || !$from.parent.isTextblock || !('pageBreakBefore' in $from.parent.attrs)) throw new Error(DOCX_PAGE_BREAK_NESTED)
+  const paragraph = editor.state.schema.nodes.docParagraph
+  if (!paragraph) throw new Error(DOCX_PAGE_BREAK_NESTED)
+  const blank = () => paragraph.create({ pageBreakBefore: true })
+  const start = $from.before(1), end = $from.after(1)
+  let blankPos: number
+  if ($from.parentOffset === 0) {
+    // 段首：空白页插在当前段之前，当前段从下一页开始。
+    tr.insert(start, blank())
+    blankPos = start
+    const moved = tr.doc.nodeAt(start + 2)
+    if (moved && !moved.attrs.pageBreakBefore) tr.setNodeMarkup(start + 2, undefined, { ...moved.attrs, pageBreakBefore: true })
+  } else if ($from.parentOffset === $from.parent.content.size) {
+    // 段尾：空白页插在当前段之后，后续块（若有）从下一页开始。
+    tr.insert(end, blank())
+    blankPos = end
+    const followPos = end + 2
+    const follow = followPos < tr.doc.content.size ? tr.doc.nodeAt(followPos) : null
+    if (follow) {
+      if ('pageBreakBefore' in follow.attrs) { if (!follow.attrs.pageBreakBefore) tr.setNodeMarkup(followPos, undefined, { ...follow.attrs, pageBreakBefore: true }) }
+      else tr.insert(followPos, blank())
+    }
+  } else {
+    // 段中：拆段，空白页夹在两半之间，后半段从再下一页开始。
+    tr.split($from.pos, 1, [{ type: $from.parent.type, attrs: { ...$from.parent.attrs, docxIndex: null, pageBreakBefore: true } }])
+    blankPos = tr.doc.resolve(tr.mapping.map($from.pos)).before(1)
+    tr.insert(blankPos, blank())
+  }
+  tr.setSelection(TextSelection.create(tr.doc, blankPos + 1))
+  editor.view.dispatch(tr.scrollIntoView())
+  editor.view.focus()
+  return true
+}
 /** 从固定上游 InsertTab 提取原分组、按钮和符号面板；结构操作等待写回协议。 */
 export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: Editor; editable: boolean; anchors?: DocxAnchor[] }) {
   const t = (key: keyof typeof insertRibbonZh) => insertRibbonZh[key]
@@ -100,6 +150,7 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
   const [linkError, setLinkError] = useState('')
   const link = editable ? docxLinkSelection(editor, anchors) : undefined
   const pageBreakReason = docxPageBreakUnavailable(editor, editable)
+  const blankPageReason = docxBlankPageUnavailable(editor, editable)
   const linkUnavailable = linkSelectionUnavailable
   const openLink = () => { if (link) { setLinkDialog(link); setHref(link.href ?? ''); setLinkError('') } }
   const applyLink = (selection: DocxLinkSelection, value: string | null) => {
@@ -121,7 +172,7 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
               <span>{t('ribbonCoverPage')}</span>
             </button>
           </div>
-          <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-blank-page" aria-label={t("ribbonBlankPageTip")}>
+          <button className="rb-big" disabled={!!blankPageReason} title={blankPageReason ?? t('ribbonBlankPageTip')} aria-description={blankPageReason} onMouseDown={event => event.preventDefault()} onClick={() => { if (!docxBlankPageUnavailable(editor, editable)) insertDocxBlankPage(editor) }} data-action="insert-blank-page" aria-label={t("ribbonBlankPageTip")}>
             <span className="rb-big-icon">
               <IconDoc size={BIG}/>
             </span>

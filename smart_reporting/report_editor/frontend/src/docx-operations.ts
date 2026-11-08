@@ -407,7 +407,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
         || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'value'].includes(key))
         || typeof operation.value !== 'boolean'
-        || operations.some(other => other.blockId === operation.blockId && other !== operation)) throw new Error('草稿分页符字段或来源身份无效')
+        || operations.some(other => other.blockId === operation.blockId && other !== operation && other.kind !== 'insertParagraph' && other.kind !== 'insertParagraphImage')) throw new Error('草稿分页符字段或来源身份无效')
       node.attrs = { ...node.attrs, pageBreakBefore: operation.value }
     }
     else if (operation.kind === 'setParagraphBorders') {
