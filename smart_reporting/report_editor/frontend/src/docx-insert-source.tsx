@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import { TextSelection } from '@tiptap/pm/state'
 import type { DocxAnchor } from './docx-operations'
+import { NEW_TABLE_LIMITS, docxTableInsertUnavailable, insertDocxTable, newTableSize } from './docx-new-table'
 import { applyDocxLink, docxLinkSelection, linkSelectionUnavailable, type DocxLinkSelection } from './docx-links'
 import { IconDoc, IconCaret, IconPageBreak, IconTable, IconPicture, IconChart, IconShapes, IconTextBox, IconWordArt, IconLink, IconBook, IconRefresh, IconComment, IconHeader, IconFooter, IconPageNumber, IconSymbol, IconEquation } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { insertRibbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/insert-zh'
@@ -150,6 +151,17 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
   const [linkError, setLinkError] = useState('')
   const link = editable ? docxLinkSelection(editor, anchors) : undefined
   const pageBreakReason = docxPageBreakUnavailable(editor, editable)
+  const tableReason = docxTableInsertUnavailable(editor, editable)
+  const [grid, setGrid] = useState({ r: 0, c: 0 })
+  const [tableForm, setTableForm] = useState<{ rows: number; cols: number } | null>(null)
+  const [tableError, setTableError] = useState('')
+  const insertTable = (rows: number, cols: number) => {
+    try {
+      newTableSize({ rows, cols })
+      insertDocxTable(editor, rows, cols)
+      setDropdown(null); setTableForm(null); setTableError(''); setGrid({ r: 0, c: 0 })
+    } catch (error) { setTableError(error instanceof Error ? error.message : String(error)) }
+  }
   const blankPageReason = docxBlankPageUnavailable(editor, editable)
   const linkUnavailable = linkSelectionUnavailable
   const openLink = () => { if (link) { setLinkDialog(link); setHref(link.href ?? ''); setLinkError('') } }
@@ -191,13 +203,31 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
       <div className="ribbon-group">
         <div className="ribbon-group-items">
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-table" aria-label={t("ribbonTableTip")}>
+            <button className="rb-big" disabled={!!tableReason} title={tableReason ?? t('ribbonTableTip')} aria-description={tableReason} aria-haspopup="true" aria-expanded={dropdown === 'table'} onMouseDown={event => event.preventDefault()} onClick={() => { setTableError(''); setTableForm(null); setDropdown(current => current === 'table' ? null : 'table') }} data-action="insert-table" aria-label={t("ribbonTableTip")}>
               <span className="rb-big-icon">
                 <IconTable size={BIG}/>
                 <IconCaret />
               </span>
               <span>{t('ribbonTable')}</span>
             </button>
+            {dropdown === 'table' && !tableReason && (<div data-rb-panel="" className="table-picker" onMouseLeave={() => setGrid({ r: 0, c: 0 })}>
+                {/* 固定源 ribbon-insert-tab.tsx:801-833：8×10 悬停网格 + "插入表格…" 自定义行列 */}
+                <div className="table-picker-title" data-testid="table-picker-title">{grid.r > 0 ? `${grid.r}×${grid.c} 表格` : '选择表格尺寸'}</div>
+                {!tableForm && <div className="table-picker-grid">
+                  {Array.from({ length: 8 }, (_, ri) => Array.from({ length: 10 }, (_, ci) => (
+                    <button key={`${ri}-${ci}`} type="button" className={`table-cell ${ri < grid.r && ci < grid.c ? 'hot' : ''}`} data-table-size={`${ri + 1}x${ci + 1}`} aria-label={`${ri + 1}×${ci + 1} 表格`}
+                      onMouseDown={event => event.preventDefault()} onMouseEnter={() => setGrid({ r: ri + 1, c: ci + 1 })} onFocus={() => setGrid({ r: ri + 1, c: ci + 1 })} onClick={() => insertTable(ri + 1, ci + 1)} />
+                  )))}
+                </div>}
+                {!tableForm && <button type="button" className="table-picker-custom" data-action="insert-table-custom" onMouseDown={event => event.preventDefault()} onClick={() => setTableForm({ rows: 2, cols: 5 })}>插入表格…</button>}
+                {tableForm && <form className="table-picker-form" aria-label="插入表格" onSubmit={event => { event.preventDefault(); insertTable(tableForm.rows, tableForm.cols) }}>
+                  <label>列数<input type="number" min={1} max={NEW_TABLE_LIMITS.cols} value={tableForm.cols} data-field="table-cols" onChange={event => setTableForm({ ...tableForm, cols: Number(event.currentTarget.value) })} /></label>
+                  <label>行数<input type="number" min={1} max={NEW_TABLE_LIMITS.rows} value={tableForm.rows} data-field="table-rows" onChange={event => setTableForm({ ...tableForm, rows: Number(event.currentTarget.value) })} /></label>
+                  <button type="submit" data-command="insertTable">插入</button>
+                  <button type="button" data-command="cancelTable" onClick={() => { setTableForm(null); setTableError('') }}>取消</button>
+                </form>}
+                {tableError && <p role="alert" className="table-picker-error">{tableError}</p>}
+              </div>)}
           </div>
         </div>
         <div className="ribbon-group-label">{t('ribbonGroupTables')}</div>

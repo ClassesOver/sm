@@ -12,7 +12,8 @@ export const TABLE_ACTIONS: Record<string, { kind: TableKind; after?: boolean }>
   'table-insert-column-before': { kind: 'insertTableColumn' }, 'table-insert-column-after': { kind: 'insertTableColumn', after: true },
   'table-delete-row': { kind: 'deleteTableRow' }, 'table-delete-column': { kind: 'deleteTableColumn' },
 }
-export const NativeTableStructure = Extension.create({ name: 'nativeTableStructure', addGlobalAttributes: () => [{ types: ['docTable'], attributes: { nativeTableStructure: { default: null, rendered: false } } }] })
+// nativeTableInsert 标记新增表格的行列意图（docx-new-table.ts），与结构意图同样不渲染、不入文件。
+export const NativeTableStructure = Extension.create({ name: 'nativeTableStructure', addGlobalAttributes: () => [{ types: ['docTable'], attributes: { nativeTableStructure: { default: null, rendered: false }, nativeTableInsert: { default: null, rendered: false, keepOnSplit: false } } }] })
 const sourceReason = (reason?: string | null) => {
   const messages: Record<string, string> = {
     width_unsupported: '仅支持宽度明确且一致的固定列宽表格', content_unsupported: '此表包含合并、嵌套、修订或其他暂不支持的内容',

@@ -443,11 +443,13 @@ it('inserts an upstream palette symbol as an anchored text operation and disable
   expect(ribbon.querySelector('.docx-source-insert')).not.toBeNull()
   const insert = ribbon.querySelector<HTMLButtonElement>('[data-action="insert-symbol"]')
   expect(insert?.disabled).toBe(false)
-  for (const action of ['insert-table', 'insert-link', 'insert-equation']) {
+  for (const action of ['insert-link', 'insert-equation']) {
     const button = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)
     expect(button?.disabled).toBe(true)
     expect(button?.getAttribute('aria-description')).toMatch(/写回/)
   }
+  // 插入表格已接通 insertTable；此测试 schema 无 docTable，按钮以位置原因禁用而非"未接入写回"。
+  expect(ribbon.querySelector<HTMLButtonElement>('[data-action="insert-table"]')?.getAttribute('aria-description')).not.toMatch(/写回/)
   flushSync(() => { insert!.click() })
   const cells = ribbon.querySelectorAll<HTMLButtonElement>('.symbol-cell')
   expect(cells).toHaveLength(50)

@@ -5,8 +5,8 @@ import { loadDocxZip } from '../packages/docx-engine/src/zip-load.ts'
 import { attrsOf, findChild, childrenOf, xmlParser, escapeXmlAttr } from '../packages/docx-engine/src/xml-utils.ts'
 import { resolve } from 'node:path'
 import { readFile, writeFile, realpath, stat } from 'node:fs/promises'
-import { PAGE_MARK, parseDocx, saveDocx, patchTableCellTexts, mergePPrFormat, readSections, readSectionSettings, type Block, type GeneratedBlock, type HfParagraph, type HeaderFooter, type HfPartInfo, type Run, type SaveBlock, type ParaFormat, type SectionSettings } from '@genoffice/docx-engine'
-import { mergeCellParaFormat, pPrWithIndLeft, pPrWithNumPr, PPR_CHILD_ORDER, RPR_CHILD_ORDER, splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate.ts'
+import { PAGE_MARK, parseDocx, saveDocx, patchTableCellTexts, mergePPrFormat, readSections, readSectionSettings, type Block, type GeneratedBlock, type HfParagraph, type HeaderFooter, type HfPartInfo, type Run, type TableModel, type SaveBlock, type ParaFormat, type SectionSettings } from '@genoffice/docx-engine'
+import { generateTableModelXml, mergeCellParaFormat, pPrWithIndLeft, pPrWithNumPr, PPR_CHILD_ORDER, RPR_CHILD_ORDER, splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate.ts'
 
 type ObjectValue = Record<string, unknown>
 function fail(code: string): never { throw new Error(`docx_${code}`) }
@@ -152,6 +152,21 @@ function paragraphShadingXml(xml: string, shading: { fill: string | null; clear:
     return xml.slice(0, opening.length) + `<w:pPr>${tag}</w:pPr>` + xml.slice(opening.length)
   }
   return xml.slice(0, pPr.start) + patch(xml.slice(pPr.start, pPr.end)) + xml.slice(pPr.end)
+}
+
+/** 新表格 OOXML：模型与固定源 apps/docs/src/renderer/editor/new-table.ts（wordTableModel/
+ *  wordTableCell/wordCellParagraph/WORD_TABLE_BORDERS）一致——渲染层文件不能被 Node 桥接
+ *  导入，这里按同一数据构造并交给引擎 generateTableModelXml。 */
+function newWordTableXml(rows: number, cols: number): string {
+  const line = { style: 'single', szEighths: 4, color: 'auto' }
+  const cell = () => ({ vAlign: 'center' as const, paras: [''], richParas: [{ spaceAfter: 0, lineSpacing: 1, lineRule: 'auto' as const, runs: [] }] })
+  return generateTableModelXml({
+    rows: Array.from({ length: rows }, () => Array.from({ length: cols }, cell)),
+    colWidthsPct: Array.from({ length: cols }, () => 100 / cols),
+    widthPct: 100,
+    autoFit: 'window',
+    borders: { top: line, bottom: line, left: line, right: line, insideH: line, insideV: line },
+  } as TableModel)
 }
 
 /** Direct paragraph page-break-before patch（固定源 page-break.ts：分页符 = 段落
@@ -670,6 +685,15 @@ if (request.kind === 'inspect') {
       if (!block.originalXml || !/^<w:p[\s>/]/.test(block.originalXml)) fail('paragraph_page_break_unsupported')
       return { op, block, pageBreakBefore: op.value as boolean }
     }
+    if (op.kind === 'insertTable') {
+      // 固定源 insertTableAt + editor/new-table.ts wordTableModel：整宽、等分列、autofit window、
+      // 单线 0.5pt 边框、单元格垂直居中且段落单倍行距无段后间距；与前端 docx-new-table.ts 同预算。
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'rows', 'cols'])
+      if (op.position !== 'before' && op.position !== 'after') fail('operation_invalid')
+      const rows = op.rows, cols = op.cols
+      if (!Number.isInteger(rows) || !Number.isInteger(cols) || (rows as number) < 1 || (cols as number) < 1 || (rows as number) > 100 || (cols as number) > 30 || (rows as number) * (cols as number) > 1000) fail('table_insert_invalid')
+      return { op, block, newTableXml: newWordTableXml(rows as number, cols as number) }
+    }
     if (op.kind === 'insertParagraphImage') {
       // 与 insertParagraph 同锚点语义：图片成为锚点前/后的独立图片段落
       // （引擎 SaveBlock {kind:'image'} → media part + 关系 + 内联 drawing）。
@@ -782,7 +806,7 @@ if (request.kind === 'inspect') {
   for (const item of operations) if (item.borders !== undefined && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_borders_batch_conflict')
   // 段前分页补丁与底纹/边框同规：同段同批次只允许一次分页操作。锚定在该段前/后的
   // 新段插入（空白页 = 新空段 + 后续段分页）只放入 before/after，不改写该段 XML，可共存。
-  const anchoredInsert = (kind: unknown) => kind === 'insertParagraph' || kind === 'insertParagraphImage'
+  const anchoredInsert = (kind: unknown) => kind === 'insertParagraph' || kind === 'insertParagraphImage' || kind === 'insertTable'
   for (const item of operations) if (item.pageBreakBefore !== undefined && operations.some(other => other.block === item.block && other.op !== item.op && !anchoredInsert(other.op.kind))) fail('paragraph_page_break_batch_conflict')
   const structuralTables = new Set<string>()
   for (const item of operations) if (item.tableStructure) {
@@ -837,6 +861,8 @@ if (request.kind === 'inspect') {
       state.tableStructure = item.tableStructure
     } else if (item.op.kind === 'insertParagraph') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'generated', block: {type: 'paragraph', runs: [{text:item.value!}], ...(item.op.pageBreakBefore === true ? { format: { pageBreakBefore: true } } : {})} })
+    } else if (item.op.kind === 'insertTable') {
+      state[item.op.position as 'before' | 'after'].push({ kind: 'xml', xml: item.newTableXml! })
     } else if (item.op.kind === 'insertParagraphImage') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'image', image: item.image! })
     } else if (item.op.kind === 'deleteParagraph') {

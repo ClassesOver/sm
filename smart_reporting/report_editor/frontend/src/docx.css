@@ -81,3 +81,9 @@
   .docx-native .docx-ribbon .ribbon-tab { padding-inline:12px; min-height:40px; }
   .docx-native .docx-ribbon .ribbon-content { padding-inline:8px; }
 }
+
+/* Insert ▸ Table 自定义行列表单与错误提示（固定源 picker 样式见 vendor scoped.css .table-picker*） */
+.docx-native .table-picker-form { display: grid; grid-template-columns: auto auto; gap: 6px 8px; align-items: center; padding: 6px 2px 2px; font-size: 12px; }
+.docx-native .table-picker-form label { display: contents; }
+.docx-native .table-picker-form input { width: 64px; font: inherit; }
+.docx-native .table-picker-error { margin: 6px 2px 0; max-width: 220px; color: #b42318; font-size: 12px; }

@@ -1,7 +1,7 @@
 {
   "LICENSE": "68e32334df324ef4fc79fad3a26487e5abac36055a484bb6c8d7ecf9d8350885",
   "NOTICE": "26fa7a458f2463af07f96af3d4b26b3cc3b4de688340838e3c9b3b958d390882",
-  "SOURCE-SHA256.json": "bbbda745b51b1a34040dbe1a0f9f441fb3a08651717e5f9d90f911c1b74141a2",
+  "SOURCE-SHA256.json": "e8945fd4434fae52e28649e89720e4d3eb23892c252a379cb40370f9285e47ad",
   "SOURCE.md": "278deb6c028bc83aaaa11b35693c0e4f71724c2b74e129fdb7c36b0cd8d0d9e8",
   "apps/docs/src/renderer/ai/after-text.ts": "c46615f9ac84ac61e7085887cae313ecb952594adcc91b3726c50db8fb42bf1a",
   "apps/docs/src/renderer/ai/doc-utils.ts": "d7aba78ea23c72f43b99c92c725dfa6310fe079a78d79def0d029f5129c28e54",
@@ -227,5 +227,6 @@
   "packages/ui/src/wordart-presets.ts": "5ff2e934a4a3893963f8464ccb869d3e762f324e854ed7d5762c986e079f94eb",
   "scoped.css": "c619903cbe36a76820bcc64310bfbdec667ea0790e082598d6015f50a90171a5",
   "apps/docs/src/renderer/i18n/ribbon/insert-zh.ts": "a74c091282ec9b08d105c21ff6f8b9e9e58b6b34f527c9e3cc2fb43515932c91",
-  "packages/ui/src/popover-dismiss.ts": "581b8f1fe677bb95eeee57b6f495df48e3a20e84b2d62f57e3412e3f60e527db"
+  "packages/ui/src/popover-dismiss.ts": "581b8f1fe677bb95eeee57b6f495df48e3a20e84b2d62f57e3412e3f60e527db",
+  "apps/docs/src/renderer/editor/new-table.ts": "b4454475492477aa835b1ac98e031236b17aa4989103cfe2bca9294a3619cb43"
 }
