@@ -154,6 +154,39 @@ function paragraphShadingXml(xml: string, shading: { fill: string | null; clear:
   return xml.slice(0, pPr.start) + patch(xml.slice(pPr.start, pPr.end)) + xml.slice(pPr.end)
 }
 
+/** Direct paragraph page-break-before patch（固定源 page-break.ts：分页符 = 段落
+ *  pageBreakBefore）。开启写入 `<w:pageBreakBefore/>`（按 pPr schema 顺序），关闭移除
+ *  直接设置；来源中带非 on/off 属性或非自闭合的元素拒绝而不是静默改写。 */
+function paragraphPageBreakBeforeXml(xml: string, value: boolean): string {
+  const tag = value ? '<w:pageBreakBefore/>' : null
+  const patch = (original: string): string => {
+    let base = original
+    for (const old of xmlSegments(original, 'w:pageBreakBefore', 0, original.length).reverse()) {
+      const oldXml = original.slice(old.start, old.end)
+      if (!/^<w:pageBreakBefore(?:\s+w:val="(?:0|1|true|false|on|off)")?\s*\/>$/.test(oldXml)) fail('paragraph_page_break_unsupported')
+      base = base.slice(0, old.start) + base.slice(old.end)
+    }
+    if (!tag) return base
+    base = base.replace(/<w:pPr\b([^>]*)\/>/, '<w:pPr$1></w:pPr>')
+    const opening = /^<w:pPr\b[^>]*>/.exec(base)?.[0]
+    if (!opening) fail('paragraph_page_break_xml_invalid')
+    const children = base.endsWith('</w:pPr>') ? splitXmlChildren(base.slice(opening.length, -'</w:pPr>'.length)) : []
+    const rank = PPR_CHILD_ORDER.indexOf('w:pageBreakBefore')
+    const at = children.findIndex(child => PPR_CHILD_ORDER.indexOf(child.name) > rank)
+    children.splice(at < 0 ? children.length : at, 0, { name: 'w:pageBreakBefore', xml: tag })
+    return `${opening}${children.map(child => child.xml).join('')}</w:pPr>`
+  }
+  const pPr = xmlSegments(xml, 'w:pPr', 0, xml.length)[0]
+  if (!pPr) {
+    if (!tag) return xml
+    if (/^<w:p(?:\s[^>]*)?\/>$/.test(xml)) return xml.replace(/\/>$/, `><w:pPr>${tag}</w:pPr></w:p>`)
+    const opening = /^<w:p(?:\s[^>]*)?>/.exec(xml)?.[0]
+    if (!opening) fail('paragraph_page_break_xml_invalid')
+    return xml.slice(0, opening.length) + `<w:pPr>${tag}</w:pPr>` + xml.slice(opening.length)
+  }
+  return xml.slice(0, pPr.start) + patch(xml.slice(pPr.start, pPr.end)) + xml.slice(pPr.end)
+}
+
 /** Direct paragraph border patch: `w:val="single"` sides only, written in the
  *  source engine's pBdr schema order (top, left, bottom, right). A source pBdr
  *  with other line styles (none/nil/double/…), w:between/w:bar children or
@@ -627,9 +660,15 @@ if (request.kind === 'inspect') {
       return { op, block, value }
     }
     if (op.kind === 'insertParagraph') {
-      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'text'])
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'text', 'pageBreakBefore'])
       if (op.position !== 'before' && op.position !== 'after') fail('operation_invalid')
+      if (op.pageBreakBefore !== undefined && op.pageBreakBefore !== true) fail('operation_invalid')
       return { op, block, value: text(op.text) }
+    }
+    if (op.kind === 'setParagraphPageBreakBefore') {
+      if (Object.keys(op).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'value'].includes(key)) || typeof op.value !== 'boolean') fail('paragraph_page_break_invalid')
+      if (!block.originalXml || !/^<w:p[\s>/]/.test(block.originalXml)) fail('paragraph_page_break_unsupported')
+      return { op, block, pageBreakBefore: op.value as boolean }
     }
     if (op.kind === 'insertParagraphImage') {
       // 与 insertParagraph 同锚点语义：图片成为锚点前/后的独立图片段落
@@ -741,6 +780,8 @@ if (request.kind === 'inspect') {
   for (const item of operations) if (item.shading && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_shading_batch_conflict')
   // 段落边框补丁与底纹同规：同段同批次只允许一次边框操作。
   for (const item of operations) if (item.borders !== undefined && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_borders_batch_conflict')
+  // 段前分页补丁与底纹/边框同规：同段同批次只允许一次分页操作（插入新段携带的分页不受限）。
+  for (const item of operations) if (item.pageBreakBefore !== undefined && operations.some(other => other.block === item.block && other.op !== item.op)) fail('paragraph_page_break_batch_conflict')
   const structuralTables = new Set<string>()
   for (const item of operations) if (item.tableStructure) {
     const id = blockId(item.block)
@@ -755,6 +796,7 @@ if (request.kind === 'inspect') {
     styleId: undefined as string | undefined,
     shading: undefined as { fill: string | null; clear: boolean } | undefined,
     borders: undefined as { sides: string; lines: Record<string, { color?: string; szPt?: number; spacePt?: number }> } | null | undefined,
+    pageBreakBefore: undefined as boolean | undefined,
     cellValues: new Map<string, {row: number; column: number; text: string}>(),
   }]))
   // 引擎补建缺失 numbering.xml 时自带 1/2 两个模板定义。
@@ -786,11 +828,13 @@ if (request.kind === 'inspect') {
       state.shading = item.shading
     } else if (item.borders !== undefined) {
       state.borders = item.borders
+    } else if (item.pageBreakBefore !== undefined) {
+      state.pageBreakBefore = item.pageBreakBefore
     } else if (item.tableStructure) {
       state.saved = { kind: 'xml', docxIndex: item.block.docxIndex!, xml: item.tableStructure.xml }
       state.tableStructure = item.tableStructure
     } else if (item.op.kind === 'insertParagraph') {
-      state[item.op.position as 'before' | 'after'].push({ kind: 'generated', block: {type: 'paragraph', runs: [{text:item.value!}]} })
+      state[item.op.position as 'before' | 'after'].push({ kind: 'generated', block: {type: 'paragraph', runs: [{text:item.value!}], ...(item.op.pageBreakBefore === true ? { format: { pageBreakBefore: true } } : {})} })
     } else if (item.op.kind === 'insertParagraphImage') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'image', image: item.image! })
     } else if (item.op.kind === 'deleteParagraph') {
@@ -879,6 +923,10 @@ if (request.kind === 'inspect') {
     const original = state.block.originalXml ?? fail('paragraph_shading_xml_invalid')
     state.saved = { kind: 'xml', docxIndex: state.block.docxIndex!, xml: paragraphShadingXml(original, state.shading) }
   }
+  for (const state of states.values()) if (state.pageBreakBefore !== undefined) {
+    const original = state.block.originalXml ?? fail('paragraph_page_break_xml_invalid')
+    state.saved = { kind: 'xml', docxIndex: state.block.docxIndex!, xml: paragraphPageBreakBeforeXml(original, state.pageBreakBefore) }
+  }
   for (const state of states.values()) if (state.borders !== undefined) {
     const original = state.block.originalXml ?? fail('paragraph_borders_xml_invalid')
     state.saved = { kind: 'xml', docxIndex: state.block.docxIndex!, xml: paragraphBordersXml(original, state.borders) }
@@ -915,8 +963,8 @@ if (request.kind === 'inspect') {
       if (!info || editableHfText(info) !== expectedHfText(edit)) fail('hf_write_not_applied')
     }
   }
-  // A pStyle/shading/borders-only patch does not touch metadata or any other package entry.
-  if (operations.length && operations.every(item => item.op.kind === 'setParagraphStyle' || item.op.kind === 'setParagraphShading' || item.op.kind === 'setParagraphBorders')) {
+  // A pStyle/shading/borders/page-break-only patch does not touch metadata or any other package entry.
+  if (operations.length && operations.every(item => item.op.kind === 'setParagraphStyle' || item.op.kind === 'setParagraphShading' || item.op.kind === 'setParagraphBorders' || item.op.kind === 'setParagraphPageBreakBefore')) {
     const core = sourceZip.file('docProps/core.xml')
     if (core) {
       const outputZip = await loadDocxZip(output)

@@ -59,6 +59,38 @@ const SYMBOLS = [
   '⑨',
   '⑩',
 ]
+/** 固定源 page-break.ts（f8c17004）语义：段首直接给当前段落设 pageBreakBefore，段中/段尾
+ *  拆段后由后半段承载 pageBreakBefore；一次 dispatch，单次撤销即可恢复。本地适配两点：
+ *  拆出的后半段清空 docxIndex（固定源 splitBlock 会把原锚点复制给两半，与 extensions.ts
+ *  split-twin/docx-clipboard 同规），保存时成为携带分页的 insertParagraph；文档开头的
+ *  分页在固定源中写成换行符（hardBreak pageBreak），本地保存协议只承载段落
+ *  pageBreakBefore，因此如实禁用。表格单元格内的段落同样不承载分页。 */
+export const DOCX_PAGE_BREAK_AT_START = '文档开头的分页符需要写入换行符，当前保存协议尚不支持；请将光标放在其他段落'
+export const DOCX_PAGE_BREAK_NESTED = '表格或嵌套内容中不能插入分页符'
+export function docxPageBreakUnavailable(editor: Editor, editable: boolean): string | undefined {
+  if (!editable || !editor.isEditable) return '当前文档不可编辑或正在保存'
+  const { $from } = editor.state.selection
+  if (!$from.parent.isTextblock || $from.depth !== 1 || !('pageBreakBefore' in $from.parent.attrs)) return DOCX_PAGE_BREAK_NESTED
+  if ($from.parentOffset === 0 && $from.before($from.depth) === 0) return DOCX_PAGE_BREAK_AT_START
+  return undefined
+}
+export function insertDocxPageBreak(editor: Editor): boolean {
+  const reason = docxPageBreakUnavailable(editor, true)
+  if (reason) throw new Error(reason)
+  const tr = editor.state.tr
+  if (!tr.selection.empty) tr.deleteSelection()
+  const $from = tr.selection.$from
+  if ($from.depth !== 1 || !$from.parent.isTextblock) throw new Error(DOCX_PAGE_BREAK_NESTED)
+  if ($from.parentOffset === 0) {
+    if ($from.before(1) === 0) throw new Error(DOCX_PAGE_BREAK_AT_START)
+    tr.setNodeMarkup($from.before(1), undefined, { ...$from.parent.attrs, pageBreakBefore: true })
+  } else {
+    tr.split($from.pos, 1, [{ type: $from.parent.type, attrs: { ...$from.parent.attrs, docxIndex: null, pageBreakBefore: true } }])
+  }
+  editor.view.dispatch(tr.scrollIntoView())
+  editor.view.focus()
+  return true
+}
 /** 从固定上游 InsertTab 提取原分组、按钮和符号面板；结构操作等待写回协议。 */
 export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: Editor; editable: boolean; anchors?: DocxAnchor[] }) {
   const t = (key: keyof typeof insertRibbonZh) => insertRibbonZh[key]
@@ -67,6 +99,7 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
   const [href, setHref] = useState('')
   const [linkError, setLinkError] = useState('')
   const link = editable ? docxLinkSelection(editor, anchors) : undefined
+  const pageBreakReason = docxPageBreakUnavailable(editor, editable)
   const linkUnavailable = linkSelectionUnavailable
   const openLink = () => { if (link) { setLinkDialog(link); setHref(link.href ?? ''); setLinkError('') } }
   const applyLink = (selection: DocxLinkSelection, value: string | null) => {
@@ -94,7 +127,7 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
             </span>
             <span>{t('ribbonBlankPage')}</span>
           </button>
-          <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-page-break" aria-label={t("ribbonPageBreakTip")}>
+          <button className="rb-big" disabled={!!pageBreakReason} title={pageBreakReason ?? t('ribbonPageBreakTip')} aria-description={pageBreakReason} onMouseDown={event => event.preventDefault()} onClick={() => { if (!docxPageBreakUnavailable(editor, editable)) insertDocxPageBreak(editor) }} data-action="insert-page-break" aria-label={t("ribbonPageBreakTip")}>
             <span className="rb-big-icon">
               <IconPageBreak size={BIG}/>
             </span>

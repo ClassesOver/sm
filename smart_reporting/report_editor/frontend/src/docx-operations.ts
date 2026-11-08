@@ -48,6 +48,7 @@ const paragraphSpacingKeys = ['spaceBefore', 'spaceAfter', 'lineSpacing', 'lineR
 const withoutParagraphSpacing = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !paragraphSpacingKeys.includes(key)))
 const withoutParagraphShading = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['shadingFill', 'shadingClear'].includes(key)))
 const withoutParagraphBorders = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['borders', 'borderLines'].includes(key)))
+const withoutPageBreakBefore = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => key !== 'pageBreakBefore'))
 const withoutList = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['kind', 'numId', 'ilvl'].includes(key)))
 const listOf = (node: DocxPmNode) => node.type === 'docListItem' ? { kind: node.attrs?.kind, numId: node.attrs?.numId, ilvl: node.attrs?.ilvl } : null
 function structure(node: DocxPmNode, marks = true): unknown {
@@ -206,7 +207,7 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
     const fallback = before.find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
     const target = next ?? previous ?? fallback
     if (!target) throw new Error('新增段落没有可编辑的锚点')
-    ops.push({ kind: 'insertParagraph', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', text: textOf(node) })
+    ops.push({ kind: 'insertParagraph', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', text: textOf(node), ...(node.attrs?.pageBreakBefore === true ? { pageBreakBefore: true } : {}) })
   }
   for (const node of before) {
     const anchor = byIndex.get(Number(idOf(node)))
@@ -265,7 +266,14 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
     }
     const originalAttrs = node.type === 'docListItem' ? withoutList(node.attrs) : node.attrs
     const editedAttrs = edited.type === 'docListItem' ? withoutList(edited.attrs) : edited.attrs
-    if ((!listChanged && node.type !== edited.type) || !same(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs))))), withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs))))))) throw new Error('暂不支持改变段落布局')
+    if ((!listChanged && node.type !== edited.type) || !same(withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs)))))), withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs)))))))) throw new Error('暂不支持改变段落布局')
+    const pageBreakChanged = !!node.attrs?.pageBreakBefore !== !!edited.attrs?.pageBreakBefore
+    if (pageBreakChanged) {
+      // 固定源 page-break.ts：分页符 = 段落 pageBreakBefore；与底纹同规走原 XML 最小修改，
+      // 不能与同段其他改动混存（段中插入分页的拆分段由 insertParagraph 携带分页）。
+      if (!same(node, { ...edited, attrs: { ...edited.attrs, pageBreakBefore: node.attrs?.pageBreakBefore ?? false } })) throw new Error('分页符修改请先保存；同段文字和格式不能混用')
+      ops.push({ kind: 'setParagraphPageBreakBefore', ...baseOp(anchor), value: !!edited.attrs?.pageBreakBefore })
+    }
     const shadingChanged = !same(node.attrs?.shadingFill ?? null, edited.attrs?.shadingFill ?? null) || !same(node.attrs?.shadingClear ?? null, edited.attrs?.shadingClear ?? null)
     if (shadingChanged) {
       // 与段落样式同规：底纹走原 XML 最小修改，不能与同段其他改动混存。
@@ -395,6 +403,13 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
         || operations.some(other => other.blockId === operation.blockId && other !== operation)) throw new Error('草稿段落底纹字段或来源身份无效')
       node.attrs = { ...node.attrs, shadingFill: operation.fill, shadingClear: operation.clear ? true : null }
     }
+    else if (operation.kind === 'setParagraphPageBreakBefore') {
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'value'].includes(key))
+        || typeof operation.value !== 'boolean'
+        || operations.some(other => other.blockId === operation.blockId && other !== operation)) throw new Error('草稿分页符字段或来源身份无效')
+      node.attrs = { ...node.attrs, pageBreakBefore: operation.value }
+    }
     else if (operation.kind === 'setParagraphBorders') {
       let borders: ReturnType<typeof safeDocxBorderSpec>
       try { borders = safeDocxBorderSpec(operation.borders) } catch { throw new Error('草稿段落边框字段或来源身份无效') }
@@ -472,7 +487,8 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       const index = result.content!.indexOf(node)
       if (index < 0) throw new Error('草稿插入锚点已删除')
       const offset = operation.position === 'after' ? (afterCounts.get(anchor.blockId) ?? 0) + 1 : 0
-      result.content!.splice(index + offset, 0, { type: 'docParagraph', attrs: { ...node.attrs, docxIndex: null }, ...(operation.text ? { content: [{ type: 'text', text: String(operation.text) }] } : {}) })
+      if (operation.pageBreakBefore !== undefined && operation.pageBreakBefore !== true) throw new Error('草稿新增段落分页字段无效')
+      result.content!.splice(index + offset, 0, { type: 'docParagraph', attrs: { ...node.attrs, docxIndex: null, pageBreakBefore: operation.pageBreakBefore === true }, ...(operation.text ? { content: [{ type: 'text', text: String(operation.text) }] } : {}) })
       if (operation.position === 'after') afterCounts.set(anchor.blockId, offset)
     }
     else if (operation.kind === 'insertParagraphImage') {
