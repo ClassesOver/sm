@@ -1,5 +1,8 @@
+import { patchTransitionPreservingMetadata, transitionEditAvailability } from './pptx-transition.ts'
+import { XMLParser } from 'fast-xml-parser'
+import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -8,7 +11,7 @@ type TextEdit = {
   elementId: string
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
-}
+} & { fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
 type Geometry = { x: number; y: number; width: number; height: number }
 type TextBox = {
   slideIndex: number
@@ -27,6 +30,7 @@ type Input = {
   edits?: TextEdit[]
   order?: number[]
   theme?: 'executive' | 'clinical' | 'modern'
+  slideSize?: { cx: number; cy: number }
   images?: {
     slideIndex: number
     bytesBase64: string
@@ -42,13 +46,35 @@ type Input = {
     trigger: SlideAnimation['trigger']
     durationMs?: number
     delayMs?: number
+    direction?: SlideAnimation['direction']
+    append?: boolean
   }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]
   backgrounds?: { slideIndex: number; color: string }[]
   textBoxes?: TextBox[]
   deletions?: { slideIndex: number; elementId: string }[]
+  paragraphFormatting?: {
+    slideIndex: number
+    elementId: string
+    bullet?: 'char' | 'number' | 'none'
+    bulletChar?: string
+    bulletFont?: string
+    numType?: string
+    startAt?: number
+    bulletHangEmu?: number
+    bulletSizePct?: number
+    bulletColor?: string
+    rtl?: boolean
+    indentDelta?: 1 | -1
+    align?: 'left' | 'center' | 'right' | 'justify'
+    lineSpacingPct?: number
+    spaceBeforePt?: number
+    spaceAfterPt?: number
+  }[]
 }
 
+const numberingTypes = ['arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPeriod', 'alphaLcParenR', 'alphaLcPeriod', 'romanLcPeriod', 'circleNumDbPlain', 'ea1ChsPeriod']
+const maxParagraphEmu = 51206400 // ECMA-376 ST_TextMargin/ST_TextIndent, 56 inches.
 const colorPattern = /^#[0-9a-fA-F]{6}$/
 const deletableTypes = new Set(['text', 'shape', 'picture'])
 const validSlideIndex = (value: unknown, count: number): value is number =>
@@ -76,6 +102,36 @@ const textOf = (element: (typeof opened.deck.slides)[number]['elements'][number]
   ).join('\n')
 }
 
+const transitionParser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, processEntities: false })
+function transitionApplyAllState(slide: (typeof opened.deck.slides)[number]) {
+  const unsafe = { transitionApplyAllSafe: false, transitionApplyAllReason: 'pptx_transition_additional_settings' }
+  try {
+  const suffix = slide.bodySuffix
+  if (/<(?:[\w.]+:)?AlternateContent\b/.test(suffix)) return unsafe
+  if (/<(?!p:)[\w.]+:transition\b/.test(suffix)) return unsafe
+  const blocks = suffix.match(/<p:transition\b[^>]*\/>|<p:transition\b[^>]*>[\s\S]*?<\/p:transition>/g) ?? []
+  if (!blocks.length) return /<p:transition\b/.test(suffix) ? unsafe : { transitionApplyAllSafe: true, transitionApplyAllReason: null }
+  // AlternateContent or repeated containers need a separate preservation contract.
+  if (blocks.length !== 1 || /<!--|<!\[CDATA\[|<\?/.test(blocks[0]!)) return unsafe
+  const parsed = transitionParser.parse(blocks[0]!)?.[0]
+  const attributes = parsed?.[':@'] ?? {}
+  if (Object.keys(attributes).some(key => key !== '@_advTm') || (attributes['@_advTm'] !== undefined && (!/^\d+$/.test(String(attributes['@_advTm'])) || !Number.isSafeInteger(Number(attributes['@_advTm'])) || Number(attributes['@_advTm']) > 4294967295))) return unsafe
+  const effect = parsed?.['p:transition'] ?? []
+  const kind = getSlideTransition(slide)
+  if (kind === 'none') return effect.length ? unsafe : { transitionApplyAllSafe: true, transitionApplyAllReason: null }
+  const canonical = patchSlideTransitionXml('</p:cSld>', kind).match(/<p:transition\b[^>]*>[\s\S]*?<\/p:transition>/)?.[0]
+  const expected = canonical ? transitionParser.parse(canonical)?.[0]?.['p:transition'] : undefined
+  if (effect.length !== 1 || !expected || expected.length !== 1) return unsafe
+  const name = Object.keys(effect[0]).find(key => key !== ':@')
+  const expectedName = Object.keys(expected[0]).find(key => key !== ':@')
+  if (name !== expectedName || !name || effect[0][name]?.length) return unsafe
+  const effectAttributes = effect[0][':@'] ?? {}
+  // Only a generic kind or the pinned writer's default variant is modeled.
+  if (Object.keys(effectAttributes).length && JSON.stringify(effectAttributes) !== JSON.stringify(expected[0][':@'] ?? {})) return unsafe
+  return { transitionApplyAllSafe: true, transitionApplyAllReason: null }
+  } catch { return unsafe }
+}
+
 if (request.action === 'inspect') {
   process.stdout.write(JSON.stringify({
     size: opened.deck.size,
@@ -86,13 +142,16 @@ if (request.action === 'inspect') {
       background: slide.background?.type === 'solid' ? slide.background.color : null,
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
-      animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, presetXml, preset }) => ({
+      ...transitionApplyAllState(slide),
+      ...transitionEditAvailability(slide.bodySuffix),
+      animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset }) => ({
         spid,
         elementId: slide.elements.find((element) => elementSpid(element) === spid)?.id ?? '',
         effect,
         trigger,
         durationMs,
         delayMs,
+        ...(direction ? { direction } : {}),
         ...(presetXml ? { presetXml } : {}),
         ...(preset ? { preset } : {}),
       })),
@@ -101,6 +160,46 @@ if (request.action === 'inspect') {
         type: element.type,
         name: element.name ?? '',
         text: textOf(element),
+        ...(element.type === 'text' || element.type === 'shape' ? (() => {
+          const paragraphs = element.text?.paragraphs ?? []
+          const run = paragraphs[0]?.runs[0]
+          return {
+            paragraphLists: paragraphs.map((paragraph) => ({
+              bulletKind: paragraph.bullet?.type ?? null,
+              bulletChar: paragraph.bullet?.char ?? null,
+              bulletFont: paragraph.bullet?.font ?? null,
+              numType: paragraph.bullet?.numType ?? null,
+              startAt: paragraph.bullet?.startAt ?? null,
+              bulletSizePct: paragraph.bullet?.sizePct ?? null,
+              bulletSizePt: paragraph.bullet?.sizePt ?? null,
+              bulletColor: paragraph.bullet?.color ?? null,
+              level: paragraph.level ?? null,
+              rtl: paragraph.rtl ?? null,
+              marLEmu: paragraph.marL ?? null,
+              indentEmu: paragraph.indent ?? null,
+              hasExplicitHangingIndent: Boolean(paragraph.pPrExplicit?.marL && paragraph.indent != null && paragraph.indent < 0),
+            })),
+            paragraphAlignments: paragraphs.map((paragraph) => paragraph.align ?? null),
+            paragraphFormatting: paragraphs.map((paragraph) => ({
+              align: paragraph.align ?? null,
+              lineSpacingPct: paragraph.lineHeight ?? null,
+              lineSpacingPt: paragraph.lineExact ?? null,
+              spaceBeforePt: paragraph.spaceBefore ?? null,
+              spaceAfterPt: paragraph.spaceAfter ?? null,
+              spaceBeforePct: paragraph.spaceBeforePct ?? null,
+              spaceAfterPct: paragraph.spaceAfterPct ?? null,
+            })),
+            ...(run ? { textStyle: {
+            fontSizePt: run.fontSize ?? null,
+            fontFamily: run.fontFamily ?? null,
+            color: run.color ?? null,
+            bold: run.bold ?? null,
+            italic: run.italic ?? null,
+            underline: run.underline ?? null,
+            strike: run.strike ?? null,
+            } } : {}),
+          }
+        })() : {}),
         editable: element.type === 'text' || element.type === 'shape',
         deletable: deletableTypes.has(element.type),
         geometry: {
@@ -117,6 +216,35 @@ if (request.action === 'inspect') {
   // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
   const originalSlides = [...opened.deck.slides]
   const slideCount = originalSlides.length
+  if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
+    throw new Error('paragraph_format_invalid')
+  }
+  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt', 'bullet', 'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta']
+  for (const format of request.paragraphFormatting ?? []) {
+    if (!format || typeof format !== 'object' || Array.isArray(format) ||
+      Object.keys(format).some(key => !['slideIndex', 'elementId', ...paragraphFields].includes(key)) ||
+      !paragraphFields.some(key => Object.hasOwn(format, key)) ||
+      !validSlideIndex(format.slideIndex, slideCount) || typeof format.elementId !== 'string' || !format.elementId ||
+      (Object.hasOwn(format, 'align') && !['left', 'center', 'right', 'justify'].includes(format.align!)) ||
+      (Object.hasOwn(format, 'lineSpacingPct') && ![100, 115, 150, 200, 250, 300].includes(format.lineSpacingPct!)) ||
+      (['spaceBeforePt', 'spaceAfterPt'] as const).some(key => Object.hasOwn(format, key) &&
+        (typeof format[key] !== 'number' || !Number.isFinite(format[key]) || format[key]! < 0 || format[key]! > 500)) ||
+      (Object.hasOwn(format, 'bullet') && !['char', 'number', 'none'].includes(format.bullet!)) ||
+      (Object.hasOwn(format, 'bulletChar') && (typeof format.bulletChar !== 'string' || [...format.bulletChar].length !== 1 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletChar))) ||
+      (Object.hasOwn(format, 'bulletFont') && (typeof format.bulletFont !== 'string' || !format.bulletFont.trim() || [...format.bulletFont].length > 200 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletFont))) ||
+      (Object.hasOwn(format, 'numType') && !numberingTypes.includes(format.numType!)) ||
+      (Object.hasOwn(format, 'startAt') && (!Number.isInteger(format.startAt) || format.startAt! < 1 || format.startAt! > 32767)) ||
+      (Object.hasOwn(format, 'bulletHangEmu') && (!Number.isInteger(format.bulletHangEmu) || format.bulletHangEmu! < 0 || format.bulletHangEmu! > maxParagraphEmu)) ||
+      (Object.hasOwn(format, 'bulletSizePct') && ![75, 90, 100, 125, 150].includes(format.bulletSizePct!)) ||
+      (Object.hasOwn(format, 'bulletColor') && (typeof format.bulletColor !== 'string' || !colorPattern.test(format.bulletColor))) ||
+      (Object.hasOwn(format, 'rtl') && typeof format.rtl !== 'boolean') ||
+      (Object.hasOwn(format, 'indentDelta') && ![-1, 1].includes(format.indentDelta!)) ||
+      (format.bullet === 'none' && ['bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor'].some(key => Object.hasOwn(format, key))) ||
+      (format.bullet === 'char' && ['numType', 'startAt'].some(key => Object.hasOwn(format, key))) ||
+      (['bulletChar', 'bulletFont'].some(key => Object.hasOwn(format, key)) && format.bullet !== 'char')) {
+      throw new Error('paragraph_format_invalid')
+    }
+  }
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
   for (const deletion of deletions) {
@@ -129,7 +257,8 @@ if (request.action === 'inspect') {
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
   if ((request.edits ?? []).some((edit) => touchesDeleted(edit.slideIndex, edit.elementId)) ||
-    (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
+    (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId)) ||
+    (request.paragraphFormatting ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
     throw new Error('delete_target_has_pending_edits')
   }
   for (const background of request.backgrounds ?? []) {
@@ -147,6 +276,13 @@ if (request.action === 'inspect') {
     if (box.rotation !== undefined && (!Number.isFinite(box.rotation) || Math.abs(box.rotation) > 360)) throw new Error('textbox_rotation_invalid')
   }
   for (const edit of request.edits ?? []) {
+    if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
+      throw new Error('element_edit_invalid')
+    }
+    if (edit.fontSizePt !== undefined && (!Number.isFinite(edit.fontSizePt) || edit.fontSizePt < 1 || edit.fontSizePt > 400)) throw new Error('text_format_font_invalid')
+    if (edit.fontFamily !== undefined && (typeof edit.fontFamily !== 'string' || !edit.fontFamily.trim() || edit.fontFamily.length > 200 || /[\x00-\x1f]/.test(edit.fontFamily))) throw new Error('text_format_font_invalid')
+    if (edit.color !== undefined && (typeof edit.color !== 'string' || !colorPattern.test(edit.color))) throw new Error('text_format_color_invalid')
+    if (['bold', 'italic', 'underline', 'strike'].some(key => edit[key as keyof TextEdit] !== undefined && typeof edit[key as keyof TextEdit] !== 'boolean')) throw new Error('text_format_font_invalid')
     if (!Number.isInteger(edit.slideIndex) || edit.slideIndex < 0 || edit.slideIndex >= opened.deck.slides.length) {
       throw new Error('slide_index_invalid')
     }
@@ -194,7 +330,13 @@ if (request.action === 'inspect') {
     if (!Number.isInteger(transition.slideIndex) || transition.slideIndex < 0 || transition.slideIndex >= opened.deck.slides.length) {
       throw new Error('transition_slide_index_invalid')
     }
-    setSlideTransition(opened.deck.slides[transition.slideIndex]!, transition.kind)
+    const slide = opened.deck.slides[transition.slideIndex]!
+    const preserved = patchTransitionPreservingMetadata(slide.bodySuffix, transition.kind)
+    if (preserved !== slide.bodySuffix) {
+      // Keep the pinned operation's dirty/save hook, then install preserved source XML.
+      setSlideTransition(slide, transition.kind)
+      slide.bodySuffix = preserved
+    }
   }
   for (const animation of request.animations ?? []) {
     const durationMs = animation.durationMs ?? 500
@@ -202,6 +344,10 @@ if (request.action === 'inspect') {
     if (!Number.isFinite(durationMs) || durationMs < 0 || !Number.isFinite(delayMs) || delayMs < 0) {
       throw new Error('animation_timing_invalid')
     }
+    if (animation.direction !== undefined && (
+      !['top', 'bottom', 'left', 'right'].includes(animation.direction) ||
+      !['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(animation.effect)
+    )) throw new Error('animation_direction_invalid')
     const slide = opened.deck.slides[animation.slideIndex]
     const element = slide?.elements.find((candidate) => candidate.id === animation.elementId)
     const spid = element ? elementSpid(element) : null
@@ -209,7 +355,7 @@ if (request.action === 'inspect') {
       throw new Error('animation_target_invalid')
     }
     const existing = getSlideAnimations(slide)
-    const index = existing.findIndex((item) => item.spid === spid && item.effect === animation.effect)
+    const index = animation.append ? -1 : existing.findIndex((item) => item.spid === spid && item.effect === animation.effect)
     const updated: SlideAnimation = {
       ...(index >= 0 ? existing[index] : {}),
       spid,
@@ -217,6 +363,7 @@ if (request.action === 'inspect') {
       trigger: animation.trigger,
       durationMs,
       delayMs,
+      ...(animation.direction !== undefined ? { direction: animation.direction } : {}),
     }
     if (index >= 0) existing[index] = updated
     else existing.push(updated)
@@ -232,9 +379,11 @@ if (request.action === 'inspect') {
     if (!layouts.some((layout) => layout.path === selection.layoutPath)) {
       throw new Error('layout_path_invalid')
     }
-    if (!setSlideLayout(opened, selection.slideIndex, selection.layoutPath)) {
-      throw new Error('layout_apply_failed')
-    }
+    const laidOut = setSlideLayout(opened, selection.slideIndex, selection.layoutPath)
+    if (!laidOut) throw new Error('layout_apply_failed')
+    // Layout materialization replaces the slide model; later edits must target
+    // that live object while retaining the request's original slide indices.
+    originalSlides[selection.slideIndex] = laidOut
   }
   if (request.order) {
     if (request.order.length !== opened.deck.slides.length || new Set(request.order).size !== request.order.length || request.order.some((n) => !Number.isInteger(n) || n < 0 || n >= request.order!.length)) {
@@ -251,6 +400,33 @@ if (request.action === 'inspect') {
     const spec = themes[request.theme]
     applyThemeToArchive(opened, spec)
     remapDeckColors(opened, spec)
+  }
+  for (const edit of request.edits ?? []) {
+    const { fontSizePt, fontFamily, color, bold, italic, underline, strike } = edit
+    if ([fontSizePt, fontFamily, color, bold, italic, underline, strike].some(value => value !== undefined)) {
+      if (!setElementFont(originalSlides[edit.slideIndex]!, edit.elementId, {
+        ...(fontSizePt !== undefined ? { fontSizePt } : {}),
+        ...(fontFamily !== undefined ? { fontFamily } : {}),
+        ...(color !== undefined ? { color: color.toUpperCase() } : {}),
+        ...(bold !== undefined ? { bold } : {}),
+        ...(italic !== undefined ? { italic } : {}),
+        ...(underline !== undefined ? { underline } : {}),
+        ...(strike !== undefined ? { strike } : {}),
+      })) throw new Error('text_format_target_invalid')
+    }
+  }
+  for (const format of request.paragraphFormatting ?? []) {
+    const { slideIndex, elementId, ...patch } = format
+    const slide = originalSlides[slideIndex]
+    const element = slide?.elements.find(candidate => candidate.id === elementId)
+    if (!slide || !element || (element.type !== 'text' && element.type !== 'shape') || !element.text ||
+      !setElementParagraphFormat(slide, elementId, patch)) throw new Error('paragraph_format_target_invalid')
+    // Validate every ordered command so a later opposite indent cannot hide overflow.
+    if (element.text?.paragraphs.some(paragraph =>
+        (paragraph.marL != null && (paragraph.marL < 0 || paragraph.marL > maxParagraphEmu)) ||
+        (paragraph.indent != null && Math.abs(paragraph.indent) > maxParagraphEmu))) {
+      throw new Error('paragraph_indent_out_of_range')
+    }
   }
   for (const background of request.backgrounds ?? []) {
     setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
@@ -272,6 +448,18 @@ if (request.action === 'inspect') {
     if (box.rotation) {
       element.transform.rot = Math.round(box.rotation * 60000)
       element.dirtyTransform = true
+    }
+  }
+  if (request.slideSize) {
+    const { cx, cy } = request.slideSize
+    if (Object.keys(request.slideSize).length !== 2
+      || ![cx, cy].every(value => Number.isInteger(value) && value >= 914400 && value <= 51206400)) {
+      throw new Error('slide_size_invalid')
+    }
+    // Draft coordinates refer to the original canvas. Resize after all edits;
+    // setSlideSize materializes slides and must not invalidate pending targets.
+    if ((opened.deck.size.cx !== cx || opened.deck.size.cy !== cy) && !setSlideSize(opened, cx, cy)) {
+      throw new Error('slide_size_apply_failed')
     }
   }
   if (!request.output) throw new Error('output_path_required')

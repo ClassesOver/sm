@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.12-slim
 ARG UV_IMAGE=ghcr.m.daocloud.io/astral-sh/uv:0.11.26
 ARG NODE_IMAGE=docker.m.daocloud.io/library/node:22-slim
@@ -12,6 +13,18 @@ RUN sed -i \
 
 FROM ${UV_IMAGE} AS uv-source
 
+FROM ${NODE_IMAGE} AS report-pdf-engine
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+WORKDIR /build/smart_reporting/reporting/pdf_engine
+COPY smart_reporting/reporting/pdf_engine ./
+COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --ignore-scripts --registry="${NPM_REGISTRY}" \
+    && npm run bundle:bridges -- --metafile=dist/metafile.json \
+    && node bridge/package-runtime.mjs . /runtime/reporting-pdf-engine /build/package-office-engine.mjs
+
 FROM ${NODE_IMAGE} AS report-editor-frontend
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
@@ -21,7 +34,9 @@ WORKDIR /build/smart_reporting/reporting/workbook_engine
 COPY smart_reporting/reporting/workbook_engine ./
 COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
 # 桥接脚本预先打包，运行时不再逐次转译 TypeScript。
-RUN npm ci --registry="${NPM_REGISTRY}" \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --registry="${NPM_REGISTRY}" \
     && npm run bundle:bridges -- --metafile=dist/metafile.json \
     && node /build/package-office-engine.mjs . /runtime/reporting-workbook-engine
 
@@ -34,7 +49,9 @@ COPY smart_reporting/reporting/slides_engine/LICENSE \
     smart_reporting/reporting/slides_engine/SOURCE.md ./
 COPY smart_reporting/reporting/slides_engine/packages ./packages
 COPY smart_reporting/reporting/slides_engine/bridge ./bridge
-RUN npm ci --registry="${NPM_REGISTRY}" \
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --registry="${NPM_REGISTRY}" \
     && npm run test --workspace @genoffice/pipelines \
     && npm run typecheck --workspace @genoffice/pipelines \
     && npm run bundle:bridges -- --metafile=dist/metafile.json \
@@ -44,17 +61,19 @@ RUN npm ci --registry="${NPM_REGISTRY}" \
 WORKDIR /build/smart_reporting/report_editor/frontend
 COPY smart_reporting/report_editor/frontend/package.json \
     smart_reporting/report_editor/frontend/package-lock.json ./
-RUN npm ci --registry="${NPM_REGISTRY}"
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --registry="${NPM_REGISTRY}"
 COPY smart_reporting/report_editor/frontend ./
 RUN npm run build && npm run build:slides
 
 # COPY smart_reporting 会再次带入引擎源码；在独立构建层裁剪，避免镜像层仍保存副本。
 FROM base AS app-source
 COPY smart_reporting /app/smart_reporting
-RUN find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine \
+RUN find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine \
         -type f ! -iname '*license*' ! -iname '*notice*' ! -iname '*copying*' ! -iname '*copyright*' \
         ! -name 'SOURCE*' ! -name 'UPSTREAM*' -delete \
-    && find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine \
+    && find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine \
         -depth -type d -empty -delete
 
 FROM base AS env-init
@@ -74,6 +93,7 @@ COPY --from=uv-source /uv /uvx /bin/
 COPY --from=report-editor-frontend /usr/local /usr/local
 COPY --from=report-editor-frontend /runtime/reporting-slides-engine /opt/reporting-slides-engine
 COPY --from=report-editor-frontend /runtime/reporting-workbook-engine /opt/reporting-workbook-engine
+COPY --from=report-pdf-engine /runtime/reporting-pdf-engine /opt/reporting-pdf-engine
 
 WORKDIR /app
 
@@ -93,7 +113,9 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock ./
 RUN sed -i "s|https://files.pythonhosted.org|${PYPI_FILES_MIRROR}|g" uv.lock
-RUN UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
+RUN --mount=type=secret,id=system_ca \
+    if [ -f /run/secrets/system_ca ]; then export SSL_CERT_FILE=/run/secrets/system_ca; fi; \
+    UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX}" UV_PROJECT_ENVIRONMENT=/app/.venv \
     uv sync --frozen --no-dev --no-install-project
 
 RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do command -v "$tool" || exit 1; done \
@@ -109,6 +131,8 @@ COPY --from=report-editor-frontend /build/smart_reporting/report_editor/static /
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_REPORTING_SLIDES_ENGINE_DIR=/opt/reporting-slides-engine \
     AGENT_REPORTING_WORKBOOK_ENGINE_DIR=/opt/reporting-workbook-engine \
+    AGENT_REPORTING_PDF_ENGINE_DIR=/opt/reporting-pdf-engine \
+    AGENT_REPORTING_PDF_WASM_DIR=/opt/reporting-pdf-engine/wasm \
     AGENT_REPORT_EDITOR_STATIC_DIR=/opt/report-editor-static \
     MPLCONFIGDIR=/tmp/reporting-matplotlib \
     MPLBACKEND=Agg \

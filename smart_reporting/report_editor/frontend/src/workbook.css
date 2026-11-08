@@ -1,2 +1,18 @@
 .editor-format-xlsx .report-outline,.editor-format-xlsx .report-meta,.editor-format-xlsx .focus-mode-exit{display:none}.editor-format-xlsx .report-workspace{display:block}.editor-format-xlsx .editor-surface{max-width:none;padding:0}.editor-format-xlsx #report-editor{height:calc(100vh - 76px);padding:0;display:flex;flex-direction:column;max-width:none}.workbook-ai{padding:12px 20px;border-bottom:1px solid #e3e5ea;background:#fff}.workbook-ai form{display:flex;align-items:center;gap:12px}.workbook-ai label{font-weight:600;color:#48546a;white-space:nowrap}.workbook-ai textarea{flex:1;resize:vertical;border:1px solid #d7dce4;border-radius:6px;padding:8px;font:inherit}.workbook-ai button{border:1px solid #d7dce4;border-radius:6px;padding:8px 12px;background:#fff;cursor:pointer}.workbook-ai button:disabled{opacity:.5;cursor:default}.workbook-feedback{font-size:13px;color:#68738a;padding-top:6px}.workbook-candidate{max-height:220px;overflow:auto;padding:10px;background:#f6f8fc;border-radius:6px}.workbook-candidate pre{font-size:12px;white-space:pre-wrap}.workbook-grid{flex:1;min-height:360px;position:relative}.workbook-grid .univer-textarea{font-family:inherit}@media(max-width:720px){.workbook-ai form{flex-wrap:wrap}.workbook-ai textarea{min-width:70%}}
 .workbook-actions{display:flex;gap:8px;padding-top:8px}
+.workbook-ribbon { background: #fff; border-bottom: 1px solid #d8dde5; color: #202936; }
+.workbook-ribbon-tabs { display: flex; gap: 2px; overflow-x: auto; border-bottom: 1px solid #e3e7ed; padding: 4px 8px 0; }
+.workbook-ribbon-tabs button { min-height: 34px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: inherit; white-space: nowrap; }
+.workbook-ribbon-tabs button[aria-selected="true"] { border-bottom-color: #167a72; color: #0d625c; font-weight: 600; }
+.workbook-ribbon-body { display: flex; min-height: 88px; gap: 8px; overflow-x: auto; padding: 8px; }
+.workbook-ribbon-group { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; border-right: 1px solid #e3e7ed; padding: 0 12px 14px 4px; position: relative; }
+.workbook-ribbon-group h3 { position: absolute; bottom: 0; left: 4px; margin: 0; color: #65717e; font-size: 11px; font-weight: 400; }
+.workbook-ribbon-group button { min-height: 34px; padding: 0 10px; border: 1px solid #cfd6de; border-radius: 4px; background: #fff; color: #202936; }
+.workbook-ribbon-group button:hover:not(:disabled) { background: #f0f6f5; border-color: #76a9a3; }
+.workbook-ribbon-group button:disabled { color: #78828d; background: #f6f7f9; }
+.workbook-ribbon-select { width: 112px; height: 32px; padding: 0 7px; border: 1px solid #cfd6de; border-radius: 3px; background: #fff; color: #202936; }
+.workbook-ribbon-size { width: 58px; }
+.workbook-ribbon-color { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid #cfd6de; border-radius: 3px; background: #fff; }
+.workbook-ribbon-color input { width: 22px; height: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.workbook-ribbon-group button .workbook-ribbon-icon { display: inline-grid; width: 18px; height: 18px; place-items: center; flex: 0 0 18px; }
+.workbook-ribbon-group button .workbook-ribbon-icon svg { width: 18px; height: 18px; }

@@ -1,0 +1,6 @@
+This product includes selected software from GenOffice, copyright its contributors,
+licensed under the Apache License, Version 2.0. Source snapshot:
+4b55db9ed1994575a695160ffc6cfd0bfc866211.
+Source provenance and local adaptations are documented in SOURCE.md.
+Runtime dependencies (PDFium, HarfBuzz, pdf-lib and others) retain their own
+licenses and notices in their npm distributions; packaging must preserve them.

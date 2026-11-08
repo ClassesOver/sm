@@ -4,6 +4,7 @@ import base64
 import json
 import shutil
 import subprocess
+from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -94,6 +95,38 @@ def _bridge(root, engine, script, request):
     result = office_engine.run_bridge(engine, script, path)
     assert result.returncode == 0, result.stderr
     return office_engine.last_json_line(result.stdout)
+
+
+def test_docx_bundle_runs_without_source_or_node_modules(tmp_path, monkeypatch):
+    from docx import Document
+
+    from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
+
+    bundle = _REPO / "smart_reporting/reporting/slides_engine/dist/edit-docx.mjs"
+    if not bundle.is_file():
+        pytest.skip("需要先为 slides_engine 执行 bundle:bridges")
+    runtime = tmp_path / "runtime"
+    (runtime / "dist").mkdir(parents=True)
+    shutil.copy2(bundle, runtime / "dist/edit-docx.mjs")
+    monkeypatch.setenv("AGENT_REPORTING_SLIDES_ENGINE_DIR", str(runtime))
+    monkeypatch.delenv("NODE_PATH", raising=False)
+    monkeypatch.delenv("NODE_OPTIONS", raising=False)
+
+    document = Document()
+    document.add_paragraph("独立运行原文")
+    stream = BytesIO()
+    document.save(stream)
+    source = stream.getvalue()
+    target = next(block for block in inspect_docx(source)["blocks"] if block["editable"])
+    edited = patch_docx(source, [{
+        "kind": "replaceParagraph", "blockId": target["blockId"],
+        "expectedObjectSha256": target["expectedObjectSha256"], "text": "独立运行已编辑",
+    }])
+
+    assert Document(BytesIO(edited)).paragraphs[0].text == "独立运行已编辑"
+    assert Document(BytesIO(source)).paragraphs[0].text == "独立运行原文"
+    assert not (runtime / "node_modules").exists()
+    assert not (runtime / "packages").exists()
 
 
 def test_isolated_bundles_build_edit_render_slides_and_patch_workbook(isolated_engines):

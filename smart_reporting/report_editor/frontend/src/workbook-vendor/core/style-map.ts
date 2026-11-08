@@ -1,3 +1,4 @@
+import { ooxmlRotationToUniver, univerRotationToOoxml } from '../../workbook-rotation'
 /// Style mapping between the engine's stylesheet model and Univer's
 /// IStyleData, through a renderer-neutral LogicalStyle both sides share.
 /// Import: OOXML xf → LogicalStyle → Univer style entry.
@@ -30,6 +31,7 @@ export interface LogicalStyle {
   fillColor?: string | undefined
   hAlign?: 'left' | 'center' | 'right' | 'justify' | undefined
   vAlign?: 'top' | 'middle' | 'bottom' | undefined
+  textRotation?: number | undefined
   wrap?: boolean | undefined
   numberFormat?: string | undefined
   /// border edges; undefined edge = none/inherited
@@ -109,6 +111,7 @@ export function logicalStyleOf(
     style.vAlign =
       alignment.vertical === 'center' ? 'middle' : alignment.vertical === 'bottom' ? 'bottom' : 'top'
   }
+  if (alignment?.textRotation !== undefined) style.textRotation = alignment.textRotation
   if (alignment?.wrapText) style.wrap = true
   const border = styles.borders[xf.borderId]
   if (border?.left) style.borderLeft = logicalEdge(border.left, palette)
@@ -142,6 +145,7 @@ export interface UniverStyleData {
   bg?: { rgb?: string | undefined } | undefined
   ht?: number | undefined
   vt?: number | undefined
+  tr?: { a?: number; v?: number } | undefined
   tb?: number | undefined
   n?: { pattern?: string | undefined } | undefined
   bd?: UniverBorderData | undefined
@@ -191,6 +195,7 @@ export function toUniverStyle(style: LogicalStyle): UniverStyleData {
   if (style.vAlign !== undefined) {
     out.vt = style.vAlign === 'top' ? 1 : style.vAlign === 'middle' ? 2 : 3
   }
+  if (style.textRotation !== undefined) out.tr = ooxmlRotationToUniver(style.textRotation)
   if (style.wrap !== undefined) out.tb = style.wrap ? 2 : 1
   if (style.numberFormat !== undefined) out.n = { pattern: style.numberFormat }
   const bd = toUniverBorder(style)
@@ -233,6 +238,8 @@ export function fromUniverStyle(data: UniverStyleData): LogicalStyle {
   if (data.vt !== undefined && VERT_FROM_UNIVER[data.vt] !== undefined) {
     style.vAlign = VERT_FROM_UNIVER[data.vt]
   }
+  const rotation = univerRotationToOoxml(data.tr)
+  if (rotation !== undefined) style.textRotation = rotation
   if (data.tb !== undefined) style.wrap = data.tb === 2
   if (data.n?.pattern !== undefined && data.n.pattern !== 'General') {
     style.numberFormat = data.n.pattern
@@ -277,6 +284,7 @@ export function styleDelta(
     'fillColor',
     'hAlign',
     'vAlign',
+    'textRotation',
     'wrap',
     'numberFormat',
     'borderTop',
@@ -288,7 +296,7 @@ export function styleDelta(
   for (const key of keys) {
     const a = before?.[key]
     const b = after?.[key]
-    if (a === b) continue
+    if (a === b || (key === 'textRotation' && (a ?? 0) === (b ?? 0))) continue
     if (b === undefined) continue // inherited: the grid kept the file's format
     delta[univerKeyToEditKey(key)] = b
   }
@@ -307,6 +315,7 @@ const KEY_MAP: Record<string, string> = {
   fillColor: 'fillColor',
   hAlign: 'horizontalAlignment',
   vAlign: 'verticalAlignment',
+  textRotation: 'textRotation',
   wrap: 'wrapText',
   numberFormat: 'numberFormat',
   borderTop: 'borderTop',

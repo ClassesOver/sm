@@ -16,8 +16,8 @@ const rangeStart50: PivotFieldGrouping = { kind: 'range', rangeStep: 25, rangeSt
 
 describe('pivot field grouping', () => {
   it('parses Excel serial dates and direct date strings', () => {
-    // 1900-01-01 is serial 2 in Excel's epoch (1899-12-30 + 2 days)
-    expect(parseDateParts(2)).toEqual({ year: 1900, month: 1 })
+    // Excel 的 1900 日期系统中，序列 1 对应 1900-01-01。
+    expect(parseDateParts(1)).toEqual({ year: 1900, month: 1 })
     // 2026-03-15 → serial 46096
     expect(parseDateParts(46096)).toEqual({ year: 2026, month: 3 })
     expect(parseDateParts('2026-03-15')).toEqual({ year: 2026, month: 3 })

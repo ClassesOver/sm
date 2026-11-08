@@ -119,17 +119,18 @@ def libreoffice_to_pdf(content: bytes, *, suffix: str, timeout: float) -> bytes:
 _ENGINES = {
     "slides": ("AGENT_REPORTING_SLIDES_ENGINE_DIR", "slides_engine"),
     "workbook": ("AGENT_REPORTING_WORKBOOK_ENGINE_DIR", "workbook_engine"),
+    "pdf": ("AGENT_REPORTING_PDF_ENGINE_DIR", "pdf_engine"),
 }
 
 
-def engine_dir(engine: Literal["slides", "workbook"]) -> Path:
+def engine_dir(engine: Literal["slides", "workbook", "pdf"]) -> Path:
     """固定版本 Node 引擎目录；部署时可用环境变量指向镜像内副本。"""
     variable, folder = _ENGINES[engine]
     return Path(os.environ.get(variable) or Path(__file__).resolve().parents[1] / folder)
 
 
 def run_bridge(
-    engine: Literal["slides", "workbook"], script: str, request_path: Path, *, timeout: float = 120,
+    engine: Literal["slides", "workbook", "pdf"], script: str, request_path: Path, *, timeout: float = 120,
 ) -> subprocess.CompletedProcess[str]:
     """执行引擎桥接脚本，返回进程结果，由调用方按各自契约解释。
 

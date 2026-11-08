@@ -33,7 +33,7 @@ import {
 import { resolveRelationshipTargetPath } from './parse-package'
 import { applyRemoveParts, planRemoveParts, type RemovePartsOptions } from './remove-parts'
 import { assertZipWithinLimits, resolveMainDocumentPath, type ParseExtras } from './parse'
-import { cleanupDocxOwnedResources } from './resource-cleanup'
+import { cleanupDocxOwnedResources, referencedRelationshipIds } from './resource-cleanup'
 import { loadDocxZip } from './zip-load'
 import {
   BLANK_NUMBERING_XML,
@@ -795,7 +795,6 @@ export async function saveDocx(
     options.themeFonts === undefined &&
     options.themeColors === undefined &&
     options.properties === undefined &&
-    options.removeParts === undefined &&
     options.contentControls === undefined &&
     (options.partXml === undefined || Object.keys(options.partXml).length === 0) &&
     (options.partBinary === undefined || Object.keys(options.partBinary).length === 0)
@@ -2260,10 +2259,7 @@ export async function saveDocx(
   const out = new JSZip()
   for (const [name, entry] of Object.entries(zip.files)) {
     if (entry.dir) {
-      // folder entries must carry the source date too: folder() stamps them
-      // with the current time, which makes two saves of an unchanged package
-      // differ in bytes whenever they straddle a 2-second DOS-time tick
-      out.file(name, null, { dir: true, date: entry.date })
+      out.file(name, '', { dir: true, date: entry.date })
       continue
     }
     const hfPart = hfParts.find((p) => p.path === name)
@@ -2374,7 +2370,17 @@ export async function saveDocx(
   if (customPropertiesIsNew && customPropertiesXml !== null) {
     out.file(CUSTOM_PROPERTIES_PATH, customPropertiesXml)
   }
-  await cleanupDocxOwnedResources(out, docPath)
+  // The resource sweep prunes only what this save broke: a relationship the
+  // source document already did not reference is a pre-existing orphan, and
+  // Word keeps those (so do the byte-identity round trips).
+  const sourceDocumentFile = zip.file(docPath)
+  await cleanupDocxOwnedResources(
+    out,
+    docPath,
+    sourceDocumentFile
+      ? referencedRelationshipIds(await sourceDocumentFile.async('string'))
+      : undefined,
+  )
   await cleanStoryMoveRanges(out, docPath)
   if (scrubPersonalInfo) await scrubPersonalMetadata(out)
   // metadata scrubs come after every generated/copied part is in place, so a

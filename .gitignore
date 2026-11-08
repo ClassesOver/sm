@@ -332,5 +332,7 @@ cython_debug/
 .worktrees/
 .superpowers
 docs
+# 固定版本的 GenOffice Docs 浏览器源码属于交付依赖。
+!smart_reporting/report_editor/frontend/src/vendor/genoffice-docs/apps/docs/
 # 证据浏览器等浏览器回放生成的截图与几何报告
 /output/

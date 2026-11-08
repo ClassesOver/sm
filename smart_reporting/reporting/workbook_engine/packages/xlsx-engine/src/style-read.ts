@@ -173,9 +173,9 @@ function numberAttribute(
   tagName: string,
   attribute: string | undefined,
 ): number | undefined {
-  const tag = element.match(new RegExp(`<${tagName}\\b[^>]*\\/?>`))?.[0]
+  const tag = attribute === undefined ? element : element.match(new RegExp(`<${tagName}\\b[^>]*\\/?>`))?.[0]
   if (tag === undefined) return undefined
-  const raw = attribute === undefined ? undefined : readCoreAttribute(tag, attribute)
+  const raw = readCoreAttribute(tag, attribute ?? tagName)
   if (raw === undefined) return undefined
   const value = Number(raw)
   return Number.isFinite(value) ? value : undefined

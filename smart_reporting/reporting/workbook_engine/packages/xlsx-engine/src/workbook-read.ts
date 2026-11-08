@@ -9,7 +9,7 @@ import { readDefinedNames } from './defined-names'
 import { readSparklines, type SparklineSpec } from './sparklines'
 import { readCharts, type ChartReadSpec } from './chart-read'
 import { createBufferEntrySource, type EntrySource } from './zip'
-import { decodeCellText, decodeXmlText, escapeRegExp, readXmlAttribute } from './xml'
+import { decodeCellText, decodeXmlText, escapeRegExp, readXmlAttribute, extractElements, sectionInner } from './xml'
 
 export interface ModelCell {
   value: string | number | boolean | null
@@ -42,6 +42,8 @@ export interface SheetModel {
   rows: readonly RowDef[]
   freeze: { frozenRows: number; frozenColumns: number } | null
   dimension: string | null
+  /// Rotation commands are gated until inherited row/column/base-XF styles are modeled.
+  rotationReadOnlyReason?: string
   /// self-colored conditional formats (dataBar / colorScale) read back for
   /// grid rendering; cellIs/iconSet are write-only boundaries
   conditionalFormats?: ReadonlyArray<CfReadableRule>
@@ -211,7 +213,12 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
   const source = await createBufferEntrySource(bytes)
   const workbookXml = await source.readText('xl/workbook.xml')
   const sharedStrings = await readSharedStrings(source)
-  const styles = parseStylesheet(await source.readText('xl/styles.xml'))
+  const stylesXml = await source.readText('xl/styles.xml')
+  const styles = parseStylesheet(stylesXml)
+  const parentStyles = stylesXml.match(/<cellStyleXfs\b[^>]*>([\s\S]*?)<\/cellStyleXfs>/)?.[1] ?? ''
+  const rotatedParent = [...parentStyles.matchAll(/<alignment\b[^>]*\btextRotation=["']([^"']+)["']/g)].some(match => Number(match[1]) !== 0)
+  const defaultRotation = styles.cellXfs[0]?.alignment?.textRotation ?? 0
+  const disabledAlignment = extractElements(sectionInner(stylesXml, 'cellXfs') ?? '', 'xf').some(xf => ['0', 'false'].includes(readXmlAttribute(xf, 'applyAlignment') ?? '') && /<alignment\b[^>]*\btextRotation=/.test(xf))
   const themePalette = (await source.has('xl/theme/theme1.xml'))
     ? parseThemePalette(await source.readText('xl/theme/theme1.xml'))
     : undefined
@@ -222,6 +229,8 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
     const path = await resolveWorksheetPath(source, element.relationshipId)
     const worksheetXml = await source.readText(path)
     const geometry = parseGeometry(worksheetXml)
+    const inheritedSheetStyle = [...worksheetXml.matchAll(/<(row|col)\b([^>]*)>/g)].some(match => readXmlAttribute(match[2]!, match[1] === 'row' ? 's' : 'style') !== undefined)
+    const rotationReadOnly = inheritedSheetStyle || defaultRotation !== 0 || rotatedParent || disabledAlignment
     const conditionalFormats = readCfRules(worksheetXml, element.name)
     const sparklines = readSparklines(worksheetXml)
     const charts = await readCharts(bytes, path)
@@ -230,6 +239,7 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
       path,
       cells: parseWorksheetCells(worksheetXml, sharedStrings),
       ...geometry,
+      ...(rotationReadOnly ? { rotationReadOnlyReason: 'xlsx_rotation_inherited_style_unsupported' } : {}),
       ...(conditionalFormats.length > 0 ? { conditionalFormats } : {}),
       ...(sparklines.length > 0 ? { sparklines } : {}),
       ...(charts.length > 0 ? { charts } : {}),

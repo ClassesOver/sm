@@ -1,0 +1,11 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "upstreamPath": "apps/pdf/src/renderer/annotations.ts",
+  "upstreamSha256": "81fa2dab6398d6b74b011fd8a4d19629c7036cd98a72a5d21bf2679ecc9bb9aa",
+  "localSha256": "00219a4cbd7426ae8b360c945431543e69e711a29a1c10e8dd5107605569e7f6",
+  "adaptations": [
+    "type-only import targets local native markup contract",
+    "page bounds selector targets native content boxes, excluding headings/borders",
+    "prominent provenance/change notice added"
+  ]
+}

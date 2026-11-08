@@ -275,9 +275,9 @@ function boxDrawingSegments(paragraphXml: string): Array<{ start: number; end: n
   )
 }
 
-/** How a caller addresses one shape drawing: by its wps:cNvPr id when known, else by box ordinal. */
+/** How a caller addresses one shape drawing: by its cNvPr id when known, else by box ordinal. */
 export interface ShapeDrawingLocation {
-  /** wps:cNvPr id of the owning shape (parsed boxes carry it) */
+  /** wps:cNvPr (or pic:cNvPr for a photo box) id of the owning shape (parsed boxes carry it) */
   shapeId?: string
   /** fallback ordinal among box drawings (generated shapes have no id) */
   boxIndex: number
@@ -291,8 +291,9 @@ function shapeDrawingSegment(
     // an id was given: never fall back to a different drawing
     const found = xmlSegments(paragraphXml, 'w:drawing', 0, paragraphXml.length).find(
       (seg) =>
-        /<wps:cNvPr\b[^>]*\bid="([^"]+)"/.exec(paragraphXml.slice(seg.start, seg.end))?.[1] ===
-        location.shapeId,
+        /<(?:wps|pic):cNvPr\b[^>]*\bid="([^"]+)"/.exec(
+          paragraphXml.slice(seg.start, seg.end),
+        )?.[1] === location.shapeId,
     )
     return found ?? null
   }
@@ -841,7 +842,7 @@ function paraPlainText(pXml: string): string {
  * pStyle and the keep-together flags, before pBdr, shd, tabs, spacing, ind and
  * jc — so it is inserted after pStyle when present (the common textbox shape)
  * and otherwise directly after the pPr opening tag. */
-function pPrWithNumPr(pPr: string, numPr: TextboxParaPatch['numPr']): string {
+export function pPrWithNumPr(pPr: string, numPr: TextboxParaPatch['numPr']): string {
   const out = pPr.replace(/<w:pPr([^>]*)\/>/, '<w:pPr$1></w:pPr>')
   const stripped = out.replace(/<w:numPr>[\s\S]*?<\/w:numPr>/, '').replace(/<w:numPr\/>/, '')
   if (!numPr) return stripped === '<w:pPr></w:pPr>' ? '' : stripped
@@ -859,7 +860,7 @@ function pPrWithNumPr(pPr: string, numPr: TextboxParaPatch['numPr']): string {
  * the style chain, over the twips twin, so a twips write also pins
  * w:leftChars="0" the way Word itself writes pt indents. CT_PPr places ind
  * before jc and the paragraph-mark rPr. */
-function pPrWithIndLeft(pPr: string, left: number | null): string {
+export function pPrWithIndLeft(pPr: string, left: number | null): string {
   let out = pPr.replace(/<w:pPr([^>]*)\/>/, '<w:pPr$1></w:pPr>')
   const value = left == null ? '' : ` w:left="${left}" w:leftChars="0"`
   const ind = /<w:ind\b([^>]*)\/>/.exec(out)

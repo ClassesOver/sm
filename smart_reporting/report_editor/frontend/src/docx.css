@@ -1,0 +1,30 @@
+.docx-native { --surface:#fff; --text:#222; --border:#ddd; --text-secondary:#667085; position:relative; color:#222; }
+.docx-native .docx-tools { padding:0; background:#fff; border-bottom:1px solid #d8dde3; }
+.docx-native .docx-ribbon { overflow-x:auto; color:#202124; font:13px Arial,sans-serif; }
+.docx-native .docx-ribbon .ribbon-tabs { display:flex; align-items:stretch; min-width:max-content; min-height:38px; padding:0 10px; border-bottom:1px solid #e2e5e9; }
+.docx-native .docx-ribbon .ribbon-tab { position:relative; border:0; border-radius:0; padding:0 13px; background:transparent; color:#333; font:inherit; cursor:pointer; }
+.docx-native .docx-ribbon .ribbon-tab.active { color:#185abd; }
+.docx-native .docx-ribbon .ribbon-tab.active::after { position:absolute; right:9px; bottom:-1px; left:9px; height:2px; background:#185abd; content:""; }
+.docx-native .docx-ribbon .ribbon-tab:disabled { color:#8b9096; cursor:not-allowed; }
+.docx-native .docx-ribbon .ribbon-body { overflow-x:auto; }
+.docx-native .docx-ribbon .ribbon-content { display:flex; align-items:stretch; width:max-content; min-width:100%; min-height:102px; padding:8px 10px 0; box-sizing:border-box; }
+.docx-native .docx-ribbon .docx-ribbon-group { display:flex; flex-direction:column; justify-content:space-between; min-width:82px; padding:0 10px 5px; border-right:1px solid #e1e4e8; }
+.docx-native .docx-ribbon .ribbon-group-items { display:flex; flex-wrap:wrap; align-content:flex-start; align-items:center; justify-content:flex-start; gap:3px; }
+.docx-native .docx-ribbon .ribbon-group-label { padding-top:5px; color:#5d6268; font-size:11px; text-align:center; }
+.docx-native .docx-ribbon .ribbon-sep { display:none; }
+.docx-native .docx-ribbon .rb-icon { display:grid; width:32px; height:32px; place-items:center; border:1px solid transparent; border-radius:3px; background:transparent; color:#343a40; cursor:pointer; }
+.docx-native .docx-ribbon .rb-icon:hover:not(:disabled) { border-color:#c8d7ec; background:#edf3fb; }
+.docx-native .docx-ribbon :disabled { opacity:.48; cursor:not-allowed; }
+.docx-native .docx-ribbon .rb-select { height:27px; border:1px solid #c7ccd1; border-radius:2px; padding:2px 5px; background:#fff; color:#30343a; font:12px Arial,sans-serif; }
+.docx-native .docx-ribbon .rb-font-family { width:112px; }
+.docx-native .docx-ribbon .rb-font-size { width:52px; }
+.docx-native .docx-ribbon .rb-color-input { width:27px; height:27px; padding:2px; border:1px solid #c7ccd1; border-radius:2px; background:#fff; }
+.docx-native .docx-ribbon .rb-big { min-height:51px; border:1px solid #c7ccd1; border-radius:2px; background:#fff; color:#555; white-space:pre-line; }
+.docx-native .docx-ribbon .docx-ribbon-command { width:auto; min-width:56px; max-width:110px; height:auto; min-height:32px; padding:4px 6px; font-size:11px; line-height:1.25; white-space:normal; }
+.docx-native .docx-notice { margin:0; padding:8px 14px; color:#526174; background:#f3f6fb; font-size:13px; }
+.docx-native .editor-scroll { overflow:auto; max-height:calc(100vh - 230px); background:#e8ecf1; padding:24px; }
+.docx-native .doc-zoom { width:max-content; min-width:100%; }
+.docx-native .doc-page { margin:auto; background:white; color:#111; box-shadow:0 2px 10px #0002; outline:none; }
+.docx-native .pagination-preview { z-index:100; }
+.editor-format-docx .editor-surface { padding:0; background:#e8ecf1; }
+.editor-format-docx #report-editor { max-width:none; padding:0; }

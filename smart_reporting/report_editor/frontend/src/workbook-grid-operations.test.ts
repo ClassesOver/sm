@@ -26,5 +26,6 @@ it('preserves renamed, added, removed and reordered tabs in original engine prot
 
 it('converts grid row-column mutation coordinates without changing one-based semantics', () => {
   expect(structuralMutation('sheet.mutation.insert-row', { subUnitId: 'sheet-0', range: { startRow: 3, endRow: 4 } })).toEqual({ sheetId: 'sheet-0', op: { kind: 'insert-rows', index: 3, count: 2 } })
+  expect(structuralMutation('sheet.mutation.remove-rows', { subUnitId: 'sheet-0', range: { startRow: 3, endRow: 4 } })).toEqual({ sheetId: 'sheet-0', op: { kind: 'remove-rows', index: 3, count: 2 } })
   expect(structuralMutation('sheet.mutation.remove-col', { subUnitId: 'sheet-0', range: { startColumn: 2, endColumn: 2 } })).toEqual({ sheetId: 'sheet-0', op: { kind: 'remove-cols', index: 2, count: 1 } })
 })
