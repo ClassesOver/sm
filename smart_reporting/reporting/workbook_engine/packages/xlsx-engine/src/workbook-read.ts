@@ -84,6 +84,9 @@ export interface SheetModel {
   dimension: string | null
   /// Rotation commands are gated until inherited row/column/base-XF styles are modeled.
   rotationReadOnlyReason?: string
+  /// 同 rotationReadOnlyReason：缩进经行/列样式、默认 xf、父样式或禁用对齐继承时，
+  /// 网格投影无法完整回读，前端缩进编辑禁用。
+  indentReadOnlyReason?: string
   /// self-colored conditional formats (dataBar / colorScale) read back for
   /// grid rendering; cellIs/iconSet are write-only boundaries
   conditionalFormats?: ReadonlyArray<CfReadableRule>
@@ -369,6 +372,9 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
   const rotatedParent = [...parentStyles.matchAll(/<alignment\b[^>]*\btextRotation=["']([^"']+)["']/g)].some(match => Number(match[1]) !== 0)
   const defaultRotation = styles.cellXfs[0]?.alignment?.textRotation ?? 0
   const disabledAlignment = extractElements(sectionInner(stylesXml, 'cellXfs') ?? '', 'xf').some(xf => ['0', 'false'].includes(readXmlAttribute(xf, 'applyAlignment') ?? '') && /<alignment\b[^>]*\btextRotation=/.test(xf))
+  const indentedParent = [...parentStyles.matchAll(/<alignment\b[^>]*\bindent=["']([^"']+)["']/g)].some(match => Number(match[1]) !== 0)
+  const defaultIndent = styles.cellXfs[0]?.alignment?.indent ?? 0
+  const disabledIndentAlignment = extractElements(sectionInner(stylesXml, 'cellXfs') ?? '', 'xf').some(xf => ['0', 'false'].includes(readXmlAttribute(xf, 'applyAlignment') ?? '') && /<alignment\b[^>]*\bindent=/.test(xf))
   const themePalette = (await source.has('xl/theme/theme1.xml'))
     ? parseThemePalette(await source.readText('xl/theme/theme1.xml'))
     : undefined
@@ -383,6 +389,7 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
     const printNames = sheetPrintNames.get(sheetIndex)
     const inheritedSheetStyle = [...worksheetXml.matchAll(/<(row|col)\b([^>]*)>/g)].some(match => readXmlAttribute(match[2]!, match[1] === 'row' ? 's' : 'style') !== undefined)
     const rotationReadOnly = inheritedSheetStyle || defaultRotation !== 0 || rotatedParent || disabledAlignment
+    const indentReadOnly = inheritedSheetStyle || defaultIndent !== 0 || indentedParent || disabledIndentAlignment
     const conditionalFormats = readCfRules(worksheetXml, element.name)
     const sparklines = readSparklines(worksheetXml)
     const charts = await readCharts(bytes, path)
@@ -401,6 +408,7 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
         ? { printTitles: stripPrintReferenceSheetPrefix(printNames.printTitles) }
         : {}),
       ...(rotationReadOnly ? { rotationReadOnlyReason: 'xlsx_rotation_inherited_style_unsupported' } : {}),
+      ...(indentReadOnly ? { indentReadOnlyReason: 'xlsx_indent_inherited_style_unsupported' } : {}),
       ...(conditionalFormats.length > 0 ? { conditionalFormats } : {}),
       ...(sparklines.length > 0 ? { sparklines } : {}),
       ...(charts.length > 0 ? { charts } : {}),

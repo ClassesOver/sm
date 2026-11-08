@@ -31,6 +31,7 @@ import type { EditorShell } from './shell'
 import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot } from './workbook-grid-operations'
 import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
+import { CLIPBOARD_COMMANDS } from './workbook-clipboard'
 import {
   applyWorkbookRibbonCommand, selectedWorkbookRotation,
   mountWorkbookRibbon,
@@ -124,6 +125,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         if (nativeDraft.persistenceError) feedback.textContent = nativeDraft.persistenceError
       }).catch(error => { feedback.textContent = `本地草稿暂未更新：${(error as Error).message}` })
     }
+  }
+  const indentUnavailable = () => {
+    const name = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+    return currentModel?.sheets.find(sheet => sheet.name === name)?.indentReadOnlyReason ? '此工作表包含尚不能完整回读的继承格式，暂不支持缩进编辑' : undefined
   }
   const rotationUnavailable = () => {
     const name = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
@@ -524,6 +529,19 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         void openFindReplace(runtime, command === 'replace').catch(error => { feedback.textContent = (error as Error).message })
         return
       }
+      if (CLIPBOARD_COMMANDS[command]) {
+        // 固定源 ribbon-actions：复制为只读安全命令；剪切/粘贴/选择性粘贴需可编辑态。
+        // 粘贴经 Univer sheet 剪贴板（Clipboard API 不可用时回退内部复制缓存），写入走
+        // sheet.mutation.*（已标记未保存），保存时由值/样式/合并/列宽差分写回。
+        if (command === 'copy' ? loading || disposed : !editable()) return
+        void runtime.univerAPI.executeCommand(CLIPBOARD_COMMANDS[command]!).then(applied => {
+          if (!applied) { feedback.textContent = command === 'copy' || command === 'cut' ? '请先选择单元格或区域' : '剪贴板中没有可粘贴的内容，或浏览器未授予剪贴板读取权限'; return }
+          if (command === 'copy') feedback.textContent = '已复制选区。'
+          else if (command === 'cut') feedback.textContent = '已剪切选区；粘贴后原位置内容移出，修改尚未保存。'
+          else { markDirty(); ribbon.refreshState?.(); feedback.textContent = '已粘贴，修改尚未保存。' }
+        }, (error: unknown) => { feedback.textContent = (error as Error).message })
+        return
+      }
       const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle'].includes(command)
       if (readingNote ? loading || saving || disposed : !editable()) return
       const workbook = runtime.univerAPI.getActiveWorkbook()
@@ -564,6 +582,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           if (reason) throw new Error(reason)
         }
         if (command.startsWith('rotate:') && rotationUnavailable()) throw new Error(rotationUnavailable())
+        if (command.startsWith('indent-step:') && indentUnavailable()) throw new Error(indentUnavailable())
         const applied = applyWorkbookRibbonCommand(
           command,
           workbook as unknown as RibbonWorkbook,
@@ -592,7 +611,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     },
     {
       rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null),
-      editable, unavailableReason: rotationUnavailable, format: formatState,
+      editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
       hasSelection: () => !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange(),
       captureTarget: () => captureNumberFormatTarget(formatWorkbook()),
       pageSetup: () => {

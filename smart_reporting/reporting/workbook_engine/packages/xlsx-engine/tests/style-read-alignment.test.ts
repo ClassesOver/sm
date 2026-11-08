@@ -28,3 +28,22 @@ it.each(['row', 'column', 'default', 'named', 'disabled', 'disabled-secondary'])
   const model = await readWorkbook(await zip.generateAsync({type:'uint8array'}))
   expect(model.sheets[0]!.rotationReadOnlyReason).toBe('xlsx_rotation_inherited_style_unsupported')
 })
+
+it.each(['row', 'column', 'default', 'named', 'disabled', 'disabled-secondary'])('exposes the same indent read-only source gate for %s inherited styles', async source => {
+  const zip = await JSZip.loadAsync(await createBlankWorkbook())
+  let sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('string')
+  let stylesheet = await zip.file('xl/styles.xml')!.async('string')
+  if (source === 'row') sheet = sheet.replace(/<sheetData\s*\/>/, '<sheetData><row r="1" s="0" customFormat="1"/></sheetData>')
+  if (source === 'column') sheet = sheet.replace('<sheetData', '<cols><col min="1" max="1" style="0"/></cols><sheetData')
+  if (source === 'default' || source === 'disabled') stylesheet = stylesheet.replace(/(<cellXfs\b[^>]*>)<xf\b[^>]*\/>/, `$1<xf numFmtId="0" fontId="0" fillId="0" borderId="0"${source === 'disabled' ? ' applyAlignment="0"' : ''}><alignment indent="2"/></xf>`)
+  if (source === 'named') stylesheet = stylesheet.replace(/(<cellStyleXfs\b[^>]*>)<xf\b[^>]*\/>/, '$1<xf numFmtId="0" fontId="0" fillId="0" borderId="0"><alignment indent="2"/></xf>')
+  if (source === 'disabled-secondary') stylesheet = stylesheet.replace('</cellXfs>', '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" applyAlignment="0"><alignment indent="2"/></xf></cellXfs>')
+  zip.file('xl/worksheets/sheet1.xml', sheet)
+  zip.file('xl/styles.xml', stylesheet)
+  const model = await readWorkbook(await zip.generateAsync({ type: 'uint8array' }))
+  expect(model.sheets[0]!.indentReadOnlyReason).toBe('xlsx_indent_inherited_style_unsupported')
+})
+
+it('leaves direct cell indent editable', async () => {
+  expect((await readWorkbook(await createBlankWorkbook())).sheets[0]!.indentReadOnlyReason).toBeUndefined()
+})

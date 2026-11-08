@@ -26,9 +26,11 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
 
   expect(onCommand.mock.calls).toEqual([['bold'], ['font-family:Calibri'], ['decimal-inc'], ['autofn:SUM']])
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  const deferred = document.querySelector<HTMLButtonElement>('[data-ribbon-command="paste"]')!
+  // 剪贴板粘贴已接入官方命令；格式刷仍未接入，保留以原因禁用。
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="paste"]')!.dataset.unavailableReason).toBeUndefined()
+  const deferred = document.querySelector<HTMLButtonElement>('[data-ribbon-command="format-painter"]')!
   expect(deferred.disabled).toBe(true)
-  expect(deferred.title).toContain('剪贴板粘贴')
+  expect(deferred.title).toContain('格式刷')
   const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
   expect(rotation.disabled).toBe(false)
   expect(rotation.title).not.toContain('does not capture text rotation')
@@ -307,7 +309,7 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   ])
   expect(getLabel('clear-contents')).toBe('清除内容')
   for (const [id, reason] of [
-    ['indent-step:increase', '缩进样式'], ['format-cells', '完整单元格格式对话框'],
+    ['format-cells', '完整单元格格式对话框'],
     ['row-height-open', '行高对话框'], ['col-width-open', '列宽对话框'],
     ['autofit-row-height', '持久化自动行高'], ['autofit-col-width', '持久化自动列宽'],
     ['insert-cells', '插入并移动单元格'], ['delete-cells', '删除并移动单元格'],

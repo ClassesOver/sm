@@ -34,6 +34,8 @@ export interface LogicalStyle {
   hAlign?: 'left' | 'center' | 'right' | 'justify' | undefined
   vAlign?: 'top' | 'middle' | 'bottom' | undefined
   textRotation?: number | undefined
+  /// OOXML alignment indent steps (0-250); projected as Univer left padding.
+  indent?: number | undefined
   wrap?: boolean | undefined
   numberFormat?: string | undefined
   /// border edges; undefined edge = none/inherited
@@ -117,6 +119,7 @@ export function logicalStyleOf(
       alignment.vertical === 'center' ? 'middle' : alignment.vertical === 'bottom' ? 'bottom' : 'top'
   }
   if (alignment?.textRotation !== undefined) style.textRotation = alignment.textRotation
+  if (alignment?.indent) style.indent = alignment.indent
   if (alignment?.wrapText) style.wrap = true
   const border = styles.borders[xf.borderId]
   if (border?.left) style.borderLeft = logicalEdge(border.left, palette)
@@ -151,6 +154,8 @@ export interface UniverStyleData {
   ht?: number | undefined
   vt?: number | undefined
   tr?: { a?: number; v?: number } | undefined
+  /// left padding carries the OOXML indent (see indentToUniverPadding)
+  pd?: { t?: number; b?: number; l?: number; r?: number } | null | undefined
   tb?: number | undefined
   n?: { pattern?: string | undefined } | undefined
   bd?: UniverBorderData | undefined
@@ -203,6 +208,7 @@ export function toUniverStyle(style: LogicalStyle): UniverStyleData {
     out.vt = style.vAlign === 'top' ? 1 : style.vAlign === 'middle' ? 2 : 3
   }
   if (style.textRotation !== undefined) out.tr = ooxmlRotationToUniver(style.textRotation)
+  if (style.indent !== undefined) out.pd = indentToUniverPadding(style.indent)
   if (style.wrap !== undefined) out.tb = style.wrap ? 2 : 1
   if (style.numberFormat !== undefined) out.n = { pattern: style.numberFormat }
   const bd = toUniverBorder(style)
@@ -250,6 +256,8 @@ export function fromUniverStyle(data: UniverStyleData): LogicalStyle {
   }
   const rotation = univerRotationToOoxml(data.tr)
   if (rotation !== undefined) style.textRotation = rotation
+  const indent = univerPaddingToIndent(data.pd)
+  if (indent !== undefined) style.indent = indent
   if (data.tb !== undefined) style.wrap = data.tb === 2
   if (data.n?.pattern !== undefined) {
     style.numberFormat = data.n.pattern
@@ -274,6 +282,24 @@ export function fromUniverStyle(data: UniverStyleData): LogicalStyle {
   return style
 }
 
+/// 固定源 selection-format.ts（f8c17004）：一个 OOXML 缩进级 = 8px 左内边距，网格
+/// 上缩进只以 pd.l 呈现。清零写回 Univer 默认左内边距 2px（显示与无缩进一致），
+/// 使"显式清除"在回读中可与"未触碰（无 pd）"区分。
+export const INDENT_STEP_PX = 8
+const DEFAULT_LEFT_PADDING_PX = 2
+
+export function indentToUniverPadding(indent: number): { l: number } {
+  const steps = Math.min(250, Math.max(0, Math.round(indent)))
+  return { l: steps === 0 ? DEFAULT_LEFT_PADDING_PX : steps * INDENT_STEP_PX }
+}
+
+/// Univer 左内边距 → OOXML 缩进级；无 pd.l（继承/未触碰）返回 undefined。
+export function univerPaddingToIndent(padding: { l?: number | undefined } | null | undefined): number | undefined {
+  const left = padding?.l
+  if (typeof left !== 'number' || !Number.isFinite(left)) return undefined
+  return Math.min(250, Math.max(0, Math.round(left / INDENT_STEP_PX)))
+}
+
 /// import snapshot vs current logical style → WorkbookStyleEdit; undefined
 /// when nothing changed. A key absent from the read-back means the grid kept
 /// the inherited format (Univer styles only carry explicit overrides), so
@@ -296,6 +322,7 @@ export function styleDelta(
     'hAlign',
     'vAlign',
     'textRotation',
+    'indent',
     'wrap',
     'numberFormat',
     'borderTop',
@@ -313,7 +340,7 @@ export function styleDelta(
       const previous = a as LogicalBorderEdge, current = b as LogicalBorderEdge
       if (previous.style === current.style && previous.color === current.color) continue
     }
-    if (a === b || (key === 'textRotation' && (a ?? 0) === (b ?? 0))) continue
+    if (a === b || ((key === 'textRotation' || key === 'indent') && (a ?? 0) === (b ?? 0))) continue
     if (b === undefined) continue // inherited: the grid kept the file's format
     delta[univerKeyToEditKey(key)] = b
   }
@@ -333,6 +360,7 @@ const KEY_MAP: Record<string, string> = {
   hAlign: 'horizontalAlignment',
   vAlign: 'verticalAlignment',
   textRotation: 'textRotation',
+  indent: 'indent',
   wrap: 'wrapText',
   numberFormat: 'numberFormat',
   borderTop: 'borderTop',

@@ -4,7 +4,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { RIBBON_GLYPH_ICONS } from './workbook-vendor/ui/ribbon-icons'
 import { selectedWorkbookFormat, type WorkbookFormatState, type FormatValue, type NumberFormatTarget } from './workbook-format'
 import { applyWorkbookFontDecoration, type FontDecorationRange } from './workbook-font'
-import type { UniverStyleData } from './workbook-vendor/core/style-map'
+import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } from './workbook-vendor/core/style-map'
+import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
 
 type RibbonTab =
   | 'File'
@@ -60,6 +61,12 @@ type RibbonCommand =
   | 'insert-function-open'
   | 'find'
   | 'replace'
+  | 'copy'
+  | 'cut'
+  | 'paste'
+  | `paste-special:${PasteSpecialKind}`
+  | 'indent-step:increase'
+  | 'indent-step:decrease'
   | 'note-open'
   | 'note-delete'
   | 'note-prev'
@@ -111,6 +118,7 @@ type RibbonRange = FontDecorationRange & {
   getValues?(): Array<Array<unknown>>
   getFormulas?(): string[][]
   getCellStyleData(): UniverStyleData | null
+  setValues?(values: Array<Array<{ s: UniverStyleData }>>): unknown
   getWrap(): boolean
   setFontWeight(value: 'bold' | 'normal' | null): unknown
   setFontStyle(value: 'italic' | 'normal' | null): unknown
@@ -314,7 +322,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '编辑', actions: [action('撤销', 'undo', 'undo'), action('恢复', 'redo', 'redo')] },
   ],
   Home: [
-    { title: '剪贴板', actions: ['paste', 'cut', 'copy', 'format-painter'].map(id => action(id, id)) },
+    { title: '剪贴板', actions: [action('paste', 'paste', 'paste'), action('cut', 'cut', 'cut'), action('copy', 'copy', 'copy'), action('format-painter', 'format-painter')] },
     { title: '字体', actions: [
       action('字体', 'font-family:Arial', 'font-family:Arial'), action('字号', 'font-size:12', 'font-size:12'),
       action('粗体', 'bold', 'bold'), action('斜体', 'italic', 'italic'), action('下划线', 'underline', 'underline'),
@@ -329,7 +337,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('向下旋转', 'rotate:-90', 'rotate:-90'), action('清除旋转', 'rotate:0', 'rotate:0'),
       action('左对齐', 'align:left', 'align:left'),
       action('居中', 'align:center', 'align:center'), action('右对齐', 'align:right', 'align:right'),
-      action('增加缩进', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease'), action('合并单元格', 'merge:cells', 'merge:cells'),
+      action('增加缩进', 'indent-step:increase', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease', 'indent-step:decrease'), action('合并单元格', 'merge:cells', 'merge:cells'),
       action('合并后居中', 'merge:center', 'merge:center'), action('跨越合并', 'merge:across', 'merge:across'),
       action('取消单元格合并', 'merge:unmerge', 'merge:unmerge'),
     ] },
@@ -474,9 +482,6 @@ const COMMAND_GLYPHS: Record<string, string> = {
 }
 
 const disabledReasons: Record<string, string> = {
-  'paste': '尚未接入剪贴板粘贴',
-  'cut': '尚未接入剪贴板剪切',
-  'copy': '尚未接入剪贴板复制',
   'format-painter': '尚未接入格式刷及多选区状态',
   'superscript': '当前引擎尚无单元格上标样式的读取和写回字段，不能保证保存',
   'subscript': '当前引擎尚无单元格下标样式的读取和写回字段，不能保证保存',
@@ -490,8 +495,6 @@ const disabledReasons: Record<string, string> = {
   'col-width-open': '尚无列宽对话框',
   'autofit-row-height': '尚不能持久化自动行高',
   'autofit-col-width': '尚不能持久化自动列宽',
-  'indent-step:increase': '尚不能完整读取并回写缩进样式',
-  'indent-step:decrease': '尚不能完整读取并回写缩进样式',
   'insert-checkbox': '尚未接入复选框绘图及文件回写',
   'recommended-charts-open': '尚未接入静态图表创建对话框与文件回写',
   'insert-chart:column': '尚未接入静态图表创建对话框与文件回写',
@@ -572,6 +575,22 @@ export function applyWorkbookRibbonCommand(
   const range = sheet?.getSelection()?.getActiveRange() ?? null
   if (!range || !sheet) return false
   const [name, value] = command.split(/:(.*)/s).slice(0, 2)
+  if (name === 'indent-step') {
+    // 固定源 ribbon-actions indent-step：每个选中单元格相对自身缩进 ±1 级（混合缩进
+    // 保持混合，0–250 级），以 pd 左内边距经 set-range-values 写入网格，可撤销；保存时
+    // 由样式差分写回 OOXML alignment@indent。
+    const delta = value === 'increase' ? 1 : value === 'decrease' ? -1 : 0
+    if (!delta) throw new Error('不支持此缩进操作')
+    if (!range.setValues) throw new Error('当前工作簿未接入缩进写入')
+    const rows = range.getHeight(), columns = range.getWidth()
+    if (rows * columns > 10_000) throw new Error('选区过大，请缩小到 10000 个单元格以内再调整缩进')
+    const top = range.getRow(), left = range.getColumn()
+    range.setValues(Array.from({ length: rows }, (_, r) => Array.from({ length: columns }, (_, c) => {
+      const current = univerPaddingToIndent(sheet.getRange(top + r, left + c).getCellStyleData?.()?.pd) ?? 0
+      return { s: { pd: indentToUniverPadding(current + delta) } }
+    })))
+    return true
+  }
   if (name === 'rotate') {
     const rotation = ROTATION_VALUES[command as keyof typeof ROTATION_VALUES]
     if (rotation === undefined) throw new Error('不支持此文字旋转值')
@@ -682,6 +701,8 @@ export function mountWorkbookRibbon(
     format?(): WorkbookFormatState
     hasSelection?(): boolean
     noteReason?(command: string): string | undefined
+    /// 缩进继承样式不可完整回读时的禁用原因（引擎 indentReadOnlyReason）。
+    indentReason?(): string | undefined
     captureTarget?(): NumberFormatTarget | undefined
     pageSetup?(): WorkbookPageSetupState | undefined
     definedNames?(): readonly string[]
@@ -725,8 +746,14 @@ export function mountWorkbookRibbon(
       const noteViewAction = ['note-prev', 'note-next', 'note-show-toggle'].includes(id)
       // 打印 is read-only (available like 查找 even while read-only/saved);
       // 撤销/恢复 replay history mutations and follow editability.
-      button.disabled = id === 'find' || id === 'print' ? false : noteViewAction ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo'].includes(id))
-      button.title = button.disabled ? !editable && !noteViewAction ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
+      // 复制只读选区（固定源 read-only-safe），只读/已保存时仍可用。
+      const readOnlySafe = noteViewAction || id === 'copy'
+      button.disabled = id === 'find' || id === 'print' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo'].includes(id))
+      button.title = button.disabled ? !editable && !readOnlySafe ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
+      if (id.startsWith('indent-step:') && !button.disabled) {
+        const indentReason = view.indentReason?.()
+        if (indentReason) { button.disabled = true; button.title = indentReason }
+      }
       if (id.startsWith('note-')) {
         const noteReason = view.noteReason?.(id) ?? (!view.noteReason ? '批注来源尚未完成身份读取' : undefined)
         if (noteReason) { button.disabled = true; button.title = noteReason }
@@ -755,6 +782,11 @@ export function mountWorkbookRibbon(
       button.setAttribute('aria-pressed', rotation === 'mixed' ? 'mixed' : String(rotation === expected))
       if (button.disabled) { button.title = editable ? reason ?? '请先选择单元格或区域' : '当前工作簿不可编辑或正在保存'; button.setAttribute('aria-description', button.title) }
       else { button.title = button.textContent ?? ''; button.removeAttribute('aria-description') }
+    }
+    const pasteSpecial = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="paste-special"]')
+    if (pasteSpecial) {
+      pasteSpecial.disabled = !editable || !selected
+      pasteSpecial.title = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : '选择性粘贴'
     }
     // Page Layout 下拉与打印开关：状态来自引擎读模型 + 会话内页面设置日志。
     const pageState = view.pageSetup?.()
@@ -787,7 +819,8 @@ export function mountWorkbookRibbon(
         [{ value: '0', label: '自动' }, ...[1, 2, 3, 4, 5].map(pages => ({ value: String(pages), label: `${pages} 页` }))],
         String(pageState?.[key] ?? 0))
     }
-    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]')) {
+    // 页面布局动作下拉依赖页面设置读模型；选择性粘贴下拉由上方剪贴板状态单独管理。
+    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
@@ -889,6 +922,15 @@ export function mountWorkbookRibbon(
           status.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick() } })
           wrapper.append(input, status); section.append(wrapper)
         }
+      }
+      if (active === 'Home' && group.title === '剪贴板') {
+        // 固定源粘贴分体按钮的下拉：选中后回弹到菜单标题（同页面布局动作下拉）。
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '选择性粘贴'); select.dataset.ribbonMenu = 'paste-special'
+        const title = document.createElement('option'); title.value = ''; title.textContent = '选择性粘贴'
+        select.append(title, ...PASTE_SPECIAL_CHOICES.map(choice => { const option = document.createElement('option'); option.value = choice.value; option.textContent = choice.label; return option }))
+        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
+        section.append(select)
       }
       if (active === 'Home' && group.title === '数字') {
         const number = document.createElement('span'); number.className = 'workbook-ribbon-number-format'; number.dataset.ribbonControl = 'number-format'; number.setAttribute('aria-label', '当前数字格式'); number.textContent = '不可判定'; section.append(number)
