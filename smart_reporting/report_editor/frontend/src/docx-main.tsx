@@ -6,9 +6,13 @@ import { readSections, readSectionSettings, type HfPartInfo, type HeaderFooter }
 import type { EditorShell } from './shell'
 import type { createNativeApi, NativeContextResponse } from './native-api'
 import type { NativeDraft } from './native-draft'
+import { createDocxFindReplace } from './docx-find-replace'
 import { docxOperations, replayDocxOperations, restoredDocxSectionOperation, type DocxAnchor, type DocxPmNode } from './docx-operations'
+import { docxHeaderFooterOperation, mergeDocxHeaderFooterOperation, restoredDocxHeaderFooterOperations, type DocxHeadersFootersModel, type DocxHfFlags, type DocxHfPart, type DocxHfVariant } from './docx-hf'
+import type { DocxHeaderFooterController, DocxHfPendingEditor } from './docx-hf-source'
 import { NativeTableStructure, createDocxTableCommands } from './docx-tables'
 import { createDocxRibbon } from './docx-ribbon'
+import { createDocxViewCommands } from './docx-view'
 import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/renderer/parse-off-thread'
 import { blocksToPmDoc, pmDocOptions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/convert'
 import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
@@ -20,7 +24,7 @@ import { setStaticAsciiResolver } from './vendor/genoffice-docs/apps/docs/src/re
 import './vendor/genoffice-docs/scoped.css'
 import './docx.css'
 
-interface WordModel { sourceSha256: string; blocks: (Omit<DocxAnchor, 'docxIndex'> & { type: string })[]; sections: { sectionId: string; expectedSectionSha256: string; settings: ReturnType<typeof readSectionSettings> }[] }
+interface WordModel { sourceSha256: string; blocks: (Omit<DocxAnchor, 'docxIndex'> & { type: string })[]; sections: { sectionId: string; expectedSectionSha256: string; settings: ReturnType<typeof readSectionSettings> }[]; headersFooters?: DocxHeadersFootersModel }
 const sha256 = (bytes: ArrayBuffer | Uint8Array<ArrayBuffer>) => bytesSha256(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
 
 const part = (value: HfPartInfo | null | undefined): HeaderFooter | null => value ? { text: value.text, paras: value.paras, pageNumber: value.hasPageNumber } : null
@@ -53,6 +57,11 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const sectionAnchor = { ...sourceSection, settings: section }
   const sectionOperation = () => restoredDocxSectionOperation(draft.operations, sectionAnchor)
   sectionOperation()
+  const hfModel = inspected.model.headersFooters as DocxHeadersFootersModel | undefined
+  const hfAnchor = { sectionId: sectionAnchor.sectionId, expectedSectionSha256: sectionAnchor.expectedSectionSha256 } as const
+  // 恢复的页眉/页脚草稿必须与当前来源的部件身份一致；不一致即拒绝打开并保留草稿。
+  const headerFooterOperations = () => restoredDocxHeaderFooterOperations(draft.operations, hfAnchor, hfModel)
+  headerFooterOperations()
   const host = document.createElement('div'); host.className = 'docx-native'
   host.innerHTML = '<div class="docx-tools" role="toolbar" aria-label="Word 编辑"></div><p class="docx-notice" role="status">支持正文、基础样式、表格文字及符合条件表格的增删行列。每张表的结构修改需保存并重开后继续；不支持的编辑会提示原因。</p><div class="editor-scroll"><div class="doc-zoom"><div class="docx-canvas"></div></div></div><div class="docx-preview-root"></div>'
   shell.editor.replaceChildren(host)
@@ -60,12 +69,13 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const notice = host.querySelector<HTMLElement>('.docx-notice')!, toolbar = host.querySelector<HTMLElement>('.docx-tools')!
   const previewRoot = createRoot(host.querySelector<HTMLElement>('.docx-preview-root')!)
   let baseline: DocxPmNode, ready = false, refreshing = false, saving = false
+  let pendingHfEditor: DocxHfPendingEditor | null = null
   const reportError = (error: unknown) => { notice.textContent = error instanceof Error ? error.message : String(error) }
   const Guard = Extension.create({ name: 'nativeOperationGuard', addProseMirrorPlugins: () => [new Plugin({
     filterTransaction(transaction) {
       if (!ready || refreshing || !transaction.docChanged) return true
       if (saving || draft.saving || draft.closed || !context.editingEnabled) return false
-      try { docxOperations(baseline, transaction.doc.toJSON(), anchors, sectionOperation(), editor.schema); return true }
+      try { docxOperations(baseline, transaction.doc.toJSON(), anchors, sectionOperation(), editor.schema, parsed.styles, headerFooterOperations()); return true }
       catch (error) { reportError(error); return false }
     },
   })] })
@@ -91,7 +101,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     },
     onUpdate: () => {
       if (!ready || refreshing) return
-      try { draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, sectionOperation(), editor.schema)); options.onDraftChange?.() }
+      try { draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, sectionOperation(), editor.schema, parsed.styles, headerFooterOperations())); options.onDraftChange?.() }
       catch (error) { reportError(error) }
     },
   })
@@ -110,7 +120,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   }
   baseline = editor.getJSON(); ready = true
   const refresh = async () => {
-    const content = replayDocxOperations(baseline, draft.operations, anchors, sectionAnchor, editor.schema)
+    const content = replayDocxOperations(baseline, draft.operations, anchors, sectionAnchor, editor.schema, parsed.styles, { anchor: hfAnchor, model: hfModel })
     refreshing = true
     try { syncSection(); editor.commands.setContent(content as JSONContent, { emitUpdate: false }); editor.setEditable(context.editingEnabled && !saving && !draft.closed, false) }
     finally { refreshing = false }
@@ -151,14 +161,62 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       try {
         const operation = restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId: sectionAnchor.sectionId,
           expectedSectionSha256: sectionAnchor.expectedSectionSha256, values: { ...sectionOperation()?.values, ...values } }], sectionAnchor)
-        draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, operation, editor.schema)); options.onDraftChange?.()
+        draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, operation, editor.schema, parsed.styles, headerFooterOperations())); options.onDraftChange?.()
       } catch (error) { reportError(error) }
       syncSection()
       editor.commands.setMeta('native-section-layout', true)
     },
   }
-  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError)))
+  const view = createDocxViewCommands({ root: host, scroller: host.querySelector<HTMLElement>('.editor-scroll')!, page: editor.view.dom,
+    pageSize: () => { const current = { ...section, ...sectionOperation()?.values }; return { width: px(current.pageWidth), height: px(current.pageHeight) } },
+    onPaginationPreview: showPaginationPreview })
+  const headerFooter: DocxHeaderFooterController | undefined = hfModel ? {
+    get editable() { return context.editingEnabled && !saving && !draft.saving && !draft.closed },
+    anchor: hfAnchor,
+    registerEditor: editor => { pendingHfEditor = editor },
+    get model() {
+      const current = { ...hfModel }
+      for (const operation of headerFooterOperations()) {
+        if (typeof operation.titlePg === 'boolean') current.titlePg = operation.titlePg
+        if (typeof operation.evenAndOddHeaders === 'boolean') current.evenAndOddHeaders = operation.evenAndOddHeaders
+      }
+      return current
+    },
+    valueOf: (part: DocxHfPart, variant: DocxHfVariant) => {
+      const partAnchor = hfModel.parts[`${part}.${variant}`]
+      if (!partAnchor) return null
+      const operation = headerFooterOperations().find(value => value.part === part && value.variant === variant)
+      // 草稿重放携带已写入操作的统一对齐，后续再提交（切换选项/变体）不会丢失页码位置。
+      const align = operation?.align as 'left' | 'center' | 'right' | undefined
+      if (operation) return { value: { text: operation.text as string, paras: (operation.text as string).split('\n').map(text => ({ ...(align ? { align } : {}), runs: [{ text }] })), pageNumber: operation.pageNumber as boolean }, anchor: partAnchor }
+      const info = partAnchor.rId ? parsed.hfParts?.[partAnchor.rId] : null
+      return { value: { text: partAnchor.text, ...(info?.paras ? { paras: info.paras } : {}), pageNumber: partAnchor.hasPageNumber }, anchor: partAnchor }
+    },
+    onCommit: (part: DocxHfPart, variant: DocxHfVariant, value, flags?: DocxHfFlags) => {
+      if (saving || draft.saving || draft.closed || !context.editingEnabled) return
+      try {
+        const partAnchor = hfModel.parts[`${part}.${variant}`]
+        if (!partAnchor) throw new Error('页眉/页脚部件不受当前保存协议支持')
+        const settings: DocxHfFlags = {}
+        for (const previous of headerFooterOperations()) {
+          for (const key of ['titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart'] as const) {
+            if (previous[key] !== undefined) Object.assign(settings, { [key]: previous[key] })
+          }
+        }
+        const sourceParas = partAnchor.rId ? parsed.hfParts?.[partAnchor.rId]?.paras : undefined
+        const operation = docxHeaderFooterOperation(hfAnchor, partAnchor, part, variant, value, { ...settings, ...flags }, sourceParas)
+        draft.setOperations(operation ? mergeDocxHeaderFooterOperation(draft.operations, operation)
+          : draft.operations.filter(operation => !(operation.kind === 'setHeaderFooter' && operation.part === part && operation.variant === variant)))
+        options.onDraftChange?.()
+      } catch (error) { reportError(error) }
+    },
+  } : undefined
+  const findReplace = createDocxFindReplace({ editor, root: host, anchors, getBaseline: () => baseline,
+    isLocked: () => saving || draft.saving || draft.closed || !context.editingEnabled,
+    getSection: () => sectionAnchor, getSectionOperation: sectionOperation, styles: parsed.styles })
+  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError), view, findReplace.open, reportError, headerFooter))
+  editor.on('transaction', view.refresh)
   await refresh()
-  return { refresh, setSaving(value: boolean) { saving = value; editor.setEditable(context.editingEnabled && !saving && !draft.closed, false); editor.commands.setMeta('native-section-layout', true); toolbar.querySelectorAll<HTMLButtonElement>('[data-mutates=true], [data-editable-action=true]').forEach(control => { control.disabled = !context.editingEnabled || saving || draft.closed }) },
-    dispose() { ready = false; previewRoot.unmount(); editor.destroy(); void adoptEmbeddedFonts([]); host.remove() } }
+  return { refresh, flushPendingEdits() { pendingHfEditor?.flush() }, setSaving(value: boolean) { saving = value; pendingHfEditor?.setEditable(!value && context.editingEnabled && !draft.closed); editor.setEditable(context.editingEnabled && !saving && !draft.closed, false); editor.commands.setMeta('native-section-layout', true); findReplace.refreshLock(); toolbar.querySelectorAll<HTMLButtonElement>('[data-mutates=true], [data-editable-action=true]').forEach(control => { control.disabled = !context.editingEnabled || saving || draft.closed }) },
+    dispose() { ready = false; editor.off('transaction', view.refresh); findReplace.dispose(); view.dispose(); previewRoot.unmount(); editor.destroy(); void adoptEmbeddedFonts([]); host.remove() } }
 }

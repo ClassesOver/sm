@@ -1,3 +1,4 @@
+import { TextDecoration } from '@univerjs/core'
 import { ooxmlRotationToUniver, univerRotationToOoxml } from '../../workbook-rotation'
 /// Style mapping between the engine's stylesheet model and Univer's
 /// IStyleData, through a renderer-neutral LogicalStyle both sides share.
@@ -23,6 +24,7 @@ export interface LogicalStyle {
   bold?: boolean | undefined
   italic?: boolean | undefined
   underline?: boolean | undefined
+  underlineStyle?: 'single' | 'double' | undefined
   strikethrough?: boolean | undefined
   fontSize?: number | undefined
   fontFamily?: string | undefined
@@ -88,7 +90,10 @@ export function logicalStyleOf(
   const style: LogicalStyle = {}
   if (font?.bold) style.bold = true
   if (font?.italic) style.italic = true
-  if (font?.underline && font.underline !== 'none') style.underline = true
+  if (font?.underline && font.underline !== 'none') {
+    style.underline = true
+    style.underlineStyle = font.underline
+  }
   if (font?.strikethrough) style.strikethrough = true
   if (font?.size !== undefined) style.fontSize = font.size
   if (font?.family) style.fontFamily = font.family
@@ -139,7 +144,7 @@ export interface UniverStyleData {
   fs?: number | undefined
   it?: number | undefined
   bl?: number | undefined
-  ul?: { s?: number | undefined } | undefined
+  ul?: { s?: number | undefined; t?: number | undefined } | undefined
   st?: { s?: number | undefined } | undefined
   cl?: { rgb?: string | undefined } | undefined
   bg?: { rgb?: string | undefined } | undefined
@@ -182,7 +187,9 @@ export function toUniverStyle(style: LogicalStyle): UniverStyleData {
   const out: UniverStyleData = {}
   if (style.bold !== undefined) out.bl = style.bold ? 1 : 0
   if (style.italic !== undefined) out.it = style.italic ? 1 : 0
-  if (style.underline !== undefined) out.ul = style.underline ? { s: 1 } : { s: 0 }
+  if (style.underline !== undefined || style.underlineStyle !== undefined) {
+    out.ul = { s: style.underline === false ? 0 : 1, t: style.underlineStyle === 'double' ? TextDecoration.DOUBLE : TextDecoration.SINGLE }
+  }
   if (style.strikethrough !== undefined) out.st = style.strikethrough ? { s: 1 } : { s: 0 }
   if (style.fontSize !== undefined) out.fs = style.fontSize
   if (style.fontFamily !== undefined) out.ff = style.fontFamily
@@ -226,7 +233,10 @@ export function fromUniverStyle(data: UniverStyleData): LogicalStyle {
   const style: LogicalStyle = {}
   if (data.bl !== undefined) style.bold = data.bl === 1
   if (data.it !== undefined) style.italic = data.it === 1
-  if (data.ul?.s !== undefined) style.underline = data.ul.s === 1
+  if (data.ul?.s !== undefined) {
+    style.underline = data.ul.s === 1
+    if (style.underline) style.underlineStyle = data.ul.t === TextDecoration.DOUBLE ? 'double' : 'single'
+  }
   if (data.st?.s !== undefined) style.strikethrough = data.st.s === 1
   if (data.fs !== undefined) style.fontSize = data.fs
   if (data.ff !== undefined) style.fontFamily = data.ff
@@ -241,7 +251,7 @@ export function fromUniverStyle(data: UniverStyleData): LogicalStyle {
   const rotation = univerRotationToOoxml(data.tr)
   if (rotation !== undefined) style.textRotation = rotation
   if (data.tb !== undefined) style.wrap = data.tb === 2
-  if (data.n?.pattern !== undefined && data.n.pattern !== 'General') {
+  if (data.n?.pattern !== undefined) {
     style.numberFormat = data.n.pattern
   }
   const edge = (value: UniverBorderEdge | undefined): LogicalBorderEdge | undefined => {
@@ -277,6 +287,7 @@ export function styleDelta(
     'bold',
     'italic',
     'underline',
+    'underlineStyle',
     'strikethrough',
     'fontSize',
     'fontFamily',
@@ -296,6 +307,12 @@ export function styleDelta(
   for (const key of keys) {
     const a = before?.[key]
     const b = after?.[key]
+    if (key === 'strikethrough' && (a ?? false) === b) continue
+    if (key === 'underlineStyle' && ((before?.underline && (a ?? 'single') === b) || after?.underline === false)) continue
+    if (key.startsWith('border') && a && b) {
+      const previous = a as LogicalBorderEdge, current = b as LogicalBorderEdge
+      if (previous.style === current.style && previous.color === current.color) continue
+    }
     if (a === b || (key === 'textRotation' && (a ?? 0) === (b ?? 0))) continue
     if (b === undefined) continue // inherited: the grid kept the file's format
     delta[univerKeyToEditKey(key)] = b

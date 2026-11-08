@@ -6,7 +6,7 @@
 /// corrupt references.
 
 import { columnIndex, columnLabel } from './cell-address'
-import { decodeXmlText, escapeXmlText } from './xml'
+import { decodeXmlText, escapeXmlText, readXmlAttribute } from './xml'
 import { FORMULA_REFERENCE_PATTERN, qualifierMatches } from './sheets-edit'
 
 export type StructuralOp =
@@ -566,15 +566,65 @@ function shiftSqrefAttribute(sqref: string, spec: ShiftSpec): { sqref: string; a
   return { sqref: alive.join(' '), allDead: false }
 }
 
-/// Shifts autoFilter@ref, dataValidation sqrefs, conditionalFormatting sqref,
-/// and hyperlink ref anchors with the op. Elements whose every reference dies
-/// are dropped (the rows they annotated are gone).
+/// First column (0-based) of an A1 range token; 0 when unparseable.
+function refStartColumn(reference: string): number {
+  const token = reference.split(':')[0] ?? reference
+  const match = token.match(/^(\$?)([A-Z]{1,3})/)
+  return match?.[2] ? columnIndex(match[2]) : 0
+}
+
+/// One worksheet-level autoFilter element along the op: the ref moves, and on
+/// column ops the filterColumn colIds follow (a colId is an offset from the
+/// range's first column, so its base moves with the ref — the same rebase
+/// Excel performs, and the table-part shift already mirrors). Columns deleted
+/// out of the range drop their filterColumn; a fully deleted ref drops the
+/// element. Row ops never touch colIds. Criteria bodies (values/customs/
+/// dateGroupItem buckets) carry no coordinates of their own — a dateGroupItem
+/// describes an attribute bucket (year/month/day/...), not a cell address —
+/// so they ride along verbatim inside the shifted element.
+function shiftAutoFilterElement(
+  attributes: string,
+  body: string | undefined,
+  spec: ShiftSpec,
+): string | null {
+  const reference = readXmlAttribute(attributes, 'ref')
+  if (reference === undefined) return null
+  const shifted = shiftRangeReference(reference, spec)
+  if (shifted === null) return null
+  const shiftedAttributes = attributes.replace(reference, () => shifted)
+  if (body === undefined) return `<autoFilter${shiftedAttributes}/>`
+  let shiftedBody = body
+  if (spec.axis === 'column') {
+    const oldStart = refStartColumn(reference)
+    const newStart = refStartColumn(shifted)
+    shiftedBody = body.replace(
+      /<filterColumn\b([^>]*?)(\/>|>[\s\S]*?<\/filterColumn>)/g,
+      (element, columnAttributes: string) => {
+        const raw = readXmlAttribute(columnAttributes, 'colId')
+        if (raw === undefined || !/^\d+$/.test(raw)) return element
+        const moved = shiftIndex(oldStart + Number(raw), spec)
+        if (moved === null) return '' // column deleted → its criteria die with it
+        return element.replace(
+          /(\bcolId=")([0-9]+)(")/,
+          (_m, prefix: string, _value: string, suffix: string) =>
+            `${prefix}${moved - newStart}${suffix}`,
+        )
+      },
+    )
+  }
+  return `<autoFilter${shiftedAttributes}>${shiftedBody}</autoFilter>`
+}
+
+/// Shifts autoFilter@ref (with per-column criteria), dataValidation sqrefs,
+/// conditionalFormatting sqref, and hyperlink ref anchors with the op.
+/// Elements whose every reference dies are dropped (the rows they annotated
+/// are gone).
 export function shiftRangedFeatures(worksheetXml: string, spec: ShiftSpec): string {
   let xml = worksheetXml.replace(
-    /<autoFilter\b[^>]*?\bref="([^"]+)"[^>]*\/>/g,
-    (full, reference: string) => {
-      const shifted = shiftRangeReference(reference, spec)
-      return shifted === null ? '' : full.replace(reference, () => shifted)
+    /<autoFilter\b([^>]*?)(\/>|>([\s\S]*?)<\/autoFilter>)/g,
+    (_full, attributes: string, _tail: string, body: string | undefined) => {
+      const shifted = shiftAutoFilterElement(attributes, body, spec)
+      return shifted ?? ''
     },
   )
   xml = xml.replace(

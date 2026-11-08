@@ -133,10 +133,10 @@ it('routes source paragraph line-spacing presets and before/after toggles throug
     extensions: [Doc, Paragraph, Text],
     content: { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0, lineSpacing: 1.5, spaceBefore: 0, spaceAfter: 0 }, content: [{ type: 'text', text: '报告正文' }] }] },
   })
-  const ribbon = createDocxRibbon(editor, true)
+  const anchor: DocxAnchor = { docxIndex: 0, blockId: 'block-0', expectedObjectSha256: 'hash', editable: true }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [anchor])
   document.body.append(ribbon)
   const original = editor.getJSON() as any
-  const anchor: DocxAnchor = { docxIndex: 0, blockId: 'block-0', expectedObjectSha256: 'hash', editable: true }
   const lineSpacing = ribbon.querySelector<HTMLButtonElement>('[data-action="line-spacing"]')!
   expect(lineSpacing.disabled).toBe(false)
   expect(lineSpacing.closest('.rb-split-wrap')).not.toBeNull()
@@ -158,14 +158,83 @@ it('routes source paragraph line-spacing presets and before/after toggles throug
   ribbon.querySelector<HTMLButtonElement>('[data-tab-label="布局"]')!.click()
   for (const action of ['space-before-value', 'space-after-value']) {
     const field = ribbon.querySelector<HTMLInputElement>(`[data-action="${action}"]`)
-    expect(field?.disabled).toBe(true)
-    expect(field?.title).toContain('DOCX 段前、段后和行距写回协议尚未接入')
+    expect(field?.disabled).toBe(false)
+    expect(field?.title).toContain('0–720 pt')
   }
   ribbon.querySelector<HTMLButtonElement>('[data-tab-id="home"]')!.click()
   flushSync(() => lineSpacing.click())
   expect(document.documentElement.classList.contains('genoffice-popover-open')).toBe(true)
   editor.destroy()
   expect(document.documentElement.classList.contains('genoffice-popover-open')).toBe(false)
+})
+
+it('routes Home paragraph border positions, width and color through DOCX operations', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const Bordered = Paragraph.extend({ addAttributes: () => ({ docxIndex: { default: 0 }, borders: { default: null }, borderLines: { default: null }, borderReset: { default: null }, borderPad: { default: null } }) })
+  const editor = new Editor({
+    element: host,
+    extensions: [Doc, Bordered, Text],
+    content: { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0, borders: 't', borderLines: '{"t":{"color":"FF0000","szPt":0.5}}' }, content: [{ type: 'text', text: '报告正文' }] }] },
+  })
+  const anchor: DocxAnchor = { docxIndex: 0, blockId: 'block-0', expectedObjectSha256: 'hash', editable: true }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [anchor])
+  document.body.append(ribbon)
+  const original = editor.getJSON() as any
+  const main = ribbon.querySelector<HTMLButtonElement>('[data-action="para-borders"]')!
+  const caret = ribbon.querySelector<HTMLButtonElement>('[data-action="para-borders-menu"]')!
+  expect(main.disabled).toBe(false)
+  expect(caret.disabled).toBe(false)
+  // Word 的 Home 边框默认笔画：下框线、0.5pt、黑色（Ribbon.tsx borderColor 000000/borderSz 4）。
+  main.click()
+  expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([
+    { kind: 'setParagraphBorders', blockId: 'block-0', expectedObjectSha256: 'hash', borders: [{ side: 'bottom', val: 'single', color: '000000', szPt: 0.5 }] },
+  ])
+  // 同一笔画再点主按钮 = 还原无框线（与底纹开关同规）。
+  main.click()
+  expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([
+    { kind: 'setParagraphBorders', blockId: 'block-0', expectedObjectSha256: 'hash', borders: null },
+  ])
+  // 主按钮点击触发事务重渲染后，弹层开关是新的 DOM 节点，需实时查询；setState 批处理需 flushSync。
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="para-borders-menu"]')!.click())
+  for (const action of ['para-border-bottom', 'para-border-top', 'para-border-left', 'para-border-right', 'para-border-box', 'para-border-none']) {
+    expect(ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.disabled, action).toBe(false)
+  }
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="para-border-width-1.5"]')!.click())
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="para-border-color-00B050"]')!.click())
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="para-border-box"]')!.click())
+  expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([
+    {
+      kind: 'setParagraphBorders', blockId: 'block-0', expectedObjectSha256: 'hash',
+      borders: (['top', 'bottom', 'left', 'right'] as const).map(side => ({ side, val: 'single', color: '00B050', szPt: 1.5 })),
+    },
+  ])
+  // 位置应用后弹层关闭（与 Word 库为同规），再次打开后执行无框线。
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="para-borders-menu"]')!.click())
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="para-border-none"]')!.click())
+  expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([
+    { kind: 'setParagraphBorders', blockId: 'block-0', expectedObjectSha256: 'hash', borders: null },
+  ])
+  editor.destroy()
+})
+
+it('locks Home paragraph border commands while saving or without an editable anchor', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const Bordered = Paragraph.extend({ addAttributes: () => ({ docxIndex: { default: 0 }, borders: { default: null }, borderLines: { default: null }, borderReset: { default: null }, borderPad: { default: null } }) })
+  const editor = new Editor({
+    element: host,
+    extensions: [Doc, Bordered, Text],
+    content: { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0 }, content: [{ type: 'text', text: '报告正文' }] }] },
+  })
+  const ribbon = createDocxRibbon(editor, false, undefined, undefined, undefined, [{ docxIndex: 0, blockId: 'block-0', expectedObjectSha256: 'hash', editable: false }])
+  document.body.append(ribbon)
+  for (const action of ['para-borders', 'para-borders-menu']) {
+    const control = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)
+    expect(control?.disabled, action).toBe(true)
+    expect(control?.title, action).toContain('请选择有唯一来源锚点的非空正文段落')
+  }
+  editor.destroy()
 })
 
 it('reveals contextual ribbons only for the matching selected Word object', () => {
@@ -425,5 +494,74 @@ it.each([['bullets', 'bullet'], ['numbering', 'ordered']])('routes Home %s throu
   expect(button.getAttribute('aria-pressed')).toBe('true')
   button.click()
   expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([])
+  editor.destroy()
+})
+
+it('wires the Word Home clipboard group: paste split menu, cut/copy and the format painter', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const editor = new Editor({
+    element: host,
+    extensions: [Doc, Paragraph, Text, simpleMark('bold'), simpleMark('italic'), simpleMark('underline'), simpleMark('strike'), TextStyle],
+    content: { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0, align: 'center' }, content: [{ type: 'text', text: '报告正文', marks: [{ type: 'bold' }] }] }] },
+  })
+  const reportError = vi.fn()
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined,
+    [{ docxIndex: 0, blockId: 'block-0', expectedObjectSha256: 'hash', editable: true } as DocxAnchor],
+    undefined, undefined, undefined, reportError)
+  document.body.append(ribbon)
+  ribbon.querySelector<HTMLButtonElement>('[data-tab-label="开始"]')!.click()
+  for (const action of ['paste', 'paste-menu', 'cut', 'copy', 'format-painter']) {
+    expect(ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.disabled).toBe(false)
+  }
+  // 分体菜单：源真实模式，富文本两项禁用并给出真实原因，仅保留文本可用
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="paste-menu"]')!.click())
+  for (const [action, reason] of [
+    ['paste-source', '无法精确映射到 DOCX 保存协议'],
+    ['paste-merge', '无法精确映射到 DOCX 保存协议'],
+    ['paste-special', '尚未接入'],
+    ['paste-defaults', '尚未接入'],
+  ] as const) {
+    const item = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
+    expect(item.disabled).toBe(true)
+    expect(item.title).toContain(reason)
+  }
+  const textItem = ribbon.querySelector<HTMLButtonElement>('[data-action="paste-text"]')!
+  expect(textItem.disabled).toBe(false)
+  // 图片粘贴：分体菜单给出 picture 模式入口（insertParagraphImage 协议）
+  const pictureItem = ribbon.querySelector<HTMLButtonElement>('[data-action="paste-picture"]')!
+  expect(pictureItem?.disabled).toBe(false)
+  expect(pictureItem?.getAttribute('aria-label')).toContain('粘贴图片')
+  // 仅保留文本粘贴走 replaceParagraph/insertParagraph 映射
+  Object.defineProperty(navigator, 'clipboard', { value: { readText: async () => '粘贴文本' }, configurable: true })
+  editor.commands.setTextSelection(2)
+  flushSync(() => textItem.click())
+  await new Promise(resolve => setTimeout(resolve))
+  expect((editor.getJSON() as any).content[0].content.map((run: any) => run.text).join('')).toBe('报粘贴文本告正文')
+  Reflect.deleteProperty(navigator as any, 'clipboard')
+  // 权限失败：准确原因经 reportError 上报，按钮保持可用
+  Object.defineProperty(navigator, 'clipboard', { value: { readText: () => Promise.reject(new DOMException('denied', 'NotAllowedError')) }, configurable: true })
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="paste"]')!.click())
+  await new Promise(resolve => setTimeout(resolve))
+  expect(reportError).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('浏览器拒绝了剪贴板读取权限') }))
+  Reflect.deleteProperty(navigator as any, 'clipboard')
+  // 剪切/复制：execCommand 路径
+  const exec = vi.fn(() => true)
+  document.execCommand = exec as unknown as typeof document.execCommand
+  editor.commands.setTextSelection({ from: 1, to: 3 })
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="copy"]')!.click())
+  expect(exec).toHaveBeenCalledWith('copy')
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="cut"]')!.click())
+  expect(exec).toHaveBeenCalledWith('cut')
+  delete (document as unknown as Record<string, unknown>).execCommand
+  // 格式刷：单击武装（按钮 active），Esc 解除
+  const painterButton = ribbon.querySelector<HTMLButtonElement>('[data-action="format-painter"]')!
+  editor.commands.setTextSelection(2)
+  flushSync(() => painterButton.click())
+  expect(painterButton.classList.contains('active')).toBe(true)
+  expect(painterButton.getAttribute('aria-pressed')).toBe('true')
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  flushSync(() => undefined)
+  expect(painterButton.classList.contains('active')).toBe(false)
   editor.destroy()
 })

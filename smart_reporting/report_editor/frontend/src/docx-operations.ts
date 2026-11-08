@@ -1,10 +1,15 @@
+import { highlightMap, paragraphHighlight, safeDocxHighlight, withoutHighlight } from './docx-highlight'
+import { docxBorderAttrs, paragraphBorders, safeDocxBorderSpec } from './docx-borders'
+import { safeDocxShading } from './docx-shading'
 import { paragraphVerticalAlign, withoutVerticalAlign, verticalAlignMap } from './docx-vertical'
 import { TABLE_KINDS, projectDocxTable, tableIntent } from './docx-tables'
 import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
 export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean }
-export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
+import { safeParagraphStyle, type DocxStyleInfo } from './docx-styles'
+import { restoredDocxHeaderFooterOperations } from './docx-hf'
+export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
 export interface DocxSectionAnchor { sectionId: string; expectedSectionSha256: string; settings: SectionSettings }
 type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>>
@@ -41,6 +46,8 @@ const withoutAlignment = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Obje
 const withoutIndent = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['indentLeft', 'indentRight'].includes(key)))
 const paragraphSpacingKeys = ['spaceBefore', 'spaceAfter', 'lineSpacing', 'lineRule', 'lineRawTwips', 'spaceBeforeAuto', 'spaceAfterAuto']
 const withoutParagraphSpacing = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !paragraphSpacingKeys.includes(key)))
+const withoutParagraphShading = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['shadingFill', 'shadingClear'].includes(key)))
+const withoutParagraphBorders = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['borders', 'borderLines'].includes(key)))
 const withoutList = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['kind', 'numId', 'ilvl'].includes(key)))
 const listOf = (node: DocxPmNode) => node.type === 'docListItem' ? { kind: node.attrs?.kind, numId: node.attrs?.numId, ilvl: node.attrs?.ilvl } : null
 function structure(node: DocxPmNode, marks = true): unknown {
@@ -77,6 +84,37 @@ export function validDocxLinkRange(text: string, from: unknown, to: unknown): bo
     && from >= 0 && to > from && to <= text.length && boundary(from) && boundary(to)
 }
 const withoutLinks = (node: DocxPmNode): DocxPmNode => ({ ...node, content: node.content?.map(run => ({ ...run, marks: (run.marks ?? []).filter(mark => mark.type !== 'link') })) })
+/** 保存协议开放的粘贴图片格式（引擎 NewImage 另支持 gif，粘贴不开放） */
+export const DOCX_PASTE_IMAGE_MIMES = ['image/png', 'image/jpeg'] as const
+export const DOCX_PASTE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+export const DOCX_PASTE_IMAGE_MAX_EDGE_PX = 10000
+export interface DocxPastedImage { mime: (typeof DOCX_PASTE_IMAGE_MIMES)[number]; base64: string; widthPx: number; heightPx: number }
+const CANONICAL_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+/** 新插入粘贴图片节点（docProtected/genImage）的协议内载荷；null = 非图片新增节点。 */
+export function pastedDocxImage(node: DocxPmNode): DocxPastedImage | null {
+  if (node.type !== 'docProtected' || node.attrs?.blockType !== 'image') return null
+  const gen = node.attrs.genImage as Record<string, unknown> | null | undefined
+  if (!gen || typeof gen !== 'object' || Array.isArray(gen)) throw new Error('新增图片缺少可保存的图片数据')
+  if (Object.keys(gen).some(key => !['mime', 'base64', 'widthPx', 'heightPx'].includes(key))) throw new Error('新增图片数据包含不支持的字段')
+  if (!(DOCX_PASTE_IMAGE_MIMES as readonly string[]).includes(String(gen.mime))) throw new Error('仅支持粘贴 PNG 或 JPEG 图片')
+  const base64 = gen.base64
+  if (typeof base64 !== 'string' || !base64.length || base64.length % 4 !== 0 || !CANONICAL_BASE64.test(base64)
+    || base64.length > Math.ceil(DOCX_PASTE_IMAGE_MAX_BYTES / 3) * 4) throw new Error('粘贴图片数据无效或超过 8MB 大小上限')
+  let rawLength = 0
+  try { rawLength = atob(base64).length } catch { throw new Error('粘贴图片数据不是有效的 base64') }
+  if (rawLength < 1 || rawLength > DOCX_PASTE_IMAGE_MAX_BYTES) throw new Error('粘贴图片超过 8MB 大小上限')
+  for (const key of ['widthPx', 'heightPx'] as const) {
+    const value = gen[key]
+    if (!Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > DOCX_PASTE_IMAGE_MAX_EDGE_PX) throw new Error('粘贴图片的显示尺寸超出可保存范围')
+  }
+  return { mime: gen.mime as DocxPastedImage['mime'], base64, widthPx: Number(gen.widthPx), heightPx: Number(gen.heightPx) }
+}
+function draftImagePayload(value: unknown): DocxPastedImage {
+  const gen = value
+  if (!gen || typeof gen !== 'object' || Array.isArray(gen)) throw new Error('草稿图片粘贴数据无效')
+  return pastedDocxImage({ type: 'docProtected', attrs: { blockType: 'image', genImage: gen } })
+    ?? (() => { throw new Error('草稿图片粘贴数据无效') })()
+}
 function linkMap(node: DocxPmNode): (string | null)[] {
   return (node.content ?? []).flatMap(run => Array.from({ length: textOf(run).length }, () => {
     const marks = (run.marks ?? []).filter(mark => mark.type === 'link')
@@ -137,7 +175,7 @@ function styleOf(node: DocxPmNode): Record<string, unknown> {
   return styles[0]
 }
 /** 原始XML和资源路径从不进入保存协议；变化仅映射为后端允许操作。 */
-export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation, schema?: Schema): NativeOperation[] {
+export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation, schema?: Schema, styles?: Map<string, DocxStyleInfo>, headerFooterOperations?: NativeOperation[]): NativeOperation[] {
   const before = original.content ?? [], after = current.content ?? []
   const byIndex = new Map(anchors.map(anchor => [anchor.docxIndex, anchor]))
   const retained = after.filter(node => idOf(node) != null)
@@ -148,6 +186,18 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
   for (let index = 0; index < after.length; index++) {
     const node = after[index]
     if (idOf(node) != null) continue
+    const pastedImage = pastedDocxImage(node)
+    if (pastedImage) {
+      // 粘贴图片与 insertParagraph 同锚点语义：贴在最近的可编辑正文段前/后。
+      const next = after.slice(index + 1).find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
+      const previous = [...after.slice(0, index)].reverse().find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
+      const fallback = before.find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
+      const target = next ?? previous ?? fallback
+      if (!target) throw new Error('新增图片没有可编辑的锚点段落')
+      ops.push({ kind: 'insertParagraphImage', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', image: pastedImage })
+      continue
+    }
+    if (node.attrs?.styleId != null) throw new Error('新增段落请保存后再修改段落样式')
     if (node.attrs?.align != null) throw new Error('新增段落请保存后再修改对齐方式')
     if (node.attrs?.indentLeft != null) throw new Error('新增段落请保存后再修改缩进')
     if (node.type !== 'docParagraph' || (node.content ?? []).some(child => child.type !== 'text' || (child.marks ?? []).some(mark => mark.type !== 'textStyle' || Object.values(mark.attrs ?? {}).some(value => value != null && value !== false)))) throw new Error('新增段落暂只支持普通文字，请保存后再修改样式')
@@ -162,7 +212,7 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
     const anchor = byIndex.get(Number(idOf(node)))
     if (!anchor) throw new Error('文档锚点无效')
     const edited = after.find(item => idOf(item) === idOf(node))
-    if (edited && same(node, edited)) continue
+    if (edited && same(node, edited) && ['spaceBefore', 'spaceAfter'].every(key => Object.is(node.attrs?.[key], edited.attrs?.[key]))) continue
     if (!edited) {
       if (!anchor.editable || !paragraph(node)) throw new Error('只读对象不能删除')
       ops.push({ kind: 'deleteParagraph', ...baseOp(anchor) }); continue
@@ -188,6 +238,15 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       }
       continue
     }
+    if (!same(node.attrs?.styleId ?? null, edited.attrs?.styleId ?? null)) {
+      if (!(anchor.paragraphStyleEditable ?? anchor.editable) || node.type !== 'docParagraph' || edited.type !== 'docParagraph' || anchor.paragraphStyleEditable === false) throw new Error('此来源段落暂不支持切换样式')
+      safeParagraphStyle(styles, edited.attrs?.styleId)
+      const sourceStyle = node.attrs?.styleId ?? [...(styles?.values() ?? [])].find(style => style.type === 'paragraph' && style.isDefault)?.styleId
+      if (sourceStyle != null) safeParagraphStyle(styles, sourceStyle)
+      if (!same(node, { ...edited, attrs: { ...edited.attrs, styleId: node.attrs?.styleId } })) throw new Error('段落样式修改请先保存；同段文字和格式不能混用')
+      ops.push({ kind: 'setParagraphStyle', ...baseOp(anchor), styleId: edited.attrs!.styleId })
+      continue
+    }
     if (!anchor.editable) throw new Error('只读对象不能修改')
     const beforeList = listOf(node), afterList = listOf(edited)
     const listLevelChanged = node.type === 'docListItem' && edited.type === 'docListItem'
@@ -206,11 +265,25 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
     }
     const originalAttrs = node.type === 'docListItem' ? withoutList(node.attrs) : node.attrs
     const editedAttrs = edited.type === 'docListItem' ? withoutList(edited.attrs) : edited.attrs
-    if ((!listChanged && node.type !== edited.type) || !same(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs))), withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs))))) throw new Error('暂不支持改变段落布局')
+    if ((!listChanged && node.type !== edited.type) || !same(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs))))), withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs))))))) throw new Error('暂不支持改变段落布局')
+    const shadingChanged = !same(node.attrs?.shadingFill ?? null, edited.attrs?.shadingFill ?? null) || !same(node.attrs?.shadingClear ?? null, edited.attrs?.shadingClear ?? null)
+    if (shadingChanged) {
+      // 与段落样式同规：底纹走原 XML 最小修改，不能与同段其他改动混存。
+      if (!same(node, { ...edited, attrs: { ...edited.attrs, shadingFill: node.attrs?.shadingFill ?? null, shadingClear: node.attrs?.shadingClear ?? null } })) throw new Error('段落底纹修改请先保存；同段文字和格式不能混用')
+      const shading = safeDocxShading(edited.attrs?.shadingClear === true ? 'auto' : edited.attrs?.shadingFill ?? 'none')
+      ops.push({ kind: 'setParagraphShading', ...baseOp(anchor), fill: shading.fill, clear: shading.clear })
+    }
+    const bordersChanged = !same(node.attrs?.borders ?? null, edited.attrs?.borders ?? null) || !same(node.attrs?.borderLines ?? null, edited.attrs?.borderLines ?? null)
+    if (bordersChanged) {
+      // 与底纹同规：边框走原 XML 最小修改，不能与同段其他改动混存。
+      if (!same(node, { ...edited, attrs: { ...edited.attrs, borders: node.attrs?.borders ?? null, borderLines: node.attrs?.borderLines ?? null } })) throw new Error('段落边框修改请先保存；同段文字和格式不能混用')
+      ops.push({ kind: 'setParagraphBorders', ...baseOp(anchor), borders: safeDocxBorderSpec(paragraphBorders(edited)) })
+    }
     const changedSpacing: Record<string, number> = {}
-    for (const key of ['spaceBefore', 'spaceAfter'] as const) if (!same(node.attrs?.[key], edited.attrs?.[key])) {
-      const value = edited.attrs?.[key] ?? 0
-      if (typeof value !== 'number' || !Number.isInteger(value) || ![0, 240].includes(value)) throw new Error('此段前/段后间距暂不支持保存')
+    for (const key of ['spaceBefore', 'spaceAfter'] as const) if (!Object.is(node.attrs?.[key], edited.attrs?.[key])
+      || !same(node.attrs?.[`${key}Auto`] ?? null, edited.attrs?.[`${key}Auto`] ?? null)) {
+      const value = edited.attrs?.[key]
+      if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value < 0 || value > 14400) throw new Error('此段前/段后间距暂不支持保存')
       changedSpacing[key] = value
     }
     if (!same(node.attrs?.lineSpacing, edited.attrs?.lineSpacing) || !same(node.attrs?.lineRule, edited.attrs?.lineRule) || !same(node.attrs?.lineRawTwips, edited.attrs?.lineRawTwips)) {
@@ -263,21 +336,28 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       if (!newVertical) throw new Error('暂不支持局部上下标修改，请选择整个段落')
       ops.push({ kind: 'setParagraphVerticalAlign', ...baseOp(anchor), value: newVertical })
     }
-    if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(withoutVerticalAlign(withoutLinks(node))), markSequence(withoutVerticalAlign(withoutLinks(edited))))) {
-      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(withoutVerticalAlign(withoutLinks(node))) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(withoutVerticalAlign(withoutLinks(edited)))
+    const oldHighlight = paragraphHighlight(node), newHighlight = paragraphHighlight(edited)
+    if (textOf(edited) && ((oldHighlight ?? null) !== (newHighlight ?? null) || (!textChanged && !same(highlightMap(node), highlightMap(edited))))) {
+      if (newHighlight == null) throw new Error('暂不支持局部高亮修改或移除覆盖；请选择整段并使用无颜色')
+      ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: { highlight: safeDocxHighlight(newHighlight) } })
+    }
+    if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(withoutHighlight(withoutVerticalAlign(withoutLinks(node)))), markSequence(withoutHighlight(withoutVerticalAlign(withoutLinks(edited)))))) {
+      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(withoutHighlight(withoutVerticalAlign(withoutLinks(node)))) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(withoutHighlight(withoutVerticalAlign(withoutLinks(edited))))
       if (['color', 'fontFamily', 'fontSize'].some(key => key in old && !(key in next))) throw new Error('暂不支持清除段落字体、字号或颜色')
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => !same(value, old[key])))
       if (Object.keys(changed).length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: changed })
     }
   }
   if (sectionOperation) ops.push(sectionOperation)
+  if (headerFooterOperations?.length) ops.push(...headerFooterOperations)
   if (ops.length > 500) throw new Error('操作超过 500 条，请分批保存')
   return ops
 }
 
 /** 从原文件恢复草稿，保持原 docxIndex 和对象身份。 */
-export function replayDocxOperations(original: DocxPmNode, operations: NativeOperation[], anchors: DocxAnchor[], section?: DocxSectionAnchor, schema?: Schema): DocxPmNode {
+export function replayDocxOperations(original: DocxPmNode, operations: NativeOperation[], anchors: DocxAnchor[], section?: DocxSectionAnchor, schema?: Schema, styles?: Map<string, DocxStyleInfo>, headerFooters?: { anchor?: { sectionId: string; expectedSectionSha256: string }; model?: import('./docx-hf').DocxHeadersFootersModel }): DocxPmNode {
   restoredDocxSectionOperation(operations, section)
+  if (headerFooters) restoredDocxHeaderFooterOperations(operations, headerFooters.anchor, headerFooters.model)
   const result = structuredClone(original), originalNodes = new Map((result.content ?? []).map(node => [Number(idOf(node)), node]))
   const byId = new Map(anchors.map(anchor => [anchor.blockId, anchor])), afterCounts = new Map<string, number>()
   const replaceText = (node: DocxPmNode, value: string) => {
@@ -294,10 +374,37 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     structural.add(id)
   }
   for (const operation of operations) {
-    if (operation.kind === 'setSectionLayout') continue
+    if (operation.kind === 'setSectionLayout' || operation.kind === 'setHeaderFooter') continue
     const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
     if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
-    if (TABLE_KINDS.includes(operation.kind as any)) {
+    if (operation.kind === 'setParagraphStyle') {
+      if (!(anchor.paragraphStyleEditable ?? anchor.editable) || node.type !== 'docParagraph' || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'styleId'].includes(key))
+        || operations.some(other => other.blockId === operation.blockId && other.kind !== 'setParagraphStyle')) throw new Error('草稿段落样式字段或来源身份无效')
+      safeParagraphStyle(styles, operation.styleId)
+      const sourceStyle = node.attrs?.styleId ?? [...(styles?.values() ?? [])].find(style => style.type === 'paragraph' && style.isDefault)?.styleId
+      if (sourceStyle != null) safeParagraphStyle(styles, sourceStyle)
+      node.attrs = { ...node.attrs, styleId: operation.styleId }
+    }
+    else if (operation.kind === 'setParagraphShading') {
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'fill', 'clear'].includes(key))
+        || (typeof operation.fill !== 'string' && operation.fill !== null)
+        || (typeof operation.fill === 'string' && !/^[0-9a-f]{6}$/.test(operation.fill))
+        || typeof operation.clear !== 'boolean'
+        || operations.some(other => other.blockId === operation.blockId && other !== operation)) throw new Error('草稿段落底纹字段或来源身份无效')
+      node.attrs = { ...node.attrs, shadingFill: operation.fill, shadingClear: operation.clear ? true : null }
+    }
+    else if (operation.kind === 'setParagraphBorders') {
+      let borders: ReturnType<typeof safeDocxBorderSpec>
+      try { borders = safeDocxBorderSpec(operation.borders) } catch { throw new Error('草稿段落边框字段或来源身份无效') }
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'borders'].includes(key))
+        || node.attrs?.borderReset || node.attrs?.borderPad
+        || operations.some(other => other.blockId === operation.blockId && other !== operation)) throw new Error('草稿段落边框字段或来源身份无效')
+      node.attrs = { ...node.attrs, ...docxBorderAttrs(borders) }
+    }
+    else if (TABLE_KINDS.includes(operation.kind as any)) {
       if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'index'].includes(key)) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('草稿表格身份或字段无效')
       const projected = projectDocxTable(node, anchor, { kind: operation.kind, index: operation.index }, schema)
       Object.assign(node, projected)
@@ -349,8 +456,10 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     }
     else if (operation.kind === 'setParagraphSpacing') {
       const values = operation as Record<string, unknown>
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(values).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'spaceBefore', 'spaceAfter', 'lineSpacing'].includes(key))) throw new Error('草稿段落间距字段或来源身份无效')
       if (!['spaceBefore', 'spaceAfter', 'lineSpacing'].some(key => values[key] !== undefined)) throw new Error('草稿段落间距无效')
-      for (const key of ['spaceBefore', 'spaceAfter']) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || ![0, 240].includes(values[key] as number))) throw new Error('草稿段落间距无效')
+      for (const key of ['spaceBefore', 'spaceAfter']) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isFinite(values[key]) || !Number.isInteger(values[key]) || (values[key] as number) < 0 || (values[key] as number) > 14400)) throw new Error('草稿段落间距无效')
       if (values.lineSpacing !== undefined && (typeof values.lineSpacing !== 'number' || ![1, 1.15, 1.5, 2, 2.5, 3].includes(values.lineSpacing as number))) throw new Error('草稿行距无效')
       node.attrs = { ...node.attrs,
         ...(values.spaceBefore !== undefined ? { spaceBefore: values.spaceBefore, spaceBeforeAuto: null } : {}),
@@ -365,8 +474,39 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       const offset = operation.position === 'after' ? (afterCounts.get(anchor.blockId) ?? 0) + 1 : 0
       result.content!.splice(index + offset, 0, { type: 'docParagraph', attrs: { ...node.attrs, docxIndex: null }, ...(operation.text ? { content: [{ type: 'text', text: String(operation.text) }] } : {}) })
       if (operation.position === 'after') afterCounts.set(anchor.blockId, offset)
+    }
+    else if (operation.kind === 'insertParagraphImage') {
+      // 与 insertParagraph 同回放语义；图片以 docProtected/genImage 形态回到草稿，
+      // 与前端粘贴时创建的节点完全一致（filterTransaction/replay 一致性）。
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'position', 'image'].includes(key))
+        || (operation.position !== 'before' && operation.position !== 'after')
+        || !anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('草稿图片粘贴字段或来源身份无效')
+      const image = draftImagePayload(operation.image)
+      const index = result.content!.indexOf(node)
+      if (index < 0) throw new Error('草稿插入锚点已删除')
+      const offset = operation.position === 'after' ? (afterCounts.get(anchor.blockId) ?? 0) + 1 : 0
+      result.content!.splice(index + offset, 0, {
+        type: 'docProtected',
+        attrs: { docxIndex: null, blockType: 'image', label: '图片（粘贴）',
+          imageDataUrl: `data:${image.mime};base64,${image.base64}`,
+          imageWidthPx: image.widthPx, imageHeightPx: image.heightPx,
+          genImage: { base64: image.base64, mime: image.mime, widthPx: image.widthPx, heightPx: image.heightPx } },
+      })
+      if (operation.position === 'after') afterCounts.set(anchor.blockId, offset)
     } else if (operation.kind === 'formatParagraph') {
       const style = operation.style as Record<string, unknown>
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'style'].includes(key))
+        || !style || typeof style !== 'object' || Array.isArray(style) || !Object.keys(style).length
+        || Object.keys(style).some(key => !['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontFamily', 'color', 'highlight'].includes(key))) throw new Error('草稿文字格式字段或来源身份无效')
+      for (const key of ['bold', 'italic', 'underline', 'strike']) if (key in style && typeof style[key] !== 'boolean') throw new Error('草稿文字格式无效')
+      if ('fontSize' in style && (typeof style.fontSize !== 'number' || !Number.isFinite(style.fontSize) || style.fontSize < 1 || style.fontSize > 200 || !Number.isInteger(style.fontSize * 2))) throw new Error('草稿字号无效')
+      if ('fontFamily' in style && (typeof style.fontFamily !== 'string' || !style.fontFamily.trim() || style.fontFamily.length > 128 || /[\x00-\x1f]/.test(style.fontFamily))) throw new Error('草稿字体无效')
+      if ('color' in style && (typeof style.color !== 'string' || !/^[a-f\d]{6}$/i.test(style.color))) throw new Error('草稿字体颜色无效')
+      if ('highlight' in style) {
+        safeDocxHighlight(style.highlight)
+        if (!(node.content ?? []).some(run => run.type === 'text' && !!run.text) || (node.content ?? []).some(run => run.type !== 'text')) throw new Error('草稿高亮要求非空正文段落')
+      }
       for (const run of node.content ?? []) {
         if (run.type !== 'text') continue
         run.marks = [...(run.marks ?? [])]
@@ -374,7 +514,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
           run.marks = run.marks.filter(mark => mark.type !== key)
           if (style[key]) run.marks.push({ type: key })
         }
-        for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font' })) if (key in style) {
+        for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font', highlight: 'highlight' })) if (key in style) {
           let mark = run.marks.find(item => item.type === 'docTextStyle' || item.type === 'textStyle')
           if (!mark) { mark = { type: 'docTextStyle', attrs: {} }; run.marks.push(mark) }
           mark.attrs = { ...mark.attrs, [attr]: key === 'fontSize' ? Number(style[key]) * 2 : style[key] }

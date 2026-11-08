@@ -1,7 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import FindReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
 import { createEditorShell } from './shell'
 import { createWorkbookEditorView } from './workbook-main'
-vi.mock('@univerjs/core', () => ({ LocaleType: { ZH_CN: 'zhCN' }, mergeLocales: () => ({}) }))
+const localeRuntime = vi.hoisted(() => ({ options: undefined as any }))
+vi.mock('@univerjs/core', async importOriginal => {
+  const { mergeLocales } = await importOriginal<typeof import('@univerjs/core')>()
+  return { ...(await importOriginal<typeof import('@univerjs/core')>()), LocaleType: { ZH_CN: 'zhCN' }, mergeLocales }
+})
 vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
@@ -25,7 +30,8 @@ vi.mock('@sheets-web/xlsx-engine', async importOriginal => {
   }) }
 })
 vi.mock('../../../reporting/workbook_engine/bridge/operations', () => ({ applyWorkbookOperations: async (bytes: unknown) => bytes }))
-vi.mock('./workbook-vendor/grid/create-univer', () => ({ createUniver: () => {
+vi.mock('./workbook-vendor/grid/create-univer', () => ({ createUniver: (options: unknown) => {
+  localeRuntime.options = options
   const snapshot: any = {
     sheets: { sheet0: { name: 'Sheet', cellData: { 0: { 0: { v: 'before' } } } } },
     sheetOrder: ['sheet0'],
@@ -33,6 +39,7 @@ vi.mock('./workbook-vendor/grid/create-univer', () => ({ createUniver: () => {
   }
   const range: any = {
     getCellStyleData: () => snapshot.styles[snapshot.sheets.sheet0.cellData[0][0].s] ?? {},
+    getRow: () => 0, getColumn: () => 0, getHeight: () => 1, getWidth: () => 1,
     getWrap: () => snapshot.styles[snapshot.sheets.sheet0.cellData[0][0].s]?.tb === 2,
     setFontWeight: (value: string) => {
       const style = { ...range.getCellStyleData(), bl: value === 'bold' ? 1 : 0 }
@@ -45,12 +52,13 @@ vi.mock('./workbook-vendor/grid/create-univer', () => ({ createUniver: () => {
     setFontStyle: vi.fn(), setFontLine: vi.fn(), setWrap: vi.fn(), setHorizontalAlignment: vi.fn(),
     merge: vi.fn(), breakApart: vi.fn(),
   }
-  const sheet = { getSelection: () => ({ getActiveRange: () => range }), getSheetName: () => 'Sheet' }
+  const sheet = { getSelection: () => ({ getActiveRange: () => range }), getSheetName: () => 'Sheet', getRange: () => range }
   const workbook: any = {
     getId: () => 'book', getSnapshot: () => snapshot, getSheets: () => [sheet],
     getActiveSheet: () => sheet, getSheetBySheetId: () => sheet, insertSheet: vi.fn(),
   }
   return { univer: { dispose: vi.fn() }, univerAPI: {
+    Event: { BeforeCommandExecute: 'BeforeCommandExecute' }, addEvent() { return { dispose() {} } },
     onCommandExecuted() {}, getActiveWorkbook: () => workbook, disposeUnit() {}, createWorkbook() {},
   } }
 } }))
@@ -61,7 +69,7 @@ vi.mock('./workbook-vendor/grid/sync', async () => {
 })
 vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines: vi.fn() }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts: vi.fn() }))
-vi.mock('./workbook-vendor/core/univer-data', () => ({ buildWorkbookData: () => ({}) }))
+vi.mock('./workbook-vendor/core/univer-data', () => ({ buildWorkbookData: () => ({ sheets: {} }) }))
 vi.mock('./workbook-vendor/core/data-tools', () => ({ geometryChanges: () => ({ columns: [], rows: [] }) }))
 vi.mock('./workbook-grid-operations', () => ({ gridMergeChanges: () => [], planGridSheets: () => ({ renames: [], additions: [], removals: [], order: ['Sheet'] }), structuralMutation: () => null }))
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks() })
@@ -95,6 +103,19 @@ it('native XLSX uses trusted transport, keeps unregistered draft and exposes suc
   expect(shell.editor.textContent).toContain('待复核')
   view?.dispose()
 })
+it('loads the preset Chinese Find/Replace locale into the workbook runtime', async () => {
+  document.body.innerHTML = '<main id="app"></main>'
+  const shell = createEditorShell(document.querySelector('#app')!, 'full', 'xlsx')
+  const view = await createWorkbookEditorView(shell, {
+    native: true, file: async () => ({ bytes: new ArrayBuffer(1), sha256: 'a'.repeat(64) }),
+  })
+  expect(localeRuntime.options.locale).toBe('zhCN')
+  const locale = localeRuntime.options.locales.zhCN['find-replace']
+  expect(locale).toEqual(FindReplaceZhCN['find-replace'])
+  expect(locale.dialog).toMatchObject({ title: '查找', replace: '替换', 'replace-all': '替换全部' })
+  view?.dispose()
+})
+
 it('native XLSX reports initialization failure to its host', async () => {
   document.body.innerHTML = '<main id="app"></main>'
   const shell = createEditorShell(document.querySelector('#app')!, 'full', 'xlsx')

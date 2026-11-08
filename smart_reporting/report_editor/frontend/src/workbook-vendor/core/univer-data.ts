@@ -13,6 +13,7 @@ import {
   type SparklineSpec,
   type WorkbookModel,
 } from '@sheets-web/xlsx-engine'
+import { CellValueType } from '@univerjs/core'
 import { logicalStyleOf, toUniverStyle, type LogicalStyle } from './style-map'
 
 export const MINIMUM_SHEET_ROW_COUNT = 1000
@@ -20,6 +21,9 @@ export const MINIMUM_SHEET_COLUMN_COUNT = 26
 
 export interface UniverCellData {
   v?: string | number | boolean | undefined
+  /// Univer cell value type marker (CellValueType); grid features like the
+  /// official sort branch on it, so the projection always sets it for values.
+  t?: number | undefined
   f?: string | undefined
   /// style map key ('' when the cell has no style)
   s?: string | undefined
@@ -180,7 +184,11 @@ function univerCellOf(cell: ModelCell, styleId: string | undefined): UniverCellD
   if (cell.value === null || cell.value === undefined) {
     return styleId === undefined ? {} : { s: styleId }
   }
-  return { v: cell.value, ...(styleId !== undefined ? { s: styleId } : {}) }
+  // Univer features (official sort, statistic bar) branch on the cell type
+  // marker; without `t` numbers compare as strings and sort lexicographically.
+  const valueType = typeof cell.value === 'number' ? CellValueType.NUMBER
+    : typeof cell.value === 'boolean' ? CellValueType.BOOLEAN : CellValueType.STRING
+  return { v: cell.value, t: valueType, ...(styleId !== undefined ? { s: styleId } : {}) }
 }
 
 /// A1 → Univer (row, column) helper for the sync layer.

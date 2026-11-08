@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { applyCellEdits, createBlankWorkbook, readWorkbook } from '../src'
-import { applySheetNotes } from '../src/notes'
+import { applySheetNotes, patchSheetNotes } from '../src/notes'
 import { createBufferEntrySource } from '../src/zip'
 
 async function hasPart(bytes: Uint8Array, path: string): Promise<boolean> {

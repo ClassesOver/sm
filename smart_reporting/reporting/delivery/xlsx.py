@@ -22,8 +22,8 @@ class WorkbookBuildResult:
 
 _OPERATION_KINDS = frozenset({
     'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyDvRules',
-    'applyCfRules', 'applySheetNotes', 'addPivot', 'applyColumnWidths',
-    'applyRowHeights', 'applyPageSetups', 'applyTableAdditions', 'sortRange',
+    'applyCfRules', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'addPivot',
+    'applyColumnWidths', 'applyRowHeights', 'applyPageSetups', 'applyTableAdditions', 'sortRange',
     'refreshPivotCaches', 'applyPivotLayoutExpansions', 'expandPivotOutputs',
     'applyDefinedNames', 'protectSheet', 'protectWorkbookStructure', 'setThemePart',
 })

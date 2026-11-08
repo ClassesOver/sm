@@ -1,0 +1,161 @@
+# Word / XLSX 固定 GenOffice 功能对齐审计
+
+审计日期：2026-11-06。审计工作区：`/home/junge/pros/smart_reporting`，分支 `feat/native-word-excel-followup`。本文件是只读代码审计产物，不是执行验收通过记录。
+
+**结论：完整功能对齐尚未达成。disabled、显式 unavailable、tab/按钮存在、manifest 哈希通过都不构成功能完成。未核验的命令和宿主差异不可计完成；不同 host 中不适用的功能必须经用户明确确认才能从目标排除。不得据当前信息给完成百分比。**
+
+## 1. 固定来源与证据边界
+
+- 固定完整源根（下文 `U`）：`/home/junge/pros/genoffice-source-full`。本次读取 `git rev-parse HEAD` 精确得到 `f8c17004fb730df11f0f743164ffd8b4281bb38c`，`git status --short` 无输出。完整固定源确实可读，无需远程替代或猜测。
+- 当前前端根（下文 `F`）：`/home/junge/pros/smart_reporting/smart_reporting/report_editor/frontend/src`。
+- 当前 DOCX engine 根（下文 `D`）：`/home/junge/pros/smart_reporting/smart_reporting/reporting/slides_engine`。
+- 当前 workbook engine 根（下文 `X`）：`/home/junge/pros/smart_reporting/smart_reporting/reporting/workbook_engine`。
+- `F/vendor/genoffice-docs/SOURCE.md:3` 固定 ref，`:4` 指向完整本地源码；`:8-16` 明确桌面启动、IPC、上游 AI、系统字体扫描不在依赖闭包；`:19-27` 明确 Home/Insert 是裁剪适配。实际 vendor 的 `apps/docs/src/renderer/components/` 仅见 `HeaderFooterArea.tsx`、`PaginationPreview.tsx`、`icons.tsx`，**未含原 Ribbon.tsx、ribbon-tabs.tsx 或各 ribbon-*-tab.tsx**。因此不能声称本地 vendor 已包含完整 Word Ribbon。原文件在 U 中可读，以下 inventory 基于 U，非历史审计文件。
+- `F/workbook-vendor/SOURCE.md:6-10` 明确未集成桌面 external-link、formula-settle export、printing，排除 `ExcelShell.tsx`、dispatcher 和桌面 App。`:17-24` 给出 rotation 原生 callback 契约，`:26-37` 描述 Find/Replace 和 custom number-format 适配。`X/SOURCE.md:2-12` 明确现有引擎是 sheets-web 子集及三项 backport，不是完整最新 xlsx-gateway。
+- 当前工作区已有未提交实现。本次以当前可读代码为准；未运行测试和 GUI，不把测试文件存在当成本轮执行通过。`NATIVE_RIBBON_COMMAND_AUDIT.md` 未作为当前真相来源。
+- 行号是本次快照定位，后续并行修改可能移动；callback 名称作为稳定补充定位。本文 `U/F/D/X` 均严格指上述绝对路径，不是另一份检出。
+
+## 2. 完整成功标准（root 追踪任务必须采用）
+
+每个固定源 tab/group/命令、gallery 选项、对话框选项、上下文命令必须有一条追踪项，并满足：
+
+1. **来源核验**：固定 ref 文件及 callback 可定位；UI 中动态 gallery、contextual tab、selection state、keyboard/context-menu 入口也有对应。不能仅复制最上层标签。
+2. **用户可执行**：在正确选区/对象/权限下可完成实际动作；无权限/无选区时正确禁用是边界行为，不能用永久禁用交付该功能。
+3. **语义和状态一致**：当前值、继承值、混合状态、选区变化、焦点移动和只读/保存中状态准确；undo/redo 能恢复文档及命令状态。
+4. **持久化命令完整闭环**：UI → 授权且含身份校验的操作 → 草稿恢复 → 服务端写回 → 新修订下载 → 独立文件读取 → 重开渲染，均保持目标语义；非目标 parts/关系/资源保留，旧修订字节不变。视图/导航类命令则验实际 UI 状态和适当的恢复边界，不人为写入文档内容。
+5. **失败与恢复真实**：stale source/object/section/sheet identity、网络中断、重试幂等、保存响应丢失、恢复后再次保存均不丢草稿、不越权、不重复生成修订。
+6. **发布非阻断**：遵守 `/home/junge/pros/smart_reporting/AGENTS.md`。验收失败不得冒称通过；已生成且身份可读取的 PDF/Word 要保留并签发链接，同时给具体问题。新增签发链故障点登记相应非阻断故障注入契约。
+7. **host 等效或用户批准排除**：桌面文件/打印/剪贴板/窗口/系统字体/插件能力以真实 web 等效交付并验收；若无法等效，仍为缺口，只有用户确认才能缩减目标。
+
+状态词：**已有代码闭环** = 本轮静态取证见 UI/操作/持久化链，不代表本轮独立验收通过；**局部** = 仅受限对象/选项或缺恢复/回读/UI；**未实现** = 当前适配未见可执行闭环；**来源未核验** = 尚未展开对应外部宿主/菜单实现，不能认为不存在；**进行中** = 明确其他 agent/root 正负责，不能预记完成。
+
+阶段建议：P0 来源/状态/持久化边界和现有功能验收；P1 高频编辑、文件剪贴板、格式和视图；P2 结构/审阅/数据处理；P3 插件、复杂对象、邮件合并和外部集成。优先级只影响顺序，不削减完整目标。
+
+## 3. Word 逐 tab 权威命令族 inventory
+
+固定 tab 定义：`U/apps/docs/src/renderer/components/Ribbon.tsx:548`（Mac 文件动作在 native menu，其他 host 含 File）、`:564` 表格、`:622` 图片、`:623` 形状、`:673` 页眉页脚；当前 tab：`F/docx-ribbon.ts:16-39`。
+
+| Tab / group | 固定源命令、galleries/options/context（来源） | 当前事实与缺口 | 可复用 / 需补读写 | 阶段 |
+|---|---|---|---|---|
+| File / 标题栏 / 转换 | File tab 依 host；原 Ribbon `onSave/onSaveAs/onOpen` 等宿主 props、转换 PDF/HTML/Markdown/images；Home Convert `Ribbon.tsx:3583`，`ConvertFormat` 定义 `:5`。文件原生菜单、打印、系统对话框需继续追 App/menu callback。 | File 在 `F/docx-ribbon.ts:27` 为待迁移按钮；报告 shell 有保存/导出但尚不能认定与所有源文件命令等效。**局部；菜单/Print 完整选项来源未核验**。 | 复用 native API/修订下载；补打开/另存为/重命名/转换对应语义与打印入口、范围、分页验证。不能将浏览器下载直接等同全部 Save As/Print。 | P0/P1 |
+| Home / AI 与转换 | AI 入口、总结、润色（全篇/选区）、排版整理、思维导图，`Ribbon.tsx:3442-3578`，callbacks `onToggleAi/onAiPreset`；Convert 见上一项。 | 当前 `DocxHomeSource` 不是完整此 group；**未见源 AI presets 闭环**。需当前报告模型授权接 Agno，不能引入上游桌面 provider 配置或擅自改模型。 | 复用报告 native AI proposal/accept/reject 和身份协议；生成候选后显式采纳、可撤销、权限/选区绑定。思维导图/图输出守 Matplotlib 静态图要求。 | P1/P2 |
+| Home / Clipboard | Paste split + paste modes、Cut、Copy、Format Painter（含格式捕获/应用）；`Ribbon.tsx:3611`，`applyPainterFormat:496`，painter marks/paragraph attrs `:451-478`。 | **已闭环**（clipboard 线）：paste 分体（source/merge/text，富文本拒绝并说明、纯文本协议校验）、cut/copy（execCommand）、格式刷（单击/双击锁定/Esc/¶ 标记规则/协议内属性白名单）；23+18 测试与 6 文件 124 项回归。**图片粘贴已闭环**（`insertParagraphImage`：png/jpeg 魔数/8MB/尺寸校验、media part+关系+drawing inline 经既有 `embedImageMedia`、12 pytest lxml 独立回读 media 字节一致；表格内/浮动/裁剪/替换诚实拒绝）。**未达**：选择性粘贴对话框、默认粘贴设置、词粒度刷、⇧⌘C/V、HTML 精确映射（协议只支持整段统一格式）。 | 复用 ProseMirror clipboard/transaction；剩余项需协议扩展（局部样式/图片资源）或对话框实现。 | P1（主链已完成） |
+| Home / Font | 系统/文档字体、字号及增减、B/I/U/strike、下划线选项、上下标、字体颜色 palette、highlight named colors/no-color、大小写/CJK 半全角、清格式、字体更多选项；`Ribbon.tsx:3714-4110`，highlights `:773`。 | `F/docx-home-source.tsx:77-95` 基础控件；`F/docx-operations.ts:118-137,271-281` 仅整段一致 run 格式及上下标，局部同段混合样式拒绝；字体/字号/颜色清除拒绝。**局部**。**段落整体高亮已闭环**（`docx-highlight.ts` 源15色+none，formatParagraph 协议；浏览器黄→保存→下载→python-docx 回读→重开画布黄色、调色板直点与撤销验证，见 NATIVE_RIBBON_STYLE_ACCEPTANCE.md 2026-11-06 第二批）；表格内/跨段/游标 run 级仍缺。 | 复用 marks/extensions、DOCX engine run 生成/patch；需局部 run anchor/offset、保持已有 rPr/links、完整 palettes和清除语义。系统字体见跨格式要求。 | P0/P1 |
+| Home / Paragraph | bullets/numbering/multilevel galleries、级别、起始编号/继续/重启，indent、alignment/RTL、line-spacing 1/1.15/1.5/2/2.5/3、段前后、更多行距、底纹/边框/显示格式等固定原 group；`Ribbon.tsx:4111-4455`，`ribbon-tabs.tsx:setParaAttrs/toggleParaSpace`。 | `F/docx-home-source.tsx:97-122` 有基本列表、可用原编号级别、0.5英寸左缩进、对齐、倍数行距和段前后；`F/docx-operations.ts:202-250` 有操作；**精确段前后 0–720pt/0.05pt 已闭环**（docx-spacing）；**段落底纹已闭环**（`docx-shading.ts` 源 20 色板+无颜色，`setParagraphShading` 最小 pPr 补丁，4+3 测试与浏览器保存/回读/重开实证，见 NATIVE_RIBBON_STYLE_ACCEPTANCE.md）。**段落边框已闭环**（`docx-borders.ts` 源 Home 六位置 b/t/l/r/tblr/无框线、单实线 0.5–3pt+20 色板+自动颜色，`setParagraphBorders` 同段独占批次，桥按 PPR_CHILD_ORDER 有序补丁；源含 between/bar/nil/double/themeColor pBdr 整体拒绝 fail-closed；between 抑制为源显示层装饰由既有 vendor 层承担，写路径不产生 between；6+6 测试与浏览器保存/回读/重开实证）。自定义编号、完整 multilevel、精确/至少行距、自动间距、完整段落 dialog 仍缺。 | 原 definitions/numbering/list-presets 和 engine pPr 可复用；需复杂 numPr/override/起始值、任意负/正左缩进、首行/悬挂、bidi 协议。 | P0/P1/P2 |
+| Home / Styles | 固定 gallery、来源 paragraph styles、应用样式时直接格式处理、normal/headings 等；`Ribbon.tsx:4456-4507`，`ribbon-tabs.tsx:184,256,305`。 | `F/docx-styles.ts:8-28,47-108` source paragraph style select；拒绝含编号/heading/复杂显示属性/不完整继承；同段样式与文字/格式不能混存。**局部，普通来源样式有代码闭环**；不是完整 gallery 和 heading 对齐。 | 复用 parsed.styles/docStyleCss；需 heading/list/复杂 display 状态刷新、源 gallery 直接格式处理语义、样式管理（以源实际入口为准）。 | P0/P1 |
+| Home / Editing | Find/Replace/Select；`Ribbon.tsx:4508-4544`。 | **Find/Replace 已闭环**（`docx-find-replace.ts` 复用 pinned find.ts 匹配/通配符/正则/展开+search 插件；82 项定向回归；浏览器 Ctrl+F 查 3 处、全部替换仅目标段变化、Ctrl+Z 还原）。Go To 独立导航与 Select 仍缺；protected/页眉页脚不搜索；段落拆分/链接正文/混合 run 单元格替换明确拒绝并给原因。 | 复用 Tiptap/PM 搜索和 selection，不解析 assistant 正文为执行；替换已沿用严格 operation/replay 一致性；Go To/Select 需补独立导航协议。 | P1 |
+| Insert / Pages & Tables | Cover gallery/移除、Blank Page、Page Break；table grid/自定义行列 modal；`U/.../ribbon-insert-tab.tsx:678-837`，`ribbon-tabs.tsx:353-397,693-748`。 | `F/docx-insert-source.tsx:83-119` disabled，普通段落插入不等于分页或表格插入。**未实现**。 | 复用 insertBlankPageAt/insertPageBreakAt/insertTableAt 和 generated blocks；需服务端新结构/分页/封面协议、selection anchor、草稿 replay。 | P1/P2 |
+| Insert / Illustrations & Text | 图片、chart modal（series/category/type）、shape gallery（含 lines）、text-box presets/绘制、WordArt gallery、drop cap、field gallery；`ribbon-insert-tab.tsx:290-429,838-1088`，`ribbon-tabs.tsx:399,473,543,648`。 | `F/docx-insert-source.tsx:124-189` disabled。渲染已有对象不等于编辑。**未实现**。 | 已有 docProtected/textbox/image/shape extensions + docx-engine；需图片资源关系/geometry、chart 静态图资源写回、drawing/textbox/field 安全生成与读回，禁止新 Plotly。 | P2/P3 |
+| Insert / Links | Insert/edit/remove hyperlink、bookmark 新增/删除/跳转、cross-reference；`ribbon-insert-tab.tsx:144,248,496,1089-1123`。 | `F/docx-insert-source.tsx:196-213` 超链接有回调；`F/docx-operations.ts:64-116,253-269,325` 安全 URL + UTF-16 boundary +简单段内 link patch/replay。tooltip/plain/复杂内联、已有链接段落文字改动受限；bookmark/cross-ref disabled。**超链接局部，其余未实现**。 | 复用 safeDocxLink/原关系 metadata；补书签/ref字段、局部编辑保持关系、导航与外链安全。不能放宽为任意 scheme。 | P0/P1/P2 |
+| Insert / Comments / HF / Symbols | 新批注；header/footer galleries及编辑/移除、页码位置/格式/移除；50 symbols、equation gallery；`ribbon-insert-tab.tsx:1125-1339`。 | `F/docx-insert-source.tsx:222-285` 仅 symbol 插入有可执行文字操作；comments/HF/equation disabled。**Symbols 有代码闭环，其余未实现**。 | 字符复用现有文字操作；comments/notes/HF/equation需专用 read/write/replay，不能当正文字符串。 | P1/P2 |
+| Draw | select/pen/highlighter/eraser、笔预设选择/宽度/颜色/透明度/删除/新增、clear all；`ribbon-tabs.tsx:1701-1947`，callbacks `onTool/onPresets/onActivate/onClearAll`。 | `F/docx-ribbon.ts:28` 占位，未见 ink annotation 写回。**未实现**。 | 源 ink model/renderer 可考察复用；需 annotation coordinate/page anchoring、持久化、undo、擦除/清空与预设状态；文字 highlight 不等于 Draw highlighter。 | P3 |
+| Design | Theme presets、font/color theme galleries、page color/no-color、水印预设/自定义/移除、page-border gallery/none；`ribbon-design-tab.tsx:29,92,110,197,222-508`，`onThemeFonts/onThemeColors/onPageColor/onWatermark/onPageBorderAll`。 | `F/docx-ribbon.ts:29` 占位。**未实现**。 | 复用 engine theme/section/page metadata，需写回对应 parts、所有节应用范围、继承/颜色 palette 与草稿恢复。 | P2 |
+| Layout / Page setup | margins gallery/custom/mirrored、portrait/landscape、paper sizes/custom/全部节、columns、breaks next/continuous/even/odd、active section；`ribbon-layout-tab.tsx:139-152,338-570`。 | `F/docx-layout-source.tsx:29-52` 有三种统一页边距、四边值、纸张/自定义、方向、1-3栏；`F/docx-main.tsx:47-54,146-157` 仅尾节 anchor；`F/docx-operations.ts:10-33` strict section patch。**局部**；未覆盖全部源纸型/镜像/当前节范围/分节/全部节。 | 复用 readSections/readSectionSettings/saveDocx；补 section insert/delete/active selection、mirrorMargins、custom gallery 等。当前 preview `colFlow=null,colMode=none`（docx-main:121），分栏显示也须独立验。 | P0/P1/P2 |
+| Layout / Paragraph & Arrange | left/right indent、段前后数值、position 3×3/inline、wrap options；`ribbon-layout-tab.tsx:200-235,255-335,571-731`。 | `F/docx-ribbon.ts:153-281` 右缩进及段前后 twip输入有 capture/stale guard；左缩进仍受720 twip倍数限制；arrange 占位。**局部**。 | 复用段落 operations；任意左缩进、首行/悬挂、对象定位/环绕需新协议。 | P0/P1/P2 |
+| References | Zotero add/edit citation/bibliography/refresh/preferences/remove codes；TOC insert/update（真实页码）、footnote/endnote、source类型/元数据/add citation/bibliography、caption Figure/Table/Equation +编号、index insert/mark；`ribbon-references-tab.tsx:244,351-360,510-719`。 | `F/docx-ribbon.ts:31` 占位。**未实现**。 | engine已有 generateTocFieldXml/generateCaptionXml/generateIndexFieldXml/citationText/bibliographyLine；需严格字段/notes/source metadata读写与独立页码验收；Zotero IPC须web授权等效或用户批准排除。 | P2/P3 |
+| Mailings | **固定实际源不是当前占位的整套 Office 邮件菜单**：Mail merge panel、选择数据源、插入 merge field、记录前后预览、合并；`ribbon-mailings-tab.tsx:20-35,66-136`，callbacks `onPickSource/onInsertField/onMerge`。 | `F/docx-ribbon.ts:32` 大量占位标签比源不同，不能当权威 inventory。**未实现**。 | 复用源 mail-merge model/生成机制需进一步追；补数据源授权/字段映射/预览、合并产物修订与下载。envelope/labels 是否源其他入口须核验，不能擅自添加为已核验范围。 | P3 |
+| Review | proofing/editor/spellcheck、translation langs/AI、new/delete current/all/resolved comments、previous/next/show/comments AI；track changes、display modes、insert/delete/format/author filters、balloons/options、accept/reject next/all/shown/selection/author、prev/next/review-pane、AI revisions、compare/protect；`ribbon-tabs.tsx:774-821,875-1353`。 | `F/docx-ribbon.ts:33` 占位；既有 protected/revision 渲染不等于可审阅。**未实现**。 | 复用 parsed comments/revisions/protection 和 engine APIs；需 author/ids/timestamps/relationships、修订接受拒绝与保留、compare结果、保护状态/密码合法操作、AI候选授权。 | P2/P3 |
+| View | print/web/outline、read mode、zoom/fit/page width/full page、appearance AI/dark、ruler/grid/nav、new tab/split/switch等；`ribbon-tabs.tsx:1362-1694`。 | 已有分页预览 `F/docx-main.tsx:117-128`；**缩放已闭环**（`docx-view.ts` 10–500%、±10、100%、页宽/整页、手动对话框；浏览器 110%/142%/125% 三方式验证不产生草稿修改；缩放不持久化为已登记缺口）。web/outline/read/grid/dark/nav/ruler/window 仍 pending 禁用并给原因。 | 复用 doc-zoom/editor-scroll/PaginationPreview；视图类验实际尺寸/viewport/selection/resize，不必制造正文写回。原native window/tab以web等效或用户确认排除。 | P1 |
+| Table Design context | no style +5 presets +来源表格样式、first/last row/column +banding six toggles、shading palette/no-color、last border +12 border modes、8 styles、width4/8/12/18/24、color；`Ribbon.tsx:567-621,681-717,2891-3103`。 | `F/docx-ribbon.ts:44-67` 标签覆盖较多但无真实格式写回；`docx-operations.ts:177-187` 既有表格仅文字改动，拒绝属性/样式变化。**未实现**。 | 复用上游 table commands/engine cell/table properties；补 source style tblLook继承和per-edge border/cell shading patch，不用整个表重建丢失复杂结构。 | P2 |
+| Table Layout context | select cell/col/row/table、gridlines/properties；delete table/cell/row/col +shift dialogs；insert rows/cols/cells；merge/split cells/table；row height/col width/autofit contents/window/fixed/distribute；9 align/directions/margins；repeat headers；`Ribbon.tsx:3106-3437`。 | `F/docx-ribbon.ts:68-105` 只是全清单；仅连接 `docx-tables`允许的简单表增删行列和删除表等窄命令（须以 TABLE_ACTIONS/allowed 实际映射逐项验），`docx-operations.ts:171-175` 同表一次结构操作必须保存重开，不能与文本/第二次混用。**局部**。 | 已有 strict table anchor/projectDocxTable/bridge patch；补合并/嵌套/网格跨度、cell styles、属性尺寸、复杂表增删与replay。UI selection纯命令可先复用。 | P0/P2 |
+| Picture Format context | adjust replace/background/color/transparency、位置/环绕/前后层/rotate/crop、height/width/aspect/reset；图片框选与普通图片路径不同；`Ribbon.tsx:2687-2888`。 | `F/docx-ribbon.ts:37` pending。**未实现**；source完整具体菜单某些 options需再细化callback，不能计不存在。 | 上游 imagePatch/embedded resources/尺寸可复用；需受信上传、media关系、同一对象锚点、裁剪/透明度/去背景真实服务与无关资源保留。 | P2/P3 |
+| Shape Format context | shape presets/fill/outline颜色/粗细/effects、edit text、arrange front/forward/backward/back、position/wrap/rotate、size；`Ribbon.tsx:625-648,2537-2686`。 | `F/docx-ribbon.ts:38` pending。**未实现**。 | 复用 protected/textbox shape model，补geometry/style/文字的严格patch及上下文选择。 | P2/P3 |
+| Header/Footer context | edit/remove header/footer、page-number位置/here/NUMPAGES/format/remove、DATE/TIME/picture、goto other/link previous、first/even-odd、header/footer distance、close；`ribbon-hf-tab.tsx:32-48,85-289`。 | **页眉/页脚编辑已接线并有桥回归**：`docx-hf-source.tsx` 进入嵌套 hf-editor、header/footer + default/first/even 变体、首页不同/奇偶页不同、PAGE/NUMPAGES/SECTIONPAGES 插入、位置与删除页码；`docx-hf.ts` 严格 setHeaderFooter diff/replay；`docx-main.tsx` 接 controller，bridge `edit-docx.ts` 已写回部件/字段并保留非目标部件。pytest header/footer 7 项通过、`docx-hf.test.ts` 覆盖操作/replay。保存前未失焦内容 flush、保存锁/失败解锁、部件状态投影和布局/HF 组合恢复已有定向回归（面板 9、恢复 17、会话 8 项）；面板测试使用 mock vendor handle，真实浏览器保存/回读/重开仍待验收。**未达**：日期/时间/图片字段、link-to-previous/goto other、完整 header/footer gallery/距离交互与真实分页视觉仍未全验。 | 复用 parsed.hfParts/readSections/header-footer engine；补每节/first/even/previous links 与 field关系写回/恢复、实际分页回读。 | P2 |
+
+## 4. XLSX 逐 tab 权威命令族 inventory
+
+固定源 `U/apps/sheets/src/renderer/ExcelShell.tsx:133-148` 有7常规 tab及 **Chart Design、Table Design、Shape Format、Picture Format 四个 contextual tab**。当前 `F/workbook-ribbon.ts:8-16,111` 只包含7常规+类型中的Chart Design；不能将缺失的另外三个 contextual tab遗忘。
+
+| Tab / group | 固定源命令、galleries/options/context（来源） | 当前事实与缺口 | 可复用 / 需补读写 | 阶段 |
+|---|---|---|---|---|
+| File / Title / Print / status | 标题保存、AI命名、undo/redo、native file菜单/打印、normal/page-break preview、zoom slider；`ExcelShell.tsx:906-953,1110-1176`。原 File不在7 tab中，必须追 App/menu不能误认为无文件功能。 | 当前报告 shell保存/新修订下载有链（workbook-main:354-387）；缺完整文件/打印等效；**局部，native菜单/打印完整选项来源未核验**。 | native API和下载复用；formula-settle export/打印被SOURCE明确排除，补真实web打印/PDF/范围布局与缓存一致性；undo需见后节。 | P0/P1 |
+| Home / AI | assistant entry及AI动作；`ExcelShell.tsx:3535` 的 `onAiRun` callbacks。 | `F/workbook-main.ts:50,61,295-352` 旧工作簿AI proposal/accept/reject/undo存在，但 native 模式form隐藏且inert；不能称native AI对齐。**局部/Native缺失**。 | 复用当前报告模型Agno与 native scoped proposal，无新provider；补源preset语义及选区上下文、审阅采纳撤销。 | P1/P2 |
+| Home / Clipboard | paste +value/formula/format/col-width/besides-border、cut/copy、painter once/locked；`ExcelShell.tsx:3606-3653`，`ribbon-actions.ts:422-475`。 | `F/workbook-ribbon.ts:366-370` disabled；Univer自身入口可用性尚未GUI核验，不能计Ribbon闭环。**未实现**。 | 复用 pinned Univer clipboard/painter commands；需源样式/公式/关系保持、浏览器权限/粘贴fallback、跨sheet及选择性粘贴的diff覆盖。 | P1 |
+| Home / Font | editable字体menu、字号/steps、B/I/U/double/strike/sup/sub、font auto/color、fill none/color、完整边框gallery和线色；`ExcelShell.tsx:3655-3822`，`ribbon-actions.ts:1541-1638,1794-1868,2239`。 | 基础B/I/U、字体/字号/颜色、all borders、**双下划线与删除线已闭环**（`workbook-font.ts` 官方 setValue 样式 patch，clear underline 不误清 strike；浏览器应用→保存→openpyxl 回读 strike/double、无边框伪差异）；格式状态 mixed/unavailable 投影已实现（`workbook-format.ts`）。上下标因引擎 schema 无字段保持禁用；auto色/完整边框gallery/theme gallery仍缺。**局部**。 | 复用 Univer style API +style-map +applyCellEdits；补 auto/no-fill/全边框模式、字体动态来源、引擎 vertAlign 字段（需授权引擎改动）。 | P0/P1 |
+| Home / Alignment | top/mid/bottom、wrap、6 rotations、align、±indent、merge center/cells/across/unmerge；`ExcelShell.tsx:3823-3928`，`ribbon-actions.ts:1639-1790,2074`。 | `F/workbook-ribbon.ts:226-237,456` 有对齐/合并/wrap/rotation代码；inherit rotation不完整源sheet只读；indent未实现。**局部，有限命令有代码闭环**。 | 复用 Univer signed tr（degree/`v`）与merge ops；补row/column/default/named-XF继承、indent读写、multi-range selectedstate与undo。 | P0/P1 |
+| Home / Number | NumberFormatSelect分类/预览/完整dialog、accounting currency、percent/comma、decimal±；`ExcelShell.tsx:3929-3969,4548`。 | 当前0.00/percent/comma、decimal、custom parser/dialog +mixed/inherited/explicit target已实现代码链（workbook-ribbon:238-242，workbook-main:113-123,137-140）；缺源完整format dialog、币种/分类选项。formula派生n隔离在main:170-202。**局部**。 | 复用numfmt、source theme、style-map/strict edits；独立验日期/货币/会计/自定义/General清除及公式不变，缓存n不得成为用户改格式。 | P0/P1 |
+| Home / Styles | CF/rules dialog、format-as-table完整gallery、cell-style gallery；`ExcelShell.tsx:3971-4026`；table palette helper `:1651-1715`。 | `F/workbook-ribbon.ts:243,375-377` disabled。官方Table preset安装不等于XLSX表写回。**未实现**。 | 现有engine有相应模块可复用（需细分公共API vs内部）；补完整read model→projection→diff→operation→readback。 | P2 |
+| Home / Cells | full format cells、row/col insert/delete、insert/delete cells shifts、row height/width/autofit/hide/unhide等format dropdown；`ExcelShell.tsx:4028-4104`。 | 窄行列增删可走structuralMutation +applyRowColumnOps；geometryChanges可持久化网格尺寸，但Ribbon尺寸dialog/autofit/shift cells disabled（workbook-ribbon:378-386）。**局部**。 | 复用 currentOperations:219-248 和geometry helpers；补选区大小/边界/隐藏状态、shift修复formula/range/table/validation等引用。 | P0/P1/P2 |
+| Home / Editing | auto fn5、fill上下左右、series/日期或复制当前值选项（dropdown实际选项须逐条接）、sort/filter menus、clear all/formats/contents/comments/hyperlinks、find/replace/goto；`ExcelShell.tsx:4105-4195`；`ribbon-actions.ts:561-676`。 | autofn5、clear-content、简单sort、**Find/Replace 已浏览器验收**（官方 preset 对话框、多表预检、替换后保存回读/Undo/恢复回归通过；见 NATIVE_RIBBON_STYLE_ACCEPTANCE.md）。fill系列、goto、自定义sort、其余clear未实现。**局部**。 | pinned Univer search算法复用，replacement预算及锁见workbook-main；保留notes/公式/非目标parts，补完整fill/clear协议。 | P0/P1/P2 |
+| Insert / Tables | Pivot create/edit、table create；`ExcelShell.tsx:2464-2486`。 | `workbook-ribbon.ts:264` placeholder。**未实现**。 | engine pivot/table API和official table preset可复用；需数据范围、字段布局/聚合/刷新、真实OOXML parts/cache/关系，不只是网格渲染。 | P2 |
+| Insert / Illustrations & Checkbox | picture、shape gallery、icons、screenshot、checkbox；`ExcelShell.tsx:2487-2531`。 | `workbook-ribbon.ts:265-266,389`未接持久化；drawing preset安装但currentOperations无drawing diff。**未实现**。 | 复用pinned drawing及engine image/shape；补资源+anchor/尺寸/替代文本/对象id/checkbox读写。 | P2/P3 |
+| Insert / Charts / Sparklines | recommended、column/bar/line/area/pie/scatter/radar/doughnut/combo；sparkline line/column/stacked；`ExcelShell.tsx:2532-2625`。 | `workbook-ribbon.ts:267-268,390-402` disabled。**未实现**。 | 原engine图表/迷你图能力可评估，报告新图遵守Matplotlib PNG/JPEG，不扩Plotly；若源要求可编辑chart和series，静态图单独不能宣告完全等效，需明确chart语义/用户确认。 | P2/P3 |
+| Insert / Filters / Links / Notes / Text / Symbols | slicer/timeline、hyperlink、note、text-box、HF、equation/symbol；`ExcelShell.tsx:2626-2696`。 | **legacy notes 已闭环**（读注释/VML 严格身份、SHEET_NOTE_PLUGIN 投影、patchSheetNotes 精确补丁保作者、行列插删随迁含 VML/Anchor/清理、弹窗/位置视图语义按源收紧；main 级真实命令历史组合回归 31 项+浏览器多作者闭环验收；见 NATIVE_RIBBON_STYLE_ACCEPTANCE.md）。threaded comments、slicer/timeline、hyperlink、text-box、HF 仍缺。 | engine相应API+source models；threaded person/comment parts 须单独模型与读写授权。 | P1（notes 已完成）/P2/P3 |
+| Page Layout | theme/colors/fonts/effects；margins/orientation/paper/print-area/page-breaks/background/print-titles；fit-width/height/scale；view/print gridlines/headings；`ExcelShell.tsx:2704-2894`，`page-layout:fit-${axis}:${value}`等callbacks。 | `workbook-ribbon.ts:275-280`**页面设置族已闭环**（page-layout 线）：margins/orientation/paper-size/print-area/print-titles/page-breaks/fit-width/fit-height/print-gridlines/print-headings 读模型+差分收集+applyPageSetups 落盘+openpyxl 独立回读（引擎 13/13、桥 7 passed）；scale 固定源仅打印对话框诚实禁用。theme/colors/fonts/effects 与 background 未实现；行列增删不重映射已写分页符（声明）。 | 复用engine page/print/theme接口；需sheet/workbook-level metadata model/diff/replay，打印范围/标题/缩放真实分页。 | P0/P1/P2 |
+| Formulas / Library | insert-function dialog、recent/financial/logical/text/date-time/lookup/math/more、autofn5；`ExcelShell.tsx:2900-2949`。 | autofn5可用，完整函数目录disabled（workbook-ribbon:424-431）。**局部**。 | 复用Univer formula/函数目录和source metadata；函数参数dialog/区域引用/locale及正确写回。 | P1 |
+| Formulas / Names / Audit / Calculate | names manager/define/use/create-from-selection；trace precedents/dependents/arrows、show formulas、error checking/watch/external links；calculate-now/sheet/mode；`ExcelShell.tsx:2950-3082`，`ribbon-actions.ts:719,1067,1095,1170`。 | `workbook-ribbon.ts:293-295`没有执行映射，默认disabled。自动formula recalc不等于这些commands完成。**未实现**。 | existing formula engine +named range/external links APIs；补calc mode/cache/settle export、host安全外链break/retarget和audit overlay状态。 | P0/P2 |
+| Data / Pivot & Get Data | pivot/refresh、CSV import/merge-workbooks/refresh-all/query refresh/query pane；`ExcelShell.tsx:3084-3157`。 | `workbook-ribbon.ts:298-299`无可执行映射。**未实现**。 | engine imports/pivots/query metadata；授权文件上传/CSV映射/外部网络连接/credentials和刷新策略，保护非目标part。 | P2/P3 |
+| Data / Sort & Filter | asc/desc/custom multi-level/header、toggle/clear/reapply/advanced filters；`ExcelShell.tsx:3158-3197`，`ribbon-actions.ts:677,777,1869,1978`。 | **升/降序已切换官方 `sheet.command.sort-range` 并浏览器闭环（含批注）**：值/样式随迁、范围外公式重算、批注经 move payload 迁移且作者保留（`patchSheetNotes` move 语义，环形置换按文本配对）。**筛选已接入引擎读写与前端闭环**：读模型（values/blank+customs 多列）+ `applySheetFilter` 声明式写回/清除 + 前端 smart-toggle/clear/reapply 官方命令与声明式差分收集（浏览器闭环 ref+条件落盘、批注保留；行可见性 v1 不写文件已声明）。附带修复：①生产未注册 sort preset；②`univer-data.ts` 投影缺 `t` 类型标记；③`update-note-position` 事件守卫恒取消；④FFilter 方法名误用（getCriteria→getColumnFilterCriteria）由浏览器实测抓出。**dateGroupItem 已闭环**（pinned 源无此代码——语义取自 OOXML 规范；读写+粒度链校验+非法组合拒绝；前端 pinned Univer 无字段故仅 server 路径可写，前端差分拒绝不静默丢弃）。**仍拒**：color/icon/top10/dynamic（读写两端）、表格内筛选路由、advanced 筛选对话框；自定义多级/表头排序仍缺。行可见性 v2 已完成。 | hiddenRows/visibilityRange 经 structural/diff 生成（v2）；表格内筛选路由需先清除表格筛选；advanced 需对话框。 | P0/P2 |
+| Data / Tools / Forecast / Outline | text-to-columns delimiters、flash-fill、dedupe、DV、consolidate；forecast/what-if；group rows/cols/auto、ungroup、hide/show details、clear outline、summary below/right、subtotal；`ExcelShell.tsx:3198-3272`，`ribbon-actions.ts:529-560,2006,2082,2219`。 | `workbook-ribbon.ts:305-315,415-423` disabled/局部标签，source完整outline选项多于当前标签。**未实现**。 | 已有engine纯compute helpers优先复用；需所有选项真实授权operation、引用修复、公式与分组状态、结果预览和撤销。 | P2/P3 |
+| Review / Proofing & Language | spell-check、stats、spellcheck-toggle、translation languages经onAiRun；`ExcelShell.tsx:3380-3429`。 | 当前只有stats/translate占位，缺spellcheck入口；**未实现**。 | 复用当前模型Agno授权translation；统计只读可先做，spellcheck使用现有host/web服务并保留用户选择。 | P1/P2 |
+| Review / Comments vs Notes | threaded `comment-new/delete/prev/next/comments-pane-toggle` 与 Notes menu 独立；Notes含open/delete/prev/next/show/show-all/pictures/conversion等dispatcher；`ExcelShell.tsx:3430-3480`，`ribbon-actions.ts:824-906`。 | **legacy notes open/delete/prev/next/show-toggle 已闭环**（只读导航可用、写入受限锁与预算；位置迁移仅随结构修改）；show-all/pictures/conversion 与 threaded comments 仍缺，`workbook-ribbon.ts` 批注/注释两组仍共用 note-open，不等于完整源 Notes menu。 | engine legacy notes可复用；threaded person/comment parts及conversion损失规则须单独模型与读写/授权。 | P1（notes 已完成）/P2 |
+| Review / Protection | protect/unprotect sheet、workbook、change-password、allow-edit-ranges；`ExcelShell.tsx:3482-3511`，`ribbon-actions.ts:488-528,1697`。 | `workbook-ribbon.ts:412-414`明确无状态读取不能切换。**未实现**。 | 复用engine protection APIs，先投影源protected状态/允许操作，再做合法密码/区域变更，禁止只在UI挡而写回能绕过。 | P0/P2 |
+| View | normal/page-break、grid/formula-bar/headings/RTL/cross-highlight、zoom/select/100%、window/freeze menus；`ExcelShell.tsx:3275-3377`，`ribbon-actions.ts:907-1041,1051,1085,1213`。 | 当前仅gridlines直接动作且缺收集持久化，其余disabled（workbook-ribbon:432-448）。**局部/未实现**。冻结窗格引擎全链已存在（读取 `workbook-read:206-215` pane 解析进 `SheetModel.freeze`、写回 `page-setup` pane 替换、前端投影 `univer-data` freeze），**冻结/网格线/缩放均已闭环**（均经官方命令+applyPageSetups 落盘+浏览器 openpyxl 实证，见 NATIVE_RIBBON_STYLE_ACCEPTANCE.md）。formula-bar/headings 无独立 Univer 运行时命令（固定源为本地状态切换）仍缺。 | 复用Univer公开viewport/zoom/freeze/selection APIs及engine metadata；web窗口等效需用户确认，不能自动排除。 | P1/P2 |
+| Chart Design context | chart-element/layout/color menus、chart type、select-data/switch-row-col/format pane/delete；`ExcelShell.tsx:2064-2280`。 | 当前 `workbook-ribbon.ts:346-350`只有部分标签，不含完整layout/colors；暂无selectedChart/context可执行链。**未实现**。 | engine chart parts/series更新、source chart state，可用静态renderer但需与完整可编辑图表目标区分并用户确认。 | P2/P3 |
+| Table Design context | name/resize、dedupe/convert-range、table options、Light/Medium/Dark style gallery；`ExcelShell.tsx:2386-2455,1651-1715`，`table-rename/table-resize-open/table-option/table-style`。 | 当前Ribbon tab都未加入；official preset不形成strict保存。**未实现**。 | 复用engine table及Univer table，需listobject id/name/range/style/options/autofilter/totals完整映射。 | P2 |
+| Shape Format context | fill/outline palette、delete、arrange/order、visual:size/alt-text；`ExcelShell.tsx:2287-2383`。 | 当前tab缺失，drawing保存未收集。**未实现**。 | engine shape anchors/style与pinned drawing，补资源/geometry/selectedVisual和replay。 | P2/P3 |
+| Picture Format context | 与visual分支共享arrange/size/alt-text，图片分支的adjust菜单需继续细化；`ExcelShell.tsx:2287-2383`。 | 当前tab缺失。**未实现**；不能声称只有shape菜单就是图片全部。 | engine images/media +pinned drawing；资源身份/替换/裁剪等按固定源真实callback补齐。 | P2/P3 |
+
+## 5. 当前严格保存链的真实边界
+
+### Word
+
+- `F/docx-main.tsx:33-51` 校验源SHA、block原XML hash、blockId及尾节identity；`:63-69` filterTransaction以 `docxOperations` 拒绝无法映射的事务。
+- `F/docx-operations.ts:140-286` 允许段落文字、普通段落插删、整段基础格式/上下标、基础列表/级别、对齐/有限缩进/间距、简单link、受限表格操作和section layout；`:290-414` replay。
+- `F/docx-operations.ts:146` 不允许原对象重排；`:151-154` 新段落先保存再改结构/样式；`:174` 表格一次结构改动必须先保存；`:197` 同段style切换不能和其他改动同存。这些是当前兼容性边界，不是完整源支持范围。
+- `D/bridge/edit-docx.ts:8-9` 已导入真实parse/save/patch/pPr helpers；`:289` model仍标`desktopVerified:false`；`:420` spacing协议只有spaceBefore/spaceAfter/lineSpacing；`:555`最终saveDocx和`:582`输出identity receipt。不能因底层engine更丰富，就认定Web adapter已经暴露全部功能。
+
+### XLSX
+
+- `F/workbook-main.ts:79-85` 实际注册core/find/drawing/table presets；`:125-166` native Ribbon只把已知窄命令交applyWorkbookRibbonCommand。
+- `F/workbook-main.ts` **currentOperations 现收集** staged、sheet edits、row/column ops、cell edits、merges、column widths、row heights、**patchSheetNotes**（legacy notes 已含投影/diff/恢复/行列迁移）。新增 protection/filter/theme/page-layout/drawing/chart/table 等特性仍必须同时补投影、diff/op 和恢复；单调用Univer command不保证写回。
+- `F/workbook-main.ts:170-202` 派生number-format/cache result隔离及replace预算，`:203-215` undo时按实际trigger撤回对应结构journal；`:250-260` 从original+operations重建；`:354-387` save/new revision/download行为。
+- `F/workbook-ribbon.ts:366-454` 是当前显式disabled reasons；它是缺口证据，不是功能对齐成果。对于仅`commandLabels`或`groups`有id而无`RibbonCommand`/apply映射的入口也不能算实现。
+
+## 6. 跨格式必须独立追踪的命令与边界
+
+### Clipboard / File / Print 的 desktop → web 等效
+
+- Clipboard：真实用户触发下读取/写入、HTML/plain/images、多种Paste Special、跨文档/跨sheet、剪切不是只复制、painter一次/锁定；权限拒绝/浏览器不支持要有可执行替代路径并保留草稿。fallback提示本身不算等效完成。
+- File：报告修订保存可复用，但需区分打开本地文件/报告已有文件、保存/另存为新修订、下载/转换/重命名/恢复、源身份和scope。Mac没有File tab不能据此排除native menu功能。
+- Print：跟进固定App/menu真正callback和print settings；验证当前未保存内容是否包含、页码/页眉页脚/页边距/横纵向/选区/分页/缩放。`window.print()`入口不自动等效源打印全功能，现有PDF下载不自动等效打印设置。
+
+### AI integration / fonts / links
+
+- AI应使用**当前报告已授权模型和Agno执行链**，复用native report AI proposals与采纳、拒绝、撤销、锁定、stale snapshot校验；不得移植桌面provider密钥/设置或自行切模型。源AI总结/润色/翻译/排版/命名等各项应有可执行映射。必要时先读相关Agno skill再实施，本审计未实施AI。
+- 系统fonts：Word SOURCE明确没有系统IPC scanner，当前只嵌入/静态fallback；XLSX字体菜单是小集合。字体名可输入并不代表字体可用/渲染匹配。需文档字体、web可用字体或用户授权本地字体access、无授权fallback、保存字体名和独立渲染证据；不自动声称桌面系统fonts不适用。
+- Links：Word现有safeDocxLink限制http/https/mailto、credentials/control chars/UTF-16 boundary；XLSX hyperlink和external-workbook link是不同功能。对javascript/file/data等不得直接开放；拒绝不可信数据不应阻断已核验产物下载。外部链接break/retarget、network refresh需scope/identity与网络边界。
+
+### Undo / redo / selected state
+
+- Word：Tiptap history可复用，但section draft更新不是自动等于同一history；表格project操作、styles、focus捕获、保存/恢复后的history定义需明确；按当前group按钮值不代表mixed selection真实状态。
+- XLSX：Univer有undo/redo与结构journal反向处理，但loadOperations重建实例内容、staged ops和AI undo是不同history。需实测连续编辑→undo→redo→保存→独立回读，新增sheet/rename/reorder/delete及多次row/col操作不能只验单步。
+- 每类state验：collapsed/range/multi-block/multi-cell/multi-range；explicit/inherited/mixed/unavailable；切sheet/对象移除/context tab消失；dialog打开后改选区、source换身份、保存中、read-only、saved/closed均不误操作旧目标。
+
+## 7. 独立验收矩阵与证据要求
+
+本轮未运行测试。后续只运行变更必要的聚焦测试，不重复完整测试。每个tracked任务至少记录以下证据路径/结果，不能只记“green”。
+
+| 类别 | 必须验收的实际结果 |
+|---|---|
+| DOCX 独立回读 | 下载实际DOCX，用与前端projection独立的python-docx +ZIP/XML/relationships检查目标w:pPr/rPr/numPr/tblPr/tcPr/sectPr/fields/notes/media等；复杂结构独立XML检查不能仅python-docx文本；旧修订SHA不变、非目标part/关系/媒体字节或语义保留。 |
+| XLSX 独立回读 | 下载实际XLSX，用openpyxl与ZIP/XML独立检查values/formulas/styles/numberFormat/rotation/merged ranges/sheet topology/geometry/notes/protection/filter/chart/table/drawings/print metadata；data_only与formula模式区分cache；公式派生n不新增错误style edits；源未支持结构需保留。 |
+| 真GUI | 真页面实际点击tab/menu/gallery/dialog，验证键盘/焦点/selection capture/Escape/outside click/resize/context切换；检查画布、数值和pressed/mixed状态；保存→下载→打开新修订重演。mock smoke只证明该mock链，不能当真实HTTP授权和修订登记通过。 |
+| Identity与恢复 | source SHA替换、block/cell/section/sheet identity伪造/变化、错误scope拒绝使用；草稿保留；刷新/关闭重开恢复同operations；保存响应丢失后同身份重试不重复新修订；载入旧草稿和stale anchor不能误写。 |
+| Undo与只读 | edit→undo→redo→save读回；multi-step和structure+format组合；保存中/成功后/无权限/关闭后禁止新mutation；navigation和search可按源语义保留；不可将permanent disabled当成功。 |
+| 非阻断发布 | 依AGENTS精确故障注入回归：验收失败返回具体issues且不标通过，已生成且身份可读取的PDF/Word下载链接仍签发；新增签发函数/失败步骤登记静态守卫和lineage故障注入。 |
+
+## 8. root 可直接拆入 tracked 清单的阶段建议
+
+1. **P0：锁定inventory/证据与已有闭环**：将本表每个group拆任务；先验未提交Word段前后精度/普通来源styles、XLSX find/customformat/theme读取/派生n隔离；核清gridlines等仅canvas状态未收集事项；保留来源未核验菜单任务，不算完成。
+2. **P1：可见高频命令实际可用**：已完成——Word 精确段前后、来源段落样式、段落高亮、视图缩放、查找替换；XLSX 格式状态/自定义数字格式、查找替换、双下划线/删除线、legacy notes（含行列迁移与位置语义收紧）。全部有定向测试+浏览器闭环证据（见 NATIVE_RIBBON_STYLE_ACCEPTANCE.md）。**进行中**：Excel 官方排序+批注随迁、筛选引擎持久化、Word 段边框/底纹。随后排：Clipboard、剩余字体/颜色/清除语义、XLSX View/geometry、File/Print web等效、原生AI入口授权。
+3. **P2：先打通共同读写模型再接UI**：Word复杂段落/section/tables/HF/review；XLSX filters/protection/tables/CF/DV/names/print metadata/计算导出；每族先补完整model→diff/op→replay再迁移gallery与dialogs。
+4. **P3：复杂对象/集成**：Word Draw/picture/shape/references/Zotero/mail merge；XLSX图表/绘图/迷你图/切片器/外链/queries/forecast及threaded comments，保留固定源真实语义，host不适用请求用户决定。
+5. 最终完成条件：全部源命令族及展开选项有“通过独立验收”的证据或用户明确批准排除；来源未核验、仅disabled、进行中、仅engine支持、仅mock测试均不得关闭完整对齐目标。
+
+## 9. 本轮尚待细化的源分支（明确保留，不推断完成）
+
+- Word/Excel native App/menu/file/print完整options与实际callback；当前已定位Ribbon/ExcelShell入口，后续从具体宿主callback单点追，不重扫全树。
+- Word Picture Format的pictureBox与普通image差异、具体adjust/rotate/crop菜单展开项；Home字体/段落全gallery、styles直接格式舍弃语义须逐选项任务。
+- Excel chart-layout/colors、shape/picture arrangement菜单、what-if/forecast、outline、Notes menu与threaded comments，需将现有group级inventory展开成选项级验收项；本表给出的fixed callbacks是权威入口，未逐项展开部分不算来源已完全核验。
+- 当前engine完整API可复用范围需按目标family核定；不得因包名含chart/filter/protection便声称adapter支持。下阶段应精准读取对应export与bridge whitelist。
