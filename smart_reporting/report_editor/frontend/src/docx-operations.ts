@@ -3,7 +3,7 @@ import { docxBorderAttrs, paragraphBorders, safeDocxBorderSpec } from './docx-bo
 import { safeDocxShading } from './docx-shading'
 import { paragraphVerticalAlign, withoutVerticalAlign, verticalAlignMap } from './docx-vertical'
 import { TABLE_KINDS, projectDocxTable, tableIntent } from './docx-tables'
-import { newTableSize, projectNewDocxTable } from './docx-new-table'
+import { newTableMatchesProjection, newTableNodeCells, newTableSize, projectNewDocxTable } from './docx-new-table'
 import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
@@ -204,13 +204,17 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       if (!schema) throw new Error('新增表格需要编辑器结构信息')
       let size: { rows: number; cols: number }
       try { size = newTableSize(node.attrs?.nativeTableInsert) } catch { throw new Error('只支持通过“插入表格”新建的表格；粘贴或复制的表格暂不支持保存') }
-      if (!same(node, projectNewDocxTable(size, schema))) throw new Error('新增表格请先保存后再填写内容或修改格式')
+      const cells = newTableNodeCells(node)
+      const typed = cells.some(row => row.some(text => text !== ''))
+      let expected: DocxPmNode | undefined
+      try { expected = projectNewDocxTable(size, schema, cells) } catch { expected = undefined }
+      if (!expected || !newTableMatchesProjection(node, expected)) throw new Error('新增表格保存前只能输入纯文字；格式或布局修改请先保存')
       const next = after.slice(index + 1).find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
       const previous = [...after.slice(0, index)].reverse().find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
       const fallback = before.find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
       const target = next ?? previous ?? fallback
       if (!target) throw new Error('新增表格没有可编辑的锚点段落')
-      ops.push({ kind: 'insertTable', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', rows: size.rows, cols: size.cols })
+      ops.push({ kind: 'insertTable', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', rows: size.rows, cols: size.cols, ...(typed ? { cells } : {}) })
       continue
     }
     if (node.attrs?.styleId != null) throw new Error('新增段落请保存后再修改段落样式')
@@ -507,10 +511,11 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (operation.position === 'after') afterCounts.set(anchor.blockId, offset)
     }
     else if (operation.kind === 'insertTable') {
-      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'position', 'rows', 'cols'].includes(key))
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'position', 'rows', 'cols', 'cells'].includes(key))
         || (operation.position !== 'before' && operation.position !== 'after')
         || !anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256 || !schema) throw new Error('草稿新增表格字段或来源身份无效')
-      const table = projectNewDocxTable({ rows: operation.rows, cols: operation.cols }, schema)
+      let table: DocxPmNode
+      try { table = projectNewDocxTable({ rows: operation.rows, cols: operation.cols }, schema, operation.cells === undefined ? undefined : operation.cells as string[][]) } catch { throw new Error('草稿新增表格字段或来源身份无效') }
       const index = result.content!.indexOf(node)
       if (index < 0) throw new Error('草稿插入锚点已删除')
       const offset = operation.position === 'after' ? (afterCounts.get(anchor.blockId) ?? 0) + 1 : 0

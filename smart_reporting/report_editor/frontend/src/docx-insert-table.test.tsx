@@ -6,7 +6,7 @@ import { flushSync } from 'react-dom'
 import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
 import { NativeTableStructure } from './docx-tables'
 import { docxOperations, replayDocxOperations, type DocxAnchor, type DocxPmNode } from './docx-operations'
-import { DOCX_TABLE_NESTED, docxTableInsertUnavailable, insertDocxTable, newTableSize, projectNewDocxTable } from './docx-new-table'
+import { DOCX_TABLE_NESTED, docxTableInsertUnavailable, insertDocxTable, newTableMatchesProjection, newTableSize, projectNewDocxTable } from './docx-new-table'
 import { DocxInsertSource } from './docx-insert-source'
 
 // 真实固定扩展（docx-main 同组：editorExtensions + NativeTableStructure + 原生保存守卫）。
@@ -78,14 +78,33 @@ it('keeps an empty caret paragraph below the table and splits a paragraph around
   expect(operations.find(op => op.kind === 'replaceParagraph')).toMatchObject({ blockId: 'body-0', text: '前半' })
 })
 
-it('refuses typing into the unsaved table, nested insertion and pasted tables', () => {
+it('carries plain text typed into the unsaved table and replays it', () => {
   const { editor, baseline, rejected } = setup()
   editor.commands.setTextSelection(5)
   insertDocxTable(editor, 2, 2)
+  editor.commands.insertContent('甲') // 光标在新表首格
+  editor.commands.splitBlock()
+  editor.commands.insertContent('乙')
+  expect(rejected).toEqual([])
+  const operations = docxOperations(baseline, editor.getJSON() as DocxPmNode, anchors, undefined, editor.schema)
+  const insert = operations.find(op => op.kind === 'insertTable')!
+  expect(insert.cells).toEqual([['甲\n乙', ''], ['', '']])
+  const restored = replayDocxOperations(baseline, operations, anchors, undefined, editor.schema)
+  expect(newTableMatchesProjection(restored.content![1]!, editor.getJSON().content![1] as DocxPmNode)).toBe(true)
+  expect(docxOperations(baseline, restored, anchors, undefined, editor.schema)).toEqual(operations)
+})
+
+it('refuses formatting the unsaved table, nested insertion and pasted tables', () => {
+  const { editor, baseline, rejected } = setup()
+  editor.commands.setTextSelection(5)
+  insertDocxTable(editor, 2, 2)
+  editor.commands.insertContent('x')
   const before = editor.getJSON()
-  editor.commands.insertContent('x') // 光标在新表首格
+  editor.commands.selectParentNode()
+  editor.commands.toggleMark('bold')
   expect(editor.getJSON()).toEqual(before)
-  expect(rejected.at(-1)).toContain('新增表格请先保存')
+  expect(rejected.at(-1)).toContain('只能输入纯文字')
+  editor.commands.setTextSelection(editor.state.selection.from)
   expect(docxTableInsertUnavailable(editor, true)).toBe(DOCX_TABLE_NESTED)
   expect(() => insertDocxTable(editor, 1, 1)).toThrow('表格或嵌套内容')
   const pasted = structuredClone(before) as DocxPmNode

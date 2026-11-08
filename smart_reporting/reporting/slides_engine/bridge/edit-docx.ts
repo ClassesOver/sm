@@ -157,11 +157,14 @@ function paragraphShadingXml(xml: string, shading: { fill: string | null; clear:
 /** 新表格 OOXML：模型与固定源 apps/docs/src/renderer/editor/new-table.ts（wordTableModel/
  *  wordTableCell/wordCellParagraph/WORD_TABLE_BORDERS）一致——渲染层文件不能被 Node 桥接
  *  导入，这里按同一数据构造并交给引擎 generateTableModelXml。 */
-function newWordTableXml(rows: number, cols: number): string {
+function newWordTableXml(rows: number, cols: number, cells?: string[][]): string {
   const line = { style: 'single', szEighths: 4, color: 'auto' }
-  const cell = () => ({ vAlign: 'center' as const, paras: [''], richParas: [{ spaceAfter: 0, lineSpacing: 1, lineRule: 'auto' as const, runs: [] }] })
+  const cell = (value: string) => {
+    const paras = value.split('\n')
+    return { vAlign: 'center' as const, paras, richParas: paras.map(text => ({ spaceAfter: 0, lineSpacing: 1, lineRule: 'auto' as const, runs: text === '' ? [] : [{ text }] })) }
+  }
   return generateTableModelXml({
-    rows: Array.from({ length: rows }, () => Array.from({ length: cols }, cell)),
+    rows: Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => cell(cells?.[r]?.[c] ?? ''))),
     colWidthsPct: Array.from({ length: cols }, () => 100 / cols),
     widthPct: 100,
     autoFit: 'window',
@@ -688,11 +691,18 @@ if (request.kind === 'inspect') {
     if (op.kind === 'insertTable') {
       // 固定源 insertTableAt + editor/new-table.ts wordTableModel：整宽、等分列、autofit window、
       // 单线 0.5pt 边框、单元格垂直居中且段落单倍行距无段后间距；与前端 docx-new-table.ts 同预算。
-      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'rows', 'cols'])
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'rows', 'cols', 'cells'])
       if (op.position !== 'before' && op.position !== 'after') fail('operation_invalid')
       const rows = op.rows, cols = op.cols
       if (!Number.isInteger(rows) || !Number.isInteger(cols) || (rows as number) < 1 || (cols as number) < 1 || (rows as number) > 100 || (cols as number) > 30 || (rows as number) * (cols as number) > 1000) fail('table_insert_invalid')
-      return { op, block, newTableXml: newWordTableXml(rows as number, cols as number) }
+      // 保存前在新表格输入的纯文字：rows×cols 字符串，'\n' 分隔单元格段落（replaceCellText 同规）。
+      let cells: string[][] | undefined
+      if (op.cells !== undefined) {
+        if (!Array.isArray(op.cells) || op.cells.length !== rows || op.cells.some(row => !Array.isArray(row) || row.length !== cols)) fail('table_insert_cells_invalid')
+        cells = (op.cells as unknown[][]).map(row => row.map(value => text(value)))
+        if (cells.reduce((sum, row) => sum + row.reduce((inner, value) => inner + value.length, 0), 0) > 200000) fail('table_insert_cells_invalid')
+      }
+      return { op, block, newTableXml: newWordTableXml(rows as number, cols as number, cells) }
     }
     if (op.kind === 'insertParagraphImage') {
       // 与 insertParagraph 同锚点语义：图片成为锚点前/后的独立图片段落

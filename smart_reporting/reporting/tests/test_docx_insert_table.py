@@ -81,3 +81,30 @@ def test_insert_table_rejects_unknown_fields_and_positions():
         patch_docx(source, [{**insert_op(source, 0, "before", 2, 2), "style": "Grid"}])
     with pytest.raises(ValueError):
         patch_docx(source, [insert_op(source, 0, "inside", 2, 2)])
+
+
+def test_insert_table_writes_plain_cell_text_typed_before_saving():
+    source = make_doc()
+    operation = {**insert_op(source, 1, "before", 2, 2), "cells": [["甲\n乙", "<&>"], ["", "末格"]]}
+    patched = patch_docx(source, [operation])
+    table = Document(BytesIO(patched)).tables[0]
+    first = table.rows[0].cells[0]
+    assert [p.text for p in first.paragraphs] == ["甲", "乙"]
+    assert all(p._p.pPr.find(qn("w:spacing")).get(qn("w:after")) == "0" for p in first.paragraphs)
+    assert table.rows[0].cells[1].text == "<&>"
+    assert table.rows[1].cells[0].text == ""
+    assert table.rows[1].cells[1].text == "末格"
+    assert not any(run.bold for row in table.rows for cell in row.cells for p in cell.paragraphs for run in p.runs)
+
+
+@pytest.mark.parametrize("cells", [
+    [["a", "b"]],
+    [["a"], ["b"]],
+    [["a", 1], ["b", "c"]],
+    [["a\x01", "b"], ["c", "d"]],
+    "ab",
+])
+def test_insert_table_rejects_malformed_cells(cells):
+    source = make_doc()
+    with pytest.raises(ValueError):
+        patch_docx(source, [{**insert_op(source, 0, "before", 2, 2), "cells": cells}])

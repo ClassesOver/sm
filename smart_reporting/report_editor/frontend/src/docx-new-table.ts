@@ -14,9 +14,10 @@ import type { DocxPmNode } from './docx-operations'
  * Local save boundary: the editor node carries `nativeTableInsert` {rows, cols}
  * and must equal the deterministic projection of that size; the native diff
  * turns it into an `insertTable` operation the bridge writes with the engine's
- * generateTableModelXml. Typing into or formatting the new table before saving
- * is refused (save first, then the table is a source table whose cells use the
- * existing replaceCellText path). Size follows the existing table structure
+ * generateTableModelXml. Plain text typed into the new cells before saving is
+ * carried as `cells` (the projection is recomputed with those texts and must
+ * still match); marks, cell/paragraph formatting or layout changes are refused
+ * until the table is saved and becomes a source table. Size follows the existing table structure
  * budget (≤100 rows, ≤30 columns, ≤1000 cells), stricter than the source
  * picker caps (200×63).
  */
@@ -32,13 +33,45 @@ export function newTableSize(value: unknown): { rows: number; cols: number } {
   return { rows: rows as number, cols: cols as number }
 }
 
-/** Deterministic editor projection of a fresh rows×cols table (fixed-source model). */
-export function projectNewDocxTable(value: unknown, schema: Schema): DocxPmNode {
+/** Plain cell texts of a new table: rows×cols strings, '\n' separates cell
+ *  paragraphs (the replaceCellText convention); same control-character and
+ *  size limits as paragraph text. */
+export function newTableCells(value: unknown, rows: number, cols: number): string[][] {
+  if (!Array.isArray(value) || value.length !== rows || value.some(row => !Array.isArray(row) || row.length !== cols)) throw new Error('新增表格单元格与行列数不一致')
+  let total = 0
+  for (const row of value as unknown[][]) for (const text of row) {
+    if (typeof text !== 'string' || text.length > 20000 || /[\x00-\x08\x0b-\x1f]/.test(text)) throw new Error('新增表格单元格文字无效')
+    total += text.length
+  }
+  if (total > 200000) throw new Error('新增表格文字超出预算')
+  return value as string[][]
+}
+
+/** Deterministic editor projection of a fresh rows×cols table (fixed-source
+ *  model), optionally with plain cell texts typed before the first save. */
+export function projectNewDocxTable(value: unknown, schema: Schema, cells?: string[][]): DocxPmNode {
   const { rows, cols } = newTableSize(value)
-  const model = wordTableModel(Array.from({ length: rows }, () => Array.from({ length: cols }, () => wordTableCell(['']))), cols)
+  const texts = cells === undefined ? undefined : newTableCells(cells, rows, cols)
+  const model = wordTableModel(Array.from({ length: rows }, (_, r) => Array.from({ length: cols }, (_, c) => wordTableCell((texts?.[r]![c] ?? '').split('\n')))), cols)
   const node = schema.nodeFromJSON(tableModelToPmNode(model)).toJSON() as DocxPmNode
   node.attrs = { ...node.attrs, nativeTableInsert: { rows, cols } }
   return schema.nodeFromJSON(node).toJSON() as DocxPmNode
+}
+
+const textOfCellParagraph = (node: DocxPmNode): string => (node.content ?? []).map(child => child.type === 'text' ? child.text ?? '' : '\uFFFC').join('')
+/** Cell texts read back from a new table node (shape checked by the projection compare). */
+export function newTableNodeCells(node: DocxPmNode): string[][] {
+  return (node.content ?? []).map(row => (row.content ?? []).map(cell => (cell.content ?? []).map(textOfCellParagraph).join('\n')))
+}
+
+/** `originalFormatting` is a run-formatting snapshot the vendored projection
+ *  derives at creation time (it still describes the empty cells after typing);
+ *  it is not document content and the bridge rebuilds the table from
+ *  rows/cols/cells, so the projection compare ignores it. Everything else —
+ *  rows, cells, paragraphs, marks and attributes — must match exactly. */
+export function newTableMatchesProjection(node: DocxPmNode, expected: DocxPmNode): boolean {
+  const strip = (value: DocxPmNode) => JSON.stringify({ ...value, attrs: { ...value.attrs, originalFormatting: null } })
+  return strip(node) === strip(expected)
 }
 
 export function docxTableInsertUnavailable(editor: Editor, editable: boolean): string | undefined {
