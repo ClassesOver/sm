@@ -80,10 +80,10 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('native_office_operations_invalid')
     if theme is not None and (not isinstance(theme, str) or theme not in {'executive', 'clinical', 'modern'}):
         raise ValueError('native_office_operations_invalid')
-    # 新建空白页（固定源 onAddSlide）：只记录版式来源页；位置由 order 决定，引擎再按来源页数校验。
+    # 新建空白页（固定源 onAddSlide，layoutFrom）或复制页（duplicateSlide，duplicateOf）；位置由 order 决定，引擎再按来源页数校验。
     new_slides = operation.get('newSlides', [])
     if (not isinstance(new_slides, list) or len(new_slides) > 50
-        or any(not isinstance(item, dict) or set(item) != {'layoutFrom'} or not _slide_index(item['layoutFrom']) for item in new_slides)
+        or any(not isinstance(item, dict) or len(item) != 1 or set(item) - {'layoutFrom', 'duplicateOf'} or not _slide_index(next(iter(item.values()))) for item in new_slides)
         or (new_slides and order is None)):
         raise ValueError('native_office_operations_invalid')
     # 删除来源页（固定源 deleteSlide）：只列来源索引；order 必须给出保留页，引擎再核对引用与页数。

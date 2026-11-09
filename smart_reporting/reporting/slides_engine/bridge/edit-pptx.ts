@@ -2,7 +2,7 @@ import { patchTransitionPreservingMetadata, transitionEditAvailability } from '.
 import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, insertBlankSlide, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -30,7 +30,7 @@ type Input = {
   edits?: TextEdit[]
   order?: number[]
   /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
-  newSlides?: { layoutFrom: number }[]
+  newSlides?: ({ layoutFrom: number } | { duplicateOf: number })[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
   deletedSlides?: number[]
   theme?: 'executive' | 'clinical' | 'modern'
@@ -254,7 +254,11 @@ if (request.action === 'inspect') {
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
   const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting]
-  if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(item?.layoutFrom))) throw new Error('deleted_slide_has_pending_edits')
+  const newSlideSource = (item: unknown) => item && typeof item === 'object' ? ('duplicateOf' in item ? (item as { duplicateOf: unknown }).duplicateOf : (item as { layoutFrom?: unknown }).layoutFrom) : undefined
+  if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
+  // 固定源 duplicateSlide 复制已保存内容：被复制页同批不得有其他修改，避免副本只带上部分待保存修改。
+  const duplicated = new Set((request.newSlides ?? []).flatMap(item => item && typeof item === 'object' && 'duplicateOf' in item ? [item.duplicateOf] : []))
+  if (slideRecords.some(records => (records ?? []).some(record => duplicated.has(record.slideIndex)))) throw new Error('duplicated_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
   for (const deletion of deletions) {
@@ -400,10 +404,13 @@ if (request.action === 'inspect') {
   const newSlides = request.newSlides ?? []
   if (!Array.isArray(newSlides) || newSlides.length > 50) throw new Error('new_slides_invalid')
   for (const item of newSlides) {
-    if (!item || typeof item !== 'object' || Object.keys(item).some(key => key !== 'layoutFrom') || !validSlideIndex(item.layoutFrom, slideCount)) throw new Error('new_slide_layout_source_invalid')
-    if (!insertBlankSlide(opened, item.layoutFrom)) throw new Error('new_slide_insert_failed')
+    const keys = item && typeof item === 'object' ? Object.keys(item) : []
+    const source = newSlideSource(item)
+    if (keys.length !== 1 || !['layoutFrom', 'duplicateOf'].includes(keys[0]!) || !validSlideIndex(source, slideCount)) throw new Error('new_slide_source_invalid')
+    const created = keys[0] === 'duplicateOf' ? duplicateSlide(opened, source) : insertBlankSlide(opened, source)
+    if (!created) throw new Error('new_slide_insert_failed')
     const last = opened.deck.slides.length - 1
-    if (item.layoutFrom + 1 !== last) moveSlide(opened, item.layoutFrom + 1, last)
+    if (source + 1 !== last) moveSlide(opened, source + 1, last)
   }
   if (newSlides.length && !request.order) throw new Error('new_slides_require_order')
   // 原始编号 = 来源页 + 新建页；删除按部件路径执行，order 用原始编号列出全部保留页。

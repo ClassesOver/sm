@@ -585,3 +585,28 @@ def test_slides_bridge_rejects_invalid_slide_deletions_without_output(tmp_path: 
     with pytest.raises(subprocess.CalledProcessError):
         _invoke(request, tmp_path)
     assert not output.exists()
+
+
+def test_slides_bridge_duplicates_saved_slide_content_and_rejects_pending_edits_on_source(tmp_path: Path):
+    """固定源 duplicateSlide：副本复制已保存内容并由 order 落位；被复制页同批有修改时拒绝且不产生输出。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "duplicated.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    slides = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"]
+    count = len(slides)
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [],
+             "newSlides": [{"duplicateOf": 1}], "order": [0, 1, count, *range(2, count)]}, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count + 1
+    texts = lambda slide: [element.get("text") for element in slide["elements"]]
+    assert texts(reopened[2]) == texts(slides[1]) and texts(reopened[1]) == texts(slides[1])
+    assert reopened[2]["layoutPath"] == slides[1]["layoutPath"]
+    rejected = tmp_path / "rejected.pptx"
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
+                 "newSlides": [{"duplicateOf": 1}], "order": [*range(count + 1)],
+                 "transitions": [{"slideIndex": 1, "kind": "fade"}]}, tmp_path)
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
+                 "newSlides": [{"duplicateOf": 1, "layoutFrom": 1}], "order": [*range(count + 1)]}, tmp_path)
+    assert not rejected.exists()
