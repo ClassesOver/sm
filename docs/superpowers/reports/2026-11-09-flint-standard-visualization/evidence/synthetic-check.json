@@ -1,0 +1,349 @@
+{
+  "case_id": "synthetic-units-periods-chinese-layout-v1",
+  "flint_commit": "a794557384adcc3293a77043f6b9aff1c33d152c",
+  "smart_reporting_commit": "28649e9c56b1aa7e96f0c363e8eec8accd0175b7",
+  "input_identity": [
+    {
+      "path": "run_synthetic_checks.py",
+      "size": 6500,
+      "sha256": "00dc574e6de5f1e926eeb3dbc656bae43986dd94c348a97e206ca6798e226ea5"
+    }
+  ],
+  "business_intent": "Synthetic-only: preserve amount units and signs, distinguish ratio change from percentage-point change, retain missing period as missing, fit Chinese labels on static output.",
+  "variant": "independent_oracle_and_static_layout_probe",
+  "mechanism_changed": "none; this is a baseline invariant probe, not a Flint adapter comparison",
+  "command": "python docs/superpowers/reports/2026-11-09-flint-standard-visualization/fixtures/run_synthetic_checks.py",
+  "expected_values": {
+    "yuan_to_wan": "250000 yuan = 25 万元",
+    "ratio_percent": "25/2%",
+    "ratio_delta_pp": "5/2 percentage points",
+    "yoy": [
+      "0.2",
+      "0.5",
+      null,
+      "0.25"
+    ]
+  },
+  "actual_values": {
+    "yuan_to_wan": "25",
+    "ratio_percent": "25/2",
+    "ratio_delta_pp": "5/2",
+    "yoy": [
+      "0.2",
+      "0.5",
+      null,
+      "0.25"
+    ]
+  },
+  "geometry": {
+    "canvas_px": [
+      1500,
+      750
+    ],
+    "text_artist_count": 31,
+    "outside_canvas_count": 0,
+    "text_bounds": [
+      {
+        "text": "12 万元",
+        "bounds": [
+          311.99,
+          461.92,
+          56.0,
+          16.67
+        ]
+      },
+      {
+        "text": "-3 万元",
+        "bounds": [
+          639.33,
+          262.04,
+          53.0,
+          16.67
+        ]
+      },
+      {
+        "text": "25 万元",
+        "bounds": [
+          1289.51,
+          636.33,
+          56.0,
+          16.67
+        ]
+      },
+      {
+        "text": "2025年1月",
+        "bounds": [
+          288.99,
+          174.58,
+          102.0,
+          20.83
+        ]
+      },
+      {
+        "text": "2025年1月",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "2025年2月（负值）",
+        "bounds": [
+          572.83,
+          174.58,
+          186.0,
+          20.83
+        ]
+      },
+      {
+        "text": "2025年2月（负值）",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "2025年3月（缺失）",
+        "bounds": [
+          898.67,
+          174.58,
+          186.0,
+          20.83
+        ]
+      },
+      {
+        "text": "2025年3月（缺失）",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "2025年4月",
+        "bounds": [
+          1266.51,
+          174.58,
+          102.0,
+          20.83
+        ]
+      },
+      {
+        "text": "2025年4月",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "金额（元）",
+        "bounds": [
+          64.25,
+          399.0,
+          20.83,
+          105.0
+        ]
+      },
+      {
+        "text": "−100000",
+        "bounds": [
+          81.42,
+          144.67,
+          84.0,
+          20.83
+        ]
+      },
+      {
+        "text": "−100000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "−50000",
+        "bounds": [
+          93.42,
+          211.75,
+          72.0,
+          20.83
+        ]
+      },
+      {
+        "text": "−50000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "0",
+        "bounds": [
+          153.42,
+          278.83,
+          12.0,
+          20.83
+        ]
+      },
+      {
+        "text": "0",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "50000",
+        "bounds": [
+          105.42,
+          345.92,
+          60.0,
+          20.83
+        ]
+      },
+      {
+        "text": "50000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "100000",
+        "bounds": [
+          93.42,
+          413.0,
+          72.0,
+          20.83
+        ]
+      },
+      {
+        "text": "100000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "150000",
+        "bounds": [
+          93.42,
+          480.08,
+          72.0,
+          20.83
+        ]
+      },
+      {
+        "text": "150000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "200000",
+        "bounds": [
+          93.42,
+          547.17,
+          72.0,
+          20.83
+        ]
+      },
+      {
+        "text": "200000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "250000",
+        "bounds": [
+          93.42,
+          614.25,
+          72.0,
+          20.83
+        ]
+      },
+      {
+        "text": "250000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "300000",
+        "bounds": [
+          93.42,
+          681.33,
+          72.0,
+          20.83
+        ]
+      },
+      {
+        "text": "300000",
+        "bounds": [
+          0.0,
+          0.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "text": "合成案例：收入金额与缺失期间",
+        "bounds": [
+          653.75,
+          702.5,
+          350.0,
+          25.0
+        ]
+      }
+    ]
+  },
+  "visual_review": "not_run; geometry assertions are not independent visual review",
+  "duration_ms": null,
+  "model_calls": null,
+  "redraws": 0,
+  "font": {
+    "family": "Noto Sans CJK SC",
+    "path_basename": "NotoSansCJK-Regular.ttc",
+    "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a"
+  },
+  "render": {
+    "matplotlib": "3.11.1",
+    "backend": "Agg",
+    "png": "synthetic-chinese-chart.png",
+    "png_sha256": "24407d89ebb2468445ca97e83098a50e6442392b3e24c2f4284ea858b09ceed5"
+  },
+  "limitations": [
+    "Negative-base arithmetic is not asserted as a universal business definition of同比",
+    "No external business reviewer",
+    "No independent visual reviewers",
+    "No production transformation or routing code was called",
+    "Canvas-bound checks do not detect overlaps or misleading visual encoding"
+  ]
+}
