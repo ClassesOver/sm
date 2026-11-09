@@ -29,4 +29,11 @@ describe('PDF draw tools (pinned DrawLayer rect/ellipse/arrow/ink)', () => {
     const withBlank = insertBlankPdfPage(pages, [], 'p1', () => 'b')
     expect(() => pdfPageState(pages, [...withBlank, { ...valid, pageId: 'blank:b' }])).toThrow('新插入的空白页')
   })
+  it('builds polygon vertices (deduplicated, clamped) and caret points', () => {
+    expect(pdfDrawingOperation('p1', 'polygon', [[50, 60], [50.5, 60.5], [150, 60], [100, 160]], box, red)).toMatchObject({ shape: 'polygon', vertices: [[50, 60], [150, 60], [100, 160]] })
+    expect(() => pdfDrawingOperation('p1', 'polygon', [[50, 60], [150, 60]], box, red)).toThrow('多边形至少需要 3 个页面内的顶点')
+    expect(pdfDrawingOperation('p1', 'caret', [[999, 30]], box, red)).toMatchObject({ shape: 'caret', point: [310, 30] })
+    const caret = pdfDrawingOperation('p1', 'caret', [[50, 60]], box, red)
+    expect(() => validatePdfDrawing({ ...caret, rect: [0, 0, 1, 1] }, box)).toThrow('绘图参数无效')
+  })
 })

@@ -58,3 +58,25 @@ test('drawings outside the page, malformed shapes and blank-page targets are rej
     { kind: 'addDrawing', pageId: 'blank:a', shape: 'rect', rect: [20, 30, 120, 90], color, width: 2 },
   ], model.sourceSha256))
 })
+
+test('polygon and caret drawings land as Polygon and Caret annotations; malformed ones are rejected', async () => {
+  const document = await PDFDocument.create(); document.addPage([400, 500])
+  const bytes = await document.save()
+  const model = await inspectPdf(bytes)
+  const pageId = model.pages[0]!.pageId
+  const result = await patchPdfWithReceipt(bytes, [
+    { kind: 'addDrawing', pageId, shape: 'polygon', vertices: [[20, 20], [120, 40], [80, 140]], color, width: 2 },
+    { kind: 'addDrawing', pageId, shape: 'caret', point: [200, 300], color, width: 2 },
+  ], model.sourceSha256)
+  const annots = await annotations(result.bytes)
+  assert.deepEqual(annots.map(item => item.get(PDFName.of('Subtype'))?.toString()).sort(), ['/Caret', '/Polygon'])
+  const polygon = annots.find(item => item.get(PDFName.of('Subtype'))?.toString() === '/Polygon')!
+  assert.equal(polygon.lookup(PDFName.of('Vertices'), PDFArray).size(), 6)
+  assert.ok(annots.every(item => item.get(PDFName.of('AP'))))
+  for (const operation of [
+    { kind: 'addDrawing', pageId, shape: 'polygon', vertices: [[20, 20], [120, 40]], color, width: 2 },
+    { kind: 'addDrawing', pageId, shape: 'polygon', vertices: [[20, 20], [120, 40], [900, 40]], color, width: 2 },
+    { kind: 'addDrawing', pageId, shape: 'caret', point: [900, 300], color, width: 2 },
+    { kind: 'addDrawing', pageId, shape: 'caret', point: [20, 30], rect: [0, 0, 10, 10], color, width: 2 },
+  ]) await assert.rejects(patchPdfWithReceipt(bytes, [operation], model.sourceSha256), undefined, JSON.stringify(operation))
+})

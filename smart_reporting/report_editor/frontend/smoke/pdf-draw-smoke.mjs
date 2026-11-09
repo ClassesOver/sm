@@ -130,19 +130,29 @@ try {
   await drag('arrow', [[0.1, 0.8], [0.4, 0.9]])
   await drag('ink', [[0.1, 0.6], [0.2, 0.65], [0.3, 0.6], [0.4, 0.7]])
   await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 4, null, { timeout: 30000 })
+  // 多边形：逐点点击，双击完成；插入符号：单击放置。
+  await page.locator('[data-pdf-draw-shape="polygon"]').click()
+  const clickAt = async ([x, y], options) => { const box = await content.boundingBox(); await page.mouse.click(box.x + box.width * x, box.y + box.height * y, options) }
+  await clickAt([0.45, 0.62]); await clickAt([0.52, 0.62])
+  await page.waitForFunction(() => document.querySelector('.pdf-editor-message')?.textContent?.includes('已放置 2 个顶点'))
+  await clickAt([0.48, 0.72], { clickCount: 2 })
+  await page.locator('[data-pdf-draw-shape="caret"]').click()
+  await clickAt([0.3, 0.5])
+  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 6, null, { timeout: 30000 })
   const drafted = await readDraft()
-  assert.deepEqual(drafted.map(op => op.shape), ['rect', 'ellipse', 'arrow', 'ink'])
+  assert.deepEqual(drafted.map(op => op.shape), ['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret'])
+  assert.equal(drafted[4].vertices.length, 3)
   assert.ok(drafted.every(op => op.kind === 'addDrawing' && op.pageId === sourceModel.pages[0].pageId && op.width === 2))
   assert.ok(drafted.find(op => op.shape === 'ink').paths[0].length >= 8)
   // 固定源 DRAW_COLORS：默认红色，切换后为蓝色
-  assert.deepEqual(drafted.map(op => op.color), [[0.86, 0.22, 0.18], [0.17, 0.4, 1], [0.17, 0.4, 1], [0.17, 0.4, 1]])
+  assert.deepEqual(drafted.map(op => op.color), [[0.86, 0.22, 0.18], ...Array(5).fill([0.17, 0.4, 1])])
   if (process.env.PDF_DRAW_SCREENSHOT) await page.screenshot({ path: process.env.PDF_DRAW_SCREENSHOT })
   await page.locator('[data-pdf-ribbon-tab="home"]').click()
-  await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click(); assert.equal((await readDraft()).length, 3)
+  await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click(); assert.equal((await readDraft()).length, 5)
   await page.getByRole('button', { name: /^(重做|Redo)$/ }).click(); assert.deepEqual(await readDraft(), drafted)
   await page.reload(); await page.locator('.pdf-ribbon').waitFor({ timeout: 60000 })
   assert.deepEqual(await readDraft(), drafted)
-  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 4, null, { timeout: 30000 })
+  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 6, null, { timeout: 30000 })
   await page.locator('[data-action="save"]').click()
   try { await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 }) }
   catch { if (process.env.PDF_DRAW_SCREENSHOT) await page.screenshot({ path: process.env.PDF_DRAW_SCREENSHOT + '.fail.png' }); throw new Error(JSON.stringify({ saveDisabled: await page.locator('[data-action="save"]').isDisabled(), saveTitle: await page.locator('[data-action="save"]').getAttribute('title'), saved: !!savePayload, label: await page.locator('.save-state-label').textContent(), status: await page.locator('.pdf-editor-message').textContent(), pageErrors })) }
@@ -154,9 +164,9 @@ try {
   const readback = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys; from io import BytesIO; from pypdf import PdfReader; r=PdfReader(BytesIO(sys.stdin.buffer.read())); print(json.dumps([[str(a.get_object().get("/Subtype")),[round(float(v),2) for v in (a.get_object().get("/C") or [])]] for a in (r.pages[0].get("/Annots") or [])]+[["page2",[str(a.get_object().get("/Subtype")) for a in (r.pages[1].get("/Annots") or [])]]]))'], { input: downloadedBytes, encoding: 'utf8' })
   if (readback.status !== 0) throw new Error(readback.stderr)
   const annots = JSON.parse(readback.stdout)
-  const drawn = annots.filter(([subtype]) => ['/Square', '/Circle', '/Line', '/Ink'].includes(subtype))
-  assert.deepEqual(drawn.map(([subtype]) => subtype).sort(), ['/Circle', '/Ink', '/Line', '/Square'])
-  const subtypeOf = { rect: '/Square', ellipse: '/Circle', arrow: '/Line', ink: '/Ink' }
+  const drawn = annots.filter(([subtype]) => ['/Square', '/Circle', '/Line', '/Ink', '/Polygon', '/Caret'].includes(subtype))
+  assert.deepEqual(drawn.map(([subtype]) => subtype).sort(), ['/Caret', '/Circle', '/Ink', '/Line', '/Polygon', '/Square'])
+  const subtypeOf = { rect: '/Square', ellipse: '/Circle', arrow: '/Line', ink: '/Ink', polygon: '/Polygon', caret: '/Caret' }
   for (const op of drafted) assert.deepEqual(drawn.find(([subtype]) => subtype === subtypeOf[op.shape])[1], op.color.map(value => Math.round(value * 100) / 100))
   assert.ok(annots.filter(([subtype]) => subtype === '/Widget').length >= 4, 'form widgets retained')
   assert.deepEqual(annots.at(-1), ['page2', ['/Text']])

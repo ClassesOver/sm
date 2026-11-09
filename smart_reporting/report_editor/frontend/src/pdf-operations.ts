@@ -93,7 +93,7 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
 
 
 /** 固定源 DrawLayer 的矩形/椭圆/箭头/手绘；坐标为未旋转 PDF user space，须位于当前可见范围内。 */
-export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'ink'
+export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'ink' | 'polygon' | 'caret'
 export const PDF_DRAWING_WIDTH = 2
 /** 固定源 DrawLayer.tsx DRAW_COLORS（默认红色）。 */
 export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, number, number] }[] = [
@@ -104,10 +104,10 @@ export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, numbe
   { name: 'black', label: '黑色', rgb: [0.15, 0.15, 0.15] },
 ]
 export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
-  const { shape, rect, from, to, paths, color, width } = operation as Record<string, unknown>
+  const { shape, rect, from, to, paths, vertices, point, color, width } = operation as Record<string, unknown>
   const finite = (value: unknown, length?: number) => Array.isArray(value) && (length === undefined || value.length === length) && value.every(item => typeof item === 'number' && Number.isFinite(item))
   const inside = (x: number, y: number) => x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height
-  const allowed = new Set(['kind', 'pageId', 'shape', 'color', 'width', 'sourceSha256', ...(shape === 'arrow' ? ['from', 'to'] : shape === 'ink' ? ['paths'] : ['rect'])])
+  const allowed = new Set(['kind', 'pageId', 'shape', 'color', 'width', 'sourceSha256', ...(shape === 'arrow' ? ['from', 'to'] : shape === 'ink' ? ['paths'] : shape === 'polygon' ? ['vertices'] : shape === 'caret' ? ['point'] : ['rect'])])
   if (Object.keys(operation).some(key => !allowed.has(key)) || !finite(color, 3) || (color as number[]).some(value => value < 0 || value > 1) || typeof width !== 'number' || width < 0.25 || width > 24) throw new Error('绘图参数无效')
   if (shape === 'rect' || shape === 'ellipse') {
     if (!finite(rect, 4)) throw new Error('绘图范围无效')
@@ -117,6 +117,10 @@ export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
     if (!finite(from, 2) || !finite(to, 2) || !inside(...(from as [number, number])) || !inside(...(to as [number, number])) || Math.hypot((to as number[])[0]! - (from as number[])[0]!, (to as number[])[1]! - (from as number[])[1]!) < 2) throw new Error('箭头太短或超出页面')
   } else if (shape === 'ink') {
     if (!Array.isArray(paths) || !paths.length || paths.length > 20 || paths.some(path => !finite(path) || path.length < 4 || path.length > 4000 || path.length % 2 || path.some((value: number, index: number) => index % 2 === 0 && !inside(value, path[index + 1])))) throw new Error('手绘路径无效')
+  } else if (shape === 'polygon') {
+    if (!Array.isArray(vertices) || vertices.length < 3 || vertices.length > 200 || vertices.some(vertex => !finite(vertex, 2) || !inside(...(vertex as [number, number])))) throw new Error('多边形至少需要 3 个页面内的顶点')
+  } else if (shape === 'caret') {
+    if (!finite(point, 2) || !inside(...(point as [number, number]))) throw new Error('插入符号必须在页面内')
   } else throw new Error('不支持的绘图形状')
 }
 /** 把一次拖拽转换为绘图操作；端点先夹到可见范围内。 */
@@ -125,7 +129,10 @@ export function pdfDrawingOperation(pageId: string, shape: PdfDrawingShape, poin
   const clamped = points.map(clamp)
   const base = { kind: 'addDrawing', pageId, shape, color: [...color], width: PDF_DRAWING_WIDTH }
   const first = clamped[0]!, last = clamped.at(-1)!
+  const distinct = clamped.filter((value, index) => index === 0 || Math.hypot(value[0]! - clamped[index - 1]![0]!, value[1]! - clamped[index - 1]![1]!) >= 2)
   const operation: NativeOperation = shape === 'ink' ? { ...base, paths: [clamped.flat()] }
+    : shape === 'polygon' ? { ...base, vertices: distinct }
+    : shape === 'caret' ? { ...base, point: first }
     : shape === 'arrow' ? { ...base, from: first, to: last }
     : { ...base, rect: [Math.min(first[0]!, last[0]!), Math.min(first[1]!, last[1]!), Math.max(first[0]!, last[0]!), Math.max(first[1]!, last[1]!)] }
   validatePdfDrawing(operation, box)

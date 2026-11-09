@@ -62,6 +62,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   let drawShape: PdfDrawingShape = 'rect'
   let drawColor: [number, number, number] = [...PDF_DRAW_COLORS[0]!.rgb]
   const drawButtons = new Map<PdfDrawingShape, HTMLButtonElement>()
+  // 多边形逐点放置：当前页的待完成顶点（PDF 坐标）与预览层。
+  let polygonDraft: { pageId: string; vertices: number[][]; preview?: SVGElement; finish: () => void } | undefined
+  const cancelPolygon = () => { polygonDraft?.preview?.remove(); polygonDraft = undefined }
+  root.addEventListener('keydown', event => {
+    if (!polygonDraft) return
+    if (event.key === 'Escape') { cancelPolygon(); status.textContent = '已取消多边形' }
+    else if (event.key === 'Enter') { event.preventDefault(); polygonDraft.finish() }
+  }, { signal: abort.signal })
   const textEnabled = response.pdfTextEnabled === true && response.editingEnabled
   const review = new PdfPreviewReview()
   let previewing = false, previewDocument: PDFDocumentProxy | undefined, previewLoading: PDFDocumentLoadingTask | undefined
@@ -510,10 +518,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup = ribbon.group('annotate', 'Draw Tools')
   const annotateDrawGroup = commandGroup
   // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；已接通四种，颜色取标注调色板。
-  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow']] as const) {
+  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
     const tool = button(label, () => { drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
     sourceCommand(tool, `annotate.drawTools.${id}`); tool.dataset.pdfDrawShape = shape
-    tool.title = `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
+    tool.title = shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
     drawButtons.set(shape, tool)
   }
   const drawColorSelect = documentElement('select', 'pdf-draw-color')
@@ -524,8 +532,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup.append(note)
   unavailableSourceGroup('annotate', 'Draw Tools', [
     { id: 'annotate.drawTools.measure', label: '测量', reason: '原生视图尚未实现可校准比例与来源坐标绑定的测量工具' },
-    { id: 'annotate.drawTools.polygon', label: '多边形', reason: 'PDF 操作桥尚未实现多边形路径写回及输出复读' },
-    { id: 'annotate.drawTools.caret', label: '插入符号', reason: 'PDF 操作桥尚未实现插入符号标注写回及输出复读' },
     { id: 'annotate.drawTools.redact', label: '涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
     { id: 'annotate.drawTools.clearRedaction', label: '清除涂黑', reason: '当前编辑器不生成涂黑标记，不能提供清除动作' },
     { id: 'annotate.drawTools.applyRedaction', label: '应用涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
@@ -969,7 +975,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)) }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)) }
   function updateControls() {
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-saved-reply-editable]')) control.disabled = !canChangeSavedReply()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply() || control.dataset.pdfReplyEditable !== 'true'
@@ -1164,6 +1170,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           shape = window.document.createElementNS(svgNs, operation.shape === 'rect' ? 'rect' : 'ellipse')
           if (operation.shape === 'rect') { shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y)); shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h)) }
           else { shape.setAttribute('cx', String(x + w / 2)); shape.setAttribute('cy', String(y + h / 2)); shape.setAttribute('rx', String(w / 2)); shape.setAttribute('ry', String(h / 2)) }
+        } else if (operation.shape === 'polygon') {
+          shape = window.document.createElementNS(svgNs, 'polygon')
+          shape.setAttribute('points', (operation.vertices as number[][]).map(vertex => point(vertex).join(',')).join(' '))
+        } else if (operation.shape === 'caret') {
+          const [x, y] = point(operation.point as number[]) as [number, number], size = 6 * scale
+          shape = window.document.createElementNS(svgNs, 'polyline')
+          shape.setAttribute('points', `${x - size},${y + size} ${x},${y - size} ${x + size},${y + size}`)
         } else {
           const values = operation.shape === 'arrow' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
           const points: number[][] = []
@@ -1213,6 +1226,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       if (mode === 'select' || mode === 'text' || locked || previewing || previewDocument || !response.editingEnabled || draft.closed) return
       event.preventDefault(); start = [event.clientX, event.clientY]; stroke = [toPdf(event.clientX, event.clientY)]; holder.setPointerCapture?.(event.pointerId)
     }
+    holder.ondblclick = event => {
+      if (mode !== 'draw' || drawShape !== 'polygon' || !polygonDraft || polygonDraft.pageId !== page.pageId) return
+      event.preventDefault()
+      try { polygonDraft.finish() } catch (error) { cancelPolygon(); showError(error) }
+    }
     holder.onpointermove = event => {
       if (!start || mode !== 'draw' || drawShape !== 'ink' || stroke.length >= 2000) return
       stroke.push(toPdf(event.clientX, event.clientY))
@@ -1221,7 +1239,32 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       if (!start || locked || previewing || previewDocument || draft.closed) return
       const begin = start; start = undefined
       try {
-        if (mode === 'draw') {
+        if (mode === 'draw' && drawShape === 'polygon') {
+          if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再绘图')
+          const vertex = toPdf(event.clientX, event.clientY)
+          if (!polygonDraft || polygonDraft.pageId !== page.pageId) {
+            cancelPolygon()
+            const draftPolygon = { pageId: page.pageId, vertices: [] as number[][], preview: undefined as SVGElement | undefined, finish: () => {
+              const vertices = draftPolygon.vertices
+              cancelPolygon()
+              const operation = pdfDrawingOperation(page.pageId, 'polygon', vertices, page.cropBox, drawColor)
+              pdfPageState(model.pages, [...draft.operations, operation])
+              void append(operation).catch(showError)
+            } }
+            polygonDraft = draftPolygon
+          }
+          const last = polygonDraft.vertices.at(-1)
+          if (!last || Math.hypot(vertex[0]! - last[0]!, vertex[1]! - last[1]!) >= 2) polygonDraft.vertices.push(vertex)
+          polygonDraft.preview?.remove()
+          const svgNs = 'http://www.w3.org/2000/svg'
+          const preview = window.document.createElementNS(svgNs, 'svg')
+          preview.setAttribute('class', 'pdf-pending-drawings pdf-polygon-progress'); preview.setAttribute('width', String(pdfViewport.width)); preview.setAttribute('height', String(pdfViewport.height))
+          const line = window.document.createElementNS(svgNs, 'polyline')
+          line.setAttribute('points', polygonDraft.vertices.map(item => pdfViewport.convertToViewportPoint(item[0]!, item[1]!).join(',')).join(' '))
+          line.setAttribute('stroke', `rgb(${drawColor.map(value => Math.round(value * 255)).join(',')})`); line.setAttribute('fill', 'none'); line.setAttribute('stroke-dasharray', '4 3'); line.setAttribute('stroke-width', '2')
+          preview.append(line); holder.append(preview); polygonDraft.preview = preview
+          status.textContent = `多边形已放置 ${polygonDraft.vertices.length} 个顶点；双击或按 Enter 完成，Esc 取消`
+        } else if (mode === 'draw') {
           const points = drawShape === 'ink' ? [...stroke, toPdf(event.clientX, event.clientY)] : [toPdf(...begin), toPdf(event.clientX, event.clientY)]
           stroke = []
           if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再绘图')
