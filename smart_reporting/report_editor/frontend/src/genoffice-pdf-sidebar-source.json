@@ -1,0 +1,27 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "config": {
+    "upstreamPath": "apps/pdf/src/renderer/view-config.ts",
+    "upstreamSha256": "96535c7bf0ce371804e532894dd34e4d6d8d86c11ae3fe8576e1acfe20d40425",
+    "localPath": "genoffice-pdf-sidebar-config.ts",
+    "localSha256": "6b990c11abff5aefa376d16838430430979bdf03f2f8936bdada0fe803432730",
+    "adaptations": [
+      "unchanged extraction of sidebar constants/clamp/load helpers"
+    ]
+  },
+  "app": {
+    "upstreamPath": "apps/pdf/src/renderer/App.tsx",
+    "gitBlob": "e87bc4f85aadc77bcc9cfb152619c17b8c70a30d",
+    "upstreamSha256": "d4480f6d9da4c756473959436fd2f036b83521ce6f43d09bde46f833332b74a9",
+    "reference": "sidebarW/thumbRasterW/startSidebarResize and window clamp lifecycle"
+  },
+  "nativeAdaptations": [
+    "best-effort storage; default is also clamped for narrow windows",
+    "shared width across existing mutually exclusive panes; keyboard ARIA separator",
+    "Escape/pointercancel/lost capture/blur/panel switch/disposal cancel and restore original body styles",
+    "native measured pane chrome/DPR up to2; raster resolution committed only on release/keyboard changes",
+    "document/page/geometry/raster cache; near-visible thumbnails render lazily and offscreen/deleted bitmaps release",
+    "thumbnail work bounded around4M pixels and16K dimensions; source/preview documents remain isolated",
+    "pagehide during reflow stores stable source position with latest fit/zoom intent; initial/preview readiness guards remain"
+  ]
+}

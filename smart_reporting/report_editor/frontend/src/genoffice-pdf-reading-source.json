@@ -1,0 +1,23 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "state": {
+    "upstreamPath": "apps/pdf/src/renderer/view-state.ts",
+    "upstreamSha256": "22b1435074f5f435d6ac30fd3fa533b16cd61cc5ca413b1c1a32338d54899c18",
+    "localPath": "genoffice-pdf-reading-state.ts",
+    "localSha256": "22b1435074f5f435d6ac30fd3fa533b16cd61cc5ca413b1c1a32338d54899c18",
+    "adaptations": []
+  },
+  "app": {
+    "upstreamPath": "apps/pdf/src/renderer/App.tsx",
+    "gitBlob": "e87bc4f85aadc77bcc9cfb152619c17b8c70a30d",
+    "upstreamSha256": "d4480f6d9da4c756473959436fd2f036b83521ce6f43d09bde46f833332b74a9"
+  },
+  "nativeAdaptations": [
+    "scope/document/revision/source-SHA key replaces desktop path",
+    "original-page number inside an immutable source replaces mutable display ordinal",
+    "DOM-measured rows adapt native headings/notes/spreads without desktop row assumptions",
+    "restore after two animation frames; debounce300ms/pagehide/disposal flush",
+    "source view separated from actual preview; explicit user input cancels pending restoration",
+    "fit restoration delegates to the row-fit adapter; current provenance/host differences are in genoffice-pdf-fit-source.json"
+  ]
+}

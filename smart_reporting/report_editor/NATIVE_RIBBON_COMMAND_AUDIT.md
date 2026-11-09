@@ -229,7 +229,8 @@ mechanical App callback nodes are counted as completed source parity.
 
 Fixed App viewNavGroup also has comments, comparison and attachments. Their
 previous omission means the five-entry native list was not a complete source
-inventory; all three are now explicit disabled controls in source order. Night
+inventory; all three were first inventoried as disabled controls in source order. The later
+comments continuation below enables bounded note reading/navigation. Night
 reading and18-step10–800% zoom/status/wheel/DOM-anchor behavior are accepted in
 `NATIVE_PDF_VIEW_ACCEPTANCE.md`; those three families, reading-position persistence,
 complete shortcuts and every source fit/layout rule remain open. No whole-View
@@ -281,3 +282,105 @@ createdMs is staged once; verified appended note dates use canonical UTC and old
 untimed drafts retain unknown dates. Pinned AP/writer/round2 behavior is preserved,
 with explicit append-count/payload drift refusal. This closes the prior preview/
 time gap, not replies/threads/sidebar parity. Evidence: `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`.
+
+
+## PDF whole-document comments continuation (2026-11-09)
+
+View comments now reads/navigates Text-note roots/replies across surviving pages,
+with body/author filter, current-page/time ordering, exclusive sidebar state,
+exact existing-card navigation and existing safe mutation controls. Readonly
+sourceRef is an exact PDF.js reference join, not an accepted mutation field.
+Per-document cache, partial-page retry, draft/document cancellation and immediate
+preview list clearing have targeted fault/timing evidence. Replies/complex notes
+remain readonly; comparison/attachments and complete source popup/persistence UX
+remain open. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`; no whole-View/PDF claim.
+
+
+## PDF existing attachment read/export continuation (2026-11-09)
+
+The View attachments entry now reads saved attachment metadata/content through
+PDF.js and offers user-triggered browser downloads from the authorized PDF.
+Internal Map IDs, not filenames, bind bytes; empty streams are valid, unreadable
+content shows explicit retry. Sidebar/document lifecycle does not create edits.
+This supersedes the completely unavailable read/export checkpoint, not the pinned
+source's add/remove/desktop workflow. Comparison and remaining source controls
+stay open. Evidence: `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
+
+
+## PDF reading-position continuation (2026-11-09)
+
+Reading-position persistence is now connected through unchanged pinned view-state
+helpers, scoped immutable source identity, actual DOM rows and guarded two-frame
+restoration. Custom zoom/basic fit reopen, reorder, readonly and source/preview
+separation have browser evidence; source Ctrl-wheel/search/comment priority stays
+intact. Selection and scroll are distinct. This supersedes the wholly missing
+reading-position checkpoint, not full fit/resize/keyboard/View parity. See
+`NATIVE_PDF_READING_ACCEPTANCE.md`. Budget applies to Standard output only.
+
+
+## PDF row fit and continuous reflow (2026-11-09)
+
+Fit Width/Page now constrains every retained canvas in independent source-paired
+rows, adapting unscaled native borders/headings/gutters. Resize/sidebar/layout/
+rotation/deletion and actual preview reflow preserve view/selection; manual zoom
+wins obsolete fit work. Unchanged form controls preserve pending input and focus.
+Seven new cases,one new compound browser scenario,five affected browsers and
+independent file readback pass. Full desktop side-note margin/host layout and other
+remaining View commands are not closed. See `NATIVE_PDF_FIT_ACCEPTANCE.md`.
+
+
+## PDF sidebar sizing/thumbnail lifecycle (2026-11-09)
+
+Shared source-bounded pane width now supports pointer and keyboard, best-effort
+persistence, cancellation and exact style cleanup. Thumbnails reuse committed
+rasters during drag and lazily manage per-document/page image/task lifetime.
+Immediate pagehide during reflow preserves latest fit intent. A30-page/DPR2 browser
+scenario,affected tests and independent files verify bounded behavior; no full
+source thumbnail overlays/context or desktop layout claim. Evidence:
+`NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.
+
+
+## PDF bounded attachment writing (2026-11-09)
+
+The existing attachment pane now stages local file additions, exact saved-file
+removals/keep and pending cancellation, using NativeDraft history and actual
+output preview. The pinned flat-tree writer is unchanged; native validation adds
+identity/budget guards, encoded name-byte ordering and post-save content checks.
+This closes only safe flat-tree add/remove; complex/shared/associated/protected
+sources remain read/export-only. Removal is not secure erasure. New browser,
+engine/service and independent file evidence: `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.
+
+
+## PDF saved flat-root reply writing (2026-11-09)
+
+Safe saved roots now expose a separate reply capability, including roots with
+existing standard flat replies whose bodies remain readonly. Exact-source
+identities replace source rect/content fallback at the public boundary; pinned
+note drawing is retained and output must contain the precise IRT parent and RT/R.
+Pending replies reuse draft history/modal editing and source/preview isolation.
+New counterexamples prove missing/wrong-parent output is refused. Pending roots,
+saved-reply mutations and complex thread families remain open. See
+`NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
+
+
+## PDF pending-root reply identity/lifecycle (2026-11-09)
+
+The existing thread reply entry now supports roots still in the immutable-source
+draft. First reply assigns one32-hex local identity and stages the reply in one
+history transaction. Editing preserves identity; deleting the root removes its
+children atomically. Native writes use the unchanged localId/replyToLocalId branch
+and verify actual fresh references rather than rect/content matching. Legacy
+unknown dates remain unknown; protected/ambiguous sources and complex thread
+families stay outside the write boundary. No new Ribbon-command count is claimed.
+See `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+
+
+## PDF saved flat-leaf reply mutation (2026-11-09)
+
+Existing editNote/removeNote now accept exact safe saved reply identities derived
+from the full source graph. Parent/sibling ambiguity stays readonly; body edit
+changes only Contents/M and leaf removal releases only a proven unshared dictionary
+to avoid stale inbound IRT. Source/preview/readonly/capability guards cover pane
+and page-card actions; ordinary note editing remains independent. The new source
+annot-delete.ts is a pinned primary reference, not a claimed executed PDFium path.
+See `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`; no new Ribbon count is claimed.

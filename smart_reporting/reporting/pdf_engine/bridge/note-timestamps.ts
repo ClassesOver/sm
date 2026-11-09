@@ -3,7 +3,7 @@
  * Verify exact counts and suffix payload before changing only the newly added dates.
  */
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRef, PDFString } from 'pdf-lib'
-export interface AddedNoteDate { pageIndex: number; contents: string; rect: number[]; createdMs?: number }
+export interface AddedNoteDate { pageIndex: number; contents: string; rect: number[]; createdMs?: number; replyToRef?: string; localId?: string; replyToLocalId?: string }
 export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes: Uint8Array, notes: AddedNoteDate[], markupPages: number[], outputOrder: number[]) {
   if (!notes.length) return outputBytes
   const base = await PDFDocument.load(baseBytes, { updateMetadata: false })
@@ -21,6 +21,25 @@ export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes
     if (actual !== expected) throw new Error('pdf_added_note_append_count_changed')
     expectedCounts.set(sourceIndex, expected)
   }
+  const originalRefs = new Set(base.getPages().flatMap(page => page.node.lookupMaybe(PDFName.of('Annots'),PDFArray)?.asArray().filter(raw=>raw instanceof PDFRef).map(String) ?? []))
+  const addedRefs = new Set<string>(), localRoots = new Map<string,{ref:string;pageIndex:number}>()
+  for (const [sourceIndex,list] of byPage) {
+    const annotations=output.getPage(outputOrder.indexOf(sourceIndex)).node.lookup(PDFName.of('Annots'),PDFArray),count=expectedCounts.get(sourceIndex)!
+    for (const [offset,note] of list.entries()) {
+      const raw=annotations.get(count-list.length+offset)
+      if (!(raw instanceof PDFRef)) throw Error('pdf_added_note_append_identity_changed')
+      if (note.localId!==undefined || note.replyToLocalId!==undefined) {
+        if (originalRefs.has(String(raw)) || addedRefs.has(String(raw))) throw Error('pdf_added_note_reference_reused')
+        addedRefs.add(String(raw))
+      }
+      if (note.localId!==undefined) {
+        if (localRoots.has(note.localId)) throw Error('pdf_local_reply_duplicate_root')
+        const dict=annotations.lookup(count-list.length+offset,PDFDict)
+        if (dict.has(PDFName.of('IRT')) || dict.has(PDFName.of('RT'))) throw Error('pdf_local_reply_root_changed')
+        localRoots.set(note.localId,{ref:String(raw),pageIndex:sourceIndex})
+      }
+    }
+  }
   for (const [sourceIndex, list] of byPage) {
     const outputIndex = outputOrder.indexOf(sourceIndex)
     if (outputIndex < 0) throw new Error('pdf_added_note_output_page_missing')
@@ -34,6 +53,10 @@ export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes
       const contents = annotation.lookup(PDFName.of('Contents'))
       const rect = annotation.lookupMaybe(PDFName.of('Rect'), PDFArray)?.asArray()
       if (String(annotation.get(PDFName.of('Subtype'))) !== '/Text' || !(contents instanceof PDFString || contents instanceof PDFHexString) || contents.decodeText() !== note.contents || !rect || rect.length !== 4 || rect.some((value, i) => !(value instanceof PDFNumber) || value.asNumber() !== note.rect[i])) throw new Error('pdf_added_note_append_identity_changed')
+      const localParent=note.replyToLocalId===undefined?undefined:localRoots.get(note.replyToLocalId)
+      if (note.replyToLocalId!==undefined && (!localParent || localParent.pageIndex!==sourceIndex)) throw Error('pdf_local_reply_parent_missing')
+      const expectedParent=localParent?.ref ?? note.replyToRef
+      if (expectedParent !== undefined && (String(annotation.get(PDFName.of('IRT'))) !== expectedParent || String(annotation.get(PDFName.of('RT'))) !== '/R')) throw new Error('pdf_reply_parent_reference_changed')
       if (note.createdMs === undefined) {
         // Legacy drafts have no trustworthy creation instant. Keep optional dates unknown.
         annotation.delete(PDFName.of('CreationDate')); annotation.delete(PDFName.of('M'))

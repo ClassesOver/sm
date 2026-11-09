@@ -36,7 +36,7 @@
 .pdf-properties-panel h3{margin:0 0 8px;font-size:14px;font-weight:600}
 .pdf-properties-panel dl{display:grid;grid-template-columns:minmax(120px,180px) minmax(0,1fr);gap:4px 12px;margin:0;font-size:12px}
 .pdf-properties-panel dt{color:#687487}.pdf-properties-panel dd{margin:0;overflow-wrap:anywhere}
-.pdf-document-pages[data-spread=two]{display:grid;grid-template-columns:repeat(2,max-content);justify-content:center;align-content:start;column-gap:16px}
+.pdf-document-pages[data-spread=two]{display:block}
 .pdf-document-pages[data-spread=two] .pdf-page{margin-inline:0}
 @media print{
   @page{size:auto;margin:10mm}

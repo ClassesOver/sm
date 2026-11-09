@@ -91,3 +91,22 @@ host adaptation, rather than every source row/layout rule. Night filter changes
 screen colors only and is not document color correction. Source View/whole PDF
 parity, other Page/Form Design/conversion families and desktop/deployed/full-app
 image acceptance remain open. Flags stay off.
+
+
+2026-11-09 follow-up: `NATIVE_PDF_READING_ACCEPTANCE.md` supersedes the previously
+missing reading-position persistence checkpoint. Comments and attachment read/export
+have separate bounded acceptance records. Comparison/full source shortcuts and fit/
+layout remain open. The configured budget script checks Standard assets only.
+
+
+2026-11-09 row-fit follow-up: `NATIVE_PDF_FIT_ACCEPTANCE.md` supersedes the
+previous active-page-only fit and missing continuous resize checkpoint. All
+retained single/paired canvases now constrain fit; native fixed chrome differs
+from the desktop side-note margin/full host layout. Earlier stage evidence/counts
+remain historical and are not recounted as new checks.
+
+
+2026-11-09 sidebar follow-up: `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md` supersedes the
+missing shared sidebar sizing/persistence checkpoint. It also covers thumbnail
+raster lifetime and stable-position/latest-fit pagehide handling during reflow.
+Earlier stage evidence remains historical; full desktop context/layout is open.

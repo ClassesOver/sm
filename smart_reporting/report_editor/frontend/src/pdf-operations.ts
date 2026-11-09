@@ -1,3 +1,5 @@
+import { validatePdfReplies } from './pdf-replies'
+import { validateAttachmentEdits, type PdfAttachmentModel } from './pdf-attachment-edits'
 import { validatePendingPdfNote, validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
 import { validatePdfMarkup, type SavedPdfMarkup } from './pdf-markup'
 import type { NativeOperation } from './native-draft'
@@ -6,7 +8,7 @@ import type { PDFPageProxy } from 'pdfjs-dist'
 export const PDF_PAPER_SIZES = [{ label: 'A3', width: 842, height: 1191 }, { label: 'A4', width: 595, height: 842 }, { label: 'A5', width: 420, height: 595 }, { label: 'Letter', width: 612, height: 792 }, { label: 'Legal', width: 612, height: 1008 }] as const
 export function validatePdfSizeOperations(operations: NativeOperation[]) {
   const sizes = operations.filter(op => op.kind === 'setPageSize')
-  if (sizes.length > 1 || sizes.some(op => !PDF_PAPER_SIZES.some(paper => paper.label === op.preset)) || (sizes.length && operations.some(op => ['cropPage', 'replaceText'].includes(op.kind)))) throw new Error('页面尺寸不能重复或与裁切、原位改字混用；请先保存重开')
+  if (sizes.length > 1 || sizes.some(op => !PDF_PAPER_SIZES.some(paper => paper.label === op.preset)) || (sizes.length && operations.some(op => ['cropPage', 'replaceText', 'replyNote', 'replyPendingNote'].includes(op.kind)))) throw new Error('页面尺寸不能重复或与裁切、原位改字、回复混用；请先保存重开')
 }
 export function setPdfPageSize(operations: NativeOperation[], preset: string): NativeOperation[] {
   validatePdfSizeOperations(operations)
@@ -19,13 +21,15 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
 export interface PdfBox { x: number; y: number; width: number; height: number }
 export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; notes?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel extends PdfAttachmentModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
 /** 所有操作引用不可变来源索引；排序后的页面位置永远不能当作来源身份。 */
 export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperation[]): PdfPageIdentity[] {
   validatePdfSizeOperations(operations)
+  validateAttachmentEdits(operations)
+  validatePdfReplies(pages, operations)
   const byId = new Map(pages.map(page => [page.pageId, { ...page }]))
   const deleted = new Set<string>()
   const removed = new Set<string>()
@@ -36,7 +40,7 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       order = operation.pageIds as string[]
       continue
     }
-    if (['setFormValue', 'setPageSize'].includes(operation.kind)) continue
+    if (['setFormValue', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(operation.kind)) continue
     const page = byId.get(String(operation.pageId))
     if (!page) throw new Error('页面身份已过期，请重新打开文件')
     if (operation.kind === 'deletePage') deleted.add(page.pageId)

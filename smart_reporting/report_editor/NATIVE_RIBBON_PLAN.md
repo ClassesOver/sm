@@ -333,3 +333,75 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Capture optional createdMs once on placement and retain through edits/history/reload. Canonicalize only verified new annotation dates to UTC; legacy untimed additions omit unknown dates without inventing time. Preserve pinned AP writer and round2 geometry; strict append count/payload guards prevent touching identical existing notes.
 - [x] Pending-only service/UI actual previews bind actual byte SHA, display PDF-read annotation contents and reproduce save/download bytes; no new manual approval. 14 new file +2 affected file cases,2 drift guards,6 new +51 affected frontend checks,2 new +3 affected service cases,Chromium/pypdf and5 Node22 readonly/offline cases pass across focused runs. Two builds/budgets,Ruff,35 local hashes and zero new bridge diagnostics pass; six baseline diagnostics remain. Direct pinned-writer cross-TZ counterexample is retained. See `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`.
 - [ ] Replies/threads,complex source/sidebar/context and whole PDF/desktop/image/deployed acceptance remain open; flags off. This supersedes the preceding pending-preview/time gap.
+
+
+### PDF whole-document comments sidebar continuation (2026-11-09)
+
+- [x] Enable View comments with exclusive thumbnails/outline/comments panels. Read Text-note roots/replies across surviving pages, filter body/author, sort current page/time and navigate exact existing saved/pending cards. Existing safe edit/delete/history is reused; reply threads stay readonly.
+- [x] Add inspect-only full-generation sourceRef, immutable-source projection, separate document promise caches, partial-page errors/retry, obsolete callback guards and immediate source/preview list clearing. No reply write API or fabricated identity.
+- [x] Seven new frontend +25 affected checks,one new bridge case,12 existing file/service cases,Chromium with Worker faults/delayed preview,independent pypdf and offline readonly Node22 runtime checks pass. Standard/Slides builds/configured Standard budget,36 engine hashes,date-parser hash and zero new bridge diagnostics pass; six baseline diagnostics remain. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`.
+- [ ] Reply writing,rich/complex mutations,full popovers/context/persistence/comparison/attachments and whole PDF/desktop/image/deployed acceptance remain open. This supersedes the prior completely missing sidebar/read-thread gap only; flags off.
+
+
+### PDF existing attachment read/export continuation (2026-11-09)
+
+- [x] Enable View attachments, mutually exclusive with thumbnails/outline/comments. Read names/descriptions/actual sizes and download real embedded bytes from the authorized opened PDF, including empty files and distinct IDs with equal basenames. No new server route or draft/write operation.
+- [x] Separate document caches, shared inflight/success reads, rejected-read retry, explicit directory/partial-content errors and stale callback/document-switch guards. Browser Blob export adapts pinned desktop export; source humanBytes is unchanged.
+- [x] Four new +9 affected frontend checks,real Chromium attachment downloads/fault injection/actual preview/save/readonly/mobile/empty-document checks,independent pypdf and affected comments/View browsers pass. Standard/Slides builds and configured Standard budget pass. Engine unchanged; do not recount earlier Node22 evidence. See `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
+- [ ] Attachment add/remove,comparison,full source sidebar/context and overall PDF/desktop/image/deployed acceptance remain open. Flags off.
+
+
+### PDF reading-position continuation (2026-11-09)
+
+- [x] Reuse unchanged pinned view-state storage/sanitization/pruning,300ms debounce/two-frame restore and pagehide flush. Bind native records to full immutable scope/document/revision/SHA and original page identity; restore fractional DOM rows and custom zoom/recomputed basic fit. Handle missing pages/blocked storage without editing or blocking viewing.
+- [x] Preserve scroll without changing selected page on refresh; explicit navigation/zoom/search/comments win. Keep preview from writing source position and restore source snapshot on return, with readiness/generation/disposal guards.
+- [x] Seven new +7 affected checks,Chromium delayed restore/resize/reorder/preview/unload/scope/readonly/storage/selection scenarios,independent pypdf and four affected browser scenarios pass. Final Standard/Slides builds and configured Standard budget pass; no new runtime check or full suite claimed. See `NATIVE_PDF_READING_ACCEPTANCE.md`.
+- [ ] Complete source fit/continuous resize/spread layout,shortcuts,comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. Earlier Slides-budget wording is corrected: its named log repeated the Standard budget script; no configured equivalent Slides budget is claimed. Flags off.
+
+
+### PDF all-page row fit/continuous reflow continuation (2026-11-09)
+
+- [x] Replace active-page-only fit and shared grid columns with all-surviving-page canvas constraints and independent source-paired rows. Measure fixed native chrome/padding; support rotation/deletion/actual-preview bounds and pinned zoom limits. Notes stay below pages; no desktop margin equivalence claimed.
+- [x] Coalesce viewport/window changes, preserve selected page and navigation anchors, defer through preview/print/render, cancel obsolete fit on manual zoom and teardown. Reuse unchanged form controls to retain uncommitted input/focus during reflow.
+- [x] Seven new +12 affected checks,new Chromium DOM-bound/form/preview/readonly/disposal scenario,five affected browsers and independent pypdf pass. Standard/Slides builds and configured Standard budget pass; source hashes/syntax/diff pass. No engine/backend change or whole-suite rerun. See `NATIVE_PDF_FIT_ACCEPTANCE.md`.
+- [ ] Desktop side-note margin/full host layout,sidebar sizing persistence,full shortcuts/comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. This supersedes the prior wholly missing all-row fit/continuous-resize gap; flags off.
+
+
+### PDF shared sidebar sizing/thumbnail lifecycle continuation (2026-11-09)
+
+- [x] Shared source-bounded width across thumbnails/outline/comments/attachments, pointer rAF/release persistence and accessible keyboard separator. Cancel on Escape/pointercancel/lost capture/blur/panel switch/disposal; preserve original global styles. Best-effort preference and narrow-window clamping do not block viewing.
+- [x] Committed/DPR-aware thumbnail resolution, per-document/page/geometry cache, near-visible lazy drawing and offscreen/deleted/replaced bitmaps/task cleanup. Drag reuses existing pixels; no new thumbnail annotation-overlay equivalence claim.
+- [x] Preserve stable source position/latest fit intent on pagehide during reflow. New30-page/DPR2 Chromium scenario,19 existing unit checks,six affected browsers and independent pypdf pass. Standard/Slides builds and Standard budget/source/syntax/diff checks pass; no backend/dependency/runtime change or full suite claimed. See `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.
+- [ ] Desktop side-note/full host/thumbnail context,full shortcuts/comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. This supersedes the wholly missing sidebar sizing/persistence checkpoint; flags off.
+
+
+### PDF bounded attachment write continuation (2026-11-09)
+
+- [x] Reuse unchanged pinned pdf-attachments writer with source SHA/key/dictionary/content identities; canonical base64 and byte/entry budgets. Refuse ambiguous/hierarchical/shared/linked/protected sources; correct encoded name-byte ordering and verify intermediate/final survivors and new content.
+- [x] Browser file add, saved remove/keep and pending cancel, NativeDraft history/reload, snapshot-bound asynchronous reads, actual preview and nonblocking saved download/reopen. Existing same-basename/empty-file read/export stays available.
+- [x] Seven new engine cases, four new frontend cases (25 selected frontend checks), three affected engine cases and seven actual service cases pass. Chromium compound scenario and independent pypdf/Node22 offline output pass; see `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md` for final build/provenance boundaries.
+- [ ] Complex attachment trees/associations/protected sources, text-replacement combinations, full host/shortcuts/comparison, reply writes and other PDF families remain open. Existing24 MiB online source ceiling is unchanged; larger outputs retain download but are outside online reopen scope. Whole image/production/desktop acceptance remains open; flags off. This supersedes only the previous wholly missing attachment mutation checkpoint.
+
+
+### PDF saved flat-root reply continuation (2026-11-09)
+
+- [x] Reuse pinned note reply drawing for safe saved flat roots with source/page/annotation/dictionary identity and strict reference/protection census. Reject parent mutation/geometry/text mixtures. Verify exact IRT/RT, counts/payload, UTC dates and every existing annotation before accepting output; never accept the writer's orphan fallback.
+- [x] Full-document pane stages replies, edits/cancels pending replies, preserves creation time/history/reload and rejects obsolete pane/modal callbacks. Original root body becomes immutable while replies are pending; readonly/preview and source capability remain authoritative.
+- [x] Five new engine cases plus nine affected engine cases, two new frontend cases plus28 affected checks and eight real service cases pass. Chromium compound path, independent pypdf and Node22 offline exact-parent/forged-output refusal pass; see `NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
+- [ ] Pending-root/local-ID replies, nested/popup/rich/complex threads, saved-reply edit/delete, authenticated author integration, full source popovers/context and the other PDF/desktop/full-image/production gaps remain open. This supersedes only the wholly missing reply-write checkpoint. Flags off; no merge/deployment.
+
+
+### PDF pending-root/local-ID reply continuation (2026-11-09)
+
+- [x] Strict source-page/local-root identities, duplicate/orphan/cross-page/protected-source refusal and canonical parent-before-child writes through the pinned localId/replyToLocalId drawing branch. Verify new references are fresh/unique, root is not itself a reply, exact IRT/RT and appended payload/counts/dates, plus every old annotation.
+- [x] Atomically assign legacy roots an identity on first reply; preserve unknown creation time, stable identity through root edits, cascade root removal with children, undo/redo and scoped draft restore. Existing pending reply editor/cancel and modal/pane identity guards work for both kinds.
+- [x] Four new engine cases plus14 affected cases, three new frontend cases plus30 affected cases and five real service cases pass. Compound production-static Chromium, independent pypdf and Node22 offline parent/forged-ID refusal pass; Standard/Slides/budget/source/typing boundaries are recorded in `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+- [ ] Nested/popup/rich/complex threads, saved-reply edit/delete, authenticated authors, full context/popovers and the other PDF/desktop/full-image/production gaps remain open. This supersedes only the pending-root/local-ID reply checkpoint; flags off and no merge/deployment.
+
+
+### PDF saved flat-leaf reply edit/remove continuation (2026-11-09)
+
+- [x] Derive safe mutable leaves from the full source thread/reference census; preserve root and sibling identities. Reuse strict editNote/removeNote operations and the existing Contents/M + Annots adapter. Retain original creation/author/geometry/AP/IRT/RT, refuse stale/forged/shared/protected/complex targets and unsupported text/crop/size mixtures.
+- [x] Release only the proven unshared deleted leaf dictionary; a real unlink-only counterexample preserves stale inbound IRT and makes future census readonly. Read back the full surviving annotation sequence/dictionaries; verify root remains replyable and last-reply deletion restores ordinary-root capability.
+- [x] Sidebar edit/delete, undo/redo/reload, actual preview/download/reopen, stale pane/modal and readonly/capability isolation work alongside prior saved/local replies. Five new engine cases plus18 affected, three new frontend plus33 affected, seven real service and14 selected ordinary-note/markup file cases pass; Chromium/pypdf/Node22/build evidence in `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
+- [ ] Root-body/whole-thread subtree mutation, nested/popup/rich/complex threads, authenticated authors and full context/popovers remain open, as do other PDF/full-image/production/desktop gaps. This supersedes only the saved flat-leaf mutation gap. Flags off; no merge/deployment.

@@ -33,7 +33,7 @@ export function markupRemovalIdentity(sourceSha256: string, pageIndex: number, i
     : ['IRT', 'Parent', 'Popup', 'StructParent'].some(key => annotation.has(PDFName.of(key))) || links.linked.has(raw.toString()) ? '此标注有关联回复、弹窗或结构信息，暂不支持移除' : null
   return { annotationId: markupSourceId(sourceSha256, pageIndex, index), expectedAnnotationSha256: markupDictionaryHash(annotation), removable: reason === null, removalReason: reason }
 }
-export interface MarkupRemoval { pageIndex: number; annotationId: string; expectedAnnotationSha256: string; subtype?: 'Text' }
+export interface MarkupRemoval { pageIndex: number; annotationId: string; expectedAnnotationSha256: string; subtype?: 'Text'; unlinkObject?: boolean }
 export interface NoteContentEdit extends MarkupRemoval { contents: string; modifiedAt: string }
 export async function removeSourceMarkups(content: Uint8Array, sourceSha256: string, removals: MarkupRemoval[], edits: NoteContentEdit[] = []) {
   if (!removals.length && !edits.length) return content
@@ -62,10 +62,25 @@ export async function removeSourceMarkups(content: Uint8Array, sourceSha256: str
       if (index === undefined || removed.has(index)) throw new Error('pdf_markup_identity_invalid')
       const annotation = annotations.lookup(index, PDFDict)
       if (!(removal.subtype === 'Text' ? String(annotation.get(PDFName.of('Subtype'))) === '/Text' : types.has(String(annotation.get(PDFName.of('Subtype'))))) || markupDictionaryHash(annotation) !== removal.expectedAnnotationSha256) throw new Error('pdf_markup_identity_invalid')
+      if (removal.unlinkObject) {
+        const raw=annotations.get(index)
+        if (!(raw instanceof PDFRef) || String(annotation.get(PDFName.of('RT')))!=='/R' || !(annotation.get(PDFName.of('IRT')) instanceof PDFRef)) throw Error('pdf_reply_unlink_identity_invalid')
+        document.context.delete(raw)
+      }
       removed.add(index)
     }
     // Copy this page's array: a source can share an indirect Annots array with another page.
     page.node.set(PDFName.of('Annots'), document.context.obj(annotations.asArray().filter((_, index) => !removed.has(index))))
   }
-  return document.save({ useObjectStreams: false, updateFieldAppearances: false })
+  const result=await document.save({ useObjectStreams:false,updateFieldAppearances:false })
+  const output=await PDFDocument.load(result,{updateMetadata:false})
+  // Read back the exact surviving annotation sequence and dictionaries after mutation.
+  for (const [pageIndex,page] of document.getPages().entries()) {
+    const expected=page.node.lookupMaybe(PDFName.of('Annots'),PDFArray),actual=output.getPage(pageIndex).node.lookupMaybe(PDFName.of('Annots'),PDFArray)
+    if ((expected?.size()??0)!==(actual?.size()??0)) throw Error('pdf_note_mutation_count_changed')
+    for (let i=0;i<(expected?.size()??0);i++) {
+      if (!actual || String(expected!.get(i))!==String(actual.get(i)) || markupDictionaryHash(document.context.lookup(expected!.get(i),PDFDict))!==markupDictionaryHash(output.context.lookup(actual.get(i),PDFDict))) throw Error('pdf_note_mutation_output_changed')
+    }
+  }
+  return result
 }

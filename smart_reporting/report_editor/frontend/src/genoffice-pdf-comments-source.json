@@ -1,0 +1,29 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "dateParser": {
+    "upstreamPath": "apps/pdf/src/renderer/note-threads.ts",
+    "upstreamSha256": "3a0f1b12a424a264ac43b573fbf83cf18e1db3a8b2b2aa4e5169e7cd7dd5c95d",
+    "localPath": "genoffice-pdf-comment-date.ts",
+    "localSha256": "a202d15a8e4c31f312dde8d28ee36e891a1575022921a25a641396bc98b3783a",
+    "adaptations": [
+      "extract unchanged parsePdfDate/daysInMonth with provenance notice"
+    ]
+  },
+  "panel": {
+    "upstreamPath": "apps/pdf/src/renderer/CommentsPanel.tsx",
+    "upstreamSha256": "4d1821fd12938b43a8072afaa3790ba7d51ad0ea9d9deccd64d244b4c24c14d7"
+  },
+  "nativeAdaptations": [
+    "full-generation reference keys and exact native identity mapping",
+    "iterative safe readonly graph and filter traversal",
+    "per-document promise cache and partial-page errors",
+    "navigate existing native note cards instead of source popovers",
+    "safe saved flat-root reply draft/modal actions with exact native parent identities",
+    "post-write IRT/RT and source annotation verification reject original writer orphan fallback",
+    "pending reply edit/cancel/history with immutable creation time; stale pane/modal guards",
+    "pending-root replies use source localId/replyToLocalId with strict graph and fresh-reference checks",
+    "legacy root identity assigned atomically on first reply; root edits preserve it and removal cascades children with undo/reload",
+    "safe saved flat-leaf edit/remove via exact parent/native identity; complex graphs remain readonly",
+    "pane and page-card saved-reply capability isolation with unchanged ordinary-note controls"
+  ]
+}

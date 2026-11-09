@@ -1,0 +1,31 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "spread": {
+    "upstreamPath": "apps/pdf/src/renderer/spread.ts",
+    "upstreamSha256": "2a14a364c2fb3b38ef2e4509260ee4bccc55e8f471716c5a4d133186f167cfde",
+    "localPath": "genoffice-pdf-spread.ts",
+    "localSha256": "2a14a364c2fb3b38ef2e4509260ee4bccc55e8f471716c5a4d133186f167cfde",
+    "adaptations": []
+  },
+  "config": {
+    "upstreamPath": "apps/pdf/src/renderer/view-config.ts",
+    "upstreamSha256": "96535c7bf0ce371804e532894dd34e4d6d8d86c11ae3fe8576e1acfe20d40425",
+    "PAGE_GAP": 16
+  },
+  "app": {
+    "upstreamPath": "apps/pdf/src/renderer/App.tsx",
+    "gitBlob": "e87bc4f85aadc77bcc9cfb152619c17b8c70a30d",
+    "upstreamSha256": "d4480f6d9da4c756473959436fd2f036b83521ce6f43d09bde46f833332b74a9",
+    "reference": "rowSize, recomputeFit, ResizeObserver and row rendering"
+  },
+  "nativeAdaptations": [
+    "adjacent visible-page pairs with independent flex row wrappers instead of shared grid tracks",
+    "all surviving page canvas bounds use effective crop/rotation or actual output-preview dimensions",
+    "fixed DOM borders/headings/gutters and computed responsive viewport padding remain unscaled",
+    "note cards stay below pages, not the desktop fixed side margin; fit targets canvas plus heading chrome",
+    "continuous viewport/resize fit coalesces animation frames and defers through refresh/preview/printing",
+    "manual zoom exits fit; selected page and explicit navigation/zoom/search/comment targets remain authoritative",
+    "unchanged form state reuses controls to preserve uncommitted input/focus during automatic reflow",
+    "replace obsolete custom fit zoom options instead of accumulating resize history"
+  ]
+}
