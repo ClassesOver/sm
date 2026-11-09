@@ -365,3 +365,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Coalesce viewport/window changes, preserve selected page and navigation anchors, defer through preview/print/render, cancel obsolete fit on manual zoom and teardown. Reuse unchanged form controls to retain uncommitted input/focus during reflow.
 - [x] Seven new +12 affected checks,new Chromium DOM-bound/form/preview/readonly/disposal scenario,five affected browsers and independent pypdf pass. Standard/Slides builds and configured Standard budget pass; source hashes/syntax/diff pass. No engine/backend change or whole-suite rerun. See `NATIVE_PDF_FIT_ACCEPTANCE.md`.
 - [ ] Desktop side-note margin/full host layout,sidebar sizing persistence,full shortcuts/comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. This supersedes the prior wholly missing all-row fit/continuous-resize gap; flags off.
+
+
+### PDF shared sidebar sizing/thumbnail lifecycle continuation (2026-11-09)
+
+- [x] Shared source-bounded width across thumbnails/outline/comments/attachments, pointer rAF/release persistence and accessible keyboard separator. Cancel on Escape/pointercancel/lost capture/blur/panel switch/disposal; preserve original global styles. Best-effort preference and narrow-window clamping do not block viewing.
+- [x] Committed/DPR-aware thumbnail resolution, per-document/page/geometry cache, near-visible lazy drawing and offscreen/deleted/replaced bitmaps/task cleanup. Drag reuses existing pixels; no new thumbnail annotation-overlay equivalence claim.
+- [x] Preserve stable source position/latest fit intent on pagehide during reflow. New30-page/DPR2 Chromium scenario,19 existing unit checks,six affected browsers and independent pypdf pass. Standard/Slides builds and Standard budget/source/syntax/diff checks pass; no backend/dependency/runtime change or full suite claimed. See `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.
+- [ ] Desktop side-note/full host/thumbnail context,full shortcuts/comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. This supersedes the wholly missing sidebar sizing/persistence checkpoint; flags off.

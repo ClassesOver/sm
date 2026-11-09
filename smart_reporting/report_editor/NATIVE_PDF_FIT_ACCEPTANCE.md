@@ -89,3 +89,9 @@ Browser auth/revision routes substitute persistence; no deployed SQL/auth claim.
 Desktop side-note margin/full host layout, sidebar width persistence, full shortcuts,
 comparison, reply/attachment mutation, remaining PDF families, full image and
 production identity/network remain open. Flags remain off; no merge/deploy.
+
+
+2026-11-09 sidebar follow-up: `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md` supersedes the
+missing shared sidebar sizing/persistence checkpoint. It also covers thumbnail
+raster lifetime and stable-position/latest-fit pagehide handling during reflow.
+Earlier stage evidence remains historical; full desktop context/layout is open.

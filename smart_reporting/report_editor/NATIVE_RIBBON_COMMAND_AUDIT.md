@@ -327,3 +327,14 @@ wins obsolete fit work. Unchanged form controls preserve pending input and focus
 Seven new cases,one new compound browser scenario,five affected browsers and
 independent file readback pass. Full desktop side-note margin/host layout and other
 remaining View commands are not closed. See `NATIVE_PDF_FIT_ACCEPTANCE.md`.
+
+
+## PDF sidebar sizing/thumbnail lifecycle (2026-11-09)
+
+Shared source-bounded pane width now supports pointer and keyboard, best-effort
+persistence, cancellation and exact style cleanup. Thumbnails reuse committed
+rasters during drag and lazily manage per-document/page image/task lifetime.
+Immediate pagehide during reflow preserves latest fit intent. A30-page/DPR2 browser
+scenario,affected tests and independent files verify bounded behavior; no full
+source thumbnail overlays/context or desktop layout claim. Evidence:
+`NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.

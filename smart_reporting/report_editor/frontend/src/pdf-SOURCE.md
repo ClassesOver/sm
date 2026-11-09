@@ -194,3 +194,11 @@ unscaled heading/border/gutter constraints across all retained canvases. Notes
 stay below pages instead of the source side margin. Form controls reuse unchanged
 model/value state during automatic reflow. Provenance/adaptations:
 `genoffice-pdf-fit-source.json`; evidence: `NATIVE_PDF_FIT_ACCEPTANCE.md`.
+
+
+Sidebar sizing (2026-11-09): unchanged sidebar config extraction and App drag/
+thumbRasterW/window clamp are recorded in `genoffice-pdf-sidebar-source.json`.
+Native adaptations add nonfatal storage, ARIA keyboard/cancellation cleanup,
+measured pane chrome, DPR2 raster caps and document/page lazy bitmap lifetime.
+Initial/preview reading guards stay intact while pagehide during ordinary reflow
+saves stable position/latest fit intent. See `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.

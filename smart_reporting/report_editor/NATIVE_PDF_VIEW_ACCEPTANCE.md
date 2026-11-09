@@ -104,3 +104,9 @@ previous active-page-only fit and missing continuous resize checkpoint. All
 retained single/paired canvases now constrain fit; native fixed chrome differs
 from the desktop side-note margin/full host layout. Earlier stage evidence/counts
 remain historical and are not recounted as new checks.
+
+
+2026-11-09 sidebar follow-up: `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md` supersedes the
+missing shared sidebar sizing/persistence checkpoint. It also covers thumbnail
+raster lifetime and stable-position/latest-fit pagehide handling during reflow.
+Earlier stage evidence remains historical; full desktop context/layout is open.

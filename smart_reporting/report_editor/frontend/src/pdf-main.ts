@@ -33,6 +33,8 @@ import { PdfAnnotationCache, projectPageComments, filterComments, flattenComment
 
 import { stagePdfNote, stagePendingPdfNote, type PendingPdfNoteReference, type SavedPdfNote } from './pdf-notes'
 
+import { createPdfSidebarSizing } from './pdf-sidebar'
+
 import { spreadRows } from './genoffice-pdf-spread'
 import { fitPdfRows } from './pdf-fit-state'
 
@@ -42,6 +44,7 @@ GlobalWorkerOptions.workerSrc = workerUrl
 const ASSET_BASE = '/reports/v1/editor/assets/pdfjs/'
 const MAX_PAGE_PIXELS = 48_000_000
 interface Options { api: ReturnType<typeof createNativeApi>; context: NativeContextResponse; draft: NativeDraft; onDraftChange?: () => void; onSelectionChange?: (selection: {pageId: string; objectId: string}[]) => void }
+interface PdfThumbnailEntry { key: string; canvas: HTMLCanvasElement; task?: RenderTask; loaded: boolean; wanted: boolean; show(): void; hide(): void }
 export interface PdfEditorHandle { setSaving(saving: boolean): void; refresh(): Promise<void>; dispose(): void; prepareSave(): Promise<{ confirmedPreviewDigest?: string }> }
 
 export async function createPdfEditorView(shell: EditorShell, { api, context: response, draft, onDraftChange, onSelectionChange }: Options): Promise<PdfEditorHandle> {
@@ -64,6 +67,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const readingKey = pdfReadingKey(draft.identity)
   const readingStorage = { getItem: (key: string) => window.localStorage.getItem(key), setItem: (key: string, value: string) => window.localStorage.setItem(key, value) }
   let pendingReadingRestore: PdfViewState | null = null, sourceReadingBeforePreview: PdfViewState | null = null
+  let lastStableReading: PdfViewState | null = null
   let readingRestoresSelection = false
   let fitFrame: number | undefined
   let readingReady = false, readingTimer: number | undefined
@@ -79,6 +83,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const textLayers = new Set<TextLayer>()
   const pageNodes = new Map<string, HTMLElement>()
   const pagesCached = new Map<number, PDFPageProxy>()
+  const thumbnailCache = new WeakMap<PDFDocumentProxy, Map<string, PdfThumbnailEntry>>()
+  const thumbnailTasks = new Set<RenderTask>()
+  let thumbnailObserver: IntersectionObserver | undefined, thumbnailDocument: PDFDocumentProxy | undefined
+  let thumbnailSlots = new Map<Element,PdfThumbnailEntry>()
+  let committedSidebarWidth = 150, sidebarRasterFrame: number | undefined
   const searchCache = createSearchIndexCache()
   let searchIndex: SearchIndex = [], searchPageIds: string[] = []
   let searchMatches: { pageId: string; rects: [number, number, number, number][] }[] = []
@@ -108,9 +117,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   viewport.setAttribute('aria-label', 'PDF 页面'); viewport.tabIndex = 0
   const saveReading = () => {
     if (readingTimer !== undefined) window.clearTimeout(readingTimer)
-    if (!readingReady || disposed || !document || previewDocument || previewing || printing || searchRendering || pendingReadingRestore) return
-    const current = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode)
-    if (current) saveViewState(readingKey, current, readingStorage)
+    if (!readingReady || disposed || !document || previewDocument || previewing || printing) return
+    // Reflow may temporarily remove rows. Preserve the last source position and
+    // the latest explicit zoom/fit intent when pagehide arrives before it settles.
+    const current = searchRendering || pendingReadingRestore
+      ? pendingReadingRestore ?? lastStableReading
+      : capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode)
+    if (current) { lastStableReading = { ...current, scale, fitMode }; saveViewState(readingKey, lastStableReading, readingStorage) }
   }
   const scheduleReading = () => { if (readingTimer !== undefined) window.clearTimeout(readingTimer); readingTimer = window.setTimeout(saveReading, 300) }
   const cancelReadingRestore = () => { pendingReadingRestore = null; readingRestoresSelection = false }
@@ -133,7 +146,18 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const attachmentsList = documentElement('ul', 'pdf-attachments-list')
   const retryAttachments = documentElement('button', 'pdf-tool'); retryAttachments.type = 'button'; retryAttachments.textContent = '重试附件读取'; retryAttachments.hidden = true
   attachmentsPanel.append(attachmentsHeading, attachmentNotice, attachmentsStatus, retryAttachments, attachmentsList)
-  layout.append(thumbs, outlinePanel, commentsPanel, attachmentsPanel, viewport)
+  const sidebarDivider = documentElement('div', 'pdf-sidebar-resizer')
+  const sidebarPanels = { thumbs, outline: outlinePanel, comments: commentsPanel, attachments: attachmentsPanel }
+  const sidebarId = `pdf-sidebar-${crypto.randomUUID()}`
+  for (const [name,panel] of Object.entries(sidebarPanels)) panel.id = `${sidebarId}-${name}`
+  layout.append(thumbs, outlinePanel, commentsPanel, attachmentsPanel, sidebarDivider, viewport)
+  const sidebarSizing = createPdfSidebarSizing(sidebarDivider, (width,committed) => {
+    layout.style.setProperty('--pdf-sidebar-width',`${width}px`)
+    if (!committed) return
+    committedSidebarWidth = width
+    if (!disposed && document && readingReady && sidebarRasterFrame === undefined) sidebarRasterFrame = requestAnimationFrame(() => { sidebarRasterFrame = undefined; if (!disposed) void refresh().catch(showError) })
+  })
+  committedSidebarWidth = sidebarSizing.width; sidebarSizing.setPanel(thumbs)
   const attachmentCache = new PdfAttachmentCache()
   let attachmentsGeneration = 0
   const attachmentDownloads = new Map<string, number>()
@@ -707,6 +731,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   function setSidebar(next: typeof sidebar) {
     if (sidebar === 'comments' && next !== 'comments') { commentsGeneration++; commentsFilter.value = ''; commentsLoading = false }
     if (sidebar === 'attachments' && next !== 'attachments') attachmentsGeneration++
+    sidebarSizing.setPanel(next ? sidebarPanels[next] : undefined)
     sidebar = next; attachmentsPanel.hidden = next !== 'attachments'; thumbs.hidden = next !== 'thumbs'; outlinePanel.hidden = next !== 'outline'; commentsPanel.hidden = next !== 'comments'
     toggleThumbnails.setAttribute('aria-pressed', String(next === 'thumbs')); outlineToggle.setAttribute('aria-pressed', String(next === 'outline')); commentsToggle.setAttribute('aria-pressed', String(next === 'comments'))
     attachmentsToggle.setAttribute('aria-pressed', String(next === 'attachments'))
@@ -1199,9 +1224,38 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     reviewPanel.scrollIntoView({ block: 'nearest' })
     throw new Error('请核对实际 PDF 预览与未执行清单，勾选确认后再次保存')
   }
+  function thumbnailForPage(original: PDFPageProxy, page: PdfPageIdentity) {
+    const doc = document!
+    let entries = thumbnailCache.get(doc)
+    if (!entries) { entries = new Map(); thumbnailCache.set(doc,entries) }
+    const style = getComputedStyle(thumbs), px = (value: string) => Number.parseFloat(value) || 0
+    const width = Math.max(1,committedSidebarWidth-px(style.paddingLeft)-px(style.paddingRight)-px(style.borderLeftWidth)-px(style.borderRightWidth))
+    const unit = displayViewport(original,page,1), dpr = Math.min(2,window.devicePixelRatio||1)
+    const initialScale = width/unit.width*dpr
+    const factor = Math.min(1,16384/(unit.width*initialScale),16384/(unit.height*initialScale),Math.sqrt(4_000_000/(unit.width*unit.height*initialScale**2)))
+    const view = displayViewport(original,page,initialScale*factor)
+    const key = JSON.stringify([page.cropBox,page.rotation,Math.ceil(view.width),Math.ceil(view.height)])
+    const previous = entries.get(page.pageId)
+    if (previous?.key === key) return previous
+    previous?.hide()
+    const canvas = documentElement('canvas'); canvas.width = canvas.height = 1; canvas.style.aspectRatio = `${view.width} / ${view.height}`
+    const entry: PdfThumbnailEntry = {key,canvas,loaded:false,wanted:false,show(){entry.wanted=true;draw()},hide(){entry.wanted=false;entry.loaded=false;entry.task?.cancel();canvas.width=canvas.height=1}}
+    entries.set(page.pageId,entry)
+    const draw = () => {
+      if (disposed || doc !== document || !canvas.isConnected || !entry.wanted || entry.loaded || entry.task || entries!.get(page.pageId)!==entry) return
+      entry.loaded=true;canvas.width=Math.ceil(view.width);canvas.height=Math.ceil(view.height)
+      const context=canvas.getContext('2d');if(!context)return
+      const task=original.render({canvas,canvasContext:context,viewport:view,annotationMode:AnnotationMode.ENABLE});entry.task=task;thumbnailTasks.add(task)
+      void task.promise.catch(error=>{
+        if(error instanceof Error&&error.name==='RenderingCancelledException')entry.loaded=false
+        else if(!disposed&&doc===document&&entries!.get(page.pageId)===entry)showError(error)
+      }).finally(()=>{entry.task=undefined;thumbnailTasks.delete(task);if(entry.wanted&&!entry.loaded)draw()})
+    }
+    return entry
+  }
   async function refresh() {
     if (disposed || !document) return
-    if (readingReady && !previewDocument && !previewing && !pendingReadingRestore) { pendingReadingRestore = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode); readingRestoresSelection = false }
+    if (readingReady && !previewDocument && !previewing && !pendingReadingRestore) { pendingReadingRestore = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode); if (pendingReadingRestore) lastStableReading = pendingReadingRestore; readingRestoresSelection = false }
     searchRendering = true
     commentsGeneration++; clearAttachments()
     if (sidebar === 'comments') { commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = true; renderComments() }
@@ -1233,6 +1287,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       for (const page of state()) { await sourcePage(page.index); if (disposed || renderGeneration !== generation) return }
       scale = fittedScale(fitMode) ?? scale; syncZoomControls()
     }
+    if (thumbnailDocument !== document) { if (thumbnailDocument) for (const entry of thumbnailCache.get(thumbnailDocument)?.values() ?? []) entry.hide(); thumbnailDocument = document }
+    const retainedThumbnailIds = new Set(state().map(page => page.pageId))
+    for (const [id,entry] of thumbnailCache.get(document!) ?? []) if (!retainedThumbnailIds.has(id)) { entry.hide(); thumbnailCache.get(document!)!.delete(id) }
+    thumbnailObserver?.disconnect(); thumbnailSlots = new Map()
+    thumbnailObserver = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(entries => {
+      if (disposed || renderGeneration !== generation) return
+      for (const item of entries) { const entry = thumbnailSlots.get(item.target); if (entry) { if (item.isIntersecting) entry.show(); else entry.hide() } }
+    }, { root: thumbs, rootMargin: '300px' })
     observer?.disconnect()
     for (const task of tasks) task.cancel()
     for (const layer of textLayers) layer.cancel()
@@ -1313,13 +1375,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       if (observer) observer.observe(card)
       else { visible.add(page.pageId); render(page.pageId) }
       const thumbnail = documentElement('button', 'pdf-thumbnail'); thumbnail.type = 'button'; thumbnail.setAttribute('aria-label', `跳转第 ${position + 1} 页`)
-      const thumbCanvas = documentElement('canvas'); const thumbViewport = displayViewport(original, page, .15)
-      thumbCanvas.width = Math.ceil(thumbViewport.width); thumbCanvas.height = Math.ceil(thumbViewport.height)
-      const thumbTask = original.render({ canvas: thumbCanvas, viewport: thumbViewport, annotationMode: AnnotationMode.ENABLE })
-      tasks.add(thumbTask); void thumbTask.promise.catch(() => {}).finally(() => tasks.delete(thumbTask))
+      const thumbEntry = thumbnailForPage(original,page), thumbCanvas = thumbEntry.canvas
       const label = documentElement('span'); label.textContent = `${position + 1}`; thumbnail.append(thumbCanvas, label)
       thumbnail.addEventListener('click', () => { activeId = page.pageId; card.scrollIntoView({ block: 'start', behavior: 'smooth' }); updateControls(); renderTextPanel() })
-      thumbs.append(thumbnail)
+      thumbs.append(thumbnail); thumbnailSlots.set(thumbCanvas,thumbEntry); if (thumbnailObserver) thumbnailObserver.observe(thumbCanvas); else thumbEntry.show()
     }
     for (const item of outline.filter(entry => pages.some(page => page.index === entry.pageIndex))) {
       const page = pages.find(candidate => candidate.index === item.pageIndex)!
@@ -1422,6 +1481,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }

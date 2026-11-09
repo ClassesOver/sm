@@ -57,3 +57,10 @@
 .pdf-page-row { display: flex; align-items: flex-start; width: max-content; gap: 16px; margin: 0 auto 18px; }
 .pdf-page-row .pdf-page { margin: 0; }
 .pdf-saved-comments, .pdf-pending-comments { max-width: 100%; overflow-wrap: anywhere; }
+
+.pdf-layout > .pdf-thumbnails, .pdf-layout > .pdf-outline, .pdf-layout > .pdf-comments-sidebar, .pdf-layout > .pdf-attachments-sidebar { box-sizing: border-box; flex: none; width: var(--pdf-sidebar-width, 150px); }
+.pdf-sidebar-resizer { flex: 0 0 6px; cursor: col-resize; touch-action: none; background: #dbe3ef; outline-offset: -2px; }
+.pdf-sidebar-resizer[hidden] { display: none; }
+.pdf-sidebar-resizer:hover, .pdf-sidebar-resizer:focus-visible, .pdf-sidebar-resizer.is-resizing { background: #7898c7; }
+.pdf-thumbnail { width: 100%; padding: 0; }
+.pdf-thumbnail canvas { width: 100%; }
