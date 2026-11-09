@@ -13,3 +13,9 @@ export const CLIPBOARD_COMMANDS: Readonly<Record<string, string>> = {
   copy: 'univer.command.copy', cut: 'univer.command.cut', paste: 'univer.command.paste',
   ...Object.fromEntries(PASTE_SPECIAL_CHOICES.map(choice => [choice.value, choice.univerCommand])),
 }
+
+/// Univer 0.25.1 SheetPermissionCheckUIController._permissionCheckByPaste reads
+/// `params.value` without a guard, so a parameterless univer.command.paste throws
+/// ("reading 'value'") before pasting — found by the real-browser smoke. Plain
+/// paste therefore sends `{}` (value undefined = the normal paste branch).
+export const clipboardCommandParams = (command: string): Record<string, never> | undefined => command === 'paste' ? {} : undefined

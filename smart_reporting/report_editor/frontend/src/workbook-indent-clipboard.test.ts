@@ -14,7 +14,7 @@ import { readBackSnapshot } from './workbook-vendor/grid/sync'
 import { diffToEdits } from './workbook-vendor/core/session-core'
 import { fromUniverStyle, indentToUniverPadding, styleDelta, toUniverStyle, univerPaddingToIndent, INDENT_STEP_PX } from './workbook-vendor/core/style-map'
 import { applyWorkbookRibbonCommand, mountWorkbookRibbon, type RibbonWorkbook } from './workbook-ribbon'
-import { CLIPBOARD_COMMANDS, PASTE_SPECIAL_CHOICES } from './workbook-clipboard'
+import { CLIPBOARD_COMMANDS, PASTE_SPECIAL_CHOICES, clipboardCommandParams } from './workbook-clipboard'
 import { independentPython } from './test-independent-python'
 
 const univers: Univer[] = []
@@ -91,6 +91,9 @@ it('refuses indent for oversized selections and unknown steps', () => {
 
 it('wires the clipboard group to the official Univer commands with read-only-safe copy', () => {
   expect(CLIPBOARD_COMMANDS).toMatchObject({ copy: 'univer.command.copy', cut: 'univer.command.cut', paste: 'univer.command.paste', 'paste-special:value': 'sheet.command.paste-value', 'paste-special:formula': 'sheet.command.paste-formula', 'paste-special:format': 'sheet.command.paste-format', 'paste-special:col-width': 'sheet.command.paste-col-width', 'paste-special:besides-border': 'sheet.command.paste-besides-border' })
+  // Univer 0.25.1 粘贴权限检查读取 params.value：普通粘贴必须带空参数对象。
+  expect(clipboardCommandParams('paste')).toEqual({})
+  expect(clipboardCommandParams('copy')).toBeUndefined()
   const host = document.createElement('div'); document.body.append(host)
   const command = vi.fn(); let editable = true, selected = true, indentReason: string | undefined
   const ribbon = mountWorkbookRibbon(host, command, { rotation: () => 0, editable: () => editable, hasSelection: () => selected, indentReason: () => indentReason })

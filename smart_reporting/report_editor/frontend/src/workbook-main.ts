@@ -31,9 +31,9 @@ import type { EditorShell } from './shell'
 import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot } from './workbook-grid-operations'
 import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
-import { CLIPBOARD_COMMANDS } from './workbook-clipboard'
+import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
 import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
-import { applyFormatPainterClick, formatPainterActive, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
+import { applyFormatPainterClick, formatPainterActive, formatPainterReady, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
   applyWorkbookRibbonCommand, selectedWorkbookRotation,
   mountWorkbookRibbon,
@@ -548,6 +548,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           if (action === 'once') feedback.textContent = '已复制格式，选择目标区域即可应用（一次）。'
           else if (action === 'lock') feedback.textContent = '格式刷已锁定，可连续应用；按 Esc 或再次点击取消。'
           else if (action === 'cancel') feedback.textContent = '格式刷已取消。'
+          else if (action === 'not-ready') feedback.textContent = '格式刷正在初始化，请稍候再试。'
         } catch (error) { feedback.textContent = (error as Error).message }
         ribbon.refreshState?.()
         return
@@ -557,7 +558,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         // 粘贴经 Univer sheet 剪贴板（Clipboard API 不可用时回退内部复制缓存），写入走
         // sheet.mutation.*（已标记未保存），保存时由值/样式/合并/列宽差分写回。
         if (command === 'copy' ? loading || disposed : !editable()) return
-        void runtime.univerAPI.executeCommand(CLIPBOARD_COMMANDS[command]!).then(applied => {
+        void runtime.univerAPI.executeCommand(CLIPBOARD_COMMANDS[command]!, clipboardCommandParams(command)).then(applied => {
           if (!applied) { feedback.textContent = command === 'copy' || command === 'cut' ? '请先选择单元格或区域' : '剪贴板中没有可粘贴的内容，或浏览器未授予剪贴板读取权限'; return }
           if (command === 'copy') feedback.textContent = '已复制选区。'
           else if (command === 'cut') feedback.textContent = '已剪切选区；粘贴后原位置内容移出，修改尚未保存。'
@@ -655,6 +656,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null),
       editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
       formatPainterActive: () => formatPainterActive(runtime),
+      formatPainterReady: () => formatPainterReady(runtime),
       hasSelection: () => !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange(),
       captureTarget: () => captureNumberFormatTarget(formatWorkbook()),
       pageSetup: () => {

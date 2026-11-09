@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { ICommandService, Univer, LocaleType } from '@univerjs/core'
+import { ICommandService, LifecycleService, LifecycleStages, Univer, LocaleType } from '@univerjs/core'
 import { FormatPainterStatus, IFormatPainterService, IShortcutService, SetFormatPainterOperation } from '@univerjs/preset-sheets-core'
-import { applyFormatPainterClick, formatPainterActive, formatPainterClickAction, formatPainterTurnedOff, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
+import { applyFormatPainterClick, formatPainterActive, formatPainterReady, formatPainterClickAction, formatPainterTurnedOff, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import { mountWorkbookRibbon } from './workbook-ribbon'
 
 const univers: Univer[] = []
@@ -25,17 +25,31 @@ it('drives the painter through the real Univer command service and Esc shortcut 
   const injector = univer.__getInjector()
   let status = FormatPainterStatus.OFF
   const listeners = new Set<(value: FormatPainterStatus) => void>()
-  const painter = { getStatus: () => status, setStatus: (next: FormatPainterStatus) => { status = next; listeners.forEach(listener => listener(next)) },
+  const changes: Array<[boolean, boolean]> = []
+  // 先安装、后到 Steady（同生产时序：编辑器挂载早于 sheets-ui 注册 painter 服务与默认钩子）。
+  const lifecycle = injector.get(LifecycleService)
+  const runtime = { univer }
+  const listener = installFormatPainter(runtime, (active, turnedOff) => changes.push([active, turnedOff]))
+  let hooks: unknown[] = []
+  const painter = { getHooks: () => hooks, getStatus: () => status, setStatus: (next: FormatPainterStatus) => { status = next; listeners.forEach(listener => listener(next)) },
     status$: { subscribe: (next: (value: FormatPainterStatus) => void) => { listeners.add(next); return { unsubscribe: () => listeners.delete(next) } } } }
   const shortcuts: unknown[] = []
   injector.add([IFormatPainterService, { useValue: painter } as never])
   injector.add([IShortcutService, { useValue: { registerShortcut: (item: unknown) => { shortcuts.push(item); return { dispose: () => shortcuts.splice(shortcuts.indexOf(item), 1) } } } } as never])
   const commands = injector.get(ICommandService)
   commands.registerCommand({ ...SetFormatPainterOperation, handler: (_accessor: unknown, params: { status: FormatPainterStatus }) => { painter.setStatus(params.status); return true } } as never)
-  const runtime = { univer }
-  const changes: Array<[boolean, boolean]> = []
-  const listener = installFormatPainter(runtime, (active, turnedOff) => changes.push([active, turnedOff]))
-  expect(shortcuts).toHaveLength(1)
+  // 安装时服务尚未就绪也不得抛错；Steady 之前不注册快捷键。
+  expect(shortcuts).toHaveLength(0)
+
+  for (const stage of [LifecycleStages.Ready, LifecycleStages.Rendered, LifecycleStages.Steady]) lifecycle.stage = stage
+  await vi.waitFor(() => expect(shortcuts).toHaveLength(1))
+  changes.splice(0)
+  // Steady 之前没有默认钩子：不武装，避免"看似激活却刷不出格式"。
+  expect(formatPainterReady(runtime)).toBe(false)
+  expect(applyFormatPainterClick(runtime, 1)).toBe('not-ready')
+  expect(status).toBe(FormatPainterStatus.OFF)
+  hooks = [{ id: 'default-format-painter' }]
+  expect(formatPainterReady(runtime)).toBe(true)
   expect(applyFormatPainterClick(runtime, 1)).toBe('once')
   await vi.waitFor(() => expect(status).toBe(FormatPainterStatus.ONCE))
   expect(applyFormatPainterClick(runtime, 2)).toBe('lock')
@@ -54,9 +68,13 @@ it('drives the painter through the real Univer command service and Esc shortcut 
 it('renders the painter as a pressed toggle that dispatches single and double clicks and follows editability', () => {
   const host = document.createElement('div'); document.body.append(host)
   const command = vi.fn(); let active = false, editable = true
-  const ribbon = mountWorkbookRibbon(host, command, { rotation: () => 0, editable: () => editable, hasSelection: () => true, formatPainterActive: () => active })
+  let ready = false
+  const ribbon = mountWorkbookRibbon(host, command, { rotation: () => 0, editable: () => editable, hasSelection: () => true, formatPainterActive: () => active, formatPainterReady: () => ready })
   host.querySelector<HTMLButtonElement>('[role="tab"][data-ribbon-tab="Home"]')!.click()
   const button = host.querySelector<HTMLButtonElement>('[data-ribbon-command="format-painter"]')!
+  expect(button.disabled).toBe(true)
+  expect(button.title).toContain('初始化')
+  ready = true; ribbon.refreshState()
   expect(button.disabled).toBe(false)
   expect(button.getAttribute('aria-pressed')).toBe('false')
   button.dispatchEvent(new MouseEvent('click', { detail: 1, bubbles: true }))

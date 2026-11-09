@@ -706,6 +706,8 @@ export function mountWorkbookRibbon(
     indentReason?(): string | undefined
     /// 格式刷是否处于单次/锁定状态（aria-pressed 镜像）。
     formatPainterActive?(): boolean
+    /// 格式刷默认钩子已安装（Univer Steady 阶段后）。缺省视为就绪。
+    formatPainterReady?(): boolean
     captureTarget?(): NumberFormatTarget | undefined
     pageSetup?(): WorkbookPageSetupState | undefined
     definedNames?(): readonly string[]
@@ -753,7 +755,10 @@ export function mountWorkbookRibbon(
       const readOnlySafe = noteViewAction || id === 'copy'
       button.disabled = id === 'find' || id === 'print' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo'].includes(id))
       button.title = button.disabled ? !editable && !readOnlySafe ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
-      if (id === 'format-painter') button.setAttribute('aria-pressed', String(!!view.formatPainterActive?.()))
+      if (id === 'format-painter') {
+        button.setAttribute('aria-pressed', String(!!view.formatPainterActive?.()))
+        if (!button.disabled && view.formatPainterReady && !view.formatPainterReady()) { button.disabled = true; button.title = '格式刷正在初始化，请稍候' }
+      }
       if (id.startsWith('indent-step:') && !button.disabled) {
         const indentReason = view.indentReason?.()
         if (indentReason) { button.disabled = true; button.title = indentReason }
