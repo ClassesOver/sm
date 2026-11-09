@@ -17,10 +17,17 @@
 | 前端 | 绘图模式拖动生成；端点夹到当前可见范围；手绘采样 ≤2000 点；草稿以 SVG 叠加预览；颜色下拉沿用源五色；空白页/已删除页拒绝 |
 | 桥接 | zod 严格字段 + 形状专属参数；坐标必须在（含同批裁切后的）可见范围内；宽度 0.25–24、颜色 0–1；输出摘要纳入预览确认 |
 
+## 编辑链接（固定源 editLink / LinkDialog）
+
+- Edit ▸ 图像、链接与水印 ▸ 编辑链接：拖出链接区域后弹出对话框，网址与页码二选一（输入一项清空另一项）；`www.` 自动补 `https://`。
+- 与固定源的差异：固定源接受任意 scheme；本系统只接受 `http`、`https`、`mailto`，拒绝 `javascript:` 等。
+- 页码按当前显示顺序输入，保存为来源页序号（引擎按删除/重排前页表解析），目标页在同一草稿被删除时前端与桥接均拒绝。
+
 ## 证据
 
 - `reporting/pdf_engine/bridge/drawings.test.ts`：真实引擎输出四种批注子类型、颜色、外观流和矩形范围；越界、错参、过短箭头、奇数路径、越界路径、非法颜色/宽度、外来页、空白页目标全部拒绝。
 - `frontend/src/pdf-drawings.test.ts`：拖拽规范化、夹取、各类拒绝及删除页/空白页约束。
-- `frontend/smoke/pdf-draw-smoke.mjs`（Chromium + 真实 Python→PDF 引擎，授权/修订路由为 fixture）：四种拖动工具 + 多边形逐点/双击 + 插入符号单击，切换蓝色 → 6 个草稿 SVG → 撤销/重做 → 刷新恢复 → 保存修订 2 → 下载字节一致 → pypdf 独立回读 Square/Circle/Line/Ink/Polygon/Caret 与逐项颜色，表单控件和第 2 页便签保留，来源摘要不变。
+- 链接：`drawings.test.ts` 回读 URI 动作与目标页引用；拒绝 javascript:、双目标、无目标、越界页、已删除页、非链接形状携带链接字段。
+- `frontend/smoke/pdf-draw-smoke.mjs`（Chromium + 真实 Python→PDF 引擎，授权/修订路由为 fixture）：四种拖动工具 + 多边形逐点/双击 + 插入符号单击，切换蓝色 → 编辑链接（拒绝 javascript:、www. 补全、页码链接）→ 8 个草稿 SVG → 撤销/重做 → 刷新恢复 → 保存修订 2 → 下载字节一致 → pypdf 独立回读 Square/Circle/Line/Ink/Polygon/Caret 与逐项颜色，表单控件和第 2 页便签保留，来源摘要不变。
 
 注：本次排查发现 `pdf_engine/dist/cli.mjs`（打包测试生成、git 忽略）存在时生产优先使用打包产物；修改桥接后必须重新打包或删除该产物，否则会运行旧 schema。镜像构建会重新打包。

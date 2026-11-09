@@ -46,7 +46,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
   // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
-  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret']), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
+  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link']), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
@@ -261,21 +261,32 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       const inside = (x: number, y: number) => x >= left && x <= right && y >= bottom && y <= top
       const base = { pageIndex: target.index, color: op.color, width: op.width }
       if (op.shape === 'rect' || op.shape === 'ellipse') {
-        if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point) throw new Error('PDF 绘图参数无效')
+        if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined) throw new Error('PDF 绘图参数无效')
         const [x1, y1, x2, y2] = op.rect
         if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 绘图范围无效')
         request.drawings.push({ ...base, kind: op.shape, rect: op.rect })
       } else if (op.shape === 'arrow') {
-        if (!op.from || !op.to || op.rect || op.paths || op.vertices || op.point || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 箭头范围无效')
+        if (!op.from || !op.to || op.rect || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 箭头范围无效')
         request.drawings.push({ ...base, kind: 'arrow', from: op.from, to: op.to })
       } else if (op.shape === 'polygon') {
-        if (!op.vertices || op.rect || op.from || op.to || op.paths || op.point || op.vertices.some(vertex => !inside(...vertex))) throw new Error('PDF 多边形顶点无效')
+        if (!op.vertices || op.rect || op.from || op.to || op.paths || op.point || op.url !== undefined || op.destPage !== undefined || op.vertices.some(vertex => !inside(...vertex))) throw new Error('PDF 多边形顶点无效')
         request.drawings.push({ ...base, kind: 'polygon', vertices: op.vertices })
+      } else if (op.shape === 'link') {
+        // 固定源 LinkDialog：外部 URL 或文档内页码二选一；仅允许 http/https/mailto。destPage 为来源页序号（引擎按删除/重排前页表解析）。
+        if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || (op.url === undefined) === (op.destPage === undefined)) throw new Error('PDF 链接目标无效')
+        const [x1, y1, x2, y2] = op.rect
+        if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 链接范围无效')
+        if (op.destPage !== undefined) {
+          const total = model.pages.length + blankIndex.size
+          const destination = op.destPage - 1
+          if (destination >= total || (destination < model.pages.length && ops.some(other => other.kind === 'deletePage' && other.pageId === model.pages[destination]!.pageId))) throw new Error('PDF 链接目标页不存在或已删除')
+        }
+        request.drawings.push({ kind: 'link', pageIndex: target.index, rect: op.rect, ...(op.url !== undefined ? { url: op.url } : { destPage: op.destPage! }) })
       } else if (op.shape === 'caret') {
-        if (!op.point || op.rect || op.from || op.to || op.paths || op.vertices || !inside(...op.point)) throw new Error('PDF 插入符号位置无效')
+        if (!op.point || op.url !== undefined || op.destPage !== undefined || op.rect || op.from || op.to || op.paths || op.vertices || !inside(...op.point)) throw new Error('PDF 插入符号位置无效')
         request.drawings.push({ kind: 'caret', pageIndex: target.index, color: op.color, point: op.point })
       } else {
-        if (!op.paths || op.rect || op.from || op.to || op.vertices || op.point || op.paths.some(path => path.length % 2 !== 0 || path.some((value, index) => index % 2 === 0 ? !inside(value, path[index + 1]!) : false))) throw new Error('PDF 手绘路径无效')
+        if (!op.paths || op.rect || op.from || op.to || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.paths.some(path => path.length % 2 !== 0 || path.some((value, index) => index % 2 === 0 ? !inside(value, path[index + 1]!) : false))) throw new Error('PDF 手绘路径无效')
         request.drawings.push({ ...base, kind: 'ink', paths: op.paths })
       }
       continue

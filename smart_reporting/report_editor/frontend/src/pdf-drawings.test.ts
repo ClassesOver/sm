@@ -36,4 +36,16 @@ describe('PDF draw tools (pinned DrawLayer rect/ellipse/arrow/ink)', () => {
     const caret = pdfDrawingOperation('p1', 'caret', [[50, 60]], box, red)
     expect(() => validatePdfDrawing({ ...caret, rect: [0, 0, 1, 1] }, box)).toThrow('绘图参数无效')
   })
+  it('builds link operations for safe URLs or existing, non-deleted source pages', () => {
+    const two: PdfPageIdentity[] = [...pages, { ...pages[0]!, pageId: 'p2', index: 1 }]
+    const url = pdfDrawingOperation('p1', 'link', [[50, 60], [150, 90]], box, red, { url: 'https://example.com' })
+    expect(url).toMatchObject({ shape: 'link', rect: [50, 60, 150, 90], url: 'https://example.com' })
+    const page = pdfDrawingOperation('p1', 'link', [[50, 60], [150, 90]], box, red, { destPage: 2 })
+    expect(pdfPageState(two, [page])).toHaveLength(2)
+    expect(() => pdfDrawingOperation('p1', 'link', [[50, 60], [150, 90]], box, red, { url: 'javascript:alert(1)' })).toThrow('链接目标')
+    expect(() => pdfDrawingOperation('p1', 'link', [[50, 60], [150, 90]], box, red)).toThrow('链接目标')
+    expect(() => validatePdfDrawing({ ...url, destPage: 1 }, box)).toThrow('链接目标')
+    expect(() => pdfPageState(two, [{ ...page, destPage: 3 }])).toThrow('链接目标页不存在或已删除')
+    expect(() => pdfPageState(two, [{ kind: 'deletePage', pageId: 'p2' }, page])).toThrow('链接目标页不存在或已删除')
+  })
 })

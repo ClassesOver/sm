@@ -85,6 +85,11 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       for (const q of operation.quads as number[][]) validatedPdfCrop([q[0], q[5], q[2], q[1]], page.cropBox)
     } else if (!['addMarkup', 'highlight', 'addTextAnnotation', 'replaceText'].includes(operation.kind)) throw new Error('不支持的 PDF 操作')
   }
+  for (const operation of operations) {
+    if (operation.kind !== 'addDrawing' || operation.shape !== 'link' || operation.destPage === undefined) continue
+    const destination = [...byId.values()].find(item => item.index === Number(operation.destPage) - 1)
+    if (!destination || deleted.has(destination.pageId)) throw new Error('链接目标页不存在或已删除')
+  }
   const remaining = order.filter(id => !deleted.has(id))
   if (remaining.length !== byId.size - deleted.size) throw new Error('页面排序必须包含所有保留页面')
   if (!remaining.length) throw new Error('不能删除全部页面')
@@ -93,7 +98,10 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
 
 
 /** 固定源 DrawLayer 的矩形/椭圆/箭头/手绘；坐标为未旋转 PDF user space，须位于当前可见范围内。 */
-export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'ink' | 'polygon' | 'caret'
+export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'ink' | 'polygon' | 'caret' | 'link'
+/** 固定源 LinkDialog：外部 URL 或文档内页码二选一。出于安全只接受 http/https/mailto（固定源允许任意 scheme）。 */
+export const PDF_LINK_URL = /^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i
+export type PdfLinkTarget = { url: string } | { destPage: number }
 export const PDF_DRAWING_WIDTH = 2
 /** 固定源 DrawLayer.tsx DRAW_COLORS（默认红色）。 */
 export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, number, number] }[] = [
@@ -104,12 +112,13 @@ export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, numbe
   { name: 'black', label: '黑色', rgb: [0.15, 0.15, 0.15] },
 ]
 export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
-  const { shape, rect, from, to, paths, vertices, point, color, width } = operation as Record<string, unknown>
+  const { shape, rect, from, to, paths, vertices, point, color, width, url, destPage } = operation as Record<string, unknown>
   const finite = (value: unknown, length?: number) => Array.isArray(value) && (length === undefined || value.length === length) && value.every(item => typeof item === 'number' && Number.isFinite(item))
   const inside = (x: number, y: number) => x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height
-  const allowed = new Set(['kind', 'pageId', 'shape', 'color', 'width', 'sourceSha256', ...(shape === 'arrow' ? ['from', 'to'] : shape === 'ink' ? ['paths'] : shape === 'polygon' ? ['vertices'] : shape === 'caret' ? ['point'] : ['rect'])])
+  const allowed = new Set(['kind', 'pageId', 'shape', 'color', 'width', 'sourceSha256', ...(shape === 'arrow' ? ['from', 'to'] : shape === 'ink' ? ['paths'] : shape === 'polygon' ? ['vertices'] : shape === 'caret' ? ['point'] : shape === 'link' ? ['rect', 'url', 'destPage'] : ['rect'])])
   if (Object.keys(operation).some(key => !allowed.has(key)) || !finite(color, 3) || (color as number[]).some(value => value < 0 || value > 1) || typeof width !== 'number' || width < 0.25 || width > 24) throw new Error('绘图参数无效')
-  if (shape === 'rect' || shape === 'ellipse') {
+  if (shape === 'link' && ((url === undefined) === (destPage === undefined) || (url !== undefined && (typeof url !== 'string' || url.length > 2048 || !PDF_LINK_URL.test(url))) || (destPage !== undefined && (!Number.isInteger(destPage) || (destPage as number) < 1)))) throw new Error('链接目标须为 http/https/mailto 地址或有效页码')
+  if (shape === 'rect' || shape === 'ellipse' || shape === 'link') {
     if (!finite(rect, 4)) throw new Error('绘图范围无效')
     const [x1, y1, x2, y2] = rect as number[]
     if (x2! - x1! < 1 || y2! - y1! < 1 || !inside(x1!, y1!) || !inside(x2!, y2!)) throw new Error('绘图范围必须在当前页面内')
@@ -124,10 +133,10 @@ export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
   } else throw new Error('不支持的绘图形状')
 }
 /** 把一次拖拽转换为绘图操作；端点先夹到可见范围内。 */
-export function pdfDrawingOperation(pageId: string, shape: PdfDrawingShape, points: number[][], box: PdfBox, color: [number, number, number]): NativeOperation {
+export function pdfDrawingOperation(pageId: string, shape: PdfDrawingShape, points: number[][], box: PdfBox, color: [number, number, number], target?: PdfLinkTarget): NativeOperation {
   const clamp = (point: number[]) => [Math.min(box.x + box.width, Math.max(box.x, point[0]!)), Math.min(box.y + box.height, Math.max(box.y, point[1]!))].map(value => Math.round(value * 100) / 100)
   const clamped = points.map(clamp)
-  const base = { kind: 'addDrawing', pageId, shape, color: [...color], width: PDF_DRAWING_WIDTH }
+  const base = { kind: 'addDrawing', pageId, shape, color: [...color], width: PDF_DRAWING_WIDTH, ...(shape === 'link' ? target ?? {} : {}) }
   const first = clamped[0]!, last = clamped.at(-1)!
   const distinct = clamped.filter((value, index) => index === 0 || Math.hypot(value[0]! - clamped[index - 1]![0]!, value[1]! - clamped[index - 1]![1]!) >= 2)
   const operation: NativeOperation = shape === 'ink' ? { ...base, paths: [clamped.flat()] }

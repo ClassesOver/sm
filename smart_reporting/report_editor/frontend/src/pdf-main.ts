@@ -681,7 +681,47 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     await rebuildTextIndex(); await refresh()
   }, false)
   backToSource.hidden = true
-  unavailableGroup('edit', '图像、链接与水印', ['插入图像', '编辑图像', '编辑链接', '水印'], '对象级图像、链接与水印写回尚未接入 PDF 操作契约')
+  commandGroup = ribbon.group('edit', '图像、链接与水印')
+  for (const label of ['插入图像', '编辑图像']) { const action = documentElement('button', 'pdf-tool'); action.type = 'button'; action.textContent = label; action.disabled = true; action.title = '对象级图像写回尚未接入 PDF 操作契约'; action.setAttribute('aria-label', `${label}，${action.title}`); commandGroup.append(action) }
+  // 固定源 editLink：在页面上拖出链接区域，再选择外部地址或文档内页码。
+  const linkTool = button('编辑链接', () => { drawShape = 'link'; setMode(mode === 'draw' && linkTool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
+  sourceCommand(linkTool, 'edit.objects.editLink'); linkTool.dataset.pdfDrawShape = 'link'
+  linkTool.title = '编辑链接：在页面上拖出链接区域，再填写 http/https/mailto 地址或页码；保存后写入 PDF'
+  drawButtons.set('link', linkTool)
+  { const action = documentElement('button', 'pdf-tool'); action.type = 'button'; action.textContent = '水印'; action.disabled = true; action.title = '水印写回尚未接入 PDF 操作契约'; action.setAttribute('aria-label', `水印，${action.title}`); commandGroup.append(action) }
+  const linkDialog = documentElement('dialog', 'pdf-link-dialog')
+  linkDialog.setAttribute('aria-label', '添加链接')
+  const linkTitle = documentElement('h3'); linkTitle.textContent = '添加链接'
+  const linkUrlLabel = documentElement('label'); linkUrlLabel.textContent = '网址（http、https 或 mailto）'
+  const linkUrl = documentElement('input'); linkUrl.type = 'url'; linkUrl.placeholder = 'https://…'; linkUrl.setAttribute('aria-label', '链接网址'); linkUrlLabel.append(linkUrl)
+  const linkPageLabel = documentElement('label')
+  const linkPageText = documentElement('span')
+  const linkPage = documentElement('input'); linkPage.inputMode = 'numeric'; linkPage.setAttribute('aria-label', '链接页码'); linkPageLabel.append(linkPageText, linkPage)
+  const linkError = documentElement('p', 'pdf-crop-error'); linkError.setAttribute('role', 'alert')
+  const linkApply = documentElement('button'); linkApply.type = 'button'; linkApply.textContent = '确定'
+  const linkCancel = documentElement('button'); linkCancel.type = 'button'; linkCancel.textContent = '取消'
+  const linkActions = documentElement('div', 'pdf-link-actions'); linkActions.append(linkCancel, linkApply)
+  linkDialog.append(linkTitle, linkUrlLabel, linkPageLabel, linkError, linkActions); root.append(linkDialog)
+  let linkPending: { page: PdfPageIdentity; points: number[][] } | undefined
+  // 二选一：输入一项会清空另一项（与固定源一致）。
+  linkUrl.addEventListener('input', () => { if (linkUrl.value.trim()) linkPage.value = '' })
+  linkPage.addEventListener('input', () => { linkPage.value = linkPage.value.replace(/[^0-9]/g, ''); if (linkPage.value) linkUrl.value = '' })
+  linkCancel.addEventListener('click', () => { linkPending = undefined; linkDialog.close() })
+  linkApply.addEventListener('click', () => {
+    try {
+      if (!linkPending) return
+      const raw = linkUrl.value.trim(), url = raw.startsWith('www.') ? `https://${raw}` : raw
+      const order = state(), position = Number(linkPage.value)
+      let target: { url: string } | { destPage: number }
+      if (url) target = { url }
+      else if (Number.isInteger(position) && position >= 1 && position <= order.length) target = { destPage: order[position - 1]!.index + 1 }
+      else throw new Error(`请输入链接网址，或 1–${order.length} 之间的页码`)
+      const operation = pdfDrawingOperation(linkPending.page.pageId, 'link', linkPending.points, linkPending.page.cropBox, drawColor, target)
+      pdfPageState(model.pages, [...draft.operations, operation])
+      linkPending = undefined; linkDialog.close()
+      void append(operation).catch(showError)
+    } catch (error) { linkError.textContent = error instanceof Error ? error.message : String(error) }
+  })
   textObjects.addEventListener('change', () => { selectedTextId = textObjects.value; fillReplacement(); notifyTextSelection() })
   stageText.addEventListener('click', () => {
     if (locked || previewing || previewDocument || draft.closed || draft.operations.some(op => op.kind === 'setPageSize')) return
@@ -1164,11 +1204,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         const rgb = `rgb(${(operation.color as number[]).map(value => Math.round(value * 255)).join(',')})`
         const point = (value: number[]) => pdfViewport.convertToViewportPoint(value[0]!, value[1]!)
         let shape: SVGElement
-        if (operation.shape === 'rect' || operation.shape === 'ellipse') {
+        if (operation.shape === 'rect' || operation.shape === 'ellipse' || operation.shape === 'link') {
           const r = operation.rect as number[], a = point([r[0]!, r[1]!]), b = point([r[2]!, r[3]!])
           const [x, y, w, h] = [Math.min(a[0]!, b[0]!), Math.min(a[1]!, b[1]!), Math.abs(b[0]! - a[0]!), Math.abs(b[1]! - a[1]!)]
-          shape = window.document.createElementNS(svgNs, operation.shape === 'rect' ? 'rect' : 'ellipse')
-          if (operation.shape === 'rect') { shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y)); shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h)) }
+          shape = window.document.createElementNS(svgNs, operation.shape === 'ellipse' ? 'ellipse' : 'rect')
+          if (operation.shape === 'link') { shape.setAttribute('stroke-dasharray', '5 3'); const title = window.document.createElementNS(svgNs, 'title'); title.textContent = operation.url !== undefined ? String(operation.url) : `跳转到原第 ${operation.destPage} 页`; shape.append(title) }
+          if (operation.shape !== 'ellipse') { shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y)); shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h)) }
           else { shape.setAttribute('cx', String(x + w / 2)); shape.setAttribute('cy', String(y + h / 2)); shape.setAttribute('rx', String(w / 2)); shape.setAttribute('ry', String(h / 2)) }
         } else if (operation.shape === 'polygon') {
           shape = window.document.createElementNS(svgNs, 'polygon')
@@ -1268,6 +1309,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           const points = drawShape === 'ink' ? [...stroke, toPdf(event.clientX, event.clientY)] : [toPdf(...begin), toPdf(event.clientX, event.clientY)]
           stroke = []
           if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再绘图')
+          if (drawShape === 'link') {
+            pdfDrawingOperation(page.pageId, 'link', points, page.cropBox, drawColor, { url: 'https://validate.invalid' })
+            linkPending = { page, points }; linkUrl.value = ''; linkPage.value = ''; linkError.textContent = ''
+            linkPageText.textContent = `或跳转到本文档第几页（1–${state().length}）`
+            linkDialog.showModal(); linkUrl.focus()
+            return
+          }
           const operation = pdfDrawingOperation(page.pageId, drawShape, points, page.cropBox, drawColor)
           pdfPageState(model.pages, [...draft.operations, operation])
           void append(operation).catch(showError)
@@ -1387,7 +1435,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {

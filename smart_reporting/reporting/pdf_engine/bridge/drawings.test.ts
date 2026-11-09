@@ -80,3 +80,29 @@ test('polygon and caret drawings land as Polygon and Caret annotations; malforme
     { kind: 'addDrawing', pageId, shape: 'caret', point: [20, 30], rect: [0, 0, 10, 10], color, width: 2 },
   ]) await assert.rejects(patchPdfWithReceipt(bytes, [operation], model.sourceSha256), undefined, JSON.stringify(operation))
 })
+
+test('links write Link annotations to a URL or a source page and reject unsafe or dangling targets', async () => {
+  const document = await PDFDocument.create(); document.addPage([400, 500]); document.addPage([400, 500])
+  const bytes = await document.save()
+  const model = await inspectPdf(bytes)
+  const [first, second] = model.pages.map(page => page.pageId)
+  const result = await patchPdfWithReceipt(bytes, [
+    { kind: 'addDrawing', pageId: first, shape: 'link', rect: [20, 20, 120, 50], url: 'https://example.com/report', color, width: 2 },
+    { kind: 'addDrawing', pageId: first, shape: 'link', rect: [20, 60, 120, 90], destPage: 2, color, width: 2 },
+  ], model.sourceSha256)
+  const output = await PDFDocument.load(result.bytes)
+  const annots = (await annotations(result.bytes)).filter(item => item.get(PDFName.of('Subtype'))?.toString() === '/Link')
+  assert.equal(annots.length, 2)
+  const uriAction = annots.map(item => item.lookupMaybe(PDFName.of('A'), PDFDict)).find(Boolean)!
+  assert.equal(uriAction.lookup(PDFName.of('URI'))?.toString().includes('https://example.com/report'), true)
+  const dest = annots.map(item => item.lookupMaybe(PDFName.of('Dest'), PDFArray) ?? item.lookupMaybe(PDFName.of('A'), PDFDict)?.lookupMaybe(PDFName.of('D'), PDFArray)).find(Boolean)!
+  assert.equal(dest.get(0)?.toString(), output.getPage(1).ref.toString())
+  for (const operations of [
+    [{ kind: 'addDrawing', pageId: first, shape: 'link', rect: [20, 20, 120, 50], url: 'javascript:alert(1)', color, width: 2 }],
+    [{ kind: 'addDrawing', pageId: first, shape: 'link', rect: [20, 20, 120, 50], url: 'https://a.example', destPage: 1, color, width: 2 }],
+    [{ kind: 'addDrawing', pageId: first, shape: 'link', rect: [20, 20, 120, 50], color, width: 2 }],
+    [{ kind: 'addDrawing', pageId: first, shape: 'link', rect: [20, 20, 120, 50], destPage: 3, color, width: 2 }],
+    [{ kind: 'deletePage', pageId: second }, { kind: 'addDrawing', pageId: first, shape: 'link', rect: [20, 20, 120, 50], destPage: 2, color, width: 2 }],
+    [{ kind: 'addDrawing', pageId: first, shape: 'rect', rect: [20, 20, 120, 50], url: 'https://a.example', color, width: 2 }],
+  ]) await assert.rejects(patchPdfWithReceipt(bytes, operations, model.sourceSha256), undefined, JSON.stringify(operations))
+})

@@ -139,20 +139,43 @@ try {
   await page.locator('[data-pdf-draw-shape="caret"]').click()
   await clickAt([0.3, 0.5])
   await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 6, null, { timeout: 30000 })
+  // 编辑链接：拖出区域后在对话框中填写网址或页码（二选一，不安全协议被拒绝）。
+  await page.locator('[data-pdf-ribbon-tab="edit"]').click()
+  const addLink = async (from, to, fill) => {
+    // 工具保持激活（与固定源一致，再点一次为关闭），只在未激活时点击。
+    if (await page.locator('[data-pdf-draw-shape="link"]').getAttribute('aria-pressed') !== 'true') await page.locator('[data-pdf-draw-shape="link"]').click()
+    const box = await content.boundingBox()
+    await page.mouse.move(box.x + box.width * from[0], box.y + box.height * from[1]); await page.mouse.down()
+    await page.mouse.move(box.x + box.width * to[0], box.y + box.height * to[1], { steps: 3 }); await page.mouse.up()
+    await page.locator('.pdf-link-dialog').waitFor({ state: 'visible' })
+    await fill()
+    await page.locator('.pdf-link-dialog').getByRole('button', { name: '确定' }).click()
+  }
+  await addLink([0.45, 0.3], [0.75, 0.35], async () => {
+    await page.getByLabel('链接网址').fill('javascript:alert(1)')
+    await page.locator('.pdf-link-dialog').getByRole('button', { name: '确定' }).click()
+    assert.match(await page.locator('.pdf-link-dialog [role=alert]').textContent(), /http\/https\/mailto/)
+    await page.getByLabel('链接网址').fill('www.example.com/report')
+  })
+  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 7, null, { timeout: 30000 })
+  await addLink([0.45, 0.4], [0.75, 0.45], async () => page.getByLabel('链接页码').fill('2'))
+  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 8, null, { timeout: 30000 })
   const drafted = await readDraft()
-  assert.deepEqual(drafted.map(op => op.shape), ['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret'])
+  assert.deepEqual(drafted.map(op => op.shape), ['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link', 'link'])
+  assert.equal(drafted[6].url, 'https://www.example.com/report')
+  assert.equal(drafted[7].destPage, 2)
   assert.equal(drafted[4].vertices.length, 3)
   assert.ok(drafted.every(op => op.kind === 'addDrawing' && op.pageId === sourceModel.pages[0].pageId && op.width === 2))
   assert.ok(drafted.find(op => op.shape === 'ink').paths[0].length >= 8)
   // 固定源 DRAW_COLORS：默认红色，切换后为蓝色
-  assert.deepEqual(drafted.map(op => op.color), [[0.86, 0.22, 0.18], ...Array(5).fill([0.17, 0.4, 1])])
+  assert.deepEqual(drafted.slice(0, 6).map(op => op.color), [[0.86, 0.22, 0.18], ...Array(5).fill([0.17, 0.4, 1])])
   if (process.env.PDF_DRAW_SCREENSHOT) await page.screenshot({ path: process.env.PDF_DRAW_SCREENSHOT })
   await page.locator('[data-pdf-ribbon-tab="home"]').click()
-  await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click(); assert.equal((await readDraft()).length, 5)
+  await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click(); assert.equal((await readDraft()).length, 7)
   await page.getByRole('button', { name: /^(重做|Redo)$/ }).click(); assert.deepEqual(await readDraft(), drafted)
   await page.reload(); await page.locator('.pdf-ribbon').waitFor({ timeout: 60000 })
   assert.deepEqual(await readDraft(), drafted)
-  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 6, null, { timeout: 30000 })
+  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 8, null, { timeout: 30000 })
   await page.locator('[data-action="save"]').click()
   try { await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 }) }
   catch { if (process.env.PDF_DRAW_SCREENSHOT) await page.screenshot({ path: process.env.PDF_DRAW_SCREENSHOT + '.fail.png' }); throw new Error(JSON.stringify({ saveDisabled: await page.locator('[data-action="save"]').isDisabled(), saveTitle: await page.locator('[data-action="save"]').getAttribute('title'), saved: !!savePayload, label: await page.locator('.save-state-label').textContent(), status: await page.locator('.pdf-editor-message').textContent(), pageErrors })) }
@@ -167,7 +190,8 @@ try {
   const drawn = annots.filter(([subtype]) => ['/Square', '/Circle', '/Line', '/Ink', '/Polygon', '/Caret'].includes(subtype))
   assert.deepEqual(drawn.map(([subtype]) => subtype).sort(), ['/Caret', '/Circle', '/Ink', '/Line', '/Polygon', '/Square'])
   const subtypeOf = { rect: '/Square', ellipse: '/Circle', arrow: '/Line', ink: '/Ink', polygon: '/Polygon', caret: '/Caret' }
-  for (const op of drafted) assert.deepEqual(drawn.find(([subtype]) => subtype === subtypeOf[op.shape])[1], op.color.map(value => Math.round(value * 100) / 100))
+  assert.equal(annots.filter(([subtype]) => subtype === '/Link').length, 2)
+  for (const op of drafted.filter(item => item.shape !== 'link')) assert.deepEqual(drawn.find(([subtype]) => subtype === subtypeOf[op.shape])[1], op.color.map(value => Math.round(value * 100) / 100))
   assert.ok(annots.filter(([subtype]) => subtype === '/Widget').length >= 4, 'form widgets retained')
   assert.deepEqual(annots.at(-1), ['page2', ['/Text']])
   assert.equal(createHash('sha256').update(sourceBytes).digest('hex'), sourceSha)
