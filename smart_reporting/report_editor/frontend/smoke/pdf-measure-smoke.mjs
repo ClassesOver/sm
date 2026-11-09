@@ -157,7 +157,11 @@ try {
   const downloadUrl = await page.locator('.native-delivery a').filter({ hasText: '下载 PDF' }).getAttribute('href')
   const downloaded = Buffer.from(await page.evaluate(async url => [...new Uint8Array(await (await fetch(url)).arrayBuffer())], downloadUrl))
   assert.deepEqual(downloaded, savedBytes)
-  if (process.env.PDF_DRAW_OUTPUT) await writeFile(process.env.PDF_DRAW_OUTPUT, downloaded)
+  if (process.env.PDF_DRAW_OUTPUT) {
+    await writeFile(process.env.PDF_DRAW_OUTPUT, downloaded)
+    await writeFile(process.env.PDF_DRAW_OUTPUT + '.source.pdf', sourceBytes)
+    await writeFile(process.env.PDF_DRAW_OUTPUT + '.operations.json', JSON.stringify(finalDraft, null, 2))
+  }
   const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', `
 import sys,json
 from io import BytesIO
