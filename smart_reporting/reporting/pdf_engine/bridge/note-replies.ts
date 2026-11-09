@@ -27,11 +27,13 @@ function replyReferences(doc: PDFDocument, protectedSource: boolean): Map<string
   } catch { return null }
 }
 export function canAppendPendingReplies(doc: PDFDocument, protectedSource: boolean) { return replyReferences(doc,protectedSource)!==null }
-export function inspectReplyTargets(doc: PDFDocument, sourceSha: string, protectedSource: boolean): Map<string,ReplyTarget> {
-  const targets = new Map<string,ReplyTarget>()
+export interface SavedReplyIdentity { annotationId:string;parentAnnotationId:string;sourceRef:string;parentRef:string;pageIndex:number }
+export function inspectNoteThreads(doc: PDFDocument, sourceSha: string, protectedSource: boolean) {
+  const targets = new Map<string,ReplyTarget>(), replies = new Map<string,SavedReplyIdentity>()
+  const empty = () => ({roots:new Map<string,ReplyTarget>(),replies:new Map<string,SavedReplyIdentity>()})
   try {
-    if (protectedSource) return targets
-    const refs = replyReferences(doc, false); if (!refs) return targets
+    if (protectedSource) return {roots:targets,replies}
+    const refs = replyReferences(doc, false); if (!refs) return {roots:targets,replies}
     const nodes: {raw:PDFRef;dict:PDFDict;pageIndex:number;index:number}[] = [], occurrences = new Map<string,number>()
     for (const [pageIndex,page] of doc.getPages().entries()) {
       const annots = page.node.lookupMaybe(PDFName.of('Annots'),PDFArray)
@@ -63,10 +65,15 @@ export function inspectReplyTargets(doc: PDFDocument, sourceSha: string, protect
       if (!rect || rect.length!==4 || !rect.every(Number.isFinite) || rect[0]>=rect[2] || rect[1]>=rect[3] || rect[0]<box.x || rect[3]>box.y+box.height || rect[0]+20>box.x+box.width || rect[3]-18<box.y || color.length!==3 || color.some(value=>!Number.isFinite(value)||value<0||value>1)) continue
       const annotationId=markupSourceId(sourceSha,root.pageIndex,root.index)
       targets.set(annotationId,{annotationId,expectedAnnotationSha256:markupDictionaryHash(root.dict),sourceRef:root.raw.toString(),pageIndex:root.pageIndex,rect:rect as ReplyTarget['rect'],contents:(root.dict.lookup(PDFName.of('Contents')) as PDFString|PDFHexString).decodeText(),color:color as ReplyTarget['color']})
+      for (const child of children) {
+        const childId=markupSourceId(sourceSha,child.pageIndex,child.index)
+        replies.set(childId,{annotationId:childId,parentAnnotationId:annotationId,sourceRef:child.raw.toString(),parentRef:root.raw.toString(),pageIndex:child.pageIndex})
+      }
     }
-  } catch { return new Map() }
-  return targets
+  } catch { return empty() }
+  return {roots:targets,replies}
 }
+export function inspectReplyTargets(doc:PDFDocument,sourceSha:string,protectedSource:boolean) { return inspectNoteThreads(doc,sourceSha,protectedSource).roots }
 export interface NoteReply { target: ReplyTarget; contents: string; createdMs: number }
 export async function appendNoteReplies(bytes: Uint8Array, replies: NoteReply[], outputOrder: number[]) {
   if (!replies.length) return bytes

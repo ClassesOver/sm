@@ -22,6 +22,8 @@
     "post-write IRT/RT and source annotation verification reject original writer orphan fallback",
     "pending reply edit/cancel/history with immutable creation time; stale pane/modal guards",
     "pending-root replies use source localId/replyToLocalId with strict graph and fresh-reference checks",
-    "legacy root identity assigned atomically on first reply; root edits preserve it and removal cascades children with undo/reload"
+    "legacy root identity assigned atomically on first reply; root edits preserve it and removal cascades children with undo/reload",
+    "safe saved flat-leaf edit/remove via exact parent/native identity; complex graphs remain readonly",
+    "pane and page-card saved-reply capability isolation with unchanged ordinary-note controls"
   ]
 }

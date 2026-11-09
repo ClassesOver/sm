@@ -259,3 +259,21 @@ preserves every existing annotation dictionary/reference. Draft local IDs are no
 written into PDF metadata. The source/visit census is shared with saved-root reply
 validation. Existing ordinary-note/text combinations retain their prior checks.
 See `report_editor/NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+
+
+## Native saved flat-leaf reply mutation (2026-11-09)
+
+The shared source census now exposes safe reply leaves with parentAnnotationId.
+Strict editNote/removeNote and the existing markup-delete adapter are reused,
+with no new public operation schema. Safe leaf edits preserve identity, IRT/RT,
+creation time, author, geometry and AP; only Contents/M change. Deletion unlinks
+the exact page slot and releases the globally unshared leaf dictionary. Leaving
+that dictionary behind retains an inbound IRT and makes the conservative future
+census readonly, as shown by a real counterexample. All surviving annotation
+references/dictionaries are read back after mutation. Source thread protection,
+flags/links and global counts remain authoritative; root/thread subtree and complex
+mutations remain unsupported. Leaf mutations cannot mix with text/crop/size work.
+The original annot-delete.ts blob660951ad1e2556276245f64054af23fd4929e081
+was fetched at the fixed ref as a semantic/fallback reference; its PDFium matching
+path is not shipped or executed for these operations. No vendor/dependency/WASM
+change. See `report_editor/NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.

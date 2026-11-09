@@ -1,5 +1,5 @@
 import { appendLocalNoteReplies, type LocalNoteRoot, type LocalNoteReply } from './local-note-replies'
-import { inspectReplyTargets, appendNoteReplies, canAppendPendingReplies, type NoteReply } from './note-replies'
+import { inspectReplyTargets, inspectNoteThreads, appendNoteReplies, canAppendPendingReplies, type NoteReply } from './note-replies'
 import { inspectAttachments, patchAttachments, validAttachmentName, ATTACHMENT_FILE_MAX } from './attachments'
 import { normalizeAddedNoteDates, type AddedNoteDate } from './note-timestamps'
 import { markupRemovalLinks, markupRemovalIdentity, removeSourceMarkups, type MarkupRemoval, type NoteContentEdit } from './markup-delete'
@@ -77,7 +77,8 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     return { ...model, fieldId: sha256(Buffer.from(`${sourceSha256}:${name}:${kind}`)), expectedFieldSha256 }
   })
   const removalLinks = markupRemovalLinks(document, formFields.some(field => field.kind === 'signature') || sourceHasXfa || document.catalog.has(PDFName.of('Perms')))
-  const replyTargets = inspectReplyTargets(document, sourceSha256, removalLinks.protectedSource)
+  const threads = inspectNoteThreads(document, sourceSha256, removalLinks.protectedSource)
+  const replyTargets = threads.roots
   const pages = document.getPages().map((page, index) => ({
     pageId: `sha256:${sourceSha256}:page:${index}`, index,
     ...(textPages ? { textObjects: textPages[index] } : {}),
@@ -111,8 +112,9 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
           const unsafe = ['RC', 'DS', 'DA', 'State', 'StateModel', 'RT'].some(key => annotation.has(PDFName.of(key)))
             || (raw instanceof PDFRef && removalLinks.references.get(raw.toString()) !== 1)
             || (flags !== undefined && (!(flags instanceof PDFNumber) || !Number.isInteger(flags.asNumber()) || flags.asNumber() < 0 || (flags.asNumber() & 704) !== 0))
-          const reason = identity.removalReason ?? (unsafe ? '此便签含共享引用、锁定、富文本或状态信息，暂不支持编辑/删除' : null)
-          return [{ ...identity, replyable: replyTargets.has(identity.annotationId), sourceRef: raw instanceof PDFRef ? `${raw.objectNumber}R${raw.generationNumber || ''}` : null, contents, editable: reason === null, removable: reason === null, removalReason: reason }]
+          const leafReply = threads.replies.get(identity.annotationId)
+          const reason = leafReply ? null : identity.removalReason ?? (unsafe ? '此便签含共享引用、锁定、富文本或状态信息，暂不支持编辑/删除' : null)
+          return [{ ...identity, ...(leafReply?{parentAnnotationId:leafReply.parentAnnotationId}:{}), replyable: replyTargets.has(identity.annotationId), sourceRef: raw instanceof PDFRef ? `${raw.objectNumber}R${raw.generationNumber || ''}` : null, contents, editable: reason === null, removable: reason === null, removalReason: reason }]
         }) : []
         return { notes, notesReadSafe: true }
       } catch { return { notes: [], notesReadSafe: false } }
@@ -120,7 +122,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, noteReplies: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
@@ -128,6 +130,8 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const hasText = ops.some(op => op.kind === 'replaceText')
   const model = await inspectPdf(content, hasText)
   if (expectedSha256 !== model.sourceSha256) throw new Error('PDF 来源摘要不匹配')
+  const savedReplyMutations = ops.some(op => (op.kind === 'editNote' || op.kind === 'removeNote') && model.pages.some(page => page.notes.some(note => note.annotationId === op.annotationId && note.parentAnnotationId !== undefined)))
+  if (savedReplyMutations && ops.some(op => ['replaceText','setPageSize','cropPage'].includes(op.kind))) throw new Error('已保存回复修改与原位改字、页面尺寸或裁切请分别保存重开')
   const localReplies = ops.filter(op => op.kind === 'replyPendingNote')
   const identifiedRoots = ops.filter((op): op is Extract<(typeof ops)[number], {kind:'addTextAnnotation'}> => op.kind === 'addTextAnnotation' && op.localId !== undefined)
   const rootIds = identifiedRoots.map(op => op.localId!)
@@ -220,7 +224,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       const note = target.notes.find(note => note.annotationId === op.annotationId)
       if (!target.notesReadSafe || !note?.editable || !note.removable || note.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_note_identity_invalid_or_readonly')
       removedIds.add(op.annotationId)
-      const plan = { pageIndex: target.index, annotationId: op.annotationId, expectedAnnotationSha256: op.expectedAnnotationSha256, subtype: 'Text' as const }
+      const plan = { pageIndex: target.index, annotationId: op.annotationId, expectedAnnotationSha256: op.expectedAnnotationSha256, subtype: 'Text' as const, ...(note.parentAnnotationId?{unlinkObject:true}:{}) }
       if (op.kind === 'editNote') noteEdits.push({ ...plan, contents: op.contents, modifiedAt: op.modifiedAt })
       else removals.push(plan)
       continue

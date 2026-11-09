@@ -3,6 +3,10 @@
 2026-11-09; bounded continuation of PR #196 after saved-root replies. This closes
 pending-root flat replies, not all PDF comment or desktop behavior.
 
+The later bounded saved-leaf edit/remove implementation supersedes this
+checkpoint's wholly missing saved-reply mutation gap; see
+`NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
+
 ## Primary materials and method
 
 Pinned GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c`: App.tsx replyToNote,

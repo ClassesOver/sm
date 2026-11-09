@@ -2,6 +2,8 @@ import { validatePendingPdfNote } from './pdf-notes'
 import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
 export function validatePdfReplies(pages: PdfPageIdentity[], operations: NativeOperation[]) {
+ const savedChanges=operations.some(op=>['editNote','removeNote'].includes(op.kind)&&pages.some(page=>page.notes?.some(note=>note.annotationId===op.annotationId&&note.parentAnnotationId!==undefined)))
+ if(savedChanges&&operations.some(op=>['replaceText','setPageSize','cropPage'].includes(op.kind)))throw Error('已保存回复修改与原位改字、页面尺寸或裁切请分别保存重开')
  const replies=operations.filter(op=>['replyNote','replyPendingNote'].includes(op.kind))
  const ids=operations.filter(op=>op.kind==='addTextAnnotation'&&op.localId!==undefined).map(op=>op.localId)
  if(new Set(ids).size!==ids.length)throw Error('待保存根便签身份重复')

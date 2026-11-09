@@ -16,7 +16,7 @@
 | Home/Annotate 四类文字标注 | 高亮、下划线、波浪线、删除线按多行文字选区写入；可切换草稿及安全来源的已保存标注 | 关联回复/弹窗/结构、签名及复杂源标注只读，尚非完整源切换语义 |
 | 标注颜色 | 固定源默认色，只有高亮接受自定义颜色；下载验证 RGB | 完整源颜色弹层/上下文工具与现有批注编辑未全部对齐 |
 | 文字编辑 | 来源身份绑定的有限文字替换及真实预览、字体/溢出跳过回执 | 插入静态文字、完整字体/对象/游标语义及复杂源对象未完成 |
-| 便签 | 新增/未保存便签编辑删除、创建时间绑定，安全既有便签编辑删除，历史/实际预览/下载重开 | 旧草稿未知创建时间不补造；全文侧栏与定位已接通，安全既有和未保存根线程可追加平铺回复并管理草稿身份/编辑删除联动；嵌套/弹窗/复杂/富文本线程及已保存回复编辑删除仍未接通 |
+| 便签 | 新增/未保存便签编辑删除、创建时间绑定，安全既有便签及标准平铺叶子回复编辑删除，历史/实际预览/下载重开 | 旧草稿未知创建时间不补造；全文侧栏与定位已接通，安全既有和未保存根线程可追加平铺回复并管理草稿身份/编辑删除联动；含回复根便签正文/整线程删除、嵌套/弹窗/复杂/富文本线程仍未接通 |
 | 绘图/测量 | 未接通 | 笔迹、矩形、椭圆、线箭头、多边形、标定测量及编辑/删除 |
 | 安全涂黑 | 未接通 | 需实际移除底层内容并独立核验；裁切或黑色覆盖不能替代 |
 | 页面旋转/删除/顺序 | 来源页身份、左右/全部旋转、删除、反序/移动、历史与回读通过 | 全部页选区/范围组合和相邻上下文仍有差异 |
@@ -48,7 +48,7 @@
 - `NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`
 - `NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`
 - `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`
-- `NATIVE_PDF_COMMENTS_ACCEPTANCE.md` / `NATIVE_PDF_REPLIES_ACCEPTANCE.md` / `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`
+- `NATIVE_PDF_COMMENTS_ACCEPTANCE.md` / `NATIVE_PDF_REPLIES_ACCEPTANCE.md` / `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md` / `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`
 - `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md` / `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`
 - `NATIVE_PDF_READING_ACCEPTANCE.md`
 - `NATIVE_PDF_FIT_ACCEPTANCE.md`

@@ -1,10 +1,11 @@
 import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
-export interface SavedPdfNote { sourceRef?: string | null; replyable?: boolean; annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
+export interface SavedPdfNote { sourceRef?: string | null; replyable?: boolean; parentAnnotationId?: string; annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
 export function validatePdfNoteOperation(operation: NativeOperation, page: PdfPageIdentity): SavedPdfNote {
   const allowed = ['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256', ...(operation.kind === 'editNote' ? ['contents', 'modifiedAt'] : [])]
   const note = page.notes?.find(note => note.annotationId === operation.annotationId)
   if (!['editNote', 'removeNote'].includes(operation.kind) || Object.keys(operation).some(key => !allowed.includes(key)) || !page.notesReadSafe || !note?.editable || !note.removable || !/^[a-f0-9]{64}$/.test(String(operation.annotationId)) || note.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || operation.pageId !== page.pageId || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error(note?.removalReason || '便签身份已过期或当前来源只读；原草稿已保留')
+  if (note.parentAnnotationId !== undefined && (!/^[a-f0-9]{64}$/.test(note.parentAnnotationId) || page.notes?.filter(parent => parent.annotationId === note.parentAnnotationId && parent.replyable === true && parent.parentAnnotationId === undefined).length !== 1)) throw new Error('回复根便签身份未完整确认')
   if (operation.kind === 'editNote') {
     if (typeof operation.contents !== 'string' || !operation.contents.trim() || operation.contents.length > 10000 || operation.contents !== operation.contents.trim()) throw new Error('便签正文须为 1–10000 个字符')
     if (typeof operation.modifiedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(operation.modifiedAt) || !Number.isFinite(Date.parse(operation.modifiedAt)) || new Date(operation.modifiedAt).toISOString() !== operation.modifiedAt.replace('Z', '.000Z')) throw new Error('便签修改时间无效')

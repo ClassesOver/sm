@@ -373,3 +373,14 @@ and verify actual fresh references rather than rect/content matching. Legacy
 unknown dates remain unknown; protected/ambiguous sources and complex thread
 families stay outside the write boundary. No new Ribbon-command count is claimed.
 See `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+
+
+## PDF saved flat-leaf reply mutation (2026-11-09)
+
+Existing editNote/removeNote now accept exact safe saved reply identities derived
+from the full source graph. Parent/sibling ambiguity stays readonly; body edit
+changes only Contents/M and leaf removal releases only a proven unshared dictionary
+to avoid stale inbound IRT. Source/preview/readonly/capability guards cover pane
+and page-card actions; ordinary note editing remains independent. The new source
+annot-delete.ts is a pinned primary reference, not a claimed executed PDFium path.
+See `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`; no new Ribbon count is claimed.
