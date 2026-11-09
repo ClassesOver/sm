@@ -450,3 +450,21 @@ it('retains source transition editability across lock/unlock independently of Ap
   expect(select.disabled).toBe(true); expect(select.title).toBe('来源无法保真')
   ribbon.dispose()
 })
+
+it('enables the pinned New Slide command on Home and Insert and dispatches addSlide', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const commands = [...host.querySelectorAll<HTMLButtonElement>('[data-command="addSlide"]')]
+  expect(commands).toHaveLength(2)
+  for (const command of commands) {
+    expect(command.dataset.sourceAction).toBe('onAddSlide')
+    expect(command.disabled).toBe(false)
+    command.click()
+  }
+  expect(onAction.mock.calls.map(call => call[0])).toEqual(['addSlide', 'addSlide'])
+  ribbon.setLocked(true)
+  expect(commands.every(command => command.disabled)).toBe(true)
+  ribbon.dispose()
+})

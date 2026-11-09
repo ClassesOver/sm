@@ -34,7 +34,7 @@ type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y:
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 type SlideChanges = {
-  edits?: Edit[]; order?: number[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
+  edits?: Edit[]; order?: number[]; newSlides?: { layoutFrom: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
@@ -135,6 +135,36 @@ const objectDelete = root.querySelector<HTMLButtonElement>('.object-delete')!
 const structurePending = root.querySelector<HTMLUListElement>('.structure-pending')!
 objectDelete.prepend(createElement(Trash2, { width: 15, height: 15, 'aria-hidden': 'true' }))
 const order: number[] = []
+/** 固定源 onAddSlide：新建空白页只记录版式来源页；其索引为 来源页数 + k，位置由 order 决定，保存后由引擎写入。 */
+const newSlides: { layoutFrom: number }[] = []
+const NEW_SLIDE_REASON = '新建的幻灯片保存并重新打开后才能编辑内容、背景、版式与转场'
+const isNewSlide = (slideIndex: number) => !!deck && slideIndex >= deck.slides.length
+function slideAt(slideIndex: number): DeckSlide {
+  const source = deck.slides[slideIndex]
+  if (source) return source
+  const layoutSource = deck.slides[newSlides[slideIndex - deck.slides.length]?.layoutFrom ?? 0]
+  return { slideIndex, elements: [], layoutPath: layoutSource?.layoutPath, masterPath: layoutSource?.masterPath, themePath: layoutSource?.themePath, transition: 'none', transitionEditSafe: false, transitionEditReason: NEW_SLIDE_REASON, transitionApplyAllSafe: false, transitionApplyAllReason: NEW_SLIDE_REASON, animations: [] }
+}
+function addNewSlide() {
+  if (!deck || locked()) return
+  if (newSlides.length >= 50 || order.length >= 500) { statusMessage.textContent = '一次最多新建 50 张幻灯片；请先保存'; return }
+  const layoutFrom = isNewSlide(selectedSlide) ? newSlides[selectedSlide - deck.slides.length]!.layoutFrom : selectedSlide
+  newSlides.push({ layoutFrom })
+  const slideIndex = deck.slides.length + newSlides.length - 1
+  order.splice(order.indexOf(selectedSlide) + 1, 0, slideIndex)
+  selectedSlide = slideIndex; selectedElement = ''
+  undoSnapshot = undefined; undoButton.disabled = true
+  renderSlides(); renderInspector(); markDirty()
+}
+function removeNewSlide(slideIndex: number) {
+  if (!isNewSlide(slideIndex) || locked()) return
+  const position = order.indexOf(slideIndex)
+  newSlides.splice(slideIndex - deck.slides.length, 1)
+  order.splice(position, 1)
+  for (let index = 0; index < order.length; index++) if (order[index]! > slideIndex) order[index]! -= 1
+  selectedSlide = order[Math.max(0, position - 1)]!
+  renderSlides(); renderInspector(); markDirty()
+}
 const backgroundEdits = new Map<number, string>()
 const textBoxEdits: TextBoxEdit[] = []
 const textFormattingEdits = new Map<string, TextFormatting>()
@@ -226,11 +256,14 @@ const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!
 const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 
 function renderCanvas() {
-  const slide = renderTree?.slides.find(item => item.slideIndex === selectedSlide)
+  const source = renderTree?.slides.find(item => item.slideIndex === selectedSlide)
+  // 新建页没有来源 RenderTree：沿用版式来源页的画布尺寸与背景，不含任何对象。
+  const layoutSource = isNewSlide(selectedSlide) ? renderTree?.slides.find(item => item.slideIndex === newSlides[selectedSlide - deck.slides.length]?.layoutFrom) : undefined
+  const slide = source ?? (layoutSource ? { ...layoutSource, slideIndex: selectedSlide, nodes: [] } : undefined)
   if (!canvas || !slide || !deck) return
   canvas.update({
     slide, selectedId: selectedElement,
-    editableIds: new Set(locked() ? [] : deck.slides[selectedSlide]!.elements.filter(item => item.editable && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
+    editableIds: new Set(locked() ? [] : slideAt(selectedSlide).elements.filter(item => item.editable && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
     edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
     onSelect: id => { selectedElement = id; renderInspector() },
     onGeometry: (id, geometry) => {
@@ -264,7 +297,7 @@ function markDirty() {
 
 function slideChanges(): SlideChanges {
   return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
-    order: [...order], ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
@@ -275,7 +308,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft() {
   if (!nativeDraft) return
   const operations = nativeDraft.operations
-  const supported = new Set(['kind', 'edits', 'order', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -283,7 +316,10 @@ function restoreNativeDraft() {
   const changes = (operations[0] ?? {}) as SlideChanges
   const transitions = restoredTransitions(changes.transitions, deck.slides.length)
   if (native && transitions.some(item => !transitionEditingAllowed(deck.slides[item.slideIndex]))) throw new Error('来源含尚不能安全修改的转场兼容性内容；原草稿已保留')
-  if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== deck.slides.length || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length))) throw new Error('草稿页面顺序无效；原草稿已保留')
+  const restoredNew = changes.newSlides ?? []
+  if (!Array.isArray(restoredNew) || restoredNew.length > 50 || restoredNew.some(item => !item || Object.keys(item).join() !== 'layoutFrom' || !Number.isInteger(item.layoutFrom) || item.layoutFrom < 0 || item.layoutFrom >= deck.slides.length) || (restoredNew.length && changes.order === undefined)) throw new Error('草稿中的新建幻灯片无效；原草稿已保留')
+  const slideTotal = deck.slides.length + restoredNew.length
+  if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== slideTotal || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= slideTotal))) throw new Error('草稿页面顺序无效；原草稿已保留')
   // Validate every step before mutating the recovered view or the persisted history.
   try {
     if ((changes.paragraphFormatting?.length ?? 0) > 500) throw new Error('段落格式操作超过 500 条；请分批保存')
@@ -313,7 +349,9 @@ function restoreNativeDraft() {
   }
   animationEdits.splice(0, animationEdits.length, ...(changes.animations ?? []))
   textBoxEdits.splice(0, textBoxEdits.length, ...(changes.textBoxes ?? []).map(box => ({ ...box, watermark: box.rotation === -25 })))
+  newSlides.splice(0, newSlides.length, ...restoredNew.map(item => ({ layoutFrom: item.layoutFrom })))
   order.splice(0, order.length, ...(changes.order ?? deck.slides.map(slide => slide.slideIndex)))
+  if (!order.includes(selectedSlide)) selectedSlide = order[0] ?? 0
   selectedTheme = changes.theme
   slideSizeEdit = changes.slideSize
   dirty = nativeDraft.dirty
@@ -340,7 +378,7 @@ function renderPendingImages() {
 function renderSlides() {
   list.replaceChildren()
   for (const [position, slideIndex] of order.entries()) {
-    const slide = deck.slides[slideIndex]!
+    const slide = slideAt(slideIndex)
     const row = document.createElement('li')
     row.className = 'slide-row'
     row.dataset.selected = String(slideIndex === selectedSlide)
@@ -348,7 +386,7 @@ function renderSlides() {
     open.type = 'button'
     open.className = 'slide-open'
     open.innerHTML = `<span class="slide-number">${position + 1}</span><span class="slide-title"></span>`
-    open.querySelector('.slide-title')!.textContent = flatText(slide)
+    open.querySelector('.slide-title')!.textContent = isNewSlide(slideIndex) ? '新建幻灯片（保存后写入）' : flatText(slide)
     open.addEventListener('click', () => { selectedSlide = slideIndex; renderSlides(); renderInspector() })
     const up = buttonIcon(ArrowUp, '上移页面')
     const down = buttonIcon(ArrowDown, '下移页面')
@@ -357,6 +395,13 @@ function renderSlides() {
     up.addEventListener('click', () => move(position, -1))
     down.addEventListener('click', () => move(position, 1))
     row.append(open, up, down)
+    if (isNewSlide(slideIndex)) {
+      row.dataset.newSlide = 'true'
+      const remove = buttonIcon(X, '移除新建的幻灯片')
+      remove.disabled = locked()
+      remove.addEventListener('click', () => removeNewSlide(slideIndex))
+      row.append(remove)
+    }
     list.append(row)
   }
   root.querySelector('.slide-count')!.textContent = String(order.length)
@@ -380,17 +425,19 @@ function transitionEditingAllowed(slide: DeckSlide | undefined) {
   return !native || (slide?.transitionEditSafe ?? slide?.transitionApplyAllSafe) === true
 }
 function transitionEditUnavailable(): string | null {
+  if (isNewSlide(selectedSlide)) return NEW_SLIDE_REASON
   return transitionEditingAllowed(deck.slides[selectedSlide]) ? null : '此页含尚不能安全修改的转场兼容性内容，请保留原转场'
 }
 function transitionApplyAllUnavailable(): string | null {
   if (!order.length || order.length > 500 || !order.includes(selectedSlide)) return '请先打开可编辑的演示文稿；一次最多支持 500 页'
+  if (newSlides.length) return NEW_SLIDE_REASON
   if (order.some(index => deck.slides[index]?.transitionApplyAllSafe !== true)) return '部分页面含未支持的转场速度、换片、声音或效果变体设置，暂不能全部应用；原文件保持不变'
   return null
 }
 
 function renderInspector() {
   renderCanvas()
-  const elements = deck.slides[selectedSlide]!.elements.filter(item => (item.editable || item.deletable) && !deletions.has(editKey(selectedSlide, item.id)))
+  const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable) && !deletions.has(editKey(selectedSlide, item.id)))
   select.replaceChildren(...elements.map(item => {
     const option = document.createElement('option')
     option.value = item.id
@@ -408,13 +455,13 @@ function renderInspector() {
     input.value = String(geometry[input.name as keyof typeof geometry] ?? 0)
     input.disabled = savedRevision || !element?.editable
   }
-  backgroundColor.value = (backgroundEdits.get(selectedSlide) ?? deck.slides[selectedSlide]!.background ?? '#FFFFFF').toLowerCase()
+  backgroundColor.value = (backgroundEdits.get(selectedSlide) ?? slideAt(selectedSlide).background ?? '#FFFFFF').toLowerCase()
   backgroundReset.disabled = !backgroundEdits.has(selectedSlide)
   objectDelete.disabled = !element?.deletable || chartTools.hasPending(selectedSlide, element.id)
   objectDelete.title = element && chartTools.hasPending(selectedSlide, element.id) ? '该图表有待保存的 AI 改图，请先撤销采纳' : '删除对象'
   themeSelect.value = selectedTheme ?? ''
-  transitionSelect.value = transitionEdits.get(selectedSlide) ?? deck.slides[selectedSlide]!.transition ?? 'none'
-  const slide = deck.slides[selectedSlide]!
+  transitionSelect.value = transitionEdits.get(selectedSlide) ?? slideAt(selectedSlide).transition ?? 'none'
+  const slide = slideAt(selectedSlide)
   const layouts = deck.layouts ?? []
   layoutSelect.replaceChildren(...layouts.map(layout => {
     const option = document.createElement('option')
@@ -423,7 +470,10 @@ function renderInspector() {
     return option
   }))
   layoutSelect.value = layoutEdits.get(selectedSlide) ?? slide.layoutPath ?? ''
-  layoutSelect.disabled = layouts.length === 0
+  layoutSelect.disabled = layouts.length === 0 || isNewSlide(selectedSlide)
+  const newSlideSelected = isNewSlide(selectedSlide)
+  for (const control of [backgroundColor, textAdd, watermarkAdd]) { control.disabled ||= newSlideSelected; control.title = newSlideSelected ? NEW_SLIDE_REASON : control.title === NEW_SLIDE_REASON ? '' : control.title }
+  if (newSlideSelected) backgroundReset.disabled = true
   const masterPath = slide.masterPath ?? ''
   const master = (deck.masterParts ?? []).find(item => item.partPath === masterPath)
   slideMaster.textContent = master?.name || masterPath || '未读取'
@@ -556,6 +606,8 @@ let nativeRibbon: NativeSlidesRibbon | undefined
 if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   onAction(command, value) {
     if (locked()) return
+    // 新建页保存前只能移动/再新建；页面级与对象级修改需要来源身份，由引擎拒绝。
+    if (isNewSlide(selectedSlide) && !['addSlide', 'movePrevious', 'moveNext', 'theme', 'slideSize', 'slideOrientation', 'customSlideSize', 'saveRevision'].includes(command)) { statusMessage.textContent = NEW_SLIDE_REASON; return }
     if (PARAGRAPH_LIST_COMMANDS.includes(command)) {
       const patch = paragraphCommandPatch(command, value)
       if (patch) updateSelectedParagraph(patch)
@@ -563,6 +615,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       return
     }
     switch (command) {
+      case 'addSlide': addNewSlide(); break
       case 'movePrevious': move(order.indexOf(selectedSlide), -1); break
       case 'moveNext': move(order.indexOf(selectedSlide), 1); break
       case 'theme':
@@ -768,6 +821,7 @@ transitionSelect.addEventListener('change', () => {
   markDirty()
 })
 layoutSelect.addEventListener('change', () => {
+  if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; renderInspector(); return }
   if (!layoutSelect.value) return
   layoutEdits.set(selectedSlide, layoutSelect.value)
   canvasStatus.textContent = '版式修改将在保存并打开新修订后更新画布。'
@@ -829,9 +883,10 @@ function addTextBox(watermark: boolean) {
   renderStructurePending()
   markDirty()
 }
-textAdd.addEventListener('click', () => addTextBox(false))
-watermarkAdd.addEventListener('click', () => addTextBox(true))
+textAdd.addEventListener('click', () => { if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; return } addTextBox(false) })
+watermarkAdd.addEventListener('click', () => { if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; return } addTextBox(true) })
 backgroundColor.addEventListener('change', () => {
+  if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; renderInspector(); return }
   backgroundEdits.set(selectedSlide, backgroundColor.value.toUpperCase())
   canvasStatus.textContent = '背景修改将在保存并打开新修订后更新画布。'
   renderStructurePending()
@@ -1009,6 +1064,7 @@ aiCancel.addEventListener('click', async () => {
 
 aiAccept.addEventListener('click', async () => {
   if (locked() || !pendingAIProposal || !pendingAIEditId) return
+  if (newSlides.length) { statusMessage.textContent = '请先保存新建的幻灯片，再采纳 AI 页面修改'; return }
   ++mutationPending
   aiAccept.disabled = true
   try {

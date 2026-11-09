@@ -181,7 +181,30 @@ try {
   catch { throw new Error(JSON.stringify({ phase: 'canvas', body: (await page.locator('body').innerText()).slice(-2500), pageErrors, failedResponses })) }
   await page.waitForFunction(() => document.querySelector('.canvas-status')?.textContent.includes('点击对象选择'))
 
-  if (smokeMode === 'textbox') {
+  if (smokeMode === 'new-slide') {
+    // 固定源 Home ▸ New Slide（onAddSlide）：在当前页后新建沿用当前页版式的空白页；保存前可移动、移除，不可编辑内容。
+    await page.locator('[data-ribbon-tab="home"]').click()
+    const add = page.locator('[data-command="addSlide"][data-source-action="onAddSlide"]').first()
+    assert.equal(await add.isEnabled(), true)
+    await add.click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    assert.equal(await page.locator('.slide-row').nth(1).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+    assert.equal(await page.locator('.slide-row').nth(1).getAttribute('data-selected'), 'true')
+    assert.equal(await page.locator('#background-color').isDisabled(), true)
+    await page.locator('.slides-canvas canvas').first().waitFor()
+    await add.click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    await page.locator('.slide-row').nth(2).getByRole('button', { name: '移除新建的幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    await page.locator('.slide-row').nth(1).locator('.slide-open').click()
+    await page.locator('[data-command="movePrevious"]').first().click()
+    assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+    if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+  } else if (smokeMode === 'textbox') {
     await page.locator('[data-ribbon-tab="insert"]').click()
     const textBoxCommand = page.locator('[data-command="addText"][data-source-action="onInsert"]')
     await textBoxCommand.click()
@@ -343,6 +366,9 @@ try {
     const target = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     assert.ok(operation.paragraphFormatting.every(record => record.slideIndex === 0 && record.elementId === target.id))
     assert.deepEqual(operation.paragraphFormatting.reduce((value, patch) => ({ ...value, ...patch }), {}), { slideIndex: 0, elementId: target.id, align: 'right', lineSpacingPct: 200, spaceBeforePt: 12.5, spaceAfterPt: 0 })
+  } else if (smokeMode === 'new-slide') {
+    assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }])
+    assert.deepEqual(operation.order, [1, 0])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
     if (smokeMode === 'slide-size-presets') assert.deepEqual(operation.edits[0].geometry, { x: 75, y: 80, width: 300, height: 90 })
@@ -367,6 +393,15 @@ try {
   const reopened = JSON.parse(runPython({ mode: 'inspect', bytes: downloaded.toString('base64'), revision: saveReceipt.revision }))
   assert.equal(reopened.revision, 2)
   assert.equal(reopened.sha256, saveReceipt.artifacts.pptx.sha256)
+  if (smokeMode === 'new-slide') {
+    const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame]] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
+    if (independent.status !== 0) throw new Error(independent.stderr)
+    const slides = JSON.parse(independent.stdout)
+    assert.equal(slides.length, 2)
+    assert.deepEqual(slides[0][1], [])
+    assert.equal(slides[0][0], slides[1][0])
+    assert.deepEqual(slides[1][1], ['Native browser formatting fixture'])
+  }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))
     assert.ok(reopened.pythonPptxTexts.includes('Ribbon inserted textbox smoke'))
@@ -431,6 +466,13 @@ try {
     assert.equal(await page.locator('[data-command="lineSpacingPct"]').inputValue(), '200')
     assert.equal(await page.locator('[data-command="spaceBeforePt"]').inputValue(), '12.5')
     assert.equal(await page.locator('[data-command="spaceAfterPt"]').inputValue(), '0')
+  } else if (smokeMode === 'new-slide') {
+    // 修订 2 重开：新页成为普通来源页，不再标记为待写入。
+    activeBytes = downloaded; activeSha = saveReceipt.artifacts.pptx.sha256; activeRevision = 2
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`)
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    assert.equal(await page.locator('.slide-row[data-new-slide]').count(), 0)
   } else {
     assert.deepEqual(reopened.size, targetSize)
     assert.deepEqual(reopened.pythonPptxSize, [targetSize.cx, targetSize.cy])
@@ -465,7 +507,7 @@ try {
     assert.equal(await page.locator('[data-command="slideOrientation"][data-source-action="onSlideSize"]').inputValue(), smokeMode === 'slide-size-presets' ? 'portrait' : 'landscape')
     assert.equal(Number(await page.locator('.geometry-grid input[name="x"]').inputValue()), expectedGeometry.x)
   }
-  assert.equal(reopened.slideCount, 1)
+  assert.equal(reopened.slideCount, smokeMode === 'new-slide' ? 2 : 1)
   if (smokeMode === 'slide-size-recovery') {
     assert.equal(failedResponses.length, 2)
     assert.ok(failedResponses.every(item => item.status === 503 && item.url.endsWith('/api/save')))

@@ -480,3 +480,56 @@ def test_slides_bridge_rejects_deleting_object_with_pending_edit_without_output(
     assert result.returncode != 0
     assert "delete_target_has_pending_edits" in result.stderr
     assert not output.exists()
+
+
+def test_slides_bridge_adds_blank_slides_with_source_layout_at_ordered_positions(tmp_path: Path):
+    """固定源 onAddSlide → addBlankSlide：新页沿用来源页版式、无内容，由 order 放到目标位置，来源页不变。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "new-slides.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    slides = inspected["slides"]
+    count = len(slides)
+    assert count >= 3
+    # 新页 count+0 插在第 1 页之后，沿用第 3 页（索引 2）的版式；新页 count+1 放在最前，沿用第 1 页版式
+    order = [count + 1, 0, count, *range(1, count)]
+    _invoke({
+        "action": "edit", "input": str(source), "output": str(output), "edits": [],
+        "order": order, "newSlides": [{"layoutFrom": 2}, {"layoutFrom": 0}],
+        "transitions": [{"slideIndex": 1, "kind": "fade"}],
+    }, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count + 2
+    assert reopened[0]["layoutPath"] == slides[0]["layoutPath"]
+    assert reopened[2]["layoutPath"] == slides[2]["layoutPath"]
+    assert reopened[0]["elements"] == [] and reopened[2]["elements"] == []
+    # 来源页按顺序保留，且索引寻址的转场作用于原第 2 页
+    kept = [reopened[1], *reopened[3:]]
+    assert [slide["layoutPath"] for slide in kept] == [slide["layoutPath"] for slide in slides]
+    assert [len(slide["elements"]) for slide in kept] == [len(slide["elements"]) for slide in slides]
+    assert reopened[3].get("transition") == "fade"
+    with ZipFile(output) as archive:
+        assert len([name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")]) == count + 2
+    assert len(Presentation(str(output)).slides) == count + 2
+
+
+@pytest.mark.parametrize("request_patch", [
+    {"newSlides": [{"layoutFrom": 99}]},
+    {"newSlides": [{"layoutFrom": 0, "extra": 1}]},
+    {"newSlides": [{"layoutFrom": 0}], "order": None},
+    {"newSlides": [{"layoutFrom": 0}], "order": "short"},
+])
+def test_slides_bridge_rejects_invalid_new_slides_without_output(tmp_path: Path, request_patch: dict[str, object]):
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "rejected.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    request: dict[str, object] = {"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": [*range(count), count]}
+    request.update(request_patch)
+    if request.get("order") is None:
+        request.pop("order")
+    elif request["order"] == "short":
+        request["order"] = list(range(count))
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke(request, tmp_path)
+    assert not output.exists()

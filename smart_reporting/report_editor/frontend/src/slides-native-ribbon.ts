@@ -65,7 +65,7 @@ const tabs: Tab[] = [
       { id: 'formatBrush', label: 'Format Painter', sourceIcon: IconFormatPainter, sourceActionId: 'onFormatBrushClick', unavailable: noWrite('格式刷') },
     ] },
     { label: 'Slides', controls: [
-      { id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide', unavailable: noWrite('新建幻灯片操作') },
+      { id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide' },
       { id: 'addSlideWithLayout', label: 'New Slide with Layout', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout', unavailable: noWrite('指定版式新建幻灯片操作') },
       { id: 'layout', label: 'Change Layout', kind: 'select', sourceIcon: IconSlideLayout, sourceActionId: 'onSetLayout' },
       { id: 'resetLayout', label: 'Reset Layout', sourceIcon: IconSlideLayout, sourceActionId: 'onResetLayout', unavailable: noWrite('重置版式操作') },
@@ -118,7 +118,7 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'insert', label: 'Insert', groups: [
-    { label: 'Slides', controls: [{ id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, unavailable: noWrite('新增幻灯片') }] },
+    { label: 'Slides', controls: [{ id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide' }] },
     { label: 'Tables', controls: [{ id: 'insertTable', label: 'Table', sourceIcon: IconTable, sourceActionId: 'onInsertTable', unavailable: noWrite('表格插入尚未接入 editSlides 请求') }] },
     { label: 'Images', controls: [{ id: 'insertPicture', label: 'Pictures', sourceIcon: IconPicture, sourceActionId: 'onInsertImage', unavailable: desktop('图片插入目前没有浏览器文件选择与上传控件') }] },
     { label: 'Illustrations', controls: [

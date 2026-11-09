@@ -2,7 +2,7 @@ import { patchTransitionPreservingMetadata, transitionEditAvailability } from '.
 import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, insertBlankSlide, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -29,6 +29,8 @@ type Input = {
   output?: string
   edits?: TextEdit[]
   order?: number[]
+  /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
+  newSlides?: { layoutFrom: number }[]
   theme?: 'executive' | 'clinical' | 'modern'
   slideSize?: { cx: number; cy: number }
   images?: {
@@ -385,6 +387,17 @@ if (request.action === 'inspect') {
     // that live object while retaining the request's original slide indices.
     originalSlides[selection.slideIndex] = laidOut
   }
+  // 新建页放在所有按来源索引寻址的步骤之后：先插在版式来源页之后（沿用其版式），
+  // 再移到末尾，保证来源页索引不变；随后 order（长度 = 来源页数 + 新页数）决定最终位置。
+  const newSlides = request.newSlides ?? []
+  if (!Array.isArray(newSlides) || newSlides.length > 50) throw new Error('new_slides_invalid')
+  for (const item of newSlides) {
+    if (!item || typeof item !== 'object' || Object.keys(item).some(key => key !== 'layoutFrom') || !validSlideIndex(item.layoutFrom, slideCount)) throw new Error('new_slide_layout_source_invalid')
+    if (!insertBlankSlide(opened, item.layoutFrom)) throw new Error('new_slide_insert_failed')
+    const last = opened.deck.slides.length - 1
+    if (item.layoutFrom + 1 !== last) moveSlide(opened, item.layoutFrom + 1, last)
+  }
+  if (newSlides.length && !request.order) throw new Error('new_slides_require_order')
   if (request.order) {
     if (request.order.length !== opened.deck.slides.length || new Set(request.order).size !== request.order.length || request.order.some((n) => !Number.isInteger(n) || n < 0 || n >= request.order!.length)) {
       throw new Error('slide_order_invalid')
