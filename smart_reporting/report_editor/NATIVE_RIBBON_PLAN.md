@@ -373,3 +373,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Committed/DPR-aware thumbnail resolution, per-document/page/geometry cache, near-visible lazy drawing and offscreen/deleted/replaced bitmaps/task cleanup. Drag reuses existing pixels; no new thumbnail annotation-overlay equivalence claim.
 - [x] Preserve stable source position/latest fit intent on pagehide during reflow. New30-page/DPR2 Chromium scenario,19 existing unit checks,six affected browsers and independent pypdf pass. Standard/Slides builds and Standard budget/source/syntax/diff checks pass; no backend/dependency/runtime change or full suite claimed. See `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.
 - [ ] Desktop side-note/full host/thumbnail context,full shortcuts/comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. This supersedes the wholly missing sidebar sizing/persistence checkpoint; flags off.
+
+
+### PDF bounded attachment write continuation (2026-11-09)
+
+- [x] Reuse unchanged pinned pdf-attachments writer with source SHA/key/dictionary/content identities; canonical base64 and byte/entry budgets. Refuse ambiguous/hierarchical/shared/linked/protected sources; correct encoded name-byte ordering and verify intermediate/final survivors and new content.
+- [x] Browser file add, saved remove/keep and pending cancel, NativeDraft history/reload, snapshot-bound asynchronous reads, actual preview and nonblocking saved download/reopen. Existing same-basename/empty-file read/export stays available.
+- [x] Seven new engine cases, four new frontend cases (25 selected frontend checks), three affected engine cases and seven actual service cases pass. Chromium compound scenario and independent pypdf/Node22 offline output pass; see `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md` for final build/provenance boundaries.
+- [ ] Complex attachment trees/associations/protected sources, text-replacement combinations, full host/shortcuts/comparison, reply writes and other PDF families remain open. Existing24 MiB online source ceiling is unchanged; larger outputs retain download but are outside online reopen scope. Whole image/production/desktop acceptance remains open; flags off. This supersedes only the previous wholly missing attachment mutation checkpoint.

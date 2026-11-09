@@ -263,7 +263,7 @@ class NativeEditorService:
             patch = partial(patch_office, context.format)
         try:
             receipt = None
-            if text_edits or (context.format == "pdf" and any(op.get("kind") in {"setPageSize", "addMarkup", "removeMarkup", "editNote", "removeNote", "addTextAnnotation"} for op in operations)):
+            if text_edits or (context.format == "pdf" and any(op.get("kind") in {"setPageSize", "addMarkup", "removeMarkup", "editNote", "removeNote", "addTextAnnotation", "addAttachment", "removeAttachment"} for op in operations)):
                 receipt = await run_office_engine(patch_pdf_with_receipt, content, operations)
                 edited = receipt["content"]
             else:

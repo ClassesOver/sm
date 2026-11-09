@@ -15,7 +15,8 @@ View attachments now opens an exclusive sidebar alongside thumbnails/outline/
 comments. It displays saved attachment names, descriptions and actual byte sizes,
 with explicit content/metadata read failures and retry. Empty attachment content
 is a valid zero-byte download; absent/unreadable content is an error, not zero.
-The UI states that add/remove is unavailable.
+At this read/export checkpoint add/remove was unavailable. The later bounded
+write implementation supersedes that gap; see `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.
 
 PDF.js Map keys are attachment identities, distinct from filenames: two different
 keys with the same display basename retain separate content/cache/download targets.

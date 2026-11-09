@@ -338,3 +338,14 @@ Immediate pagehide during reflow preserves latest fit intent. A30-page/DPR2 brow
 scenario,affected tests and independent files verify bounded behavior; no full
 source thumbnail overlays/context or desktop layout claim. Evidence:
 `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.
+
+
+## PDF bounded attachment writing (2026-11-09)
+
+The existing attachment pane now stages local file additions, exact saved-file
+removals/keep and pending cancellation, using NativeDraft history and actual
+output preview. The pinned flat-tree writer is unchanged; native validation adds
+identity/budget guards, encoded name-byte ordering and post-save content checks.
+This closes only safe flat-tree add/remove; complex/shared/associated/protected
+sources remain read/export-only. Removal is not secure erasure. New browser,
+engine/service and independent file evidence: `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.

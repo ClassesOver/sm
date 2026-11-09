@@ -11,10 +11,13 @@
   },
   "humanBytes": "unchanged extraction from AttachmentsPanel.tsx",
   "nativeAdaptations": [
-    "read/export only; attachment add/remove remains unavailable",
+    "bounded add/remove via unchanged pinned pdf-attachments.ts; exact source identities, canonical base64 and byte budgets",
     "Map key identity distinct from display filename",
     "per-document promise cache; failed reads retry and explicit partial failure",
     "browser binary download with basename and URL lifecycle cleanup instead of Electron export",
-    "generation guards reject abandoned/source-preview/disposed callbacks"
+    "generation guards reject abandoned/source-preview/disposed callbacks",
+    "strict flat-tree census refuses shared/linked/protected/ambiguous sources; read/export remains available",
+    "sort encoded name bytes after upstream writer; verify survivors and new content after output save",
+    "pending add/remove reuse NativeDraft history/storage and actual preview; async file reads bind full draft snapshot"
   ]
 }

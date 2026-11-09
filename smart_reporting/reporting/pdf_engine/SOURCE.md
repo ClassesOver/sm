@@ -18,7 +18,7 @@ LOCAL-SHA256.json records every current TS/MJS source and test, local package ma
 
 The bridge reads a JSON request file at argv[2], returns one JSON receipt on the last stdout line, and writes errors to stderr with a nonzero status. inspect requests are `{kind:"inspect",input}`; patch requests are `{kind:"patch",input,output,sourceSha256,operations}`. It calls upstream applySaveRequest, takes the returned bytes and writes a new destination using exclusive creation (`wx`); existing output files, source aliases, hard links and symbolic links are not overwritten. It never calls savePdfToPath or its verification-before-write path.
 
-At most 500 operations are accepted. Only highlight, addMarkup, removeMarkup, editNote, removeNote, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
+At most 500 operations are accepted. Only highlight, addMarkup, removeMarkup, editNote, removeNote, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, addAttachment, removeAttachment, setFormValue, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
 
 Page IDs are `sha256:<source SHA-256>:page:<original zero-based index>`. The source digest is required at patch request level; optional per-operation sourceSha256 must agree if present. IDs are stable within one immutable source; after saving, inspect the new bytes to obtain new IDs. Operations reference original source page IDs. An optional single reorderPages must list every surviving page exactly once, even when deletePage appears later in the list. A page cannot be both deleted and otherwise edited in one request. Multiple rotatePage deltas on one retained page accumulate via upstream order. Empty operation lists return the exact original bytes.
 
@@ -204,3 +204,25 @@ indirect object's full number/generation key matching PDF.js IDs (`80R3`, zero
 write schemas still reject it and require annotationId/dictionary digest. The
 new focused bridge test covers nonzero generations and direct-note readonly.
 No upstream vendor source or write protocol changed. LOCAL-SHA256 has36 entries.
+
+
+## Native bounded attachment write adapter (2026-11-09)
+
+`bridge/attachments.ts` wraps unchanged pinned `src/main/pdf-attachments.ts`.
+The source writer uses EmbeddedFiles name-tree keys, removes before adding,
+preserves existing Filespec references and refuses Kids trees. The native adapter
+adds immutable source/key/Filespec+stream/content identities, canonical payload
+and decoded-byte budgets, bounded Flate inspection, conservative reference and
+protection census, intermediate/output content verification and encoded-string
+byte ordering (the source writer sorts decoded labels). Only flat, unambiguous,
+unshared embedded files are writable. Associated/linked files, signature/XFA/
+permission sources, unsupported filters and complex structures remain readonly.
+Removed objects can remain in the PDF; no secure erasure is claimed.
+
+Added data is limited to2 MiB/file and6 MiB/batch; source census is bounded to
+200 entries,20,000 indirect objects,8 MiB decoded/file and24 MiB decoded total.
+Native operation count/JSON and online source size limits remain in force.
+Attachment writes run after page/form/note work and verify source survivors.
+Text-replacement combinations are refused until their preservation contract is
+verified. No vendor source, WASM, dependency or signing route changed.
+See `report_editor/NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.

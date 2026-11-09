@@ -1,3 +1,4 @@
+import { attachmentEditState, attachmentFileOperation, isAttachmentEdit } from './pdf-attachment-edits'
 /** PDF.js canvas/text-layer hosting follows GenOffice PdfPage.tsx at 4b55db9.
  * Desktop IPC is replaced by the native API; original source page IDs stay authoritative.
  */
@@ -141,11 +142,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const attachmentsPanel = documentElement('aside', 'pdf-attachments-sidebar'); attachmentsPanel.hidden = true; attachmentsPanel.setAttribute('aria-label', 'PDF 附件')
   const attachmentsHeading = documentElement('header'), attachmentsTitle = documentElement('strong'); attachmentsTitle.textContent = '附件'
   const closeAttachments = documentElement('button', 'pdf-tool'); closeAttachments.type = 'button'; closeAttachments.textContent = '关闭附件侧栏'; attachmentsHeading.append(attachmentsTitle, closeAttachments)
-  const attachmentNotice = documentElement('p'); attachmentNotice.textContent = '可查看和下载已有附件；暂不支持新增或删除。'
+  const attachmentNotice = documentElement('p'); attachmentNotice.textContent = '新增附件单文件最多 2 MiB、每次共 6 MiB。删除只移除附件目录，不能擦除敏感数据。'
+  const addAttachment = documentElement('button', 'pdf-tool'); addAttachment.type = 'button'; addAttachment.textContent = '新增附件'
+  const attachmentFile = documentElement('input'); attachmentFile.type = 'file'; attachmentFile.hidden = true; attachmentFile.setAttribute('aria-label', '选择新增附件')
+  addAttachment.addEventListener('click', () => { if (canEditAttachments()) attachmentFile.click() })
+  attachmentFile.addEventListener('change', () => { void stageAttachmentFile().catch(showError) })
   const attachmentsStatus = documentElement('p'); attachmentsStatus.setAttribute('role', 'status')
   const attachmentsList = documentElement('ul', 'pdf-attachments-list')
   const retryAttachments = documentElement('button', 'pdf-tool'); retryAttachments.type = 'button'; retryAttachments.textContent = '重试附件读取'; retryAttachments.hidden = true
-  attachmentsPanel.append(attachmentsHeading, attachmentNotice, attachmentsStatus, retryAttachments, attachmentsList)
+  attachmentsPanel.append(attachmentsHeading, attachmentNotice, addAttachment, attachmentFile, attachmentsStatus, retryAttachments, attachmentsList)
   const sidebarDivider = documentElement('div', 'pdf-sidebar-resizer')
   const sidebarPanels = { thumbs, outline: outlinePanel, comments: commentsPanel, attachments: attachmentsPanel }
   const sidebarId = `pdf-sidebar-${crypto.randomUUID()}`
@@ -738,6 +743,22 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (next === 'comments') void loadComments()
     if (next === 'attachments') void loadAttachments()
   }
+  function canEditAttachments() {
+    return !disposed && !!document && !locked && !previewing && !printing && !previewDocument && response.editingEnabled && !draft.closed && model.attachmentsEditable === true
+  }
+  async function setAttachmentOperations(operations: NativeOperation[]) {
+    if (!canEditAttachments()) return
+    attachmentEditState(model, operations)
+    draft.setOperations(operations); await refresh()
+  }
+  async function stageAttachmentFile() {
+    const file = attachmentFile.files?.[0]; attachmentFile.value = ''
+    if (!file || !canEditAttachments()) return
+    const snapshot = JSON.stringify(draft.operations), doc = document
+    const op = await attachmentFileOperation(file)
+    if (!canEditAttachments() || doc !== document || snapshot !== JSON.stringify(draft.operations)) throw Error('草稿已变化，请重新选择附件')
+    await setAttachmentOperations([...draft.operations, op])
+  }
   function clearAttachments() {
     attachmentsGeneration++; attachmentsList.replaceChildren(); retryAttachments.hidden = true
     attachmentsStatus.textContent = '正在读取附件…'
@@ -745,11 +766,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   async function loadAttachments() {
     if (disposed || sidebar !== 'attachments' || !document) return
     clearAttachments()
-    const epoch = attachmentsGeneration, doc = document
-    const current = () => !disposed && sidebar === 'attachments' && epoch === attachmentsGeneration && doc === document
+    const epoch = attachmentsGeneration, doc = document, snapshot = JSON.stringify(draft.operations)
+    const current = () => !disposed && sidebar === 'attachments' && epoch === attachmentsGeneration && doc === document && snapshot === JSON.stringify(draft.operations)
     try {
       const rows = await attachmentCache.rows(doc)
       if (!current()) return
+      const projected = previewDocument ? { removed: new Set<string>(), added: [] as NativeOperation[] } : attachmentEditState(model, draft.operations)
       let failures = 0
       for (const row of rows) {
         if (!current()) return
@@ -757,6 +779,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         name.textContent = row.filename || '未命名附件'; name.title = row.filename; description.textContent = row.description
         const download = documentElement('button', 'pdf-tool'); download.type = 'button'; download.textContent = '下载附件'; download.disabled = true
         item.append(name, description, size, download); attachmentsList.append(item)
+        const saved = !previewDocument && model.attachments?.find(entry => entry.key === row.id)
+        if (saved && model.attachmentsEditable) {
+          const remove = documentElement('button', 'pdf-tool'); remove.type = 'button'; remove.dataset.pdfAttachmentEditable = 'true'
+          const deleted = projected.removed.has(row.id); remove.textContent = deleted ? '撤销移除附件' : '移除附件'; if (deleted) name.textContent += '（待移除）'
+          remove.disabled = !canEditAttachments()
+          remove.addEventListener('click', () => {
+            if (!current() || !canEditAttachments()) return
+            const next = deleted ? draft.operations.filter(op => !(op.kind === 'removeAttachment' && op.attachmentId === saved.attachmentId)) : [...draft.operations, {kind:'removeAttachment',attachmentId:saved.attachmentId,expectedAttachmentSha256:saved.expectedAttachmentSha256}]
+            void setAttachmentOperations(next).catch(showError)
+          }); item.append(remove)
+        }
         try {
           const bytes = await attachmentCache.content(doc, row)
           if (!current()) return
@@ -772,6 +805,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       if (!current()) return
       attachmentsStatus.textContent = failures ? `${rows.length} 个附件；${failures} 个内容读取失败` : rows.length ? `${rows.length} 个附件` : '此 PDF 没有附件'
+      for (const op of projected.added) {
+        const item = documentElement('li'), name = documentElement('strong'), remove = documentElement('button', 'pdf-tool')
+        name.textContent = `${String(op.name)}（待新增）`; remove.type = 'button'; remove.textContent = '取消新增附件'; remove.dataset.pdfAttachmentEditable = 'true'; remove.disabled = !canEditAttachments()
+        remove.addEventListener('click', () => { if (current() && canEditAttachments()) void setAttachmentOperations(draft.operations.filter(entry => !(entry.kind === 'addAttachment' && entry.name === op.name))).catch(showError) })
+        const size = documentElement('span'), payload = String(op.bytesBase64)
+        size.textContent = humanBytes(payload.length * 3 / 4 - (payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0))
+        item.append(name, size, remove); attachmentsList.append(item)
+      }
+      if (projected.added.length || projected.removed.size) attachmentsStatus.textContent += `；待新增 ${projected.added.length}、待移除 ${projected.removed.size}`
       retryAttachments.hidden = !failures
     } catch {
       if (!current()) return
@@ -872,6 +914,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)) }
   function updateControls() {
+    addAttachment.disabled = attachmentFile.disabled = !canEditAttachments()
+    addAttachment.title = document ? model.attachmentsReason || '选择本地文件加入草稿，保存时写入 PDF' : '请先打开 PDF'
+    for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-attachment-editable]')) control.disabled = !canEditAttachments()
     for (const button of editableButtons) button.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     sizeOptions.disabled = sizeApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     cropFields.disabled = cropApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
@@ -1173,7 +1218,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1191,7 +1236,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -1458,6 +1503,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const sourceModel = await api.preview<PdfModel>({ expectedSha256: actualSha256, operations: [] }, abort.signal)
       if (sourceModel.sourceSha256 !== actualSha256 || sourceModel.model.sourceSha256 !== actualSha256) throw new Error('PDF 字段与文字对象来源不匹配')
+      model.attachments = sourceModel.model.attachments ?? []
+      model.attachmentsEditable = sourceModel.model.attachmentsEditable === true
+      model.attachmentsReason = sourceModel.model.attachmentsReason
+      if (model.attachmentsEditable !== true) attachmentNotice.textContent = `${model.attachmentsReason || '当前来源附件仅可查看和下载'}。删除附件目录不能擦除敏感数据。`
       model.capabilities = sourceModel.model.capabilities
       for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true; page.notes = source?.notes ?? []; page.notesReadSafe = source?.notesReadSafe === true }
       model.formFields = sourceModel.model.formFields ?? []
@@ -1474,6 +1523,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   if (draft.operations.some(operation => ['editNote', 'removeNote'].includes(operation.kind)) && model.capabilities?.notes !== true) throw new Error('当前引擎未确认已有便签修改能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'removeMarkup') && model.capabilities?.removeMarkup !== true) throw new Error('当前引擎未确认已保存标注移除能力；原草稿已保留')
+  if (draft.operations.some(isAttachmentEdit)) attachmentEditState(model, draft.operations)
   if (draft.operations.some(operation => operation.kind === 'setPageSize') && model.capabilities?.pageSize !== true) throw new Error('当前来源未确认尺寸变更能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'cropPage') && model.capabilities?.cropPage !== true) throw new Error('当前 PDF 引擎未确认裁切能力；原草稿已保留')
   void rebuildTextIndex().catch(showError)
