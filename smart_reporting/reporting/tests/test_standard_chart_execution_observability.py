@@ -268,10 +268,9 @@ async def test_failed_outer_route_keeps_initial_compile_cost_and_original_diagno
             deterministic=deterministic,
         )
     assert caught.value is failure
+    # 首次预检复用后：3ms 编译 + 12ms 执行，不再重复计入第二次相同编译。
     assert failure.standard_route_total_ms == 15
-    assert failure.standard_route_execution["stageTimings"]["compile"] == (
-        3
-    )
+    assert failure.standard_route_execution["stageTimings"]["compile"] == 3
     assert failure.standard_route_execution["initialCompileMs"] == 3
     assert failure.standard_route_execution["status"] == (
         "cancelled" if failure_type is asyncio.CancelledError else "failed"
@@ -339,4 +338,5 @@ async def test_outer_route_failed_retry_includes_initial_compile_without_fake_at
     assert len(failure.standard_execution_attempts) == 2
     # 首次尝试沿用外层已计入的3ms预检，重试仍重新编译。
     assert [item["durationMs"] for item in failure.standard_execution_attempts] == [12, 15]
+    assert [item["stageTimings"]["compile"] for item in failure.standard_execution_attempts] == [0, 3]
     assert calls == ([{"deterministic": True}] * 2 if deterministic else [{}, {}])
