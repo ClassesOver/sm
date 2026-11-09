@@ -83,3 +83,21 @@ def test_cover_page_rejects_specs_outside_the_bounded_schema(paras):
     source = make_doc()
     with pytest.raises(ValueError):
         patch_docx(source, [cover_op(source, 0, paras)])
+
+
+def test_saved_cover_bookmark_paragraphs_are_deletable_but_not_editable():
+    covered = patch_docx(make_doc(), [cover_op(make_doc(), 0)])
+    blocks = inspect_docx(covered)["blocks"]
+    cover = blocks[:5]
+    markers = [block for block in cover if not block["editable"]]
+    assert markers and all(block["deletable"] for block in markers)
+    assert all(block["deletable"] for block in cover)
+    with pytest.raises(ValueError, match="paragraph_unsupported"):
+        patch_docx(covered, [{"kind": "replaceParagraph", "blockId": markers[0]["blockId"],
+                              "expectedObjectSha256": markers[0]["expectedObjectSha256"], "text": "x"}])
+    removed = patch_docx(covered, [{"kind": "deleteParagraph", "blockId": block["blockId"],
+                                    "expectedObjectSha256": block["expectedObjectSha256"]} for block in cover])
+    document = Document(BytesIO(removed))
+    assert [p.text for p in document.paragraphs] == ["first body", "second body"]
+    assert not [el for el in document.element.body.iter(qn("w:bookmarkStart"))
+                if (el.get(qn("w:name")) or "").startswith("_GenOfficeCover")]

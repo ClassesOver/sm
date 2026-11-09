@@ -40,6 +40,17 @@ describe('DOCX snapshots to allowed operations', () => {
     changed.content[0].content[0].content[1] = cell('不能改')
     expect(() => docxOperations(original, changed, tableAnchors)).toThrow(/只读/)
   })
+  it('lets an empty saved cell gain plain typed text but not formatted runs or new paragraphs', () => {
+    const empty = { type: 'docTableCell', content: [{ type: 'docParagraph', attrs: { docxIndex: null } }] }
+    const original = { type: 'doc', content: [{ type: 'docTable', attrs: { docxIndex: 4 }, content: [{ type: 'docTableRow', content: [empty] }] }] }
+    const tableAnchors = [{ docxIndex: 4, blockId: 'table', expectedObjectSha256: 'table-hash', editable: false, cells: [[{ cellId: 'c1', expectedObjectSha256: 'c1hash', editable: true }]] }]
+    const typed = (marks?: unknown[]) => { const next = structuredClone(original) as any; next.content[0].content[0].content[0].content[0].content = [{ type: 'text', text: '后填', ...(marks ? { marks } : {}) }]; return next }
+    expect(docxOperations(original, typed(), tableAnchors)).toEqual([{ kind: 'replaceCellText', blockId: 'table', cellId: 'c1', expectedObjectSha256: 'c1hash', text: '后填' }])
+    expect(docxOperations(original, typed([{ type: 'textStyle', attrs: { color: null } }]), tableAnchors)[0]).toMatchObject({ text: '后填' })
+    expect(() => docxOperations(original, typed([{ type: 'bold' }]), tableAnchors)).toThrow(/结构或样式/)
+    const split = typed(); split.content[0].content[0].content[0].content.push({ type: 'docParagraph', attrs: { docxIndex: null } })
+    expect(() => docxOperations(original, split, tableAnchors)).toThrow(/结构或样式/)
+  })
   it('keeps strict table writeback limited to anchored cell text', () => {
     const cell = (text: string, fill: string | null = null) => ({ type: 'docTableCell', attrs: { fill }, content: [para(null, text)] })
     const original = { type: 'doc', content: [{ type: 'docTable', attrs: { docxIndex: 4, tblStyleId: 'TableGrid' }, content: [{ type: 'docTableRow', content: [cell('旧值')] }] }] }

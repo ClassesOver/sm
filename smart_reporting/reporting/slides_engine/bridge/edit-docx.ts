@@ -349,6 +349,26 @@ function simpleParagraphXml(xml: string): boolean {
     .replace(/<w:rPr\b[^>]*(?:\/>|>[\s\S]*?<\/w:rPr>)/g, '')
   return [...body.matchAll(/<\/?([\w:.-]+)/g)].every(match => ['w:p', 'w:r', 'w:t', 'w:tab', 'w:br', 'w:cr', 'w:hyperlink'].includes(match[1]!))
 }
+/** A paragraph whose only non-simple content is the gallery cover's hidden
+ *  _GenOfficeCoverPage / _GenOfficeCoverPageEnd bookmarks (editor/cover-pages.ts).
+ *  It stays read-only for editing (a rewrite could drop the markers "Remove
+ *  Current Cover Page" relies on) but may be deleted as a whole, so a saved
+ *  cover can be removed or replaced. */
+function coverMarkerParagraph(block: Block): boolean {
+  if (block.type !== 'paragraph' || !block.originalXml) return false
+  const xml = block.originalXml
+  const ids = [...xml.matchAll(/<w:bookmarkStart\b[^>]*\/>/g)].map(match => match[0])
+  if (!ids.length) return false
+  const coverIds: string[] = []
+  for (const start of ids) {
+    const name = /\bw:name="([^"]*)"/.exec(start)?.[1]
+    if (name !== '_GenOfficeCoverPage' && name !== '_GenOfficeCoverPageEnd') return false
+    coverIds.push(/\bw:id="([^"]*)"/.exec(start)?.[1] ?? '')
+  }
+  const stripped = xml.replace(/<w:bookmarkStart\b[^>]*\/>/g, '')
+    .replace(/<w:bookmarkEnd\b[^>]*\/>/g, end => coverIds.includes(/\bw:id="([^"]*)"/.exec(end)?.[1] ?? '\u0000') ? '' : end)
+  return simpleParagraphXml(stripped)
+}
 function editableParagraph(block: Block): boolean {
   return ['paragraph', 'heading', 'listItem'].includes(block.type) && Array.isArray(block.runs) &&
     !!block.originalXml && simpleParagraphXml(block.originalXml) && compatibleLinkGroups(block.runs) && block.runs.every(run => !run.link || safeLinkHref(run.link.href))
@@ -609,6 +629,7 @@ const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c1700
     ...(block.list ? { list: block.list } : {}),
     paragraphStyleEditable: paragraphStyleEditable(block),
     editable: editableParagraph(block), readOnlyReason: editableParagraph(block) ? null : 'docx_object_unsupported',
+    deletable: editableParagraph(block) || coverMarkerParagraph(block),
     ...(block.type === 'table' ? { ...tableStructureAvailability(block), rowCount: block.table?.rows.length ?? 0, columnCount: block.table?.rows[0]?.length ?? 0, cells: cellXmls(block).map((row, r) => row.map((xml, c) => ({
       cellId: cellId(block, r, c), expectedObjectSha256: hash(xml), row: r, column: c,
       text: block.table?.rows[r]?.[c]?.paras.join('\n') ?? '', editable: editableTable(block) && editableCell(xml),
@@ -705,6 +726,11 @@ if (request.kind === 'inspect') {
       const sourceId = block.styleId ?? [...parsed.styles.values()].find(style => style.type === 'paragraph' && style.isDefault)?.styleId
       if (sourceId) sourceParagraphStyle(sourceId)
       return { op, block, styleId: target.styleId }
+    }
+    if (op.kind === 'deleteParagraph' && coverMarkerParagraph(block)) {
+      // 封面书签段只读但可整段删除（移除/替换已保存图库封面）。
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256'])
+      return { op, block }
     }
     if (!editableParagraph(block)) fail('paragraph_unsupported')
     if (op.kind === 'replaceParagraph') {

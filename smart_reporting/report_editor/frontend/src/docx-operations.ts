@@ -11,7 +11,7 @@ import type { SectionSettings } from '@genoffice/docx-engine'
 export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean }
 import { safeParagraphStyle, type DocxStyleInfo } from './docx-styles'
 import { restoredDocxHeaderFooterOperations } from './docx-hf'
-export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
+export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; deletable?: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
 export interface DocxSectionAnchor { sectionId: string; expectedSectionSha256: string; settings: SectionSettings }
 type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>>
@@ -62,6 +62,16 @@ function structure(node: DocxPmNode, marks = true): unknown {
     content.push(shape)
   }
   return { type: node.type, attrs: node.attrs, marks: marks ? node.marks : undefined, content }
+}
+const plainTyping = (run: DocxPmNode) => (run.marks ?? []).every(mark => mark.type === 'textStyle' && Object.values(mark.attrs ?? {}).every(value => value == null || value === false))
+/** 单元格只改文字：段落结构与属性不变；有文字的段落保持 run 格式，空段落（如新建表格的空格子）只允许新增普通文字。 */
+function cellTextEditOnly(cell: DocxPmNode, changed: DocxPmNode): boolean {
+  if (!same(structure(cell, false), structure(changed, false))) return false
+  return (cell.content ?? []).every((left, index) => {
+    const right = changed.content![index]
+    if (same(structure(left), structure(right))) return true
+    return !(left.content ?? []).some(run => run.type === 'text') && (right.content ?? []).every(run => run.type !== 'text' || plainTyping(run))
+  })
 }
 function markSequence(node: DocxPmNode): unknown[] {
   const result: unknown[] = []
@@ -251,7 +261,8 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
     const edited = after.find(item => idOf(item) === idOf(node))
     if (edited && same(node, edited) && ['spaceBefore', 'spaceAfter'].every(key => Object.is(node.attrs?.[key], edited.attrs?.[key]))) continue
     if (!edited) {
-      if (!anchor.editable || !paragraph(node)) throw new Error('只读对象不能删除')
+      // deletable：可编辑段落，或仅含图库封面隐藏书签的封面段（整段删除/替换已保存封面）。
+      if (!(anchor.deletable ?? anchor.editable) || !paragraph(node)) throw new Error('只读对象不能删除')
       ops.push({ kind: 'deleteParagraph', ...baseOp(anchor) }); continue
     }
     if (node.type === 'docTable' && edited.type === 'docTable') {
@@ -269,7 +280,7 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
           if (same(cell, changed)) continue
           const cellAnchor = anchor.cells?.[row]?.[col]
           if (!cellAnchor?.editable) throw new Error('只读单元格不能修改')
-          if (!same(structure(cell), structure(changed))) throw new Error('暂不支持修改单元格结构或样式')
+          if (!cellTextEditOnly(cell, changed)) throw new Error('暂不支持修改单元格结构或样式')
           ops.push({ kind: 'replaceCellText', blockId: anchor.blockId, cellId: cellAnchor.cellId, expectedObjectSha256: cellAnchor.expectedObjectSha256, text: (changed.content ?? []).map(textOf).join('\n') })
         }
       }
