@@ -204,10 +204,12 @@ it('preserves Insert table, image, shape and chart source actions while disablin
     const group = host.querySelector<HTMLElement>(`[aria-label="${groupName}"]`)!
     const controls = [...group.querySelectorAll<HTMLButtonElement>('[data-source-action]')]
     expect(controls.map(control => control.dataset.sourceAction)).toEqual(actions)
-    const unsupported = controls.filter(control => control.dataset.sourceAction !== 'onPickShape')
+    const unsupported = controls.filter(control => !['onPickShape', 'onInsertTable'].includes(control.dataset.sourceAction!))
     expect(unsupported.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
     expect(unsupported.every(control => control.querySelector('svg'))).toBe(true)
   }
+  // Table 已接通（行列对话框）
+  expect(host.querySelector<HTMLButtonElement>('[data-source-action="onInsertTable"]')!.disabled).toBe(false)
   // Shapes 已接通：固定源形状库 7 组 109 个预设
   const shapes = host.querySelector<HTMLSelectElement>('select[data-command="insertShape"]')!
   expect(shapes.closest('[data-source-action]')?.getAttribute('data-source-action') ?? shapes.dataset.sourceAction).toBe('onPickShape')

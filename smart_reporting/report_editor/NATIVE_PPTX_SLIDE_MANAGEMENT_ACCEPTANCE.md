@@ -19,6 +19,12 @@
 - 草稿 `resetLayouts: [来源页]`；桥接最先调用固定引擎 `resetSlideLayout`（占位符去掉显式 xfrm，回到版式/母版继承位置），同批其他修改叠加在重置后的页面上。新建页不适用；已加入重置的页不能再复制或删除（与其他待保存修改一致）。
 - 证据：`test_slides_bridge_reset_layout_restores_inherited_placeholder_geometry`（移位标题回到继承几何、文字保留，非法索引无输出）、Ribbon 单测、`new-slide` 冒烟中重置并保存。
 
+## 插入表格（固定源 Insert ▸ Table / table-insert.ts）
+
+- Insert ▸ Tables ▸ Table 打开行列对话框（默认 5 列 × 2 行，1–75），表格进入待保存清单。
+- 几何与固定源 `tableInsertSpec` 一致：宽为幻灯片 2/3 并水平居中、顶部在 10.5% 高度、每行 29.2pt；桥接按演示文稿尺寸计算后调用固定引擎 `addTable`（默认表格样式）。`addTable` 会重建页面模型，因此在其他页面修改之前执行，同页同批的文本框等修改不受影响。
+- 证据：`test_slides_bridge_inserts_table_with_pinned_geometry_alongside_other_edits`、Ribbon 单测、`new-slide` 冒烟插入 4×3 表格并用 python-pptx 回读行列。
+
 ## 插入形状（固定源 Insert ▸ Shapes / onPickShape）
 
 - Insert ▸ Illustrations ▸ Shapes 为分组选择器：固定源 `SHAPE_GALLERY_GROUPS` 7 组 109 个预设，中文名称取自固定源语言包（`components/shape-gallery-data.ts`，来源与哈希见 `SOURCE.md`）。选后复位，形状加入待保存清单（可单独撤销）。
@@ -29,7 +35,7 @@
 ## 复制幻灯片（固定源 duplicateSlide）
 
 - 草稿 `newSlides` 项为 `{ duplicateOf: 来源页 }`；桥接调用固定引擎 `duplicateSlide` 后移到末尾，再由 `order` 落位。
-- 复制的是来源页**已保存内容**：来源页同批有任何修改时前端拒绝、桥接拒绝，避免副本只带上部分待保存修改。副本在保存重开前只读。
+- 复制的是来源页**已保存内容**：桥接在任何其他修改之前创建全部新页（追加到末尾，编号不变），因此同批对来源页的修改（文字、转场、表格、形状等）只作用于来源页、不进入副本；复制时来源页已有待保存修改则前端提示先保存。副本在保存重开前只读。
 
 ## 删除幻灯片（固定源缩略图 deleteSlide）
 

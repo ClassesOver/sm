@@ -232,6 +232,12 @@ try {
     assert.equal(await shapePicker.inputValue(), '')
     await page.locator('.structure-pending li').filter({ hasText: '形状 圆角矩形' }).waitFor()
     await page.locator('.structure-pending li').filter({ hasText: '形状 箭头' }).waitFor()
+    // 插入表格（固定源 onInsertTable）：3 列 × 4 行。
+    await page.locator('[data-command="insertTable"][data-source-action="onInsertTable"]').click()
+    await page.locator('.slides-table-dialog input[name=cols]').fill('3')
+    await page.locator('.slides-table-dialog input[name=rows]').fill('4')
+    await page.locator('.slides-table-dialog button[value=ok]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '表格 4×3' }).waitFor()
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
@@ -404,6 +410,7 @@ try {
     assert.deepEqual(operation.deletedSlides, [1])
     assert.deepEqual(operation.resetLayouts, [0])
     assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
+    assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
     assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
@@ -440,7 +447,9 @@ try {
     assert.deepEqual(slides[1][1], ['Native browser formatting fixture'])
     // 副本复制的是已保存内容（不含同批新增形状）；原页多出两个形状
     assert.deepEqual(slides[2].slice(0, 2), slides[1].slice(0, 2))
-    assert.equal(slides[1][2], slides[2][2] + 2)
+    assert.equal(slides[1][2], slides[2][2] + 3)
+    const table = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[len(s.table.rows),len(s.table.columns)] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
+    assert.deepEqual(JSON.parse(table.stdout), [[4, 3]])
     const shapeXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "prst=\\"roundRect\\"" in z.read(n).decode() and "C43E1C" in z.read(n).decode()))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(shapeXml.stdout.trim(), '1')
   }

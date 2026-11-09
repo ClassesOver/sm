@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, addTable, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -34,6 +34,8 @@ type Input = {
   newSlides?: ({ layoutFrom: number } | { duplicateOf: number } | { withLayout: string })[]
   /** 固定源 Insert ▸ Shapes（onPickShape）：预设形状，几何为 96dpi 像素；线条为 1pt 黑色连接符，其他为出厂填充色。 */
   shapes?: { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }[]
+  /** 固定源 Insert ▸ Table（insertTable + table-insert.ts）：行列数；位置按固定源规格由幻灯片尺寸计算。 */
+  tables?: { slideIndex: number; rows: number; cols: number }[]
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -225,12 +227,44 @@ if (request.action === 'inspect') {
   // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
   const originalSlides = [...opened.deck.slides]
   const slideCount = originalSlides.length
+  // 新建页最先创建（副本因此复制已保存内容），逐个追加到末尾：来源页索引与新页编号（来源页数 + k）均不变；
+  // 之后所有按索引的步骤只接受来源页，order（长度 = 来源页数 + 新页数）决定最终位置。
+  const newSlideSource = (item: unknown) => item && typeof item === 'object' ? ('duplicateOf' in item ? (item as { duplicateOf: unknown }).duplicateOf : (item as { layoutFrom?: unknown }).layoutFrom) : undefined
+  const newSlides = request.newSlides ?? []
+  if (!Array.isArray(newSlides) || newSlides.length > 50) throw new Error('new_slides_invalid')
+  for (const item of newSlides) {
+    const keys = item && typeof item === 'object' ? Object.keys(item) : []
+    if (keys.length === 1 && keys[0] === 'withLayout') {
+      // 固定源 onAddSlideWithLayout：按所选版式生成占位符；插在末尾，来源页索引不变。
+      const layoutPath = (item as { withLayout: unknown }).withLayout
+      if (typeof layoutPath !== 'string' || !layouts.some(layout => layout.path === layoutPath)) throw new Error('new_slide_layout_invalid')
+      if (!insertSlideWithLayout(opened, opened.deck.slides.length - 1, layoutPath)) throw new Error('new_slide_insert_failed')
+      continue
+    }
+    const source = newSlideSource(item)
+    if (keys.length !== 1 || !['layoutFrom', 'duplicateOf'].includes(keys[0]!) || !validSlideIndex(source, slideCount)) throw new Error('new_slide_source_invalid')
+    const created = keys[0] === 'duplicateOf' ? duplicateSlide(opened, source) : insertBlankSlide(opened, source)
+    if (!created) throw new Error('new_slide_insert_failed')
+    const last = opened.deck.slides.length - 1
+    if (source + 1 !== last) moveSlide(opened, source + 1, last)
+  }
   const resetLayouts = request.resetLayouts ?? []
   if (!Array.isArray(resetLayouts) || new Set(resetLayouts).size !== resetLayouts.length || resetLayouts.some(index => !validSlideIndex(index, slideCount))) throw new Error('reset_layouts_invalid')
   for (const index of resetLayouts) {
     const reset = resetSlideLayout(opened, index)
     if (!reset) throw new Error('reset_layout_failed')
     originalSlides[index] = reset
+  }
+  // addTable 会重建页面模型，因此放在其他页面修改之前；几何同固定源 tableInsertSpec：宽 2/3 居中、顶部 10.5%、行高 29.2pt。
+  const tables = request.tables ?? []
+  if (!Array.isArray(tables) || tables.length > 100) throw new Error('tables_invalid')
+  for (const table of tables) {
+    if (!table || typeof table !== 'object' || Object.keys(table).some(key => !['slideIndex', 'rows', 'cols'].includes(key)) || !validSlideIndex(table.slideIndex, slideCount)
+      || !Number.isInteger(table.rows) || !Number.isInteger(table.cols) || table.rows < 1 || table.cols < 1 || table.rows > 75 || table.cols > 75) throw new Error('table_invalid')
+    const { cx, cy } = opened.deck.size, rowHeightEmu = Math.round(29.2 * 12700), width = Math.round(cx * 2 / 3)
+    const added = addTable(opened, table.slideIndex, { rows: table.rows, cols: table.cols, offset: { x: Math.round((cx - width) / 2), y: Math.round(cy * 0.105), cx: width, cy: table.rows * rowHeightEmu }, rowHeightsEmu: Array(table.rows).fill(rowHeightEmu) })
+    if (!added) throw new Error('table_insert_failed')
+    originalSlides[table.slideIndex] = added.slide
   }
   if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
     throw new Error('paragraph_format_invalid')
@@ -265,12 +299,8 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting]
-  const newSlideSource = (item: unknown) => item && typeof item === 'object' ? ('duplicateOf' in item ? (item as { duplicateOf: unknown }).duplicateOf : (item as { layoutFrom?: unknown }).layoutFrom) : undefined
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
-  // 固定源 duplicateSlide 复制已保存内容：被复制页同批不得有其他修改，避免副本只带上部分待保存修改。
-  const duplicated = new Set((request.newSlides ?? []).flatMap(item => item && typeof item === 'object' && 'duplicateOf' in item ? [item.duplicateOf] : []))
-  if (slideRecords.some(records => (records ?? []).some(record => duplicated.has(record.slideIndex)))) throw new Error('duplicated_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
   for (const deletion of deletions) {
@@ -338,7 +368,7 @@ if (request.action === 'inspect') {
     }
   }
   for (const image of request.images ?? []) {
-    if (!Number.isInteger(image.slideIndex) || image.slideIndex < 0 || image.slideIndex >= opened.deck.slides.length) {
+    if (!Number.isInteger(image.slideIndex) || image.slideIndex < 0 || image.slideIndex >= slideCount) {
       throw new Error('image_slide_index_invalid')
     }
     const slide = opened.deck.slides[image.slideIndex]!
@@ -357,7 +387,7 @@ if (request.action === 'inspect') {
     if (!added) throw new Error('image_format_unsupported')
   }
   for (const transition of request.transitions ?? []) {
-    if (!Number.isInteger(transition.slideIndex) || transition.slideIndex < 0 || transition.slideIndex >= opened.deck.slides.length) {
+    if (!Number.isInteger(transition.slideIndex) || transition.slideIndex < 0 || transition.slideIndex >= slideCount) {
       throw new Error('transition_slide_index_invalid')
     }
     const slide = opened.deck.slides[transition.slideIndex]!
@@ -403,7 +433,7 @@ if (request.action === 'inspect') {
     if (!deleteElement(opened, originalSlides[deletion.slideIndex]!, deletion.elementId)) throw new Error('delete_target_invalid')
   }
   for (const selection of request.slideLayouts ?? []) {
-    if (!Number.isInteger(selection.slideIndex) || selection.slideIndex < 0 || selection.slideIndex >= opened.deck.slides.length) {
+    if (!Number.isInteger(selection.slideIndex) || selection.slideIndex < 0 || selection.slideIndex >= slideCount) {
       throw new Error('layout_slide_index_invalid')
     }
     if (!layouts.some((layout) => layout.path === selection.layoutPath)) {
@@ -414,26 +444,6 @@ if (request.action === 'inspect') {
     // Layout materialization replaces the slide model; later edits must target
     // that live object while retaining the request's original slide indices.
     originalSlides[selection.slideIndex] = laidOut
-  }
-  // 新建页放在所有按来源索引寻址的步骤之后：先插在版式来源页之后（沿用其版式），
-  // 再移到末尾，保证来源页索引不变；随后 order（长度 = 来源页数 + 新页数）决定最终位置。
-  const newSlides = request.newSlides ?? []
-  if (!Array.isArray(newSlides) || newSlides.length > 50) throw new Error('new_slides_invalid')
-  for (const item of newSlides) {
-    const keys = item && typeof item === 'object' ? Object.keys(item) : []
-    if (keys.length === 1 && keys[0] === 'withLayout') {
-      // 固定源 onAddSlideWithLayout：按所选版式生成占位符；插在末尾，来源页索引不变。
-      const layoutPath = (item as { withLayout: unknown }).withLayout
-      if (typeof layoutPath !== 'string' || !layouts.some(layout => layout.path === layoutPath)) throw new Error('new_slide_layout_invalid')
-      if (!insertSlideWithLayout(opened, opened.deck.slides.length - 1, layoutPath)) throw new Error('new_slide_insert_failed')
-      continue
-    }
-    const source = newSlideSource(item)
-    if (keys.length !== 1 || !['layoutFrom', 'duplicateOf'].includes(keys[0]!) || !validSlideIndex(source, slideCount)) throw new Error('new_slide_source_invalid')
-    const created = keys[0] === 'duplicateOf' ? duplicateSlide(opened, source) : insertBlankSlide(opened, source)
-    if (!created) throw new Error('new_slide_insert_failed')
-    const last = opened.deck.slides.length - 1
-    if (source + 1 !== last) moveSlide(opened, source + 1, last)
   }
   if (newSlides.length && !request.order) throw new Error('new_slides_require_order')
   // 原始编号 = 来源页 + 新建页；删除按部件路径执行，order 用原始编号列出全部保留页。

@@ -159,3 +159,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .structure-pending li { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .structure-pending input { flex: 1 1 auto; min-width: 0; height: 26px; padding: 0 6px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); }
 .structure-pending button { width: 24px; height: 24px; flex: 0 0 24px; display: grid; place-items: center; border: 0; border-radius: var(--office-radius); background: transparent; color: var(--office-muted); cursor: pointer; }
+.slides-table-dialog { width: min(360px, calc(100vw - 32px)); border: 1px solid var(--office-border); border-radius: var(--radius-md); padding: 20px; box-shadow: var(--shadow-popover); }
+.slides-table-dialog::backdrop { background: var(--color-scrim); }
+.slides-table-dialog label { display: grid; gap: 6px; margin: 10px 0; color: var(--office-ink-2); }
+.slides-table-dialog input { min-height: 34px; padding: 4px 8px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; }
+.slides-table-dialog [role=alert] { color: var(--color-danger); min-height: 1em; }
+.slides-table-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.slides-table-actions button { min-height: 34px; padding: 0 14px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); font: inherit; cursor: pointer; }
+.slides-table-actions button[value=ok] { border-color: var(--office-accent); background: var(--office-accent); color: var(--office-chrome); }

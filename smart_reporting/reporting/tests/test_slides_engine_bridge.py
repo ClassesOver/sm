@@ -605,11 +605,16 @@ def test_slides_bridge_duplicates_saved_slide_content_and_rejects_pending_edits_
     texts = lambda slide: [element.get("text") for element in slide["elements"]]
     assert texts(reopened[2]) == texts(slides[1]) and texts(reopened[1]) == texts(slides[1])
     assert reopened[2]["layoutPath"] == slides[1]["layoutPath"]
+    # 副本复制已保存内容：同批对来源页的修改（转场、表格）只作用于来源页
+    edited = tmp_path / "edited-source.pptx"
+    _invoke({"action": "edit", "input": str(source), "output": str(edited), "edits": [],
+             "newSlides": [{"duplicateOf": 1}], "order": [*range(count + 1)],
+             "transitions": [{"slideIndex": 1, "kind": "fade"}], "tables": [{"slideIndex": 1, "rows": 2, "cols": 2}]}, tmp_path)
+    after = _invoke({"action": "inspect", "input": str(edited)}, tmp_path)["slides"]
+    assert after[1].get("transition") == "fade" and after[count].get("transition") != "fade"
+    assert sum(shape.has_table for shape in Presentation(str(edited)).slides[1].shapes) == 1
+    assert sum(shape.has_table for shape in Presentation(str(edited)).slides[count].shapes) == 0
     rejected = tmp_path / "rejected.pptx"
-    with pytest.raises(subprocess.CalledProcessError):
-        _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
-                 "newSlides": [{"duplicateOf": 1}], "order": [*range(count + 1)],
-                 "transitions": [{"slideIndex": 1, "kind": "fade"}]}, tmp_path)
     with pytest.raises(subprocess.CalledProcessError):
         _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
                  "newSlides": [{"duplicateOf": 1, "layoutFrom": 1}], "order": [*range(count + 1)]}, tmp_path)
@@ -694,3 +699,27 @@ def test_bridge_shape_allow_list_matches_frontend_gallery():
     presets = json.loads((ENGINE / "bridge/shape-presets.json").read_text(encoding="utf-8"))["presets"]
     assert presets == re.findall(r'prst: "([^"]+)"', frontend.read_text(encoding="utf-8"))
     assert len(presets) == 109
+
+
+def test_slides_bridge_inserts_table_with_pinned_geometry_alongside_other_edits(tmp_path: Path):
+    """固定源 Insert ▸ Table：rows×cols、宽 2/3 居中、顶部 10.5%、行高 29.2pt；同页其他修改不丢失；越界拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "table.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    count = len(inspected["slides"])
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)),
+             "tables": [{"slideIndex": 0, "rows": 2, "cols": 5}],
+             "textBoxes": [{"slideIndex": 0, "text": "表格旁说明", "geometry": {"x": 10, "y": 10, "width": 200, "height": 40}}]}, tmp_path)
+    presentation = Presentation(str(output))
+    frame = next(shape for shape in presentation.slides[0].shapes if shape.has_table)
+    assert (len(frame.table.rows), len(frame.table.columns)) == (2, 5)
+    cx, cy = presentation.slide_width, presentation.slide_height
+    assert abs(frame.width - round(cx * 2 / 3)) <= 5 and abs(frame.left - round((cx - frame.width) / 2)) <= 5
+    assert abs(frame.top - round(cy * 0.105)) <= 5
+    assert all(row.height == round(29.2 * 12700) for row in frame.table.rows)
+    assert any(shape.has_text_frame and shape.text == "表格旁说明" for shape in presentation.slides[0].shapes)
+    for bad in ({"slideIndex": 0, "rows": 0, "cols": 5}, {"slideIndex": 0, "rows": 2, "cols": 76}, {"slideIndex": 99, "rows": 2, "cols": 2}, {"slideIndex": 0, "rows": 2, "cols": 2, "style": "x"}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "tables": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
