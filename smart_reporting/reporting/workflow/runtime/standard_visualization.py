@@ -985,9 +985,13 @@ def finish_standard_layout(fig, policy):
                                   (ax.yaxis, policy.get("categorical_y", policy["horizontal"]))):
             if not categorical:
                 continue
-            boxes = [text.get_window_extent(renderer) for text in axis.get_ticklabels() if text.get_visible()]
+            boxes = [text.get_window_extent(renderer) for text in axis.get_ticklabels()
+                     if text.get_visible() and text.get_text()]
             if any(left.overlaps(right) for index, left in enumerate(boxes) for right in boxes[index + 1:]):
                 raise ValueError("standard_chart_layout_unresolved: 分类标签重叠，请扩大画布或减少标签密度")
+            if policy["crop"] == "canvas" and any(
+                    box.x0 < 0 or box.y0 < 0 or box.x1 > fig.bbox.width or box.y1 > fig.bbox.height for box in boxes):
+                raise ValueError("standard_chart_layout_unresolved: 分类标签超出画布，请调整边距或扩大画布")
 
 '''
 
