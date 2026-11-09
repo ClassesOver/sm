@@ -1,0 +1,27 @@
+{
+  "title": "四格式联动审计样例",
+  "periodLabel": "2026-10",
+  "organizationName": "合成验证机构",
+  "generatedByLabel": "Reporting Agent",
+  "watermarkText": "合成数据",
+  "generatedDate": "2026-11-06",
+  "sectionNumbers": [
+    "1"
+  ],
+  "sections": [
+    {
+      "code": "overview",
+      "sectionNumber": "1",
+      "title": "营业收入"
+    }
+  ],
+  "headingNumbers": [
+    {
+      "level": 2,
+      "number": "1",
+      "title": "营业收入",
+      "sectionCode": "overview",
+      "anchor": "report-section-overview"
+    }
+  ]
+}

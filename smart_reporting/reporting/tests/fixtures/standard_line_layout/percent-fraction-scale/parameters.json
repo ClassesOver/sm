@@ -1,0 +1,35 @@
+{
+  "chart_id": "percent-scales",
+  "renderer": "matplotlib",
+  "interactive_path": null,
+  "visual_form": "line",
+  "standard_form": "line",
+  "source_path": "standard.png",
+  "title": "百分比尺度独立核验",
+  "alt_text": "合成数据核验，缺失不补零。",
+  "current_period": "2026-02",
+  "comparison_type": "none",
+  "comparability": "strict",
+  "standard_label_field": "月份",
+  "standard_value_fields": [
+    "比例"
+  ],
+  "standard_canvas": {
+    "sizeMode": "fixed",
+    "width": 14,
+    "height": 8,
+    "dpi": 100
+  },
+  "standard_style": {
+    "labelRotation": 0
+  },
+  "standard_axes": {
+    "allowNulls": true
+  },
+  "standard_annotations": [
+    {
+      "kind": "values",
+      "series": "比例"
+    }
+  ]
+}

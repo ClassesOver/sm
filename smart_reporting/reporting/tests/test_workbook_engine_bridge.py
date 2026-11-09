@@ -133,3 +133,205 @@ def test_workbook_bridge_reuses_sort_structure_rules_table_pivot_and_page_setup(
     assert book['透视']._pivots[0].name == 'ByDepartment'
     assert book['透视']['B4'].value == 25
     assert book['透视']['B5'].value == 10
+
+
+def _static_image(tmp_path, *, kind='PNG', color='navy', image_id='revenue'):
+    from PIL import Image
+
+    path = tmp_path / f'{image_id}.{kind.lower()}'
+    Image.new('RGB', (120, 80), color=color).save(path, format=kind)
+    content = path.read_bytes()
+    return {
+        'imageId': image_id, 'path': str(path), 'size': len(content),
+        'sha256': hashlib.sha256(content).hexdigest(), 'sheetName': '汇总',
+        'range': 'D2:L18', 'chartId': 'revenue', 'snapshotId': 'snapshot-1',
+        'chartRevision': 'revision-1',
+        'sourceRanges': [{'sheetName': '汇总', 'range': 'A1:B2'}],
+    }
+
+
+def test_workbook_image_mapping_keeps_relative_identity_without_host_read_paths(tmp_path):
+    import json
+
+    from smart_reporting.reporting.delivery.xlsx import build_workbook
+
+    image = _static_image(tmp_path)
+    image['identityPath'] = 'reports/revision-new/chart.png'
+    source = tmp_path / 'private-source.json'
+    source.write_bytes(b'{"value":180}')
+    image['sourceFiles'] = [{'path': str(source), 'identityPath': 'reports/data/input.json',
+        'size': source.stat().st_size, 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}]
+    output = tmp_path / 'mapped.xlsx'
+    result = build_workbook(output_path=output, title='修订', period='',
+        sheets=({'name': '汇总', 'rows': [['期间', '值'], ['2026-10', 180]]},), images=(image,))
+    assert not result.issues
+    with ZipFile(output) as archive:
+        raw = archive.read('smart-reporting/source-mapping.json').decode()
+    mapping = json.loads(raw)
+    assert str(tmp_path) not in raw
+    assert mapping['images'][0]['path'] == image['identityPath']
+    assert mapping['images'][0]['sourceFiles'][0]['path'] == 'reports/data/input.json'
+    assert 'identityPath' not in raw
+
+
+def test_workbook_embeds_verified_png_jpeg_with_sources_and_formula_cache(tmp_path):
+    import json
+
+    from smart_reporting.reporting.delivery.xlsx import build_workbook, inspect_workbook
+
+    images = (_static_image(tmp_path), _static_image(tmp_path, kind='JPEG', image_id='cost'))
+    sources = {'snapshotId': 'snapshot-1', 'chartRevisions': {'revenue': 'revision-1'},
+               'cells': [{'sheetName': '汇总', 'cell': 'B2', 'datasetId': 'sales'}]}
+    output = tmp_path / 'report.xlsx'
+    result = build_workbook(output_path=output, title='汇总', period='2026-10',
+        sheets=({'name': '汇总', 'rows': [['收入', '金额'], [120, {'value': 240, 'formula': 'A2*2'}]]},),
+        source_mapping=sources, images=images)
+    assert not result.issues
+    book = load_workbook(output)
+    assert book['汇总']['B2'].value == '=A2*2'
+    assert load_workbook(output, data_only=True)['汇总']['B2'].value == 240
+    assert len(book['汇总']._images) == 2
+    assert (book['汇总']._images[0].anchor._from.col, book['汇总']._images[0].anchor._from.row) == (3, 1)
+    with ZipFile(output) as archive:
+        mapping = json.loads(archive.read('smart-reporting/source-mapping.json'))
+        assert mapping['sources'] == sources
+        assert len(mapping['images']) == 2
+        assert not any(name.startswith('xl/charts/') for name in archive.namelist())
+        for source, stored in zip(images, mapping['images']):
+            assert archive.read(stored['mediaPart']) == __import__('pathlib').Path(source['path']).read_bytes()
+            assert stored['snapshotId'] == 'snapshot-1'
+            assert stored['chartRevision'] == 'revision-1'
+            assert stored['sourceRanges'] == source['sourceRanges']
+            assert stored['range'] == 'D2:L18'
+            assert stored['sha256'] == source['sha256']
+    inspected = inspect_workbook(output.read_bytes())
+    assert inspected['sourceMapping'] == mapping
+    assert len(inspected['images']) == 2
+
+
+def test_workbook_static_image_replacement_preserves_data_and_source_mapping(tmp_path):
+    import json
+
+    from smart_reporting.reporting.delivery.xlsx import build_workbook, inspect_workbook, patch_workbook
+
+    image = _static_image(tmp_path)
+    output = tmp_path / 'report.xlsx'
+    sources = {'snapshotId': 'snapshot-1', 'cells': [{'cell': 'A2', 'datasetId': 'sales'}]}
+    build_workbook(output_path=output, title='汇总', period='',
+        sheets=({'name': '汇总', 'rows': [['收入'], [120, {'value': 240, 'formula': 'A2*2'}]]},),
+        source_mapping=sources, images=(image,))
+    original = output.read_bytes()
+    replacement = _static_image(tmp_path, kind='JPEG', color='teal')
+    replacement['chartRevision'] = 'revision-2'
+    edited = patch_workbook(original, [{'kind': 'applyStaticImages', 'images': [replacement]}])
+    assert load_workbook(BytesIO(edited))['汇总']['A2'].value == 120
+    assert load_workbook(BytesIO(edited))['汇总']['B2'].value == '=A2*2'
+    assert load_workbook(BytesIO(edited), data_only=True)['汇总']['B2'].value == 240
+    assert len(load_workbook(BytesIO(edited))['汇总']._images) == 1
+    with ZipFile(BytesIO(edited)) as archive:
+        mapping = json.loads(archive.read('smart-reporting/source-mapping.json'))
+        assert mapping['sources'] == sources
+        assert mapping['images'][0]['chartRevision'] == 'revision-2'
+        assert archive.read(mapping['images'][0]['mediaPart']) == __import__('pathlib').Path(replacement['path']).read_bytes()
+        assert len([name for name in archive.namelist() if name.startswith('xl/media/') and not name.endswith('/')]) == 1
+    assert inspect_workbook(original)['images'][0]['sha256'] == image['sha256']
+
+
+def test_workbook_rejects_changed_invalid_and_foreign_image_without_losing_cells(tmp_path):
+    from pathlib import Path
+
+    from smart_reporting.reporting.delivery.xlsx import build_workbook, inspect_workbook, patch_workbook
+
+    image = _static_image(tmp_path)
+    output = tmp_path / 'report.xlsx'
+    sources = {'snapshotId': 'snapshot-1'}
+    build_workbook(output_path=output, title='汇总', period='',
+        sheets=({'name': '汇总', 'rows': [['收入'], [120]]},), source_mapping=sources, images=(image,))
+    original = output.read_bytes()
+    Path(image['path']).write_bytes(b'not-an-image')
+    edited = patch_workbook(original, [{'kind': 'applyStaticImages', 'images': [image]}])
+    assert inspect_workbook(edited)['images'][0]['sha256'] == image['sha256']
+    assert load_workbook(BytesIO(edited))['汇总']['A2'].value == 120
+    invalid = {**image, 'size': 12, 'sha256': hashlib.sha256(b'not-an-image').hexdigest()}
+    foreign = {**_static_image(tmp_path, image_id='foreign'), 'snapshotId': 'snapshot-other'}
+    result = build_workbook(output_path=tmp_path / 'rejected.xlsx', title='汇总', period='',
+        sheets=({'name': '汇总', 'rows': [['收入'], [120]]},), source_mapping=sources, images=(invalid, foreign))
+    assert len(result.issues) == 2
+    assert {issue['imageId'] for issue in result.issues} == {'revenue', 'foreign'}
+    assert not inspect_workbook((tmp_path / 'rejected.xlsx').read_bytes())['images']
+    assert load_workbook(tmp_path / 'rejected.xlsx')['汇总']['A2'].value == 120
+
+
+def test_workbook_rejects_changed_image_source_file_identity(tmp_path):
+    from smart_reporting.reporting.delivery.xlsx import build_workbook, inspect_workbook
+
+    image = _static_image(tmp_path)
+    source = tmp_path / 'data.csv'
+    source.write_bytes(b'value\n120\n')
+    image['sourceFiles'] = [{'path': str(source), 'size': len(source.read_bytes()),
+                             'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}]
+    source.write_bytes(b'value\n150\n')
+    output = tmp_path / 'report.xlsx'
+    result = build_workbook(output_path=output, title='汇总', period='',
+        sheets=({'name': '汇总', 'rows': [['收入'], [120]]},), images=(image,))
+    assert result.issues and result.issues[0]['imageId'] == 'revenue'
+    assert not inspect_workbook(output.read_bytes())['images']
+
+
+def test_workbook_patch_rejected_image_exposes_issue_and_retains_original(tmp_path):
+    from pathlib import Path
+
+    from smart_reporting.reporting.delivery.xlsx import build_workbook, inspect_workbook, patch_workbook
+
+    image = _static_image(tmp_path)
+    output = tmp_path / 'report.xlsx'
+    build_workbook(output_path=output, title='汇总', period='',
+        sheets=({'name': '汇总', 'rows': [['收入'], [120]]},), images=(image,))
+    Path(image['path']).write_bytes(b'changed-after-render')
+    edited = patch_workbook(output.read_bytes(), [{'kind': 'applyStaticImages', 'images': [image]}])
+    inspected = inspect_workbook(edited)
+    assert inspected['sourceMapping']['imageIssues'][0]['imageId'] == 'revenue'
+    assert inspected['images'][0]['sha256'] == image['sha256']
+
+
+def test_workbook_node_rechecks_image_and_source_files_after_python_validation(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from smart_reporting.reporting.delivery import xlsx
+
+    original_invoke = xlsx._invoke
+    for changed in ('image', 'source'):
+        image = _static_image(tmp_path)
+        source = tmp_path / 'data.csv'
+        source.write_bytes(b'value\n120\n')
+        image['sourceFiles'] = [{'path': str(source), 'size': len(source.read_bytes()),
+                                'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}]
+        def replace_then_invoke(payload):
+            if payload['kind'] == 'create':
+                Path(image['path'] if changed == 'image' else source).write_bytes(b'changed-after-validation')
+            return original_invoke(payload)
+        monkeypatch.setattr(xlsx, '_invoke', replace_then_invoke)
+        output = tmp_path / f'{changed}.xlsx'
+        result = xlsx.build_workbook(output_path=output, title='汇总', period='',
+            sheets=({'name': '汇总', 'rows': [['收入'], [120]]},), images=(image,))
+        assert result.issues[0]['message'] == 'workbook_image_identity_changed'
+        assert not xlsx.inspect_workbook(output.read_bytes())['images']
+        assert load_workbook(output)['汇总']['A2'].value == 120
+
+
+def test_workbook_image_new_snapshot_preserves_existing_cell_source_mapping(tmp_path):
+    from smart_reporting.reporting.delivery.xlsx import build_workbook, inspect_workbook, patch_workbook
+
+    image = _static_image(tmp_path)
+    output = tmp_path / 'report.xlsx'
+    cells = [{'sheetName': '汇总', 'cell': 'A2', 'datasetId': 'sales'}]
+    build_workbook(output_path=output, title='汇总', period='',
+        sheets=({'name': '汇总', 'rows': [['收入'], [120]]},),
+        source_mapping={'snapshotId': 'snapshot-1', 'cells': cells}, images=(image,))
+    revised = {**_static_image(tmp_path, color='teal'), 'snapshotId': 'snapshot-2', 'chartRevision': 'revision-2'}
+    edited = patch_workbook(output.read_bytes(), [{'kind': 'applyStaticImages', 'images': [revised],
+        'sourceMapping': {'snapshotId': 'snapshot-2', 'chartRevisions': {'revenue': 'revision-2'}}}])
+    inspected = inspect_workbook(edited)
+    assert inspected['sourceMapping']['sources']['cells'] == cells
+    assert inspected['images'][0]['snapshotId'] == 'snapshot-2'
+    assert inspected['images'][0]['chartRevision'] == 'revision-2'

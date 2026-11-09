@@ -3493,7 +3493,7 @@ async def test_visualization_submit_keeps_preflight_plot_data(monkeypatch):
         ChartInputMaterialization,
     )
 
-    chart = SimpleNamespace(chart_id="chart-1", data_bindings=())
+    chart = SimpleNamespace(chart_id="chart-1", data_bindings=(), visual_form="line")
     plan = SimpleNamespace(
         charts=(chart,),
         model_dump=lambda **_kwargs: {"charts": [{"chartId": "chart-1", "title": "收入"}]},

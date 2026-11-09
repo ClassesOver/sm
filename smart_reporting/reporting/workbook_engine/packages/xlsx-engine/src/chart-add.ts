@@ -2,7 +2,7 @@
 /// branch): persists brand-new chart parts — a chart part, a drawing part
 /// (created or extended), the worksheet/drawing relationships, and the
 /// [Content_Types].xml overrides. The upstream shape/image branches are not
-/// ported (no browser op consumes them yet).
+/// ported. The static report-bitmap extension below reuses this plumbing.
 
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { createBufferEntrySource, assemblePackage, type EntrySource, type MutationPlan } from './zip'
@@ -843,4 +843,67 @@ async function registerContentTypeOverride(
       `ContentType="${escapeXmlAttribute(contentType)}"/>` +
       xml.slice(closeAt),
   )
+}
+
+/** Static bitmap addition; shares the existing drawing/relationship/package pipeline. */
+export interface StaticImageAddition {
+  readonly worksheetSheetName: string
+  readonly anchor: DrawingAnchor
+  readonly imageId: string
+  readonly bytes: Uint8Array
+  readonly contentType: 'image/png' | 'image/jpeg'
+  /** A trusted existing media part replaces pixels without changing the anchor. */
+  readonly replaceMediaPart?: string | undefined
+}
+
+export async function applyStaticImage(
+  sourceBytes: Uint8Array, addition: StaticImageAddition,
+): Promise<{ bytes: Uint8Array; mediaPart: string }> {
+  const source = await createBufferEntrySource(sourceBytes)
+  const overlay = new Map<string, string>()
+  const addedEntries: string[] = []
+  const touchedEntries = new Set<string>()
+  const workbookXml = await source.readText('xl/workbook.xml')
+  const sheet = parseSheetElements(workbookXml).find(entry => entry.name === addition.worksheetSheetName)
+  if (!sheet?.relationshipId) throw new Error('workbook_image_sheet_missing')
+  const worksheetPath = await resolveWorksheetPath(source, sheet.relationshipId)
+  const mediaPart = addition.replaceMediaPart ?? await allocatePartPath(
+    source, overlay, 'xl/media/image', addition.contentType === 'image/png' ? '.png' : '.jpeg',
+  )
+  if (addition.replaceMediaPart) {
+    if (!/^xl\/media\/image\d+\.(png|jpeg)$/.test(mediaPart) || !await source.has(mediaPart)) {
+      throw new Error('workbook_image_replacement_invalid')
+    }
+  } else {
+    const drawing = await ensureSheetDrawing(source, overlay, addedEntries, worksheetPath, touchedEntries)
+    const relsPath = relsPathFor(drawing.path)
+    if (!await hasPart(source, overlay, relsPath)) addedEntries.push(relsPath)
+    const relId = await appendRelationship(source, overlay, relsPath,
+      'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image',
+      relativeTarget(drawing.path, mediaPart))
+    await appendAnchor(source, overlay, drawing.path, addition.anchor, shapeId =>
+      '<xdr:pic><xdr:nvPicPr>' +
+      `<xdr:cNvPr id="${shapeId}" name="${escapeXmlAttribute(addition.imageId)}"/>` +
+      '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>' +
+      '<xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"' +
+      ` r:embed="${escapeXmlAttribute(relId)}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>` +
+      '<xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>')
+    touchedEntries.add(drawing.path)
+    touchedEntries.add(relsPath)
+    addedEntries.push(mediaPart)
+  }
+  // Replacements can change PNG ↔ JPEG: content type follows the actual bytes.
+  let types = await readPart(source, overlay, CONTENT_TYPES_PATH)
+  types = types.replace(new RegExp(`<Override\\b[^>]*PartName="/${mediaPart}"[^>]*/>`), '')
+  overlay.set(CONTENT_TYPES_PATH, types)
+  await registerContentTypeOverride(source, overlay, mediaPart, addition.contentType)
+  touchedEntries.add(CONTENT_TYPES_PATH)
+  touchedEntries.add(mediaPart)
+  const mutation = await assemblePackage(sourceBytes, {
+    replaced: new Map([...overlay].filter(([path]) => !addedEntries.includes(path))),
+    added: new Map([...overlay].filter(([path]) => addedEntries.includes(path))),
+    addedBinary: new Map([[mediaPart, addition.bytes]]), removedEntries: [], addedEntries,
+    touchedEntries: [...touchedEntries],
+  })
+  return { bytes: mutation.buffer, mediaPart }
 }

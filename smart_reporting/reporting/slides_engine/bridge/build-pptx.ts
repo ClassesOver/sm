@@ -1,9 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
 import { buildDeckPptx, type DeckSpec } from '../packages/pipelines/src/slides/deck-spec.ts'
 import { SPEC_CANVAS_H } from '../packages/pipelines/src/slides/page-spec.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 import { openPptx, savePptx, setSlideNotes } from '@genoffice/pptx-engine'
-import { HeuristicMetrics, layoutText } from '@genoffice/pptx-render'
+import { HeuristicMetrics, imageAspect, layoutText } from '@genoffice/pptx-render'
 
 type Input = {
   output: string
@@ -39,6 +40,17 @@ const inputPath = process.argv[2]
 if (!inputPath) throw new Error('input JSON path required')
 const input = JSON.parse(await readFile(inputPath, 'utf8')) as Input
 const colors = palettes[input.theme]
+const chartUrls = input.slides.map((slide) => slide.chartPath ? pathToFileURL(slide.chartPath).href : undefined)
+const charts = new Map<string, { bytes: Buffer; ext: string; aspect: number } | null>()
+for (const url of new Set(chartUrls)) {
+  if (!url) continue
+  const file = new URL(url)
+  const bytes = await readFile(file).catch(() => null)
+  const ext = /\.jpe?g$/i.test(file.pathname) ? 'jpg' : 'png'
+  charts.set(url, bytes ? {
+    bytes, ext, aspect: imageAspect(`data:image/${ext};base64,${bytes.subarray(0, 64 * 1024).toString('base64')}`),
+  } : null)
+}
 const pages: DeckSpec['pages'] = [
   {
     background: colors.background,
@@ -71,21 +83,19 @@ const pages: DeckSpec['pages'] = [
       }),
       text(1090, 660, 100, 24, `${index + 2}`, 10, colors.muted),
     ]
-    if (slide.chartPath) {
-      elements.push({ type: 'image' as const, url: `file://${slide.chartPath}`, x: 700, y: 220, w: 460, h: 320 })
+    const url = chartUrls[index]
+    if (url) {
+      const aspect = charts.get(url)?.aspect ?? 460 / 320
+      const w = Math.min(460, 320 * aspect)
+      const h = w / aspect
+      elements.push({ type: 'image' as const, url, x: 700 + (460 - w) / 2, y: 220 + (320 - h) / 2, w, h })
     }
     return { background: colors.background, elements }
   }),
 ]
 
 const deck = await buildDeckPptx({ pages }, {
-  fetchImage: async (url) => {
-    if (!url.startsWith('file://')) return null
-    const path = decodeURIComponent(new URL(url).pathname)
-    const bytes = new Uint8Array(await readFile(path))
-    const ext = path.toLowerCase().endsWith('.jpg') || path.toLowerCase().endsWith('.jpeg') ? 'jpg' : 'png'
-    return { bytes, ext }
-  },
+  fetchImage: async (url) => charts.get(url) ?? null,
 })
 const opened = await openPptx(deck.bytes)
 setSlideNotes(opened, 0, `报告期间：${input.period}`)

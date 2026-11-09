@@ -1704,3 +1704,120 @@ async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, mon
         response = await client.get(result["xlsx"]["downloadUrl"])
     assert response.status_code == 200
     assert hashlib.sha256(response.content).hexdigest() == result["xlsx"]["sha256"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+@pytest.mark.parametrize('fault', [None, 'record', 'manifest', 'validation', 'persistence', 'office_postwrite'])
+async def test_data_export_service_keeps_downloads_and_registers_common_revision(tmp_path, monkeypatch, fault, anyio_backend):
+    from smart_reporting.report_editor import data_revision_exports as module
+    from smart_reporting.reporting.delivery import office_engine
+    from smart_reporting.reporting.delivery.publishing import ReportDownloadScope
+    from smart_reporting.reporting.tests.test_report_data_revision_service import service_case
+
+    async def run_local(func, **kwargs):
+        return func(**kwargs)
+
+    monkeypatch.setattr(office_engine, 'run_office_engine', run_local)
+
+    service, context, repository, files, editor = service_case()
+    context.scope.update(database='test', companyId='company-1', sessionId='session-1')
+    # 编辑上下文的摘要受作用域影响；内存恢复器及状态均共享该已授权上下文。
+    repository.state.payload['reportEditorContexts']['1'] = context.model_dump(mode='json', by_alias=True)
+    snapshot = await service.freeze(context)
+    editor.workspace_registry.get = lambda thread: SimpleNamespace(root=tmp_path)
+    grants = InMemoryDownloadGrantRepository()
+    artifacts = InMemoryReportArtifactRepository()
+
+    async def chunks(thread, path, **kwargs):
+        yield files[path]
+
+    async def read_regular(thread, path, **kwargs):
+        return files[path]
+
+    editor.workspace.aiter_regular_file_chunks = chunks
+    editor.workspace.read_limited_regular_file = read_regular
+    editor.workspace.normalize_path = ReportingWorkspaceRouter.normalize_path
+    editor.artifact_persistence = ReportArtifactPersistenceService(artifacts, editor.workspace)
+    if fault == 'persistence':
+        async def fail_persist(**kwargs):
+            raise RuntimeError('persistence unavailable')
+        editor.artifact_persistence.persist_available = fail_persist
+    editor.download_grants = ReportDownloadGrantService(grants)
+    editor.public_base_url = 'http://test'
+    old_token, _ = await editor.download_grants.issue(
+        scope=ReportDownloadScope('test', 'user-1', 'company-1', 'session-1', 'thread-1', context.workflow_run_id),
+        report_id=context.report_id, revision=1, pdf_path='reports/original.pdf',
+        pdf_size=1, pdf_sha256='a' * 64,
+    )
+    original_apply = repository.apply
+
+    async def apply(run_id, command, **kwargs):
+        if fault == 'record' and command.name == 'record_report_data_export':
+            raise RuntimeError('record unavailable')
+        return await original_apply(run_id, command, **kwargs)
+
+    repository.apply = apply
+    original_write = editor.workspace.awrite_bytes
+
+    async def write(thread, path, raw, **kwargs):
+        if fault == 'manifest' and path.endswith('/export-manifest.json'):
+            raise RuntimeError('manifest unavailable')
+        return await original_write(thread, path, raw, **kwargs)
+
+    editor.workspace.awrite_bytes = write
+
+    def render(**kwargs):
+        refs = {}
+        for label, suffix in [('pdf', 'pdf'), ('word', 'docx'), ('pptx', 'pptx'), ('xlsx', 'xlsx')]:
+            raw = f'{label} snapshot={snapshot["snapshotId"]}'.encode()
+            path = kwargs['output_root'] + '/report.' + suffix
+            files[path] = raw
+            refs[label] = {'path': path, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+        return {'snapshotId': snapshot['snapshotId'],
+            'chartRevisions': {key: chart['chartRevision'] for key, chart in snapshot['charts'].items()},
+            'artifacts': refs, 'validation': {'ok': fault != 'validation', 'issues': [
+                {'code': 'test_validation_failed', 'message': '验收失败'}
+            ] if fault == 'validation' else []}}
+
+    monkeypatch.setattr(module, 'render_data_revision_formats', render)
+    if fault == 'office_postwrite':
+        render_formats = module.render_data_revision_formats
+        def office_postwrite(**kwargs):
+            result = render_formats(**kwargs)
+            result['validation'] = {'ok': False, 'issues': [
+                {'code': 'report_data_pptx_render_failed', 'message': 'PPTX写入后回执失败，保留实际文件。'},
+                {'code': 'report_data_xlsx_render_failed', 'message': 'XLSX写入后回执失败，保留实际文件。'},
+            ]}
+            return result
+        monkeypatch.setattr(module, 'render_data_revision_formats', office_postwrite)
+    first = await service.export(context, snapshot['snapshotId'])
+    second = await service.export(context, snapshot['snapshotId'])
+    assert first['snapshotId'] == second['snapshotId'] == snapshot['snapshotId']
+    assert first['exportId'] != second['exportId']
+    assert second['revision'] > first['revision']
+    assert all(first[label]['downloadUrl'].startswith('http://test/reports/v1/download/') for label in ['pdf', 'word', 'pptx', 'xlsx'])
+    assert all('path' not in first[label] for label in ['pdf', 'word', 'pptx', 'xlsx'])
+    assert len(artifacts.records) == (0 if fault == 'persistence' else 8)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        editor.download_grants, artifacts, workspace_service=editor.workspace,
+    )))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        for label in ['pdf', 'word', 'pptx', 'xlsx']:
+            response = await client.get(first[label]['downloadUrl'])
+            assert response.status_code == 200
+            assert response.content == f'{label} snapshot={snapshot["snapshotId"]}'.encode()
+    assert (await editor.download_grants.lookup(old_token)).revision == 1
+    first_token = first['pdf']['downloadUrl'].rsplit('/', 1)[-1]
+    assert (await editor.download_grants.lookup(first_token)).revision == first['revision']
+    assert await service.read(context, snapshot['snapshotId']) == snapshot
+    if fault:
+        assert first['validation']['ok'] is False and first['validation']['issues']
+    if fault not in {'record', 'manifest'}:
+        history = (await service._history(context))['exports']
+        assert set(history) == {first['exportId'], second['exportId']}
+        manifest = json.loads(files[history[first['exportId']]['manifest']['path']])
+        assert manifest['snapshotId'] == snapshot['snapshotId']
+        assert manifest['chartRevisions'] == first['chartRevisions']
+        assert set(manifest['artifacts']) == {'pdf', 'word', 'pptx', 'xlsx'}

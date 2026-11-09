@@ -53,6 +53,7 @@ from .report_editor import (
     create_report_workbook_ai_service,
     create_report_workbook_editor_router,
 )
+from .report_editor.data_revisions import ReportDataRevisionService
 from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
 from .report_editor.slides_chart_ai import ReportSlidesChartAIService
 from .reporting.agent import create_report_agent
@@ -337,6 +338,7 @@ report_slides_chart_ai = (
     ReportSlidesChartAIService(report_slides_editor, chart_ai=report_editor_chart_ai)
     if report_editor_chart_ai is not None else None
 )
+report_data_revisions = ReportDataRevisionService(editor=report_editor, chart_service=report_editor_chart_ai)
 report_editor_table_ai = None
 if settings.report_editor_table_ai_enabled:
     report_editor_table_ai = create_report_editor_table_ai_service(
@@ -401,6 +403,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             editor=report_editor,
             ai=report_editor_ai,
             chart_ai=report_editor_chart_ai,
+            data_revisions=report_data_revisions,
             table_ai=report_editor_table_ai,
             cookie_secure=bool(
                 settings.report_public_base_url
