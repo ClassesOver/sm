@@ -1,3 +1,8 @@
+import { applyParagraphBorders, paragraphBorders } from './docx-borders'
+import { applyParagraphHighlight, highlightTarget, paragraphHighlight } from './docx-highlight'
+import { applyParagraphShading, paragraphShading } from './docx-shading'
+import { createParagraphStyleControl } from './docx-styles'
+import type { DocxViewCommands } from './docx-view'
 import { paragraphVerticalAlign, toggleParagraphVerticalAlign, verticalAlignTarget } from './docx-vertical'
 import { TABLE_ACTIONS, type DocxTableCommands } from './docx-tables'
 import { createRoot } from 'react-dom/client'
@@ -5,10 +10,13 @@ import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
+import { closeHistory } from '@tiptap/pm/history'
 import { DocxHomeSource } from './docx-home-source'
+import { createDocxPainter, docxClipboardCopy, docxClipboardCut, docxClipboardPaste, type DocxPasteMode } from './docx-clipboard'
 import type { DocxAnchor } from './docx-operations'
 import { DocxInsertSource } from './docx-insert-source'
 import { DocxLayoutSource } from './docx-layout-source'
+import { DocxHeaderFooterSource, type DocxHeaderFooterController } from './docx-hf-source'
 import type { SectionSettings } from '@genoffice/docx-engine'
 import { effectiveBidi, setSelectionAlign } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/direction'
 
@@ -21,7 +29,6 @@ const tabs = [
   { id: 'headerFooter', label: '页眉和页脚', contextual: true },
 ]
 const migrating = '迁移中：当前 DOCX 保存协议不支持此命令'
-const spacingUnavailable = 'DOCX 段前、段后和行距写回协议尚未接入'
 const tableUnavailable = 'DOCX 表格操作尚未接入严格写回协议'
 const pendingGroups: Record<string, [string, string[]][]> = {
   file: [['文件', ['打开', '保存', '另存为']]],
@@ -31,7 +38,7 @@ const pendingGroups: Record<string, [string, string[]][]> = {
   references: [['Zotero', ['Zotero']], ['目录', ['目录', '更新目录']], ['脚注', ['插入脚注', '插入尾注']], ['引文与索引', ['插入引文', '书目', '题注', '索引']]],
   mailings: [['创建', ['信封', '标签']], ['开始邮件合并', ['开始邮件合并', '选择收件人', '编辑收件人列表']], ['编写和插入域', ['突出显示合并域', '地址块', '问候语', '插入合并域']], ['预览结果', ['预览结果', '查找收件人', '检查错误']], ['完成', ['完成并合并']]],
   review: [['校对', ['编辑器', '拼写检查']], ['语言', ['翻译']], ['批注', ['新建批注', '显示批注']], ['修订', ['修订', '显示标记', '接受', '拒绝', '上一条', '下一条']], ['保护', ['比较', '保护文档']]],
-  view: [['视图', ['页面视图', 'Web 版式', '大纲', '阅读视图', '分页预览']], ['缩放', ['缩小', '放大', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
+  view: [['视图', ['页面视图', 'Web 版式', '大纲', '阅读视图', '分页预览']], ['缩放', ['缩放', '缩小', '放大', '100%', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
   tableDesign: [['表格样式', ['无样式', '表格样式']], ['底纹', ['单元格底纹']], ['边框', ['所有框线', '外侧框线', '内侧框线', '边框颜色', '边框粗细']]],
   tableLayout: [['删除', ['删除表格']], ['行和列', ['上方插入', '下方插入', '左侧插入', '右侧插入']], ['合并', ['合并单元格', '拆分单元格']], ['行列操作', ['删除行', '删除列']], ['对齐方式', ['顶端对齐', '垂直居中', '底端对齐']], ['单元格大小', ['行高', '列宽']], ['表格数据', ['表格属性']]],
   pictureFormat: [['调整', ['替换图片', '删除背景', '颜色', '透明度']], ['排列', ['位置', '环绕文字', '上移一层', '下移一层', '旋转', '裁剪']], ['大小', ['高度', '宽度', '重置大小']]],
@@ -107,7 +114,7 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands): HTMLElement {
+  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void; label?: string; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController): HTMLElement {
   const ribbon = document.createElement('div')
   ribbon.className = 'ribbon docx-ribbon'
   const tablist = document.createElement('nav')
@@ -120,6 +127,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const layout = document.createElement('div')
   let layoutRoot: ReturnType<typeof createRoot> | undefined
   let layoutParagraph: HTMLElement | undefined
+  let focusedSpacingInput: HTMLInputElement | undefined
+  const headerFooterPanel = document.createElement('div')
+  let headerFooterRoot: ReturnType<typeof createRoot> | undefined
   body.className = 'ribbon-body'
   body.setAttribute('role', 'tabpanel')
   const selectedParagraph = () => {
@@ -186,15 +196,94 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     label.append(title, input, unit)
     return label
   }
+  // Only anchored top-level paragraphs are represented by setParagraphSpacing.
+  const spacingTargets = () => {
+    const { from, to } = editor.state.selection
+    const targets: { pos: number; node: NonNullable<ReturnType<typeof selectedParagraph>>['node']; anchor: DocxAnchor }[] = []
+    let unsupported = false
+    if (from === to) {
+      const current = selectedParagraph()
+      if (!current || editor.state.selection.$from.depth !== 1) return []
+      const anchor = anchors.find(item => item.docxIndex === current.node.attrs.docxIndex)
+      const sameIndexCount = editor.state.doc.content.content.filter(node => node.attrs.docxIndex === current.node.attrs.docxIndex).length
+      if (!anchor?.editable || sameIndexCount !== 1 || !anchor.blockId || !anchor.expectedObjectSha256) return []
+      return [{ ...current, anchor }]
+    }
+    editor.state.doc.nodesBetween(from, to, (node, pos, parent) => {
+      if (parent !== editor.state.doc) return false
+      // A range ending at the next paragraph's text offset 0 does not include it.
+      if (pos + 1 === to && from < pos) return false
+      const anchor = anchors.find(item => item.docxIndex === node.attrs.docxIndex)
+      const sameIndexCount = editor.state.doc.content.content.filter(item => item.attrs.docxIndex === node.attrs.docxIndex).length
+      if (!['docParagraph', 'docHeading', 'docListItem'].includes(node.type.name) || !anchor?.editable || sameIndexCount !== 1
+        || !anchor.blockId || !anchor.expectedObjectSha256) unsupported = true
+      else targets.push({ pos, node, anchor })
+      return false
+    })
+    return unsupported ? [] : targets
+  }
   const spacingField = (action: string, title: string) => {
     const label = document.createElement('label')
     label.className = 'layout-num'
     const caption = document.createElement('span')
     caption.textContent = title
     const input = document.createElement('input')
-    input.type = 'number'; input.disabled = true; input.value = '0'
+    input.type = 'number'; input.inputMode = 'decimal'; input.step = '0.05'; input.min = '0'; input.max = '720'
     input.dataset.action = action; input.setAttribute('aria-label', `${title}（pt）`)
-    input.title = spacingUnavailable; input.setAttribute('aria-description', spacingUnavailable)
+    const valueKey = action === 'space-before-value' ? 'spaceBefore' : 'spaceAfter'
+    const autoKey = valueKey === 'spaceBefore' ? 'spaceBeforeAuto' : 'spaceAfterAuto'
+    const sync = (force = false) => {
+      const targets = spacingTargets()
+      const first = targets[0]?.node.attrs
+      const mixed = targets.some(({ node }) => node.attrs[valueKey] !== first?.[valueKey] || node.attrs[autoKey] !== first?.[autoKey])
+      const automatic = first?.[autoKey] === true
+      const value = first?.[valueKey]
+      if (force || document.activeElement !== input) {
+        input.value = mixed || automatic || value == null ? '' : String(Number(value) / 20)
+        input.placeholder = mixed ? '混合' : automatic ? '自动' : '继承'
+        input.dataset.spacingState = mixed ? 'mixed' : automatic ? 'auto' : value == null ? 'inherited' : 'explicit'
+      }
+      input.disabled = !editable || !editor.isEditable || !targets.length
+      input.title = input.disabled ? '请选择已有可编辑正文段落；当前文档可能只读或正在保存' : `${title}（0–720 pt，精度 0.05 pt；空输入不修改）`
+    }
+    sync()
+    input.addEventListener('docx-spacing-refresh', () => sync())
+    let captured: { doc: typeof editor.state.doc; targets: ReturnType<typeof spacingTargets> } | undefined
+    input.addEventListener('focus', () => {
+      if (editable && editor.isEditable && !input.disabled) {
+        focusedSpacingInput = input
+        captured = { doc: editor.state.doc, targets: spacingTargets().map(target => ({ ...target, anchor: { ...target.anchor } })) }
+      }
+    })
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); captured = undefined; input.blur() }
+      if (event.key === 'Enter') { event.preventDefault(); input.blur() }
+    })
+    input.addEventListener('blur', event => {
+      const saved = captured
+      captured = undefined
+      if (saved?.targets.length && editable && editor.isEditable && !input.disabled && input.value.trim() !== '' && editor.state.doc === saved.doc) {
+        const points = Number(input.value)
+        const rawTwips = points * 20
+        const twips = Math.round(rawTwips)
+        const validTargets = saved.targets.every(({ pos, node, anchor }) => {
+          const current = anchors.find(item => item.docxIndex === anchor.docxIndex)
+          return editor.state.doc.nodeAt(pos) === node && current?.editable && current.blockId === anchor.blockId
+            && current.expectedObjectSha256 === anchor.expectedObjectSha256
+        })
+        if (Number.isFinite(points) && points >= 0 && points <= 720 && Math.abs(rawTwips - twips) < 1e-8 && validTargets) {
+          const tr = closeHistory(editor.state.tr)
+          for (const { pos, node } of saved.targets) if (node.attrs[valueKey] !== twips || node.attrs[autoKey] != null) {
+            tr.setNodeMarkup(pos, undefined, { ...node.attrs, [valueKey]: twips, [autoKey]: null })
+          }
+          if (tr.docChanged) editor.view.dispatch(tr)
+        }
+      }
+      // Refresh invalid/empty input as well; never retain a stale display after blur.
+      sync(true)
+      focusedSpacingInput = undefined
+      if (!event.relatedTarget) editor.commands.focus()
+    })
     const unit = document.createElement('span')
     unit.className = 'layout-unit'; unit.textContent = 'pt'
     label.append(caption, input, unit)
@@ -222,19 +311,23 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         command.type = 'button'
         command.className = 'rb-icon docx-ribbon-command'
         const structure = !!TABLE_ACTIONS[actionId]
-        const reason = structure && tableCommands ? (!editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(actionId)) : actionId ? tableUnavailable : migrating
-        const available = structure && tableCommands ? reason === null : !actionId && id === 'view' && label === '分页预览' && !!onPaginationPreview
+        const view = id === 'view' ? viewCommands : undefined
+        const reason = view ? view.reason(label) : structure && tableCommands ? (!editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(actionId)) : actionId ? tableUnavailable : migrating
+        const available = view ? reason === null : structure && tableCommands ? reason === null : !actionId && id === 'view' && label === '分页预览' && !!onPaginationPreview
         command.disabled = !available
         command.textContent = label
         command.title = available ? label : `${label}：${reason}`
         command.setAttribute('aria-label', available ? label : `${label}，${reason}`)
         if (!available) command.setAttribute('aria-description', reason ?? migrating)
         if (actionId) command.dataset.action = actionId
-        else if (available) command.dataset.action = 'pagination-preview'
+        else if (available) command.dataset.action = view && label !== '分页预览' ? `view-${label}` : 'pagination-preview'
         if (structure && tableCommands) {
           command.dataset.sourceAction = actionId
           command.addEventListener('mousedown', event => event.preventDefault())
           command.addEventListener('click', () => tableCommands.run(actionId))
+        } else if (view && available) {
+          command.dataset.sourceAction = label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
+          command.addEventListener('click', () => view.run(label))
         } else if (available) command.addEventListener('click', onPaginationPreview!)
         items.append(command)
       }
@@ -258,7 +351,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'insert') { body.replaceChildren(insert); body.setAttribute('aria-label', '插入') }
     else if (id === 'layout' && section) {
       layoutRoot ??= createRoot(layout)
-      flushSync(() => layoutRoot!.render(createElement(DocxLayoutSource, { editable: editable && editor.isEditable, settings: section.settings, onChange: section.onChange })))
+      flushSync(() => layoutRoot!.render(createElement(DocxLayoutSource, { editable: editable && editor.isEditable, settings: section.settings, onChange: section.onChange, sectionLabel: section.label, onSectionBreak: section.onSectionBreak, onEditHeaderFooter: headerFooter ? () => setActive('headerFooter') : undefined })))
       const paragraph = document.createElement('section')
       paragraph.className = 'ribbon-group docx-ribbon-group'
       paragraph.setAttribute('aria-label', '段落(选中段落)')
@@ -272,6 +365,11 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       else layout.querySelector('.docx-source-layout')!.append(paragraph)
       layoutParagraph = paragraph
       body.replaceChildren(layout); body.setAttribute('aria-label', '布局')
+    }
+    else if (id === 'headerFooter' && headerFooter) {
+      headerFooterRoot ??= createRoot(headerFooterPanel)
+      flushSync(() => headerFooterRoot!.render(createElement(DocxHeaderFooterSource, { controller: headerFooter })))
+      body.replaceChildren(headerFooterPanel); body.setAttribute('aria-label', '页眉和页脚')
     }
     else if (id === 'layout') renderPending(id)
     else if (id !== 'home') renderPending(id)
@@ -287,7 +385,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     const inTable = names.some(name => ['docTable', 'docTableRow', 'docTableCell', 'docTableHeader'].includes(name))
     const picture = nodes.some(node => node.type.name === 'docInlineImage' || (node.type.name === 'docProtected' && node.attrs.blockType === 'image'))
     const shape = nodes.some(node => node.type.name === 'docProtected' && Array.isArray(node.attrs.textboxes) && node.attrs.textboxes.length > 0)
-    const states: Record<string, boolean> = { tableDesign: inTable, tableLayout: inTable, pictureFormat: picture, shapeFormat: shape, headerFooter: false }
+    const states: Record<string, boolean> = { tableDesign: inTable, tableLayout: inTable, pictureFormat: picture, shapeFormat: shape, headerFooter: !!headerFooter }
     for (const [id, button] of contextTabs) button.hidden = states[id] !== true
     if (contextTabs.get(active)?.hidden) setActive('home')
   }
@@ -303,6 +401,14 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     tab.tabIndex = id === active ? 0 : -1
     if (contextual) { tab.hidden = true; contextTabs.set(id, tab) }
     tab.addEventListener('click', () => setActive(id))
+    tab.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+      event.preventDefault()
+      const visible = [...tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]')].filter(item => !item.hidden)
+      const index = visible.indexOf(tab)
+      const next = event.key === 'Home' ? visible[0] : event.key === 'End' ? visible.at(-1)! : visible[(index + (event.key === 'ArrowRight' ? 1 : -1) + visible.length) % visible.length]
+      setActive(next.dataset.tabId!); next.focus()
+    })
     tablist.append(tab)
   }
   ribbon.append(tablist)
@@ -322,12 +428,17 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     }
     throw new Error('请先选择正文段落')
   }
+  /** 有选区时只作用于选中文字（保存为 formatRange）；光标折叠时作用于整段（formatParagraph）。 */
+  const formatTarget = () => {
+    const { from, to, empty } = editor.state.selection
+    return empty ? selectParagraph() : { from, to }
+  }
   const applyMark = (name: string) => {
-    const range = selectParagraph()
+    const range = formatTarget()
     editor.chain().focus().setTextSelection(range).toggleMark(name).run()
   }
   const applyTextStyle = (style: Record<string, unknown>) => {
-    const range = selectParagraph()
+    const range = formatTarget()
     const attrs: Record<string, unknown> = {}
     if ('fontFamily' in style) attrs.font = style.fontFamily
     if ('fontSize' in style) attrs.sizeHalfPoints = Number(style.fontSize) * 2
@@ -335,7 +446,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     editor.chain().focus().setTextSelection(range).setMark('docTextStyle', attrs).run()
   }
   const adjustFontSize = (delta: number) => {
-    const range = selectParagraph()
+    const range = formatTarget()
     let size = 12
     let found = false
     editor.state.doc.nodesBetween(range.from, range.to, node => {
@@ -379,6 +490,12 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (editor.isActive('docListItem', { kind })) editor.chain().focus().setNode('docParagraph').run()
     else editor.chain().focus().setNode('docListItem', { kind, numId: `native-${kind}`, ilvl: 0 }).run()
   }
+  const paragraphStyleControl = createParagraphStyleControl(editor, editable, anchors)
+  // 剪贴板组：格式刷控制器 + 粘贴/剪切/复制回调（docx-clipboard.ts，协议内收敛）。
+  // 剪贴板/刷子的失败原因经 reportError 写回文档状态栏，按钮保持可用可重试。
+  const reportClipboardError = (error: unknown) => { if (reportError) reportError(error); else console.warn(error instanceof Error ? error.message : String(error)) }
+  let refreshHome: () => void = () => {}
+  const painter = createDocxPainter(editor, { report: reportClipboardError, onChange: () => refreshHome() })
   const renderHome = () => {
     let alignment: string | undefined
     let listKind: string | undefined
@@ -399,6 +516,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     }
     flushSync(() => homeRoot.render(createElement(DocxHomeSource, {
       editable: editable && editor.isEditable,
+      paragraphStyleControl,
       alignment,
       listKind,
       spaceBefore: selected?.attrs.spaceBefore == null ? null : Number(selected.attrs.spaceBefore),
@@ -417,6 +535,15 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       onFontSize: adjustFontSize,
       onFontFamily: (fontFamily: string) => { if (fontFamily) applyTextStyle({ fontFamily }) },
       onFontSizeValue: (fontSize: number) => applyTextStyle({ fontSize }),
+      onHighlight: (value: string) => { if (editable) applyParagraphHighlight(editor, anchors, value) },
+      highlight: selected ? paragraphHighlight(selected.toJSON()) : undefined,
+      highlightAvailable: !!highlightTarget(editor, anchors),
+      onShading: (value: string) => { if (editable) applyParagraphShading(editor, anchors, value) },
+      shading: selected ? paragraphShading(selected.toJSON()) : undefined,
+      shadingAvailable: !!highlightTarget(editor, anchors),
+      onBorders: (value: { sides: string; color: string | null; szPt: number } | null) => { if (editable) applyParagraphBorders(editor, anchors, value) },
+      borders: selected ? paragraphBorders(selected.toJSON()) : null,
+      bordersAvailable: !!highlightTarget(editor, anchors),
       onColor: (color: string) => applyTextStyle({ color }),
       onAlignment: (value: 'left' | 'center' | 'right' | 'justify') => { setSelectionAlign(editor, value) },
       onIndent: adjustIndent,
@@ -427,8 +554,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       listLevel,
       onListLevel: setListLevel,
       onParagraph: onParagraphCommand ? (command: 'add' | 'delete') => onParagraphCommand(command) : undefined,
+      onFindReplace,
+      onPaste: (mode?: DocxPasteMode) => { void docxClipboardPaste(editor, mode).catch(reportClipboardError) },
+      onCut: () => { try { docxClipboardCut(editor) } catch (error) { reportClipboardError(error) } },
+      onCopy: () => { try { docxClipboardCopy(editor) } catch (error) { reportClipboardError(error) } },
+      onPainterClick: () => painter.click(),
+      onPainterDoubleClick: () => painter.doubleClick(),
+      painterActive: painter.active(),
     })))
   }
+  refreshHome = renderHome
   renderHome()
   ribbon.append(body)
   const refreshSelection = () => {
@@ -445,7 +580,11 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       if (reason === null) button.removeAttribute('aria-description')
       else button.setAttribute('aria-description', reason)
     }
-    if (active === 'layout' && !body.querySelector('[data-action="indent-right"]:focus')) setActive('layout')
+    if (active === 'layout') {
+      // Do not replace a focused field (or the next field during its blur/focus handoff).
+      if (!focusedSpacingInput?.isConnected && !body.querySelector('.layout-num input:focus')) setActive('layout')
+      else for (const input of body.querySelectorAll<HTMLInputElement>('[data-action="space-before-value"], [data-action="space-after-value"]')) input.dispatchEvent(new Event('docx-spacing-refresh'))
+    }
   }
   editor.on('selectionUpdate', refreshSelection)
   editor.on('transaction', refreshSelection)
@@ -454,7 +593,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)
     editor.off('transaction', renderHome)
-    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount()
+    painter.dispose()
+    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount()
   })
   refreshContextTabs()
   return ribbon

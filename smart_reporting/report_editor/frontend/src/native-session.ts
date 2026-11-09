@@ -7,6 +7,7 @@ export interface NativeViewHandle {
   setSaving(saving: boolean): void
   refresh?(): Promise<void>
   dispose?(): void
+  flushPendingEdits?(): void
   prepareSave?(): Promise<{confirmedPreviewDigest?: string}>
 }
 interface SessionOptions {
@@ -69,6 +70,7 @@ export function bindNativeSession(shell: EditorShell, options: SessionOptions) {
     try {
       preparing = true
       update()
+      view.flushPendingEdits?.()
       const snapshot = JSON.stringify(draft.operations)
       const confirmation = await view.prepareSave?.()
       if (snapshot !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新确认修改')

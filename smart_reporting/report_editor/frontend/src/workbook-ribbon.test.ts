@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { applyWorkbookRibbonCommand, mountWorkbookRibbon } from './workbook-ribbon'
+import { applyWorkbookRibbonCommand, mountWorkbookRibbon, type WorkbookPageSetupState } from './workbook-ribbon'
 
 afterEach(() => { document.body.replaceChildren() })
 
@@ -9,7 +9,7 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand)
 
   expect([...document.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual([
-    'Home', 'Insert', 'Page Layout', 'Formulas', 'Data', 'Review', 'View',
+    '文件', '开始', '插入', '页面布局', '公式', '数据', '审阅', '视图',
   ])
   document.querySelector<HTMLButtonElement>('[data-ribbon-command="bold"]')!.click()
   const font = document.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!
@@ -26,9 +26,11 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
 
   expect(onCommand.mock.calls).toEqual([['bold'], ['font-family:Calibri'], ['decimal-inc'], ['autofn:SUM']])
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  const deferred = document.querySelector<HTMLButtonElement>('[data-ribbon-command="paste"]')!
+  // 剪贴板与格式刷已接入官方命令；上标仍缺引擎字段，保留以原因禁用。
+  for (const id of ['paste', 'format-painter']) expect(document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!.dataset.unavailableReason, id).toBeUndefined()
+  const deferred = document.querySelector<HTMLButtonElement>('[data-ribbon-command="superscript"]')!
   expect(deferred.disabled).toBe(true)
-  expect(deferred.title).toContain('native workbook editor')
+  expect(deferred.title).toContain('上标')
   const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
   expect(rotation.disabled).toBe(false)
   expect(rotation.title).not.toContain('does not capture text rotation')
@@ -43,9 +45,11 @@ it('writes formatting through the selected Univer range and inserts a worksheet 
     getCellStyleData: () => style,
     getRow: () => 2,
     getColumn: () => 3,
+    getHeight: () => 1, getWidth: () => 1,
     getWrap: () => wrap,
     setFontWeight: (value: 'bold' | 'normal' | null) => { calls.push(['bold', value]); style.bl = value === 'bold' ? 1 : 0 },
     setFontStyle: (value: 'italic' | 'normal' | null) => { calls.push(['italic', value]); style.it = value === 'italic' ? 1 : 0 },
+    setValue: (patch: { s: { ul?: { s: number } } }) => { if (patch.s.ul) { calls.push(['underline', patch.s.ul.s === 1 ? 'underline' : 'none']); style.ul.s = patch.s.ul.s } },
     setFontLine: (value: 'underline' | 'line-through' | 'none' | null) => { calls.push(['underline', value]); style.ul.s = value === 'underline' ? 1 : 0 },
     setWrap: (value: boolean) => { calls.push(['wrap', value]); wrap = value },
     setFontFamily: (value: string) => calls.push(['font-family', value]),
@@ -64,7 +68,7 @@ it('writes formatting through the selected Univer range and inserts a worksheet 
   const workbook = {
     getActiveSheet: () => ({
       getSelection: () => ({ getActiveRange: () => range }),
-      getRange: () => ({ setFormula: () => undefined }),
+      getRange: () => ({ setFormula: () => undefined, getCellStyleData: () => style }),
       insertRowsBefore: (...args: unknown[]) => calls.push(['insert-row', ...args]),
       deleteRows: (...args: unknown[]) => calls.push(['delete-row', ...args]),
       insertColumnsBefore: (...args: unknown[]) => calls.push(['insert-col', ...args]),
@@ -92,12 +96,12 @@ it('writes formatting through the selected Univer range and inserts a worksheet 
     ['insert-row', 2, 1], ['delete-row', 2, 1], ['insert-col', 3, 1], ['delete-col', 3, 1],
     ['insert-sheet'],
   ])
-  expect(() => applyWorkbookRibbonCommand('rotate:45', workbook)).toThrow('not wired to the workbook runtime')
+  expect(() => applyWorkbookRibbonCommand('rotate:45', workbook)).toThrow('当前工作簿未接入')
   const step = vi.fn()
   expect(applyWorkbookRibbonCommand('decimal-inc', workbook, step)).toBe(true)
   expect(applyWorkbookRibbonCommand('decimal-dec', workbook, step)).toBe(true)
   expect(step.mock.calls).toEqual([[1], [-1]])
-  expect(() => applyWorkbookRibbonCommand('decimal-inc', workbook)).toThrow('not wired to the workbook runtime')
+  expect(() => applyWorkbookRibbonCommand('decimal-inc', workbook)).toThrow('当前工作簿未接入')
 })
 
 it('writes upstream AutoSum function formulas below every selected column', () => {
@@ -133,7 +137,7 @@ it('rejects AutoSum for a single-row selection', () => {
     }),
     insertSheet: () => undefined,
   } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
-  expect(() => applyWorkbookRibbonCommand('autofn:SUM', workbook)).toThrow('Select at least two rows')
+  expect(() => applyWorkbookRibbonCommand('autofn:SUM', workbook)).toThrow('请至少选择两行')
 })
 
 it('renders source-localized sort actions and dispatches their upstream command ids', () => {
@@ -156,12 +160,14 @@ it('keeps sort and filter source actions visible with an operation-specific unav
   document.body.innerHTML = '<main></main>'
   mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
+  // filter-toggle/clear/reapply 走官方 pinned 筛选命令（workbook-main 接线），保持可用；
+  // 其余排序/筛选入口仍受不可用原因约束。
+  for (const id of ['filter-toggle', 'filter-clear', 'filter-reapply', 'sort-custom-open']) {
+    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
+    expect(button?.disabled, id).toBe(false)
+  }
   for (const [id, label, reason] of [
-    ['sort-custom-open', '自定义排序…', 'custom-sort dialog'],
-    ['filter-toggle', '筛选', 'no autoFilter readback/writeback contract'],
-    ['filter-clear', '清除筛选条件', 'no filter criteria readback'],
-    ['filter-reapply', '重新应用筛选', 'no persisted autoFilter criteria model'],
-    ['filter-advanced', '高级筛选', 'no advanced criteria dialog'],
+    ['filter-advanced', '高级筛选', '高级筛选条件对话框'],
   ]) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
     expect(button?.textContent, id).toBe(label)
@@ -169,6 +175,32 @@ it('keeps sort and filter source actions visible with an operation-specific unav
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
   }
+})
+
+it('dispatches clear formats/all through the official selection commands and refuses without the wiring', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
+  const clearAll = document.querySelector<HTMLButtonElement>('[data-ribbon-command="clear-all"]')!
+  const clearFormats = document.querySelector<HTMLButtonElement>('[data-ribbon-command="clear-formats"]')!
+  expect(clearAll.textContent).toBe('全部清除')
+  expect(clearFormats.textContent).toBe('清除格式')
+  expect(clearAll.disabled).toBe(false)
+  expect(clearFormats.disabled).toBe(false)
+  clearFormats.click(); clearAll.click()
+  expect(onCommand.mock.calls.map(([command]) => command)).toEqual(['clear-formats', 'clear-all'])
+
+  const range = { getRow: () => 0, getColumn: () => 0, getHeight: () => 2, getWidth: () => 1 }
+  const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => range }) }) } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
+  const kinds: ('all' | 'formats')[] = []
+  const clearSelection = vi.fn((kind: 'all' | 'formats') => { kinds.push(kind); return true })
+  expect(applyWorkbookRibbonCommand('clear-formats', workbook, undefined, undefined, undefined, clearSelection)).toBe(true)
+  expect(applyWorkbookRibbonCommand('clear-all', workbook, undefined, undefined, undefined, clearSelection)).toBe(true)
+  expect(clearSelection.mock.calls).toEqual([['formats'], ['all']])
+  clearSelection.mockReturnValueOnce(false)
+  expect(() => applyWorkbookRibbonCommand('clear-formats', workbook, undefined, undefined, undefined, clearSelection)).toThrow('清除未应用')
+  expect(() => applyWorkbookRibbonCommand('clear-formats', workbook)).toThrow('未接入清除命令')
 })
 
 it('renders GenOffice Data Tools in source order with explicit native writeback limits', () => {
@@ -185,14 +217,14 @@ it('renders GenOffice Data Tools in source order with explicit native writeback 
     'flash-fill', 'remove-duplicates-open', 'dv-open', 'consolidate-open',
   ])
   const expected = [
-    ['text-to-columns:2', '按逗号拆分', 'no text-to-columns command'],
-    ['text-to-columns:4', '按分号拆分', 'no text-to-columns command'],
-    ['text-to-columns:8', '按空格拆分', 'no text-to-columns command'],
-    ['text-to-columns:1', '按制表符拆分', 'no text-to-columns command'],
-    ['flash-fill', '快速填充', 'derived cell edits'],
-    ['remove-duplicates-open', '删除重复值', 'selection-driven duplicate dialog'],
-    ['dv-open', '数据验证', 'data-validation dialog'],
-    ['consolidate-open', '合并计算', 'consolidate dialog'],
+    ['text-to-columns:2', '按逗号拆分', '文本分列操作'],
+    ['text-to-columns:4', '按分号拆分', '文本分列操作'],
+    ['text-to-columns:8', '按空格拆分', '文本分列操作'],
+    ['text-to-columns:1', '按制表符拆分', '文本分列操作'],
+    ['flash-fill', '快速填充', '快速填充生成的修改'],
+    ['remove-duplicates-open', '删除重复值', '重复值对话框'],
+    ['dv-open', '数据验证', '数据验证对话框'],
+    ['consolidate-open', '合并计算', '合并计算对话框'],
   ]
   for (const [id, label, reason] of expected) {
     const button = dataTools.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
@@ -208,46 +240,39 @@ it('renders GenOffice Data Tools in source order with explicit native writeback 
   const subtotal = outline.querySelector<HTMLButtonElement>('[data-ribbon-command="subtotal-open"]')
   expect(subtotal?.textContent).toBe('分类汇总')
   expect(subtotal?.disabled).toBe(true)
-  expect(subtotal?.title).toContain('no subtotal operation')
-  expect(subtotal?.getAttribute('aria-description')).toContain('no subtotal operation')
+  expect(subtotal?.title).toContain('分组汇总行')
+  expect(subtotal?.getAttribute('aria-description')).toContain('分组汇总行')
 })
 
-it('sorts the selected Univer range with the shared stable XLSX engine semantics', () => {
+it('dispatches the official sort-range command with absolute bounds for asc and desc', () => {
   const calls: unknown[][] = []
-  const rows = [
-    ['z', 20],
-    ['a', 10],
-    ['m', 15],
-  ]
-  const formulas = [['', ''], ['', ''], ['', '']]
-  const range = {
-    getRow: () => 1, getColumn: () => 1, getHeight: () => 3, getWidth: () => 2,
-    getValues: () => rows,
-    getFormulas: () => formulas,
-  }
+  const range = { getRow: () => 1, getColumn: () => 2, getHeight: () => 3, getWidth: () => 2 }
   const sheet = {
     getSelection: () => ({ getActiveRange: () => range }),
-    getRange: (row: number, column: number) => ({ setValue: (value: unknown) => calls.push([row, column, value]) }),
+    getRange: () => { throw new Error('must not write cells directly') },
     insertRowsBefore: () => undefined, deleteRows: () => undefined,
     insertColumnsBefore: () => undefined, deleteColumns: () => undefined,
   }
   const workbook = { getActiveSheet: () => sheet, insertSheet: () => undefined } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
-  expect(applyWorkbookRibbonCommand('sort:asc', workbook)).toBe(true)
-  expect(calls).toEqual([[1, 1, 'a'], [1, 2, 10], [2, 1, 'm'], [2, 2, 15], [3, 1, 'z'], [3, 2, 20]])
-  calls.length = 0
-  expect(applyWorkbookRibbonCommand('sort:desc', workbook)).toBe(true)
-  expect(calls).toEqual([[2, 1, 'm'], [2, 2, 15], [3, 1, 'a'], [3, 2, 10]])
+  const sortRange = (bounds: { startRow: number; endRow: number; startColumn: number; endColumn: number; colIndex: number }, ascending: boolean) => {
+    calls.push([{ ...bounds }, ascending]); return true
+  }
+  expect(applyWorkbookRibbonCommand('sort:asc', workbook, undefined, undefined, sortRange)).toBe(true)
+  expect(applyWorkbookRibbonCommand('sort:desc', workbook, undefined, undefined, sortRange)).toBe(true)
+  expect(calls).toEqual([
+    [{ startRow: 1, endRow: 3, startColumn: 2, endColumn: 3, colIndex: 2 }, true],
+    [{ startRow: 1, endRow: 3, startColumn: 2, endColumn: 3, colIndex: 2 }, false],
+  ])
 })
 
-it('rejects sorting a selected range containing formulas without changing the grid', () => {
-  const setValue = vi.fn()
-  const range = { getRow: () => 0, getColumn: () => 0, getHeight: () => 2, getWidth: () => 1,
-    getValues: () => [[2], [1]], getFormulas: () => [['=1+1'], ['']] }
-  const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => range }),
-    getRange: () => ({ setValue }), insertRowsBefore: vi.fn(), deleteRows: vi.fn(), insertColumnsBefore: vi.fn(), deleteColumns: vi.fn() }),
-    insertSheet: vi.fn() } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
-  expect(() => applyWorkbookRibbonCommand('sort:asc', workbook)).toThrow('contains a formula at A1')
-  expect(setValue).not.toHaveBeenCalled()
+it('surfaces official sort failures and keeps the single-row guard', () => {
+  const range = { getRow: () => 0, getColumn: () => 0, getHeight: () => 2, getWidth: () => 1 }
+  const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => range }) }), insertSheet: () => undefined } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
+  expect(() => applyWorkbookRibbonCommand('sort:asc', workbook, undefined, undefined, () => false)).toThrow('排序未应用')
+  expect(() => applyWorkbookRibbonCommand('sort:asc', workbook)).toThrow('未接入官方排序命令')
+  const single = { getRow: () => 0, getColumn: () => 0, getHeight: () => 1, getWidth: () => 1 }
+  const singleWorkbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => single }) }), insertSheet: () => undefined } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
+  expect(() => applyWorkbookRibbonCommand('sort:asc', singleWorkbook, undefined, undefined, () => true)).toThrow('请至少选择两行')
 })
 
 it('renders source-localized Home Alignment and Cells actions with their fixed command ids', () => {
@@ -272,27 +297,28 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   expect(labels.get('insert-col-here')).toBe('插入列')
   expect(labels.get('delete-col-here')).toBe('删除列')
   expect(labels.get('clear-contents')).toBe('清除内容')
-  for (const id of ['valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents']) {
+  for (const id of ['valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells']) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
     expect(button.disabled, id).toBe(false)
     button.click()
   }
   expect(onCommand.mock.calls.map(([command]) => command)).toEqual([
     'valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge',
-    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents',
+    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells',
   ])
   expect(getLabel('clear-contents')).toBe('清除内容')
-  for (const [id, reason] of [
-    ['indent-step:increase', 'does not roundtrip OOXML indent styles'], ['format-cells', 'no Format Cells dialog'],
-    ['row-height-open', 'no row-height dialog'], ['col-width-open', 'no column-width dialog'],
-    ['autofit-row-height', 'does not persist Univer auto-height'], ['autofit-col-width', 'does not persist Univer auto-width'],
-    ['clear-all', 'only supports clearing cell contents'], ['clear-formats', 'does not distinguish every cleared inherited/style component'],
-    ['insert-cells', 'no insert-shifted-cells operation'], ['delete-cells', 'no delete-shifted-cells operation'],
-  ]) {
+})
+
+it('wires Find and Replace to the registered Univer dialogs', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
+  for (const [id, label] of [['find', '查找'], ['replace', '替换']]) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button?.disabled, id).toBe(true)
-    expect(button?.title, id).toContain(reason)
-    expect(button?.getAttribute('aria-description'), id).toContain(reason)
+    expect(button?.textContent).toBe(label)
+    expect(button?.disabled).toBe(false)
+    button?.click()
+    expect(onCommand).toHaveBeenLastCalledWith(id)
   }
 })
 
@@ -319,18 +345,26 @@ it('renders the GenOffice Formulas Function Library with localized categories an
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
     expect(button?.disabled, id).toBe(true)
-    expect(button?.getAttribute('aria-description'), id).toContain('function catalog')
+    expect(button?.getAttribute('aria-description'), id).toContain('函数目录对话框')
   }
 })
 
 it('renders the GenOffice Review Comments and Notes commands with note-specific unavailable reasons', () => {
   document.body.innerHTML = '<main></main>'
-  mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
+  const reasons: Record<string, string> = {
+    'note-open': '批注状态不可用', 'note-delete': '批注状态不可用',
+    'note-prev': '批注集合不可用', 'note-next': '批注集合不可用', 'note-show-toggle': '批注可见状态不可用',
+  }
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => undefined, editable: () => true, hasSelection: () => true,
+    noteReason: id => reasons[id],
+  })
+  ribbon.refreshState?.()
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
   const expected = [
-    ['note-open', '新建批注', 'note state/readback'], ['note-delete', '删除', 'note state/readback'],
-    ['note-prev', '上一条', 'note collection'], ['note-next', '下一条', 'note collection'],
-    ['note-show-toggle', '显示批注', 'Note preset'],
+    ['note-open', '新建/编辑批注', '批注状态不可用'], ['note-delete', '删除', '批注状态不可用'],
+    ['note-prev', '上一条', '批注集合不可用'], ['note-next', '下一条', '批注集合不可用'],
+    ['note-show-toggle', '显示批注', '批注可见状态不可用'],
   ]
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   for (const [id, label, reason] of expected) {
@@ -366,11 +400,9 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   expect(labels.get('workbook-protect')).toBe('保护工作簿')
   expect(labels.get('allow-edit-ranges-open')).toBe('允许编辑区域')
   for (const [id, reason] of [
-    ['workbook-statistics', 'workbook-statistics view'],
-    ['translate', 'workbook AI translation'],
-    ['sheet-protect', 'does not expose sheet protection state'],
-    ['workbook-protect', 'does not expose workbook protection state'],
-    ['allow-edit-ranges-open', 'protected-range readback'],
+    ['workbook-statistics', '工作簿统计视图'],
+    ['translate', '翻译操作'],
+    ['allow-edit-ranges-open', '受保护区域'],
   ]) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
     expect(button?.disabled, id).toBe(true)
@@ -388,8 +420,8 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   const expected = new Map([
-    ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '网格线'],
-    ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '标题'],
+    ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '显示网格线'],
+    ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '显示标题'],
     ['toggle-right-to-left', '从右到左'], ['toggle-cross-highlight', '突出显示活动行和列'],
     ['zoom-reset', '重置缩放'], ['zoom-to-selection', '缩放到选定区域'],
     ['zoom-in', '放大'], ['zoom-out', '缩小'],
@@ -402,13 +434,12 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   }
   expect(buttons.find(button => button.dataset.ribbonCommand === 'toggle-gridlines')?.disabled).toBe(false)
   for (const [id, reason] of [
-    ['toggle-page-break-preview', 'page-break preview renderer'], ['toggle-formula-bar', 'Formula bar visibility'],
-    ['toggle-headings', 'Row and column heading visibility'], ['toggle-right-to-left', 'Right-to-left view'],
-    ['toggle-cross-highlight', 'Cross-highlight is transient UI state'], ['zoom-reset', 'no zoom getter/setter'],
-    ['zoom-to-selection', 'render skeleton dimensions'], ['zoom-in', 'no zoom getter/setter'], ['zoom-out', 'no zoom getter/setter'],
-    ['new-window', 'desktop workbook windows'], ['arrange-all', 'desktop window manager'],
-    ['freeze-panes', 'Freeze panes requires'], ['split-window', 'split-window viewport state'],
-    ['hide-window', 'desktop workbook windows'], ['switch-window', 'desktop workbook windows'],
+    ['toggle-page-break-preview', '分页预览渲染'], ['toggle-formula-bar', '编辑栏'],
+    ['toggle-headings', '表头尺寸'], ['toggle-right-to-left', '从右到左视图'],
+    ['toggle-cross-highlight', '活动行列突出显示'], ['zoom-to-selection', '选区尺寸'],
+    ['new-window', '桌面工作簿窗口'], ['arrange-all', '桌面工作簿窗口'],
+ ['split-window', '拆分视口'],
+    ['hide-window', '桌面工作簿窗口'], ['switch-window', '桌面工作簿窗口'],
   ]) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
     expect(button?.disabled, id).toBe(true)
@@ -429,4 +460,105 @@ it('toggles the active Univer worksheet gridlines without changing cell data', (
   expect(applyWorkbookRibbonCommand('toggle-gridlines', workbook)).toBe(true)
   expect(applyWorkbookRibbonCommand('toggle-gridlines', workbook)).toBe(true)
   expect(calls).toEqual([true, false])
+})
+
+it('renders Page Layout dropdowns with the source option sets and dispatches their commands', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  const state: WorkbookPageSetupState = {
+    margins: 'custom', orientation: undefined, paperSize: undefined,
+    fitToWidth: 2, fitToHeight: 0, printGridlines: true, printHeadings: false, printArea: 'A1:B4',
+  }
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => undefined, editable: () => true, unavailableReason: () => undefined, pageSetup: () => state,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Page Layout"]')!.click()
+  const margins = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-margins"]')!
+  expect([...margins.options].map(option => option.textContent)).toEqual(['自定义（保留文件边距）', '常规', '宽', '窄'])
+  expect(margins.value).toBe('custom')
+  const orientation = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-orientation"]')!
+  expect([...orientation.options].map(option => option.value)).toEqual(['', 'portrait', 'landscape'])
+  const paper = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-paper"]')!
+  expect([...paper.options].map(option => option.textContent)).toEqual(['按文件保存', 'Letter', 'Legal', 'Tabloid', 'Executive', 'A3', 'A4', 'A5'])
+  const fitWidth = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-fit:width"]')!
+  expect([...fitWidth.options].map(option => option.value)).toEqual(['0', '1', '2', '3', '4', '5'])
+  expect(fitWidth.value).toBe('2')
+  expect(document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-fit:height"]')!.value).toBe('0')
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.getAttribute('aria-pressed')).toBe('true')
+  const breaks = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="page-breaks"]')!
+  breaks.value = 'page-breaks:reset'
+  breaks.dispatchEvent(new Event('change', { bubbles: true }))
+  expect(breaks.value).toBe('')
+  orientation.value = 'landscape'
+  orientation.dispatchEvent(new Event('change', { bubbles: true }))
+  fitWidth.value = '3'
+  fitWidth.dispatchEvent(new Event('change', { bubbles: true }))
+  document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-headings"]')!.click()
+  expect(onCommand.mock.calls).toEqual([
+    ['page-breaks:reset'], ['page-orientation:landscape'], ['page-fit:width:3'], ['print-headings'],
+  ])
+  const scale = document.querySelector<HTMLButtonElement>('[data-ribbon-command="scale"]')!
+  expect(scale.disabled).toBe(true)
+  expect(scale.title).toContain('打印对话框')
+  ribbon.dispose()
+})
+
+it('keeps Page Layout controls non-editable without page-setup state', () => {
+  document.body.innerHTML = '<main></main>'
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), { rotation: () => undefined, editable: () => true, unavailableReason: () => undefined })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Page Layout"]')!.click()
+  expect(document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-margins"]')!.disabled).toBe(true)
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('mirrors protection state on Review ▸ Protection and locks editing buttons on a protected sheet', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  let protection = { sheet: { protected: true, reason: undefined as string | undefined }, workbook: { locked: false, reason: '工作簿结构受密码保护' as string | undefined } }
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => undefined, editable: () => true, hasSelection: () => true, protection: () => protection,
+  })
+  ribbon.refreshState?.()
+  const button = (id: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
+  expect(button('bold').disabled).toBe(true)
+  expect(button('bold').title).toContain('工作表受保护')
+  expect(button('copy').disabled).toBe(false)
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
+  expect(button('sheet-protect').textContent).toBe('撤销工作表保护')
+  expect(button('sheet-protect').getAttribute('aria-pressed')).toBe('true')
+  expect(button('sheet-protect').disabled).toBe(false)
+  expect(button('workbook-protect').textContent).toBe('保护工作簿')
+  expect(button('workbook-protect').disabled).toBe(true)
+  expect(button('workbook-protect').title).toBe('工作簿结构受密码保护')
+  button('sheet-protect').click()
+  expect(onCommand).toHaveBeenCalledWith('sheet-protect')
+  protection = { sheet: { protected: false, reason: undefined }, workbook: { locked: true, reason: undefined } }
+  ribbon.refreshState?.()
+  expect(button('sheet-protect').textContent).toBe('保护工作表')
+  expect(button('workbook-protect').textContent).toBe('撤销工作簿保护')
+})
+
+it('wires Formulas ▸ Show Formulas, Calculate Now/Sheet and the Calculation Options menu, usable read-only', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  let calculation = { formulaView: true, manual: false }
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => undefined, editable: () => false, hasSelection: () => true, calculation: () => calculation,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Formulas"]')!.click()
+  ribbon.refreshState?.()
+  const button = (id: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
+  for (const id of ['toggle-show-formulas', 'calculate-now', 'calculate-sheet']) { expect(button(id).disabled, id).toBe(false); button(id).click() }
+  expect(button('toggle-show-formulas').getAttribute('aria-pressed')).toBe('true')
+  const mode = document.querySelector<HTMLSelectElement>('[data-ribbon-control="calc-mode"]')!
+  expect([...mode.options].map(option => option.value)).toEqual(['auto', 'manual'])
+  expect(mode.value).toBe('auto')
+  mode.value = 'manual'; mode.dispatchEvent(new Event('change'))
+  expect(onCommand.mock.calls.map(([command]) => command)).toEqual(['toggle-show-formulas', 'calculate-now', 'calculate-sheet', 'calc-mode:manual'])
+  calculation = { formulaView: false, manual: true }
+  ribbon.refreshState?.()
+  expect(mode.value).toBe('manual')
+  expect(button('toggle-show-formulas').getAttribute('aria-pressed')).toBe('false')
+  expect(document.querySelector('[data-ribbon-command="calculation-options"]')).toBeNull()
 })

@@ -40,6 +40,17 @@ describe('DOCX snapshots to allowed operations', () => {
     changed.content[0].content[0].content[1] = cell('不能改')
     expect(() => docxOperations(original, changed, tableAnchors)).toThrow(/只读/)
   })
+  it('lets an empty saved cell gain plain typed text but not formatted runs or new paragraphs', () => {
+    const empty = { type: 'docTableCell', content: [{ type: 'docParagraph', attrs: { docxIndex: null } }] }
+    const original = { type: 'doc', content: [{ type: 'docTable', attrs: { docxIndex: 4 }, content: [{ type: 'docTableRow', content: [empty] }] }] }
+    const tableAnchors = [{ docxIndex: 4, blockId: 'table', expectedObjectSha256: 'table-hash', editable: false, cells: [[{ cellId: 'c1', expectedObjectSha256: 'c1hash', editable: true }]] }]
+    const typed = (marks?: unknown[]) => { const next = structuredClone(original) as any; next.content[0].content[0].content[0].content[0].content = [{ type: 'text', text: '后填', ...(marks ? { marks } : {}) }]; return next }
+    expect(docxOperations(original, typed(), tableAnchors)).toEqual([{ kind: 'replaceCellText', blockId: 'table', cellId: 'c1', expectedObjectSha256: 'c1hash', text: '后填' }])
+    expect(docxOperations(original, typed([{ type: 'textStyle', attrs: { color: null } }]), tableAnchors)[0]).toMatchObject({ text: '后填' })
+    expect(() => docxOperations(original, typed([{ type: 'bold' }]), tableAnchors)).toThrow(/结构或样式/)
+    const split = typed(); split.content[0].content[0].content[0].content.push({ type: 'docParagraph', attrs: { docxIndex: null } })
+    expect(() => docxOperations(original, split, tableAnchors)).toThrow(/结构或样式/)
+  })
   it('keeps strict table writeback limited to anchored cell text', () => {
     const cell = (text: string, fill: string | null = null) => ({ type: 'docTableCell', attrs: { fill }, content: [para(null, text)] })
     const original = { type: 'doc', content: [{ type: 'docTable', attrs: { docxIndex: 4, tblStyleId: 'TableGrid' }, content: [{ type: 'docTableRow', content: [cell('旧值')] }] }] }
@@ -195,7 +206,32 @@ it('carries an anchored section layout and validates its source identity before 
   expect(() => replayDocxOperations(base, operations, anchors)).toThrow(/节身份/)
 })
 
-it('maps only source line-spacing presets and 12 pt before/after toggles to an anchored operation', () => {
+it('maps arbitrary paragraph before/after values to source-bound spacing and replays explicit zero', () => {
+  const original = { type: 'doc', content: [{ ...para(0, '任意间距'), attrs: { docxIndex: 0, spaceBefore: null, spaceAfter: null, spaceBeforeAuto: null, spaceAfterAuto: null } }] }
+  const current = structuredClone(original) as any
+  current.content[0].attrs.spaceBefore = 735
+  current.content[0].attrs.spaceAfter = 0
+  const operation = { kind: 'setParagraphSpacing', blockId: 'a', expectedObjectSha256: 'hash-a', spaceBefore: 735, spaceAfter: 0 }
+  expect(docxOperations(original, current, anchors)).toEqual([operation])
+  expect(docxOperations(original, replayDocxOperations(original, [operation], anchors), anchors)).toEqual([operation])
+  for (const invalid of [-1, 14401, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    current.content[0].attrs.spaceBefore = invalid
+    expect(() => docxOperations(original, current, anchors)).toThrow(/间距/)
+  }
+  expect(() => replayDocxOperations(original, [{ ...operation, expectedObjectSha256: 'foreign' }], anchors)).toThrow(/身份/)
+  expect(() => replayDocxOperations(original, [{ ...operation, tooltip: 'unexpected' }], anchors)).toThrow(/字段/)
+})
+
+it('reapplies an unchanged literal spacing value to clear automatic source formatting', () => {
+  const original = { type: 'doc', content: [{ ...para(0, '自动间距'), attrs: { docxIndex: 0, spaceBefore: 240, spaceBeforeAuto: true } }] }
+  const current = structuredClone(original) as any
+  current.content[0].attrs.spaceBeforeAuto = null
+  const operation = { kind: 'setParagraphSpacing', blockId: 'a', expectedObjectSha256: 'hash-a', spaceBefore: 240 }
+  expect(docxOperations(original, current, anchors)).toEqual([operation])
+  expect(docxOperations(original, replayDocxOperations(original, [operation], anchors), anchors)).toEqual([operation])
+})
+
+it('maps only source line-spacing presets and arbitrary before/after spacing to anchored operations', () => {
   const original = { type: 'doc', content: [{ ...para(0, '行距正文'), attrs: { docxIndex: 0, spaceBefore: 0, spaceAfter: 120, lineSpacing: 1.5, lineRule: null, lineRawTwips: null } }] }
   const current = structuredClone(original) as any
   current.content[0].attrs.spaceBefore = 240
@@ -272,4 +308,65 @@ it('rejects unknown hyperlink draft fields before they can disappear in a later 
   const operation = { kind: 'setParagraphLink', blockId: 'a', expectedObjectSha256: 'hash-a', from: 0, to: 6, href: 'https://example.test', tooltip: 'unsupported draft semantics' }
   expect(() => replayDocxOperations(original, [operation], anchors)).toThrow(/草稿链接包含不支持的字段/)
   expect(original.content[0].content[0]).toEqual({ type: 'text', text: 'source text' })
+})
+
+const imageNode = (overrides: Record<string, unknown> = {}) => ({
+  type: 'docProtected',
+  attrs: { docxIndex: null, blockType: 'image', label: '图片（粘贴）',
+    imageDataUrl: 'data:image/png;base64,QUJD', imageWidthPx: 3, imageHeightPx: 2,
+    genImage: { mime: 'image/png', base64: 'QUJD', widthPx: 3, heightPx: 2 }, ...overrides },
+})
+
+describe('粘贴图片 insertParagraphImage（docProtected/genImage 的协议内映射）', () => {
+  it('新增图片映射为最近可编辑锚点的 insertParagraphImage，携带完整图片载荷', () => {
+    const next = { type: 'doc', content: [imageNode(), para(0, '原文'), para(1, '复杂对象')] }
+    expect(docxOperations(base, next as never, anchors)).toEqual([
+      { kind: 'insertParagraphImage', blockId: 'a', expectedObjectSha256: 'hash-a', position: 'before',
+        image: { mime: 'image/png', base64: 'QUJD', widthPx: 3, heightPx: 2 } },
+    ])
+  })
+
+  it('锚点前后各有可编辑段时贴在后段之前（与 insertParagraph 的 before/after 语义一致）', () => {
+    const doc = { type: 'doc', content: [para(0, '原文'), imageNode(), para(1, '复杂对象')] }
+    const editableBoth = [{ ...anchors[0] }, { ...anchors[1], editable: true }]
+    expect(docxOperations(base as never, doc as never, editableBoth)).toEqual([
+      { kind: 'insertParagraphImage', blockId: 'b', expectedObjectSha256: 'hash-b', position: 'before',
+        image: { mime: 'image/png', base64: 'QUJD', widthPx: 3, heightPx: 2 } },
+    ])
+  })
+
+  it('只读锚点或无锚点时拒绝并说明', () => {
+    expect(() => docxOperations(base, { type: 'doc', content: [imageNode()] } as never, [anchors[1]])).toThrow(/锚点/)
+    expect(() => docxOperations(base, { type: 'doc', content: [imageNode()] } as never, [])).toThrow(/锚点/)
+  })
+
+  it.each([
+    [{ ...imageNode(), attrs: { blockType: 'image', docxIndex: null, genImage: { mime: 'image/gif', base64: 'QUJD', widthPx: 3, heightPx: 2 } } }, 'PNG 或 JPEG'],
+    [{ ...imageNode(), attrs: { blockType: 'image', docxIndex: null, genImage: { mime: 'image/png', base64: 'QUJ', widthPx: 3, heightPx: 2 } } }, '数据无效'],
+    [{ ...imageNode(), attrs: { blockType: 'image', docxIndex: null, genImage: { mime: 'image/png', base64: 'QUJD', widthPx: 0, heightPx: 2 } } }, '尺寸'],
+    [{ ...imageNode(), attrs: { blockType: 'image', docxIndex: null, genImage: { mime: 'image/png', base64: 'QUJD', widthPx: 3, heightPx: 2, extra: 1 } } }, '不支持的字段'],
+    [{ type: 'docProtected', attrs: { docxIndex: null, blockType: 'image' } }, '图片数据'],
+  ])('严格拒绝越界载荷：%j', (node, reason) => {
+    expect(() => docxOperations(base, { type: 'doc', content: [node, para(0, '原文')] } as never, anchors)).toThrow(new RegExp(reason))
+  })
+
+  it('回放 insertParagraphImage 恢复相同的 docProtected 节点并保持 diff 幂等', () => {
+    const operations = [{ kind: 'insertParagraphImage', blockId: 'a', expectedObjectSha256: 'hash-a', position: 'after',
+      image: { mime: 'image/jpeg', base64: 'QUJD', widthPx: 620, heightPx: 480 } }]
+    const recovered = replayDocxOperations(base, operations as never, anchors)
+    expect(recovered.content?.map(node => node.type)).toEqual(['docParagraph', 'docProtected', 'docParagraph'])
+    const image = recovered.content![1]
+    expect(image.attrs!).toMatchObject({ docxIndex: null, blockType: 'image', imageWidthPx: 620, imageHeightPx: 480 })
+    expect(image.attrs!.genImage).toEqual({ mime: 'image/jpeg', base64: 'QUJD', widthPx: 620, heightPx: 480 })
+    expect(image.attrs!.imageDataUrl).toBe('data:image/jpeg;base64,QUJD')
+    expect(docxOperations(base, recovered, anchors)).toEqual(operations)
+  })
+
+  it('回放拒绝伪造身份、越界尺寸和未知字段', () => {
+    const valid = { kind: 'insertParagraphImage', blockId: 'a', expectedObjectSha256: 'hash-a', position: 'before', image: { mime: 'image/png', base64: 'QUJD', widthPx: 3, heightPx: 2 } }
+    expect(() => replayDocxOperations(base, [{ ...valid, expectedObjectSha256: 'forged' }], anchors)).toThrow(/身份/)
+    expect(() => replayDocxOperations(base, [{ ...valid, image: { ...valid.image, widthPx: 20001 } }], anchors)).toThrow(/数据无效|尺寸/)
+    expect(() => replayDocxOperations(base, [{ ...valid, position: 'middle' }], anchors)).toThrow(/字段或来源身份/)
+    expect(() => replayDocxOperations(base, [{ ...valid, note: 'x' }], anchors)).toThrow(/字段或来源身份/)
+  })
 })

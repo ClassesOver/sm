@@ -26,7 +26,7 @@ it('routes exactly the six fixed-source rotation values through the registered U
   const rotate = vi.fn()
   for (const id of Object.keys(ROTATION_VALUES)) applyWorkbookRibbonCommand(id as never, workbook, undefined, rotate)
   expect(rotate.mock.calls).toEqual([[45], [-45], ['v'], [90], [-90], [0]])
-  expect(() => applyWorkbookRibbonCommand('rotate:31' as never, workbook, undefined, rotate)).toThrow(/Unsupported/)
+  expect(() => applyWorkbookRibbonCommand('rotate:31' as never, workbook, undefined, rotate)).toThrow('不支持此文字旋转值')
   expect(rotate).toHaveBeenCalledTimes(6)
 })
 it('refreshes active, mixed, no-selection and saving states without replacing the clicked control', () => {
@@ -37,7 +37,7 @@ it('refreshes active, mixed, no-selection and saving states without replacing th
   expect(button.getAttribute('aria-pressed')).toBe('true')
   button.click(); expect(callback).toHaveBeenCalledWith('rotate:-45')
   rotation = 'mixed'; ribbon.refreshState()
-  expect(button.getAttribute('aria-pressed')).toBe('false'); expect(button.disabled).toBe(false)
+  expect(button.getAttribute('aria-pressed')).toBe('mixed'); expect(button.disabled).toBe(false)
   editable = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
   editable = true; rotation = undefined; ribbon.refreshState(); expect(button.disabled).toBe(true)
   rotation = 255; ribbon.refreshState()

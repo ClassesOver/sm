@@ -1,5 +1,8 @@
 {
-  "core/session-core.ts": "62090844718cfe80a4583475a9201a79a667ebafa2fd41bab177fc8d8b68d8e6",
+  "core/session-core.ts": "a1e1a687983e9264f1aff50e60be9a5c84f459464e59c519ee66df9bb4f75314",
   "grid/decimal-step.ts": "f97c59a2aa70900c99dc9f8f350a214430878c7f2e0868e8a98fe042c5712a60",
-  "core/style-map.ts": "eb1e373eff8f83c593c29b7fced004c7973064c6ec351be21e03f4bd4b733d4f"
+  "core/style-map.ts": "fbdab632baed3847f734351e04d51c0cee54cf1b42029b1c4b2a121ce92db8f2",
+  "grid/sync.ts": "9c75b700efce704da2c0fdbe250ec18fabb9c502cc6723f18bf4b90cd5c2262f",
+  "core/univer-data.ts": "fe8de9eea95d3ac98c61d50109840eba80dc91b4832d5d62831322ccd1c681ea",
+  "core/data-tools.ts": "b61dbf4364419a187e603d1b7c5e3e412a310681d691c6520852834cddb93014"
 }

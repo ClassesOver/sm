@@ -3,6 +3,9 @@
 /// genoffice reader; styles and geometry are read here because the web app
 /// has no sidecar to resolve them.
 
+import { readSheetProtection, readWorkbookProtection, type SheetProtectionModel, type WorkbookProtectionModel } from './protection-read'
+import { readSheetNotes, type SheetNotesModel } from './note-read'
+import { readSheetFilter, type SheetFilterModel } from './filter-read'
 import { parseStylesheet, parseThemePalette, type Stylesheet } from './style-read'
 import { readCfRules, type CfReadableRule } from './cf-read'
 import { readDefinedNames } from './defined-names'
@@ -31,6 +34,26 @@ export interface RowDef {
   hidden: boolean
 }
 
+export interface SheetMarginsModel {
+  left: number
+  right: number
+  top: number
+  bottom: number
+  header: number
+  footer: number
+}
+
+export interface SheetPageSetupModel {
+  orientation?: 'portrait' | 'landscape' | undefined
+  paperSize?: number | undefined
+  /// 打印缩放百分比（10-400；OOXML 默认 100，缺省时保留 undefined）。
+  scale?: number | undefined
+  /// fitToPage 宽/高页数（OOXML 默认 1，缺省时保留 undefined）。
+  fitToWidth?: number | undefined
+  fitToHeight?: number | undefined
+  fitToPage?: boolean | undefined
+}
+
 export interface SheetModel {
   name: string
   /// worksheet part path (xl/worksheets/sheetN.xml)
@@ -41,9 +64,32 @@ export interface SheetModel {
   columns: readonly ColumnDef[]
   rows: readonly RowDef[]
   freeze: { frozenRows: number; frozenColumns: number } | null
+  /// sheetView showGridLines（OOXML 默认 true；写回经 applyPageSetups）。
+  showGridlines: boolean
+  /// sheetView showFormulas（公式视图，OOXML 默认 false；仅为真时出现，写回经 applyPageSetups）。
+  showFormulas?: boolean
+  /// 常规视图缩放百分比（10-400，OOXML 默认 100；写回经 applyPageSetups）。
+  zoomScale: number
+  /// 页面设置（pageSetup 元素 + sheetPr@pageSetUpPr；写回经 applyPageSetups）。
+  pageSetup?: SheetPageSetupModel
+  /// 页边距（英寸；OOXML 默认 0.7/0.7/0.75/0.75/0.3/0.3；写回经 applyPageSetups 预设）。
+  margins?: SheetMarginsModel
+  /// printOptions 打印网格线/标题（OOXML 默认 false；写回经 applyPageSetups）。
+  printGridlines?: boolean
+  printHeadings?: boolean
+  /// 手动分页符（brk@id，0-based，位于该行/列之前；写回经 applyPageSetups breaks）。
+  rowBreaks?: readonly number[]
+  colBreaks?: readonly number[]
+  /// 工作表级 `_xlnm.Print_Area` / `_xlnm.Print_Titles`（去掉工作表前缀与 $ 的
+  /// 显示形式，如 "A1:B4"；写回经 applyPageSetups printArea/printTitles）。
+  printArea?: string | undefined
+  printTitles?: string | undefined
   dimension: string | null
   /// Rotation commands are gated until inherited row/column/base-XF styles are modeled.
   rotationReadOnlyReason?: string
+  /// 同 rotationReadOnlyReason：缩进经行/列样式、默认 xf、父样式或禁用对齐继承时，
+  /// 网格投影无法完整回读，前端缩进编辑禁用。
+  indentReadOnlyReason?: string
   /// self-colored conditional formats (dataBar / colorScale) read back for
   /// grid rendering; cellIs/iconSet are write-only boundaries
   conditionalFormats?: ReadonlyArray<CfReadableRule>
@@ -51,6 +97,13 @@ export interface SheetModel {
   sparklines?: ReadonlyArray<SparklineSpec>
   /// anchored charts read back for grid rendering (column/bar/line/pie v1)
   charts?: ReadonlyArray<ChartReadSpec>
+  notes?: SheetNotesModel
+  /// worksheet-level autoFilter: range + per-column criteria (values/blank/
+  /// customs/dateGroups); readOnlyReason marks structures (color/icon/top10/
+  /// dynamic) the write path refuses
+  filter?: SheetFilterModel
+  /// `<sheetProtection>` state; absent when the sheet carries no element
+  protection?: SheetProtectionModel
 }
 
 export interface WorkbookModel {
@@ -60,6 +113,8 @@ export interface WorkbookModel {
   themePalette: readonly string[] | undefined
   /// workbook-level defined names (global scope; sheet-scoped excluded)
   definedNames?: ReadonlyArray<{ name: string; refersTo: string }>
+  /// `<workbookProtection>` state; absent when workbook.xml carries no element
+  workbookProtection?: WorkbookProtectionModel
 }
 
 const TAG_ATTRIBUTES = `(?:"[^"]*"|'[^']*'|[^>"'])*?`
@@ -165,6 +220,49 @@ function parseWorksheetCells(worksheetXml: string, sharedStrings: readonly strin
   return cells
 }
 
+/// Sheet-scoped `_xlnm.Print_Area` / `_xlnm.Print_Titles` keyed by
+/// localSheetId (positional sheet order in workbook.xml). The reference keeps
+/// its stored text; stripSheetPrefix trims the sheet part for display.
+export function readSheetPrintNames(
+  workbookXml: string,
+): ReadonlyMap<number, { printArea?: string; printTitles?: string }> {
+  const section = workbookXml.match(/<definedNames\b[^>]*>([\s\S]*?)<\/definedNames>/)
+  const result = new Map<number, { printArea?: string; printTitles?: string }>()
+  if (!section) return result
+  for (const match of (section[1] ?? '').matchAll(/<definedName\b([^>]*?)>([\s\S]*?)<\/definedName>/g)) {
+    const attributes = match[1] ?? ''
+    const name = attributes.match(/\bname="(_xlnm\.Print_Area|_xlnm\.Print_Titles)"/)?.[1]
+    const localSheetId = Number(attributes.match(/\blocalSheetId="(\d+)"/)?.[1] ?? Number.NaN)
+    if (name === undefined || !Number.isInteger(localSheetId)) continue
+    const entry = result.get(localSheetId) ?? {}
+    const reference = (match[2] ?? '').trim()
+    if (name === '_xlnm.Print_Area') entry.printArea = reference
+    else entry.printTitles = reference
+    result.set(localSheetId, entry)
+  }
+  return result
+}
+
+/// `'Sheet'!$A$1:$B$4,'Sheet'!$D$1:$E$4` → `A1:B4,D1:E4`：多打印区域、行+列打印
+/// 标题的每个逗号分量各自带工作表前缀，须逐个去掉前缀与绝对引用标记。分量按
+/// 引号外的逗号切分（带引号的工作表名可含逗号，'' 为转义引号）；单元格引用
+/// 本身不含 "!"，取分量最后一个 "!" 之后（工作表名允许含 "!"）。
+export function stripPrintReferenceSheetPrefix(reference: string): string {
+  const components: string[] = []
+  let current = ''
+  let quoted = false
+  for (const character of reference) {
+    if (character === "'") quoted = !quoted
+    if (character === ',' && !quoted) { components.push(current); current = ''; continue }
+    current += character
+  }
+  components.push(current)
+  return components.map(component => {
+    const separator = component.lastIndexOf('!')
+    return (separator === -1 ? component : component.slice(separator + 1)).replaceAll('$', '').trim()
+  }).join(',')
+}
+
 function parseGeometry(worksheetXml: string) {
   const dimension = worksheetXml.match(/<dimension\b[^>]*\bref="([^"]+)"/)?.[1] ?? null
 
@@ -197,6 +295,42 @@ function parseGeometry(worksheetXml: string) {
     }
   })
 
+  // printOptions：打印网格线/标题（OOXML 默认 false，仅显式 "1"/"true" 打开）。
+  const printOptions = worksheetXml.match(/<(?:[\w.-]+:)?printOptions\b[^>]*?(?:\/>|>)/)?.[0]
+  const printGridlines = printOptions !== undefined && /^(1|true)$/i.test(readXmlAttribute(printOptions, 'gridLines') ?? '')
+  const printHeadings = printOptions !== undefined && /^(1|true)$/i.test(readXmlAttribute(printOptions, 'headings') ?? '')
+
+  // pageMargins（英寸；OOXML 默认值对齐 CT_PageMargins）。
+  const marginsElement = worksheetXml.match(/<(?:[\w.-]+:)?pageMargins\b[^>]*?(?:\/>|>)/)?.[0]
+  const marginAttr = (name: string, fallback: number): number => {
+    const raw = marginsElement === undefined ? undefined : readXmlAttribute(marginsElement, name)
+    const value = raw === undefined ? Number.NaN : Number(raw)
+    return Number.isFinite(value) ? value : fallback
+  }
+  const margins: SheetMarginsModel = {
+    left: marginAttr('left', 0.7), right: marginAttr('right', 0.7),
+    top: marginAttr('top', 0.75), bottom: marginAttr('bottom', 0.75),
+    header: marginAttr('header', 0.3), footer: marginAttr('footer', 0.3),
+  }
+
+  // pageSetup + sheetPr@pageSetUpPr（fitToPage）。
+  const pageSetupElement = worksheetXml.match(/<(?:[\w.-]+:)?pageSetup\b[^>]*?(?:\/>|>)/)?.[0]
+  const pageSetupAttr = (name: string): number | undefined => {
+    const raw = pageSetupElement === undefined ? undefined : readXmlAttribute(pageSetupElement, name)
+    const value = raw === undefined ? Number.NaN : Number(raw)
+    return Number.isFinite(value) ? value : undefined
+  }
+  const fitToPage = /<pageSetUpPr\b[^>]*\bfitToPage="(1|true)"/i.test(worksheetXml)
+  const orientationRaw = pageSetupElement === undefined ? undefined : readXmlAttribute(pageSetupElement, 'orientation')
+  const pageSetup: SheetPageSetupModel = {
+    ...(orientationRaw === 'portrait' || orientationRaw === 'landscape' ? { orientation: orientationRaw } : {}),
+    ...(pageSetupAttr('paperSize') !== undefined ? { paperSize: pageSetupAttr('paperSize') } : {}),
+    ...(pageSetupAttr('scale') !== undefined ? { scale: pageSetupAttr('scale') } : {}),
+    ...(pageSetupAttr('fitToWidth') !== undefined ? { fitToWidth: pageSetupAttr('fitToWidth') } : {}),
+    ...(pageSetupAttr('fitToHeight') !== undefined ? { fitToHeight: pageSetupAttr('fitToHeight') } : {}),
+    ...(fitToPage ? { fitToPage: true } : {}),
+  }
+
   const pane = worksheetXml.match(/<pane\b([^>]*?)\/?>/)?.[1]
   const freeze =
     pane === undefined
@@ -205,8 +339,35 @@ function parseGeometry(worksheetXml: string) {
           frozenRows: Number(readXmlAttribute(pane, 'ySplit') ?? 0),
           frozenColumns: Number(readXmlAttribute(pane, 'xSplit') ?? 0),
         }
+  // OOXML 默认显示网格线；仅显式 showGridLines="0" 才是隐藏。
+  const sheetView = worksheetXml.match(/<(?:[\w.-]+:)?sheetView\b[^>]*?(?:\/>|>[\s\S]*?<\/(?:[\w.-]+:)?sheetView>)/)?.[0]
+  const showGridlines = sheetView && readXmlAttribute(sheetView, 'showGridLines') === '0' ? false : true
+  const showFormulas = !!sheetView && ['1', 'true'].includes(readXmlAttribute(sheetView, 'showFormulas') ?? '')
+  // 常规视图缩放百分比（OOXML 默认 100）。
+  const zoomScaleRaw = sheetView ? readXmlAttribute(sheetView, 'zoomScale') : undefined
+  const zoomScale = zoomScaleRaw !== undefined && Number.isFinite(Number(zoomScaleRaw)) ? Math.min(Math.max(Number(zoomScaleRaw), 10), 400) : 100
 
-  return { dimension, merges, columns, rows, freeze }
+  // 手动分页符：brk@id 为 0-based 行/列号；man 缺省为 true（Excel 缓存的
+  // 自动分页带 man="0"，排除）。brk 归属其父 rowBreaks/colBreaks 元素。
+  const manualBreaks = (tag: 'rowBreaks' | 'colBreaks'): number[] => {
+    const section = worksheetXml.match(
+      new RegExp(`<(?:[\\w.-]+:)?${tag}\\b[^>]*?(?:/>|>([\\s\\S]*?)</(?:[\\w.-]+:)?${tag}>)`),
+    )
+    const body = section?.[1]
+    if (body === undefined) return []
+    return [...body.matchAll(/<brk\b([^>]*?)\/?>/g)]
+      .map((match) => match[1]!)
+      .filter((attributes) => /^(1|true)$/i.test(readXmlAttribute(attributes, 'man') ?? '1'))
+      .map((attributes) => Number(readXmlAttribute(attributes, 'id') ?? Number.NaN))
+      .filter((id) => Number.isInteger(id) && id > 0)
+      .sort((a, b) => a - b)
+  }
+
+  return {
+    dimension, merges, columns, rows, freeze, showGridlines, zoomScale, ...(showFormulas ? { showFormulas } : {}),
+    margins, printGridlines, printHeadings, pageSetup,
+    rowBreaks: manualBreaks('rowBreaks'), colBreaks: manualBreaks('colBreaks'),
+  }
 }
 
 export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
@@ -219,38 +380,59 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
   const rotatedParent = [...parentStyles.matchAll(/<alignment\b[^>]*\btextRotation=["']([^"']+)["']/g)].some(match => Number(match[1]) !== 0)
   const defaultRotation = styles.cellXfs[0]?.alignment?.textRotation ?? 0
   const disabledAlignment = extractElements(sectionInner(stylesXml, 'cellXfs') ?? '', 'xf').some(xf => ['0', 'false'].includes(readXmlAttribute(xf, 'applyAlignment') ?? '') && /<alignment\b[^>]*\btextRotation=/.test(xf))
+  const indentedParent = [...parentStyles.matchAll(/<alignment\b[^>]*\bindent=["']([^"']+)["']/g)].some(match => Number(match[1]) !== 0)
+  const defaultIndent = styles.cellXfs[0]?.alignment?.indent ?? 0
+  const disabledIndentAlignment = extractElements(sectionInner(stylesXml, 'cellXfs') ?? '', 'xf').some(xf => ['0', 'false'].includes(readXmlAttribute(xf, 'applyAlignment') ?? '') && /<alignment\b[^>]*\bindent=/.test(xf))
   const themePalette = (await source.has('xl/theme/theme1.xml'))
     ? parseThemePalette(await source.readText('xl/theme/theme1.xml'))
     : undefined
 
   const sheets: SheetModel[] = []
-  for (const element of parseSheetElements(workbookXml)) {
+  const sheetPrintNames = readSheetPrintNames(workbookXml)
+  for (const [sheetIndex, element] of parseSheetElements(workbookXml).entries()) {
     if (element.relationshipId === undefined) continue
     const path = await resolveWorksheetPath(source, element.relationshipId)
     const worksheetXml = await source.readText(path)
     const geometry = parseGeometry(worksheetXml)
+    const printNames = sheetPrintNames.get(sheetIndex)
     const inheritedSheetStyle = [...worksheetXml.matchAll(/<(row|col)\b([^>]*)>/g)].some(match => readXmlAttribute(match[2]!, match[1] === 'row' ? 's' : 'style') !== undefined)
     const rotationReadOnly = inheritedSheetStyle || defaultRotation !== 0 || rotatedParent || disabledAlignment
+    const indentReadOnly = inheritedSheetStyle || defaultIndent !== 0 || indentedParent || disabledIndentAlignment
     const conditionalFormats = readCfRules(worksheetXml, element.name)
     const sparklines = readSparklines(worksheetXml)
     const charts = await readCharts(bytes, path)
+    const { notes, sourceIdentity, readOnlyReason } = await readSheetNotes(source, path)
+    const filter = readSheetFilter(worksheetXml)
+    const protection = readSheetProtection(worksheetXml)
     sheets.push({
+      notes: { notes, sourceIdentity, ...(readOnlyReason ? { readOnlyReason } : {}) },
       name: element.name,
       path,
       cells: parseWorksheetCells(worksheetXml, sharedStrings),
       ...geometry,
+      ...(printNames?.printArea !== undefined
+        ? { printArea: stripPrintReferenceSheetPrefix(printNames.printArea) }
+        : {}),
+      ...(printNames?.printTitles !== undefined
+        ? { printTitles: stripPrintReferenceSheetPrefix(printNames.printTitles) }
+        : {}),
       ...(rotationReadOnly ? { rotationReadOnlyReason: 'xlsx_rotation_inherited_style_unsupported' } : {}),
+      ...(indentReadOnly ? { indentReadOnlyReason: 'xlsx_indent_inherited_style_unsupported' } : {}),
       ...(conditionalFormats.length > 0 ? { conditionalFormats } : {}),
       ...(sparklines.length > 0 ? { sparklines } : {}),
       ...(charts.length > 0 ? { charts } : {}),
+      ...(filter ? { filter } : {}),
+      ...(protection ? { protection } : {}),
     })
   }
   if (sheets.length === 0) throw new Error('工作簿没有可读取的工作表。')
   const definedNames = readDefinedNames(workbookXml)
+  const workbookProtection = readWorkbookProtection(workbookXml)
   return {
     sheets,
     styles,
     themePalette,
     ...(definedNames.length > 0 ? { definedNames } : {}),
+    ...(workbookProtection ? { workbookProtection } : {}),
   }
 }

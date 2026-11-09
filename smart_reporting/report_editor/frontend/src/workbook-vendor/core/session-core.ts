@@ -52,6 +52,8 @@ export interface ReadbackSheet {
   columnWidths?: Readonly<Record<number, number | undefined>>
   /// per-row pixel heights keyed by 0-based row index (geometry persistence)
   rowHeights?: Readonly<Record<number, number | undefined>>
+  /// rows the grid sizes automatically (Univer rowData.ia = 1), e.g. after AutoFit Row Height
+  autoHeightRows?: readonly number[]
 }
 
 export interface ReadbackWorkbook {
@@ -712,8 +714,14 @@ export function diffToEdits(model: WorkbookModel, readback: ReadbackWorkbook): C
           : before?.formula !== after.formula || before?.value !== after.value
       const beforeStyle = importedStyleOf(model, sheet.name, address)
       const afterStyle = after?.style
+      // The grid drops a cleared cell's style key entirely (Univer clears are
+      // s:null → the style entry is deleted, not zeroed). With a styled source
+      // cell, a wholly absent read-back style is therefore an explicit clear —
+      // "clear formats/all" — and must reach the file as styleReset (xf 0),
+      // never as the per-key delta that absence-is-inherited would imply.
+      const styleCleared = beforeStyle !== undefined && afterStyle === undefined
       const styleChanged =
-        after !== undefined && !logicalStyleEqual(beforeStyle, afterStyle)
+        after === undefined ? styleCleared : !logicalStyleEqual(beforeStyle, afterStyle)
       if (!changedValue && !styleChanged) continue
 
       const cell = after
@@ -722,7 +730,7 @@ export function diffToEdits(model: WorkbookModel, readback: ReadbackWorkbook): C
           : { value: after.value }
         : { value: null }
       const delta = styleDelta(beforeStyle, afterStyle)
-      if (!changedValue && delta === undefined) continue // no-op: inherited style
+      if (!changedValue && delta === undefined && !styleCleared) continue // no-op: inherited style
       edits.push({
         sheetName: sheet.name,
         row: Number(row) - 1,
@@ -730,6 +738,7 @@ export function diffToEdits(model: WorkbookModel, readback: ReadbackWorkbook): C
         writeValue: changedValue,
         cell,
         ...(delta !== undefined ? { style: delta } : {}),
+        ...(delta === undefined && styleCleared ? { styleReset: true } : {}),
       })
     }
   }

@@ -49,7 +49,10 @@ else:
    assert etree.tostring(t._tbl,method='c14n')==etree.tostring(before.tables[k]._tbl,method='c14n');continue
   expected=[[f'T{k}R{r}C{c}' for c in range(3)] for r in range(3)]
   widths=[2401,3000,3599]
-  if k==0:expected.insert(1,['','',''])
+  if k==0:
+   expected.insert(1,['','',''])
+   for row in expected:row.insert(2,'')
+   expected[2][2]='NEWCELL';widths=[2401,3000,1799,1800]
   if k==1:expected.pop(1)
   if k==2:
    for row in expected:row.insert(1,'')
@@ -63,7 +66,7 @@ else:
   original={cell.text:etree.tostring(cell.paragraphs[0]._p,method='c14n') for row in before.tables[k].rows for cell in row.cells}
   for row in t.rows:
    for cell in row.cells:
-    if cell.text:assert etree.tostring(cell.paragraphs[0]._p,method='c14n')==original[cell.text]
+    if cell.text in original:assert etree.tostring(cell.paragraphs[0]._p,method='c14n')==original[cell.text]
   report.append({'table':k,'matrix':matrix,'widthsTwips':widths})
  assert [p.text for p in after.paragraphs]==[p.text for p in before.paragraphs]
  with ZipFile(p['source']) as a,ZipFile(p['output']) as b:
@@ -117,22 +120,30 @@ try {
       await page.keyboard.press('Control+z'); await locate(k)
     }
     await control(action).click()
-    assert.equal(await control('table-insert-row-before').isDisabled(), true, JSON.stringify({ k, live: await page.evaluate(() => document.querySelector('.tiptap').editor.getJSON().content.filter(node => node.type === 'docTable').map(node => node.attrs.nativeTableStructure)), events: await page.evaluate(() => window.tableEvents), rows: await table(k).locator('tr').count(), notice: await page.locator('.docx-notice').innerText(), title: await control('table-insert-row-before').getAttribute('title'), html: (await table(k).innerHTML()).slice(0, 250) }))
-    assert.match(await control('table-insert-row-before').getAttribute('title'), /新修订/)
+    // 多步：同表结构修改后仍可继续修改（不必保存重开）。
+    assert.equal(await control('table-insert-row-before').isEnabled(), true, JSON.stringify({ k, live: await page.evaluate(() => document.querySelector('.tiptap').editor.getJSON().content.filter(node => node.type === 'docTable').map(node => node.attrs.nativeTableStructure)), events: await page.evaluate(() => window.tableEvents), rows: await table(k).locator('tr').count(), notice: await page.locator('.docx-notice').innerText(), title: await control('table-insert-row-before').getAttribute('title'), html: (await table(k).innerHTML()).slice(0, 250) }))
     if (k === 0) {
       await page.keyboard.press('Control+z'); assert.equal(await table(0).locator('tr').count(), 3)
       await page.keyboard.press('Control+Shift+z'); assert.equal(await table(0).locator('tr').count(), 4)
       await page.reload(); await page.locator('.docx-source-home').waitFor({ timeout: 60000 })
       assert.equal(await table(0).locator('tr').count(), 4)
-      await locate(0); assert.equal(await control(action).isDisabled(), true)
-      const text = await table(0).innerText(); await page.keyboard.type('forbidden'); assert.equal(await table(0).innerText(), text)
+      // 刷新后草稿恢复，继续第二步：在 T0R1C1 右侧插入列并在新单元格输入。
+      await locate(0); assert.equal(await control('table-insert-column-after').isEnabled(), true)
+      await control('table-insert-column-after').click()
+      await page.keyboard.type('NEWCELL')
+      assert.equal(await table(0).locator('tr').nth(2).locator('td, th').nth(2).innerText(), 'NEWCELL')
     }
   }
   await locate(4, 'R1C1'); assert.equal(await control('table-delete-row').isDisabled(), true)
   assert.equal(await control('table-merge-cells').isDisabled(), true)
   const save = page.locator('[data-action="save"]')
   await save.click(); await page.getByRole('link', { name: '下载 Word', exact: true }).waitFor({ timeout: 60000 })
-  assert.deepEqual(payload.operations.map(op => [op.kind, op.index]), [['insertTableRow', 1], ['deleteTableRow', 1], ['insertTableColumn', 1], ['deleteTableColumn', 1]])
+  assert.deepEqual(payload.operations.map(op => [op.kind, op.steps, op.texts]), [
+    ['restructureTable', [{ kind: 'insertTableRow', index: 1 }, { kind: 'insertTableColumn', index: 2 }], [{ row: 2, column: 2, text: 'NEWCELL' }]],
+    ['restructureTable', [{ kind: 'deleteTableRow', index: 1 }], undefined],
+    ['restructureTable', [{ kind: 'insertTableColumn', index: 1 }], undefined],
+    ['restructureTable', [{ kind: 'deleteTableColumn', index: 1 }], undefined],
+  ])
   const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('link', { name: '下载 Word', exact: true }).click()])
   const bytes = await readFile(await download.path()); assert.equal(sha(bytes), sha(saved))
   const readback = JSON.parse(python({ mode: 'verify', source: sourcePath, output: savedPath }))

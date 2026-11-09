@@ -109,3 +109,22 @@ describe('geometry writers（列宽/行高落盘）', () => {
     ).rejects.toThrow('0–409')
   })
 })
+
+describe('row height reset to automatic', () => {
+  it('drops ht/customHeight on an existing row and keeps its cells and other attributes', async () => {
+    let bytes = await applyCellEdits(await createBlankWorkbook(), [
+      { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 'keep' } },
+    ])
+    bytes = await applyRowHeights(bytes, 'Sheet1', [{ index: 1, heightPoints: 45 }, { index: 3, heightPoints: 20 }])
+    const sized = await (await JSZip.loadAsync(bytes)).file('xl/worksheets/sheet1.xml')!.async('string')
+    expect(sized.match(/<row\b[^>]*\br="2"[^>]*>/)![0]).toContain('customHeight="1"')
+    bytes = await applyRowHeights(bytes, 'Sheet1', [{ index: 1, heightPoints: null }, { index: 7, heightPoints: null }])
+    const xml = await (await JSZip.loadAsync(bytes)).file('xl/worksheets/sheet1.xml')!.async('string')
+    const row2 = xml.match(/<row\b[^>]*\br="2"[^>]*>[\s\S]*?<\/row>/)![0]
+    expect(row2).not.toMatch(/\bht=|customHeight=/)
+    expect(row2).toContain('keep')
+    expect(xml.match(/<row\b[^>]*\br="4"[^>]*>/)![0]).toContain('ht="20')
+    expect(xml).not.toMatch(/r="8"/)
+    await expect(applyRowHeights(bytes, 'Sheet1', [{ index: 1, heightPoints: 0 }])).rejects.toThrow('行高')
+  })
+})

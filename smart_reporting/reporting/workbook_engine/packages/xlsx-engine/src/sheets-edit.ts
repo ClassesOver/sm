@@ -241,7 +241,11 @@ export function applySheetPlanToWorkbookXml(
   }
   for (const addition of additions) {
     finalElements.set(addition.name, {
-      xml: `<sheet name="${escapeXmlAttribute(addition.name)}" sheetId="${addition.sheetId}" r:id="${addition.relationshipId}"/>`,
+      // Declare the relationships prefix on the element itself: producers such as
+      // openpyxl bind xmlns:r per <sheet> rather than on <workbook>, and an
+      // undeclared r:id makes the whole workbook unreadable (found by the
+      // real-browser smoke: add sheet + save on an openpyxl source).
+      xml: `<sheet xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" name="${escapeXmlAttribute(addition.name)}" sheetId="${addition.sheetId}" r:id="${addition.relationshipId}"/>`,
       hidden: false,
     })
   }

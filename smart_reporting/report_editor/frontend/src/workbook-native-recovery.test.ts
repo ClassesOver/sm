@@ -4,10 +4,12 @@ import { applyWorkbookOperations } from '../../../reporting/workbook_engine/brid
 import { createWorkbookEditorView } from './workbook-main'
 import { createNativeOfficeTransport } from './native-office-view'
 import { NativeDraft, type NativeDraftIdentity, type NativeSaveRequest } from './native-draft'
+import { validateWorkbookReplacement } from './workbook-find-replace'
+import { openFindReplace } from './workbook-vendor/grid/sync'
 import { createEditorShell } from './shell'
 
-const grid = vi.hoisted(() => ({ snapshot: undefined as any, listener: (_command: any) => {} }))
-vi.mock('@univerjs/core', () => ({ LocaleType: { ZH_CN: 'zhCN' }, mergeLocales: () => ({}) }))
+const grid = vi.hoisted(() => ({ snapshot: undefined as any, listener: (_command: any, _options?: any) => {}, before: (_command: any) => {} }))
+vi.mock('@univerjs/core', async importOriginal => ({ ...(await importOriginal<typeof import('@univerjs/core')>()), LocaleType: { ZH_CN: 'zhCN' }, mergeLocales: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
@@ -20,7 +22,9 @@ vi.mock('./workbook-vendor/grid/create-univer', () => ({ createUniver: () => {
   const worksheet = { getSheetName: () => 'Sheet1' }
   const workbook = { getId: () => 'report-workbook', getSnapshot: () => grid.snapshot,
     getSheets: () => [worksheet], getSheetBySheetId: () => worksheet }
-  return { univer: { dispose() {} }, univerAPI: { getActiveWorkbook: () => grid.snapshot ? workbook : null,
+  return { univer: { dispose() {} }, univerAPI: { Event: { BeforeCommandExecute: 'BeforeCommandExecute' },
+    addEvent(_event: string, listener: typeof grid.before) { grid.before = listener; return { dispose() {} } },
+    getActiveWorkbook: () => grid.snapshot ? workbook : null,
     disposeUnit() {}, createWorkbook(data: unknown) { grid.snapshot = structuredClone(data); return workbook },
     onCommandExecuted(listener: typeof grid.listener) { grid.listener = listener; return { dispose() {} } } } }
 } }))
@@ -224,10 +228,220 @@ it('persists the grid mutations emitted by Univer undo and redo into the same na
   view.view?.dispose()
 })
 
+it('persists number-format mutations through Undo Redo refresh and format-only save', async () => {
+  source = await applyCellEdits(source, [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 1234.567 } },
+    { sheetName: 'Sheet1', row: 0, column: 1, writeValue: true, cell: { value: null, formula: '=A1*2' } },
+  ])
+  const storage = store(), draft = new NativeDraft(identity, storage)
+  const first = await open(draft, async () => { throw Error('不应保存') })
+  const before = structuredClone(grid.snapshot), id = grid.snapshot.sheetOrder[0]
+  grid.snapshot.styles.customNumber = { ...(grid.snapshot.styles[grid.snapshot.sheets[id].cellData[0][0].s] ?? {}), n: { pattern: '#,##0.000' } }
+  grid.snapshot.sheets[id].cellData[0][0].s = 'customNumber'
+  const after = structuredClone(grid.snapshot)
+  grid.listener({ id: 'sheet.mutation.set.numfmt', params: {} })
+  await vi.waitFor(() => expect(draft.operations[0]).toMatchObject({ kind: 'applyCellEdits', edits: [{ row: 0, column: 0, writeValue: false, style: { numberFormat: '#,##0.000' } }] }))
+  grid.snapshot = before
+  grid.listener({ id: 'sheet.mutation.remove.numfmt', params: { trigger: 'univer.command.undo' } })
+  await vi.waitFor(() => expect(draft.operations).toEqual([]))
+  grid.snapshot = after
+  grid.listener({ id: 'sheet.mutation.set.numfmt', params: { trigger: 'univer.command.redo' } })
+  await vi.waitFor(() => expect(draft.operations).not.toEqual([]))
+  first.view?.dispose()
+  let downloaded: Uint8Array | undefined
+  const restored = await open(new NativeDraft(identity, storage), async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: {}, validation: { issues: [] } }
+  })
+  const cell = grid.snapshot.sheets[id].cellData[0][0]
+  expect(grid.snapshot.styles[cell.s].n.pattern).toBe('#,##0.000')
+  expect(cell.v).toBe(1234.567)
+  expect(grid.snapshot.sheets[id].cellData[0][1].f).toBe('=A1*2')
+  restored.shell.save.click()
+  await vi.waitFor(() => expect(restored.shell.statusLabel.textContent).toContain('已保存修订 2'))
+  const saved = await readWorkbook(downloaded!)
+  expect(saved.sheets[0].cells.A1.value).toBe(1234.567)
+  expect(saved.sheets[0].cells.B1.formula).toBe('=A1*2')
+  restored.view?.dispose()
+})
+
 it('rejects an XLSX draft bound to a different source before applying its operations', async () => {
   const draft = new NativeDraft({ ...identity, sourceSha256: 'b'.repeat(64) }, store())
   draft.setOperations([{ kind: 'applyCellEdits', edits: [{ sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: '外来来源' } }] }])
   await expect(open(draft, async () => { throw Error('不应保存') })).rejects.toThrow('工作簿来源已变化')
   expect(grid.snapshot).toBeUndefined()
   expect(draft.operations[0]).toMatchObject({ edits: [{ cell: { value: '外来来源' } }] })
+})
+
+it('uses the public facade for Find/Replace and propagates dialog failures', async () => {
+  const executeCommand = vi.fn(async () => true)
+  const runtime = { univerAPI: { executeCommand } } as any
+  await openFindReplace(runtime, false)
+  await openFindReplace(runtime, true)
+  expect(executeCommand.mock.calls).toEqual([['ui.operation.open-find-dialog'], ['ui.operation.open-replace-dialog']])
+  executeCommand.mockResolvedValueOnce(false)
+  await expect(openFindReplace(runtime, false)).rejects.toThrow('面板未能打开')
+})
+
+it('preflights the official multi-sheet payload, captures mutations, and restores replacements after refresh', async () => {
+  source = await applyWorkbookOperations(source, [{ kind: 'applySheetEdits', plan: { renames: [], additions: [{ name: 'Other' }], removals: [], order: ['Sheet1', 'Other'] } }])
+  source = await applyCellEdits(source, [
+    { sheetName: 'Sheet1', row: 0, column: 1, writeValue: true, cell: { value: 42 } },
+    { sheetName: 'Sheet1', row: 0, column: 2, writeValue: true, cell: { value: true } },
+    { sheetName: 'Other', row: 0, column: 0, writeValue: true, cell: { value: null, formula: '=1+1' } },
+  ])
+  const storage = store(), draft = new NativeDraft(identity, storage)
+  const first = await open(draft, async () => { throw Error('不应保存') })
+  const ids = grid.snapshot.sheetOrder
+  const payload = { unitId: grid.snapshot.id, replacements: [
+    { subUnitId: ids[0], count: 1, value: { 0: { 0: { v: '替换后' } } } },
+    { subUnitId: ids[1], count: 1, value: { 0: { 0: { f: '=2+2', v: null } } } },
+  ] }
+  const event = { id: 'sheet.command.replace', params: payload, cancel: false }
+  grid.before(event)
+  expect(event.cancel).toBe(false)
+  const before = structuredClone(grid.snapshot)
+  for (const replacement of payload.replacements) {
+    const cells = grid.snapshot.sheets[replacement.subUnitId].cellData
+    cells[0][0] = { ...cells[0][0], ...replacement.value[0][0] }
+    grid.listener({ id: 'sheet.mutation.set-range-values', params: { subUnitId: replacement.subUnitId } })
+  }
+  await vi.waitFor(() => expect((draft.operations[0] as any).edits).toHaveLength(2))
+  const after = structuredClone(grid.snapshot)
+  grid.snapshot = before
+  grid.listener({ id: 'sheet.mutation.set-range-values', params: { trigger: 'univer.command.undo' } })
+  await vi.waitFor(() => expect(draft.operations).toEqual([]))
+  grid.snapshot = after
+  grid.listener({ id: 'sheet.mutation.set-range-values', params: { trigger: 'univer.command.redo' } })
+  await vi.waitFor(() => expect(draft.operations).not.toEqual([]))
+  first.view?.dispose()
+  const restored = await open(new NativeDraft(identity, storage), async () => { throw Error('不应保存') })
+  const model = await readWorkbook(await applyWorkbookOperations(source, draft.operations))
+  expect(model.sheets[0].cells.A1.value).toBe('替换后')
+  expect(model.sheets[0].cells.B1.value).toBe(42)
+  expect(model.sheets[0].cells.C1.value).toBe(true)
+  expect(model.sheets[1].cells.A1.formula).toBe('=2+2')
+  expect(grid.snapshot.sheets[ids[0]].cellData[0][0].v).toBe('替换后')
+  restored.view?.dispose()
+})
+
+it('rejects foreign, rich-text and over-budget official payloads without changing grid or draft', async () => {
+  const draft = new NativeDraft(identity, store())
+  const view = await open(draft, async () => { throw Error('不应保存') })
+  const before = structuredClone(grid.snapshot), id = grid.snapshot.sheetOrder[0]
+  const payload = (cell: unknown) => ({ unitId: grid.snapshot.id, replacements: [{ subUnitId: id, count: 1, value: { 0: { 0: cell } } }] })
+  for (const params of [
+    { ...payload({ v: 'foreign' }), unitId: 'foreign' },
+    payload({ p: { body: { dataStream: 'rich\r\n' } } }),
+    payload({ v: 'x'.repeat(10 * 1024 * 1024) }),
+  ]) {
+    const event = { id: 'sheet.command.replace', params, cancel: false }
+    grid.before(event)
+    expect(event.cancel).toBe(true)
+    expect(grid.snapshot).toEqual(before)
+    expect(draft.operations).toEqual([])
+  }
+  const model = await readWorkbook(source)
+  expect(() => validateWorkbookReplacement({ id: 'sheet.command.replace', params: payload({ v: 'valid' }) }, before, model, [], 500)).toThrow('预算')
+  // A cancelled/no-match single replacement must not poison later ordinary edits.
+  grid.before({ id: 'ui.command.replace-current-match' })
+  await Promise.resolve()
+  const edit = { id: 'sheet.command.set-range-values', params: {}, cancel: false }
+  grid.before(edit)
+  expect(edit.cancel).toBe(false)
+  view.view?.dispose()
+})
+
+it('blocks Replace through the official dialog while locked but leaves Find usable', async () => {
+  const draft = new NativeDraft(identity, store())
+  const view = await open(draft, async () => { throw Error('不应保存') })
+  view.shell.editor.inert = true
+  for (const id of ['ui.operation.open-replace-dialog', 'ui.command.replace-current-match', 'ui.command.replace-all-matches', 'sheet.command.replace']) {
+    const event = { id, cancel: false }
+    grid.before(event)
+    expect(event.cancel).toBe(true)
+  }
+  const find = { id: 'ui.operation.open-find-dialog', cancel: false }
+  grid.before(find)
+  expect(find.cancel).toBe(false)
+  view.view?.dispose()
+})
+
+
+it('excludes formula inferred formats from cross-sheet drafts while keeping explicit formats Undo Redo and refresh', async () => {
+  source = await applyWorkbookOperations(await createBlankWorkbook(), [
+    { kind: 'applySheetEdits', plan: { renames: [{ sheetName: 'Sheet1', newName: 'Summary' }], additions: [{ name: 'Details' }], removals: [], order: ['Summary', 'Details'] } },
+    { kind: 'applyCellEdits', edits: [
+      { sheetName: 'Summary', row: 0, column: 0, writeValue: true, cell: { value: 1234.567 }, style: { numberFormat: '#,##0.00' } },
+      { sheetName: 'Details', row: 0, column: 0, writeValue: true, cell: { value: null, formula: '=Summary!A1' }, style: { bold: true, fontFamily: 'Arial', fontSize: 16, fontColor: '#AA2200', fillColor: '#EEEECC' } },
+    ] },
+  ])
+  const storage = store(), draft = new NativeDraft(identity, storage)
+  const first = await open(draft, async () => { throw Error('not saving yet') })
+  const [summary, details] = grid.snapshot.sheetOrder
+  const styleOf = (sheet: string) => { const cell = grid.snapshot.sheets[sheet].cellData[0][0]; return grid.snapshot.styles[cell.s] ?? {} }
+  const calculate = () => {
+    const options = { onlyLocal: true, fromFormula: true, applyFormulaCalculationResult: true }
+    const incoming = { v: 1234.567, t: 2, s: { n: { pattern: '#,##0.00' } } }
+    const event: any = { id: 'sheet.mutation.set-range-values', options, params: { unitId: grid.snapshot.id, subUnitId: details, trigger: 'formula-result', cellValue: { 0: { 0: incoming } } } }
+    grid.before(event)
+    expect(event.cancel).not.toBe(true)
+    expect(event.params.trigger).toBe('formula-result')
+    expect(incoming.s.n.pattern).toBe('#,##0.00')
+    const result = event.params.cellValue[0][0]
+    const cell = grid.snapshot.sheets[details].cellData[0][0]
+    const style = { ...styleOf(details), ...result.s }
+    const id = `calculated-${Object.keys(grid.snapshot.styles).length}`
+    grid.snapshot.styles[id] = style
+    Object.assign(cell, result, { s: id })
+    grid.listener(event, options)
+  }
+  calculate()
+  await Promise.resolve(); await Promise.resolve()
+  expect(draft.operations).toEqual([])
+  expect(first.shell.statusLabel.textContent).toBe('已保存')
+  expect(styleOf(details)).toEqual({ bl: 1, ff: 'Arial', fs: 16, cl: { rgb: '#AA2200' }, bg: { rgb: '#EEEECC' } })
+  const before = structuredClone(grid.snapshot)
+  const setFormat = (sheet: string, pattern: string) => {
+    const id = `user-format-${Object.keys(grid.snapshot.styles).length}`
+    grid.snapshot.styles[id] = { ...styleOf(sheet), n: { pattern } }
+    grid.snapshot.sheets[sheet].cellData[0][0].s = id
+    grid.listener({ id: 'sheet.mutation.set.numfmt', params: { subUnitId: sheet, trigger: 'sheet.command.numfmt.set.numfmt' } })
+  }
+  setFormat(summary, '#,##0.0000')
+  calculate()
+  await vi.waitFor(() => expect(draft.operations).toMatchObject([{ kind: 'applyCellEdits', edits: [{ sheetName: 'Summary', writeValue: false, style: { numberFormat: '#,##0.0000' } }] }]))
+  expect((draft.operations[0] as any).edits).toHaveLength(1)
+  const after = structuredClone(grid.snapshot)
+  grid.snapshot = before
+  grid.listener({ id: 'sheet.mutation.set.numfmt', params: { trigger: 'univer.command.undo' } })
+  await vi.waitFor(() => expect(draft.operations).toEqual([]))
+  grid.snapshot = after
+  grid.listener({ id: 'sheet.mutation.set.numfmt', params: { trigger: 'univer.command.redo' } })
+  await vi.waitFor(() => expect(draft.operations).toHaveLength(1))
+  setFormat(details, 'General')
+  calculate()
+  await vi.waitFor(() => expect((draft.operations[0] as any).edits).toHaveLength(2))
+  expect((draft.operations[0] as any).edits.find((edit: any) => edit.sheetName === 'Details')).toMatchObject({ writeValue: false, style: { numberFormat: 'General' } })
+  expect(styleOf(details)).toMatchObject({ bl: 1, n: { pattern: 'General' } })
+  first.shell.editor.inert = true
+  calculate()
+  expect(styleOf(details).n.pattern).toBe('General')
+  first.view?.dispose()
+  const recovered = new NativeDraft(identity, storage)
+  let payload: NativeSaveRequest | undefined
+  const restored = await open(recovered, async request => { payload = request; throw Error('inspect payload') })
+  calculate()
+  await Promise.resolve(); await Promise.resolve()
+  expect(recovered.operations).toEqual(draft.operations)
+  restored.shell.save.click()
+  await vi.waitFor(() => expect(payload).toBeDefined())
+  const edits = (payload!.operations[0] as any).edits
+  expect(edits).toHaveLength(2)
+  expect(edits.find((edit: any) => edit.sheetName === 'Summary').style).toEqual({ numberFormat: '#,##0.0000' })
+  expect(edits.find((edit: any) => edit.sheetName === 'Details').style).toEqual({ numberFormat: 'General' })
+  const saved = await readWorkbook(await applyWorkbookOperations(source, payload!.operations))
+  expect(saved.sheets[1].cells.A1.formula).toBe('=Summary!A1')
+  expect(saved.sheets[0].cells.A1.value).toBe(1234.567)
+  restored.view?.dispose()
 })

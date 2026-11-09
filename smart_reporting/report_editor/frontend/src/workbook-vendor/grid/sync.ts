@@ -11,7 +11,7 @@ import type { UniverStyleData } from '../core/style-map'
 import { fromUniverStyle, univerBorderStyleId } from '../core/style-map'
 import type { ReadbackWorkbook, ReadbackCell } from '../core/session-core'
 import type { UniverWorkbookData } from '../core/univer-data'
-import { engineCfToUniverRule } from '../core/univer-data'
+import { engineCfToUniverRule, type UniverColumnData, type UniverRowData } from '../core/univer-data'
 import { setSparklines } from './sparkline-render'
 import { setCharts } from './chart-render'
 import type { UniverRuntime } from './create-univer'
@@ -177,13 +177,18 @@ export function readBack(runtime: UniverRuntime | null): ReadbackWorkbook {
   const empty: ReadbackWorkbook = { sheets: [] }
   const workbook = facadeOf(runtime)?.getActiveWorkbook()
   if (!workbook) return empty
-  const snapshot = workbook.getSnapshot() as {
+  return readBackSnapshot(workbook.getSnapshot())
+}
+
+/** Shared projection for save capture and preflight of official replacement payloads. */
+export function readBackSnapshot(data: unknown): ReadbackWorkbook {
+  const snapshot = data as {
     sheets?: Record<string, {
       name?: string
       cellData?: Record<number, Record<number, { v?: unknown; f?: string; s?: string } | undefined>>
       mergeData?: Array<{ startRow: number; startColumn: number; endRow: number; endColumn: number }>
-      columnData?: Record<string, { width?: number | undefined; hidden?: boolean | undefined }>
-      rowData?: Record<string, { height?: number | undefined; hidden?: boolean | undefined }>
+      columnData?: Record<string, UniverColumnData | undefined>
+      rowData?: Record<string, UniverRowData | undefined>
     }>
     sheetOrder?: string[]
     styles?: Record<string, UniverStyleData>
@@ -206,7 +211,8 @@ export function readBack(runtime: UniverRuntime | null): ReadbackWorkbook {
             : typeof rawValue === 'number' || typeof rawValue === 'boolean'
               ? rawValue
               : String(rawValue)
-        const style = cell.s !== undefined ? fromUniverStyle(styles[cell.s] ?? {}) : undefined
+        // Univer 移动单元格（插入/删除单元格移位、拖动）后 s 可为内联样式对象而非样式 id。
+        const style = cell.s != null ? fromUniverStyle(typeof cell.s === 'string' ? styles[cell.s] ?? {} : cell.s) : undefined
         cells[address] = {
           value,
           ...(formula !== undefined ? { formula } : {}),
@@ -227,11 +233,13 @@ export function readBack(runtime: UniverRuntime | null): ReadbackWorkbook {
       }))
     const columnWidths: Record<number, number | undefined> = {}
     for (const [columnKey, column] of Object.entries(sheet.columnData ?? {})) {
-      if (column?.width !== undefined) columnWidths[Number(columnKey)] = column.width
+      if (column?.w !== undefined) columnWidths[Number(columnKey)] = column.w
     }
     const rowHeights: Record<number, number | undefined> = {}
+    const autoHeightRows: number[] = []
     for (const [rowKey, row] of Object.entries(sheet.rowData ?? {})) {
-      if (row?.height !== undefined) rowHeights[Number(rowKey)] = row.height
+      if (row?.ia === 1) autoHeightRows.push(Number(rowKey))
+      else if (row?.h !== undefined) rowHeights[Number(rowKey)] = row.h
     }
     return [{
       name: sheet.name,
@@ -239,6 +247,7 @@ export function readBack(runtime: UniverRuntime | null): ReadbackWorkbook {
       ...(merges.length > 0 ? { merges } : {}),
       ...(Object.keys(columnWidths).length > 0 ? { columnWidths } : {}),
       ...(Object.keys(rowHeights).length > 0 ? { rowHeights } : {}),
+      ...(autoHeightRows.length > 0 ? { autoHeightRows } : {}),
     }]
   })
   return { sheets }
@@ -334,16 +343,8 @@ export function activeSheetName(runtime: UniverRuntime | null): string | undefin
 /// `ui.operation.open-find-dialog` / `open-replace-dialog`). The operation's
 /// handler calls findReplaceService.start(), which lazily initializes the
 /// provider controller, so the panel appears on first use.
-export function openFindReplace(runtime: UniverRuntime | null, replace: boolean): void {
-  if (!runtime) return
-  const commandService = (
-    runtime.univerAPI as unknown as {
-      _commandService?: { executeCommand(id: string): Promise<boolean> }
-    }
-  )._commandService
-  if (!commandService) return
+export async function openFindReplace(runtime: UniverRuntime | null, replace: boolean): Promise<void> {
+  if (!runtime) throw new Error('工作簿尚未就绪')
   const operation = replace ? 'ui.operation.open-replace-dialog' : 'ui.operation.open-find-dialog'
-  void commandService.executeCommand(operation).catch(() => {
-    // preset not ready yet: next toolbar click will succeed
-  })
+  if (!await runtime.univerAPI.executeCommand(operation)) throw new Error('查找/替换面板未能打开，请重试')
 }

@@ -919,5 +919,13 @@
   "packages/ui/src/popover-dismiss.ts": {
     "upstream": "packages/ui/src/popover-dismiss.ts",
     "sha256": "581b8f1fe677bb95eeee57b6f495df48e3a20e84b2d62f57e3412e3f60e527db"
+  },
+  "apps/docs/src/renderer/editor/new-table.ts": {
+    "upstream": "apps/docs/src/renderer/editor/new-table.ts",
+    "sha256": "b4454475492477aa835b1ac98e031236b17aa4989103cfe2bca9294a3619cb43"
+  },
+  "apps/docs/src/renderer/editor/cover-pages.ts": {
+    "upstream": "apps/docs/src/renderer/editor/cover-pages.ts",
+    "sha256": "d3b4fd06b80a5f6f34cc7238be6d9b6784b1ce0e74259c13628796baaf5a101b"
   }
 }
