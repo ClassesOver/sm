@@ -21,5 +21,6 @@
   "packages/xlsx-engine/src/page-setup.ts": "894442d9e6976584db3f0e316e8d2663ebfc16bbb978b1714f630a4298427919",
   "packages/xlsx-engine/tests/protection-page-setup.test.ts": "d5fdbc87bec238bd75c9c88f014167c5cc54f299e22f505b329db499ee3fa06a",
   "packages/xlsx-engine/src/geometry.ts": "d637793629d80af7efe9ae29d76713ddf2721bfef2eb68f86c1778a6de0ec2e0",
-  "packages/xlsx-engine/tests/geometry.test.ts": "a64a51e49c9a33729a2da27e63c00a06fe68b935e14b25b2f74a28fca32d4443"
+  "packages/xlsx-engine/tests/geometry.test.ts": "a64a51e49c9a33729a2da27e63c00a06fe68b935e14b25b2f74a28fca32d4443",
+  "packages/xlsx-engine/src/sheets-edit.ts": "bd016a5ea9ccccd15ee7a447a3098ebbe59afacc555f9af6360d6ced8f0464a8"
 }

@@ -29,3 +29,9 @@ automatic height (drops `ht`/`customHeight` on the row element, cells and other
 attributes kept; rows the file never sized are left alone). Used by the editor's
 AutoFit Row Height. `src/geometry.ts` and `tests/geometry.test.ts` are pinned in
 UPSTREAM-PATCHES-SHA256.json.
+
+2026-11-09 `applySheetEdits` writes new `<sheet>` elements with their own
+`xmlns:r` declaration. openpyxl binds the relationships prefix per `<sheet>`
+rather than on `<workbook>`, so an added sheet without it left `r:id` unbound
+and the whole workbook unreadable. `src/sheets-edit.ts` is pinned in
+UPSTREAM-PATCHES-SHA256.json.

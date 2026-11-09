@@ -29,13 +29,16 @@ elif payload['mode'] == 'patch':
     from smart_reporting.report_editor.native_office import patch_office
     print(base64.b64encode(patch_office('xlsx', base64.b64decode(payload['bytes']), payload['operations'])).decode())
 else:
-    s = load_workbook(BytesIO(base64.b64decode(payload['bytes']))).active
+    book = load_workbook(BytesIO(base64.b64decode(payload['bytes']))); s = book['Summary']
     print(json.dumps({
       'A1': [s['A1'].value, s['A1'].font.bold, s['A1'].alignment.indent],
       'A2': [s['A2'].value, s['A2'].font.bold, s['A2'].alignment.indent],
       'C1': [s['C1'].value, s['C1'].font.bold],
       'row1': s.row_dimensions[1].height, 'row2': [s.row_dimensions[2].height, s.row_dimensions[2].customHeight],
-      'colB': round(s.column_dimensions['B'].width or 0, 2), 'colD': round(s.column_dimensions['D'].width or 0, 2)}))
+      'colB': round(s.column_dimensions['B'].width or 0, 2), 'colD': round(s.column_dimensions['D'].width or 0, 2),
+      'A3': [s['A3'].value, s['A3'].font.bold, s['A3'].alignment.indent], 'B3': [s['B3'].value, s['B3'].font.bold, s['B3'].alignment.indent],
+      'E1': [s['E1'].value, s['E1'].font.bold], 'F1': s['F1'].value,
+      'sheets': book.sheetnames, 'newSheetA1': [book.worksheets[-1]['A1'].value, book.worksheets[-1]['A1'].font.bold] if len(book.worksheets) > 1 else None}))
 `], { cwd: repo, env: { ...process.env, PYTHONPATH: repo }, input: JSON.stringify(input), encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(result.stderr || `python exited ${result.status}`)
   return result.stdout.trim()
@@ -75,7 +78,7 @@ try {
   // 网格内坐标（截图核对：行头宽 46px、列头高 20px；A 88px、B 为文件 30 字符宽、C/D 88px；
   // 第 2 行为文件 40 磅）。第 1 行改为 30 磅（40px）后第 2 行下移。
   const clickCell = async (x, y) => { await page.locator('.workbook-grid').click({ position: { x, y } }); await delay(300) }
-  const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32]
+  const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32], A3 = [90, 109], B3 = [240, 109], E1 = [569, 32]
 
   // 1. 缩进：A1 增加两级。
   await clickCell(...A1); await command('indent-step:increase'); await command('indent-step:increase')
@@ -86,6 +89,22 @@ try {
   assert.equal(await page.locator('[data-ribbon-command="format-painter"]').getAttribute('aria-pressed'), 'true')
   await clickCell(...A2)
   assert.equal(await page.locator('[data-ribbon-command="format-painter"]').getAttribute('aria-pressed'), 'false', '单次格式刷应用后自动解除')
+  // 2b. 锁定格式刷（双击）：A1 格式连续刷到 A3、B3，Esc 取消。
+  await clickCell(...A1)
+  await page.locator('[data-ribbon-command="format-painter"]').dblclick()
+  await page.waitForFunction(() => /格式刷已锁定/.test(document.querySelector('.workbook-feedback')?.textContent ?? ''), null, { timeout: 10000 })
+  await clickCell(...A3); await clickCell(...B3)
+  assert.equal(await page.locator('[data-ribbon-command="format-painter"]').getAttribute('aria-pressed'), 'true', '锁定格式刷连续应用后仍保持')
+  await page.keyboard.press('Escape'); await delay(300)
+  assert.equal(await page.locator('[data-ribbon-command="format-painter"]').getAttribute('aria-pressed'), 'false', 'Esc 取消锁定格式刷')
+  // 2c. 外部富文本粘贴：系统剪贴板写入 HTML 表格，粘贴到 E1。
+  await page.evaluate(async () => {
+    const html = '<table><tr><td><b>外部</b></td><td>2</td></tr></table>'
+    await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob(['外部\t2'], { type: 'text/plain' }) })])
+  })
+  await clickCell(...E1); await command('paste')
+  await page.waitForFunction(() => /已粘贴|剪贴板|Cannot/.test(document.querySelector('.workbook-feedback')?.textContent ?? ''), null, { timeout: 15000 })
+  const externalPasteFeedback = await feedback()
   // 3. 行高对话框：第 1 行 30 磅。
   await clickCell(...A1); await command('row-height-open')
   await page.locator('.workbook-ribbon-axis-value').fill('30'); await page.locator('.workbook-ribbon-axis-dialog .workbook-ribbon-format-apply').click()
@@ -103,12 +122,21 @@ try {
   await clickCell(...C1); await command('paste')
   await page.waitForFunction(() => /已粘贴|剪贴板|Cannot/.test(document.querySelector('.workbook-feedback')?.textContent ?? ''), null, { timeout: 15000 })
   const pasteFeedback = await feedback()
+  // 7. 跨工作表：A1 复制后新建工作表并粘贴到新表 A1。
+  await clickCell(...A1); await command('copy')
+  await page.waitForFunction(() => /已复制/.test(document.querySelector('.workbook-feedback')?.textContent ?? ''), null, { timeout: 10000 })
+  // 功能区无"插入工作表"按钮；用 Univer 工作表栏左下角的"+"新增工作表（新表成为活动表）。
+  const grid = await page.locator('.workbook-grid').boundingBox()
+  await page.mouse.click(grid.x + 35, grid.y + grid.height - 18); await delay(1000)
+  await clickCell(...A1); await command('paste')
+  await page.waitForFunction(() => /已粘贴|剪贴板|Cannot/.test(document.querySelector('.workbook-feedback')?.textContent ?? ''), null, { timeout: 15000 })
+  const crossSheetFeedback = await feedback()
 
   await page.locator('[data-action="save"]').click()
   await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 })
   const download = await page.evaluate(async () => { const r = await fetch('/fixture-gui-download.xlsx'); return Array.from(new Uint8Array(await r.arrayBuffer())) })
   const reopened = JSON.parse(python({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
-  const result = { ok: true, browserVersion: browser.version(), pasteFeedback, operationKinds: savePayload.operations.map(op => op.kind), reopened, pageErrors }
+  const result = { ok: true, browserVersion: browser.version(), pasteFeedback, externalPasteFeedback, crossSheetFeedback, operationKinds: savePayload.operations.map(op => op.kind), reopened, pageErrors }
   console.log(JSON.stringify(result))
   assert.deepEqual(reopened.A1, ['alpha', true, 2])
   assert.deepEqual(reopened.A2, ['beta', true, 2])
@@ -118,6 +146,12 @@ try {
   assert.equal(reopened.colD, 12.57)
   assert.equal(reopened.colB, 30)
   assert.deepEqual(reopened.C1, ['alpha', true])
+  assert.deepEqual(reopened.A3, [null, true, 2])
+  assert.deepEqual(reopened.B3, [null, true, 2])
+  assert.deepEqual(reopened.E1, ['外部', true])
+  assert.equal(reopened.F1, 2)
+  assert.deepEqual(reopened.sheets.length, 2)
+  assert.deepEqual(reopened.newSheetA1, ['alpha', true])
   assert.deepEqual(pageErrors, [])
 } finally {
   await browser?.close()
