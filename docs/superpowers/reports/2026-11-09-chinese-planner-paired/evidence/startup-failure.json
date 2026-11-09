@@ -1,0 +1,8 @@
+{
+  "status": "failed_before_provider",
+  "provider_requests": 0,
+  "script_commit": "49f09a93",
+  "error_type": "AttributeError",
+  "cause": "ThinkingDecision was passed where ReportingThinkingProfile was required",
+  "resolution": "explicit conversion and offline construction plus shared-sink verification; new output directory"
+}

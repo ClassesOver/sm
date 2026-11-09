@@ -28,6 +28,7 @@ from matplotlib.figure import Figure
 from scripts.replay_visualization_task import ReplayObservedOpenAIChat
 from smart_reporting.reporting.agent import _report_model
 from smart_reporting.reporting.model_policy import (
+    ReportingThinkingProfile,
     ThinkingRequest,
     apply_reporting_thinking_profile,
     select_reporting_thinking,
@@ -187,10 +188,13 @@ async def run(output):
     profiles, agents, metrics = {}, {}, {}
     for variant, commit in COMMITS.items():
         base = _report_model(settings, enable_thinking=settings.report_enable_thinking, retries=0, timeout_seconds=180)
-        profile = select_reporting_thinking(ThinkingRequest(operation='visualization_plan',
+        decision = select_reporting_thinking(ThinkingRequest(operation='visualization_plan',
             thinking_enabled=settings.report_enable_thinking,
             reasoning_effort=settings.report_planner_reasoning_effort,
             configured_budget_cap=settings.report_planner_thinking_budget))
+        profile = (ReportingThinkingProfile.on(reasoning_effort=decision.reasoning_effort,
+                                               thinking_budget=decision.thinking_budget)
+                   if decision.enabled else ReportingThinkingProfile.off())
         apply_reporting_thinking_profile(base, profile)
         profiles[variant] = asdict(profile)
         model = ReplayObservedOpenAIChat(**{field.name: getattr(base, field.name) for field in fields(base)})
