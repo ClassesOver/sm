@@ -81,7 +81,25 @@ try {
   const clickCell = async (x, y) => { await page.locator('.workbook-grid').click({ position: { x, y } }); await delay(300) }
   const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32], A3 = [90, 109], B3 = [240, 109], E1 = [569, 32], B1 = [240, 32]
 
-  if (process.env.WORKBOOK_RIBBON_CASE === 'formulas') {
+  if (process.env.WORKBOOK_RIBBON_CASE === 'sort') {
+    // 数据▸自定义排序：A1:A2 不含标题、按 A 列降序（粗体随 alpha 移动）。
+    await clickCell(...A1); await page.keyboard.down('Shift'); await clickCell(...A2); await page.keyboard.up('Shift')
+    await page.locator('[data-ribbon-tab="Data"]').click(); await command('sort-custom-open')
+    const dialog = page.locator('.workbook-ribbon-sort-dialog')
+    await dialog.locator('[data-sort-header]').uncheck()
+    await dialog.locator('[data-sort-level="0"] [data-sort-order]').selectOption('desc')
+    await dialog.locator('.workbook-ribbon-format-apply').click()
+    assert.match(await feedback(), /已按 1 个关键字排序/)
+    await page.locator('[data-action="save"]').click()
+    await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 })
+    const download = await page.evaluate(async () => { const r = await fetch('/fixture-gui-download.xlsx'); return Array.from(new Uint8Array(await r.arrayBuffer())) })
+    const reopened = JSON.parse(python({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
+    console.log(JSON.stringify({ ok: true, case: 'sort', browserVersion: browser.version(), operationKinds: savePayload.operations.map(op => op.kind), reopened, pageErrors }))
+    assert.deepEqual(reopened.A1.slice(0, 2), ['beta', false])
+    assert.deepEqual(reopened.A2.slice(0, 2), ['alpha', true])
+    assert.equal(reopened.B1, 'wide')
+    assert.deepEqual(pageErrors, [])
+  } else if (process.env.WORKBOOK_RIBBON_CASE === 'formulas') {
     // 公式▸显示公式（保存为 sheetView/@showFormulas）、手动计算与开始计算（不产生保存操作）。
     await page.locator('[data-ribbon-tab="Formulas"]').click()
     await page.locator('[data-ribbon-control="calc-mode"]').selectOption('manual')

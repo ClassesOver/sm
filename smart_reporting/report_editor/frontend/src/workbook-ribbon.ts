@@ -69,6 +69,7 @@ type RibbonCommand =
   | 'format-painter:dblclick'
   | 'row-height-open'
   | 'insert-cells'
+  | 'sort-custom-open'
   | 'toggle-show-formulas'
   | 'calculate-now'
   | 'calculate-sheet'
@@ -434,7 +435,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '获取数据', actions: ['import-csv', 'merge-workbooks', 'refresh-all', 'queries-open'].map(id => action(id, id)) },
     { title: '排序和筛选', actions: [
       action('升序', 'sort:asc', 'sort:asc'), action('降序', 'sort:desc', 'sort:desc'),
-      action('自定义排序…', 'sort-custom-open'), action('筛选', 'filter-toggle', 'filter-toggle'), action('清除筛选条件', 'filter-clear', 'filter-clear'),
+      action('自定义排序…', 'sort-custom-open', 'sort-custom-open'), action('筛选', 'filter-toggle', 'filter-toggle'), action('清除筛选条件', 'filter-clear', 'filter-clear'),
       action('重新应用筛选', 'filter-reapply', 'filter-reapply'), action('高级筛选', 'filter-advanced'),
     ] },
     { title: '数据工具', actions: [
@@ -522,7 +523,6 @@ const disabledReasons: Record<string, string> = {
   'sparkline:stacked': '尚不能回写迷你图修改',
   'slicer-open': '尚不能读取和回写此筛选器',
   'timeline-open': '尚不能读取和回写此筛选器',
-  'sort-custom-open': '尚无选择关键列、标题和多级条件的自定义排序对话框',
   'filter-advanced': '尚无高级筛选条件对话框与文件回写',
   'workbook-statistics': '尚无整本工作簿统计视图',
   'translate': '尚未接入基于选区的翻译操作',

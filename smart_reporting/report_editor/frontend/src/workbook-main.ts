@@ -35,6 +35,7 @@ import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard
 import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
 import { assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
 import { installCalculation, type CalculationControl } from './workbook-calculation'
+import { createSortDialog, type SortRange } from './workbook-sort-dialog'
 import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
 import { applyFormatPainterClick, formatPainterActive, formatPainterReady, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
@@ -191,6 +192,17 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const cellsDialog = createCellsDialog(shell.editor, (mode, choice) => {
     if (!cellsRange) throw new Error('请先选择单元格或区域')
     runCellsChoice(mode, choice, cellsRange)
+  })
+  // 数据▸自定义排序：打开时冻结选区，确定后执行官方 sort-range（批注/值/样式在网格内迁移，保存走既有差分）。
+  const sortDialog = createSortDialog(shell.editor, (range, hasTitle, orderRules) => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    const workbook = runtime.univerAPI.getActiveWorkbook()!, sheet = workbook.getActiveSheet()!
+    const reason = noteStructureReason(currentModel, noteWorkbook(), { id: 'sheet.command.sort-range' })
+    if (reason) throw new Error(reason)
+    const applied = runtime.univerAPI.syncExecuteCommand('sheet.command.sort-range', { range, orderRules, hasTitle, unitId: workbook.getId(), subUnitId: sheet.getSheetId() })
+    if (!applied) throw new Error(feedback.textContent || '排序未应用')
+    markDirty(); ribbon.refreshState?.()
+    feedback.textContent = `已按 ${orderRules.length} 个关键字排序${hasTitle ? '（首行为标题）' : ''}，修改尚未保存。`
   })
   const numberFormatDialog = createNumberFormatDialog(shell.editor, {
     initial: () => formatState().numberFormat,
@@ -694,6 +706,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           structureLock = next === (currentModel.workbookProtection?.lockStructure ?? false) ? undefined : next
           markDirty(); ribbon.refreshState?.()
           feedback.textContent = next ? '工作簿结构已设为受保护（无密码），保存后写入文件；期间不能增删、重命名、移动或隐藏工作表。' : '工作簿结构保护将在保存后移除。'
+          return
+        }
+        if (command === 'sort-custom-open') {
+          const range = workbook.getActiveSheet()?.getSelection()?.getActiveRange()?.getRange() as SortRange | undefined
+          if (!range) throw new Error('请先选择要排序的区域')
+          sortDialog.open({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn })
           return
         }
         if (command === 'insert-cells' || command === 'delete-cells') {
@@ -1219,5 +1237,5 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

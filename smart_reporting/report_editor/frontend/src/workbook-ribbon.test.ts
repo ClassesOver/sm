@@ -162,12 +162,11 @@ it('keeps sort and filter source actions visible with an operation-specific unav
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
   // filter-toggle/clear/reapply 走官方 pinned 筛选命令（workbook-main 接线），保持可用；
   // 其余排序/筛选入口仍受不可用原因约束。
-  for (const id of ['filter-toggle', 'filter-clear', 'filter-reapply']) {
+  for (const id of ['filter-toggle', 'filter-clear', 'filter-reapply', 'sort-custom-open']) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
     expect(button?.disabled, id).toBe(false)
   }
   for (const [id, label, reason] of [
-    ['sort-custom-open', '自定义排序…', '自定义排序对话框'],
     ['filter-advanced', '高级筛选', '高级筛选条件对话框'],
   ]) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
