@@ -3,7 +3,7 @@ import { closeHistory } from '@tiptap/pm/history'
 import { EditorState, TextSelection, NodeSelection } from '@tiptap/pm/state'
 import type { Schema } from '@tiptap/pm/model'
 import { TableMap, selectedRect, cellAround, CellSelection, addRowBefore, addRowAfter, deleteRow, addColumnBefore, addColumnAfter, deleteColumn } from '@tiptap/pm/tables'
-import type { DocxAnchor, DocxPmNode } from './docx-operations'
+import { restructuredTableTexts, type DocxAnchor, type DocxPmNode } from './docx-operations'
 
 export const TABLE_KINDS = ['insertTableRow', 'deleteTableRow', 'insertTableColumn', 'deleteTableColumn'] as const
 export type TableKind = typeof TABLE_KINDS[number]
@@ -34,13 +34,21 @@ export function tableIntent(value: unknown): { kind: TableKind; index: number } 
   if (!TABLE_KINDS.includes(kind) || !Number.isInteger(index)) throw new Error('表格结构操作或源坐标无效')
   return { kind, index }
 }
-/** Use upstream PM commands for the structure; source coordinates own surviving content. */
-export function projectDocxTable(source: DocxPmNode, anchor: DocxAnchor, value: unknown, schema?: Schema): DocxPmNode {
-  const { kind, index } = tableIntent(value)
-  if (!schema || source.type !== 'docTable' || !anchor.structureEditable) throw new Error(sourceReason(anchor.structureReadOnlyReason))
-  const widths = [...(anchor.tableWidthsTwips ?? [])], rows = source.content ?? []
-  if (!widths.length || rows.length !== anchor.cells?.length || rows.some(row => row.content?.length !== widths.length)
-    || widths.some(width => !Number.isInteger(width) || width < 1)) throw new Error('表格源宽度或坐标不一致')
+export type TableStep = { kind: TableKind; index: number }
+export const MAX_TABLE_STEPS = 50
+/** `{steps}` intent (multi-step, current protocol) or a legacy single `{kind, index}` draft intent. */
+export function tableSteps(value: unknown): TableStep[] {
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'steps' in value) {
+    const steps = (value as { steps: unknown }).steps
+    if (Object.keys(value).length !== 1 || !Array.isArray(steps) || !steps.length || steps.length > MAX_TABLE_STEPS) throw new Error('表格结构草稿字段无效')
+    return steps.map(tableIntent)
+  }
+  return [tableIntent(value)]
+}
+interface Projection { table: DocxPmNode; widths: number[]; headerCount: number; origin: ({ row: number; column: number } | null)[][] }
+/** One upstream PM structure command over the current projection; surviving cells keep their content. */
+function projectStep(current: Projection, step: TableStep, schema: Schema): Projection {
+  const { kind, index } = step, rows = current.table.content ?? [], widths = [...current.widths]
   const rowOperation = kind.endsWith('Row'), inserting = kind.startsWith('insert'), count = rowOperation ? rows.length : widths.length
   if (index < 0 || index >= count + Number(inserting)) throw new Error('表格源坐标越界')
   if (!inserting && count === 1) throw new Error('不能删除最后一行或最后一列')
@@ -56,7 +64,7 @@ export function projectDocxTable(source: DocxPmNode, anchor: DocxAnchor, value: 
       widths.splice(neighbor, 1, Math.floor(width / 2), width - Math.floor(width / 2))
     } else { const [removed] = widths.splice(index, 1); widths[Math.min(index, widths.length - 1)]! += removed! }
   }
-  const doc = schema.nodeFromJSON({ type: 'doc', content: [source] }), map = TableMap.get(doc.firstChild!)
+  const doc = schema.nodeFromJSON({ type: 'doc', content: [current.table] }), map = TableMap.get(doc.firstChild!)
   const row = rowOperation ? Math.min(index, count - 1) : 0, col = rowOperation ? 0 : Math.min(index, count - 1)
   let state = EditorState.create({ schema, doc, selection: TextSelection.near(doc.resolve(2 + map.map[row * map.width + col]!)) })
   const command = rowOperation ? inserting ? index === count ? addRowAfter : addRowBefore : deleteRow
@@ -65,11 +73,11 @@ export function projectDocxTable(source: DocxPmNode, anchor: DocxAnchor, value: 
   const projected = state.doc.firstChild!.toJSON() as DocxPmNode
   if (projected.content?.length !== nextRows || projected.content.some(row => row.content?.length !== nextCols)) throw new Error('表格结构命令结果不一致')
   const total = widths.reduce((a, b) => a + b, 0)
-  projected.attrs = { ...source.attrs, colWidthsPct: widths.map(width => width / total * 100), nativeTableStructure: { kind, index } }
+  const newHeader = rowOperation && inserting && index < current.headerCount
+  projected.attrs = { ...current.table.attrs, colWidthsPct: widths.map(width => width / total * 100) }
   projected.content = projected.content.map((row, ri) => {
     const sourceRow = rowIds[ri]!
-    const header = sourceRow === null && rowOperation && inserting && index < (anchor.tableHeaderCount ?? 0)
-    const attrs = sourceRow === null ? { ...schema.nodes.docTableRow.create().attrs, repeatHeader: header, rawTrPr: header ? '<w:trPr><w:tblHeader/></w:trPr>' : null } : rows[sourceRow]!.attrs
+    const attrs = sourceRow === null ? { ...schema.nodes.docTableRow.create().attrs, repeatHeader: newHeader, rawTrPr: newHeader ? '<w:trPr><w:tblHeader/></w:trPr>' : null } : rows[sourceRow]!.attrs
     return { ...row, attrs, content: row.content!.map((_, ci) => {
       const sourceColumn = colIds[ci]!
       const cell = sourceRow === null || sourceColumn === null
@@ -79,7 +87,36 @@ export function projectDocxTable(source: DocxPmNode, anchor: DocxAnchor, value: 
       return cell
     }) }
   })
-  return schema.nodeFromJSON(projected).toJSON() as DocxPmNode
+  const headerCount = current.headerCount + (newHeader ? 1 : 0) - (rowOperation && !inserting && index < current.headerCount ? 1 : 0)
+  return { table: projected, widths, headerCount,
+    origin: rowIds.map(r => colIds.map(c => r === null || c === null ? null : current.origin[r]?.[c] ?? null)) }
+}
+function projectSteps(source: DocxPmNode, anchor: DocxAnchor, steps: readonly TableStep[], schema?: Schema): Projection {
+  if (!schema || source.type !== 'docTable' || !anchor.structureEditable) throw new Error(sourceReason(anchor.structureReadOnlyReason))
+  const widths = [...(anchor.tableWidthsTwips ?? [])], rows = source.content ?? []
+  if (!widths.length || rows.length !== anchor.cells?.length || rows.some(row => row.content?.length !== widths.length)
+    || widths.some(width => !Number.isInteger(width) || width < 1)) throw new Error('表格源宽度或坐标不一致')
+  let current: Projection = { table: source, widths, headerCount: anchor.tableHeaderCount ?? 0, origin: rows.map((row, r) => (row.content ?? []).map((_, c) => ({ row: r, column: c }))) }
+  for (const step of steps) current = projectStep(current, step, schema)
+  return current
+}
+/** Deterministic projection of the source table through ordered steps (attr carries the intent). */
+export function projectDocxTableSteps(source: DocxPmNode, anchor: DocxAnchor, steps: readonly TableStep[], schema?: Schema, legacy = false): DocxPmNode {
+  const { table } = projectSteps(source, anchor, steps, schema)
+  table.attrs = { ...table.attrs, nativeTableStructure: legacy ? steps[0] : { steps } }
+  return schema!.nodeFromJSON(table).toJSON() as DocxPmNode
+}
+/** Next step on the live table: earlier steps' projection supplies widths/header
+ *  prefix, the live cells (with their text edits) carry over through the step. */
+export function extendDocxTable(source: DocxPmNode, anchor: DocxAnchor, live: DocxPmNode, steps: readonly TableStep[], step: TableStep, schema: Schema): DocxPmNode {
+  const base = projectSteps(source, anchor, steps, schema)
+  const next = projectStep({ ...base, table: live }, step, schema)
+  next.table.attrs = { ...next.table.attrs, nativeTableStructure: { steps: [...steps, step] } }
+  return schema.nodeFromJSON(next.table).toJSON() as DocxPmNode
+}
+/** Legacy single-step projection (drafts saved before multi-step tables). */
+export function projectDocxTable(source: DocxPmNode, anchor: DocxAnchor, value: unknown, schema?: Schema): DocxPmNode {
+  return projectDocxTableSteps(source, anchor, [tableIntent(value)], schema, true)
 }
 export interface DocxTableCommands { reason: (action: string) => string | null; run: (action: string) => void }
 export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, anchors: DocxAnchor[], reportError: (error: unknown) => void): DocxTableCommands {
@@ -95,16 +132,21 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     const anchor = anchors.find(anchor => anchor.docxIndex === index)
     const source = baseline.content?.find(node => node.attrs?.docxIndex === index)
     if (!source || !anchor?.structureEditable) throw new Error(sourceReason(anchor?.structureReadOnlyReason))
-    if (rect.table.attrs.nativeTableStructure) throw new Error('此表已有结构修改，请保存并打开新修订后继续')
-    if (!equal(rect.table.toJSON(), source)) throw new Error('此表已有文字或格式修改，请先保存并打开新修订')
+    // 已有步骤（含旧草稿单步意图）继续累加；同表此前只允许文字修改（与投影逐格比对）。
+    const intent = rect.table.attrs.nativeTableStructure
+    const steps = intent ? tableSteps(intent) : []
+    if (steps.length >= MAX_TABLE_STEPS) throw new Error('此表结构修改步骤过多，请先保存')
+    const live = rect.table.toJSON() as DocxPmNode
+    restructuredTableTexts(steps.length ? projectDocxTableSteps(source, anchor, steps, editor.schema) : source, live)
     const coordinate = (spec.kind.endsWith('Row') ? rect.top : rect.left) + Number(!!spec.after)
-    return { anchor, rect, projected: projectDocxTable(source, anchor, { kind: spec.kind, index: coordinate }, editor.schema) }
+    const step = { kind: spec.kind, index: coordinate }
+    return { anchor, rect, step, projected: extendDocxTable(source, anchor, live, steps, step, editor.schema) }
   }
   return {
     reason(action) { try { target(action); return null } catch (error) { return error instanceof Error && !/No cell|Not in a table/.test(error.message) ? error.message : '请先在可编辑表格的单个单元格内定位' } },
     run(action) {
       try {
-        const { rect, projected } = target(action), intent = tableIntent(projected.attrs?.nativeTableStructure)
+        const { rect, projected, step: intent } = target(action)
         const table = editor.schema.nodeFromJSON(projected), map = TableMap.get(table), start = rect.tableStart - 1
         const row = Math.min(intent.kind === 'insertTableRow' ? intent.index : rect.top, map.height - 1)
         const column = Math.min(intent.kind === 'insertTableColumn' ? intent.index : rect.left, map.width - 1)

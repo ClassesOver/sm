@@ -2,7 +2,7 @@ import { highlightMap, paragraphHighlight, safeDocxHighlight, withoutHighlight }
 import { docxBorderAttrs, paragraphBorders, safeDocxBorderSpec } from './docx-borders'
 import { safeDocxShading } from './docx-shading'
 import { paragraphVerticalAlign, withoutVerticalAlign, verticalAlignMap } from './docx-vertical'
-import { TABLE_KINDS, projectDocxTable, tableIntent } from './docx-tables'
+import { TABLE_KINDS, projectDocxTable, projectDocxTableSteps, tableIntent, tableSteps } from './docx-tables'
 import { newTableMatchesProjection, newTableNodeCells, newTableSize, projectNewDocxTable } from './docx-new-table'
 import { coverGroupMatchesProjection, coverGroupParas, isCoverEndNode, projectCoverNodes } from './docx-cover-page'
 import type { Schema } from '@tiptap/pm/model'
@@ -65,13 +65,29 @@ function structure(node: DocxPmNode, marks = true): unknown {
 }
 const plainTyping = (run: DocxPmNode) => (run.marks ?? []).every(mark => mark.type === 'textStyle' && Object.values(mark.attrs ?? {}).every(value => value == null || value === false))
 /** 单元格只改文字：段落结构与属性不变；有文字的段落保持 run 格式，空段落（如新建表格的空格子）只允许新增普通文字。 */
-function cellTextEditOnly(cell: DocxPmNode, changed: DocxPmNode): boolean {
+export function cellTextEditOnly(cell: DocxPmNode, changed: DocxPmNode): boolean {
   if (!same(structure(cell, false), structure(changed, false))) return false
   return (cell.content ?? []).every((left, index) => {
     const right = changed.content![index]
     if (same(structure(left), structure(right))) return true
     return !(left.content ?? []).some(run => run.type === 'text') && (right.content ?? []).every(run => run.type !== 'text' || plainTyping(run))
   })
+}
+/** Cells a restructured table changed only by text, at final coordinates; anything else is refused. */
+export function restructuredTableTexts(projected: DocxPmNode, edited: DocxPmNode): { row: number; column: number; text: string }[] {
+  if (!same(projected.attrs, edited.attrs) || projected.content?.length !== edited.content?.length) throw new Error('表格结构修改后暂不支持同时修改表格属性')
+  const texts: { row: number; column: number; text: string }[] = []
+  projected.content!.forEach((left, row) => {
+    const right = edited.content![row]!
+    if (!same(left.attrs, right.attrs) || left.content?.length !== right.content?.length) throw new Error('表格结构修改后暂不支持同时修改行属性')
+    left.content!.forEach((cell, column) => {
+      const changed = right.content![column]!
+      if (same(cell, changed)) return
+      if (!cellTextEditOnly(cell, changed)) throw new Error('表格结构修改后单元格只支持修改文字')
+      texts.push({ row, column, text: (changed.content ?? []).map(textOf).join('\n') })
+    })
+  })
+  return texts
 }
 function markSequence(node: DocxPmNode): unknown[] {
   const result: unknown[] = []
@@ -266,6 +282,13 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       ops.push({ kind: 'deleteParagraph', ...baseOp(anchor) }); continue
     }
     if (node.type === 'docTable' && edited.type === 'docTable') {
+      const structureIntent = edited.attrs?.nativeTableStructure
+      if (structureIntent && typeof structureIntent === 'object' && 'steps' in structureIntent) {
+        // 多步行列增删 + 文字：一次 restructureTable（步骤坐标逐步推进，文字按最终坐标）。
+        const steps = tableSteps(structureIntent)
+        const texts = restructuredTableTexts(projectDocxTableSteps(node, anchor, steps, schema), edited)
+        ops.push({ kind: 'restructureTable', ...baseOp(anchor), steps, ...(texts.length ? { texts } : {}) }); continue
+      }
       if (edited.attrs?.nativeTableStructure) {
         const intent = tableIntent(edited.attrs.nativeTableStructure)
         if (!same(edited, projectDocxTable(node, anchor, intent, schema))) throw new Error('表格结构修改后请先保存；同表文字、格式或第二次结构修改不能混用')
@@ -423,7 +446,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     node.content = node.content?.filter(child => child.type !== 'text' || child.text)
   }
   const structural = new Set<string>()
-  for (const operation of operations) if (TABLE_KINDS.includes(operation.kind as any)) {
+  for (const operation of operations) if (TABLE_KINDS.includes(operation.kind as any) || operation.kind === 'restructureTable') {
     const id = String(operation.blockId)
     if (structural.has(id) || operations.some(other => other !== operation && other.blockId === id)) throw new Error('同表草稿不能混合文字或多次结构操作')
     structural.add(id)
@@ -469,6 +492,19 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     else if (TABLE_KINDS.includes(operation.kind as any)) {
       if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'index'].includes(key)) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('草稿表格身份或字段无效')
       const projected = projectDocxTable(node, anchor, { kind: operation.kind, index: operation.index }, schema)
+      Object.assign(node, projected)
+    }
+    else if (operation.kind === 'restructureTable') {
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'steps', 'texts'].includes(key)) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('草稿表格身份或字段无效')
+      const projected = projectDocxTableSteps(node, anchor, tableSteps({ steps: operation.steps }), schema)
+      const texts = operation.texts === undefined ? [] : operation.texts
+      if (!Array.isArray(texts)) throw new Error('草稿表格文字无效')
+      for (const entry of texts as { row: unknown; column: unknown; text: unknown }[]) {
+        const cell = projected.content?.[Number(entry?.row)]?.content?.[Number(entry?.column)]
+        if (!cell?.content?.length || typeof entry.text !== 'string' || !Number.isInteger(entry.row) || !Number.isInteger(entry.column)) throw new Error('草稿表格文字坐标无效')
+        replaceText(cell.content[0]!, entry.text)
+        for (const paragraph of cell.content.slice(1)) replaceText(paragraph, '')
+      }
       Object.assign(node, projected)
     }
     else if (operation.kind === 'setParagraphLink') {

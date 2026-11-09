@@ -267,3 +267,44 @@ def test_source_property_dollars_are_literal_data_during_xml_splice(source):
     result = patch_docx(content, [operation(table_anchor(content))])
     props = Document(BytesIO(result)).tables[0].cell(0, 0)._tc.get_or_add_tcPr()
     assert props.find(qn('w:shd')).get(extension) == literal
+
+
+def restructure(anchor, steps, texts=None):
+    op = {'kind': 'restructureTable', 'blockId': anchor['blockId'], 'expectedObjectSha256': anchor['expectedObjectSha256'], 'steps': steps}
+    return {**op, 'texts': texts} if texts is not None else op
+
+
+def test_restructure_composes_steps_and_final_cell_texts(source):
+    anchor = table_anchor(source)
+    before = [[cell.text for cell in row.cells] for row in Document(BytesIO(source)).tables[0].rows]
+    steps = [{'kind': 'insertTableRow', 'index': 1}, {'kind': 'deleteTableColumn', 'index': 0},
+             {'kind': 'insertTableColumn', 'index': 2}, {'kind': 'insertTableRow', 'index': 4}]
+    texts = [{'row': 1, 'column': 0, 'text': '新行'}, {'row': 0, 'column': 1, 'text': '改写'}, {'row': 4, 'column': 2, 'text': '末格'}]
+    edited = patch_docx(source, [restructure(anchor, steps, texts)])
+    expected = [row[:] for row in before]
+    expected.insert(1, ['', '', ''])
+    expected = [row[1:] for row in expected]
+    for row in expected:
+        row.insert(2, '')
+    expected.insert(4, ['', '', ''])
+    expected[1][0], expected[0][1], expected[4][2] = '新行', '改写', '末格'
+    table = Document(BytesIO(edited)).tables[0]
+    assert [[cell.text for cell in row.cells] for row in table.rows] == expected
+    # untouched source paragraphs keep their original XML
+    original = Document(BytesIO(source)).tables[0]
+    assert xml(table.rows[2].cells[1]._tc.p_lst[0]) == xml(original.rows[1].cells[2]._tc.p_lst[0])
+
+
+@pytest.mark.parametrize('bad', [
+    {'steps': []},
+    {'steps': [{'kind': 'insertTableRow', 'index': 99}]},
+    {'steps': [{'kind': 'mergeCells', 'index': 0}]},
+    {'steps': [{'kind': 'insertTableRow', 'index': 0, 'extra': 1}]},
+    {'steps': [{'kind': 'insertTableRow', 'index': 0}], 'texts': [{'row': 9, 'column': 0, 'text': 'x'}]},
+    {'steps': [{'kind': 'insertTableRow', 'index': 0}], 'texts': [{'row': 0, 'column': 0, 'text': 'a'}, {'row': 0, 'column': 0, 'text': 'b'}]},
+    {'steps': [{'kind': 'deleteTableRow', 'index': 0}] * 3},
+])
+def test_restructure_rejects_invalid_steps_and_texts(source, bad):
+    anchor = table_anchor(source)
+    with pytest.raises(ValueError):
+        patch_docx(source, [{'kind': 'restructureTable', 'blockId': anchor['blockId'], 'expectedObjectSha256': anchor['expectedObjectSha256'], **bad}])

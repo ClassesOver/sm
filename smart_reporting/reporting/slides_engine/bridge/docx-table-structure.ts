@@ -1,6 +1,6 @@
 /** Native adapter: generate structure with the pinned engine; keep surviving XML. */
 import { generateTableModelXml, type Block, type TableModel } from '@genoffice/docx-engine'
-import { splitXmlChildren } from '../packages/docx-engine/src/generate.ts'
+import { patchTableCellTexts, splitXmlChildren } from '../packages/docx-engine/src/generate.ts'
 
 export const TABLE_STRUCTURE_KINDS = ['insertTableRow', 'deleteTableRow', 'insertTableColumn', 'deleteTableColumn'] as const
 export type TableStructureKind = typeof TABLE_STRUCTURE_KINDS[number]
@@ -102,31 +102,47 @@ export function tableStructureAvailability(block: Block): { structureEditable: b
 }
 
 export function editTableStructure(block: Block, kind: TableStructureKind, index: number) {
+  return editTableStructureSteps(block, [{ kind, index }])
+}
+
+export interface TableStructureStep { kind: TableStructureKind; index: number }
+export const MAX_TABLE_STEPS = 50
+
+/** Ordered row/column inserts and deletes on one source table; each step's
+ *  index is in the coordinates left by the previous step. Surviving source
+ *  rows/cells keep their original XML; `texts` then replaces cell text at final
+ *  coordinates (same plain-text patch as replaceCellText). */
+export function editTableStructureSteps(block: Block, steps: readonly TableStructureStep[],
+  texts: readonly { row: number; column: number; text: string }[] = []) {
   const source = sourceOf(block)
-  const inserting = kind.startsWith('insert'), rowOperation = kind.endsWith('Row')
-  if (!TABLE_STRUCTURE_KINDS.includes(kind)) fail('operation_invalid')
-  const count = rowOperation ? source.rows.length : source.widths.length
-  if (!Number.isInteger(index) || index < 0 || index >= count + Number(inserting)) fail('index_invalid')
-  if (!inserting && count === 1) fail('last_dimension')
-  const nextRows = source.rows.length + (rowOperation ? inserting ? 1 : -1 : 0)
-  const nextColumns = source.widths.length + (!rowOperation ? inserting ? 1 : -1 : 0)
-  if (nextRows > MAX_ROWS || nextColumns > MAX_COLUMNS || nextRows * nextColumns > MAX_CELLS) fail('size_unsupported')
+  if (!steps.length || steps.length > MAX_TABLE_STEPS) fail('steps_invalid')
   const model: TableModel = structuredClone(source.model)
-  const rowIds: (number | null)[] = source.rows.map((_, i) => i)
+  // number = original source row/column; 'new' / 'header' = inserted (header keeps the repeat prefix contiguous)
+  const rowIds: (number | 'new' | 'header')[] = source.rows.map((_, i) => i)
   const columnIds: (number | null)[] = source.widths.map((_, i) => i)
   const widths = [...source.widths]
-  // Inserting inside the repeating prefix must keep it contiguous for Word.
-  const newHeader = inserting && rowOperation && index < source.headerCount
+  let headerCount = source.headerCount
   const blankCell = () => ({ paras: [''], richParas: [{ runs: [] }] })
-  if (rowOperation) {
-    if (inserting) { model.rows.splice(index, 0, widths.map(blankCell)); rowIds.splice(index, 0, null) }
-    else { model.rows.splice(index, 1); rowIds.splice(index, 1) }
-    for (const key of ROW_ARRAYS) {
-      const values = model[key] as unknown[] | undefined
-      if (values) inserting ? values.splice(index, 0, key === 'repeatHeaderRows' && newHeader ? true : null) : values.splice(index, 1)
-    }
-  } else {
-    if (inserting) {
+  for (const { kind, index } of steps) {
+    if (!TABLE_STRUCTURE_KINDS.includes(kind)) fail('operation_invalid')
+    const inserting = kind.startsWith('insert'), rowOperation = kind.endsWith('Row')
+    const count = rowOperation ? rowIds.length : widths.length
+    if (!Number.isInteger(index) || index < 0 || index >= count + Number(inserting)) fail('index_invalid')
+    if (!inserting && count === 1) fail('last_dimension')
+    const nextRows = rowIds.length + (rowOperation ? inserting ? 1 : -1 : 0)
+    const nextColumns = widths.length + (!rowOperation ? inserting ? 1 : -1 : 0)
+    if (nextRows > MAX_ROWS || nextColumns > MAX_COLUMNS || nextRows * nextColumns > MAX_CELLS) fail('size_unsupported')
+    if (rowOperation) {
+      const newHeader = inserting && index < headerCount
+      if (inserting) { model.rows.splice(index, 0, widths.map(blankCell)); rowIds.splice(index, 0, newHeader ? 'header' : 'new') }
+      else { model.rows.splice(index, 1); rowIds.splice(index, 1) }
+      for (const key of ROW_ARRAYS) {
+        const values = model[key] as unknown[] | undefined
+        if (values) inserting ? values.splice(index, 0, key === 'repeatHeaderRows' && newHeader ? true : null) : values.splice(index, 1)
+      }
+      if (inserting && newHeader) headerCount += 1
+      if (!inserting && index < headerCount) headerCount -= 1
+    } else if (inserting) {
       const neighbor = Math.min(index, count - 1), width = widths[neighbor]!
       if (width < 2) fail('width_too_small')
       widths.splice(neighbor, 1, Math.floor(width / 2), width - Math.floor(width / 2))
@@ -143,18 +159,31 @@ export function editTableStructure(block: Block, kind: TableStructureKind, index
   model.colWidthsPct = widths.map(width => width / widths.reduce((a, b) => a + b, 0) * 100)
   const generated = children(generateTableModelXml(model, source.originalXml), 'w:tbl')
   let ri = 0
-  const xml = '<w:tbl>' + generated.map(part => {
+  let xml = '<w:tbl>' + generated.map(part => {
     if (part.name === 'w:tblPr') return source.tblPr
     if (part.name !== 'w:tr') return part.xml
-    const sourceRow = rowIds[ri++]
+    const sourceRow = rowIds[ri++]!
     let ci = 0
     const content = children(part.xml, 'w:tr').filter(child => child.name !== 'w:trPr').map(child => {
       if (child.name !== 'w:tc') return child.xml
       const column = columnIds[ci]!, width = widths[ci++]!
-      return sourceRow === null || column === null ? child.xml : withWidth(source.rows[sourceRow!]!.cells[column]!, width)
+      return typeof sourceRow !== 'number' || column === null ? child.xml : withWidth(source.rows[sourceRow]!.cells[column]!, width)
     }).join('')
-    return `<w:tr>${sourceRow === null ? newHeader ? '<w:trPr><w:tblHeader/></w:trPr>' : '' : source.rows[sourceRow!]!.trPr}${content}</w:tr>`
+    return `<w:tr>${typeof sourceRow !== 'number' ? sourceRow === 'header' ? '<w:trPr><w:tblHeader/></w:trPr>' : '' : source.rows[sourceRow]!.trPr}${content}</w:tr>`
   }).join('') + '</w:tbl>'
-  const matrix = rowIds.map(row => columnIds.map(column => row === null || column === null ? '' : source.model.rows[row]![column]!.paras.join('\n')))
+  const matrix = rowIds.map(row => columnIds.map(column => typeof row !== 'number' || column === null ? '' : source.model.rows[row]![column]!.paras.join('\n')))
+  if (texts.length) {
+    if (texts.length > MAX_CELLS) fail('texts_invalid')
+    const grid: (null | (null | string[])[])[] = []
+    const seen = new Set<string>()
+    for (const { row, column, text } of texts) {
+      if (!Number.isInteger(row) || !Number.isInteger(column) || row < 0 || column < 0 || row >= rowIds.length || column >= widths.length
+        || typeof text !== 'string' || text.length > 32767 || seen.has(`${row}:${column}`)) fail('texts_invalid')
+      seen.add(`${row}:${column}`)
+      ;(grid[row] ??= [])[column] = [text]
+      matrix[row]![column] = text
+    }
+    xml = patchTableCellTexts(xml, grid)
+  }
   return { xml, matrix, widths }
 }

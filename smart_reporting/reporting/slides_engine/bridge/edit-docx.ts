@@ -1,5 +1,5 @@
 // GenOffice Apache-2.0: 仅从原文件解析锚点，不接受客户端 OOXML 或资源路径。
-import { TABLE_STRUCTURE_KINDS, editTableStructure, tableStructureAvailability, type TableStructureKind } from './docx-table-structure.ts'
+import { MAX_TABLE_STEPS, TABLE_STRUCTURE_KINDS, editTableStructure, editTableStructureSteps, tableStructureAvailability, type TableStructureKind } from './docx-table-structure.ts'
 import { createHash } from 'node:crypto'
 import { loadDocxZip } from '../packages/docx-engine/src/zip-load.ts'
 import { attrsOf, findChild, childrenOf, xmlParser, escapeXmlAttr } from '../packages/docx-engine/src/xml-utils.ts'
@@ -708,6 +708,21 @@ if (request.kind === 'inspect') {
       if (hash(block.originalXml ?? '') !== op.expectedObjectSha256) fail('anchor_invalid')
       if (typeof op.index !== 'number' || !Number.isInteger(op.index)) fail('table_structure_index_invalid')
       return { op, block, tableStructure: editTableStructure(block, op.kind as TableStructureKind, op.index) }
+    }
+    if (op.kind === 'restructureTable') {
+      // 同一来源表格的多步行列增删（每步坐标基于上一步结果）+ 最终坐标的纯文字修改。
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'steps', 'texts'])
+      if (hash(block.originalXml ?? '') !== op.expectedObjectSha256) fail('anchor_invalid')
+      const steps = op.steps, texts = op.texts ?? []
+      if (!Array.isArray(steps) || !steps.length || steps.length > MAX_TABLE_STEPS || !Array.isArray(texts)) fail('table_structure_steps_invalid')
+      for (const step of steps) {
+        if (!step || typeof step !== 'object' || Object.keys(step).some(key => !['kind', 'index'].includes(key))
+          || !TABLE_STRUCTURE_KINDS.includes(step.kind) || !Number.isInteger(step.index)) fail('table_structure_steps_invalid')
+      }
+      for (const text of texts) {
+        if (!text || typeof text !== 'object' || Object.keys(text).some(key => !['row', 'column', 'text'].includes(key))) fail('table_structure_steps_invalid')
+      }
+      return { op, block, tableStructure: editTableStructureSteps(block, steps, texts) }
     }
     if (op.kind === 'replaceCellText') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'cellId', 'text'])
