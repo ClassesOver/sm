@@ -59,9 +59,9 @@ def save(path, value):
     path.write_bytes(encoded(value))
 
 
-def identity(path):
+def identity(path, root=REPORT):
     raw = path.read_bytes()
-    return {'path': str(path.relative_to(REPORT)), 'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)}
+    return {'path': str(path.relative_to(root)), 'sha256': hashlib.sha256(raw).hexdigest(), 'size': len(raw)}
 
 
 def instructions(commit):
@@ -109,17 +109,30 @@ def replay_module():
 
 
 def judge(case_id, case, plan, folder, replay):
+    folder = folder.resolve()
     result = {'visual_review': 'not_run', 'redraws': 0, 'render_attempts': 0}
+    result['identity_mismatches'] = []
     result['identity'] = len(plan.charts) == 1
     if not result['identity']:
+        result['identity_mismatches'].append('chart_count')
         return result
     chart = plan.charts[0]
-    result['identity'] = (chart.chart_id == 'synthetic' and chart.source_path == 'chart.png'
-        and chart.source_dataset_id == 'synthetic' and chart.current_period == '2025-01'
-        and chart.comparison_period is None and chart.comparison_type == 'none'
-        and chart.aggregation_grain == 'category' and chart.metric_codes == ('synthetic',)
-        and chart.citation_ids == ('synthetic',) and len(chart.data_bindings) == 1
-        and chart.data_bindings[0].model_dump(mode='json', by_alias=True) == case['binding'])
+    expected = {'chart_id': 'synthetic', 'source_path': 'chart.png',
+        'source_dataset_id': 'synthetic', 'current_period': '2025-01',
+        'comparison_period': None, 'comparison_type': 'none',
+        'aggregation_grain': 'category', 'metric_codes': ('synthetic',),
+        'citation_ids': ('synthetic',)}
+    result['identity_mismatches'].extend(
+        field for field, value in expected.items() if getattr(chart, field) != value)
+    if len(chart.data_bindings) != 1:
+        result['identity_mismatches'].append('data_bindings_count')
+    else:
+        actual_binding = chart.data_bindings[0].model_dump(mode='json', by_alias=True)
+        # role is descriptive prose; data identity is carried by these immutable selectors.
+        for field in ('analysisId', 'factPath', 'dataPath', 'fields'):
+            if actual_binding.get(field) != case['binding'][field]:
+                result['identity_mismatches'].append(f'data_bindings.{field}')
+    result['identity'] = not result['identity_mismatches']
     result['custom'] = chart.standard_form == 'custom'
     if not result['identity'] or result['custom']:
         return result
@@ -144,6 +157,10 @@ def judge(case_id, case, plan, folder, replay):
             actual = replay.render(state, folder)
     except Exception as error:
         result['render_error'] = type(error).__name__
+        import traceback
+
+        result['render_error_frames'] = [{'file': Path(frame.filename).name, 'line': frame.lineno,
+                                          'function': frame.name} for frame in traceback.extract_tb(error.__traceback__)]
         return result
     result['actual'] = actual
     result['plot_geometry'] = geometry
@@ -185,7 +202,7 @@ async def run(output):
         return
     replay = replay_module()
     frozen = cases()
-    profiles, agents, metrics = {}, {}, {}
+    profiles, agents = {}, {}
     for variant, commit in COMMITS.items():
         base = _report_model(settings, enable_thinking=settings.report_enable_thinking, retries=0, timeout_seconds=180)
         decision = select_reporting_thinking(ThinkingRequest(operation='visualization_plan',
@@ -202,7 +219,6 @@ async def run(output):
             if name.startswith('_reporting_'):
                 setattr(model, name, value)
         model.max_tokens = 8192
-        metrics[variant] = model.replay_request_metrics()  # 初始化浅复制模型共享的sink。
         _, agent = build_benchmark_planner_agent(model=model, task_kind='visualization',
             variant=BenchmarkVariant.CANDIDATE, planner_request=frozen['L1']['request'], standard_visualization=False)
         agent.instructions = [*agent.instructions, *instructions(commit)]
@@ -225,6 +241,7 @@ async def run(output):
         folder = output / f'{case_id}-{variant}'
         folder.mkdir()
         if stopped:
+            record.update(duration_ms=0, provider_requests=[])
             save(output / 'results.json', observations)
             continue
         agent = agents[variant]
@@ -238,7 +255,7 @@ async def run(output):
             try:
                 response = await original_invoke(model, *args, **kwargs)
                 call['response'] = {name: getattr(response, name, None)
-                                    for name in ('content', 'reasoning_content', 'tool_calls', 'finish_reason')}
+                                    for name in ('content', 'tool_calls', 'finish_reason')}
                 return response
             finally:
                 save(folder / 'provider-messages.json', raw_calls)
@@ -249,7 +266,8 @@ async def run(output):
             with patch.object(ReplayObservedOpenAIChat, 'ainvoke', capture):
                 structured = await ReportingStructuredOutputExecutor(agent, idle_timeout_seconds=180).execute(
                     json.dumps(frozen[case_id]['request'], ensure_ascii=False),
-                    routing_context=RunContext(run_id=f'{case_id}-{variant}', session_state={}),
+                    routing_context=RunContext(run_id=f'{case_id}-{variant}',
+                                               session_id=f'paired-{case_id}-{variant}', session_state={}),
                     session_id=f'paired-{case_id}-{variant}', user_id='synthetic-eval',
                     call_budget=StructuredOutputCallBudget(max_model_calls=1))
             plan = VisualizationPlanDraft.model_validate(structured.content)
@@ -261,17 +279,81 @@ async def run(output):
             # 不持久化任意异常正文，避免供应商错误包含地址或凭据。
             record.update(status='failed', error_type=type(error).__name__,
                           error_code=getattr(error, 'code', type(error).__name__))
+            import traceback
+
+            record['error_frames'] = [{'file': Path(frame.filename).name, 'line': frame.lineno,
+                                       'function': frame.name} for frame in traceback.extract_tb(error.__traceback__)]
             stopped = True
         record['duration_ms'] = round((perf_counter() - started) * 1000)
         record['provider_requests'] = agent.model.replay_request_metrics()[start_metrics:]
         save(output / 'results.json', observations)
         logger.info('paired_planner_finished case={} variant={} status={}', case_id, variant, record['status'])
-    save(output / 'manifest.json', [identity(path) for path in sorted(output.rglob('*')) if path.is_file()])
+    save(output / 'manifest.json', [identity(path, output) for path in sorted(output.rglob('*')) if path.is_file()])
+
+
+def derive(source, output):
+    """从已保存模型输出离线重算预注册与明确标记的事后口径。"""
+    output.mkdir(parents=True, exist_ok=False)
+    replay = replay_module()
+    frozen = json.loads((source / 'cases.json').read_text())
+    source_rows = json.loads((source / 'results.json').read_text())
+    rows = []
+    for original in source_rows:
+        case_id, variant = original['case'], original['variant']
+        source_folder = source / f'{case_id}-{variant}'
+        folder = output / f'{case_id}-{variant}'
+        row = {'case': case_id, 'variant': variant, 'original_status': original['status'],
+               'duration_ms': original.get('duration_ms'),
+               'provider_requests': original.get('provider_requests', [])}
+        plan_path = source_folder / 'plan.json'
+        if original['status'] != 'planned' or not plan_path.exists():
+            row['strict_identity'] = None
+            row['posthoc_selector_identity'] = None
+            row['render_judgement'] = 'not_run'
+            rows.append(row)
+            continue
+        folder.mkdir()
+        plan = VisualizationPlanDraft.model_validate_json(plan_path.read_bytes())
+        strict = judge(case_id, frozen[case_id], plan, folder, replay)
+        chart = plan.charts[0] if len(plan.charts) == 1 else None
+        binding = chart.data_bindings[0].model_dump(mode='json', by_alias=True) if chart and len(chart.data_bindings) == 1 else None
+        selector_matches = bool(binding) and all(
+            binding.get(field) == frozen[case_id]['binding'][field]
+            for field in ('analysisId', 'factPath', 'dataPath', 'fields'))
+        row.update(strict_identity=(binding == frozen[case_id]['binding']),
+                   posthoc_selector_identity=bool(strict['identity'] and selector_matches),
+                   role_matches=(binding or {}).get('role') == frozen[case_id]['binding']['role'],
+                   render_judgement=strict)
+        rows.append(row)
+    source_environment = json.loads((source / 'environment.json').read_text())
+    environment = {'derivation': 'posthoc_offline_replay',
+        'created_after_online_responses': True,
+        'source_evidence': str(source.relative_to(REPORT)),
+        'source_manifest_sha256': hashlib.sha256((source / 'manifest.json').read_bytes()).hexdigest(),
+        'source_committed_protocol_sha256': source_environment['protocol']['sha256'],
+        'current_protocol_sha256': hashlib.sha256((REPORT / 'PROTOCOL.md').read_bytes()).hexdigest(),
+        'current_evaluator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'strict_oracle': 'entire dataBindings entry equals frozen binding',
+        'posthoc_oracle': 'analysisId/factPath/dataPath/fields exact; role assessed separately',
+        'visual_review': 'not_run'}
+    save(output / 'method.json', environment)
+    save(output / 'results.json', rows)
+    save(output / 'source-plan-identities.json', [identity(source / f'{r["case"]}-{r["variant"]}/plan.json', source)
+        for r in source_rows if r['status'] == 'planned' and (source / f'{r["case"]}-{r["variant"]}/plan.json').exists()])
+    save(output / 'manifest.json', [identity(path, output) for path in sorted(output.rglob('*')) if path.is_file()])
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--output', type=Path)
+    mode.add_argument('--derive-from', type=Path)
+    parser.add_argument('--derived-output', type=Path)
     args = parser.parse_args()
     os.environ.setdefault('MPLBACKEND', 'Agg')
-    asyncio.run(run(args.output.resolve()))
+    if args.derive_from:
+        if args.derived_output is None:
+            parser.error('--derive-from requires --derived-output')
+        derive(args.derive_from.resolve(), args.derived_output.resolve())
+    else:
+        asyncio.run(run(args.output.resolve()))

@@ -1,0 +1,26 @@
+[
+  {
+    "case": "L1",
+    "duration_ms": 0,
+    "error_code": "TypeError",
+    "error_type": "TypeError",
+    "provider_requests": [],
+    "status": "failed",
+    "variant": "before"
+  },
+  {
+    "case": "L1",
+    "status": "not_run",
+    "variant": "after"
+  },
+  {
+    "case": "U1",
+    "status": "not_run",
+    "variant": "after"
+  },
+  {
+    "case": "U1",
+    "status": "not_run",
+    "variant": "before"
+  }
+]

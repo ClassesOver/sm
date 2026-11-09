@@ -1,0 +1,1009 @@
+[
+  {
+    "case": "L1",
+    "duration_ms": 21877,
+    "original_status": "planned",
+    "posthoc_selector_identity": true,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 0,
+        "durationMs": 20712,
+        "inputTokens": 19895,
+        "outputTokens": 2786,
+        "providerRequestId": "chatcmpl-ab5d840d-9353-4996-b48b-592b6672101a",
+        "reasoningTokens": 2246,
+        "requestIndex": 1,
+        "status": "completed"
+      }
+    ],
+    "render_judgement": {
+      "actual": {
+        "bar_values": [
+          -12.0
+        ],
+        "category_labels": [
+          "合成机构超长中文分类标签\n用于验证画布边缘完整显示"
+        ],
+        "compiled_script": {
+          "path": "compiled.py",
+          "sha256": "fc81fffc1dfb25644b211200be3291889c6189dfefa47ce94a99e754dde31a2b",
+          "size": 59356
+        },
+        "error": "standard_chart_layout_unresolved: 分类标签超出画布，请调整边距或扩大画布",
+        "execution": "rejected",
+        "geometry": {
+          "canvas_px": [
+            600.0,
+            450.0
+          ],
+          "fonts": {
+            "NotoSansCJK-Bold.ttc": {
+              "path": "NotoSansCJK-Bold.ttc",
+              "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+              "size": 20050760
+            },
+            "NotoSansCJK-Regular.ttc": {
+              "path": "NotoSansCJK-Regular.ttc",
+              "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+              "size": 19484784
+            }
+          },
+          "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+          "missing_glyphs": [],
+          "text_bbox_intersections": [],
+          "texts": [
+            {
+              "bbox": [
+                179.33333333333334,
+                264.1666666666667,
+                58.0,
+                16.828125
+              ],
+              "outside_canvas": false,
+              "text": "-12人次"
+            },
+            {
+              "bbox": [
+                359.0,
+                27.296875000000036,
+                38.0,
+                18.953125
+              ],
+              "outside_canvas": false,
+              "text": "人次"
+            },
+            {
+              "bbox": [
+                162.99999999999994,
+                54.58333333333337,
+                27.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-15"
+            },
+            {
+              "bbox": [
+                292.16666666666663,
+                54.58333333333337,
+                27.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-10"
+            },
+            {
+              "bbox": [
+                426.3333333333333,
+                54.58333333333337,
+                17.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-5"
+            },
+            {
+              "bbox": [
+                559.0,
+                54.58333333333337,
+                10.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "0"
+            },
+            {
+              "bbox": [
+                -52.66666666666666,
+                227.28906250000003,
+                228.0,
+                38.17187499999997
+              ],
+              "outside_canvas": true,
+              "text": "合成机构超长中文分类标签\n用于验证画布边缘完整显示"
+            },
+            {
+              "bbox": [
+                39.0,
+                382.9052083333333,
+                277.0,
+                58.994791666666686
+              ],
+              "outside_canvas": false,
+              "text": "2025年1月唯一分类\n人次净变化为-12人次"
+            },
+            {
+              "bbox": [
+                39.0,
+                307.73333333333335,
+                226.0,
+                44.166666666666686
+              ],
+              "outside_canvas": false,
+              "text": "期间2025-01，分类粒度\ncategory，仅1个类别"
+            },
+            {
+              "bbox": [
+                39.0,
+                9.899999999999999,
+                247.0,
+                17.015625
+              ],
+              "outside_canvas": false,
+              "text": "来源：合成冻结数据（2025-01）"
+            }
+          ]
+        },
+        "image": {
+          "path": "rejected-debug.png",
+          "sha256": "05cfbcd9395d0eae7b2202962dbd6338bb19c57a6a4db9e6a887f628c04feab1",
+          "size": 49095
+        },
+        "preflight_diagnostic": null,
+        "value_axis_label": "人次",
+        "warnings": []
+      },
+      "custom": false,
+      "decimal_expected": [
+        "-12"
+      ],
+      "full_categories": true,
+      "geometry": false,
+      "identity": true,
+      "identity_mismatches": [],
+      "numeric": true,
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            192.0,
+            90.00000000000003,
+            372.0,
+            315.0
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -14.4,
+            0.0
+          ],
+          "ylim": [
+            0.275,
+            -0.275
+          ]
+        }
+      ],
+      "redraws": 0,
+      "render_attempts": 1,
+      "standard_delivered": false,
+      "visual_review": "not_run"
+    },
+    "role_matches": true,
+    "strict_identity": true,
+    "variant": "before"
+  },
+  {
+    "case": "L1",
+    "duration_ms": 13959,
+    "original_status": "planned",
+    "posthoc_selector_identity": true,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 1536,
+        "durationMs": 13759,
+        "inputTokens": 20049,
+        "outputTokens": 1991,
+        "providerRequestId": "chatcmpl-b7862466-a94b-44b0-8f5e-a5281e39f194",
+        "reasoningTokens": 1297,
+        "requestIndex": 1,
+        "status": "completed"
+      }
+    ],
+    "render_judgement": {
+      "actual": {
+        "bar_values": [
+          -12.0
+        ],
+        "category_labels": [
+          "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+        ],
+        "compiled_script": {
+          "path": "compiled.py",
+          "sha256": "134b7b43d1b31827187f8b13eeddb164d12ab8f9a00da84c47e1b1da9a85763a",
+          "size": 59172
+        },
+        "execution": "rendered",
+        "geometry": {
+          "canvas_px": [
+            600.0,
+            450.0
+          ],
+          "fonts": {
+            "NotoSansCJK-Bold.ttc": {
+              "path": "NotoSansCJK-Bold.ttc",
+              "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+              "size": 20050760
+            },
+            "NotoSansCJK-Regular.ttc": {
+              "path": "NotoSansCJK-Regular.ttc",
+              "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+              "size": 19484784
+            }
+          },
+          "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+          "missing_glyphs": [],
+          "text_bbox_intersections": [],
+          "texts": [
+            {
+              "bbox": [
+                362.8333333333333,
+                109.33333333333334,
+                38.0,
+                18.953125
+              ],
+              "outside_canvas": false,
+              "text": "人次"
+            },
+            {
+              "bbox": [
+                130.86363636363637,
+                136.61979166666669,
+                27.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-15"
+            },
+            {
+              "bbox": [
+                272.2146464646465,
+                136.61979166666669,
+                27.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-10"
+            },
+            {
+              "bbox": [
+                418.5656565656566,
+                136.61979166666669,
+                17.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-5"
+            },
+            {
+              "bbox": [
+                563.4166666666666,
+                136.61979166666669,
+                10.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "0"
+            },
+            {
+              "bbox": [
+                26.583333333333343,
+                163.43177083333336,
+                152.0,
+                57.21875
+              ],
+              "outside_canvas": false,
+              "text": "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+            },
+            {
+              "bbox": [
+                39.0,
+                382.7125,
+                291.0,
+                59.1875
+              ],
+              "outside_canvas": false,
+              "text": "2025-01 该中文分类\n人次净变化为 -12 人次"
+            },
+            {
+              "bbox": [
+                39.0,
+                331.0666666666667,
+                231.0,
+                20.833333333333314
+              ],
+              "outside_canvas": false,
+              "text": "单分类、单期人次净变化"
+            },
+            {
+              "bbox": [
+                39.0,
+                9.899999999999999,
+                238.0,
+                51.1875
+              ],
+              "outside_canvas": false,
+              "text": "数据来源：合成冻结数据，期间\n2025-01，类别粒度，单位：人\n次"
+            }
+          ]
+        },
+        "image": {
+          "path": "chart.png",
+          "sha256": "ecb96f6aa920038d166fd9f09a0f2e54a90f50a4de6b4dbc8e99de41633b3039",
+          "size": 50358
+        },
+        "preflight_diagnostic": null,
+        "value_axis_label": "人次",
+        "warnings": []
+      },
+      "custom": false,
+      "decimal_expected": [
+        "-12"
+      ],
+      "full_categories": true,
+      "geometry": false,
+      "identity": true,
+      "identity_mismatches": [],
+      "numeric": true,
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            195.25,
+            172.03645833333334,
+            373.16666666666663,
+            42.259375000000006
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -13.2,
+            0.0
+          ],
+          "ylim": [
+            0.352,
+            -0.352
+          ]
+        }
+      ],
+      "redraws": 0,
+      "render_attempts": 1,
+      "standard_delivered": true,
+      "visual_review": "not_run"
+    },
+    "role_matches": false,
+    "strict_identity": false,
+    "variant": "after"
+  },
+  {
+    "case": "U1",
+    "duration_ms": 17307,
+    "original_status": "planned",
+    "posthoc_selector_identity": true,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 19712,
+        "durationMs": 17109,
+        "inputTokens": 20072,
+        "outputTokens": 2532,
+        "providerRequestId": "chatcmpl-ba6118ba-3f48-4a4c-860c-7a548c6fe7fe",
+        "reasoningTokens": 1973,
+        "requestIndex": 2,
+        "status": "completed"
+      }
+    ],
+    "render_judgement": {
+      "actual": {
+        "bar_values": [
+          12.0,
+          null,
+          -3.0
+        ],
+        "category_labels": [
+          "普通门诊",
+          "合成缺失类别",
+          "特需门诊"
+        ],
+        "compiled_script": {
+          "path": "compiled.py",
+          "sha256": "7db3093ca3f5896956d81b40c7b003bc86f6a972847b14162ba6c9e4b5e33815",
+          "size": 59673
+        },
+        "execution": "rendered",
+        "geometry": {
+          "canvas_px": [
+            900.0,
+            600.0
+          ],
+          "fonts": {
+            "NotoSansCJK-Bold.ttc": {
+              "path": "NotoSansCJK-Bold.ttc",
+              "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+              "size": 20050760
+            },
+            "NotoSansCJK-Regular.ttc": {
+              "path": "NotoSansCJK-Regular.ttc",
+              "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+              "size": 19484784
+            }
+          },
+          "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+          "missing_glyphs": [],
+          "text_bbox_intersections": [],
+          "texts": [
+            {
+              "bbox": [
+                161.01351939598285,
+                129.10221732026156,
+                325.59375,
+                19.09375
+              ],
+              "outside_canvas": false,
+              "text": "value 缺失（保留空位）: 合成缺失类别"
+            },
+            {
+              "bbox": [
+                713.7495001873167,
+                340.6047500000065,
+                162.0,
+                19.015625
+              ],
+              "outside_canvas": false,
+              "text": "基准门诊量: 12人次"
+            },
+            {
+              "bbox": [
+                438.73480313247575,
+                62.58383333333333,
+                42.0,
+                20.83333333333333
+              ],
+              "outside_canvas": false,
+              "text": "人次"
+            },
+            {
+              "bbox": [
+                95.6142272556985,
+                91.75049999999999,
+                17.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-6"
+            },
+            {
+              "bbox": [
+                163.35147980365608,
+                91.75049999999999,
+                17.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-4"
+            },
+            {
+              "bbox": [
+                231.08873235161366,
+                91.75049999999999,
+                17.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-2"
+            },
+            {
+              "bbox": [
+                302.3259848995712,
+                91.75049999999999,
+                10.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "0"
+            },
+            {
+              "bbox": [
+                370.06323744752876,
+                91.75049999999999,
+                10.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "2"
+            },
+            {
+              "bbox": [
+                437.8004899954864,
+                91.75049999999999,
+                10.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "4"
+            },
+            {
+              "bbox": [
+                505.5377425434439,
+                91.75049999999999,
+                10.000000000000057,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "6"
+            },
+            {
+              "bbox": [
+                573.2749950914015,
+                91.75049999999999,
+                10.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "8"
+            },
+            {
+              "bbox": [
+                636.012247639359,
+                91.75049999999999,
+                20.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "10"
+            },
+            {
+              "bbox": [
+                703.7495001873167,
+                91.75049999999999,
+                20.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "12"
+            },
+            {
+              "bbox": [
+                771.4867527352742,
+                91.75049999999999,
+                20.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "14"
+            },
+            {
+              "bbox": [
+                62.25050000000002,
+                293.2329027654045,
+                76.0,
+                18.984375
+              ],
+              "outside_canvas": false,
+              "text": "普通门诊"
+            },
+            {
+              "bbox": [
+                24.250500000000017,
+                221.17624550653915,
+                114.0,
+                18.984375
+              ],
+              "outside_canvas": false,
+              "text": "合成缺失类别"
+            },
+            {
+              "bbox": [
+                62.25050000000002,
+                149.11958824767382,
+                76.0,
+                18.984375
+              ],
+              "outside_canvas": false,
+              "text": "特需门诊"
+            },
+            {
+              "bbox": [
+                58.5,
+                531.921375,
+                522.0,
+                61.828125
+              ],
+              "outside_canvas": false,
+              "text": "2025-01门诊量：普通门诊居首，\n特需门诊为负值，合成缺失类别保留空位"
+            },
+            {
+              "bbox": [
+                58.5,
+                474.6166666666667,
+                330.0,
+                20.833333333333314
+              ],
+              "outside_canvas": false,
+              "text": "2025-01 · 分类粒度 · 单位：人次"
+            },
+            {
+              "bbox": [
+                58.5,
+                13.2,
+                578.0,
+                18.1875
+              ],
+              "outside_canvas": false,
+              "text": "数据来源：门诊量统计；合成缺失类别未提供数值，图中保留空位，不补零。"
+            }
+          ]
+        },
+        "image": {
+          "path": "chart.png",
+          "sha256": "9727a9aa4a49a54acbe87bd96804c8f996453a173cd060f22656aaa9ec424008",
+          "size": 79253
+        },
+        "preflight_diagnostic": null,
+        "value_axis_label": "人次",
+        "warnings": []
+      },
+      "business_mapping": false,
+      "custom": false,
+      "decimal_expected": [
+        "12",
+        null,
+        "-3"
+      ],
+      "full_categories": true,
+      "geometry": true,
+      "identity": true,
+      "identity_mismatches": [],
+      "numeric": true,
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            154.91716666666667,
+            127.16716666666666,
+            609.6353021529922,
+            209.25253269591428
+          ],
+          "tick_font_sizes": [
+            9.0,
+            9.0,
+            9.0
+          ],
+          "xlim": [
+            -4.5,
+            13.5
+          ],
+          "ylim": [
+            2.452,
+            -0.45199999999999996
+          ]
+        }
+      ],
+      "redraws": 0,
+      "render_attempts": 1,
+      "standard_delivered": true,
+      "visual_review": "not_run"
+    },
+    "role_matches": false,
+    "strict_identity": false,
+    "variant": "after"
+  },
+  {
+    "case": "U1",
+    "duration_ms": 13059,
+    "original_status": "planned",
+    "posthoc_selector_identity": true,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 19456,
+        "durationMs": 11172,
+        "inputTokens": 19918,
+        "outputTokens": 1585,
+        "providerRequestId": "chatcmpl-eaef0557-057c-49d1-b25d-48fc62146f86",
+        "reasoningTokens": 1030,
+        "requestIndex": 2,
+        "status": "completed"
+      }
+    ],
+    "render_judgement": {
+      "actual": {
+        "bar_values": [
+          12.0,
+          null,
+          -3.0
+        ],
+        "category_labels": [
+          "普通门诊",
+          "合成缺失类别",
+          "特需门诊"
+        ],
+        "compiled_script": {
+          "path": "compiled.py",
+          "sha256": "d4e21d4e12bd82803ae7138a0459d9beb4287b3d51845a2c21b5b148818e1f1d",
+          "size": 59729
+        },
+        "execution": "rendered",
+        "geometry": {
+          "canvas_px": [
+            900.0,
+            600.0
+          ],
+          "fonts": {
+            "NotoSansCJK-Bold.ttc": {
+              "path": "NotoSansCJK-Bold.ttc",
+              "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+              "size": 20050760
+            },
+            "NotoSansCJK-Regular.ttc": {
+              "path": "NotoSansCJK-Regular.ttc",
+              "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+              "size": 19484784
+            }
+          },
+          "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+          "missing_glyphs": [],
+          "text_bbox_intersections": [],
+          "texts": [
+            {
+              "bbox": [
+                169.63647435897434,
+                135.99190833333336,
+                292.640625,
+                16.9375
+              ],
+              "outside_canvas": false,
+              "text": "value 缺失（保留空位）: 合成缺失类别"
+            },
+            {
+              "bbox": [
+                728.2073471400395,
+                358.9883666666665,
+                146.0,
+                16.859375
+              ],
+              "outside_canvas": false,
+              "text": "基准门诊量: 12人次"
+            },
+            {
+              "bbox": [
+                463.5737179487179,
+                70.9166666666667,
+                38.0,
+                18.953125
+              ],
+              "outside_canvas": false,
+              "text": "人次"
+            },
+            {
+              "bbox": [
+                73.55991124260353,
+                98.20312500000003,
+                32.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-7.5"
+            },
+            {
+              "bbox": [
+                155.43778763971068,
+                98.20312500000003,
+                32.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-5.0"
+            },
+            {
+              "bbox": [
+                237.31566403681785,
+                98.20312500000003,
+                32.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "-2.5"
+            },
+            {
+              "bbox": [
+                322.693540433925,
+                98.20312500000003,
+                25.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "0.0"
+            },
+            {
+              "bbox": [
+                404.5714168310322,
+                98.20312500000003,
+                25.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "2.5"
+            },
+            {
+              "bbox": [
+                486.44929322813937,
+                98.20312500000003,
+                25.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "5.0"
+            },
+            {
+              "bbox": [
+                568.3271696252465,
+                98.20312500000003,
+                25.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "7.5"
+            },
+            {
+              "bbox": [
+                645.2050460223537,
+                98.20312500000003,
+                35.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "10.0"
+            },
+            {
+              "bbox": [
+                727.0829224194608,
+                98.20312500000003,
+                35.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "12.5"
+            },
+            {
+              "bbox": [
+                808.9607988165681,
+                98.20312500000003,
+                35.0,
+                18.75
+              ],
+              "outside_canvas": false,
+              "text": "15.0"
+            },
+            {
+              "bbox": [
+                70.58333333333331,
+                309.5619630968777,
+                76.0,
+                18.984375
+              ],
+              "outside_canvas": false,
+              "text": "普通门诊"
+            },
+            {
+              "bbox": [
+                32.583333333333314,
+                233.47739583333325,
+                114.0,
+                18.984375
+              ],
+              "outside_canvas": false,
+              "text": "合成缺失类别"
+            },
+            {
+              "bbox": [
+                70.58333333333331,
+                157.39282856978878,
+                76.0,
+                18.984375
+              ],
+              "outside_canvas": false,
+              "text": "特需门诊"
+            },
+            {
+              "bbox": [
+                58.5,
+                541.9604166666667,
+                482.0,
+                47.23958333333337
+              ],
+              "outside_canvas": false,
+              "text": "2025-01各类别门诊量：普通门诊12人次\n为基准，特需门诊-3人次，合成缺失类别无数据"
+            },
+            {
+              "bbox": [
+                58.5,
+                491.4916666666666,
+                257.0,
+                20.833333333333314
+              ],
+              "outside_canvas": false,
+              "text": "2025-01 · 分类粒度：类别"
+            },
+            {
+              "bbox": [
+                58.5,
+                13.2,
+                647.0,
+                18.1875
+              ],
+              "outside_canvas": false,
+              "text": "数据来源：门诊业务统计，期间2025-01；合成缺失类别无数据，保留空位未按0处理。"
+            }
+          ]
+        },
+        "image": {
+          "path": "chart.png",
+          "sha256": "1f8d40fd3d66b034ac1230d94eebbc0921cbee9532b1114eaed5a76eb8c3ad34",
+          "size": 78500
+        },
+        "preflight_diagnostic": null,
+        "value_axis_label": "人次",
+        "warnings": []
+      },
+      "business_mapping": false,
+      "custom": false,
+      "decimal_expected": [
+        "12",
+        null,
+        "-3"
+      ],
+      "full_categories": true,
+      "geometry": true,
+      "identity": true,
+      "identity_mismatches": [],
+      "numeric": true,
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            163.24999999999997,
+            133.61979166666669,
+            638.6474358974359,
+            220.94958333333312
+          ],
+          "tick_font_sizes": [
+            9.0,
+            9.0,
+            9.0
+          ],
+          "xlim": [
+            -5.25,
+            14.25
+          ],
+          "ylim": [
+            2.452,
+            -0.45199999999999996
+          ]
+        }
+      ],
+      "redraws": 0,
+      "render_attempts": 1,
+      "standard_delivered": true,
+      "visual_review": "not_run"
+    },
+    "role_matches": true,
+    "strict_identity": true,
+    "variant": "before"
+  }
+]

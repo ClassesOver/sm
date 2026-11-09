@@ -1,0 +1,156 @@
+{
+  "charts": [
+    {
+      "aggregationGrain": "category",
+      "altText": "横向柱图显示2025年1月仅一个分类，其人次净变化为-12人次，负值柱从零基线向左延伸，超长中文类别标签在画布内完整显示。",
+      "chartId": "synthetic",
+      "citationIds": [
+        "synthetic"
+      ],
+      "comparability": "strict",
+      "comparisonPeriod": null,
+      "comparisonType": "none",
+      "currentPeriod": "2025-01",
+      "dataBindings": [
+        {
+          "analysisId": "synthetic",
+          "dataPath": "rows",
+          "factPath": "facts.json",
+          "fields": [
+            "label",
+            "value"
+          ],
+          "role": "合成冻结数据"
+        }
+      ],
+      "metricCodes": [
+        "synthetic"
+      ],
+      "sourceDatasetId": "synthetic",
+      "sourcePath": "chart.png",
+      "standardAnnotations": [
+        {
+          "caption": null,
+          "color": null,
+          "endLabel": null,
+          "endRowLabel": null,
+          "highlight": false,
+          "kind": "values",
+          "label": null,
+          "position": "auto",
+          "rowLabel": null,
+          "series": "value"
+        }
+      ],
+      "standardAxes": {
+        "allowNulls": true,
+        "leftDisplayUnit": "人次",
+        "linearThreshold": 1.0,
+        "mode": "single",
+        "panelDescending": true,
+        "panelLimit": null,
+        "rightDisplayUnit": null,
+        "rightFields": [],
+        "scale": "linear",
+        "zeroBaseline": true,
+        "zoomBounds": [
+          0.56,
+          0.5,
+          0.4,
+          0.4
+        ],
+        "zoomEnd": null,
+        "zoomStart": null
+      },
+      "standardBands": [],
+      "standardBoxSummary": null,
+      "standardBreak": null,
+      "standardCanvas": {
+        "bottom": 0.2,
+        "crop": "canvas",
+        "dpi": 150,
+        "height": 3.0,
+        "labelWrap": 13,
+        "layout": "manual",
+        "left": 0.32,
+        "legendPosition": "outside",
+        "maxCategoryTicks": 18,
+        "padding": 0.2,
+        "right": 0.94,
+        "sizeMode": "fixed",
+        "tickFontSize": 9,
+        "top": 0.9,
+        "width": 4.0
+      },
+      "standardComposition": null,
+      "standardDerivations": [],
+      "standardDisplayUnit": null,
+      "standardDistribution": null,
+      "standardDomains": null,
+      "standardEncoding": null,
+      "standardForm": "barh",
+      "standardFunnel": null,
+      "standardLabelField": "label",
+      "standardLabelFields": [],
+      "standardLabels": [],
+      "standardPagination": null,
+      "standardPresentation": {
+        "labelFormats": [],
+        "labelMode": "source",
+        "order": {
+          "descending": false,
+          "excludeMissing": false,
+          "field": null,
+          "fields": [],
+          "labels": [],
+          "limit": null,
+          "mode": "source"
+        },
+        "sourceNote": "来源：合成冻结数据（2025-01）",
+        "subtitle": "期间2025-01，分类粒度category，仅1个类别",
+        "summaries": []
+      },
+      "standardRadar": null,
+      "standardSankey": null,
+      "standardSourceLabels": [],
+      "standardSources": [],
+      "standardSteps": [],
+      "standardStyle": {
+        "annotationColor": "series",
+        "annotationFontSize": 8,
+        "annotationLeader": false,
+        "annotationOffsetX": 8,
+        "annotationOffsetY": 8,
+        "axisFontSize": 9,
+        "background": "#ffffff",
+        "barGroupWidth": 0.5,
+        "decimals": 0,
+        "grid": "x",
+        "gridAlpha": 0.2,
+        "labelRotation": 0,
+        "legendColumns": 1,
+        "legendFontSize": 9,
+        "legendLocation": "auto",
+        "palette": "report",
+        "points": [],
+        "series": [],
+        "theme": "report",
+        "titleFontSize": 14,
+        "valueMargin": 0.2
+      },
+      "standardTotalField": null,
+      "standardValueFields": [
+        "value"
+      ],
+      "standardView": null,
+      "standardWaterfall": null,
+      "title": "2025年1月唯一分类人次净变化为-12人次",
+      "visualForm": "横向柱图展示单一分类的人次净变化，保留负值并完整显示中文类别标签。"
+    }
+  ],
+  "warnings": [
+    "仅绑定1个分类、1条冻结记录，图中不涉及排序、截取或跨期比较。",
+    "类别标签为超长中文文本，按固定画布内换行完整显示，未删行或缩小字号。",
+    "数值为负（-12人次），横向柱从零基线向左绘制，保留原始符号。"
+  ]
+}
