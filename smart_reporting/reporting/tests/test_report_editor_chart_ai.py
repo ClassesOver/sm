@@ -1162,10 +1162,10 @@ async def test_chart_ai_visual_issues_are_soft_warnings_and_trigger_one_repair(
     """设计稿 §5.2/§8：视觉问题只出软告警不阻断；requiresRevision 触发一次自动修复，
     修复后仍有问题则带告警交付审阅。"""
 
-    def receipt(requires_revision: bool) -> ChartVisualInspectionReceipt:
+    def receipt(requires_revision: bool, image_receipt: ChartVisualInspectionReceipt) -> ChartVisualInspectionReceipt:
         return ChartVisualInspectionReceipt(
-            sourcePath="reports/revision-1/chart-edits/x/chart.png",
-            sha256=_sha(b"img"),
+            sourcePath=image_receipt.source_path,
+            sha256=image_receipt.sha256,
             inspectionMode="vision",
             visualReviewStatus="passed",
             modelId="fake-vision-model",
@@ -1180,8 +1180,14 @@ async def test_chart_ai_visual_issues_are_soft_warnings_and_trigger_one_repair(
             ),
         )
 
+    class ReviewIssuesRunner(FakeRunner):
+        async def run(self, *args, **kwargs):
+            result = await super().run(*args, **kwargs)
+            result.visual_inspection_receipts = (receipt(True, result.visual_inspection_receipts[0]),)
+            return result
+
     fixture = await _make_editor_with_chart(tmp_path)
-    runner = FakeRunner(fixture.chart_bytes, receipts=(receipt(True),))
+    runner = ReviewIssuesRunner(fixture.chart_bytes)
     service = _service(fixture, runner)
     session = SimpleNamespace(capabilities=None)
 
