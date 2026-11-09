@@ -7,7 +7,7 @@
   "packages/xlsx-engine/src/sheet-ops.ts": "01aa26864f845868b896b3509688af7593d6b9416748263570fc22bee8655c68",
   "packages/xlsx-engine/src/sort-range.ts": "7b1b39a7f932584a5a7bd3bcb21d789686d360908aecb0c847ce311e7b7196a7",
   "packages/xlsx-engine/src/style-read.ts": "d67bb36ced611ebe1f55f63517e5d5de105dc9ee5556273cf7185b7e8e0b31e5",
-  "packages/xlsx-engine/src/workbook-read.ts": "086a7a5795102b4ddcb0cf0c3e82289204e821356697544396888c67bae4fa4d",
+  "packages/xlsx-engine/src/workbook-read.ts": "bd680a97d3db00f4ce9d96259428392969c99766330654b4ca06b8741f8bda1f",
   "packages/xlsx-engine/tests/notes-structure.test.ts": "271c1f3ceaf8a2a86cda4314043e55ce537d1aef887e4a5826b3a1ee43502838",
   "packages/xlsx-engine/tests/notes.test.ts": "7e7543e9d6f34c8b08d02b8a5198b1633ec821e78e7fdfe06c34e1a7c3181841",
   "packages/xlsx-engine/tests/pivot-grouping.test.ts": "1d3e2f20ca433131fd8ba5c78ac22247cd7d7c489ec4031b690bad1987593345",
@@ -26,5 +26,6 @@
   "packages/xlsx-engine/src/cell-shift.ts": "a0a8121257ce3575da6cc30a55760e85428bceff03f65a6ef91c809bc9661230",
   "packages/xlsx-engine/tests/cell-shift.test.ts": "1a441297b03e256319078521d1646ad8e8fd9b905bb5373c8610909ede84670d",
   "packages/xlsx-engine/src/protection-read.ts": "a5354a9736c2d6a1a446686cbfcb5ddb77a7ba5248b71157f3a6766da048ecc0",
-  "packages/xlsx-engine/tests/protection-read.test.ts": "9ca80dd7d437b28365ef640ac6eb52562a8b17441919df1b7219aca85b117741"
+  "packages/xlsx-engine/tests/protection-read.test.ts": "9ca80dd7d437b28365ef640ac6eb52562a8b17441919df1b7219aca85b117741",
+  "packages/xlsx-engine/tests/show-formulas.test.ts": "491d93efc58faa345afd16a424d26a04cc6ec2d57f622d88765c0b4fc2aa14de"
 }

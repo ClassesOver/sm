@@ -66,6 +66,8 @@ export interface SheetModel {
   freeze: { frozenRows: number; frozenColumns: number } | null
   /// sheetView showGridLines（OOXML 默认 true；写回经 applyPageSetups）。
   showGridlines: boolean
+  /// sheetView showFormulas（公式视图，OOXML 默认 false；仅为真时出现，写回经 applyPageSetups）。
+  showFormulas?: boolean
   /// 常规视图缩放百分比（10-400，OOXML 默认 100；写回经 applyPageSetups）。
   zoomScale: number
   /// 页面设置（pageSetup 元素 + sheetPr@pageSetUpPr；写回经 applyPageSetups）。
@@ -340,6 +342,7 @@ function parseGeometry(worksheetXml: string) {
   // OOXML 默认显示网格线；仅显式 showGridLines="0" 才是隐藏。
   const sheetView = worksheetXml.match(/<(?:[\w.-]+:)?sheetView\b[^>]*?(?:\/>|>[\s\S]*?<\/(?:[\w.-]+:)?sheetView>)/)?.[0]
   const showGridlines = sheetView && readXmlAttribute(sheetView, 'showGridLines') === '0' ? false : true
+  const showFormulas = !!sheetView && ['1', 'true'].includes(readXmlAttribute(sheetView, 'showFormulas') ?? '')
   // 常规视图缩放百分比（OOXML 默认 100）。
   const zoomScaleRaw = sheetView ? readXmlAttribute(sheetView, 'zoomScale') : undefined
   const zoomScale = zoomScaleRaw !== undefined && Number.isFinite(Number(zoomScaleRaw)) ? Math.min(Math.max(Number(zoomScaleRaw), 10), 400) : 100
@@ -361,7 +364,7 @@ function parseGeometry(worksheetXml: string) {
   }
 
   return {
-    dimension, merges, columns, rows, freeze, showGridlines, zoomScale,
+    dimension, merges, columns, rows, freeze, showGridlines, zoomScale, ...(showFormulas ? { showFormulas } : {}),
     margins, printGridlines, printHeadings, pageSetup,
     rowBreaks: manualBreaks('rowBreaks'), colBreaks: manualBreaks('colBreaks'),
   }

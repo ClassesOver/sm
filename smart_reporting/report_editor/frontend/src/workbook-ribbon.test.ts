@@ -547,3 +547,27 @@ it('mirrors protection state on Review ▸ Protection and locks editing buttons 
   expect(button('sheet-protect').textContent).toBe('保护工作表')
   expect(button('workbook-protect').textContent).toBe('撤销工作簿保护')
 })
+
+it('wires Formulas ▸ Show Formulas, Calculate Now/Sheet and the Calculation Options menu, usable read-only', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  let calculation = { formulaView: true, manual: false }
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => undefined, editable: () => false, hasSelection: () => true, calculation: () => calculation,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Formulas"]')!.click()
+  ribbon.refreshState?.()
+  const button = (id: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
+  for (const id of ['toggle-show-formulas', 'calculate-now', 'calculate-sheet']) { expect(button(id).disabled, id).toBe(false); button(id).click() }
+  expect(button('toggle-show-formulas').getAttribute('aria-pressed')).toBe('true')
+  const mode = document.querySelector<HTMLSelectElement>('[data-ribbon-control="calc-mode"]')!
+  expect([...mode.options].map(option => option.value)).toEqual(['auto', 'manual'])
+  expect(mode.value).toBe('auto')
+  mode.value = 'manual'; mode.dispatchEvent(new Event('change'))
+  expect(onCommand.mock.calls.map(([command]) => command)).toEqual(['toggle-show-formulas', 'calculate-now', 'calculate-sheet', 'calc-mode:manual'])
+  calculation = { formulaView: false, manual: true }
+  ribbon.refreshState?.()
+  expect(mode.value).toBe('manual')
+  expect(button('toggle-show-formulas').getAttribute('aria-pressed')).toBe('false')
+  expect(document.querySelector('[data-ribbon-command="calculation-options"]')).toBeNull()
+})

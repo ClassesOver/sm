@@ -51,6 +51,7 @@ export function protectionBlockReason(commandId: string, sheetProtected: boolean
 export const PROTECTED_SHEET_RIBBON = new Set([
   'find', 'print', 'copy', 'note-prev', 'note-next', 'note-show-toggle', 'sheet-protect', 'workbook-protect',
   'toggle-gridlines', 'name-manager-open', 'insert-sheet', 'undo', 'redo',
+  'toggle-show-formulas', 'calculate-now', 'calculate-sheet',
 ])
 
 export interface ProtectionPlan {

@@ -34,6 +34,7 @@ import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
 import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
 import { assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
+import { installCalculation, type CalculationControl } from './workbook-calculation'
 import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
 import { applyFormatPainterClick, formatPainterActive, formatPainterReady, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
@@ -106,6 +107,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   // 审阅▸保护：按原工作表 id（sheet-N）记录切换后的期望状态；undefined/缺省 = 文件原状态。
   const sheetProtection = new Map<string, boolean>()
   let structureLock: boolean | undefined
+  // 公式▸显示公式：按 Univer 工作表 id 记录公式视图（文件 sheetView/@showFormulas 为基线）；计算模式为编辑器状态。
+  const formulaSheets = new Set<string>()
+  let calculation: CalculationControl | undefined
   let acceptedSnapshot = ''
   const runtime = createUniver({
     locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, FindReplaceZhCN, SortZhCN, NoteZhCN, FilterUiZhCN) },
@@ -318,6 +322,31 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           feedback.textContent = printed
             ? '已提交浏览器打印：纸张、方向、页边距、打印区域、标题行、分页符与缩放已按页面设置生效；打印机、份数与页码范围由浏览器打印对话框掌管，页眉页脚与单元格边框不在本次打印内。'
             : '当前浏览器不支持框架内打印，未发送打印任务；请改用浏览器菜单的打印功能。'
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'toggle-show-formulas' || command === 'calculate-now' || command === 'calculate-sheet' || command.startsWith('calc-mode:')) {
+        // 仅改变显示/计算结果，只读与保存后亦可用；公式视图在可编辑时随保存写回 sheetView/@showFormulas。
+        if (loading || disposed) return
+        try {
+          const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+          if (!sheet || !calculation) throw new Error('工作簿尚未就绪')
+          if (command === 'toggle-show-formulas') {
+            const sheetId = sheet.getSheetId(), next = !formulaSheets.has(sheetId)
+            if (next) formulaSheets.add(sheetId); else formulaSheets.delete(sheetId)
+            calculation.syncFormulaView(next)
+            if (editable()) markDirty()
+            feedback.textContent = next ? '正在显示公式（保存后写入工作表视图）。' : '正在显示计算结果。'
+          } else if (command === 'calculate-now' || command === 'calculate-sheet') {
+            if (command === 'calculate-now') calculation.calculateNow()
+            else calculation.calculateSheet({ unitId: runtime.univerAPI.getActiveWorkbook()!.getId(), sheetId: sheet.getSheetId(), sheetName: sheet.getSheetName(), rows: sheet.getMaxRows(), columns: sheet.getMaxColumns() })
+            feedback.textContent = command === 'calculate-now' ? '已重新计算工作簿；计算结果不作为修改保存。' : '已重新计算当前工作表；计算结果不作为修改保存。'
+          } else {
+            const manual = command === 'calc-mode:manual'
+            calculation.setManual(manual)
+            feedback.textContent = manual ? '计算模式为手动：修改后按“开始计算”或“计算工作表”更新结果（仅当前编辑会话）。' : '计算模式为自动，已重新计算。'
+          }
+          ribbon.refreshState?.()
         } catch (error) { feedback.textContent = (error as Error).message }
         return
       }
@@ -729,6 +758,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
       formatPainterActive: () => formatPainterActive(runtime),
       protection: protectionView,
+      calculation: () => ({ formulaView: formulaSheets.has(activeSheetId() ?? ''), manual: calculation?.manual() ?? false }),
       formatPainterReady: () => formatPainterReady(runtime),
       hasSelection: () => !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange(),
       captureTarget: () => captureNumberFormatTarget(formatWorkbook()),
@@ -846,6 +876,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   })
   runtime.univerAPI.onCommandExecuted((command, options) => {
     if (command.id === 'ui.command.replace-current-match' || command.id === 'ui.command.replace-all-matches') replacing = false
+    if (!loading && command.id.includes('worksheet-activ')) calculation?.syncFormulaView(formulaSheets.has(activeSheetId() ?? ''))
     ribbon.refreshState?.()
     // Cached values and inferred source number formats are calculation results,
     // not user edits. The before hook removes only incoming calculated n.
@@ -975,7 +1006,14 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       const baselineZoom = baseline.sheets.find(item => item.name === sheet.getSheetName())?.zoomScale ?? 100
       if (liveZoom !== baselineZoom) zoomSetups.push({ sheetName: sheet.getSheetName(), zoomScale: liveZoom })
     }
-    const viewSetups: Array<{ sheetName: string } & Record<string, unknown>> = [...freezeSetups, ...gridlineSetups, ...zoomSetups]
+    // 公式视图：同一 applyPageSetups 协议（showFormulas），与 baseline 对比。
+    const formulaViewSetups: { sheetName: string; showFormulas: boolean }[] = []
+    for (const sheet of liveWorkbook?.getSheets() ?? []) {
+      if (typeof sheet.getSheetId !== 'function') continue
+      const live = formulaSheets.has(sheet.getSheetId())
+      if (live !== (baseline.sheets.find(item => item.name === sheet.getSheetName())?.showFormulas ?? false)) formulaViewSetups.push({ sheetName: sheet.getSheetName(), showFormulas: live })
+    }
+    const viewSetups: Array<{ sheetName: string } & Record<string, unknown>> = [...freezeSetups, ...gridlineSetups, ...zoomSetups, ...formulaViewSetups]
     // 页面设置日志差分：与 baseline 逐字段对比，只提交实际变化的字段；
     // 打印区域/标题 null（清除）仅在文件确有值时落盘。
     for (const sheet of liveWorkbook?.getSheets() ?? []) {
@@ -1031,6 +1069,13 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     currentModel = await readWorkbook(bytes)
     // 批注、筛选、视图状态随快照资源/工作表配置一并灌入，保存差分才有真实基线。
     loadWorkbookData(runtime, withWorkbookView(withWorkbookFilters(withWorkbookNotes(buildWorkbookData(currentModel, 'report-workbook', '报告工作簿'), currentModel), currentModel), currentModel))
+    formulaSheets.clear()
+    currentModel.sheets.forEach((sheet, index) => { if (sheet.showFormulas) formulaSheets.add(`sheet-${index}`) })
+    // 无注入器的测试替身不提供拦截器服务：公式视图与计算选项不可用。
+    if (!calculation && typeof runtime.univer.__getInjector === 'function') {
+      try { calculation = installCalculation(runtime as never, sheetId => formulaSheets.has(sheetId)) } catch { calculation = undefined }
+    }
+    calculation?.syncFormulaView(formulaSheets.has(activeSheetId() ?? ''))
     selectionListener?.dispose()
     selectionListener = runtime.univerAPI.getActiveWorkbook()?.onSelectionChange?.(() => ribbon.refreshState?.())
     staged = structuredClone(ops)
@@ -1174,5 +1219,5 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); historyListener?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

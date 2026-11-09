@@ -61,3 +61,9 @@ Protect Workbook toggle only what `protection.ts` writes (password-less) and
 leave password-protected targets read-only. `src/protection-read.ts`,
 `src/workbook-read.ts`, `src/index.ts` and `tests/protection-read.test.ts` are
 pinned in UPSTREAM-PATCHES-SHA256.json.
+
+2026-11-09 `readWorkbook` projects `SheetModel.showFormulas` (sheetView
+`showFormulas`, present only when true) so the editor's Formulas ▸ Show
+Formulas starts from the file and its save diff writes only changes through
+the existing `applyPageSetups` `showFormulas` field. `src/workbook-read.ts`
+and `tests/show-formulas.test.ts` are pinned in UPSTREAM-PATCHES-SHA256.json.

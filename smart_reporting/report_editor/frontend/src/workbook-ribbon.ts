@@ -69,6 +69,11 @@ type RibbonCommand =
   | 'format-painter:dblclick'
   | 'row-height-open'
   | 'insert-cells'
+  | 'toggle-show-formulas'
+  | 'calculate-now'
+  | 'calculate-sheet'
+  | 'calc-mode:auto'
+  | 'calc-mode:manual'
   | 'sheet-protect'
   | 'workbook-protect'
   | 'delete-cells'
@@ -419,8 +424,10 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       // use-in-formula 渲染为已定义名称下拉，命令形如 use-in-formula:<name>。
       action('用于公式', 'use-in-formula', 'use-in-formula'),
     ] },
-    { title: '公式审核', actions: ['trace-precedents', 'trace-dependents', 'remove-arrows', 'toggle-show-formulas', 'error-checking', 'watch-window', 'external-links-panel'].map(id => action(id, id)) },
-    { title: '计算', actions: ['calculate-now', 'calculate-sheet', 'calculation-options'].map(id => action(id, id)) },
+    { title: '公式审核', actions: ['trace-precedents', 'trace-dependents', 'remove-arrows', 'toggle-show-formulas', 'error-checking', 'watch-window', 'external-links-panel']
+      .map(id => id === 'toggle-show-formulas' ? action(id, id, id) : action(id, id)) },
+    // 计算选项为固定源 MenuSelect（calc-mode:auto|manual），在下方按组渲染为下拉。
+    { title: '计算', actions: [action('calculate-now', 'calculate-now', 'calculate-now'), action('calculate-sheet', 'calculate-sheet', 'calculate-sheet')] },
   ],
   Data: [
     { title: '数据透视表', actions: ['pivot-open', 'pivot-edit'].map(id => action(id, id)) },
@@ -714,6 +721,8 @@ export function mountWorkbookRibbon(
     definedNames?(): readonly string[]
     /// 审阅▸保护：当前工作表与工作簿结构的有效保护状态；reason 为不可切换原因（密码保护）。
     protection?(): { sheet: { protected: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
+    /// 公式▸计算：当前工作表公式视图与计算模式（编辑器状态）。
+    calculation?(): { formulaView: boolean; manual: boolean }
   },
 ) {
   const tabLabels: Record<RibbonTab, string> = { File: '文件', Home: '开始', Insert: '插入', 'Page Layout': '页面布局', Formulas: '公式', Data: '数据', Review: '审阅', View: '视图', 'Chart Design': '图表设计' }
@@ -758,6 +767,11 @@ export function mountWorkbookRibbon(
       const readOnlySafe = noteViewAction || id === 'copy'
       button.disabled = id === 'find' || id === 'print' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo', 'sheet-protect', 'workbook-protect'].includes(id))
       button.title = button.disabled ? !editable && !readOnlySafe ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
+      // 公式视图/重新计算只改变显示与计算结果，不修改文件内容，只读时亦可用。
+      if (['toggle-show-formulas', 'calculate-now', 'calculate-sheet'].includes(id)) {
+        button.disabled = false; button.title = button.textContent ?? ''
+        if (id === 'toggle-show-formulas') button.setAttribute('aria-pressed', String(!!view.calculation?.().formulaView))
+      }
       const protection = view.protection?.()
       if (protection?.sheet.protected && !button.disabled && !PROTECTED_SHEET_RIBBON.has(id)) { button.disabled = true; button.title = PROTECTED_SHEET_REASON }
       if (id === 'sheet-protect' || id === 'workbook-protect') {
@@ -795,6 +809,8 @@ export function mountWorkbookRibbon(
       if (button.disabled) button.setAttribute('aria-description', button.title)
       else button.removeAttribute('aria-description')
     }
+    const calcMode = body.querySelector<HTMLSelectElement>('[data-ribbon-control="calc-mode"]')
+    if (calcMode) calcMode.value = view.calculation?.().manual ? 'manual' : 'auto'
     for (const [id, value] of Object.entries(ROTATION_VALUES)) {
       const button = body.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
       if (!button) continue
@@ -981,6 +997,13 @@ export function mountWorkbookRibbon(
           select.addEventListener('change', () => { if (!select.disabled && select.value) onCommand(`page-fit:${axis}:${select.value}` as RibbonCommand) })
           section.append(select)
         }
+      }
+      if (active === 'Formulas' && group.title === '计算') {
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '计算选项'); select.dataset.ribbonControl = 'calc-mode'
+        select.append(...[['auto', '自动'], ['manual', '手动']].map(([value, label]) => { const option = document.createElement('option'); option.value = value!; option.textContent = `计算选项：${label}`; return option }))
+        select.addEventListener('change', () => { if (!select.disabled) onCommand(`calc-mode:${select.value}` as RibbonCommand) })
+        section.append(select)
       }
       if (active === 'Formulas' && group.title === '定义的名称') {
         // 固定源 MenuSelect 形态：Use in Formula 渲染为名称下拉，命令
