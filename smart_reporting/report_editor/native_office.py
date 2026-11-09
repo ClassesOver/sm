@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Set
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from ..reporting.delivery.xlsx import inspect_workbook, patch_workbook
@@ -18,7 +18,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'kind', 'edits', 'order', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -44,6 +44,8 @@ _NUMBERING_TYPES = {'arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPer
 # ECMA-376 ST_TextMargin/ST_TextIndent use an absolute limit of 56 inches.
 _MAX_PARAGRAPH_EMU = 51206400
 _HEX_COLOR = re.compile(r'^#[0-9a-fA-F]{6}$')
+# 固定源形状库（与前端 shape-gallery-data.ts 同源），只允许这些 prstGeom。
+_SHAPE_PRESETS = frozenset(json.loads((Path(__file__).parents[1] / 'reporting' / 'slides_engine' / 'bridge' / 'shape-presets.json').read_text(encoding='utf-8'))['presets'])
 
 
 def _content(format: str, content: bytes) -> None:
@@ -70,6 +72,11 @@ def _records(payload: dict[str, Any], key: str, required: set[str], optional: Se
     return values
 
 
+def _layout_path(path: Any) -> bool:
+    return (isinstance(path, str) and path.startswith('ppt/slideLayouts/') and path.endswith('.xml')
+            and '\\' not in path and '..' not in PurePosixPath(path).parts and ':' not in path)
+
+
 def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
     if operation.get('kind') != 'editSlides' or not set(operation).issubset(_ALLOWED_KEYS):
         raise ValueError('native_office_operations_invalid')
@@ -79,6 +86,40 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
                               or len(set(order)) != len(order)):
         raise ValueError('native_office_operations_invalid')
     if theme is not None and (not isinstance(theme, str) or theme not in {'executive', 'clinical', 'modern'}):
+        raise ValueError('native_office_operations_invalid')
+    # 新建空白页（固定源 onAddSlide，layoutFrom）或复制页（duplicateSlide，duplicateOf）；位置由 order 决定，引擎再按来源页数校验。
+    new_slides = operation.get('newSlides', [])
+    if (not isinstance(new_slides, list) or len(new_slides) > 50
+        or any(not isinstance(item, dict) or len(item) != 1 or set(item) - {'layoutFrom', 'duplicateOf', 'withLayout'}
+               or (not _slide_index(next(iter(item.values()))) if 'withLayout' not in item else not _layout_path(item['withLayout'])) for item in new_slides)
+        or (new_slides and order is None)):
+        raise ValueError('native_office_operations_invalid')
+    shapes = _records(operation, 'shapes', {'slideIndex', 'kind', 'geometry'})
+    for item in shapes:
+        geometry = item['geometry']
+        if (not isinstance(item['kind'], str) or item['kind'] not in _SHAPE_PRESETS or not isinstance(geometry, dict)
+            or set(geometry) != {'x', 'y', 'width', 'height'} or any(not _number(geometry[key], -100_000, 100_000) for key in ('x', 'y'))
+            or any(not _number(geometry[key], 1, 100_000) for key in ('width', 'height'))):
+            raise ValueError('native_office_operations_invalid')
+    tables = _records(operation, 'tables', {'slideIndex', 'rows', 'cols'})
+    if len(tables) > 100 or any(not isinstance(item[key], int) or isinstance(item[key], bool) or not 1 <= item[key] <= 75 for item in tables for key in ('rows', 'cols')):
+        raise ValueError('native_office_operations_invalid')
+    shape_styles = _records(operation, 'shapeStyles', {'slideIndex', 'elementId'}, {'fill', 'stroke'})
+    for item in shape_styles:
+        fill, stroke = item.get('fill'), item.get('stroke', ...)
+        if (not isinstance(item['elementId'], str) or not item['elementId'] or ('fill' not in item and 'stroke' not in item)
+            or ('fill' in item and fill != 'none' and (not isinstance(fill, str) or not _HEX_COLOR.fullmatch(fill)))
+            or (stroke is not ... and stroke is not None and (not isinstance(stroke, dict) or set(stroke) != {'color', 'widthPt'}
+                or not isinstance(stroke['color'], str) or not _HEX_COLOR.fullmatch(stroke['color']) or not _number(stroke['widthPt'], 0.01, 100)))):
+            raise ValueError('native_office_operations_invalid')
+    reset_layouts = operation.get('resetLayouts', [])
+    if (not isinstance(reset_layouts, list) or len(reset_layouts) > 500 or any(not _slide_index(index) for index in reset_layouts)
+        or len(set(reset_layouts)) != len(reset_layouts)):
+        raise ValueError('native_office_operations_invalid')
+    # 删除来源页（固定源 deleteSlide）：只列来源索引；order 必须给出保留页，引擎再核对引用与页数。
+    deleted_slides = operation.get('deletedSlides', [])
+    if (not isinstance(deleted_slides, list) or len(deleted_slides) > 500 or any(not _slide_index(index) for index in deleted_slides)
+        or len(set(deleted_slides)) != len(deleted_slides) or (deleted_slides and order is None)):
         raise ValueError('native_office_operations_invalid')
     slide_size = operation.get('slideSize')
     if slide_size is not None and (
@@ -150,7 +191,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
+    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
         'slide_layouts': layouts, 'backgrounds': backgrounds, 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting}
 

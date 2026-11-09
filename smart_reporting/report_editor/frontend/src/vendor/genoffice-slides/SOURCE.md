@@ -54,3 +54,10 @@ The follow-up also aligns source identities with fixed `Ribbon.tsx`: custom
 size calls `onCustomSlideSize`, whereas the disabled new-deck default action
 directly invokes the upstream local helper `saveDefaultNewSlideSize`. Preset
 state uses the source matching helper without an aspect-ratio fallback.
+
+2026-11-09: `components/shape-gallery-data.ts` adapts the pinned `packages/ui/src/shape-gallery.tsx`
+`SHAPE_GALLERY_GROUPS` (7 groups, 109 presets, unchanged order) with Simplified Chinese labels from
+`packages/i18n/src/common-ribbon.ts` (`ribbonCommonZh`) and `apps/slides/src/renderer/i18n/ribbon/zh.ts`.
+Only the data is taken; the React previews depend on the renderer's preset geometry. Insert ▸ Shapes
+uses it with the pinned insert defaults (`default-shape.ts` factory fill `#C43E1C`; line presets get a
+1pt black stroke per `insert-actions.ts`). Hashes are in `components/SOURCE-SHA256.json`.

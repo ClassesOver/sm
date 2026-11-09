@@ -31,8 +31,15 @@ const identity = { sourceSha256: z.string().regex(/^[a-f0-9]{64}$/).optional() }
 const page = { ...identity, pageId: z.string().min(1) }
 const color = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1)])
 const rect = z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])
+const point = z.tuple([z.number().finite(), z.number().finite()])
 const fieldIdentity = { fieldId: z.string().regex(/^[a-f0-9]{64}$/), expectedFieldSha256: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().min(1).max(256), fieldKind: z.enum(['text', 'checkbox', 'radio', 'choice']) }
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/)
+const stampText = z.string().max(200)
+// 固定源 StampDialog 配置（WatermarkConfig / HeaderFooterConfig），位图由浏览器按固定源 stamps.ts 渲染。
+const watermarkConfig = z.object({ text: z.string().trim().min(1).max(200), angle: z.number().min(-90).max(90), opacity: z.number().min(0.05).max(1), color: hexColor, sizeRatio: z.number().min(0.04).max(0.22) }).strict()
+const headerFooterConfig = z.object({ headerLeft: stampText, headerCenter: stampText, headerRight: stampText, footerLeft: stampText, footerCenter: stampText, footerRight: stampText, pageNumber: z.boolean(), startAt: z.number().int().min(1).max(100000), fontSize: z.number().min(4).max(72), color: hexColor }).strict()
 const operation = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('setStamps'), ...identity, watermark: watermarkConfig.nullable(), headerFooter: headerFooterConfig.nullable(), images: z.array(z.string().min(8).max(8_000_000)).min(1).max(1000), stamps: z.array(z.object({ pageId: z.string().min(1), image: z.number().int().min(0), rect, opacity: z.number().min(0).max(1).optional() }).strict()).min(1).max(20000) }).strict(),
   z.object({ kind: z.literal('replyPendingNote'), ...page, parentLocalId: z.string().regex(/^[a-f0-9]{32}$/), contents: z.string().trim().min(1).max(10000), createdMs: z.number().int().min(0).max(253402300799999) }).strict(),
   z.object({ kind: z.literal('replyNote'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/), contents: z.string().trim().min(1).max(10000), createdMs: z.number().int().min(0).max(253402300799999) }).strict(),
   z.object({ kind: z.literal('addAttachment'), ...identity, name: z.string().refine(validAttachmentName), bytesBase64: z.string().max(4 * Math.ceil(ATTACHMENT_FILE_MAX / 3)), description: z.string().max(4000).optional() }).strict(),
@@ -44,11 +51,14 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
+  // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
+  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link', 'image']), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
   z.object({ kind: z.literal('rotatePage'), ...page, delta: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),
   z.object({ kind: z.literal('deletePage'), ...page }).strict(),
+  z.object({ kind: z.literal('insertBlankPage'), ...identity, pageId: z.string().regex(/^blank:[a-z0-9-]{1,64}$/), width: z.number().finite().min(1).max(14400), height: z.number().finite().min(1).max(14400) }).strict(),
   z.object({ kind: z.literal('reorderPages'), ...identity, pageIds: z.array(z.string()).min(1).max(10000) }).strict(),
 ])
 const operationsSchema = z.array(operation).max(500)
@@ -151,6 +161,15 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   if (sizeOps.length > 1 || (sizeOps.length && ops.some(op => ['cropPage', 'replaceText'].includes(op.kind)))) throw new Error('PDF 页面尺寸不能重复或与裁切、原位改字混用；请先保存重开')
   if (sizeOps.length && !model.capabilities.pageSize) throw new Error(model.capabilities.pageSizeReason ?? 'pdf_page_size_source_unsupported')
   const byId = new Map(model.pages.map((page) => [page.pageId, page]))
+  // 固定源 blankPages：空白页按插入顺序追加为原始索引 pageCount + k，再由 pageOrder 放到目标位置。
+  // 空白页只有本地草稿身份，只接受旋转；其他依赖来源身份的修改需保存重开后进行。
+  const blankIndex = new Map<string, number>()
+  for (const op of ops) {
+    if (op.kind !== 'insertBlankPage') continue
+    if (blankIndex.has(op.pageId)) throw new Error('PDF 空白页身份重复')
+    blankIndex.set(op.pageId, model.pages.length + blankIndex.size)
+  }
+  if (blankIndex.size > 200) throw new Error('PDF 空白页数量超过 200')
   const crops = new Map<string, [number, number, number, number]>()
   const removals: MarkupRemoval[] = []
   const noteEdits: NoteContentEdit[] = []
@@ -159,7 +178,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const deleted = new Set<string>()
   const touched = new Set<string>()
   let reordered = false
-  const request: SavePdfRequest = { path: '', markups: [], drawings: [], formValues: [], stamps: [], rotations: [], deletedPages: [] }
+  const request: SavePdfRequest = { path: '', markups: [], drawings: [], formValues: [], stamps: [], rotations: [], deletedPages: [], blankPages: ops.flatMap(op => op.kind === 'insertBlankPage' ? [{ pageIndex: blankIndex.get(op.pageId)!, width: op.width, height: op.height }] : []) }
   const formOps = ops.filter((op): op is Extract<typeof op, { kind: 'setFormValue' }> => op.kind === 'setFormValue')
   if (formOps.length) {
     if (model.formFields.some(field => field.kind === 'signature')) throw new Error('含有签名字段的 PDF 不允许表单值写回')
@@ -189,11 +208,17 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   for (const op of ops) {
     if (op.kind === 'setFormValue') continue
     if (op.sourceSha256 !== undefined && op.sourceSha256 !== model.sourceSha256) throw new Error('PDF 操作来源摘要不匹配')
-    if (op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment') continue
+    if (op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment' || op.kind === 'insertBlankPage' || op.kind === 'setStamps') continue
     if (op.kind === 'reorderPages') {
-      if (reordered || new Set(op.pageIds).size !== op.pageIds.length || op.pageIds.some((id) => !byId.has(id))) throw new Error('PDF 页面排序无效')
+      if (reordered || new Set(op.pageIds).size !== op.pageIds.length || op.pageIds.some((id) => !byId.has(id) && !blankIndex.has(id))) throw new Error('PDF 页面排序无效')
       reordered = true
-      request.pageOrder = op.pageIds.map((id) => byId.get(id)!.index)
+      request.pageOrder = op.pageIds.map((id) => byId.get(id)?.index ?? blankIndex.get(id)!)
+      continue
+    }
+    const blank = blankIndex.get(op.pageId)
+    if (blank !== undefined) {
+      if (op.kind !== 'rotatePage') throw new Error('PDF 新插入的空白页只能旋转、移动或删除；请先保存重开后再编辑')
+      request.rotations!.push({ pageIndex: blank, delta: op.delta })
       continue
     }
     const target = byId.get(op.pageId)
@@ -236,6 +261,51 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       removals.push({ pageIndex: target.index, annotationId: op.annotationId, expectedAnnotationSha256: op.expectedAnnotationSha256 })
       continue
     }
+    if (op.kind === 'addDrawing') {
+      const current = crops.get(op.pageId), b = target.cropBox
+      const [left, bottom, right, top] = current ?? [b.x, b.y, b.x + b.width, b.y + b.height]
+      const inside = (x: number, y: number) => x >= left && x <= right && y >= bottom && y <= top
+      const base = { pageIndex: target.index, color: op.color, width: op.width }
+      if (op.image !== undefined && op.shape !== 'image') throw new Error('PDF 绘图参数无效')
+      if (op.shape === 'rect' || op.shape === 'ellipse') {
+        if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.image !== undefined) throw new Error('PDF 绘图参数无效')
+        const [x1, y1, x2, y2] = op.rect
+        if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 绘图范围无效')
+        request.drawings.push({ ...base, kind: op.shape, rect: op.rect })
+      } else if (op.shape === 'arrow') {
+        if (!op.from || !op.to || op.rect || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 箭头范围无效')
+        request.drawings.push({ ...base, kind: 'arrow', from: op.from, to: op.to })
+      } else if (op.shape === 'polygon') {
+        if (!op.vertices || op.rect || op.from || op.to || op.paths || op.point || op.url !== undefined || op.destPage !== undefined || op.vertices.some(vertex => !inside(...vertex))) throw new Error('PDF 多边形顶点无效')
+        request.drawings.push({ ...base, kind: 'polygon', vertices: op.vertices })
+      } else if (op.shape === 'image') {
+        // 固定源 ImageDialogs 插入图像：PNG 位图写为 Stamp 批注。
+        if (!op.rect || !op.image || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined) throw new Error('PDF 图像参数无效')
+        const bytes = Buffer.from(op.image, 'base64')
+        if (bytes.toString('base64') !== op.image || !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) throw new Error('PDF 图像须为 PNG')
+        const [x1, y1, x2, y2] = op.rect
+        if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 图像范围无效')
+        request.drawings.push({ kind: 'image', pageIndex: target.index, image: op.image, rect: op.rect })
+      } else if (op.shape === 'link') {
+        // 固定源 LinkDialog：外部 URL 或文档内页码二选一；仅允许 http/https/mailto。destPage 为来源页序号（引擎按删除/重排前页表解析）。
+        if (!op.rect || op.image !== undefined || op.from || op.to || op.paths || op.vertices || op.point || (op.url === undefined) === (op.destPage === undefined)) throw new Error('PDF 链接目标无效')
+        const [x1, y1, x2, y2] = op.rect
+        if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 链接范围无效')
+        if (op.destPage !== undefined) {
+          const total = model.pages.length + blankIndex.size
+          const destination = op.destPage - 1
+          if (destination >= total || (destination < model.pages.length && ops.some(other => other.kind === 'deletePage' && other.pageId === model.pages[destination]!.pageId))) throw new Error('PDF 链接目标页不存在或已删除')
+        }
+        request.drawings.push({ kind: 'link', pageIndex: target.index, rect: op.rect, ...(op.url !== undefined ? { url: op.url } : { destPage: op.destPage! }) })
+      } else if (op.shape === 'caret') {
+        if (!op.point || op.url !== undefined || op.destPage !== undefined || op.rect || op.from || op.to || op.paths || op.vertices || !inside(...op.point)) throw new Error('PDF 插入符号位置无效')
+        request.drawings.push({ kind: 'caret', pageIndex: target.index, color: op.color, point: op.point })
+      } else {
+        if (!op.paths || op.rect || op.from || op.to || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.paths.some(path => path.length % 2 !== 0 || path.some((value, index) => index % 2 === 0 ? !inside(value, path[index + 1]!) : false))) throw new Error('PDF 手绘路径无效')
+        request.drawings.push({ ...base, kind: 'ink', paths: op.paths })
+      }
+      continue
+    }
     if (op.kind === 'addMarkup') {
       if (!target.markupReadSafe) throw new Error('pdf_source_markup_unreadable')
       const current = crops.get(op.pageId), b = target.cropBox
@@ -268,7 +338,30 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   }
   const survivors = model.pages.filter((page) => !deleted.has(page.pageId))
   if (!survivors.length) throw new Error('PDF 不能删除全部页面')
-  if (request.pageOrder && (request.pageOrder.length !== survivors.length || request.pageOrder.some((index) => deleted.has(model.pages[index]!.pageId)))) throw new Error('PDF 排序必须完整包含保留页面')
+  // 水印/页眉页脚：每个保留页（含新空白页）恰好由同一批图章覆盖；位图须为 PNG 且总量受限。
+  const stampOps = ops.filter((op): op is Extract<(typeof ops)[number], { kind: 'setStamps' }> => op.kind === 'setStamps')
+  if (stampOps.length > 1 || (stampOps.length && sizeOps.length)) throw new Error('PDF 水印/页眉页脚只能设置一次，且不能与页面尺寸同批修改')
+  for (const stampOp of stampOps) {
+    if (!stampOp.watermark && !stampOp.headerFooter) throw new Error('PDF 水印/页眉页脚配置为空')
+    const decoded = stampOp.images.map(image => Buffer.from(image, 'base64'))
+    if (decoded.some((bytes, index) => bytes.toString('base64') !== stampOp.images[index] || !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) || decoded.reduce((total, bytes) => total + bytes.length, 0) > 12 * 1024 * 1024) throw new Error('PDF 图章位图无效或过大')
+    const covered = new Set<string>()
+    for (const stamp of stampOp.stamps) {
+      const source = byId.get(stamp.pageId), blank = blankIndex.get(stamp.pageId)
+      if ((!source && blank === undefined) || deleted.has(stamp.pageId) || stamp.image >= decoded.length) throw new Error('PDF 图章页面身份无效')
+      const box = source?.mediaBox ?? (() => { const op = ops.find(item => item.kind === 'insertBlankPage' && item.pageId === stamp.pageId) as { width: number; height: number }; return { x: 0, y: 0, width: op.width, height: op.height } })()
+      const [x1, y1, x2, y2] = stamp.rect
+      const tolerance = 0.01
+      if (x2 - x1 < 1 || y2 - y1 < 1 || x1 < box.x - tolerance || y1 < box.y - tolerance || x2 > box.x + box.width + tolerance || y2 > box.y + box.height + tolerance) throw new Error('PDF 图章位置超出页面')
+      covered.add(stamp.pageId)
+      request.stamps!.push({ pageIndex: source?.index ?? blank!, image: stampOp.images[stamp.image]!, rect: stamp.rect, ...(stamp.opacity === undefined ? {} : { opacity: stamp.opacity }) })
+    }
+    const expected = [...survivors.map(page => page.pageId), ...blankIndex.keys()]
+    if (covered.size !== expected.length || expected.some(id => !covered.has(id))) throw new Error('PDF 水印/页眉页脚须覆盖全部保留页面')
+  }
+  if (request.pageOrder && (request.pageOrder.length !== survivors.length + blankIndex.size || request.pageOrder.some((index) => index < model.pages.length && deleted.has(model.pages[index]!.pageId)))) throw new Error('PDF 排序必须完整包含保留页面')
+  // 未重排时空白页按插入顺序追加在末尾；后续裁切/批注定位统一使用这一最终顺序。
+  const finalOrder = request.pageOrder ?? [...survivors.map(page => page.index), ...blankIndex.values()]
   const prepared = hasText ? await prepareTextEdits(content, model.pages, ops) : { edits: [], indices: [], skipped: [] as SkippedOperation[] }
   request.textEdits = prepared.edits
   const skippedOperations = [...prepared.skipped]
@@ -283,12 +376,12 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       bytes = ops.some(op => !['replaceText', 'editNote', 'removeNote', 'removeMarkup', 'addAttachment', 'removeAttachment'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
     } else bytes = result.bytes
   }
-  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), request.pageOrder ?? survivors.map(page => page.index))
+  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), finalOrder)
   if (crops.size) {
     // Same CropBox primitive as pinned cropPagesBytes; absolute source-space
     // bounds keep ordered crop/rotation commands stable through final reorder.
     const output = await PDFDocument.load(bytes, { updateMetadata: false })
-    const order = request.pageOrder ?? survivors.map(page => page.index)
+    const order = finalOrder
     for (const [pageId, [x1, y1, x2, y2]] of crops) {
       const sourceIndex = byId.get(pageId)!.index
       output.getPage(order.indexOf(sourceIndex)).setCropBox(x1, y1, x2 - x1, y2 - y1)
@@ -301,8 +394,8 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     bytes = await setPageSizeBytes(bytes, width, height)
   }
   bytes = await patchAttachments(bytes, model, attachmentOps)
-  bytes = await appendNoteReplies(bytes, replies, request.pageOrder ?? survivors.map(page => page.index))
-  bytes = await appendLocalNoteReplies(bytes, localRoots, pendingReplies, request.pageOrder ?? survivors.map(page => page.index))
+  bytes = await appendNoteReplies(bytes, replies, finalOrder)
+  bytes = await appendLocalNoteReplies(bytes, localRoots, pendingReplies, finalOrder)
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,
   // runtime WASM identity, requested operations and all application decisions.
@@ -315,7 +408,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

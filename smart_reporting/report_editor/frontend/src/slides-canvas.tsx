@@ -7,6 +7,11 @@ import { StaticNode } from './vendor/genoffice/renderer/NodeBody'
 import { boxPivotProps, fillToKonva } from './vendor/genoffice/renderer/konva-adapter'
 import { applyCanvasEdits, canvasEditable, canvasGeometryEdit, type CanvasEdit, type CanvasGeometry } from './slides-canvas-model'
 
+/** Konva 不能解析 CSS 变量：从统一视觉 token（office-theme.css）读取当前强调色。 */
+export function officeSelectionStroke(root: Element = document.documentElement): string {
+  return getComputedStyle(root).getPropertyValue('--office-accent').trim() || '#0b4f8a'
+}
+
 export type SlidesCanvasState = {
   slide: RenderSlide
   selectedId: string
@@ -28,6 +33,7 @@ function SlideCanvas({ state, width }: { state: SlidesCanvasState; width: number
   const nodes = useRef(new Map<string, Konva.Group>())
   const slide = applyCanvasEdits(state.slide, state.edits)
   const scale = width / slide.widthPx
+  const selectionStroke = officeSelectionStroke()
   useEffect(() => {
     let disposed = false
     for (const url of collectImages(state.slide)) {
@@ -63,7 +69,7 @@ function SlideCanvas({ state, width }: { state: SlidesCanvasState; width: number
           </Group>
         </Group>
       })}
-      <Transformer ref={transformer} rotateEnabled={false} flipEnabled={false} keepRatio={false} enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']} anchorSize={12} borderStroke="#237a6e" anchorStroke="#237a6e" boundBoxFunc={(oldBox, newBox) => newBox.width < 8 || newBox.height < 8 ? oldBox : newBox} />
+      <Transformer ref={transformer} rotateEnabled={false} flipEnabled={false} keepRatio={false} enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']} anchorSize={12} borderStroke={selectionStroke} anchorStroke={selectionStroke} boundBoxFunc={(oldBox, newBox) => newBox.width < 8 || newBox.height < 8 ? oldBox : newBox} />
     </Layer>
   </Stage>
 }

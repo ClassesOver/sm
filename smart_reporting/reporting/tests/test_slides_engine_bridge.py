@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import os
 import subprocess
 from pathlib import Path
@@ -378,6 +379,10 @@ def test_slides_bridge_audit_exception_retains_edited_pptx(tmp_path: Path):
     (isolated / 'bridge').mkdir(parents=True)
     for name in ('node_modules', 'packages', 'package.json'):
         (isolated / name).symlink_to(ENGINE / name, target_is_directory=(ENGINE / name).is_dir())
+    # 只替换 edit-pptx.ts；其余桥接模块（如 pptx-transition.ts）原样链接，避免新增依赖时隔离副本缺件。
+    for sibling in (ENGINE / 'bridge').iterdir():
+        if sibling.name != 'edit-pptx.ts':
+            (isolated / 'bridge' / sibling.name).symlink_to(sibling)
     bridge = (ENGINE / 'bridge/edit-pptx.ts').read_text(encoding='utf-8').replace(
         "import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'",
         "const auditDeck = async (_bytes: Uint8Array): Promise<never> => { await readFile(request.output!); throw new Error('injected edit audit failure') }",
@@ -480,3 +485,319 @@ def test_slides_bridge_rejects_deleting_object_with_pending_edit_without_output(
     assert result.returncode != 0
     assert "delete_target_has_pending_edits" in result.stderr
     assert not output.exists()
+
+
+def test_slides_bridge_adds_blank_slides_with_source_layout_at_ordered_positions(tmp_path: Path):
+    """固定源 onAddSlide → addBlankSlide：新页沿用来源页版式、无内容，由 order 放到目标位置，来源页不变。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "new-slides.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    slides = inspected["slides"]
+    count = len(slides)
+    assert count >= 3
+    # 新页 count+0 插在第 1 页之后，沿用第 3 页（索引 2）的版式；新页 count+1 放在最前，沿用第 1 页版式
+    order = [count + 1, 0, count, *range(1, count)]
+    _invoke({
+        "action": "edit", "input": str(source), "output": str(output), "edits": [],
+        "order": order, "newSlides": [{"layoutFrom": 2}, {"layoutFrom": 0}],
+        "transitions": [{"slideIndex": 1, "kind": "fade"}],
+    }, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count + 2
+    assert reopened[0]["layoutPath"] == slides[0]["layoutPath"]
+    assert reopened[2]["layoutPath"] == slides[2]["layoutPath"]
+    assert reopened[0]["elements"] == [] and reopened[2]["elements"] == []
+    # 来源页按顺序保留，且索引寻址的转场作用于原第 2 页
+    kept = [reopened[1], *reopened[3:]]
+    assert [slide["layoutPath"] for slide in kept] == [slide["layoutPath"] for slide in slides]
+    assert [len(slide["elements"]) for slide in kept] == [len(slide["elements"]) for slide in slides]
+    assert reopened[3].get("transition") == "fade"
+    with ZipFile(output) as archive:
+        assert len([name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")]) == count + 2
+    assert len(Presentation(str(output)).slides) == count + 2
+
+
+@pytest.mark.parametrize("request_patch", [
+    {"newSlides": [{"layoutFrom": 99}]},
+    {"newSlides": [{"layoutFrom": 0, "extra": 1}]},
+    {"newSlides": [{"layoutFrom": 0}], "order": None},
+    {"newSlides": [{"layoutFrom": 0}], "order": "short"},
+])
+def test_slides_bridge_rejects_invalid_new_slides_without_output(tmp_path: Path, request_patch: dict[str, object]):
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "rejected.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    request: dict[str, object] = {"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": [*range(count), count]}
+    request.update(request_patch)
+    if request.get("order") is None:
+        request.pop("order")
+    elif request["order"] == "short":
+        request["order"] = list(range(count))
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke(request, tmp_path)
+    assert not output.exists()
+
+
+def test_slides_bridge_deletes_source_slides_with_new_slides_and_order(tmp_path: Path):
+    """固定源 deleteSlide：删除来源页后 order 只列保留页（含新建页），其余页内容与按索引的修改保持正确。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "deleted.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    slides = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"]
+    count = len(slides)
+    kept = [index for index in range(count) if index != 1]
+    _invoke({
+        "action": "edit", "input": str(source), "output": str(output), "edits": [],
+        "deletedSlides": [1], "newSlides": [{"layoutFrom": 0}],
+        "order": [count, *reversed(kept)], "transitions": [{"slideIndex": 0, "kind": "fade"}],
+    }, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count
+    assert reopened[0]["elements"] == []
+    expected = [slides[index] for index in reversed(kept)]
+    assert [len(slide["elements"]) for slide in reopened[1:]] == [len(slide["elements"]) for slide in expected]
+    assert reopened[-1].get("transition") == "fade"
+    with ZipFile(output) as archive:
+        assert len([name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")]) == count
+    assert len(Presentation(str(output)).slides) == count
+
+
+@pytest.mark.parametrize("request_patch", [
+    {"deletedSlides": [1], "order": "keep-deleted"},
+    {"deletedSlides": [1, 1]},
+    {"deletedSlides": [99]},
+    {"deletedSlides": [1], "transitions": [{"slideIndex": 1, "kind": "fade"}]},
+    {"deletedSlides": [0], "newSlides": [{"layoutFrom": 0}]},
+    {"deletedSlides": "all"},
+])
+def test_slides_bridge_rejects_invalid_slide_deletions_without_output(tmp_path: Path, request_patch: dict[str, object]):
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "rejected.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    request: dict[str, object] = {"action": "edit", "input": str(source), "output": str(output), "edits": []}
+    request.update(request_patch)
+    if request.get("order") == "keep-deleted":
+        request["order"] = list(range(count - 1))
+    elif request["deletedSlides"] == "all":
+        request["deletedSlides"], request["order"] = list(range(count)), []
+    else:
+        removed = set(request["deletedSlides"]) if isinstance(request["deletedSlides"], list) else set()
+        extra = len(request.get("newSlides", []))
+        request["order"] = [index for index in range(count + extra) if index not in removed]
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke(request, tmp_path)
+    assert not output.exists()
+
+
+def test_slides_bridge_duplicates_saved_slide_content_and_rejects_pending_edits_on_source(tmp_path: Path):
+    """固定源 duplicateSlide：副本复制已保存内容并由 order 落位；被复制页同批有修改时拒绝且不产生输出。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "duplicated.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    slides = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"]
+    count = len(slides)
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [],
+             "newSlides": [{"duplicateOf": 1}], "order": [0, 1, count, *range(2, count)]}, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count + 1
+    texts = lambda slide: [element.get("text") for element in slide["elements"]]
+    assert texts(reopened[2]) == texts(slides[1]) and texts(reopened[1]) == texts(slides[1])
+    assert reopened[2]["layoutPath"] == slides[1]["layoutPath"]
+    # 副本复制已保存内容：同批对来源页的修改（转场、表格）只作用于来源页
+    edited = tmp_path / "edited-source.pptx"
+    _invoke({"action": "edit", "input": str(source), "output": str(edited), "edits": [],
+             "newSlides": [{"duplicateOf": 1}], "order": [*range(count + 1)],
+             "transitions": [{"slideIndex": 1, "kind": "fade"}], "tables": [{"slideIndex": 1, "rows": 2, "cols": 2}]}, tmp_path)
+    after = _invoke({"action": "inspect", "input": str(edited)}, tmp_path)["slides"]
+    assert after[1].get("transition") == "fade" and after[count].get("transition") != "fade"
+    assert sum(shape.has_table for shape in Presentation(str(edited)).slides[1].shapes) == 1
+    assert sum(shape.has_table for shape in Presentation(str(edited)).slides[count].shapes) == 0
+    rejected = tmp_path / "rejected.pptx"
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
+                 "newSlides": [{"duplicateOf": 1, "layoutFrom": 1}], "order": [*range(count + 1)]}, tmp_path)
+    assert not rejected.exists()
+
+
+def test_slides_bridge_adds_slide_with_chosen_layout_placeholders(tmp_path: Path):
+    """固定源 onAddSlideWithLayout：新页使用所选版式并带版式占位符；非法版式拒绝且不产生输出。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "with-layout.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    count = len(inspected["slides"])
+    layout = next(item for item in inspected["layouts"] if item["placeholders"])
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [],
+             "newSlides": [{"withLayout": layout["path"]}], "order": [count, *range(count)]}, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count + 1
+    assert reopened[0]["layoutPath"] == layout["path"]
+    assert len(Presentation(str(output)).slides[0].placeholders) >= 1
+    rejected = tmp_path / "rejected.pptx"
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
+                 "newSlides": [{"withLayout": "ppt/slideLayouts/missing.xml"}], "order": [*range(count + 1)]}, tmp_path)
+    assert not rejected.exists()
+
+
+def test_slides_bridge_reset_layout_restores_inherited_placeholder_geometry(tmp_path: Path):
+    """固定源 onResetLayout：占位符移位后重置回版式继承位置；同批对其他对象的修改照常叠加。"""
+    from pptx.util import Emu
+    source = tmp_path / "source.pptx"
+    moved = tmp_path / "moved.pptx"
+    output = tmp_path / "reset.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    title = slide.shapes.title
+    title.text = "标题"
+    inherited = (title.left, title.top, title.width, title.height)
+    presentation.save(source)
+    shifted = Presentation(source)
+    shape = shifted.slides[0].shapes.title
+    shape.left, shape.top = Emu(inherited[0] + 914400), Emu(inherited[1] + 914400)
+    shifted.save(moved)
+    assert Presentation(moved).slides[0].shapes.title.left == inherited[0] + 914400
+    _invoke({"action": "edit", "input": str(moved), "output": str(output), "edits": [], "resetLayouts": [0]}, tmp_path)
+    reset = Presentation(output).slides[0].shapes.title
+    assert (reset.left, reset.top, reset.width, reset.height) == inherited
+    assert reset.text == "标题"
+    for bad in ([0, 0], [5], ["0"]):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(moved), "output": str(tmp_path / "bad.pptx"), "edits": [], "resetLayouts": bad}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_inserts_gallery_shapes_with_pinned_default_styles(tmp_path: Path):
+    """固定源 Insert ▸ Shapes：预设形状写入 prstGeom；普通形状出厂填充 #C43E1C，线条为 1pt 黑色；未知预设拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "shapes.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    before = len(Presentation(source).slides[0].shapes)
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)), "shapes": [
+        {"slideIndex": 0, "kind": "roundRect", "geometry": {"x": 100, "y": 100, "width": 200, "height": 120}},
+        {"slideIndex": 0, "kind": "lineArrow", "geometry": {"x": 100, "y": 300, "width": 200, "height": 1}},
+    ]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    assert 'prst="roundRect"' in xml and 'srgbClr val="C43E1C"' in xml
+    assert 'prst="straightConnector1"' in xml and '<a:ln w="12700"' in xml
+    assert len(Presentation(output).slides[0].shapes) == before + 2
+    for bad in ({"slideIndex": 0, "kind": "notAShape", "geometry": {"x": 1, "y": 1, "width": 10, "height": 10}},
+                {"slideIndex": 0, "kind": "rect", "geometry": {"x": 1, "y": 1, "width": 10, "height": 10}, "fill": "#000000"},
+                {"slideIndex": 0, "kind": "rect", "geometry": {"x": 1, "y": 1, "width": 0, "height": 10}}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "shapes": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_bridge_shape_allow_list_matches_frontend_gallery():
+    import re
+    frontend = Path(__file__).parents[2] / "report_editor/frontend/src/vendor/genoffice-slides/components/shape-gallery-data.ts"
+    presets = json.loads((ENGINE / "bridge/shape-presets.json").read_text(encoding="utf-8"))["presets"]
+    assert presets == re.findall(r'prst: "([^"]+)"', frontend.read_text(encoding="utf-8"))
+    assert len(presets) == 109
+
+
+def test_slides_bridge_inserts_table_with_pinned_geometry_alongside_other_edits(tmp_path: Path):
+    """固定源 Insert ▸ Table：rows×cols、宽 2/3 居中、顶部 10.5%、行高 29.2pt；同页其他修改不丢失；越界拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "table.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    count = len(inspected["slides"])
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)),
+             "tables": [{"slideIndex": 0, "rows": 2, "cols": 5}],
+             "textBoxes": [{"slideIndex": 0, "text": "表格旁说明", "geometry": {"x": 10, "y": 10, "width": 200, "height": 40}}]}, tmp_path)
+    presentation = Presentation(str(output))
+    frame = next(shape for shape in presentation.slides[0].shapes if shape.has_table)
+    assert (len(frame.table.rows), len(frame.table.columns)) == (2, 5)
+    cx, cy = presentation.slide_width, presentation.slide_height
+    assert abs(frame.width - round(cx * 2 / 3)) <= 5 and abs(frame.left - round((cx - frame.width) / 2)) <= 5
+    assert abs(frame.top - round(cy * 0.105)) <= 5
+    assert all(row.height == round(29.2 * 12700) for row in frame.table.rows)
+    assert any(shape.has_text_frame and shape.text == "表格旁说明" for shape in presentation.slides[0].shapes)
+    for bad in ({"slideIndex": 0, "rows": 0, "cols": 5}, {"slideIndex": 0, "rows": 2, "cols": 76}, {"slideIndex": 99, "rows": 2, "cols": 2}, {"slideIndex": 0, "rows": 2, "cols": 2, "style": "x"}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "tables": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_inserts_slide_number_and_date_fields(tmp_path: Path):
+    """固定源 insertField：文本框中的 <a:fld type="slidenum|datetime1">，缓存文字保留；未知字段拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "fields.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)), "textBoxes": [
+        {"slideIndex": 0, "text": "1", "field": "slidenum", "fontSize": 18, "geometry": {"x": 430, "y": 248, "width": 100, "height": 44}},
+        {"slideIndex": 0, "text": "2026/11/9", "field": "datetime1", "fontSize": 18, "geometry": {"x": 360, "y": 300, "width": 240, "height": 44}},
+    ]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    assert re.search(r'<a:fld id="\{[0-9A-F-]+\}" type="slidenum">.*?<a:t>1</a:t></a:fld>', xml)
+    assert re.search(r'<a:fld id="\{[0-9A-F-]+\}" type="datetime1">.*?<a:t>2026/11/9</a:t></a:fld>', xml)
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "textBoxes": [
+            {"slideIndex": 0, "text": "x", "field": "author", "geometry": {"x": 1, "y": 1, "width": 10, "height": 10}}]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_sets_shape_fill_and_outline(tmp_path: Path):
+    """固定源 Shape Format ▸ 填充/轮廓：纯色、无填充、描边颜色与线宽、无轮廓；非法颜色与目标拒绝。"""
+    from pptx.util import Inches
+    from pptx.enum.shapes import MSO_SHAPE
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "styled.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(1), Inches(1), Inches(3), Inches(2))
+    slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(5), Inches(1), Inches(2), Inches(2))
+    presentation.save(source)
+    elements = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"][0]["elements"]
+    first, second = elements[0]["id"], elements[1]["id"]
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "shapeStyles": [
+        {"slideIndex": 0, "elementId": first, "fill": "#2E7D32", "stroke": {"color": "#1B2A41", "widthPt": 3}},
+        {"slideIndex": 0, "elementId": second, "fill": "none", "stroke": None},
+    ]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    shapes = re.findall(r"<p:sp>.*?</p:sp>", xml, re.S)
+    assert 'srgbClr val="2E7D32"' in shapes[0] and '<a:ln w="38100"' in shapes[0] and 'srgbClr val="1B2A41"' in shapes[0]
+    assert "<a:noFill/>" in shapes[1]
+    for bad in ({"slideIndex": 0, "elementId": first, "fill": "green"},
+                {"slideIndex": 0, "elementId": first},
+                {"slideIndex": 0, "elementId": "missing", "fill": "#000000"},
+                {"slideIndex": 0, "elementId": first, "stroke": {"color": "#000000", "widthPt": 0}}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "shapeStyles": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_table_coexists_with_element_edits_on_the_same_slide(tmp_path: Path):
+    """表格插入会重建页面模型：须在按对象身份的修改（改字、样式、删除）之后执行，二者同批均生效。"""
+    from pptx.util import Inches
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "combined.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(4), Inches(3), Inches(1)).text = "原文字"
+    slide.shapes.add_textbox(Inches(5), Inches(4), Inches(3), Inches(1)).text = "待删除"
+    presentation.save(source)
+    elements = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"][0]["elements"]
+    keep = next(item["id"] for item in elements if item["text"] == "原文字")
+    drop = next(item["id"] for item in elements if item["text"] == "待删除")
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "order": [0],
+             "edits": [{"slideIndex": 0, "elementId": keep, "text": "改后文字"}],
+             "shapeStyles": [{"slideIndex": 0, "elementId": keep, "fill": "#2E7D32"}],
+             "deletions": [{"slideIndex": 0, "elementId": drop}],
+             "tables": [{"slideIndex": 0, "rows": 2, "cols": 2}]}, tmp_path)
+    shapes = Presentation(str(output)).slides[0].shapes
+    texts = [shape.text for shape in shapes if shape.has_text_frame]
+    assert "改后文字" in texts and "待删除" not in texts
+    assert sum(shape.has_table for shape in shapes) == 1
+    with ZipFile(output) as archive:
+        assert 'srgbClr val="2E7D32"' in archive.read("ppt/slides/slide1.xml").decode()

@@ -42,6 +42,9 @@ if payload['mode'] == 'create':
         other = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1)); other.text = 'Untouched object'
         p = other.text_frame.paragraphs[0]; p.line_spacing = 1.37; p.space_before = Pt(8.25); p.space_after = Pt(9.75)
         p.runs[0].font.bold = True
+    if payload.get('extraSlide'):
+        extra = presentation.slides.add_slide(presentation.slide_layouts[6])
+        extra.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1)).text = 'Second source slide'
     if payload.get('listsSample'):
         for index, paragraph in enumerate(shape.text_frame.paragraphs):
             paragraph._p.get_or_add_pPr().set('lvl', '0' if index == 0 else '8')
@@ -90,7 +93,7 @@ elif payload['mode'] == 'patch':
   return result.stdout.trim()
 }
 
-const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists'].includes(smokeMode), listsSample: smokeMode === 'paragraph-lists' }), 'base64')
+const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists'].includes(smokeMode), listsSample: smokeMode === 'paragraph-lists', extraSlide: smokeMode === 'new-slide' }), 'base64')
 const sourceIdentity = createHash('sha256').update(sourceBytes).digest('hex')
 const sourceSha = sourceIdentity
 let activeBytes = sourceBytes
@@ -181,7 +184,76 @@ try {
   catch { throw new Error(JSON.stringify({ phase: 'canvas', body: (await page.locator('body').innerText()).slice(-2500), pageErrors, failedResponses })) }
   await page.waitForFunction(() => document.querySelector('.canvas-status')?.textContent.includes('点击对象选择'))
 
-  if (smokeMode === 'textbox') {
+  if (smokeMode === 'new-slide') {
+    // 固定源 Home ▸ New Slide（onAddSlide）：在当前页后新建沿用当前页版式的空白页；保存前可移动、移除，不可编辑内容。
+    await page.locator('[data-ribbon-tab="home"]').click()
+    const add = page.locator('[data-command="addSlide"][data-source-action="onAddSlide"]').first()
+    assert.equal(await add.isEnabled(), true)
+    await add.click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    assert.equal(await page.locator('.slide-row').nth(1).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+    assert.equal(await page.locator('.slide-row').nth(1).getAttribute('data-selected'), 'true')
+    assert.equal(await page.locator('#background-color').isDisabled(), true)
+    await page.locator('.slides-canvas canvas').first().waitFor()
+    await add.click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    await page.locator('.slide-row').nth(2).getByRole('button', { name: '移除新建的幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    // 删除幻灯片：新页沿用其版式的来源页不可删除；另一来源页可删除，保存时由引擎按部件路径删除。
+    await page.locator('.slide-row').nth(0).getByRole('button', { name: '删除幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelector('.slides-statusbar')?.textContent?.includes('被新建页沿用版式'))
+    assert.equal(await page.locator('.slide-row').count(), 3)
+    await page.locator('.slide-row').nth(2).getByRole('button', { name: '删除幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    assert.equal(await page.locator('.slide-row').filter({ hasText: 'Second source slide' }).count(), 0)
+    await page.locator('.slide-row').nth(1).locator('.slide-open').click()
+    await page.locator('[data-command="movePrevious"]').first().click()
+    assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+    // 复制幻灯片（固定源 duplicateSlide）：副本插在来源页之后，展示已保存内容，保存前只读。
+    await page.locator('.slide-row').nth(1).getByRole('button', { name: '复制幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    assert.equal(await page.locator('.slide-row').nth(2).locator('.slide-title').textContent(), '副本：Native browser formatting fixture（保存后写入）')
+    assert.equal(await page.locator('#object-text').isDisabled(), true)
+    // 新建指定版式幻灯片（固定源 onAddSlideWithLayout）：在当前页（副本）之后按“Title Slide”版式新建。
+    const layoutPicker = page.locator('select[data-command="addSlideWithLayout"]')
+    const titleLayout = inspected.layouts.find(item => item.name === 'Title Slide')
+    await layoutPicker.selectOption(titleLayout.path)
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    assert.equal(await layoutPicker.inputValue(), '')
+    assert.equal(await page.locator('.slide-row').nth(3).locator('.slide-title').textContent(), '新建幻灯片 · Title Slide（保存后写入）')
+    // 重置版式（固定源 onResetLayout）：作用于来源页，进入待保存清单。
+    await page.locator('.slide-row').filter({ hasText: 'Native browser' }).first().locator('.slide-open').click()
+    await page.locator('[data-command="resetLayout"][data-source-action="onResetLayout"]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '重置版式' }).waitFor()
+    // 插入形状（固定源形状库 onPickShape）：圆角矩形与箭头线条。
+    const shapePicker = page.locator('select[data-command="insertShape"]')
+    await page.locator('[data-ribbon-tab="insert"]').click()
+    await shapePicker.selectOption('roundRect'); await shapePicker.selectOption('lineArrow')
+    assert.equal(await shapePicker.inputValue(), '')
+    await page.locator('.structure-pending li').filter({ hasText: '形状 圆角矩形' }).waitFor()
+    await page.locator('.structure-pending li').filter({ hasText: '形状 箭头' }).waitFor()
+    // 插入表格（固定源 onInsertTable）：3 列 × 4 行。
+    await page.locator('[data-command="insertTable"][data-source-action="onInsertTable"]').click()
+    await page.locator('.slides-table-dialog input[name=cols]').fill('3')
+    await page.locator('.slides-table-dialog input[name=rows]').fill('4')
+    await page.locator('.slides-table-dialog button[value=ok]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '表格 4×3' }).waitFor()
+    // 页码字段（固定源 insertField:slidenum）
+    await page.locator('[data-command="slideNumber"][data-source-action="onInsertField:slidenum"]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '页码字段' }).waitFor()
+    // 形状格式（固定源 Shape Format 填充/轮廓）：作用于来源页文本框。
+    const styledTarget = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    await page.locator('#object-select').selectOption(styledTarget.id)
+    await page.locator('[data-ribbon-tab="shapeFormat"]').click()
+    await page.locator('input[data-command="shapeFill"]').fill('#2e7d32')
+    await page.locator('select[data-command="shapeOutlineWidth"]').selectOption('3')
+    await page.locator('.structure-pending li').filter({ hasText: '填充 #2E7D32、轮廓 #000000 3 磅' }).waitFor()
+    if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+  } else if (smokeMode === 'textbox') {
     await page.locator('[data-ribbon-tab="insert"]').click()
     const textBoxCommand = page.locator('[data-command="addText"][data-source-action="onInsert"]')
     await textBoxCommand.click()
@@ -343,6 +415,15 @@ try {
     const target = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     assert.ok(operation.paragraphFormatting.every(record => record.slideIndex === 0 && record.elementId === target.id))
     assert.deepEqual(operation.paragraphFormatting.reduce((value, patch) => ({ ...value, ...patch }), {}), { slideIndex: 0, elementId: target.id, align: 'right', lineSpacingPct: 200, spaceBeforePt: 12.5, spaceAfterPt: 0 })
+  } else if (smokeMode === 'new-slide') {
+    assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }, { duplicateOf: 0 }, { withLayout: inspected.layouts.find(item => item.name === 'Title Slide').path }])
+    assert.deepEqual(operation.deletedSlides, [1])
+    assert.deepEqual(operation.resetLayouts, [0])
+    assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
+    assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
+    assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
+    assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2']])
+    assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
     if (smokeMode === 'slide-size-presets') assert.deepEqual(operation.edits[0].geometry, { x: 75, y: 80, width: 300, height: 90 })
@@ -367,6 +448,27 @@ try {
   const reopened = JSON.parse(runPython({ mode: 'inspect', bytes: downloaded.toString('base64'), revision: saveReceipt.revision }))
   assert.equal(reopened.revision, 2)
   assert.equal(reopened.sha256, saveReceipt.artifacts.pptx.sha256)
+  if (smokeMode === 'new-slide') {
+    const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame and sh.text],len(s.shapes)] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
+    if (independent.status !== 0) throw new Error(independent.stderr)
+    const slides = JSON.parse(independent.stdout)
+    assert.equal(slides.length, 4)
+    assert.equal(slides[3][0], 'Title Slide')
+    assert.deepEqual(slides[0][1], [])
+    assert.equal(slides[0][0], slides[1][0])
+    assert.deepEqual(slides[1][1], ['Native browser formatting fixture', '2'])
+    // 副本复制的是已保存内容（不含同批新增形状）；原页多出两个形状
+    assert.deepEqual(slides[2].slice(0, 2), [slides[1][0], ['Native browser formatting fixture']])
+    assert.equal(slides[1][2], slides[2][2] + 4)
+    const table = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[len(s.table.rows),len(s.table.columns)] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
+    assert.deepEqual(JSON.parse(table.stdout), [[4, 3]])
+    const shapeXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "prst=\\"roundRect\\"" in z.read(n).decode() and "C43E1C" in z.read(n).decode()))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(shapeXml.stdout.trim(), '1')
+    const fieldXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(z.read(n).decode().count("type=\\"slidenum\\"") for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(fieldXml.stdout.trim(), '1')
+    const styleXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") for sp in re.findall(r"<p:sp>.*?</p:sp>", z.read(n).decode(), re.S) if "Native browser formatting fixture" in sp and "2E7D32" in sp and "<a:ln w=\\"38100\\"" in sp))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(styleXml.stdout.trim(), '1')
+  }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))
     assert.ok(reopened.pythonPptxTexts.includes('Ribbon inserted textbox smoke'))
@@ -431,6 +533,13 @@ try {
     assert.equal(await page.locator('[data-command="lineSpacingPct"]').inputValue(), '200')
     assert.equal(await page.locator('[data-command="spaceBeforePt"]').inputValue(), '12.5')
     assert.equal(await page.locator('[data-command="spaceAfterPt"]').inputValue(), '0')
+  } else if (smokeMode === 'new-slide') {
+    // 修订 2 重开：新页成为普通来源页，不再标记为待写入。
+    activeBytes = downloaded; activeSha = saveReceipt.artifacts.pptx.sha256; activeRevision = 2
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`)
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    assert.equal(await page.locator('.slide-row[data-new-slide]').count(), 0)
   } else {
     assert.deepEqual(reopened.size, targetSize)
     assert.deepEqual(reopened.pythonPptxSize, [targetSize.cx, targetSize.cy])
@@ -465,7 +574,7 @@ try {
     assert.equal(await page.locator('[data-command="slideOrientation"][data-source-action="onSlideSize"]').inputValue(), smokeMode === 'slide-size-presets' ? 'portrait' : 'landscape')
     assert.equal(Number(await page.locator('.geometry-grid input[name="x"]').inputValue()), expectedGeometry.x)
   }
-  assert.equal(reopened.slideCount, 1)
+  assert.equal(reopened.slideCount, smokeMode === 'new-slide' ? 4 : 1)
   if (smokeMode === 'slide-size-recovery') {
     assert.equal(failedResponses.length, 2)
     assert.ok(failedResponses.every(item => item.status === 503 && item.url.endsWith('/api/save')))

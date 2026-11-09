@@ -1,4 +1,6 @@
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import { SHAPE_GALLERY_GROUPS } from './vendor/genoffice-slides/components/shape-gallery-data'
+import './office-theme.css'
 import { BULLET_GLYPHS, BULLET_GLYPH_LABELS, BULLET_SYMBOLS, NUMBER_TYPES, BULLET_COLORS, PARAGRAPH_LIST_COMMANDS } from './slides-paragraph'
 import { ArrowDown, ArrowUp, Bold, Download, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
 import { createElement as reactElement, type ComponentType } from 'react'
@@ -64,10 +66,10 @@ const tabs: Tab[] = [
       { id: 'formatBrush', label: 'Format Painter', sourceIcon: IconFormatPainter, sourceActionId: 'onFormatBrushClick', unavailable: noWrite('格式刷') },
     ] },
     { label: 'Slides', controls: [
-      { id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide', unavailable: noWrite('新建幻灯片操作') },
-      { id: 'addSlideWithLayout', label: 'New Slide with Layout', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout', unavailable: noWrite('指定版式新建幻灯片操作') },
+      { id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide' },
+      { id: 'addSlideWithLayout', label: 'New Slide with Layout', kind: 'select', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout' },
       { id: 'layout', label: 'Change Layout', kind: 'select', sourceIcon: IconSlideLayout, sourceActionId: 'onSetLayout' },
-      { id: 'resetLayout', label: 'Reset Layout', sourceIcon: IconSlideLayout, sourceActionId: 'onResetLayout', unavailable: noWrite('重置版式操作') },
+      { id: 'resetLayout', label: 'Reset Layout', sourceIcon: IconSlideLayout, sourceActionId: 'onResetLayout' },
       { id: 'addSection', label: 'Add Section', sourceIcon: IconSection, sourceActionId: 'onAddSection', unavailable: noWrite('分节数据操作') },
       { id: 'movePrevious', label: 'Move Earlier', icon: ArrowUp }, { id: 'moveNext', label: 'Move Later', icon: ArrowDown },
     ] },
@@ -117,11 +119,11 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'insert', label: 'Insert', groups: [
-    { label: 'Slides', controls: [{ id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, unavailable: noWrite('新增幻灯片') }] },
-    { label: 'Tables', controls: [{ id: 'insertTable', label: 'Table', sourceIcon: IconTable, sourceActionId: 'onInsertTable', unavailable: noWrite('表格插入尚未接入 editSlides 请求') }] },
+    { label: 'Slides', controls: [{ id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide' }] },
+    { label: 'Tables', controls: [{ id: 'insertTable', label: 'Table', sourceIcon: IconTable, sourceActionId: 'onInsertTable' }] },
     { label: 'Images', controls: [{ id: 'insertPicture', label: 'Pictures', sourceIcon: IconPicture, sourceActionId: 'onInsertImage', unavailable: desktop('图片插入目前没有浏览器文件选择与上传控件') }] },
     { label: 'Illustrations', controls: [
-      { id: 'insertShape', label: 'Shapes', sourceIcon: IconShapes, sourceActionId: 'onPickShape', unavailable: noWrite('形状插入尚未接入 editSlides 请求') },
+      { id: 'insertShape', label: 'Shapes', kind: 'select', sourceIcon: IconShapes, sourceActionId: 'onPickShape' },
       { id: 'insertSmartArt', label: 'SmartArt', sourceIcon: IconSmartArt, sourceActionId: 'onInsertSmartArt', unavailable: noWrite('SmartArt 插入尚未接入 editSlides 请求') },
       { id: 'insertChart', label: 'Chart', sourceIcon: IconChart, sourceActionId: 'onInsertChart', unavailable: noWrite('图表插入尚未接入 editSlides 请求') },
     ] },
@@ -129,8 +131,8 @@ const tabs: Tab[] = [
       { id: 'addText', label: 'Text Box', sourceIcon: IconTextBox, sourceActionId: 'onInsert' },
       { id: 'insertWordArt', label: 'WordArt', sourceIcon: IconWordArt, sourceActionId: 'onInsertWordArt', unavailable: noWrite('WordArt 样式数据未进入 textBoxes 请求') },
       { id: 'headerFooter', label: 'Header and Footer', sourceIcon: IconFooter, sourceActionId: 'onOpenHeaderFooter', unavailable: noWrite('页眉页脚字段/应用范围未进入 editSlides 请求') },
-      { id: 'dateTime', label: 'Date and Time', sourceIcon: IconDateTime, sourceActionId: 'onInsertField:datetime', unavailable: noWrite('动态日期字段未进入 textBoxes 请求') },
-      { id: 'slideNumber', label: 'Slide Number', sourceIcon: IconPageNumber, sourceActionId: 'onInsertField:slidenum', unavailable: noWrite('动态页码字段未进入 textBoxes 请求') },
+      { id: 'dateTime', label: 'Date and Time', sourceIcon: IconDateTime, sourceActionId: 'onInsertField:datetime' },
+      { id: 'slideNumber', label: 'Slide Number', sourceIcon: IconPageNumber, sourceActionId: 'onInsertField:slidenum' },
       { id: 'insertLink', label: 'Link', unavailable: noWrite('超链接') },
     ] },
     { label: 'Symbols', controls: [{ id: 'insertEquation', label: 'Equation', sourceIcon: IconEquation, sourceActionId: 'onOpenEquation', unavailable: noWrite('公式编辑/数学标记未进入 editSlides 请求') }] },
@@ -206,7 +208,7 @@ const tabs: Tab[] = [
   { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id: 'replacePicture', label: 'Replace Picture', unavailable: desktop('选择替换图片文件') }, { id: 'cropPicture', label: 'Crop', unavailable: noWrite('图片裁切') }, { id: 'pictureOpacity', label: 'Transparency', unavailable: noWrite('图片透明度') }] }] },
   { id: 'shapeFormat', label: 'Shape Format', context: 'shape', groups: [
     { label: 'Size', controls: [{ id: 'shapeGeometry', label: 'Position and Size' }] },
-    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', unavailable: noWrite('形状填充') }, { id: 'shapeOutline', label: 'Outline', unavailable: noWrite('形状描边') }, { id: 'changeShape', label: 'Change Shape', unavailable: noWrite('形状类型') }] },
+    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', caption: '填充', kind: 'color', sourceActionId: 'onShapeFill' }, { id: 'shapeNoFill', label: 'No Fill', caption: '无填充', sourceActionId: 'onShapeFill' }, { id: 'shapeOutline', label: 'Outline', caption: '轮廓', kind: 'color', sourceActionId: 'onShapeOutline' }, { id: 'shapeOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: ['0.75', '1', '1.5', '2.25', '3', '4.5', '6'], optionLabels: ['0.75 磅', '1 磅', '1.5 磅', '2.25 磅', '3 磅', '4.5 磅', '6 磅'], sourceActionId: 'onShapeOutline' }, { id: 'shapeNoOutline', label: 'No Outline', caption: '无轮廓', sourceActionId: 'onShapeOutline' }, { id: 'changeShape', label: 'Change Shape', unavailable: noWrite('形状类型') }] },
   ] },
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
@@ -219,9 +221,6 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   const root = document.createElement('section')
   root.className = 'slides-native-ribbon'
   root.setAttribute('aria-label', 'PowerPoint ribbon')
-  const style = document.createElement('style')
-  style.textContent = `.slides-native-ribbon{flex:none;background:#fff;border-bottom:1px solid #d5dcd9;color:#273532}.slides-native-ribbon-tabs{display:flex;gap:2px;overflow:auto;padding:5px 8px 0;border-bottom:1px solid #e5e9e7}.slides-native-ribbon-tabs [role=tab]{flex:none;border:0;border-bottom:2px solid transparent;padding:7px 11px;background:transparent;color:inherit;font:inherit;cursor:pointer}.slides-native-ribbon-tabs [aria-selected=true]{border-bottom-color:#247f70;color:#176b5e}.slides-native-ribbon [role=tabpanel]{display:flex;min-height:80px;gap:8px;overflow:auto;padding:8px}.slides-native-ribbon [role=tabpanel][hidden]{display:none}.slides-native-ribbon-group{position:relative;display:flex;align-items:center;align-content:flex-start;flex-wrap:wrap;gap:5px;min-width:max-content;padding:0 9px 15px;border-right:1px solid #e1e6ec}.slides-native-ribbon-group h3{position:absolute;bottom:0;left:0;right:0;margin:0;text-align:center;color:#687487;font-size:10px;font-weight:400}.slides-native-ribbon-group button,.slides-native-ribbon-group select,.slides-native-ribbon-group input,.slides-native-ribbon-group textarea{max-width:180px;min-height:30px;border:1px solid #ccd5d2;border-radius:3px;padding:5px 7px;background:#fff;color:#263431;font-size:11px}.slides-native-ribbon-group button:disabled,.slides-native-ribbon-group select:disabled,.slides-native-ribbon-group input:disabled{opacity:.52;cursor:not-allowed}.slides-native-ribbon-group textarea{width:150px;min-height:48px;resize:vertical}@media(max-width:700px){.slides-native-ribbon-tabs [role=tab]{padding:7px 8px}.slides-native-ribbon [role=tabpanel]{min-height:72px;padding:6px}.slides-native-ribbon-group{gap:4px;padding-inline:6px}}`
-  root.append(style)
   const tablist = document.createElement('div')
   tablist.className = 'slides-native-ribbon-tabs'
   tablist.setAttribute('role', 'tablist')
@@ -330,12 +329,21 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           select.setAttribute('aria-label', control.label)
           select.dataset.command = control.id
           if (control.id === 'lineSpacingPct' || PARAGRAPH_LIST_COMMANDS.includes(control.id)) select.add(new Option('未设置或混合值', ''))
-          if (control.id === 'layout') {
+          if (control.id === 'insertShape') {
+            // 固定源形状库：分组与顺序同 SHAPE_GALLERY_GROUPS，选后复位。
+            select.add(new Option('插入形状…', ''))
+            for (const group of SHAPE_GALLERY_GROUPS) {
+              const optgroup = document.createElement('optgroup'); optgroup.label = group.group
+              for (const shape of group.shapes) optgroup.append(new Option(shape.label, shape.prst))
+              select.append(optgroup)
+            }
+          } else if (control.id === 'layout' || control.id === 'addSlideWithLayout') {
+            if (control.id === 'addSlideWithLayout') select.add(new Option('新建指定版式幻灯片…', ''))
             for (const layout of options.layouts ?? []) select.add(new Option(`${layout.name || layout.path}`, layout.path))
           } else {
             for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value), value))
           }
-          select.addEventListener('change', () => options.onAction(control.id, select.value))
+          select.addEventListener('change', () => { options.onAction(control.id, select.value); if (control.id === 'addSlideWithLayout' || control.id === 'insertShape') select.value = '' })
           element = select
         } else if (control.kind === 'text' || control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
           const input = document.createElement(control.kind === 'text' ? 'textarea' : 'input')
@@ -431,6 +439,9 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         const current = picker.value
         picker.replaceChildren(...layouts.map(layout => new Option(layout.name || layout.path, layout.path)))
         picker.value = layouts.some(layout => layout.path === current) ? current : ''
+      }
+      for (const select of controls.get('addSlideWithLayout') ?? []) {
+        (select as HTMLSelectElement).replaceChildren(new Option('新建指定版式幻灯片…', ''), ...layouts.map(layout => new Option(layout.name || layout.path, layout.path)))
       }
     },
     setValue(command, value, hint) {

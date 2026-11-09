@@ -392,8 +392,11 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       if (typeof ilvl !== 'number' || !Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) throw new Error('此列表级别暂不支持保存')
       ops.push({ kind: 'setParagraphListLevel', ...baseOp(anchor), ilvl })
     }
-    const originalAttrs = node.type === 'docListItem' ? withoutList(node.attrs) : node.attrs
-    const editedAttrs = edited.type === 'docListItem' ? withoutList(edited.attrs) : edited.attrs
+    // nativeCoverPage 是只在 docParagraph 上声明的本地标记（不入文件）；转成列表项时该键会被 ProseMirror 丢弃，
+    // 空值不代表布局变化。非空封面意图已在上方单独处理。
+    const withoutLocalMarkers = (attrs: DocxPmNode['attrs']) => attrs?.nativeCoverPage == null ? Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => key !== 'nativeCoverPage')) : attrs
+    const originalAttrs = withoutLocalMarkers(node.type === 'docListItem' ? withoutList(node.attrs) : node.attrs)
+    const editedAttrs = withoutLocalMarkers(edited.type === 'docListItem' ? withoutList(edited.attrs) : edited.attrs)
     if ((!listChanged && node.type !== edited.type) || !same(withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs)))))), withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs)))))))) throw new Error('暂不支持改变段落布局')
     const pageBreakChanged = !!node.attrs?.pageBreakBefore !== !!edited.attrs?.pageBreakBefore
     if (pageBreakChanged) {

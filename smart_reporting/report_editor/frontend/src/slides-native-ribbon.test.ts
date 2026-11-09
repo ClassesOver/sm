@@ -204,9 +204,18 @@ it('preserves Insert table, image, shape and chart source actions while disablin
     const group = host.querySelector<HTMLElement>(`[aria-label="${groupName}"]`)!
     const controls = [...group.querySelectorAll<HTMLButtonElement>('[data-source-action]')]
     expect(controls.map(control => control.dataset.sourceAction)).toEqual(actions)
-    expect(controls.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
-    expect(controls.every(control => control.querySelector('svg'))).toBe(true)
+    const unsupported = controls.filter(control => !['onPickShape', 'onInsertTable'].includes(control.dataset.sourceAction!))
+    expect(unsupported.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
+    expect(unsupported.every(control => control.querySelector('svg'))).toBe(true)
   }
+  // Table 已接通（行列对话框）
+  expect(host.querySelector<HTMLButtonElement>('[data-source-action="onInsertTable"]')!.disabled).toBe(false)
+  // Shapes 已接通：固定源形状库 7 组 109 个预设
+  const shapes = host.querySelector<HTMLSelectElement>('select[data-command="insertShape"]')!
+  expect(shapes.closest('[data-source-action]')?.getAttribute('data-source-action') ?? shapes.dataset.sourceAction).toBe('onPickShape')
+  expect(shapes.disabled).toBe(false)
+  expect(shapes.querySelectorAll('optgroup')).toHaveLength(7)
+  expect(shapes.querySelectorAll('optgroup option')).toHaveLength(109)
   const images = host.querySelector<HTMLElement>('[aria-label="Images"]')!
   const picture = images.querySelector<HTMLButtonElement>('[data-source-action="onInsertImage"]')!
   expect(picture.disabled).toBe(true)
@@ -225,9 +234,9 @@ it('connects the source text-box action and disables unsupported Insert Text and
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   const textGroup = host.querySelector<HTMLElement>('.slides-native-ribbon-group[aria-label="Text"]')!
   const textBox = textGroup.querySelector<HTMLButtonElement>('[data-command="addText"]')!
-  const unsupportedTextActions = [
-    'onInsertWordArt', 'onOpenHeaderFooter', 'onInsertField:datetime', 'onInsertField:slidenum',
-  ]
+  const unsupportedTextActions = ['onInsertWordArt', 'onOpenHeaderFooter']
+  // 日期与页码字段已接通（固定源 insertField）
+  for (const action of ['onInsertField:datetime', 'onInsertField:slidenum']) expect(textGroup.querySelector<HTMLButtonElement>(`[data-source-action="${action}"]`)!.disabled).toBe(false)
 
   expect(textBox.disabled).toBe(false)
   expect(textBox.dataset.sourceAction).toBe('onInsert')
@@ -448,5 +457,70 @@ it('retains source transition editability across lock/unlock independently of Ap
   ribbon.setLocked(false); expect(select.disabled).toBe(false)
   ribbon.setTransitionEditEnabled(false, '来源无法保真'); ribbon.setLocked(true); ribbon.setLocked(false)
   expect(select.disabled).toBe(true); expect(select.title).toBe('来源无法保真')
+  ribbon.dispose()
+})
+
+it('enables the pinned New Slide command on Home and Insert and dispatches addSlide', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const commands = [...host.querySelectorAll<HTMLButtonElement>('[data-command="addSlide"]')]
+  expect(commands).toHaveLength(2)
+  for (const command of commands) {
+    expect(command.dataset.sourceAction).toBe('onAddSlide')
+    expect(command.disabled).toBe(false)
+    command.click()
+  }
+  expect(onAction.mock.calls.map(call => call[0])).toEqual(['addSlide', 'addSlide'])
+  ribbon.setLocked(true)
+  expect(commands.every(command => command.disabled)).toBe(true)
+  ribbon.dispose()
+})
+
+it('offers New Slide with Layout as a layout picker that dispatches the chosen path and resets', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction, layouts: [{ path: 'ppt/slideLayouts/slideLayout1.xml', name: 'Title Slide', layoutType: 'title', placeholders: [] }, { path: 'ppt/slideLayouts/slideLayout2.xml', name: 'Title and Content', layoutType: 'obj', placeholders: [] }] as never })
+  const picker = host.querySelector<HTMLSelectElement>('select[data-command="addSlideWithLayout"]')!
+  expect(picker.dataset.sourceAction ?? picker.closest('[data-source-action]')?.getAttribute('data-source-action')).toBe('onAddSlideWithLayout')
+  expect([...picker.options].map(option => option.value)).toEqual(['', 'ppt/slideLayouts/slideLayout1.xml', 'ppt/slideLayouts/slideLayout2.xml'])
+  picker.value = 'ppt/slideLayouts/slideLayout2.xml'; picker.dispatchEvent(new Event('change'))
+  expect(onAction).toHaveBeenCalledWith('addSlideWithLayout', 'ppt/slideLayouts/slideLayout2.xml')
+  expect(picker.value).toBe('')
+  ribbon.setLayouts([{ path: 'ppt/slideLayouts/slideLayout7.xml', name: 'Blank' }])
+  expect([...picker.options].map(option => option.textContent)).toEqual(['新建指定版式幻灯片…', 'Blank'])
+  ribbon.dispose()
+})
+
+it('enables the pinned Reset Layout command', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const command = host.querySelector<HTMLButtonElement>('[data-command="resetLayout"]')!
+  expect(command.dataset.sourceAction).toBe('onResetLayout')
+  expect(command.disabled).toBe(false)
+  command.click()
+  expect(onAction).toHaveBeenCalledWith('resetLayout')
+  ribbon.dispose()
+})
+
+it('enables the Shape Format fill and outline controls with their source actions', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  ribbon.setContext('shape')
+  const fill = host.querySelector<HTMLInputElement>('input[data-command="shapeFill"]')!
+  const width = host.querySelector<HTMLSelectElement>('select[data-command="shapeOutlineWidth"]')!
+  expect(fill.disabled).toBe(false)
+  expect([...width.options].map(option => option.value)).toEqual(['0.75', '1', '1.5', '2.25', '3', '4.5', '6'])
+  fill.value = '#2e7d32'; fill.dispatchEvent(new Event('change'))
+  host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
+  expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
+  expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
+  expect(host.querySelector<HTMLButtonElement>('[data-command="changeShape"]')!.disabled).toBe(true)
   ribbon.dispose()
 })

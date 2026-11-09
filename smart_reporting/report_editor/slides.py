@@ -70,7 +70,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
         raise ReportingError("report_slides_edit_invalid", "页面背景内容无效。")
     if len({item["slideIndex"] for item in backgrounds}) != len(backgrounds):
         raise ReportingError("report_slides_edit_invalid", "同一页面只能设置一次背景。")
-    optional = {"fontSize", "fontFamily", "color", "bold", "rotation"}
+    optional = {"fontSize", "fontFamily", "color", "bold", "rotation", "field"}
     if (
         not isinstance(text_boxes, list) or len(text_boxes) > _MAX_STRUCTURE_EDITS
         or any(
@@ -93,6 +93,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
             or ("color" in item and (not isinstance(item["color"], str) or not _HEX_COLOR.match(item["color"])))
             or ("bold" in item and not isinstance(item["bold"], bool))
             or ("rotation" in item and not _number(item["rotation"], -360, 360))
+            or ("field" in item and item["field"] not in {"slidenum", "datetime1"})
             for item in text_boxes
         )
     ):
@@ -535,6 +536,12 @@ class ReportSlidesEditorService:
         *,
         edits: list[dict[str, Any]] | None = None,
         order: list[int] | None = None,
+        new_slides: list[dict[str, Any]] | None = None,
+        deleted_slides: list[int] | None = None,
+        reset_layouts: list[int] | None = None,
+        shapes: list[dict[str, Any]] | None = None,
+        tables: list[dict[str, Any]] | None = None,
+        shape_styles: list[dict[str, Any]] | None = None,
         theme: str | None = None,
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
@@ -555,6 +562,18 @@ class ReportSlidesEditorService:
             output_path = root / "output.pptx"
             if action == "edit":
                 request.update({"output": str(output_path), "edits": edits or [], "order": order})
+                if new_slides:
+                    request["newSlides"] = new_slides
+                if deleted_slides:
+                    request["deletedSlides"] = deleted_slides
+                if reset_layouts:
+                    request["resetLayouts"] = reset_layouts
+                if shapes:
+                    request["shapes"] = shapes
+                if tables:
+                    request["tables"] = tables
+                if shape_styles:
+                    request["shapeStyles"] = shape_styles
                 if theme is not None:
                     request["theme"] = theme
                 if slide_size is not None:
