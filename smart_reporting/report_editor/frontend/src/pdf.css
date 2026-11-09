@@ -64,3 +64,8 @@
 .pdf-sidebar-resizer:hover, .pdf-sidebar-resizer:focus-visible, .pdf-sidebar-resizer.is-resizing { background: var(--office-accent); }
 .pdf-thumbnail { width: 100%; padding: 0; }
 .pdf-thumbnail canvas { width: 100%; }
+
+/* 固定源 DrawLayer 草稿预览：绘图模式下拖动绘制，文字层不拦截指针。 */
+.native-pdf-editor[data-pdf-mode=draw] .pdf-page-content { cursor: crosshair; touch-action: none; }
+.native-pdf-editor[data-pdf-mode=draw] .textLayer { pointer-events: none; user-select: none; }
+.pdf-pending-drawings { position: absolute; inset: 0; overflow: visible; pointer-events: none; }

@@ -14,7 +14,7 @@ import type { NativeContextResponse, createNativeApi } from './native-api'
 import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
-import { PDF_PAPER_SIZES, blankPdfBytes, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, blankPdfBytes, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -58,7 +58,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   root.replaceChildren()
   const abort = new AbortController()
   let disposed = false, locked = true, generation = 0, document: PDFDocumentProxy | undefined
-  let mode: 'select' | 'highlight' | 'note' | 'text' = 'select'
+  let mode: 'select' | 'highlight' | 'note' | 'text' | 'draw' = 'select'
+  let drawShape: PdfDrawingShape = 'rect'
+  let drawColor: [number, number, number] = [...PDF_DRAW_COLORS[0]!.rgb]
+  const drawButtons = new Map<PdfDrawingShape, HTMLButtonElement>()
   const textEnabled = response.pdfTextEnabled === true && response.editingEnabled
   const review = new PdfPreviewReview()
   let previewing = false, previewDocument: PDFDocumentProxy | undefined, previewLoading: PDFDocumentLoadingTask | undefined
@@ -506,19 +509,26 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(note, 'annotate.drawTools.note')
   commandGroup = ribbon.group('annotate', 'Draw Tools')
   const annotateDrawGroup = commandGroup
+  // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；已接通四种，颜色取标注调色板。
+  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow']] as const) {
+    const tool = button(label, () => { drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
+    sourceCommand(tool, `annotate.drawTools.${id}`); tool.dataset.pdfDrawShape = shape
+    tool.title = `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
+    drawButtons.set(shape, tool)
+  }
+  const drawColorSelect = documentElement('select', 'pdf-draw-color')
+  drawColorSelect.setAttribute('aria-label', '绘图颜色'); sourceCommand(drawColorSelect, 'annotate.drawTools.color')
+  for (const item of PDF_DRAW_COLORS) { const option = documentElement('option'); option.value = item.name; option.textContent = item.label; drawColorSelect.append(option) }
+  drawColorSelect.addEventListener('change', () => { drawColor = [...(PDF_DRAW_COLORS.find(item => item.name === drawColorSelect.value) ?? PDF_DRAW_COLORS[0]!).rgb] })
+  commandGroup.append(drawColorSelect)
   commandGroup.append(note)
   unavailableSourceGroup('annotate', 'Draw Tools', [
-    { id: 'annotate.drawTools.ink', label: '手绘', reason: 'PDF 操作桥尚未实现笔迹路径写回及输出复读' },
     { id: 'annotate.drawTools.measure', label: '测量', reason: '原生视图尚未实现可校准比例与来源坐标绑定的测量工具' },
-    { id: 'annotate.drawTools.rectangle', label: '矩形', reason: 'PDF 操作桥尚未实现矩形绘图身份与输出复读' },
-    { id: 'annotate.drawTools.ellipse', label: '椭圆', reason: 'PDF 操作桥尚未实现椭圆绘图身份与输出复读' },
-    { id: 'annotate.drawTools.arrow', label: '箭头', reason: 'PDF 操作桥尚未实现箭头绘图身份与输出复读' },
     { id: 'annotate.drawTools.polygon', label: '多边形', reason: 'PDF 操作桥尚未实现多边形路径写回及输出复读' },
     { id: 'annotate.drawTools.caret', label: '插入符号', reason: 'PDF 操作桥尚未实现插入符号标注写回及输出复读' },
     { id: 'annotate.drawTools.redact', label: '涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
     { id: 'annotate.drawTools.clearRedaction', label: '清除涂黑', reason: '当前编辑器不生成涂黑标记，不能提供清除动作' },
     { id: 'annotate.drawTools.applyRedaction', label: '应用涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
-    { id: 'annotate.drawTools.color', label: '绘图颜色', reason: '当前仅支持高亮颜色；绘图操作及对应颜色写回尚未实现' },
   ], annotateDrawGroup)
   unavailableSourceGroup('annotate', 'Signature & Protection', [
     { id: 'annotate.signature.sign', label: '签名', reason: '签名图片写回和字段身份验证尚未接入' },
@@ -959,7 +969,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)) }
+  function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)) }
   function updateControls() {
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-saved-reply-editable]')) control.disabled = !canChangeSavedReply()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply() || control.dataset.pdfReplyEditable !== 'true'
@@ -1139,6 +1149,42 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         layer.append(overlay)
       }
     }
+    const drawings = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing')
+    if (drawings.length) {
+      const svgNs = 'http://www.w3.org/2000/svg'
+      const svg = window.document.createElementNS(svgNs, 'svg')
+      svg.setAttribute('class', 'pdf-pending-drawings'); svg.setAttribute('width', String(pdfViewport.width)); svg.setAttribute('height', String(pdfViewport.height))
+      for (const operation of drawings) {
+        const rgb = `rgb(${(operation.color as number[]).map(value => Math.round(value * 255)).join(',')})`
+        const point = (value: number[]) => pdfViewport.convertToViewportPoint(value[0]!, value[1]!)
+        let shape: SVGElement
+        if (operation.shape === 'rect' || operation.shape === 'ellipse') {
+          const r = operation.rect as number[], a = point([r[0]!, r[1]!]), b = point([r[2]!, r[3]!])
+          const [x, y, w, h] = [Math.min(a[0]!, b[0]!), Math.min(a[1]!, b[1]!), Math.abs(b[0]! - a[0]!), Math.abs(b[1]! - a[1]!)]
+          shape = window.document.createElementNS(svgNs, operation.shape === 'rect' ? 'rect' : 'ellipse')
+          if (operation.shape === 'rect') { shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y)); shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h)) }
+          else { shape.setAttribute('cx', String(x + w / 2)); shape.setAttribute('cy', String(y + h / 2)); shape.setAttribute('rx', String(w / 2)); shape.setAttribute('ry', String(h / 2)) }
+        } else {
+          const values = operation.shape === 'arrow' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
+          const points: number[][] = []
+          for (let index = 0; index < values.length; index += 2) points.push(point([values[index]!, values[index + 1]!]))
+          shape = window.document.createElementNS(svgNs, 'polyline')
+          shape.setAttribute('points', points.map(item => item.join(',')).join(' '))
+          if (operation.shape === 'arrow' && points.length === 2) {
+            const [[x1, y1], [x2, y2]] = points as [[number, number], [number, number]]
+            const angle = Math.atan2(y2 - y1, x2 - x1), size = 10 * scale
+            const head = window.document.createElementNS(svgNs, 'polyline')
+            head.setAttribute('points', [[x2 - size * Math.cos(angle - Math.PI / 7), y2 - size * Math.sin(angle - Math.PI / 7)], [x2, y2], [x2 - size * Math.cos(angle + Math.PI / 7), y2 - size * Math.sin(angle + Math.PI / 7)]].map(item => item.join(',')).join(' '))
+            head.setAttribute('stroke', rgb); head.setAttribute('fill', 'none'); head.setAttribute('stroke-width', String(Number(operation.width) * scale))
+            svg.append(head)
+          }
+        }
+        shape.setAttribute('stroke', rgb); shape.setAttribute('fill', 'none'); shape.setAttribute('stroke-width', String(Number(operation.width) * scale))
+        shape.dataset.pdfDrawing = String(operation.shape)
+        svg.append(shape)
+      }
+      layer.append(svg)
+    }
     holder.append(layer)
   }
   async function renderPage(page: PdfPageIdentity, holder: HTMLElement, renderGeneration: number) {
@@ -1161,15 +1207,28 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (disposed || renderGeneration !== generation) return
     markSearch(); if (!previewDocument) overlays(holder, page, pdfViewport)
     let start: [number, number] | undefined
+    let stroke: number[][] = []
+    const toPdf = (clientX: number, clientY: number) => { const bounds = holder.getBoundingClientRect(); return pdfViewport.convertToPdfPoint((clientX - bounds.left) * pdfViewport.width / bounds.width, (clientY - bounds.top) * pdfViewport.height / bounds.height) }
     holder.onpointerdown = event => {
       if (mode === 'select' || mode === 'text' || locked || previewing || previewDocument || !response.editingEnabled || draft.closed) return
-      event.preventDefault(); start = [event.clientX, event.clientY]; holder.setPointerCapture?.(event.pointerId)
+      event.preventDefault(); start = [event.clientX, event.clientY]; stroke = [toPdf(event.clientX, event.clientY)]; holder.setPointerCapture?.(event.pointerId)
+    }
+    holder.onpointermove = event => {
+      if (!start || mode !== 'draw' || drawShape !== 'ink' || stroke.length >= 2000) return
+      stroke.push(toPdf(event.clientX, event.clientY))
     }
     holder.onpointerup = event => {
       if (!start || locked || previewing || previewDocument || draft.closed) return
       const begin = start; start = undefined
       try {
-        if (mode === 'highlight') {
+        if (mode === 'draw') {
+          const points = drawShape === 'ink' ? [...stroke, toPdf(event.clientX, event.clientY)] : [toPdf(...begin), toPdf(event.clientX, event.clientY)]
+          stroke = []
+          if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再绘图')
+          const operation = pdfDrawingOperation(page.pageId, drawShape, points, page.cropBox, drawColor)
+          pdfPageState(model.pages, [...draft.operations, operation])
+          void append(operation).catch(showError)
+        } else if (mode === 'highlight') {
           const rect = pdfRectFromClient(pdfViewport, holder.getBoundingClientRect(), begin, [event.clientX, event.clientY], page.cropBox)
           void append({ kind: 'highlight', pageId: page.pageId, rect, color: markupColor }).catch(showError)
         } else if (mode === 'note') {
@@ -1285,7 +1344,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1303,7 +1362,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')

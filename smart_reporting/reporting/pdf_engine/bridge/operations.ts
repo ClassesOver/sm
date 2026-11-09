@@ -31,6 +31,7 @@ const identity = { sourceSha256: z.string().regex(/^[a-f0-9]{64}$/).optional() }
 const page = { ...identity, pageId: z.string().min(1) }
 const color = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1)])
 const rect = z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])
+const point = z.tuple([z.number().finite(), z.number().finite()])
 const fieldIdentity = { fieldId: z.string().regex(/^[a-f0-9]{64}$/), expectedFieldSha256: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().min(1).max(256), fieldKind: z.enum(['text', 'checkbox', 'radio', 'choice']) }
 const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('replyPendingNote'), ...page, parentLocalId: z.string().regex(/^[a-f0-9]{32}$/), contents: z.string().trim().min(1).max(10000), createdMs: z.number().int().min(0).max(253402300799999) }).strict(),
@@ -44,6 +45,8 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
+  // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
+  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink']), rect: rect.optional(), from: point.optional(), to: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
@@ -252,6 +255,25 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       removals.push({ pageIndex: target.index, annotationId: op.annotationId, expectedAnnotationSha256: op.expectedAnnotationSha256 })
       continue
     }
+    if (op.kind === 'addDrawing') {
+      const current = crops.get(op.pageId), b = target.cropBox
+      const [left, bottom, right, top] = current ?? [b.x, b.y, b.x + b.width, b.y + b.height]
+      const inside = (x: number, y: number) => x >= left && x <= right && y >= bottom && y <= top
+      const base = { pageIndex: target.index, color: op.color, width: op.width }
+      if (op.shape === 'rect' || op.shape === 'ellipse') {
+        if (!op.rect || op.from || op.to || op.paths) throw new Error('PDF 绘图参数无效')
+        const [x1, y1, x2, y2] = op.rect
+        if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 绘图范围无效')
+        request.drawings.push({ ...base, kind: op.shape, rect: op.rect })
+      } else if (op.shape === 'arrow') {
+        if (!op.from || !op.to || op.rect || op.paths || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 箭头范围无效')
+        request.drawings.push({ ...base, kind: 'arrow', from: op.from, to: op.to })
+      } else {
+        if (!op.paths || op.rect || op.from || op.to || op.paths.some(path => path.length % 2 !== 0 || path.some((value, index) => index % 2 === 0 ? !inside(value, path[index + 1]!) : false))) throw new Error('PDF 手绘路径无效')
+        request.drawings.push({ ...base, kind: 'ink', paths: op.paths })
+      }
+      continue
+    }
     if (op.kind === 'addMarkup') {
       if (!target.markupReadSafe) throw new Error('pdf_source_markup_unreadable')
       const current = crops.get(op.pageId), b = target.cropBox
@@ -333,7 +355,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'addDrawing', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

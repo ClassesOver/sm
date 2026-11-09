@@ -76,6 +76,9 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (Object.keys(operation).some(key => !['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256'].includes(key)) || typeof operation.annotationId !== 'string' || !/^[a-f0-9]{64}$/.test(operation.annotationId) || !source.markupReadSafe || !mark?.removable || mark.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || removed.has(operation.annotationId)) throw new Error('标注身份已过期或暂不支持移除；原草稿已保留')
       removed.add(operation.annotationId)
       page.markups = page.markups?.filter(item => item.annotationId !== operation.annotationId)
+    } else if (operation.kind === 'addDrawing') {
+      if (deleted.has(page.pageId)) throw new Error('绘图不能引用已删除页面')
+      validatePdfDrawing(operation, page.cropBox)
     } else if (operation.kind === 'addMarkup') {
       if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
       validatePdfMarkup(operation)
@@ -88,6 +91,46 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
   return remaining.map(id => byId.get(id)!)
 }
 
+
+/** 固定源 DrawLayer 的矩形/椭圆/箭头/手绘；坐标为未旋转 PDF user space，须位于当前可见范围内。 */
+export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'ink'
+export const PDF_DRAWING_WIDTH = 2
+/** 固定源 DrawLayer.tsx DRAW_COLORS（默认红色）。 */
+export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, number, number] }[] = [
+  { name: 'red', label: '红色', rgb: [0.86, 0.22, 0.18] },
+  { name: 'yellow', label: '黄色', rgb: [1, 0.78, 0.13] },
+  { name: 'green', label: '绿色', rgb: [0.13, 0.65, 0.35] },
+  { name: 'blue', label: '蓝色', rgb: [0.17, 0.4, 1] },
+  { name: 'black', label: '黑色', rgb: [0.15, 0.15, 0.15] },
+]
+export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
+  const { shape, rect, from, to, paths, color, width } = operation as Record<string, unknown>
+  const finite = (value: unknown, length?: number) => Array.isArray(value) && (length === undefined || value.length === length) && value.every(item => typeof item === 'number' && Number.isFinite(item))
+  const inside = (x: number, y: number) => x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height
+  const allowed = new Set(['kind', 'pageId', 'shape', 'color', 'width', 'sourceSha256', ...(shape === 'arrow' ? ['from', 'to'] : shape === 'ink' ? ['paths'] : ['rect'])])
+  if (Object.keys(operation).some(key => !allowed.has(key)) || !finite(color, 3) || (color as number[]).some(value => value < 0 || value > 1) || typeof width !== 'number' || width < 0.25 || width > 24) throw new Error('绘图参数无效')
+  if (shape === 'rect' || shape === 'ellipse') {
+    if (!finite(rect, 4)) throw new Error('绘图范围无效')
+    const [x1, y1, x2, y2] = rect as number[]
+    if (x2! - x1! < 1 || y2! - y1! < 1 || !inside(x1!, y1!) || !inside(x2!, y2!)) throw new Error('绘图范围必须在当前页面内')
+  } else if (shape === 'arrow') {
+    if (!finite(from, 2) || !finite(to, 2) || !inside(...(from as [number, number])) || !inside(...(to as [number, number])) || Math.hypot((to as number[])[0]! - (from as number[])[0]!, (to as number[])[1]! - (from as number[])[1]!) < 2) throw new Error('箭头太短或超出页面')
+  } else if (shape === 'ink') {
+    if (!Array.isArray(paths) || !paths.length || paths.length > 20 || paths.some(path => !finite(path) || path.length < 4 || path.length > 4000 || path.length % 2 || path.some((value: number, index: number) => index % 2 === 0 && !inside(value, path[index + 1])))) throw new Error('手绘路径无效')
+  } else throw new Error('不支持的绘图形状')
+}
+/** 把一次拖拽转换为绘图操作；端点先夹到可见范围内。 */
+export function pdfDrawingOperation(pageId: string, shape: PdfDrawingShape, points: number[][], box: PdfBox, color: [number, number, number]): NativeOperation {
+  const clamp = (point: number[]) => [Math.min(box.x + box.width, Math.max(box.x, point[0]!)), Math.min(box.y + box.height, Math.max(box.y, point[1]!))].map(value => Math.round(value * 100) / 100)
+  const clamped = points.map(clamp)
+  const base = { kind: 'addDrawing', pageId, shape, color: [...color], width: PDF_DRAWING_WIDTH }
+  const first = clamped[0]!, last = clamped.at(-1)!
+  const operation: NativeOperation = shape === 'ink' ? { ...base, paths: [clamped.flat()] }
+    : shape === 'arrow' ? { ...base, from: first, to: last }
+    : { ...base, rect: [Math.min(first[0]!, last[0]!), Math.min(first[1]!, last[1]!), Math.max(first[0]!, last[0]!), Math.max(first[1]!, last[1]!)] }
+  validatePdfDrawing(operation, box)
+  return operation
+}
 
 /** Native crop stores unrotated PDF coordinates, never a displayed page index. */
 export function validatedPdfCrop(value: unknown, box: PdfBox): PdfRect {
