@@ -97,3 +97,10 @@ image acceptance remain open. Flags stay off.
 missing reading-position persistence checkpoint. Comments and attachment read/export
 have separate bounded acceptance records. Comparison/full source shortcuts and fit/
 layout remain open. The configured budget script checks Standard assets only.
+
+
+2026-11-09 row-fit follow-up: `NATIVE_PDF_FIT_ACCEPTANCE.md` supersedes the
+previous active-page-only fit and missing continuous resize checkpoint. All
+retained single/paired canvases now constrain fit; native fixed chrome differs
+from the desktop side-note margin/full host layout. Earlier stage evidence/counts
+remain historical and are not recounted as new checks.

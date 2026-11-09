@@ -185,3 +185,12 @@ identity and measures DOM rows instead of assuming desktop row heights. Numeric
 page retains original source ordinal, not mutable output order; preview view state
 never overwrites source. Existing basic fit recalculates on reopen, not full source
 fit/continuous resize parity. See `NATIVE_PDF_READING_ACCEPTANCE.md`.
+
+
+All-row fit/continuous reflow (2026-11-09): unchanged pinned spread.ts supplies
+adjacent visible-page pairing; App rowSize/recomputeFit/ResizeObserver and fixed
+PAGE_GAP are primary references. Native fit uses actual responsive padding and
+unscaled heading/border/gutter constraints across all retained canvases. Notes
+stay below pages instead of the source side margin. Form controls reuse unchanged
+model/value state during automatic reflow. Provenance/adaptations:
+`genoffice-pdf-fit-source.json`; evidence: `NATIVE_PDF_FIT_ACCEPTANCE.md`.

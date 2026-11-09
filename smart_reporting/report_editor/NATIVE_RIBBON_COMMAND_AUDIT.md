@@ -316,3 +316,14 @@ separation have browser evidence; source Ctrl-wheel/search/comment priority stay
 intact. Selection and scroll are distinct. This supersedes the wholly missing
 reading-position checkpoint, not full fit/resize/keyboard/View parity. See
 `NATIVE_PDF_READING_ACCEPTANCE.md`. Budget applies to Standard output only.
+
+
+## PDF row fit and continuous reflow (2026-11-09)
+
+Fit Width/Page now constrains every retained canvas in independent source-paired
+rows, adapting unscaled native borders/headings/gutters. Resize/sidebar/layout/
+rotation/deletion and actual preview reflow preserve view/selection; manual zoom
+wins obsolete fit work. Unchanged form controls preserve pending input and focus.
+Seven new cases,one new compound browser scenario,five affected browsers and
+independent file readback pass. Full desktop side-note margin/host layout and other
+remaining View commands are not closed. See `NATIVE_PDF_FIT_ACCEPTANCE.md`.

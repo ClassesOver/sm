@@ -357,3 +357,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Preserve scroll without changing selected page on refresh; explicit navigation/zoom/search/comments win. Keep preview from writing source position and restore source snapshot on return, with readiness/generation/disposal guards.
 - [x] Seven new +7 affected checks,Chromium delayed restore/resize/reorder/preview/unload/scope/readonly/storage/selection scenarios,independent pypdf and four affected browser scenarios pass. Final Standard/Slides builds and configured Standard budget pass; no new runtime check or full suite claimed. See `NATIVE_PDF_READING_ACCEPTANCE.md`.
 - [ ] Complete source fit/continuous resize/spread layout,shortcuts,comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. Earlier Slides-budget wording is corrected: its named log repeated the Standard budget script; no configured equivalent Slides budget is claimed. Flags off.
+
+
+### PDF all-page row fit/continuous reflow continuation (2026-11-09)
+
+- [x] Replace active-page-only fit and shared grid columns with all-surviving-page canvas constraints and independent source-paired rows. Measure fixed native chrome/padding; support rotation/deletion/actual-preview bounds and pinned zoom limits. Notes stay below pages; no desktop margin equivalence claimed.
+- [x] Coalesce viewport/window changes, preserve selected page and navigation anchors, defer through preview/print/render, cancel obsolete fit on manual zoom and teardown. Reuse unchanged form controls to retain uncommitted input/focus during reflow.
+- [x] Seven new +12 affected checks,new Chromium DOM-bound/form/preview/readonly/disposal scenario,five affected browsers and independent pypdf pass. Standard/Slides builds and configured Standard budget pass; source hashes/syntax/diff pass. No engine/backend change or whole-suite rerun. See `NATIVE_PDF_FIT_ACCEPTANCE.md`.
+- [ ] Desktop side-note margin/full host layout,sidebar sizing persistence,full shortcuts/comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. This supersedes the prior wholly missing all-row fit/continuous-resize gap; flags off.

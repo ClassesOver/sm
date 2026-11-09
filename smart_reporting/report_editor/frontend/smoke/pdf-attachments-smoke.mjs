@@ -50,7 +50,7 @@ try {
           if (message.action === 'GetAttachments') window.__failList = false; else window.__failContent = false
           queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: { sourceName: message.targetName, targetName: message.sourceName, callback: 2, callbackId: message.callbackId, reason: { name: 'UnknownErrorException', message: 'fixture attachment read failed', details: 'test fault' } } }))); return
         }
-        if (message.action === 'GetAttachments' && !window.__releasedAttachments) { setTimeout(() => { window.__releasedAttachments = true; original.call(this,message,...args) }, 150); return }
+        if (message.action === 'GetAttachments' && !window.__releasedAttachments) { const release = () => { window.__releasedAttachments = true; original.call(this,message,...args) }; if (location.pathname.endsWith('/1')) window.__releaseAttachmentRead = release; else setTimeout(release,150); return }
       }
       return original.call(this,message,...args)
     }
@@ -81,7 +81,7 @@ try {
   const loaded = () => page.waitForFunction(() => !document.querySelector('.pdf-attachments-sidebar [role="status"]')?.textContent?.includes('正在读取'))
   await open(1); await page.locator('[data-pdf-ribbon-tab="view"]').click(); await toggle.click(); await loaded()
   assert.match(await panel.locator('[role="status"]').innerText(),/目录读取失败/); assert.equal(await rows.count(),0)
-  await panel.getByRole('button',{name:'重试附件读取'}).click(); await page.waitForFunction(() => window.__attachmentReads.length === 2); await toggle.click(); assert.equal(await panel.isVisible(),false); await toggle.click(); await loaded()
+  await panel.getByRole('button',{name:'重试附件读取'}).click(); await page.waitForFunction(() => window.__attachmentReads.length === 2); await toggle.click(); assert.equal(await panel.isVisible(),false); await page.evaluate(()=>window.__releaseAttachmentRead()); await toggle.click(); await loaded()
   assert.match(await panel.locator('[role="status"]').innerText(),/1 个内容读取失败/); assert.equal(await rows.count(),4)
   assert.equal(await rows.getByRole('button',{name:'下载附件'}).filter({visible:true}).count(),4)
   await panel.getByRole('button',{name:'重试附件读取'}).click(); await loaded(); assert.equal(await panel.getByRole('button',{name:'下载附件',disabled:true}).count(),0)

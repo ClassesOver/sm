@@ -51,7 +51,7 @@ try {
           queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: { sourceName: message.targetName, targetName: message.sourceName, callback: 2, callbackId: message.callbackId, reason: { name: 'UnknownErrorException', message: 'fixture annotations unavailable', details: 'test fault' } } })))
           return
         }
-        if (message.data.pageIndex === 1 && !window.__released) { setTimeout(() => { window.__released = true; original.call(this, message, ...args) }, 150); return }
+        if (message.data.pageIndex === 1 && !window.__released) { const release = () => { window.__released = true; original.call(this, message, ...args) }; if (location.pathname.endsWith('/1')) window.__releaseAnnotationRead = release; else setTimeout(release, 150); return }
       }
       return original.call(this, message, ...args)
     }
@@ -85,7 +85,7 @@ try {
   await open(1); assert.deepEqual(await ops(), [])
   await page.locator('[data-pdf-ribbon-tab="view"]').click(); await toggle.click()
   await page.waitForFunction(() => window.__annotationReads.some(row => row.page === 1))
-  await toggle.click(); assert.equal(await panel.isVisible(), false); await page.waitForFunction(() => window.__released); await toggle.click()
+  await toggle.click(); assert.equal(await panel.isVisible(), false); await page.evaluate(() => window.__releaseAnnotationRead()); await page.waitForFunction(() => window.__released); await toggle.click()
   await page.waitForFunction(() => document.querySelector('.pdf-comments-sidebar [role="status"]')?.textContent?.includes('1 页未能读取'))
   assert.equal(await roots.count(), 2)
   await panel.getByRole('button', { name: '重试未读页面', exact: true }).click(); await loaded(); assert.equal(await roots.count(), 3)

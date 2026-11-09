@@ -33,6 +33,9 @@ import { PdfAnnotationCache, projectPageComments, filterComments, flattenComment
 
 import { stagePdfNote, stagePendingPdfNote, type PendingPdfNoteReference, type SavedPdfNote } from './pdf-notes'
 
+import { spreadRows } from './genoffice-pdf-spread'
+import { fitPdfRows } from './pdf-fit-state'
+
 import { PDF_ZOOM_STEPS, clampPdfZoom, stepPdfZoom, capturePdfZoomAnchor, restorePdfZoomAnchor, type PdfZoomAnchor } from './pdf-view-state'
 
 GlobalWorkerOptions.workerSrc = workerUrl
@@ -62,6 +65,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const readingStorage = { getItem: (key: string) => window.localStorage.getItem(key), setItem: (key: string, value: string) => window.localStorage.setItem(key, value) }
   let pendingReadingRestore: PdfViewState | null = null, sourceReadingBeforePreview: PdfViewState | null = null
   let readingRestoresSelection = false
+  let fitFrame: number | undefined
   let readingReady = false, readingTimer: number | undefined
   let pendingZoomAnchor: PdfZoomAnchor | null = null
   let markupColor: [number, number, number] = [...MARKUP_COLORS.highlight]
@@ -279,18 +283,39 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   for (const value of PDF_ZOOM_STEPS) { const option = documentElement('option'); option.value = String(value); option.textContent = `${Math.round(value * 100)}%`; homeZoom.append(option) }
   homeZoom.value = '1'; homeZoom.addEventListener('change', () => setZoom(Number(homeZoom.value))); commandGroup.append(homeZoom)
   const fittedScale = (mode: 'width' | 'page') => {
-    const page = state().find(item => item.pageId === activeId)
-    const original = page && pagesCached.get(previewDocument ? state().findIndex(item => item.index === page.index) : page.index)
-    if (!page || !original) return
-    const availableWidth = Math.max(1, viewport.clientWidth - 36)
-    const availableHeight = Math.max(1, viewport.clientHeight - 36)
-    const unit = displayViewport(original, page, 1)
-    return clampPdfZoom(Math.min(availableWidth / unit.width, mode === 'page' ? availableHeight / unit.height : Number.POSITIVE_INFINITY))
+    if (!document) return
+    const pages = state(), items = []
+    const pixels = (value: string) => Number.parseFloat(value) || 0
+    for (const [index, page] of pages.entries()) {
+      const original = pagesCached.get(previewDocument ? index : page.index)
+      if (!original) return
+      const unit = displayViewport(original, page, 1), card = pageNodes.get(page.pageId), content = card?.querySelector<HTMLElement>('.pdf-page-content')
+      const style = card && getComputedStyle(card)
+      const chromeWidth = style ? pixels(style.borderLeftWidth) + pixels(style.borderRightWidth) + pixels(style.paddingLeft) + pixels(style.paddingRight) : 10
+      const chromeHeight = style && content ? content.getBoundingClientRect().top - card!.getBoundingClientRect().top + pixels(style.paddingBottom) + pixels(style.borderBottomWidth) : 36
+      items.push({ width: unit.width, height: unit.height, chromeWidth, chromeHeight })
+    }
+    const style = getComputedStyle(viewport)
+    return fitPdfRows(items, twoPageView ? 2 : 1, mode, viewport.clientWidth - pixels(style.paddingLeft) - pixels(style.paddingRight), viewport.clientHeight - pixels(style.paddingTop) - pixels(style.paddingBottom)) ?? undefined
   }
+  const scheduleFit = () => {
+    if (disposed || !fitMode || !document || fitFrame !== undefined) return
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = undefined
+      if (disposed || !fitMode || !document || !readingReady || searchRendering || printing || previewing) return
+      try {
+        const next = fittedScale(fitMode)
+        if (next !== undefined && Math.abs(next - scale) > .0001) setZoom(next, 0, 0, false)
+      } catch (error) { showError(error) }
+    })
+  }
+  const fitObserver = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(scheduleFit)
+  fitObserver?.observe(viewport)
+  window.addEventListener('resize', scheduleFit, { signal: abort.signal })
   const fitScale = (mode: 'width' | 'page') => {
     const next = fittedScale(mode)
     if (next === undefined) return
-    fitMode = mode; setZoom(next, 0, 0, false); scheduleReading()
+    cancelReadingRestore(); fitMode = mode; setZoom(next, 0, 0, false); scheduleReading()
   }
   const homeZoomOut = button('缩小', () => setZoom(stepPdfZoom(scale, -1)), false)
   const homeZoomIn = button('放大', () => setZoom(stepPdfZoom(scale, 1)), false)
@@ -364,6 +389,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     viewport.dataset.spread = twoPageView ? 'two' : 'single'
     pageSpreadToggle.textContent = pdfRibbonLabel(twoPageView ? '单页视图' : '双页视图')
     pageSpreadToggle.setAttribute('aria-pressed', String(twoPageView))
+    void refresh().catch(showError)
   }, false)
   sourceCommand(pageSpreadToggle, 'view.navigation.pageSpread')
   const nightToggle = button('夜间模式', () => {
@@ -378,13 +404,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   viewZoomGroup.append(viewPageInput.row)
   commandGroup = viewZoomGroup
   const syncZoomControls = () => {
+    for (const option of [...homeZoom.options]) if (!PDF_ZOOM_STEPS.some(step => step === Number(option.value)) && Number(option.value) !== scale) option.remove()
     if (![...homeZoom.options].some(item => Number(item.value) === scale)) { const added = documentElement('option'); added.value = String(scale); added.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(added) }
     homeZoom.value = String(scale); zoomSlider.value = String(Math.round(scale * 100)); zoomValue.textContent = `${Math.round(scale * 100)}%`
   }
   const setZoom = (value: number, vx = 0, vy = 0, manual = true) => {
     let next: number
     try { next = clampPdfZoom(value) } catch (error) { showError(error); return }
-    if (manual) fitMode = null
+    if (manual) {
+      fitMode = null; cancelReadingRestore()
+      if (fitFrame !== undefined) { cancelAnimationFrame(fitFrame); fitFrame = undefined }
+    }
     if (next === scale) { scheduleReading(); return }
     pendingZoomAnchor ??= capturePdfZoomAnchor(viewport, scale, vx, vy)
     scale = next
@@ -416,6 +446,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }, { passive: false, signal: abort.signal })
   const formGroup = ribbon.group('fillForm', '填写可填写域')
   const formControls = documentElement('div', 'pdf-form-controls')
+  let formControlsKey = ''
   formGroup.append(formControls)
   const formNavigation = documentElement('div', 'pdf-form-navigation')
   const previousField = documentElement('button', 'pdf-tool')
@@ -870,7 +901,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     printTimer = undefined
     printRoot?.remove(); printRoot = undefined; printing = false
     window.removeEventListener('afterprint', cleanupPrint)
-    updateControls()
+    updateControls(); scheduleFit()
   }
   async function printPdf() {
     if (!pdfCanPrint({ loaded: !!document, locked, dirty: draft.dirty, previewing, printing, previewDocument: !!previewDocument }) || !document) throw new Error('请先完成保存或返回原稿，再打印 PDF')
@@ -1030,6 +1061,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     replacement.hidden = stageText.hidden = !target
   }
   function renderFormControls(fields: PdfFormField[]) {
+    const key = JSON.stringify([fields, draft.operations.filter(operation => operation.kind === 'setFormValue')])
+    if (key === formControlsKey) return
+    formControlsKey = key
     formControls.replaceChildren()
     const editableFields = fields.filter(field => field.editable && ['text', 'checkbox', 'radio', 'choice'].includes(field.kind))
     previousField.disabled = nextField.disabled = editableFields.length === 0
@@ -1153,7 +1187,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       review.reset(); reviewPanel.hidden = true; confirmPreview.checked = false
       await leavePreview(); await refresh()
       throw error
-    } finally { previewing = false; updateControls() }
+    } finally { previewing = false; updateControls(); scheduleFit() }
   }
   async function prepareSave(): Promise<{ confirmedPreviewDigest?: string }> {
     if (hasUnstagedText()) throw new Error('请先点击“加入文字修改”，再预览并保存')
@@ -1193,8 +1227,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const page = state().find(page => page.pageId === activeId)!
       await sourcePage(page.index)
       if (disposed || renderGeneration !== generation) return
-      if (fitMode) scale = fittedScale(fitMode) ?? scale
       syncZoomControls()
+    }
+    if (fitMode) {
+      for (const page of state()) { await sourcePage(page.index); if (disposed || renderGeneration !== generation) return }
+      scale = fittedScale(fitMode) ?? scale; syncZoomControls()
     }
     observer?.disconnect()
     for (const task of tasks) task.cancel()
@@ -1202,6 +1239,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     tasks.clear(); textLayers.clear(); visible.clear(); pageNodes.clear()
     viewport.replaceChildren(); thumbs.replaceChildren(); outlinePanel.replaceChildren()
     const pages = state()
+    const rowByPosition = new Map<number, HTMLElement>()
+    for (const indices of spreadRows(pages.map((_, index) => index), twoPageView ? 2 : 1)) {
+      const row = documentElement('div', 'pdf-page-row'); viewport.append(row)
+      for (const index of indices) rowByPosition.set(index, row)
+    }
     const pendingOperations = draft.operations, pendingSnapshot = JSON.stringify(pendingOperations)
     if (!pages.some(page => page.pageId === activeId)) activeId = pages[0].pageId
     const render = (pageId: string) => {
@@ -1219,7 +1261,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const original = await sourcePage(page.index)
       if (disposed || renderGeneration !== generation) return
       const dimensions = displayViewport(original, page, scale)
-      const card = documentElement('section', 'pdf-page'); card.dataset.pageId = page.pageId
+      const card = documentElement('section', 'pdf-page'); card.dataset.pageId = page.pageId; card.style.width = `${dimensions.width}px`; card.style.boxSizing = 'content-box'
       card.setAttribute('aria-label', `第 ${position + 1} 页`)
       const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
       const content = documentElement('div', 'pdf-page-content'); content.style.width = `${dimensions.width}px`; content.style.height = `${dimensions.height}px`
@@ -1266,7 +1308,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           card.append(details)
         }
       }
-      viewport.append(card); pageNodes.set(page.pageId, card)
+      rowByPosition.get(position)!.append(card); pageNodes.set(page.pageId, card)
       card.classList.toggle('is-active', activeId === page.pageId)
       if (observer) observer.observe(card)
       else { visible.add(page.pageId); render(page.pageId) }
@@ -1300,7 +1342,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       pendingReadingRestore = null; sourceReadingBeforePreview = null; readingRestoresSelection = false
     }
-    readingReady = true; scheduleReading()
+    readingReady = true; scheduleReading(); scheduleFit()
     searchRendering = false; if (pendingCommentJump) { pendingZoomAnchor = null; jumpComment() }; if (sidebar === 'comments') void loadComments(); if (sidebar === 'attachments') void loadAttachments(); runSearch(false, false); renderTextPanel(); updateControls(); onDraftChange?.()
   }
   setMode('select')
@@ -1380,6 +1422,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }

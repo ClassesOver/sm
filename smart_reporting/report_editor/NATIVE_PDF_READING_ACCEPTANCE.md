@@ -85,3 +85,10 @@ budget claim. Previous comments/attachments documents are corrected accordingly.
 Browser auth/revision routes are substitutes, not production SQL/auth acceptance.
 Desktop, full image, deployed identity/network, full keyboard/layout/fit semantics,
 comparison, reply and attachment mutation, and whole PDF parity remain open. Flags off.
+
+
+2026-11-09 row-fit follow-up: `NATIVE_PDF_FIT_ACCEPTANCE.md` supersedes the
+previous active-page-only fit and missing continuous resize checkpoint. All
+retained single/paired canvases now constrain fit; native fixed chrome differs
+from the desktop side-note margin/full host layout. Earlier stage evidence/counts
+remain historical and are not recounted as new checks.

@@ -18,6 +18,6 @@
     "DOM-measured rows adapt native headings/notes/spreads without desktop row assumptions",
     "restore after two animation frames; debounce300ms/pagehide/disposal flush",
     "source view separated from actual preview; explicit user input cancels pending restoration",
-    "restore fit mode using existing native current-page fit calculation; full desktop fit/resize semantics remain open"
+    "fit restoration delegates to the row-fit adapter; current provenance/host differences are in genoffice-pdf-fit-source.json"
   ]
 }
