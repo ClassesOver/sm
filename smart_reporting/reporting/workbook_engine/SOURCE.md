@@ -35,3 +35,20 @@ UPSTREAM-PATCHES-SHA256.json.
 rather than on `<workbook>`, so an added sheet without it left `r:id` unbound
 and the whole workbook unreadable. `src/sheets-edit.ts` is pinned in
 UPSTREAM-PATCHES-SHA256.json.
+
+2026-11-09 `applyCellShift` (new `src/cell-shift.ts`, local addition: GenOffice
+f8c17004 Insert/Delete Cells serializes its whole Univer model, so there is no
+engine op to port) inserts or deletes a cell range shifting right/down/left/up.
+It is a banded structural op: `ShiftSpec.band` (`src/structural.ts`) limits the
+shift to the selected rows/columns and leaves references whose cross-axis extent
+is not wholly inside the band as written (whole-row/column spans included);
+`src/notes.ts` keeps notes outside the band in place. Cells move with their
+records, row elements stay; same-sheet formulas, qualified formulas on other
+sheets, defined names, chart series and notes follow; merges shift only when
+wholly inside the band. Tables, autoFilter, validations, conditional formats,
+hyperlinks, drawing/OLE/control anchors and shared/array formula groups that
+touch the shifted region, merges straddling the band or split by a delete, and
+values pushed off the sheet are refused. `src/sheet-ops.ts` exports
+`sheetPartsOf`. `src/cell-shift.ts`, `src/structural.ts`, `src/notes.ts`,
+`src/sheet-ops.ts`, `src/index.ts` and `tests/cell-shift.test.ts` are pinned in
+UPSTREAM-PATCHES-SHA256.json.

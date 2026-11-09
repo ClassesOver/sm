@@ -389,6 +389,8 @@ export async function shiftSheetNotes(
     let column = note.column
     let removed = false
     for (const spec of specs) {
+      // Insert/Delete Cells: notes outside the band stay with their cells.
+      if (spec.band && ((spec.axis === 'row' ? column : row) < spec.band.start || (spec.axis === 'row' ? column : row) > spec.band.end)) continue
       const shifted = spec.axis === 'row' ? shiftIndex(row, spec) : shiftIndex(column, spec)
       if (shifted === null) { removed = true; break }
       if (shifted < 0 || shifted > (spec.axis === 'row' ? 1048575 : 16383)) throw new NoteEditError('批注移位超出工作表边界')

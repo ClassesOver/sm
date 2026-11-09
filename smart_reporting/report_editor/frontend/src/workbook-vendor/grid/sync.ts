@@ -211,7 +211,8 @@ export function readBackSnapshot(data: unknown): ReadbackWorkbook {
             : typeof rawValue === 'number' || typeof rawValue === 'boolean'
               ? rawValue
               : String(rawValue)
-        const style = cell.s !== undefined ? fromUniverStyle(styles[cell.s] ?? {}) : undefined
+        // Univer 移动单元格（插入/删除单元格移位、拖动）后 s 可为内联样式对象而非样式 id。
+        const style = cell.s != null ? fromUniverStyle(typeof cell.s === 'string' ? styles[cell.s] ?? {} : cell.s) : undefined
         cells[address] = {
           value,
           ...(formula !== undefined ? { formula } : {}),

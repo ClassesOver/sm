@@ -61,7 +61,7 @@ interface SheetPart {
   readonly relationshipId: string
 }
 
-async function sheetPartsOf(
+export async function sheetPartsOf(
   source: Awaited<ReturnType<typeof createBufferEntrySource>>,
   workbookXml: string,
 ): Promise<SheetPart[]> {

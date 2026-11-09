@@ -76,3 +76,9 @@ grid sizes automatically (`ia: 1`) as `autoHeightRows`; `geometryChanges`
 `heightPoints: null` for such rows only when the file had sized them, which the
 engine writes as a height reset. `core/session-core.ts` carries the new
 readback field.
+
+2026-11-09 inline cell style readback: `grid/sync.ts` resolves a cell's `s`
+either as a style id or as an inline style object. Univer's range moves
+(Insert/Delete Cells shifts, drag-moves) store the moved cell's style inline,
+so reading `s` only as an id dropped the moved formatting and the save diff
+emitted a style reset (found by the real-browser Insert Cells acceptance).

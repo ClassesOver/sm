@@ -1,10 +1,10 @@
 {
-  "packages/xlsx-engine/src/index.ts": "8af67058dbda28a50270b04cb5535891687cfde00b9ce5ea74e028974808e4ab",
-  "packages/xlsx-engine/src/notes.ts": "f2029fd93d77c0a5c71fc8cd13893bf7297ab819449af0f75fb9a7f4df16f1eb",
+  "packages/xlsx-engine/src/index.ts": "2f87ed1ca70141954662605b5beae27a4ef638955d702f0fe22541fd1ed3d0f6",
+  "packages/xlsx-engine/src/notes.ts": "13a61a02edeaae5707efb432fbefdd2a18ee8c1076ce3f44ceedb52ac176ad97",
   "packages/xlsx-engine/src/note-read.ts": "ee3eb11c7730255498f4416c92af86e59699ccc6a46bfcef6a18a5d8de313ef2",
   "packages/xlsx-engine/src/pivot-grouping.ts": "f0e167a3a3e12610a0e268f6775feb3e20bc8b023a5a7b2efef43376e2f659d0",
   "packages/xlsx-engine/src/pivot-layout.ts": "b068254667e5d1574f7f761a2d0b3e4536343a2b91233f393d91668aba071fce",
-  "packages/xlsx-engine/src/sheet-ops.ts": "29302aa97ba516686a4bb0df97a785d96e3de4a31c7f3d4bf8ed06b76cd15ad5",
+  "packages/xlsx-engine/src/sheet-ops.ts": "01aa26864f845868b896b3509688af7593d6b9416748263570fc22bee8655c68",
   "packages/xlsx-engine/src/sort-range.ts": "7b1b39a7f932584a5a7bd3bcb21d789686d360908aecb0c847ce311e7b7196a7",
   "packages/xlsx-engine/src/style-read.ts": "d67bb36ced611ebe1f55f63517e5d5de105dc9ee5556273cf7185b7e8e0b31e5",
   "packages/xlsx-engine/src/workbook-read.ts": "66d83acd514e5218dcaeea27b4011670fcd4f4b1687ddb12c0a80330cdeb803d",
@@ -17,10 +17,12 @@
   "packages/xlsx-engine/src/filter-read.ts": "77030f9e244922e471f6359e8daea73c185a46593c5271c169e0821168a39f0c",
   "packages/xlsx-engine/src/filters.ts": "dc7ff31ba3679761dda1473ce7ca5a28db34c190f0717b89062790f616604779",
   "packages/xlsx-engine/tests/filters.test.ts": "1696a65cbcff80a3e33341f4a261fb06fa492364c2bccaba365781a17937dc94",
-  "packages/xlsx-engine/src/structural.ts": "96d0042fdb16855565bdf4c2a34004f98d3e51fcbb7e656fc08f6eb13a54d24f",
+  "packages/xlsx-engine/src/structural.ts": "9f994647b7a7498d01427a7a7234fb01d0cea5aadd220356c5b0c9610f8f7e1a",
   "packages/xlsx-engine/src/page-setup.ts": "894442d9e6976584db3f0e316e8d2663ebfc16bbb978b1714f630a4298427919",
   "packages/xlsx-engine/tests/protection-page-setup.test.ts": "d5fdbc87bec238bd75c9c88f014167c5cc54f299e22f505b329db499ee3fa06a",
   "packages/xlsx-engine/src/geometry.ts": "d637793629d80af7efe9ae29d76713ddf2721bfef2eb68f86c1778a6de0ec2e0",
   "packages/xlsx-engine/tests/geometry.test.ts": "a64a51e49c9a33729a2da27e63c00a06fe68b935e14b25b2f74a28fca32d4443",
-  "packages/xlsx-engine/src/sheets-edit.ts": "bd016a5ea9ccccd15ee7a447a3098ebbe59afacc555f9af6360d6ced8f0464a8"
+  "packages/xlsx-engine/src/sheets-edit.ts": "bd016a5ea9ccccd15ee7a447a3098ebbe59afacc555f9af6360d6ced8f0464a8",
+  "packages/xlsx-engine/src/cell-shift.ts": "a0a8121257ce3575da6cc30a55760e85428bceff03f65a6ef91c809bc9661230",
+  "packages/xlsx-engine/tests/cell-shift.test.ts": "1a441297b03e256319078521d1646ad8e8fd9b905bb5373c8610909ede84670d"
 }

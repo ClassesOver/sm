@@ -23,6 +23,7 @@ _ALLOWED_KEYS = {'kind', 'edits', 'order', 'theme', 'slideSize', 'transitions', 
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
     'applySheetEdits': {'plan'}, 'applyRowColumnOps': {'sheetName', 'ops'},
+    'applyCellShift': {'sheetName', 'range', 'shift'},
     'applyDvRules': {'rules'}, 'applyCfRules': {'rules'}, 'applySheetNotes': {'sheetName', 'notes'},
     'patchSheetNotes': {'sheetName', 'sourceIdentity', 'changes'},
     'applySheetFilter': {'sheetName', 'filter'},

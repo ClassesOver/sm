@@ -21,7 +21,7 @@ class WorkbookBuildResult:
 
 
 _OPERATION_KINDS = frozenset({
-    'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyDvRules',
+    'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyCellShift', 'applyDvRules',
     'applyCfRules', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'addPivot',
     'applyColumnWidths', 'applyRowHeights', 'applyPageSetups', 'applyTableAdditions', 'sortRange',
     'refreshPivotCaches', 'applyPivotLayoutExpansions', 'expandPivotOutputs',

@@ -16,7 +16,9 @@ const workbookLimits = {
   // 272 KiB (2026-11-07): the official sheets-filter preset's UI icons joined
   // the shared icon chunk when native filtering was wired into the ribbon.
   'workbook-icons': 274 * KIB,
-  'workbook-engine': 390 * KIB,
+  // 396 KiB (2026-11-09): Insert/Delete Cells adds the engine's banded
+  // applyCellShift, which the browser replays to build the save baseline.
+  'workbook-engine': 396 * KIB,
   'workbook-core': 400 * KIB,
   'workbook-sheets': 430 * KIB,
   'workbook-docs-ui': 470 * KIB,

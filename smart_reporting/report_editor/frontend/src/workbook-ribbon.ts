@@ -67,6 +67,8 @@ type RibbonCommand =
   | 'format-painter'
   | 'format-painter:dblclick'
   | 'row-height-open'
+  | 'insert-cells'
+  | 'delete-cells'
   | 'col-width-open'
   | 'autofit-row-height'
   | 'autofit-col-width'
@@ -359,7 +361,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('删除行', 'delete-row-here', 'delete-row-here'),
       action('插入列', 'insert-col-here', 'insert-col-here'),
       action('删除列', 'delete-col-here', 'delete-col-here'),
-      action('插入单元格', 'insert-cells'), action('删除单元格', 'delete-cells'),
+      action('插入单元格', 'insert-cells', 'insert-cells'), action('删除单元格', 'delete-cells', 'delete-cells'),
       action('行高', 'row-height-open', 'row-height-open'), action('自动调整行高', 'autofit-row-height', 'autofit-row-height'),
       action('列宽', 'col-width-open', 'col-width-open'), action('自动调整列宽', 'autofit-col-width', 'autofit-col-width'),
       action('全部清除', 'clear-all', 'clear-all'), action('清除格式', 'clear-formats', 'clear-formats'),
@@ -493,8 +495,6 @@ const disabledReasons: Record<string, string> = {
   'cf-open': '尚未接入条件格式草稿编辑',
   'format-as-table': '尚未接入表格创建的文件回写',
   'cell-style': '尚未接入单元格样式预设的文件回写',
-  'insert-cells': '尚无插入并移动单元格操作',
-  'delete-cells': '尚无删除并移动单元格操作',
   'format-cells': '尚无完整单元格格式对话框；可使用数字组的自定义数字格式',
   'insert-checkbox': '尚未接入复选框绘图及文件回写',
   'recommended-charts-open': '尚未接入静态图表创建对话框与文件回写',

@@ -19,6 +19,9 @@ export interface ShiftSpec {
   readonly start: number
   /// positive for inserts, negative for deletes
   readonly delta: number
+  /// Insert/Delete Cells shifts only this inclusive cross-axis span (rows for
+  /// a column shift, columns for a row shift); absent = whole rows/columns.
+  readonly band?: { readonly start: number; readonly end: number }
 }
 
 export class StructuralShiftError extends Error {}
@@ -34,6 +37,25 @@ export function shiftIndex(index: number, spec: ShiftSpec): number | null {
   if (spec.delta > 0) return index + spec.delta
   if (index < spec.start - spec.delta) return null
   return index + spec.delta
+}
+
+/// Cell coordinates after the shift (null when deleted); outside a band the
+/// cell does not move.
+export function shiftCellIndex(row: number, column: number, spec: ShiftSpec): { row: number; column: number } | null {
+  const cross = spec.axis === 'row' ? column : row
+  if (spec.band && (cross < spec.band.start || cross > spec.band.end)) return { row, column }
+  const shifted = shiftIndex(spec.axis === 'row' ? row : column, spec)
+  if (shifted === null) return null
+  return spec.axis === 'row' ? { row: shifted, column } : { row, column: shifted }
+}
+
+/// Excel's Insert/Delete Cells rewrites a reference only when its cross-axis
+/// extent lies wholly inside the shifted band; others stay as written.
+function insideBand(spec: ShiftSpec, first: RefPart, second: RefPart = first): boolean {
+  if (!spec.band) return true
+  const a = spec.axis === 'row' ? first.col : first.row
+  const b = spec.axis === 'row' ? second.col : second.row
+  return Math.min(a, b) >= spec.band.start && Math.max(a, b) <= spec.band.end
 }
 
 // ── formula shifting (genoffice domain/formula-shift semantics) ──────────
@@ -118,6 +140,7 @@ function shiftSegment(
         row: Number(aRow) - 1,
       }
       if (bCol === undefined) {
+        if (!insideBand(spec, first)) return match
         const shifted = shiftRefPart(first, spec)
         return shifted ? `${prefix}${formatRef(shifted)}` : `${prefix}#REF!`
       }
@@ -127,6 +150,7 @@ function shiftSegment(
         rowAbs: bAbsR,
         row: Number(bRow) - 1,
       }
+      if (!insideBand(spec, first, second)) return match
       let shiftedFirst = shiftRefPart(first, spec)
       let shiftedSecond = shiftRefPart(second, spec)
       if (!shiftedFirst && !shiftedSecond) return `${prefix}#REF!`
@@ -135,7 +159,8 @@ function shiftSegment(
       return `${prefix}${formatRef(shiftedFirst)}:${formatRef(shiftedSecond)}`
     },
   )
-  if (spec.axis === 'column') {
+  // whole-column/row spans cross every band, so a banded shift leaves them
+  if (spec.axis === 'column' && !spec.band) {
     out = out.replace(COLUMN_SPAN_RE, (match, quoted, bare, aAbs, aCol, bAbs, bCol) => {
       if (!appliesTo(quoted, bare, formulaSheetMatchesOp, opSheetName)) return match
       const prefix = prefixOf(quoted, bare)
@@ -154,7 +179,7 @@ function shiftSegment(
       return `${prefix}${formatCol(first)}:${formatCol(second)}`
     })
   }
-  if (spec.axis === 'row') {
+  if (spec.axis === 'row' && !spec.band) {
     out = out.replace(ROW_SPAN_RE, (match, quoted, bare, aAbs, aRow, bAbs, bRow) => {
       if (!appliesTo(quoted, bare, formulaSheetMatchesOp, opSheetName)) return match
       const prefix = prefixOf(quoted, bare)

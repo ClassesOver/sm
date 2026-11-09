@@ -298,19 +298,18 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   expect(labels.get('insert-col-here')).toBe('插入列')
   expect(labels.get('delete-col-here')).toBe('删除列')
   expect(labels.get('clear-contents')).toBe('清除内容')
-  for (const id of ['valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents']) {
+  for (const id of ['valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells']) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
     expect(button.disabled, id).toBe(false)
     button.click()
   }
   expect(onCommand.mock.calls.map(([command]) => command)).toEqual([
     'valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge',
-    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents',
+    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells',
   ])
   expect(getLabel('clear-contents')).toBe('清除内容')
   for (const [id, reason] of [
     ['format-cells', '完整单元格格式对话框'],
-    ['insert-cells', '插入并移动单元格'], ['delete-cells', '删除并移动单元格'],
   ]) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
     expect(button?.disabled, id).toBe(true)

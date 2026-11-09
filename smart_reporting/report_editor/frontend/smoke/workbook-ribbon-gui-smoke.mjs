@@ -21,7 +21,7 @@ payload = json.load(sys.stdin)
 if payload['mode'] == 'create':
     book = Workbook(); sheet = book.active; sheet.title = 'Summary'
     sheet['A1'] = 'alpha'; sheet['A1'].font = Font(bold=True)
-    sheet['A2'] = 'beta'; sheet['B1'] = 'wide'
+    sheet['A2'] = 'beta'; sheet['B1'] = 'wide'; sheet['C1'] = 'gamma'; sheet['D5'] = '=A2'
     sheet.row_dimensions[2].height = 40
     sheet.column_dimensions['B'].width = 30
     stream = BytesIO(); book.save(stream); print(base64.b64encode(stream.getvalue()).decode())
@@ -37,7 +37,7 @@ else:
       'row1': s.row_dimensions[1].height, 'row2': [s.row_dimensions[2].height, s.row_dimensions[2].customHeight],
       'colB': round(s.column_dimensions['B'].width or 0, 2), 'colD': round(s.column_dimensions['D'].width or 0, 2),
       'A3': [s['A3'].value, s['A3'].font.bold, s['A3'].alignment.indent], 'B3': [s['B3'].value, s['B3'].font.bold, s['B3'].alignment.indent],
-      'E1': [s['E1'].value, s['E1'].font.bold], 'F1': s['F1'].value,
+      'E1': [s['E1'].value, s['E1'].font.bold], 'F1': s['F1'].value, 'B1': s['B1'].value, 'D5': s['D5'].value,
       'sheets': book.sheetnames, 'newSheetA1': [book.worksheets[-1]['A1'].value, book.worksheets[-1]['A1'].font.bold] if len(book.worksheets) > 1 else None}))
 `], { cwd: repo, env: { ...process.env, PYTHONPATH: repo }, input: JSON.stringify(input), encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(result.stderr || `python exited ${result.status}`)
@@ -78,7 +78,34 @@ try {
   // 网格内坐标（截图核对：行头宽 46px、列头高 20px；A 88px、B 为文件 30 字符宽、C/D 88px；
   // 第 2 行为文件 40 磅）。第 1 行改为 30 磅（40px）后第 2 行下移。
   const clickCell = async (x, y) => { await page.locator('.workbook-grid').click({ position: { x, y } }); await delay(300) }
-  const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32], A3 = [90, 109], B3 = [240, 109], E1 = [569, 32]
+  const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32], A3 = [90, 109], B3 = [240, 109], E1 = [569, 32], B1 = [240, 32]
+
+  if (process.env.WORKBOOK_RIBBON_CASE === 'cells') {
+    // 插入单元格：A1 下移（对话框默认项）；删除单元格：B1 右侧左移。
+    await clickCell(...A1); await command('insert-cells')
+    await page.locator('.workbook-ribbon-cells-dialog input[value="shift-vertical"]').waitFor()
+    assert.equal(await page.locator('.workbook-ribbon-cells-dialog input[value="shift-vertical"]').isChecked(), true)
+    await page.locator('.workbook-ribbon-cells-dialog .workbook-ribbon-format-apply').click(); await delay(800)
+    await clickCell(...B1); await command('delete-cells')
+    await page.locator('.workbook-ribbon-cells-dialog input[value="shift-horizontal"]').check()
+    await page.locator('.workbook-ribbon-cells-dialog .workbook-ribbon-format-apply').click(); await delay(800)
+    await page.locator('[data-action="save"]').click()
+    await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 })
+    const download = await page.evaluate(async () => { const r = await fetch('/fixture-gui-download.xlsx'); return Array.from(new Uint8Array(await r.arrayBuffer())) })
+    const reopened = JSON.parse(python({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
+    const operationKinds = savePayload.operations.map(op => op.kind)
+    console.log(JSON.stringify({ ok: true, case: 'cells', browserVersion: browser.version(), operations: savePayload.operations.filter(op => op.kind === 'applyCellShift'), operationKinds, reopened, pageErrors }))
+    assert.deepEqual(savePayload.operations.filter(op => op.kind === 'applyCellShift'), [
+      { kind: 'applyCellShift', sheetName: 'Summary', range: 'A1', shift: 'down' },
+      { kind: 'applyCellShift', sheetName: 'Summary', range: 'B1', shift: 'left' },
+    ])
+    assert.equal(reopened.A1[0], null)
+    assert.deepEqual(reopened.A2.slice(0, 2), ['alpha', true])
+    assert.equal(reopened.A3[0], 'beta')
+    assert.equal(reopened.B1, 'gamma')
+    assert.equal(reopened.D5, '=A3')
+    assert.deepEqual(pageErrors, [])
+  } else {
 
   // 1. 缩进：A1 增加两级。
   await clickCell(...A1); await command('indent-step:increase'); await command('indent-step:increase')
@@ -153,6 +180,7 @@ try {
   assert.deepEqual(reopened.sheets.length, 2)
   assert.deepEqual(reopened.newSheetA1, ['alpha', true])
   assert.deepEqual(pageErrors, [])
+  }
 } finally {
   await browser?.close()
   server.kill()

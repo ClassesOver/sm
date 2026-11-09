@@ -4,7 +4,7 @@ import '@univerjs/preset-sheets-note/lib/index.css'
 import { adjacentNote, validateNoteCommand, captureNoteTarget, validateNoteTarget, noteSource, noteStructureReason, withWorkbookNotes, workbookNoteOperations, validateNoteBudget, createNoteDialog, type NoteWorkbook } from './workbook-notes'
 import { withWorkbookFilters, workbookFilterOperations, type FilterWorkbook } from './workbook-filters'
 import { withWorkbookView } from './workbook-view'
-import { LocaleType, mergeLocales } from '@univerjs/core'
+import { ICommandService, IUndoRedoService, LocaleType, mergeLocales } from '@univerjs/core'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
 import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace'
 import { UniverSheetsDrawingPreset } from '@univerjs/preset-sheets-drawing'
@@ -32,6 +32,7 @@ import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot
 import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
+import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
 import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
 import { applyFormatPainterClick, formatPainterActive, formatPainterReady, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
@@ -96,7 +97,11 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let gridChanged = false
   let captureGeneration = 0
   let persistence = Promise.resolve()
-  let structural: NonNullable<ReturnType<typeof structuralMutation>>[] = []
+  // 结构日志：行列增删（Univer mutation）与插入/删除单元格移位（命令 + 撤销元素），按发生顺序回放。
+  let structural: (NonNullable<ReturnType<typeof structuralMutation>> | CellShiftEntry)[] = []
+  const undone: CellShiftEntry[] = []
+  // 单元格移位/其撤销重做同步执行期间，Univer 为扩容附带的 insert/remove-col|row mutation 不进行列日志。
+  let suppressStructural = false
   let acceptedSnapshot = ''
   const runtime = createUniver({
     locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, FindReplaceZhCN, SortZhCN, NoteZhCN, FilterUiZhCN) },
@@ -146,6 +151,20 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     markDirty()
     ribbon.refreshState?.()
     feedback.textContent = `${target.axis === 'row' ? '行高' : '列宽'}已更新，修改尚未保存。`
+  })
+  // 无注入器的测试替身没有撤销栈：单元格移位仍记日志，只是不能按撤销元素认领。
+  const undoStack = () => typeof runtime.univer.__getInjector === 'function'
+    ? runtime.univer.__getInjector().get<{ pitchTopUndoElement(): unknown; pitchTopRedoElement(): unknown }>(IUndoRedoService) : undefined
+  const runCellsChoice = (mode: CellsMode, choice: CellsChoice, range: CellRange) => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    void runtime.univerAPI.executeCommand(cellsCommandId(mode, choice), cellsCommandParams(mode, choice, range)).then(applied => {
+      if (!applied) feedback.textContent ||= mode === 'insert' ? '插入单元格未应用' : '删除单元格未应用'
+    }, (error: unknown) => { feedback.textContent = (error as Error).message })
+  }
+  let cellsRange: CellRange | undefined
+  const cellsDialog = createCellsDialog(shell.editor, (mode, choice) => {
+    if (!cellsRange) throw new Error('请先选择单元格或区域')
+    runCellsChoice(mode, choice, cellsRange)
   })
   const numberFormatDialog = createNumberFormatDialog(shell.editor, {
     initial: () => formatState().numberFormat,
@@ -606,6 +625,17 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           }, (error: unknown) => { feedback.textContent = (error as Error).message })
           return
         }
+        if (command === 'insert-cells' || command === 'delete-cells') {
+          const sheet = workbook.getActiveSheet()
+          const range = sheet?.getSelection()?.getActiveRange()?.getRange() as CellRange | undefined
+          if (!sheet || !range) throw new Error('请先选择单元格或区域')
+          const mode: CellsMode = command === 'insert-cells' ? 'insert' : 'delete'
+          const decision = decideCellsAction({ range, rowCount: sheet.getMaxRows(), columnCount: sheet.getMaxColumns() })
+          cellsRange = { startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn }
+          if (decision.kind === 'direct') runCellsChoice(mode, decision.choice, cellsRange)
+          else cellsDialog.open(mode)
+          return
+        }
         if (command === 'row-height-open' || command === 'col-width-open') {
           const target = captureAxisTarget(runtime.univerAPI.getActiveWorkbook() as never, command === 'row-height-open' ? 'row' : 'col')
           if (!target) throw new Error('请先选择单元格或区域')
@@ -678,11 +708,16 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   )
   let selectionListener: { dispose(): void } | undefined
   let replacing = false
+  let pendingShiftUndo: { id: string; element: unknown } | undefined
   runtime.univerAPI.addEvent(runtime.univerAPI.Event.BeforeCommandExecute, command => {
     if (omitCalculatedNumberFormats(command, runtime.univerAPI.getActiveWorkbook()?.getSnapshot())) return
     if (!loading) {
       const reason = noteStructureReason(currentModel, noteWorkbook(), command)
       if (reason) { command.cancel = true; feedback.textContent = reason; return }
+    }
+    if (!loading && CELL_SHIFT_COMMANDS[command.id]) {
+      if (!editable()) { command.cancel = true; feedback.textContent = '当前工作簿不可编辑或正在保存'; return }
+      suppressStructural = true; queueMicrotask(() => { suppressStructural = false })
     }
     if (/^sheet\.(?:command|mutation)\.(?:update-note|remove-note|delete-note|toggle-note-popup|update-note-position)$/.test(command.id)) {
       if (loading) return
@@ -750,6 +785,17 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       feedback.textContent = (error as Error).message
     }
   })
+  // Facade 的 BeforeCommandExecute 不派发 undo/redo；直接挂命令服务，在栈顶元素出栈前认领单元格移位。
+  const historyListener = typeof runtime.univer.__getInjector !== 'function' ? undefined : runtime.univer.__getInjector().get<ICommandService>(ICommandService).beforeCommandExecuted(command => {
+    if (loading || (command.id !== 'univer.command.undo' && command.id !== 'univer.command.redo')) return
+    const top = command.id === 'univer.command.undo' ? undoStack()?.pitchTopUndoElement() : undoStack()?.pitchTopRedoElement()
+    const owned = command.id === 'univer.command.undo'
+      ? structural.some(item => 'cellShift' in item && item.element === top) : undone.some(item => item.element === top)
+    if (top && owned) {
+      pendingShiftUndo = { id: command.id, element: top }
+      suppressStructural = true; queueMicrotask(() => { suppressStructural = false })
+    }
+  })
   runtime.univerAPI.onCommandExecuted((command, options) => {
     if (command.id === 'ui.command.replace-current-match' || command.id === 'ui.command.replace-all-matches') replacing = false
     ribbon.refreshState?.()
@@ -768,17 +814,49 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       if (!loading && !saving && !saved) markDirty()
       return
     }
+    if (!loading && !saving && !saved && CELL_SHIFT_COMMANDS[command.id]) {
+      const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+      const range = (command.params as { range?: CellRange } | undefined)?.range ?? sheet?.getSelection()?.getActiveRange()?.getRange() as CellRange | undefined
+      if (sheet && range) {
+        structural.push({ sheetId: sheet.getSheetId(), cellShift: { range: cellShiftRange(range), shift: CELL_SHIFT_COMMANDS[command.id]! }, element: undoStack()?.pitchTopUndoElement() })
+        undone.length = 0
+        markDirty()
+        // 引擎按同一规则预演；不支持移位的来源特性（表格、验证、共享公式等）立即撤销并说明原因。
+        const entry = structural[structural.length - 1]
+        void currentOperations().catch((error: unknown) => {
+          const message = (error as Error).message ?? ''
+          if (!message.includes('插入/删除单元格已拒绝')) return
+          const element = (entry as CellShiftEntry).element
+          if (element && undoStack()?.pitchTopUndoElement() === element) void runtime.univerAPI.undo()
+          feedback.textContent = message
+        })
+      }
+      return
+    }
+    if (pendingShiftUndo && command.id === pendingShiftUndo.id) {
+      const element = pendingShiftUndo.element
+      pendingShiftUndo = undefined
+      if (command.id === 'univer.command.undo') {
+        const index = structural.findIndex(item => 'cellShift' in item && item.element === element)
+        if (index >= 0) undone.push(structural.splice(index, 1)[0] as CellShiftEntry)
+      } else {
+        const index = undone.findIndex(item => item.element === element)
+        if (index >= 0) structural.push(undone.splice(index, 1)[0]!)
+      }
+      if (!saving && !saved) markDirty()
+      return
+    }
     if (!loading && !saving && !saved && command.id.startsWith('sheet.mutation.')) {
-      const mutation = structuralMutation(command.id, command.params)
+      const mutation = suppressStructural ? undefined : structuralMutation(command.id, command.params)
       if (mutation) {
         const trigger = (command.params as { trigger?: string }).trigger
         const inverse = mutation.op.kind.startsWith('insert-')
           ? mutation.op.kind.replace('insert-', 'remove-') : mutation.op.kind.replace('remove-', 'insert-')
-        const undone = trigger === 'univer.command.undo' ? structural.findLastIndex(item =>
+        const reverted = trigger === 'univer.command.undo' ? structural.findLastIndex(item => 'op' in item &&
           item.sheetId === mutation.sheetId && item.op.kind === inverse &&
           item.op.index === mutation.op.index && item.op.count === mutation.op.count) : -1
         // 仅真实 Univer Undo 撤回对应结构日志；手动删后插仍须保留破坏性引用语义。
-        if (undone >= 0) structural.splice(undone, 1)
+        if (reverted >= 0) structural.splice(reverted, 1)
         else structural.push(mutation)
       }
       markDirty()
@@ -798,7 +876,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (sheetChanged) ops.push({ kind: 'applySheetEdits', plan })
     for (const mutation of structural) {
       const name = snapshot.sheets[mutation.sheetId]?.name
-      if (name) ops.push({ kind: 'applyRowColumnOps', sheetName: name, ops: [mutation.op] })
+      if (name) ops.push('cellShift' in mutation
+        ? { kind: 'applyCellShift', sheetName: name, ...mutation.cellShift }
+        : { kind: 'applyRowColumnOps', sheetName: name, ops: [mutation.op] })
     }
     const baseline = sheetChanged || structural.length
       ? await readWorkbook(await applyWorkbookOperations(original, ops)) : currentModel
@@ -900,6 +980,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     selectionListener = runtime.univerAPI.getActiveWorkbook()?.onSelectionChange?.(() => ribbon.refreshState?.())
     staged = structuredClone(ops)
     structural = []
+    undone.length = 0
     loading = false
     ribbon.refreshState?.()
   }
@@ -1037,5 +1118,5 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); historyListener?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

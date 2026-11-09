@@ -1,6 +1,6 @@
 /** Server and browser share the migrated engine's operation protocol. */
 import {
-  applyCellEdits, applySheetEdits, applyRowColumnOps, applyDvRules, applyCfRules,
+  applyCellEdits, applySheetEdits, applyRowColumnOps, applyCellShift, applyDvRules, applyCfRules,
   applySheetNotes, patchSheetNotes, applySheetFilter, addPivotTable, applyColumnWidths,
   applyRowHeights, applyPageSetups, applyTableAdditions, workbookStyleEditSchema,
   refreshPivotCaches, applyPivotLayoutExpansions, expandPivotOutputs, sortRangeRows,
@@ -58,6 +58,12 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       case 'applySheetMerges': bytes = await applySheetMerges(bytes, op.sheetName, op.ranges); break
       case 'applySheetEdits': bytes = await applySheetEdits(bytes, op.plan); break
       case 'applyRowColumnOps': bytes = await applyRowColumnOps(bytes, op.sheetName, op.ops); break
+      case 'applyCellShift': {
+        const parsed = z.object({ kind: z.literal('applyCellShift'), sheetName: z.string().min(1).max(31),
+          range: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}(?::[A-Z]{1,3}[1-9][0-9]{0,6})?$/),
+          shift: z.enum(['right', 'down', 'left', 'up']) }).strict().parse(op)
+        bytes = await applyCellShift(bytes, parsed.sheetName, { range: parsed.range, shift: parsed.shift }); break
+      }
       case 'applyDvRules': bytes = await applyDvRules(bytes, op.rules); break
       case 'applyCfRules': bytes = await applyCfRules(bytes, op.rules); break
       case 'patchSheetNotes': {
