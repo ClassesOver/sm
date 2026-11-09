@@ -744,3 +744,60 @@ def test_slides_bridge_inserts_slide_number_and_date_fields(tmp_path: Path):
         _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "textBoxes": [
             {"slideIndex": 0, "text": "x", "field": "author", "geometry": {"x": 1, "y": 1, "width": 10, "height": 10}}]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_sets_shape_fill_and_outline(tmp_path: Path):
+    """固定源 Shape Format ▸ 填充/轮廓：纯色、无填充、描边颜色与线宽、无轮廓；非法颜色与目标拒绝。"""
+    from pptx.util import Inches
+    from pptx.enum.shapes import MSO_SHAPE
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "styled.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(1), Inches(1), Inches(3), Inches(2))
+    slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(5), Inches(1), Inches(2), Inches(2))
+    presentation.save(source)
+    elements = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"][0]["elements"]
+    first, second = elements[0]["id"], elements[1]["id"]
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "shapeStyles": [
+        {"slideIndex": 0, "elementId": first, "fill": "#2E7D32", "stroke": {"color": "#1B2A41", "widthPt": 3}},
+        {"slideIndex": 0, "elementId": second, "fill": "none", "stroke": None},
+    ]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    shapes = re.findall(r"<p:sp>.*?</p:sp>", xml, re.S)
+    assert 'srgbClr val="2E7D32"' in shapes[0] and '<a:ln w="38100"' in shapes[0] and 'srgbClr val="1B2A41"' in shapes[0]
+    assert "<a:noFill/>" in shapes[1]
+    for bad in ({"slideIndex": 0, "elementId": first, "fill": "green"},
+                {"slideIndex": 0, "elementId": first},
+                {"slideIndex": 0, "elementId": "missing", "fill": "#000000"},
+                {"slideIndex": 0, "elementId": first, "stroke": {"color": "#000000", "widthPt": 0}}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "shapeStyles": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_table_coexists_with_element_edits_on_the_same_slide(tmp_path: Path):
+    """表格插入会重建页面模型：须在按对象身份的修改（改字、样式、删除）之后执行，二者同批均生效。"""
+    from pptx.util import Inches
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "combined.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(4), Inches(3), Inches(1)).text = "原文字"
+    slide.shapes.add_textbox(Inches(5), Inches(4), Inches(3), Inches(1)).text = "待删除"
+    presentation.save(source)
+    elements = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"][0]["elements"]
+    keep = next(item["id"] for item in elements if item["text"] == "原文字")
+    drop = next(item["id"] for item in elements if item["text"] == "待删除")
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "order": [0],
+             "edits": [{"slideIndex": 0, "elementId": keep, "text": "改后文字"}],
+             "shapeStyles": [{"slideIndex": 0, "elementId": keep, "fill": "#2E7D32"}],
+             "deletions": [{"slideIndex": 0, "elementId": drop}],
+             "tables": [{"slideIndex": 0, "rows": 2, "cols": 2}]}, tmp_path)
+    shapes = Presentation(str(output)).slides[0].shapes
+    texts = [shape.text for shape in shapes if shape.has_text_frame]
+    assert "改后文字" in texts and "待删除" not in texts
+    assert sum(shape.has_table for shape in shapes) == 1
+    with ZipFile(output) as archive:
+        assert 'srgbClr val="2E7D32"' in archive.read("ppt/slides/slide1.xml").decode()

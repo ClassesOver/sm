@@ -241,6 +241,13 @@ try {
     // 页码字段（固定源 insertField:slidenum）
     await page.locator('[data-command="slideNumber"][data-source-action="onInsertField:slidenum"]').click()
     await page.locator('.structure-pending li').filter({ hasText: '页码字段' }).waitFor()
+    // 形状格式（固定源 Shape Format 填充/轮廓）：作用于来源页文本框。
+    const styledTarget = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    await page.locator('#object-select').selectOption(styledTarget.id)
+    await page.locator('[data-ribbon-tab="shapeFormat"]').click()
+    await page.locator('input[data-command="shapeFill"]').fill('#2e7d32')
+    await page.locator('select[data-command="shapeOutlineWidth"]').selectOption('3')
+    await page.locator('.structure-pending li').filter({ hasText: '填充 #2E7D32、轮廓 #000000 3 磅' }).waitFor()
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
@@ -414,6 +421,7 @@ try {
     assert.deepEqual(operation.resetLayouts, [0])
     assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
     assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
+    assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
     assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2']])
     assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
@@ -458,6 +466,8 @@ try {
     assert.equal(shapeXml.stdout.trim(), '1')
     const fieldXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(z.read(n).decode().count("type=\\"slidenum\\"") for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(fieldXml.stdout.trim(), '1')
+    const styleXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") for sp in re.findall(r"<p:sp>.*?</p:sp>", z.read(n).decode(), re.S) if "Native browser formatting fixture" in sp and "2E7D32" in sp and "<a:ln w=\\"38100\\"" in sp))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(styleXml.stdout.trim(), '1')
   }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))

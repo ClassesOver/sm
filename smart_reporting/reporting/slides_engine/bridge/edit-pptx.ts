@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, addTable, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, addTable, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -38,6 +38,8 @@ type Input = {
   shapes?: { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }[]
   /** 固定源 Insert ▸ Table（insertTable + table-insert.ts）：行列数；位置按固定源规格由幻灯片尺寸计算。 */
   tables?: { slideIndex: number; rows: number; cols: number }[]
+  /** 固定源 Shape Format ▸ Shape Fill / Shape Outline（setFill / setStroke）：纯色或无填充；描边颜色与线宽（pt）或无轮廓。 */
+  shapeStyles?: { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }[]
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -257,16 +259,12 @@ if (request.action === 'inspect') {
     if (!reset) throw new Error('reset_layout_failed')
     originalSlides[index] = reset
   }
-  // addTable 会重建页面模型，因此放在其他页面修改之前；几何同固定源 tableInsertSpec：宽 2/3 居中、顶部 10.5%、行高 29.2pt。
+  // 表格先校验；插入放在最后（addTable 会把已做的修改写入 XML 后重建页面并改变对象身份）。
   const tables = request.tables ?? []
   if (!Array.isArray(tables) || tables.length > 100) throw new Error('tables_invalid')
   for (const table of tables) {
     if (!table || typeof table !== 'object' || Object.keys(table).some(key => !['slideIndex', 'rows', 'cols'].includes(key)) || !validSlideIndex(table.slideIndex, slideCount)
       || !Number.isInteger(table.rows) || !Number.isInteger(table.cols) || table.rows < 1 || table.cols < 1 || table.rows > 75 || table.cols > 75) throw new Error('table_invalid')
-    const { cx, cy } = opened.deck.size, rowHeightEmu = Math.round(29.2 * 12700), width = Math.round(cx * 2 / 3)
-    const added = addTable(opened, table.slideIndex, { rows: table.rows, cols: table.cols, offset: { x: Math.round((cx - width) / 2), y: Math.round(cy * 0.105), cx: width, cy: table.rows * rowHeightEmu }, rowHeightsEmu: Array(table.rows).fill(rowHeightEmu) })
-    if (!added) throw new Error('table_insert_failed')
-    originalSlides[table.slideIndex] = added.slide
   }
   if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
     throw new Error('paragraph_format_invalid')
@@ -301,7 +299,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -314,6 +312,16 @@ if (request.action === 'inspect') {
     deleted.add(key)
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
+  if (!Array.isArray(request.shapeStyles ?? []) || (request.shapeStyles ?? []).length > 500) throw new Error('shape_styles_invalid')
+  const styled = new Set<string>()
+  for (const style of request.shapeStyles ?? []) {
+    if (!style || typeof style !== 'object' || Object.keys(style).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || !validSlideIndex(style.slideIndex, slideCount) || typeof style.elementId !== 'string' || !style.elementId
+      || (style.fill === undefined && style.stroke === undefined)
+      || (style.fill !== undefined && style.fill !== 'none' && (typeof style.fill !== 'string' || !colorPattern.test(style.fill)))
+      || (style.stroke !== undefined && style.stroke !== null && (typeof style.stroke !== 'object' || Object.keys(style.stroke).some(key => !['color', 'widthPt'].includes(key)) || typeof style.stroke.color !== 'string' || !colorPattern.test(style.stroke.color) || !Number.isFinite(style.stroke.widthPt) || style.stroke.widthPt <= 0 || style.stroke.widthPt > 100))
+      || touchesDeleted(style.slideIndex, style.elementId) || styled.has(`${style.slideIndex}:${style.elementId}`)) throw new Error('shape_style_invalid')
+    styled.add(`${style.slideIndex}:${style.elementId}`)
+  }
   if ((request.edits ?? []).some((edit) => touchesDeleted(edit.slideIndex, edit.elementId)) ||
     (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId)) ||
     (request.paragraphFormatting ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
@@ -435,6 +443,17 @@ if (request.action === 'inspect') {
   for (const deletion of deletions) {
     if (!deleteElement(opened, originalSlides[deletion.slideIndex]!, deletion.elementId)) throw new Error('delete_target_invalid')
   }
+  for (const style of request.shapeStyles ?? []) {
+    const slide = originalSlides[style.slideIndex]!
+    const element = slide.elements.find(candidate => candidate.id === style.elementId)
+    if (!element || (element.type !== 'text' && element.type !== 'shape')) throw new Error('shape_style_target_invalid')
+    if (style.fill !== undefined && !setElementFill(opened, slide, style.elementId, style.fill)) throw new Error('shape_fill_failed')
+    if (style.stroke !== undefined) {
+      const target = element as typeof element & { stroke?: unknown; dirtyStroke?: boolean }
+      target.stroke = style.stroke ? strokePatchToModel({ color: style.stroke.color.toUpperCase(), widthEmu: Math.round(style.stroke.widthPt * 12700) }) : undefined
+      target.dirtyStroke = true
+    }
+  }
   for (const selection of request.slideLayouts ?? []) {
     if (!Number.isInteger(selection.slideIndex) || selection.slideIndex < 0 || selection.slideIndex >= slideCount) {
       throw new Error('layout_slide_index_invalid')
@@ -542,6 +561,13 @@ if (request.action === 'inspect') {
     if ((opened.deck.size.cx !== cx || opened.deck.size.cy !== cy) && !setSlideSize(opened, cx, cy)) {
       throw new Error('slide_size_apply_failed')
     }
+  }
+  // 固定源 tableInsertSpec：宽 2/3 居中、顶部 10.5%、行高 29.2pt；在全部按对象身份的修改与尺寸缩放之后插入。
+  for (const table of tables) {
+    const { cx, cy } = opened.deck.size, rowHeightEmu = Math.round(29.2 * 12700), width = Math.round(cx * 2 / 3)
+    const slideIndex = opened.deck.slides.indexOf(originalSlides[table.slideIndex]!)
+    if (slideIndex < 0) throw new Error('table_slide_missing')
+    if (!addTable(opened, slideIndex, { rows: table.rows, cols: table.cols, offset: { x: Math.round((cx - width) / 2), y: Math.round(cy * 0.105), cx: width, cy: table.rows * rowHeightEmu }, rowHeightsEmu: Array(table.rows).fill(rowHeightEmu) })) throw new Error('table_insert_failed')
   }
   if (!request.output) throw new Error('output_path_required')
   const bytes = await savePptx(opened)

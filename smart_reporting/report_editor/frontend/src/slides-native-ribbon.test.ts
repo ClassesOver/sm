@@ -506,3 +506,21 @@ it('enables the pinned Reset Layout command', () => {
   expect(onAction).toHaveBeenCalledWith('resetLayout')
   ribbon.dispose()
 })
+
+it('enables the Shape Format fill and outline controls with their source actions', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  ribbon.setContext('shape')
+  const fill = host.querySelector<HTMLInputElement>('input[data-command="shapeFill"]')!
+  const width = host.querySelector<HTMLSelectElement>('select[data-command="shapeOutlineWidth"]')!
+  expect(fill.disabled).toBe(false)
+  expect([...width.options].map(option => option.value)).toEqual(['0.75', '1', '1.5', '2.25', '3', '4.5', '6'])
+  fill.value = '#2e7d32'; fill.dispatchEvent(new Event('change'))
+  host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
+  expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
+  expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
+  expect(host.querySelector<HTMLButtonElement>('[data-command="changeShape"]')!.disabled).toBe(true)
+  ribbon.dispose()
+})

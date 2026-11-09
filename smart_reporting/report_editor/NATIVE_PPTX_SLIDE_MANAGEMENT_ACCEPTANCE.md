@@ -19,10 +19,16 @@
 - 草稿 `resetLayouts: [来源页]`；桥接最先调用固定引擎 `resetSlideLayout`（占位符去掉显式 xfrm，回到版式/母版继承位置），同批其他修改叠加在重置后的页面上。新建页不适用；已加入重置的页不能再复制或删除（与其他待保存修改一致）。
 - 证据：`test_slides_bridge_reset_layout_restores_inherited_placeholder_geometry`（移位标题回到继承几何、文字保留，非法索引无输出）、Ribbon 单测、`new-slide` 冒烟中重置并保存。
 
+## 形状填充与轮廓（固定源 Shape Format ▸ Shape Styles / setFill · setStroke）
+
+- 选中形状或文本框时出现的 Shape Format 上下文标签：填充颜色、无填充、轮廓颜色、轮廓粗细（0.75–6 磅，同 PowerPoint 档位）、无轮廓；每个对象的修改合并为一条待保存项，可单独撤销；删除对象时一并撤回其样式。
+- 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
+- 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
+
 ## 插入表格（固定源 Insert ▸ Table / table-insert.ts）
 
 - Insert ▸ Tables ▸ Table 打开行列对话框（默认 5 列 × 2 行，1–75），表格进入待保存清单。
-- 几何与固定源 `tableInsertSpec` 一致：宽为幻灯片 2/3 并水平居中、顶部在 10.5% 高度、每行 29.2pt；桥接按演示文稿尺寸计算后调用固定引擎 `addTable`（默认表格样式）。`addTable` 会重建页面模型，因此在其他页面修改之前执行，同页同批的文本框等修改不受影响。
+- 几何与固定源 `tableInsertSpec` 一致：宽为幻灯片 2/3 并水平居中、顶部在 10.5% 高度、每行 29.2pt；桥接按演示文稿尺寸计算后调用固定引擎 `addTable`（默认表格样式）。`addTable` 会把已做修改写入 XML 后重建页面并改变对象身份，因此在全部按对象身份的修改（改字、样式、删除等）与尺寸缩放之后最后执行，同页同批修改均生效（`test_slides_bridge_table_coexists_with_element_edits_on_the_same_slide`）。
 - 证据：`test_slides_bridge_inserts_table_with_pinned_geometry_alongside_other_edits`、Ribbon 单测、`new-slide` 冒烟插入 4×3 表格并用 python-pptx 回读行列。
 
 ## 页码与日期字段（固定源 insertField）

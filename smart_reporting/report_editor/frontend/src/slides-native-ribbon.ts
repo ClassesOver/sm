@@ -208,7 +208,7 @@ const tabs: Tab[] = [
   { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id: 'replacePicture', label: 'Replace Picture', unavailable: desktop('选择替换图片文件') }, { id: 'cropPicture', label: 'Crop', unavailable: noWrite('图片裁切') }, { id: 'pictureOpacity', label: 'Transparency', unavailable: noWrite('图片透明度') }] }] },
   { id: 'shapeFormat', label: 'Shape Format', context: 'shape', groups: [
     { label: 'Size', controls: [{ id: 'shapeGeometry', label: 'Position and Size' }] },
-    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', unavailable: noWrite('形状填充') }, { id: 'shapeOutline', label: 'Outline', unavailable: noWrite('形状描边') }, { id: 'changeShape', label: 'Change Shape', unavailable: noWrite('形状类型') }] },
+    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', caption: '填充', kind: 'color', sourceActionId: 'onShapeFill' }, { id: 'shapeNoFill', label: 'No Fill', caption: '无填充', sourceActionId: 'onShapeFill' }, { id: 'shapeOutline', label: 'Outline', caption: '轮廓', kind: 'color', sourceActionId: 'onShapeOutline' }, { id: 'shapeOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: ['0.75', '1', '1.5', '2.25', '3', '4.5', '6'], optionLabels: ['0.75 磅', '1 磅', '1.5 磅', '2.25 磅', '3 磅', '4.5 磅', '6 磅'], sourceActionId: 'onShapeOutline' }, { id: 'shapeNoOutline', label: 'No Outline', caption: '无轮廓', sourceActionId: 'onShapeOutline' }, { id: 'changeShape', label: 'Change Shape', unavailable: noWrite('形状类型') }] },
   ] },
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
