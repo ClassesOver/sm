@@ -38,6 +38,7 @@ else:
       'colB': round(s.column_dimensions['B'].width or 0, 2), 'colD': round(s.column_dimensions['D'].width or 0, 2),
       'A3': [s['A3'].value, s['A3'].font.bold, s['A3'].alignment.indent], 'B3': [s['B3'].value, s['B3'].font.bold, s['B3'].alignment.indent],
       'E1': [s['E1'].value, s['E1'].font.bold], 'F1': s['F1'].value, 'B1': s['B1'].value, 'D5': s['D5'].value,
+      'sheetProtected': bool(s.protection.sheet), 'structureLocked': bool(book.security and book.security.lockStructure),
       'sheets': book.sheetnames, 'newSheetA1': [book.worksheets[-1]['A1'].value, book.worksheets[-1]['A1'].font.bold] if len(book.worksheets) > 1 else None}))
 `], { cwd: repo, env: { ...process.env, PYTHONPATH: repo }, input: JSON.stringify(input), encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(result.stderr || `python exited ${result.status}`)
@@ -80,7 +81,30 @@ try {
   const clickCell = async (x, y) => { await page.locator('.workbook-grid').click({ position: { x, y } }); await delay(300) }
   const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32], A3 = [90, 109], B3 = [240, 109], E1 = [569, 32], B1 = [240, 32]
 
-  if (process.env.WORKBOOK_RIBBON_CASE === 'cells') {
+  if (process.env.WORKBOOK_RIBBON_CASE === 'protect') {
+    // 先改 A2，再保护工作表与工作簿结构；保护后 A1 键入被拒绝。
+    await clickCell(...A2); await page.keyboard.type('edited'); await page.keyboard.press('Enter'); await delay(500)
+    await page.locator('[data-ribbon-tab="Review"]').click()
+    await command('sheet-protect'); await command('workbook-protect')
+    assert.equal(await page.locator('[data-ribbon-command="sheet-protect"]').innerText(), '撤销工作表保护')
+    assert.equal(await page.locator('[data-ribbon-command="workbook-protect"]').getAttribute('aria-pressed'), 'true')
+    await clickCell(...A1); await page.keyboard.type('blocked'); await page.keyboard.press('Enter'); await delay(500)
+    assert.match(await feedback(), /工作表受保护/)
+    await page.locator('[data-ribbon-tab="Home"]').click()
+    assert.equal(await page.locator('[data-ribbon-command="bold"]').isDisabled(), true)
+    await page.locator('[data-action="save"]').click()
+    await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 })
+    const download = await page.evaluate(async () => { const r = await fetch('/fixture-gui-download.xlsx'); return Array.from(new Uint8Array(await r.arrayBuffer())) })
+    const reopened = JSON.parse(python({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
+    const operationKinds = savePayload.operations.map(op => op.kind)
+    console.log(JSON.stringify({ ok: true, case: 'protect', browserVersion: browser.version(), operationKinds, reopened, pageErrors }))
+    assert.deepEqual(operationKinds, ['applyCellEdits', 'protectSheet', 'protectWorkbookStructure'])
+    assert.equal(reopened.A1[0], 'alpha')
+    assert.equal(reopened.A2[0], 'edited')
+    assert.equal(reopened.sheetProtected, true)
+    assert.equal(reopened.structureLocked, true)
+    assert.deepEqual(pageErrors, [])
+  } else if (process.env.WORKBOOK_RIBBON_CASE === 'cells') {
     // 插入单元格：A1 下移（对话框默认项）；删除单元格：B1 右侧左移。
     await clickCell(...A1); await command('insert-cells')
     await page.locator('.workbook-ribbon-cells-dialog input[value="shift-vertical"]').waitFor()

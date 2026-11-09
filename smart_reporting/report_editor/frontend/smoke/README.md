@@ -227,7 +227,7 @@ REPORT_SLIDES_CONTEXT_FILE=/absolute/path/to/context.json REPORT_EDITOR_EVIDENCE
 
 ## 2026-11-09 对齐批次真实浏览器验收
 
-- `workbook-ribbon-gui-smoke.mjs`：XLSX 缩进、格式刷（单次）、行高/列宽对话框、自动调整行高、复制→粘贴；保存经真实 `patch_office`，openpyxl 回读。`WORKBOOK_RIBBON_CASE=cells` 跑插入单元格（下移）与删除单元格（左移）。
+- `workbook-ribbon-gui-smoke.mjs`：XLSX 缩进、格式刷（单次）、行高/列宽对话框、自动调整行高、复制→粘贴；保存经真实 `patch_office`，openpyxl 回读。`WORKBOOK_RIBBON_CASE=cells` 跑插入单元格（下移）与删除单元格（左移）。`WORKBOOK_RIBBON_CASE=protect` 跑保护工作表/工作簿及保护后编辑拒绝。
 - `docx-insert-gui-smoke.mjs`：Word 封面、分页符、空白页、插入表格并输入；保存经真实 `patch_docx`，python-docx/XML 回读。`DOCX_INSERT_CASE=followup` 跑多修订续验收：替换封面并改占位文字、插入表格，重开后编辑保存表格空单元格并删除封面。
 
 两者与既有 smoke 相同：vite 前端 + Playwright 替身 context/file 路由。需先 `npm run bundle:bridges`（workbook_engine、slides_engine）。在 Playwright 版本与预装浏览器不一致的环境中，用 `REPORT_EDITOR_CHROMIUM_EXECUTABLE` 指向本机 Chromium。

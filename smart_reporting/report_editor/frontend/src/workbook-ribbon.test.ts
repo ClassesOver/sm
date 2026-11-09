@@ -411,8 +411,6 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   for (const [id, reason] of [
     ['workbook-statistics', '工作簿统计视图'],
     ['translate', '翻译操作'],
-    ['sheet-protect', '工作表保护状态'],
-    ['workbook-protect', '工作簿保护状态'],
     ['allow-edit-ranges-open', '受保护区域'],
   ]) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
@@ -521,4 +519,31 @@ it('keeps Page Layout controls non-editable without page-setup state', () => {
   expect(document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-margins"]')!.disabled).toBe(true)
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.disabled).toBe(true)
   ribbon.dispose()
+})
+
+it('mirrors protection state on Review ▸ Protection and locks editing buttons on a protected sheet', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  let protection = { sheet: { protected: true, reason: undefined as string | undefined }, workbook: { locked: false, reason: '工作簿结构受密码保护' as string | undefined } }
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => undefined, editable: () => true, hasSelection: () => true, protection: () => protection,
+  })
+  ribbon.refreshState?.()
+  const button = (id: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
+  expect(button('bold').disabled).toBe(true)
+  expect(button('bold').title).toContain('工作表受保护')
+  expect(button('copy').disabled).toBe(false)
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
+  expect(button('sheet-protect').textContent).toBe('撤销工作表保护')
+  expect(button('sheet-protect').getAttribute('aria-pressed')).toBe('true')
+  expect(button('sheet-protect').disabled).toBe(false)
+  expect(button('workbook-protect').textContent).toBe('保护工作簿')
+  expect(button('workbook-protect').disabled).toBe(true)
+  expect(button('workbook-protect').title).toBe('工作簿结构受密码保护')
+  button('sheet-protect').click()
+  expect(onCommand).toHaveBeenCalledWith('sheet-protect')
+  protection = { sheet: { protected: false, reason: undefined }, workbook: { locked: true, reason: undefined } }
+  ribbon.refreshState?.()
+  expect(button('sheet-protect').textContent).toBe('保护工作表')
+  expect(button('workbook-protect').textContent).toBe('撤销工作簿保护')
 })

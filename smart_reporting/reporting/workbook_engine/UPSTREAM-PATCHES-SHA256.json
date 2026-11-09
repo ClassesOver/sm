@@ -1,5 +1,5 @@
 {
-  "packages/xlsx-engine/src/index.ts": "2f87ed1ca70141954662605b5beae27a4ef638955d702f0fe22541fd1ed3d0f6",
+  "packages/xlsx-engine/src/index.ts": "31fe575560325413dd7e7b07d1cfb35541a988c02429d58d089aea6e9ccd7954",
   "packages/xlsx-engine/src/notes.ts": "13a61a02edeaae5707efb432fbefdd2a18ee8c1076ce3f44ceedb52ac176ad97",
   "packages/xlsx-engine/src/note-read.ts": "ee3eb11c7730255498f4416c92af86e59699ccc6a46bfcef6a18a5d8de313ef2",
   "packages/xlsx-engine/src/pivot-grouping.ts": "f0e167a3a3e12610a0e268f6775feb3e20bc8b023a5a7b2efef43376e2f659d0",
@@ -7,7 +7,7 @@
   "packages/xlsx-engine/src/sheet-ops.ts": "01aa26864f845868b896b3509688af7593d6b9416748263570fc22bee8655c68",
   "packages/xlsx-engine/src/sort-range.ts": "7b1b39a7f932584a5a7bd3bcb21d789686d360908aecb0c847ce311e7b7196a7",
   "packages/xlsx-engine/src/style-read.ts": "d67bb36ced611ebe1f55f63517e5d5de105dc9ee5556273cf7185b7e8e0b31e5",
-  "packages/xlsx-engine/src/workbook-read.ts": "66d83acd514e5218dcaeea27b4011670fcd4f4b1687ddb12c0a80330cdeb803d",
+  "packages/xlsx-engine/src/workbook-read.ts": "086a7a5795102b4ddcb0cf0c3e82289204e821356697544396888c67bae4fa4d",
   "packages/xlsx-engine/tests/notes-structure.test.ts": "271c1f3ceaf8a2a86cda4314043e55ce537d1aef887e4a5826b3a1ee43502838",
   "packages/xlsx-engine/tests/notes.test.ts": "7e7543e9d6f34c8b08d02b8a5198b1633ec821e78e7fdfe06c34e1a7c3181841",
   "packages/xlsx-engine/tests/pivot-grouping.test.ts": "1d3e2f20ca433131fd8ba5c78ac22247cd7d7c489ec4031b690bad1987593345",
@@ -24,5 +24,7 @@
   "packages/xlsx-engine/tests/geometry.test.ts": "a64a51e49c9a33729a2da27e63c00a06fe68b935e14b25b2f74a28fca32d4443",
   "packages/xlsx-engine/src/sheets-edit.ts": "bd016a5ea9ccccd15ee7a447a3098ebbe59afacc555f9af6360d6ced8f0464a8",
   "packages/xlsx-engine/src/cell-shift.ts": "a0a8121257ce3575da6cc30a55760e85428bceff03f65a6ef91c809bc9661230",
-  "packages/xlsx-engine/tests/cell-shift.test.ts": "1a441297b03e256319078521d1646ad8e8fd9b905bb5373c8610909ede84670d"
+  "packages/xlsx-engine/tests/cell-shift.test.ts": "1a441297b03e256319078521d1646ad8e8fd9b905bb5373c8610909ede84670d",
+  "packages/xlsx-engine/src/protection-read.ts": "a5354a9736c2d6a1a446686cbfcb5ddb77a7ba5248b71157f3a6766da048ecc0",
+  "packages/xlsx-engine/tests/protection-read.test.ts": "9ca80dd7d437b28365ef640ac6eb52562a8b17441919df1b7219aca85b117741"
 }

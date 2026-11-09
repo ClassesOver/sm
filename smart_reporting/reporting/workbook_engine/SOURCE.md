@@ -52,3 +52,12 @@ values pushed off the sheet are refused. `src/sheet-ops.ts` exports
 `sheetPartsOf`. `src/cell-shift.ts`, `src/structural.ts`, `src/notes.ts`,
 `src/sheet-ops.ts`, `src/index.ts` and `tests/cell-shift.test.ts` are pinned in
 UPSTREAM-PATCHES-SHA256.json.
+
+2026-11-09 protection readback (new `src/protection-read.ts`, local addition):
+`readWorkbook` projects `SheetModel.protection` (`<sheetProtection sheet>` and
+whether a password/hash guards it) and `WorkbookModel.workbookProtection`
+(`lockStructure` and workbook password). The editor's Review ▸ Protect Sheet /
+Protect Workbook toggle only what `protection.ts` writes (password-less) and
+leave password-protected targets read-only. `src/protection-read.ts`,
+`src/workbook-read.ts`, `src/index.ts` and `tests/protection-read.test.ts` are
+pinned in UPSTREAM-PATCHES-SHA256.json.

@@ -1,3 +1,4 @@
+import { PROTECTED_SHEET_REASON, PROTECTED_SHEET_RIBBON } from './workbook-protection'
 import { ROTATION_VALUES, univerRotationToOoxml, type RotationValue } from './workbook-rotation'
 import { BorderStyleTypes, BorderType } from '@univerjs/core'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -68,6 +69,8 @@ type RibbonCommand =
   | 'format-painter:dblclick'
   | 'row-height-open'
   | 'insert-cells'
+  | 'sheet-protect'
+  | 'workbook-protect'
   | 'delete-cells'
   | 'col-width-open'
   | 'autofit-row-height'
@@ -449,7 +452,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     ] },
     { title: '注释', actions: [action('注释', 'note-open', 'note-open')] },
     { title: '保护', actions: [
-      action('保护工作表', 'sheet-protect'), action('保护工作簿', 'workbook-protect'),
+      action('保护工作表', 'sheet-protect', 'sheet-protect'), action('保护工作簿', 'workbook-protect', 'workbook-protect'),
       action('允许编辑区域', 'allow-edit-ranges-open'),
     ] },
   ],
@@ -516,8 +519,6 @@ const disabledReasons: Record<string, string> = {
   'filter-advanced': '尚无高级筛选条件对话框与文件回写',
   'workbook-statistics': '尚无整本工作簿统计视图',
   'translate': '尚未接入基于选区的翻译操作',
-  'sheet-protect': '尚不能读取工作表保护状态，暂不能安全切换',
-  'workbook-protect': '尚不能读取工作簿保护状态，暂不能安全切换',
   'allow-edit-ranges-open': '尚不能读取和编辑受保护区域',
   'text-to-columns:2': '尚无文本分列操作与文件回写',
   'text-to-columns:4': '尚无文本分列操作与文件回写',
@@ -711,6 +712,8 @@ export function mountWorkbookRibbon(
     captureTarget?(): NumberFormatTarget | undefined
     pageSetup?(): WorkbookPageSetupState | undefined
     definedNames?(): readonly string[]
+    /// 审阅▸保护：当前工作表与工作簿结构的有效保护状态；reason 为不可切换原因（密码保护）。
+    protection?(): { sheet: { protected: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
   },
 ) {
   const tabLabels: Record<RibbonTab, string> = { File: '文件', Home: '开始', Insert: '插入', 'Page Layout': '页面布局', Formulas: '公式', Data: '数据', Review: '审阅', View: '视图', 'Chart Design': '图表设计' }
@@ -753,8 +756,17 @@ export function mountWorkbookRibbon(
       // 撤销/恢复 replay history mutations and follow editability.
       // 复制只读选区（固定源 read-only-safe），只读/已保存时仍可用。
       const readOnlySafe = noteViewAction || id === 'copy'
-      button.disabled = id === 'find' || id === 'print' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo'].includes(id))
+      button.disabled = id === 'find' || id === 'print' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo', 'sheet-protect', 'workbook-protect'].includes(id))
       button.title = button.disabled ? !editable && !readOnlySafe ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
+      const protection = view.protection?.()
+      if (protection?.sheet.protected && !button.disabled && !PROTECTED_SHEET_RIBBON.has(id)) { button.disabled = true; button.title = PROTECTED_SHEET_REASON }
+      if (id === 'sheet-protect' || id === 'workbook-protect') {
+        const state = id === 'sheet-protect' ? { on: !!protection?.sheet.protected, reason: protection?.sheet.reason } : { on: !!protection?.workbook.locked, reason: protection?.workbook.reason }
+        button.textContent = id === 'sheet-protect' ? (state.on ? '撤销工作表保护' : '保护工作表') : (state.on ? '撤销工作簿保护' : '保护工作簿')
+        button.setAttribute('aria-pressed', String(state.on))
+        button.disabled = !editable || !!state.reason
+        button.title = state.reason ?? (!editable ? '当前工作簿不可编辑或正在保存' : button.textContent)
+      }
       if (id === 'format-painter') {
         button.setAttribute('aria-pressed', String(!!view.formatPainterActive?.()))
         if (!button.disabled && view.formatPainterReady && !view.formatPainterReady()) { button.disabled = true; button.title = '格式刷正在初始化，请稍候' }

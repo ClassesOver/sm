@@ -33,6 +33,7 @@ import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
 import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
+import { assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
 import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
 import { applyFormatPainterClick, formatPainterActive, formatPainterReady, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
@@ -102,6 +103,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const undone: CellShiftEntry[] = []
   // 单元格移位/其撤销重做同步执行期间，Univer 为扩容附带的 insert/remove-col|row mutation 不进行列日志。
   let suppressStructural = false
+  // 审阅▸保护：按原工作表 id（sheet-N）记录切换后的期望状态；undefined/缺省 = 文件原状态。
+  const sheetProtection = new Map<string, boolean>()
+  let structureLock: boolean | undefined
   let acceptedSnapshot = ''
   const runtime = createUniver({
     locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, FindReplaceZhCN, SortZhCN, NoteZhCN, FilterUiZhCN) },
@@ -152,6 +156,24 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     ribbon.refreshState?.()
     feedback.textContent = `${target.axis === 'row' ? '行高' : '列宽'}已更新，修改尚未保存。`
   })
+  const originalSheet = (sheetId: string | undefined) => {
+    const index = /^sheet-(\d+)$/.exec(sheetId ?? '')?.[1]
+    return index === undefined ? undefined : currentModel?.sheets[Number(index)]
+  }
+  const sheetProtected = (sheetId: string | undefined) =>
+    sheetId !== undefined && (sheetProtection.get(sheetId) ?? originalSheet(sheetId)?.protection?.protected ?? false)
+  const structureLocked = () => structureLock ?? currentModel?.workbookProtection?.lockStructure ?? false
+  const activeSheetId = () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook() as { getActiveSheet?(): { getSheetId?(): string } | null } | null
+    return workbook?.getActiveSheet?.()?.getSheetId?.()
+  }
+  const protectionView = () => {
+    const sheetId = activeSheetId(), password = originalSheet(sheetId)?.protection?.hasPassword
+    return {
+      sheet: { protected: sheetProtected(sheetId), reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
+      workbook: { locked: structureLocked(), reason: currentModel?.workbookProtection?.hasPassword ? '工作簿结构受密码保护，暂不支持撤销或修改其保护' : undefined },
+    }
+  }
   // 无注入器的测试替身没有撤销栈：单元格移位仍记日志，只是不能按撤销元素认领。
   const undoStack = () => typeof runtime.univer.__getInjector === 'function'
     ? runtime.univer.__getInjector().get<{ pitchTopUndoElement(): unknown; pitchTopRedoElement(): unknown }>(IUndoRedoService) : undefined
@@ -625,6 +647,26 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           }, (error: unknown) => { feedback.textContent = (error as Error).message })
           return
         }
+        if (command === 'sheet-protect') {
+          const sheetId = activeSheetId(), view = protectionView()
+          if (!sheetId) throw new Error('请先选择工作表')
+          if (view.sheet.reason) throw new Error(view.sheet.reason)
+          const next = !view.sheet.protected
+          if (next === (originalSheet(sheetId)?.protection?.protected ?? false)) sheetProtection.delete(sheetId)
+          else sheetProtection.set(sheetId, next)
+          markDirty(); ribbon.refreshState?.()
+          feedback.textContent = next ? '工作表已设为受保护（无密码，Excel 默认权限），保存后写入文件；受保护期间不能编辑此工作表。' : '工作表保护将在保存后移除。'
+          return
+        }
+        if (command === 'workbook-protect') {
+          const view = protectionView()
+          if (view.workbook.reason) throw new Error(view.workbook.reason)
+          const next = !view.workbook.locked
+          structureLock = next === (currentModel.workbookProtection?.lockStructure ?? false) ? undefined : next
+          markDirty(); ribbon.refreshState?.()
+          feedback.textContent = next ? '工作簿结构已设为受保护（无密码），保存后写入文件；期间不能增删、重命名、移动或隐藏工作表。' : '工作簿结构保护将在保存后移除。'
+          return
+        }
         if (command === 'insert-cells' || command === 'delete-cells') {
           const sheet = workbook.getActiveSheet()
           const range = sheet?.getSelection()?.getActiveRange()?.getRange() as CellRange | undefined
@@ -686,6 +728,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null),
       editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
       formatPainterActive: () => formatPainterActive(runtime),
+      protection: protectionView,
       formatPainterReady: () => formatPainterReady(runtime),
       hasSelection: () => !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange(),
       captureTarget: () => captureNumberFormatTarget(formatWorkbook()),
@@ -713,6 +756,11 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (omitCalculatedNumberFormats(command, runtime.univerAPI.getActiveWorkbook()?.getSnapshot())) return
     if (!loading) {
       const reason = noteStructureReason(currentModel, noteWorkbook(), command)
+      if (reason) { command.cancel = true; feedback.textContent = reason; return }
+    }
+    if (!loading) {
+      const target = (command.params as { subUnitId?: string } | undefined)?.subUnitId ?? activeSheetId()
+      const reason = protectionBlockReason(command.id, sheetProtected(target), structureLocked())
       if (reason) { command.cancel = true; feedback.textContent = reason; return }
     }
     if (!loading && CELL_SHIFT_COMMANDS[command.id]) {
@@ -871,6 +919,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     const snapshot = workbook!.getSnapshot() as unknown as GridSnapshot
     const plan = planGridSheets(currentModel.sheets.map(sheet => sheet.name), snapshot)
     const ops: WorkbookOperation[] = [...staged]
+    const protection = planProtection(currentModel, sheetProtection, structureLock, id => snapshot.sheets[id]?.name)
+    ops.push(...protection.leading)
+    const editsFrom = ops.length
     const sheetChanged = plan.renames.length || plan.additions.length || plan.removals.length ||
       plan.order.some((name, index) => name !== currentModel.sheets[index]?.name)
     if (sheetChanged) ops.push({ kind: 'applySheetEdits', plan })
@@ -968,6 +1019,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         ? definedNamesPlanOperation(baseline.definedNames ?? [], liveNames) : undefined
       if (namesOperation) ops.push(namesOperation)
     }
+    // 保护：本次前后都受保护的工作表/工作簿结构不得被本次修改触及（草稿重放同样受限）。
+    assertProtectionRespected(ops.slice(editsFrom), protection,
+      (currentModel.workbookProtection?.lockStructure ?? false) && structureLock !== false)
+    ops.push(...protection.trailing)
     return ops
   }
   const loadOperations = async (ops: WorkbookOperation[]) => {
@@ -981,6 +1036,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     staged = structuredClone(ops)
     structural = []
     undone.length = 0
+    sheetProtection.clear(); structureLock = undefined
     loading = false
     ribbon.refreshState?.()
   }

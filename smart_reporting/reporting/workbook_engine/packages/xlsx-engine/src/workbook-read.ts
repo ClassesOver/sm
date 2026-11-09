@@ -3,6 +3,7 @@
 /// genoffice reader; styles and geometry are read here because the web app
 /// has no sidecar to resolve them.
 
+import { readSheetProtection, readWorkbookProtection, type SheetProtectionModel, type WorkbookProtectionModel } from './protection-read'
 import { readSheetNotes, type SheetNotesModel } from './note-read'
 import { readSheetFilter, type SheetFilterModel } from './filter-read'
 import { parseStylesheet, parseThemePalette, type Stylesheet } from './style-read'
@@ -99,6 +100,8 @@ export interface SheetModel {
   /// customs/dateGroups); readOnlyReason marks structures (color/icon/top10/
   /// dynamic) the write path refuses
   filter?: SheetFilterModel
+  /// `<sheetProtection>` state; absent when the sheet carries no element
+  protection?: SheetProtectionModel
 }
 
 export interface WorkbookModel {
@@ -108,6 +111,8 @@ export interface WorkbookModel {
   themePalette: readonly string[] | undefined
   /// workbook-level defined names (global scope; sheet-scoped excluded)
   definedNames?: ReadonlyArray<{ name: string; refersTo: string }>
+  /// `<workbookProtection>` state; absent when workbook.xml carries no element
+  workbookProtection?: WorkbookProtectionModel
 }
 
 const TAG_ATTRIBUTES = `(?:"[^"]*"|'[^']*'|[^>"'])*?`
@@ -395,6 +400,7 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
     const charts = await readCharts(bytes, path)
     const { notes, sourceIdentity, readOnlyReason } = await readSheetNotes(source, path)
     const filter = readSheetFilter(worksheetXml)
+    const protection = readSheetProtection(worksheetXml)
     sheets.push({
       notes: { notes, sourceIdentity, ...(readOnlyReason ? { readOnlyReason } : {}) },
       name: element.name,
@@ -413,14 +419,17 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
       ...(sparklines.length > 0 ? { sparklines } : {}),
       ...(charts.length > 0 ? { charts } : {}),
       ...(filter ? { filter } : {}),
+      ...(protection ? { protection } : {}),
     })
   }
   if (sheets.length === 0) throw new Error('工作簿没有可读取的工作表。')
   const definedNames = readDefinedNames(workbookXml)
+  const workbookProtection = readWorkbookProtection(workbookXml)
   return {
     sheets,
     styles,
     themePalette,
     ...(definedNames.length > 0 ? { definedNames } : {}),
+    ...(workbookProtection ? { workbookProtection } : {}),
   }
 }
