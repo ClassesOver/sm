@@ -53,11 +53,11 @@ it('refuses readonly, stale focus document, missing anchors and foreign replay i
   expect(() => replayDocxOperations(f.original, [{ kind: 'setParagraphStyle', blockId: 'block1', expectedObjectSha256: 'foreign', styleId: 'Custom' }], f.anchors, undefined, undefined, f.styles)).toThrow(/身份/)
   expect(() => replayDocxOperations(f.original, [{ kind: 'setParagraphStyle', blockId: 'block1', expectedObjectSha256: 'hash1', styleId: 'Custom', rawPPr: '<evil/>' }], f.anchors, undefined, undefined, f.styles)).toThrow(/字段/)
 })
-it.each(['missing', 'character', 'numbered', 'heading', 'cycle', 'orphan'])('rejects unsafe target or inherited style %s', mode => {
+it.each(['missing', 'character', 'numbered', 'outline-off', 'cycle', 'orphan'])('rejects unsafe target or inherited style %s', mode => {
   const styles = catalog(); const bad: any = { styleId: 'Bad', name: 'Bad', type: 'paragraph' }
   if (mode === 'character') bad.type = 'character'
   if (mode === 'numbered') { bad.basedOn = 'Parent'; styles.set('Parent', { styleId: 'Parent', name: 'Parent', type: 'paragraph', numPr: {} } as any) }
-  if (mode === 'heading') bad.headingLevel = 1
+  if (mode === 'outline-off') bad.headingOutlineOff = true
   if (mode === 'cycle') bad.basedOn = 'Bad'
   if (mode === 'orphan') bad.basedOn = 'absent'
   if (mode !== 'missing') styles.set('Bad', bad)
@@ -67,9 +67,11 @@ it.each(['missing', 'character', 'numbered', 'heading', 'cycle', 'orphan'])('rej
 it('keeps the select DOM focused while ordinary basedOn style runs update and exposes unsupported reasons', () => {
   const f = fixture()
   f.styles.set('Heading', { styleId: 'Heading', name: '标题', type: 'paragraph', headingLevel: 1 } as any)
+  f.styles.set('Numbered', { styleId: 'Numbered', name: '编号', type: 'paragraph', numPr: {} } as any)
   f.editor.commands.setMeta('refresh', true)
-  expect(f.control.querySelector<HTMLOptionElement>('option[value="Heading"]')!.text).toContain('编号或大纲')
-  expect(f.control.querySelector<HTMLOptionElement>('option[value="Heading"]')!.disabled).toBe(true)
+  expect(f.control.querySelector<HTMLOptionElement>('option[value="Heading"]')!.disabled).toBe(false)
+  expect(f.control.querySelector<HTMLOptionElement>('option[value="Numbered"]')!.text).toContain('编号')
+  expect(f.control.querySelector<HTMLOptionElement>('option[value="Numbered"]')!.disabled).toBe(true)
   f.styles.set('Custom', { ...f.styles.get('Custom')!, display: { sizeHalfPoints: 40, color: '336699' } } as any)
   f.choose('Custom')
   expect(document.activeElement).toBe(f.control)

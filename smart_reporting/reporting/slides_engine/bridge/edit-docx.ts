@@ -339,7 +339,8 @@ function safeParagraphStyle(styles: Map<string, import('../packages/docx-engine/
   while (current) {
     if (seen.has(current.styleId)) fail('paragraph_style_inheritance_invalid')
     seen.add(current.styleId)
-    if (current.type !== 'paragraph' || current.numPr != null || current.headingLevel != null || current.headingLevelInherited || current.headingOutlineOff) fail('paragraph_style_unsupported')
+    // 标题样式（大纲级别）可应用：pStyle 补丁后重新解析即为标题块；编号与关闭大纲的样式仍不支持。
+    if (current.type !== 'paragraph' || current.numPr != null || current.headingOutlineOff) fail('paragraph_style_unsupported')
     if (current.basedOn === undefined) break
     if (!current.basedOn || seen.has(current.basedOn) || !styles.has(current.basedOn)) fail('paragraph_style_inheritance_invalid')
     current = styles.get(current.basedOn)
@@ -590,7 +591,7 @@ function sourceParagraphStyle(id: unknown) {
     const raw = rawStyles.get(current)
     if (!raw || attrsOf(raw)['w:type'] !== 'paragraph') fail('paragraph_style_invalid')
     const properties = findChild(raw, 'w:pPr')
-    if (properties && ['w:numPr', 'w:outlineLvl', 'w:bidi', 'w:tabs', 'w:framePr', 'w:textDirection', 'w:wordWrap', 'w:overflowPunct', 'w:autoSpaceDE', 'w:autoSpaceDN'].some(name => findChild(properties, name))) fail('paragraph_style_unsupported')
+    if (properties && ['w:numPr', 'w:bidi', 'w:tabs', 'w:framePr', 'w:textDirection', 'w:wordWrap', 'w:overflowPunct', 'w:autoSpaceDE', 'w:autoSpaceDN'].some(name => findChild(properties, name))) fail('paragraph_style_unsupported')
     const display = parsed.styles.get(current)?.display as Record<string, unknown> | undefined
     if (display && ['bidi', 'rtl', 'tabStops', 'indentChars', 'autoSpaceDE', 'autoSpaceDN', 'wordWrap', 'overflowPunct', 'eastAsiaLang', 'frame', 'dropCap'].some(key => display[key] != null)) fail('paragraph_style_unsupported')
     current = attrsOf(findChild(raw, 'w:basedOn') ?? {})['w:val']
@@ -598,7 +599,7 @@ function sourceParagraphStyle(id: unknown) {
   return style
 }
 function paragraphStyleEditable(block: Block) {
-  if (parsed.protection?.enforced || block.type !== 'paragraph' || !block.originalXml || !simpleParagraphXml(block.originalXml.replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g, ''))) return false
+  if (parsed.protection?.enforced || !['paragraph', 'heading'].includes(block.type) || !block.originalXml || !simpleParagraphXml(block.originalXml.replace(/<w:bookmark(?:Start|End)\b[^>]*\/>/g, ''))) return false
   try {
     const id = block.styleId ?? [...parsed.styles.values()].find(style => style.type === 'paragraph' && style.isDefault)?.styleId
     if (id) sourceParagraphStyle(id)

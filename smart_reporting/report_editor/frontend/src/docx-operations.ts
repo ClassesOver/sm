@@ -9,7 +9,7 @@ import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
 export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean }
-import { safeParagraphStyle, type DocxStyleInfo } from './docx-styles'
+import { projectParagraphStyle, safeParagraphStyle, type DocxStyleInfo } from './docx-styles'
 import { restoredDocxHeaderFooterOperations } from './docx-hf'
 export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; deletable?: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
@@ -368,11 +368,12 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       continue
     }
     if (!same(node.attrs?.styleId ?? null, edited.attrs?.styleId ?? null)) {
-      if (!(anchor.paragraphStyleEditable ?? anchor.editable) || node.type !== 'docParagraph' || edited.type !== 'docParagraph' || anchor.paragraphStyleEditable === false) throw new Error('此来源段落暂不支持切换样式')
+      const styleNodes = ['docParagraph', 'docHeading']
+      if (!(anchor.paragraphStyleEditable ?? anchor.editable) || !styleNodes.includes(node.type) || !styleNodes.includes(edited.type) || anchor.paragraphStyleEditable === false) throw new Error('此来源段落暂不支持切换样式')
       safeParagraphStyle(styles, edited.attrs?.styleId)
       const sourceStyle = node.attrs?.styleId ?? [...(styles?.values() ?? [])].find(style => style.type === 'paragraph' && style.isDefault)?.styleId
       if (sourceStyle != null) safeParagraphStyle(styles, sourceStyle)
-      if (!same(node, { ...edited, attrs: { ...edited.attrs, styleId: node.attrs?.styleId } })) throw new Error('段落样式修改请先保存；同段文字和格式不能混用')
+      if (!same(edited, projectParagraphStyle(node, String(edited.attrs!.styleId), styles, schema))) throw new Error('段落样式修改请先保存；同段文字和格式不能混用')
       ops.push({ kind: 'setParagraphStyle', ...baseOp(anchor), styleId: edited.attrs!.styleId })
       continue
     }
@@ -528,13 +529,13 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
     if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
     if (operation.kind === 'setParagraphStyle') {
-      if (!(anchor.paragraphStyleEditable ?? anchor.editable) || node.type !== 'docParagraph' || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+      if (!(anchor.paragraphStyleEditable ?? anchor.editable) || !['docParagraph', 'docHeading'].includes(node.type) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
         || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'styleId'].includes(key))
         || operations.some(other => other.blockId === operation.blockId && other.kind !== 'setParagraphStyle')) throw new Error('草稿段落样式字段或来源身份无效')
       safeParagraphStyle(styles, operation.styleId)
       const sourceStyle = node.attrs?.styleId ?? [...(styles?.values() ?? [])].find(style => style.type === 'paragraph' && style.isDefault)?.styleId
       if (sourceStyle != null) safeParagraphStyle(styles, sourceStyle)
-      node.attrs = { ...node.attrs, styleId: operation.styleId }
+      Object.assign(node, projectParagraphStyle(node, String(operation.styleId), styles, schema))
     }
     else if (operation.kind === 'setParagraphShading') {
       if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256

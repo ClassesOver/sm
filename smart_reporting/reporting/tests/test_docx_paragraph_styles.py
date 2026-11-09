@@ -120,7 +120,7 @@ def test_rejects_missing_style_foreign_hash_and_unknown_fields():
         patch_docx(data, [op(data) | {"rawPPr": "<evil/>"}])
 
 
-def test_rejects_based_on_numbering_heading_missing_parent_and_cycles():
+def test_rejects_based_on_numbering_missing_parent_and_cycles():
     data = make_doc()
     doc = Document(BytesIO(data))
     numbered = doc.styles.add_style("NumberedChild", WD_STYLE_TYPE.PARAGRAPH)
@@ -135,9 +135,26 @@ def test_rejects_based_on_numbering_heading_missing_parent_and_cycles():
     out = BytesIO()
     doc.save(out)
     data = out.getvalue()
-    for style in ("NumberedChild", "InheritedHeading", "MissingParent", "Cycle"):
+    for style in ("NumberedChild", "MissingParent", "Cycle"):
         with pytest.raises(ValueError):
             patch_docx(data, [op(data, style)])
+    # 标题样式（含继承自 Heading 1 的样式）可应用：只改 pStyle，重新解析为标题块。
+    patched = patch_docx(data, [op(data, "InheritedHeading")])
+    assert Document(BytesIO(patched)).paragraphs[0].style.name == "InheritedHeading"
+
+
+def test_heading_styles_apply_to_body_paragraphs_and_headings_return_to_body():
+    data = make_doc()
+    heading_id = "Heading1"
+    patched = patch_docx(data, [op(data, heading_id)])
+    paragraph = Document(BytesIO(patched)).paragraphs[0]
+    assert paragraph.style.name == "Heading 1"
+    assert paragraph.text == "target linked"
+    assert inspect_docx(patched)["blocks"][0]["type"] == "heading"
+    block = inspect_docx(patched)["blocks"][0]
+    back = patch_docx(patched, [{"kind": "setParagraphStyle", "blockId": block["blockId"], "expectedObjectSha256": block["expectedObjectSha256"], "styleId": "Normal"}])
+    assert Document(BytesIO(back)).paragraphs[0].style.name == "Normal"
+    assert inspect_docx(back)["blocks"][0]["type"] == "paragraph"
 
 
 @pytest.mark.parametrize(

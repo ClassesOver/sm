@@ -112,7 +112,25 @@ try {
     const download = await page.evaluate(async url => { const r = await fetch(url); return Array.from(new Uint8Array(await r.arrayBuffer())) }, `/fixture-insert-download-${revision}.docx`)
     return JSON.parse(runPython({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
   }
-  if (smokeCase === 'format') {
+  if (smokeCase === 'heading') {
+    // 开始▸样式：正文段设为“标题 1”（编辑器变为标题节点），保存重开后再设回正文。
+    await page.locator('[data-tab-id="home"]').click()
+    await editor.locator('p').filter({ hasText: '第二段' }).click()
+    await page.locator('[data-action="paragraph-style"]').selectOption('Heading1')
+    await editor.locator('h1').filter({ hasText: '第二段' }).waitFor({ timeout: 10000 })
+    const revision2 = await save(2)
+    await open(2)
+    await page.locator('[data-tab-id="home"]').click()
+    await editor.locator('h1').filter({ hasText: '第二段' }).click()
+    await page.locator('[data-action="paragraph-style"]').selectOption('Normal')
+    await editor.locator('p').filter({ hasText: '第二段' }).waitFor({ timeout: 10000 })
+    const revision3 = await save(3)
+    const types = revision => revision.model.blocks.map(block => [block.type, block.text])
+    console.log(JSON.stringify({ ok: true, case: smokeCase, browserVersion: browser.version(), rev2: types(revision2), rev3: types(revision3), pageErrors }))
+    assert.deepEqual(types(revision2).slice(0, 3), [['paragraph', '第一段正文'], ['heading', '第二段前半第二段后半'], ['paragraph', '第三段']])
+    assert.deepEqual(types(revision3).slice(0, 3), [['paragraph', '第一段正文'], ['paragraph', '第二段前半第二段后半'], ['paragraph', '第三段']])
+    assert.deepEqual(pageErrors, [])
+  } else if (smokeCase === 'format') {
     // 开始▸加粗作用于选中文字：选中“一段”（第 2-3 字）加粗，“第三段”整段（光标折叠）倾斜。
     await page.locator('[data-tab-id="home"]').click()
     await editor.locator('p').filter({ hasText: '第一段正文' }).click()
