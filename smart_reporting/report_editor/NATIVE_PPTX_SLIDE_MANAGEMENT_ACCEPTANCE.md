@@ -1,4 +1,4 @@
-# PPTX 新建 / 复制 / 删除幻灯片验收
+# PPTX 新建 / 指定版式新建 / 复制 / 删除幻灯片验收
 
 2026-11-09。固定来源提交 `f8c17004fb730df11f0f743164ffd8b4281bb38c`。单项命令闭环，不代表 PowerPoint Ribbon 全功能对齐。
 
@@ -7,6 +7,11 @@
 - `apps/slides/src/renderer/slide-actions.ts` `addSlide(ctx)`：`slidesApi.addBlankSlide({ sourceIndex: ctx.current })`，新页插在当前页之后并成为当前页。
 - 主进程 `{ op: 'addBlankSlide', target: { slide } }` → `packages/pptx-ops` → `pptx-engine` `insertBlankSlide(opened, sourceIndex)`：
   空白 `p:sld`，沿用来源页的 slideLayout 关系。Home ▸ Slides 与 Insert ▸ Slides 的 New Slide 均调用 `onAddSlide`。
+
+## 新建指定版式幻灯片（固定源 onAddSlideWithLayout）
+
+- Home ▸ Slides 的 New Slide with Layout 为版式选择器（打开后由 `setLayouts` 填入演示文稿版式，选后复位）；新页插在当前页之后。
+- 草稿 `newSlides` 项 `{ withLayout: 版式路径 }`；桥接校验版式在包内后调用固定引擎 `insertSlideWithLayout`（生成版式占位符）并放在末尾，再由 `order` 落位；Python 端校验路径格式（拒绝 `..`、非版式路径、盘符）。
 
 ## 复制幻灯片（固定源 duplicateSlide）
 
@@ -34,8 +39,9 @@
 - `reporting/tests/test_slides_engine_bridge.py`：真实引擎两张新页分别沿用第 3 页/第 1 页版式、无对象、按 order 落位；同批按索引的转场仍作用于原第 2 页；python-pptx 独立读取页数；非法来源、多余字段、缺少/不完整 order 均拒绝且不产生输出。
 - `reporting/tests/test_native_office.py`：服务路径往返与非法 `newSlides` 不调用引擎。
 - `frontend/src/slides-native-ribbon.test.ts`：Home/Insert New Slide 启用、来源动作身份、派发 `addSlide`、锁定时禁用。
+- 指定版式：`test_slides_bridge_adds_slide_with_chosen_layout_placeholders`、`test_real_pptx_new_slide_with_layout_and_path_validation`、Ribbon 版式选择器单测。
 - 复制：`test_slides_bridge_duplicates_saved_slide_content_and_rejects_pending_edits_on_source`。
 - 删除：`test_slides_bridge_deletes_source_slides_with_new_slides_and_order` 与 6 个拒绝用例；`test_real_pptx_slide_deletion_roundtrips_and_rejects_invalid_requests`。
-- `frontend/smoke/pptx-native-save-smoke.mjs`（`PPTX_SMOKE_MODE=new-slide`，夹具两页；Chromium + 真实 Python→PPTX 引擎，授权/修订路由为 fixture）：新建 → 再新建并移除 → 删除被沿用版式的来源页被拒绝 → 删除另一来源页 → 上移到首页 → 复制来源页（副本只读、显示原内容） → 刷新恢复 → 保存修订 2 → 下载身份一致 → python-pptx 独立回读三页（首页空白且版式与原页相同、原文字保留、副本与原页一致、被删页不存在）→ 重开修订 2 新页成为普通页。原 `textbox` 模式回归通过。
+- `frontend/smoke/pptx-native-save-smoke.mjs`（`PPTX_SMOKE_MODE=new-slide`，夹具两页；Chromium + 真实 Python→PPTX 引擎，授权/修订路由为 fixture）：新建 → 再新建并移除 → 删除被沿用版式的来源页被拒绝 → 删除另一来源页 → 上移到首页 → 复制来源页（副本只读、显示原内容）→ 按 Title Slide 版式新建 → 刷新恢复 → 保存修订 2 → 下载身份一致 → python-pptx 独立回读四页（末页版式为 Title Slide；首页空白且版式与原页相同、原文字保留、副本与原页一致、被删页不存在）→ 重开修订 2 新页成为普通页。原 `textbox` 模式回归通过。
 
 生产镜像、真实授权与发布链路未在此验收。

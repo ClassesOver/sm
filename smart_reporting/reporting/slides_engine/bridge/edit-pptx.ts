@@ -2,7 +2,7 @@ import { patchTransitionPreservingMetadata, transitionEditAvailability } from '.
 import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, insertSlideWithLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -30,7 +30,7 @@ type Input = {
   edits?: TextEdit[]
   order?: number[]
   /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
-  newSlides?: ({ layoutFrom: number } | { duplicateOf: number })[]
+  newSlides?: ({ layoutFrom: number } | { duplicateOf: number } | { withLayout: string })[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
   deletedSlides?: number[]
   theme?: 'executive' | 'clinical' | 'modern'
@@ -405,6 +405,13 @@ if (request.action === 'inspect') {
   if (!Array.isArray(newSlides) || newSlides.length > 50) throw new Error('new_slides_invalid')
   for (const item of newSlides) {
     const keys = item && typeof item === 'object' ? Object.keys(item) : []
+    if (keys.length === 1 && keys[0] === 'withLayout') {
+      // 固定源 onAddSlideWithLayout：按所选版式生成占位符；插在末尾，来源页索引不变。
+      const layoutPath = (item as { withLayout: unknown }).withLayout
+      if (typeof layoutPath !== 'string' || !layouts.some(layout => layout.path === layoutPath)) throw new Error('new_slide_layout_invalid')
+      if (!insertSlideWithLayout(opened, opened.deck.slides.length - 1, layoutPath)) throw new Error('new_slide_insert_failed')
+      continue
+    }
     const source = newSlideSource(item)
     if (keys.length !== 1 || !['layoutFrom', 'duplicateOf'].includes(keys[0]!) || !validSlideIndex(source, slideCount)) throw new Error('new_slide_source_invalid')
     const created = keys[0] === 'duplicateOf' ? duplicateSlide(opened, source) : insertBlankSlide(opened, source)

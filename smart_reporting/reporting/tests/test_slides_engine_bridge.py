@@ -614,3 +614,24 @@ def test_slides_bridge_duplicates_saved_slide_content_and_rejects_pending_edits_
         _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
                  "newSlides": [{"duplicateOf": 1, "layoutFrom": 1}], "order": [*range(count + 1)]}, tmp_path)
     assert not rejected.exists()
+
+
+def test_slides_bridge_adds_slide_with_chosen_layout_placeholders(tmp_path: Path):
+    """固定源 onAddSlideWithLayout：新页使用所选版式并带版式占位符；非法版式拒绝且不产生输出。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "with-layout.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    count = len(inspected["slides"])
+    layout = next(item for item in inspected["layouts"] if item["placeholders"])
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [],
+             "newSlides": [{"withLayout": layout["path"]}], "order": [count, *range(count)]}, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count + 1
+    assert reopened[0]["layoutPath"] == layout["path"]
+    assert len(Presentation(str(output)).slides[0].placeholders) >= 1
+    rejected = tmp_path / "rejected.pptx"
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
+                 "newSlides": [{"withLayout": "ppt/slideLayouts/missing.xml"}], "order": [*range(count + 1)]}, tmp_path)
+    assert not rejected.exists()

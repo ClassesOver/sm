@@ -468,3 +468,19 @@ it('enables the pinned New Slide command on Home and Insert and dispatches addSl
   expect(commands.every(command => command.disabled)).toBe(true)
   ribbon.dispose()
 })
+
+it('offers New Slide with Layout as a layout picker that dispatches the chosen path and resets', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction, layouts: [{ path: 'ppt/slideLayouts/slideLayout1.xml', name: 'Title Slide', layoutType: 'title', placeholders: [] }, { path: 'ppt/slideLayouts/slideLayout2.xml', name: 'Title and Content', layoutType: 'obj', placeholders: [] }] as never })
+  const picker = host.querySelector<HTMLSelectElement>('select[data-command="addSlideWithLayout"]')!
+  expect(picker.dataset.sourceAction ?? picker.closest('[data-source-action]')?.getAttribute('data-source-action')).toBe('onAddSlideWithLayout')
+  expect([...picker.options].map(option => option.value)).toEqual(['', 'ppt/slideLayouts/slideLayout1.xml', 'ppt/slideLayouts/slideLayout2.xml'])
+  picker.value = 'ppt/slideLayouts/slideLayout2.xml'; picker.dispatchEvent(new Event('change'))
+  expect(onAction).toHaveBeenCalledWith('addSlideWithLayout', 'ppt/slideLayouts/slideLayout2.xml')
+  expect(picker.value).toBe('')
+  ribbon.setLayouts([{ path: 'ppt/slideLayouts/slideLayout7.xml', name: 'Blank' }])
+  expect([...picker.options].map(option => option.textContent)).toEqual(['新建指定版式幻灯片…', 'Blank'])
+  ribbon.dispose()
+})

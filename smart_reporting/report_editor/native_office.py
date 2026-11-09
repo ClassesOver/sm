@@ -70,6 +70,11 @@ def _records(payload: dict[str, Any], key: str, required: set[str], optional: Se
     return values
 
 
+def _layout_path(path: Any) -> bool:
+    return (isinstance(path, str) and path.startswith('ppt/slideLayouts/') and path.endswith('.xml')
+            and '\\' not in path and '..' not in PurePosixPath(path).parts and ':' not in path)
+
+
 def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
     if operation.get('kind') != 'editSlides' or not set(operation).issubset(_ALLOWED_KEYS):
         raise ValueError('native_office_operations_invalid')
@@ -83,7 +88,8 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
     # 新建空白页（固定源 onAddSlide，layoutFrom）或复制页（duplicateSlide，duplicateOf）；位置由 order 决定，引擎再按来源页数校验。
     new_slides = operation.get('newSlides', [])
     if (not isinstance(new_slides, list) or len(new_slides) > 50
-        or any(not isinstance(item, dict) or len(item) != 1 or set(item) - {'layoutFrom', 'duplicateOf'} or not _slide_index(next(iter(item.values()))) for item in new_slides)
+        or any(not isinstance(item, dict) or len(item) != 1 or set(item) - {'layoutFrom', 'duplicateOf', 'withLayout'}
+               or (not _slide_index(next(iter(item.values()))) if 'withLayout' not in item else not _layout_path(item['withLayout'])) for item in new_slides)
         or (new_slides and order is None)):
         raise ValueError('native_office_operations_invalid')
     # 删除来源页（固定源 deleteSlide）：只列来源索引；order 必须给出保留页，引擎再核对引用与页数。

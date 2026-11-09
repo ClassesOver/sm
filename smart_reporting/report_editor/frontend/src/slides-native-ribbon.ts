@@ -66,7 +66,7 @@ const tabs: Tab[] = [
     ] },
     { label: 'Slides', controls: [
       { id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide' },
-      { id: 'addSlideWithLayout', label: 'New Slide with Layout', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout', unavailable: noWrite('指定版式新建幻灯片操作') },
+      { id: 'addSlideWithLayout', label: 'New Slide with Layout', kind: 'select', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout' },
       { id: 'layout', label: 'Change Layout', kind: 'select', sourceIcon: IconSlideLayout, sourceActionId: 'onSetLayout' },
       { id: 'resetLayout', label: 'Reset Layout', sourceIcon: IconSlideLayout, sourceActionId: 'onResetLayout', unavailable: noWrite('重置版式操作') },
       { id: 'addSection', label: 'Add Section', sourceIcon: IconSection, sourceActionId: 'onAddSection', unavailable: noWrite('分节数据操作') },
@@ -328,12 +328,13 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           select.setAttribute('aria-label', control.label)
           select.dataset.command = control.id
           if (control.id === 'lineSpacingPct' || PARAGRAPH_LIST_COMMANDS.includes(control.id)) select.add(new Option('未设置或混合值', ''))
-          if (control.id === 'layout') {
+          if (control.id === 'layout' || control.id === 'addSlideWithLayout') {
+            if (control.id === 'addSlideWithLayout') select.add(new Option('新建指定版式幻灯片…', ''))
             for (const layout of options.layouts ?? []) select.add(new Option(`${layout.name || layout.path}`, layout.path))
           } else {
             for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value), value))
           }
-          select.addEventListener('change', () => options.onAction(control.id, select.value))
+          select.addEventListener('change', () => { options.onAction(control.id, select.value); if (control.id === 'addSlideWithLayout') select.value = '' })
           element = select
         } else if (control.kind === 'text' || control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
           const input = document.createElement(control.kind === 'text' ? 'textarea' : 'input')
@@ -429,6 +430,9 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         const current = picker.value
         picker.replaceChildren(...layouts.map(layout => new Option(layout.name || layout.path, layout.path)))
         picker.value = layouts.some(layout => layout.path === current) ? current : ''
+      }
+      for (const select of controls.get('addSlideWithLayout') ?? []) {
+        (select as HTMLSelectElement).replaceChildren(new Option('新建指定版式幻灯片…', ''), ...layouts.map(layout => new Option(layout.name || layout.path, layout.path)))
       }
     },
     setValue(command, value, hint) {

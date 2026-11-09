@@ -214,10 +214,17 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
     assert.equal(await page.locator('.slide-row').nth(2).locator('.slide-title').textContent(), '副本：Native browser formatting fixture（保存后写入）')
     assert.equal(await page.locator('#object-text').isDisabled(), true)
+    // 新建指定版式幻灯片（固定源 onAddSlideWithLayout）：在当前页（副本）之后按“Title Slide”版式新建。
+    const layoutPicker = page.locator('select[data-command="addSlideWithLayout"]')
+    const titleLayout = inspected.layouts.find(item => item.name === 'Title Slide')
+    await layoutPicker.selectOption(titleLayout.path)
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    assert.equal(await layoutPicker.inputValue(), '')
+    assert.equal(await page.locator('.slide-row').nth(3).locator('.slide-title').textContent(), '新建幻灯片 · Title Slide（保存后写入）')
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
-    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
     assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
   } else if (smokeMode === 'textbox') {
     await page.locator('[data-ribbon-tab="insert"]').click()
@@ -382,9 +389,9 @@ try {
     assert.ok(operation.paragraphFormatting.every(record => record.slideIndex === 0 && record.elementId === target.id))
     assert.deepEqual(operation.paragraphFormatting.reduce((value, patch) => ({ ...value, ...patch }), {}), { slideIndex: 0, elementId: target.id, align: 'right', lineSpacingPct: 200, spaceBeforePt: 12.5, spaceAfterPt: 0 })
   } else if (smokeMode === 'new-slide') {
-    assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }, { duplicateOf: 0 }])
+    assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }, { duplicateOf: 0 }, { withLayout: inspected.layouts.find(item => item.name === 'Title Slide').path }])
     assert.deepEqual(operation.deletedSlides, [1])
-    assert.deepEqual(operation.order, [2, 0, 3])
+    assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
     if (smokeMode === 'slide-size-presets') assert.deepEqual(operation.edits[0].geometry, { x: 75, y: 80, width: 300, height: 90 })
@@ -413,7 +420,8 @@ try {
     const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame]] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
     if (independent.status !== 0) throw new Error(independent.stderr)
     const slides = JSON.parse(independent.stdout)
-    assert.equal(slides.length, 3)
+    assert.equal(slides.length, 4)
+    assert.equal(slides[3][0], 'Title Slide')
     assert.deepEqual(slides[0][1], [])
     assert.equal(slides[0][0], slides[1][0])
     assert.deepEqual(slides[1][1], ['Native browser formatting fixture'])
@@ -488,7 +496,7 @@ try {
     activeBytes = downloaded; activeSha = saveReceipt.artifacts.pptx.sha256; activeRevision = 2
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
-    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
     assert.equal(await page.locator('.slide-row[data-new-slide]').count(), 0)
   } else {
     assert.deepEqual(reopened.size, targetSize)
@@ -524,7 +532,7 @@ try {
     assert.equal(await page.locator('[data-command="slideOrientation"][data-source-action="onSlideSize"]').inputValue(), smokeMode === 'slide-size-presets' ? 'portrait' : 'landscape')
     assert.equal(Number(await page.locator('.geometry-grid input[name="x"]').inputValue()), expectedGeometry.x)
   }
-  assert.equal(reopened.slideCount, smokeMode === 'new-slide' ? 3 : 1)
+  assert.equal(reopened.slideCount, smokeMode === 'new-slide' ? 4 : 1)
   if (smokeMode === 'slide-size-recovery') {
     assert.equal(failedResponses.length, 2)
     assert.ok(failedResponses.every(item => item.status === 503 && item.url.endsWith('/api/save')))

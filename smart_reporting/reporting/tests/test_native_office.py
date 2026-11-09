@@ -296,3 +296,15 @@ def test_real_pptx_slide_deletion_roundtrips_and_rejects_invalid_requests(monkey
         with pytest.raises(ValueError):native_office.patch_office('pptx',content,[{'kind':'editSlides','order':[1],'deletedSlides':deleted}])
     with pytest.raises(ValueError):native_office.patch_office('pptx',content,[{'kind':'editSlides','deletedSlides':[0]}])
     engine.assert_not_called()
+
+
+def test_real_pptx_new_slide_with_layout_and_path_validation(monkeypatch):
+    from smart_reporting.report_editor import native_office
+    content=presentation_bytes();model=native_office.inspect_office('pptx',content)
+    layout=model['layouts'][0]['path']
+    edited=native_office.patch_office('pptx',content,[{'kind':'editSlides','edits':[],'order':[0,1,2],'newSlides':[{'withLayout':layout}]}])
+    assert native_office.inspect_office('pptx',edited)['slides'][2]['layoutPath']==layout
+    engine=Mock();monkeypatch.setattr(native_office.ReportSlidesEditorService,'_run_engine',engine)
+    for path in ['ppt/slideLayouts/../../x.xml','ppt/slides/slide1.xml','C:/x.xml',3]:
+        with pytest.raises(ValueError):native_office.patch_office('pptx',content,[{'kind':'editSlides','order':[0,1,2],'newSlides':[{'withLayout':path}]}])
+    engine.assert_not_called()
