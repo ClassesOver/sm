@@ -13,7 +13,7 @@
 - [environment.json](evidence/final/environment.json)：Python、OS、locale、已安装依赖版本、项目锁和 runtime 源码身份；具体字体与缺字检查在每个绘图观测中。共享虚拟环境的已安装版本并不等于已证明从锁文件干净重建。
 - [service_checks.py](service_checks.py) 与 [服务结果](evidence/services-2/result.json)：精确命令、返回码、源码身份和清理前生成的20个文件身份；[pytest原始日志](evidence/services-2/pytest.stdout.txt)、[JUnit](evidence/services-2/junit.xml) 证明8项通过。生成的服务产物在临时目录清理前哈希，未保存其字节；跨格式媒体相等是现有测试运行时断言，可复跑重建，不能仅凭哈希清单再独立提取媒体验证。
 - [verify_evidence.py](verify_evidence.py) 与 [核对结果](evidence/integrity-check.json)：仅用标准库核对存档、单因素差异、当前源码身份和8个测试回执；不执行生产变换或模型。它是可核查性工具，不是业务或视觉证明。
-- [trial-history.json](evidence/trial-history.json)：三个脚本失败及一次错误nodeid均保留原因；完整原始失败证据收在归档中。修正只涉及异常类型、NumPy序列化、分页标签字段和nodeid；没有修改生产实现、数值预期或布局第二因素。最终回放与服务测试均退出0，失败尝试不计成功。
+- [trial-history.json](evidence/trial-history.json)：三个脚本失败及一次错误nodeid均记录原因；归档保留失败尝试产生的观测与工件。未保存三次原始traceback或历次replay.py正文，不能只靠归档独立重建脚本调试过程。按本次执行记录，修正涉及异常类型、NumPy序列化、分页标签字段和nodeid，生产实现、数值预期及布局第二因素未改；该过程说明不作为独立证据。最终回放与服务测试均退出0，失败尝试不计成功。
 
 ## 配对结果
 
