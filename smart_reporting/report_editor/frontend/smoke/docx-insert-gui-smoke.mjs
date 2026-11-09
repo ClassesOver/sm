@@ -54,7 +54,8 @@ else:
             rows = child.findall(qn('w:tr'))
             body.append(['tbl', len(rows), len(rows[0].findall(qn('w:tc'))), [''.join(t.text or '' for t in tc.iter(qn('w:t'))) for tc in rows[0].findall(qn('w:tc'))]])
     marks = [b.get(qn('w:name')) for b in document.element.body.iter(qn('w:bookmarkStart'))]
-    print(json.dumps({'model': inspect_docx(content), 'body': body, 'bookmarks': marks}, ensure_ascii=False))
+    sections = [{'start': str(sec.start_type), 'orientation': str(sec.orientation), 'width': sec.page_width.twips, 'left': sec.left_margin.twips} for sec in document.sections]
+    print(json.dumps({'model': inspect_docx(content), 'body': body, 'bookmarks': marks, 'sections': sections}, ensure_ascii=False))
 `], { cwd: repo, env: { ...process.env, PYTHONPATH: repo }, input: JSON.stringify(input), encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(result.stderr || `python exited ${result.status}`)
   return result.stdout.trim()
@@ -110,7 +111,33 @@ try {
     const download = await page.evaluate(async url => { const r = await fetch(url); return Array.from(new Uint8Array(await r.arrayBuffer())) }, `/fixture-insert-download-${revision}.docx`)
     return JSON.parse(runPython({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
   }
-  if (smokeCase === 'followup') {
+  if (smokeCase === 'sections') {
+    // 修订 1：在“第二段”后插入连续分节符（一节拆为两节）。
+    await editor.locator('p').filter({ hasText: '第二段' }).click()
+    await page.locator('[data-tab-id="layout"]').click()
+    await page.locator('[data-source-action="layout-section-break-continuous"]').click()
+    const revision2 = await save(2)
+    // 修订 2：第一节窄边距，第二节（尾节）横向；节标签随光标切换。
+    await open(2)
+    await page.locator('[data-tab-id="layout"]').click()
+    await editor.locator('p').filter({ hasText: '第一段正文' }).click()
+    await page.waitForFunction(() => document.querySelector('[data-source-action="layout-section-label"]')?.textContent === '第 1 节，共 2 节', null, { timeout: 10000 })
+    await page.locator('[data-source-action="layout-margins"]').selectOption('720')
+    await editor.locator('p').filter({ hasText: '第三段' }).click()
+    // ProseMirror 异步读取 DOM 选区；等待节标签随光标切换。
+    await page.waitForFunction(() => document.querySelector('[data-source-action="layout-section-label"]')?.textContent === '第 2 节，共 2 节', null, { timeout: 10000 })
+    assert.equal(await page.locator('[data-source-action="layout-margin-left"]').inputValue(), String(revision2.sections[1].left))
+    await page.locator('[data-source-action="layout-orientation"]').selectOption('landscape')
+    const revision3 = await save(3)
+    console.log(JSON.stringify({ ok: true, case: smokeCase, browserVersion: browser.version(), rev2Ops: savePayloads.get(1).operations, rev3Ops: savePayloads.get(2).operations.map(op => [op.kind, op.values]), rev2Sections: revision2.sections, rev3Sections: revision3.sections, pageErrors }))
+    assert.deepEqual(savePayloads.get(1).operations.map(op => [op.kind, op.type]), [['insertSectionBreak', 'continuous']])
+    assert.equal(revision2.sections.length, 2)
+    assert.equal(revision2.sections[1].start, 'CONTINUOUS (0)')
+    assert.deepEqual(revision3.sections.map(sec => [sec.left, sec.orientation]), [[720, 'PORTRAIT (0)'], [revision2.sections[1].left, 'LANDSCAPE (1)']])
+    assert.equal(revision3.sections[1].start, 'CONTINUOUS (0)')
+    assert.deepEqual(revision3.body.filter(item => item[1]).map(item => item[1]), ['第一段正文', '第二段前半第二段后半', '第三段'])
+    assert.deepEqual(pageErrors, [])
+  } else if (smokeCase === 'followup') {
     // 修订 1：经典封面 → 替换为色带封面 → 改标题占位；第三段末尾插入 1×2 表格。
     await editor.locator('p').filter({ hasText: '第一段正文' }).click()
     await insert('insert-cover-page'); await page.locator('[data-cover-preset="classic"]').click()

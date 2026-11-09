@@ -7,7 +7,7 @@ import type { EditorShell } from './shell'
 import type { createNativeApi, NativeContextResponse } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { createDocxFindReplace } from './docx-find-replace'
-import { docxOperations, replayDocxOperations, restoredDocxSectionOperation, type DocxAnchor, type DocxPmNode } from './docx-operations'
+import { docxOperations, replayDocxOperations, restoredDocxSectionOperation, restoredDocxSectionOperations, sectionBreakNode, type DocxAnchor, type DocxPmNode, type DocxSectionAnchor, type SectionBreakType } from './docx-operations'
 import { docxHeaderFooterOperation, mergeDocxHeaderFooterOperation, restoredDocxHeaderFooterOperations, type DocxHeadersFootersModel, type DocxHfFlags, type DocxHfPart, type DocxHfVariant } from './docx-hf'
 import type { DocxHeaderFooterController, DocxHfPendingEditor } from './docx-hf-source'
 import { NativeTableStructure, createDocxTableCommands } from './docx-tables'
@@ -24,7 +24,7 @@ import { setStaticAsciiResolver } from './vendor/genoffice-docs/apps/docs/src/re
 import './vendor/genoffice-docs/scoped.css'
 import './docx.css'
 
-interface WordModel { sourceSha256: string; blocks: (Omit<DocxAnchor, 'docxIndex'> & { type: string })[]; sections: { sectionId: string; expectedSectionSha256: string; settings: ReturnType<typeof readSectionSettings> }[]; headersFooters?: DocxHeadersFootersModel }
+interface WordModel { sourceSha256: string; blocks: (Omit<DocxAnchor, 'docxIndex'> & { type: string })[]; sections: { sectionId: string; expectedSectionSha256: string; settings: ReturnType<typeof readSectionSettings>; firstBlockIndex?: number; lastBlockIndex?: number }[]; headersFooters?: DocxHeadersFootersModel }
 const sha256 = (bytes: ArrayBuffer | Uint8Array<ArrayBuffer>) => bytesSha256(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
 
 const part = (value: HfPartInfo | null | undefined): HeaderFooter | null => value ? { text: value.text, paras: value.paras, pageNumber: value.hasPageNumber } : null
@@ -50,13 +50,25 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   setResolverFontTable(parsed.fontTable)
   await adoptEmbeddedFonts(parsed.embeddedFonts)
   const sections = readSections(parsed), section = readSectionSettings(parsed), px = (twips: number) => twips / 15
-  const sourceSection = inspected.model.sections.at(-1), trailingSection = sections.at(-1)
-  if (!sourceSection || !trailingSection
-    || sourceSection.sectionId !== await sha256(new TextEncoder().encode(`${expectedSha256}:section:${trailingSection.lastBlockIndex}`))
-    || sourceSection.expectedSectionSha256 !== await sha256(new TextEncoder().encode(trailingSection.sectPrXml))) throw new Error('Word 页面设置的节身份校验失败')
-  const sectionAnchor = { ...sourceSection, settings: section }
-  const sectionOperation = () => restoredDocxSectionOperation(draft.operations, sectionAnchor)
+  // 全部节逐一核验身份（文档顺序，尾节在最后）；页面设置作用于光标所在节。
+  if (!sections.length || inspected.model.sections.length !== sections.length) throw new Error('Word 页面设置的节身份校验失败')
+  const sectionAnchors: DocxSectionAnchor[] = []
+  for (const [index, item] of sections.entries()) {
+    const source = inspected.model.sections[index]!
+    if (source.sectionId !== await sha256(new TextEncoder().encode(`${expectedSha256}:section:${item.lastBlockIndex}`))
+      || source.expectedSectionSha256 !== await sha256(new TextEncoder().encode(item.sectPrXml))) throw new Error('Word 页面设置的节身份校验失败')
+    sectionAnchors.push({ sectionId: source.sectionId, expectedSectionSha256: source.expectedSectionSha256, settings: index === sections.length - 1 ? section : item.settings,
+      firstBlockIndex: item.firstBlockIndex, lastBlockIndex: item.lastBlockIndex })
+  }
+  const sectionAnchor = sectionAnchors.at(-1)!
+  const sectionOperation = () => restoredDocxSectionOperations(draft.operations, sectionAnchors)
   sectionOperation()
+  let activeSection = 0
+  const sectionValues = (index: number) => sectionOperation().find(operation => operation.sectionId === sectionAnchors[index]!.sectionId)?.values as Partial<typeof section> | undefined
+  const sectionAt = (docxIndex: number) => Math.max(0, sectionAnchors.findIndex(item => (item.firstBlockIndex ?? 0) <= docxIndex && docxIndex <= (item.lastBlockIndex ?? Infinity)))
+  /** 本次草稿已在该节插入分节符（保存前该节不能再插入分节符或改页面设置）。 */
+  const pendingBreakIn = (index: number) => draft.operations.some(operation => operation.kind === 'insertSectionBreak'
+    && sectionAt(anchors.find(anchor => anchor.blockId === operation.blockId)?.docxIndex ?? -1) === index)
   const hfModel = inspected.model.headersFooters as DocxHeadersFootersModel | undefined
   const hfAnchor = { sectionId: sectionAnchor.sectionId, expectedSectionSha256: sectionAnchor.expectedSectionSha256 } as const
   // 恢复的页眉/页脚草稿必须与当前来源的部件身份一致；不一致即拒绝打开并保留草稿。
@@ -85,6 +97,13 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     editorProps: { attributes: { class: 'doc-page', 'aria-label': 'Word 文档编辑区', role: 'textbox', 'aria-multiline': 'true' } },
     onSelectionUpdate: ({ editor }) => {
       const { $from } = editor.state.selection
+      // 当前节：光标所在顶层块（或其前最近的原有块）的 docxIndex 所属节。
+      let top = $from.depth > 0 ? $from.index(0) : 0, sectionIndex: number | undefined
+      for (; top >= 0 && sectionIndex === undefined; top--) {
+        const docxIndex = editor.state.doc.maybeChild(top)?.attrs.docxIndex
+        if (docxIndex != null) sectionIndex = sectionAt(Number(docxIndex))
+      }
+      if ((sectionIndex ?? 0) !== activeSection) { activeSection = sectionIndex ?? 0; syncSection(); editor.commands.setMeta('native-section-layout', true) }
       let anchor: DocxAnchor | undefined
       for (let depth = $from.depth; depth > 0; depth--) {
         const node = $from.node(depth)
@@ -113,21 +132,22 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   editor.storage.tabStops.defaultTabStopTwips = parsed.defaultTabStopTwips ?? null
   setStaticAsciiResolver(() => editor.storage.listNumbering)
   const syncSection = () => {
-    const settings = { ...section, ...sectionOperation()?.values }
+    const settings = { ...sectionAnchors[activeSection]!.settings, ...sectionValues(activeSection) }
     sectionRibbon.settings = settings
+    sectionRibbon.label = sections.length > 1 ? `第 ${activeSection + 1} 节，共 ${sections.length} 节` : undefined
     Object.assign(editor.view.dom.style, { width: `${px(settings.pageWidth)}px`, minHeight: `${px(settings.pageHeight)}px`,
       padding: `${px(settings.marginTop)}px ${px(settings.marginRight)}px ${px(settings.marginBottom)}px ${px(settings.marginLeft)}px`, boxSizing: 'border-box' })
   }
   baseline = editor.getJSON(); ready = true
   const refresh = async () => {
-    const content = replayDocxOperations(baseline, draft.operations, anchors, sectionAnchor, editor.schema, parsed.styles, { anchor: hfAnchor, model: hfModel })
+    const content = replayDocxOperations(baseline, draft.operations, anchors, sectionAnchors, editor.schema, parsed.styles, { anchor: hfAnchor, model: hfModel })
     refreshing = true
     try { syncSection(); editor.commands.setContent(content as JSONContent, { emitUpdate: false }); editor.setEditable(context.editingEnabled && !saving && !draft.closed, false) }
     finally { refreshing = false }
   }
   const showPaginationPreview = () => {
-    const currentSection = { ...section, ...sectionOperation()?.values }
-    const currentSections = sections.map((item, index) => index === sections.length - 1 ? { ...item, settings: currentSection } : item)
+    const currentSections = sections.map((item, index) => ({ ...item, settings: { ...sectionAnchors[index]!.settings, ...sectionValues(index) } }))
+    const currentSection = currentSections[activeSection]!.settings
     previewRoot.render(<PaginationPreview section={currentSection} sections={currentSections} canvasTop={px(currentSection.marginTop)} hfParts={parsed.hfParts ?? {}}
     colFlow={null} colMode="none" mirrorMargins={parsed.mirrorMargins} comments={parsed.comments} anchorBlocks={parsed.blocks}
     hf={{ header: { text: parsed.headerText ?? '', paras: parsed.headerParas ?? undefined, pageNumber: parsed.headerHasPageNumber },
@@ -154,21 +174,40 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       } else selectParagraph().deleteNode(editor.state.selection.$from.parent.type.name).run()
     } catch (error) { reportError(error) }
   }
+  /** 布局▸分隔符▸分节符（固定源 App.tsx insertSectionBreak）：插在光标所在顶层原有块之后。 */
+  const insertSectionBreak = (type: SectionBreakType) => {
+    try {
+      if (saving || draft.saving || draft.closed || !context.editingEnabled) throw new Error('当前文档不可编辑或正在保存')
+      const { $from } = editor.state.selection
+      if ($from.depth < 1) throw new Error('请先将光标放在段落中')
+      const top = editor.state.doc.child($from.index(0)), docxIndex = top.attrs.docxIndex
+      if (docxIndex == null) throw new Error('请将光标放在原有段落或表格中，再插入分节符（新增内容请先保存）')
+      const index = sectionAt(Number(docxIndex))
+      if (pendingBreakIn(index)) throw new Error('此节已插入分节符，请先保存再继续分节')
+      if (sectionOperation().some(operation => operation.sectionId === sectionAnchors[index]!.sectionId)) throw new Error('此节的页面设置修改请先保存，再插入分节符')
+      editor.chain().insertContentAt($from.after(1), sectionBreakNode(type) as JSONContent).run()
+    } catch (error) { reportError(error) }
+  }
   const sectionRibbon = {
     settings: section,
+    label: sections.length > 1 ? `第 1 节，共 ${sections.length} 节` : undefined as string | undefined,
+    onSectionBreak: insertSectionBreak,
     onChange: (values: Partial<ReturnType<typeof readSectionSettings>>) => {
       if (saving || draft.saving || draft.closed || !context.editingEnabled) return
       try {
-        const operation = restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId: sectionAnchor.sectionId,
-          expectedSectionSha256: sectionAnchor.expectedSectionSha256, values: { ...sectionOperation()?.values, ...values } }], sectionAnchor)
-        draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, operation, editor.schema, parsed.styles, headerFooterOperations())); options.onDraftChange?.()
+        const target = sectionAnchors[activeSection]!
+        if (pendingBreakIn(activeSection)) throw new Error('此节已插入分节符，请先保存，再调整页面设置')
+        const operation = restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId: target.sectionId,
+          expectedSectionSha256: target.expectedSectionSha256, values: { ...sectionValues(activeSection), ...values } }], target)
+        const others = sectionOperation().filter(item => item.sectionId !== target.sectionId)
+        draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, [...others, ...(operation ? [operation] : [])], editor.schema, parsed.styles, headerFooterOperations())); options.onDraftChange?.()
       } catch (error) { reportError(error) }
       syncSection()
       editor.commands.setMeta('native-section-layout', true)
     },
   }
   const view = createDocxViewCommands({ root: host, scroller: host.querySelector<HTMLElement>('.editor-scroll')!, page: editor.view.dom,
-    pageSize: () => { const current = { ...section, ...sectionOperation()?.values }; return { width: px(current.pageWidth), height: px(current.pageHeight) } },
+    pageSize: () => { const current = { ...sectionAnchors[activeSection]!.settings, ...sectionValues(activeSection) }; return { width: px(current.pageWidth), height: px(current.pageHeight) } },
     onPaginationPreview: showPaginationPreview })
   const headerFooter: DocxHeaderFooterController | undefined = hfModel ? {
     get editable() { return context.editingEnabled && !saving && !draft.saving && !draft.closed },
@@ -213,7 +252,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   } : undefined
   const findReplace = createDocxFindReplace({ editor, root: host, anchors, getBaseline: () => baseline,
     isLocked: () => saving || draft.saving || draft.closed || !context.editingEnabled,
-    getSection: () => sectionAnchor, getSectionOperation: sectionOperation, styles: parsed.styles })
+    getSection: () => sectionAnchors, getSectionOperation: sectionOperation, styles: parsed.styles })
   toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError), view, findReplace.open, reportError, headerFooter))
   editor.on('transaction', view.refresh)
   await refresh()

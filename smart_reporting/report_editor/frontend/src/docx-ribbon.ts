@@ -114,7 +114,7 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController): HTMLElement {
+  section?: { settings: SectionSettings; onChange: (values: Partial<SectionSettings>) => void; label?: string; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController): HTMLElement {
   const ribbon = document.createElement('div')
   ribbon.className = 'ribbon docx-ribbon'
   const tablist = document.createElement('nav')
@@ -351,7 +351,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'insert') { body.replaceChildren(insert); body.setAttribute('aria-label', '插入') }
     else if (id === 'layout' && section) {
       layoutRoot ??= createRoot(layout)
-      flushSync(() => layoutRoot!.render(createElement(DocxLayoutSource, { editable: editable && editor.isEditable, settings: section.settings, onChange: section.onChange, onEditHeaderFooter: headerFooter ? () => setActive('headerFooter') : undefined })))
+      flushSync(() => layoutRoot!.render(createElement(DocxLayoutSource, { editable: editable && editor.isEditable, settings: section.settings, onChange: section.onChange, sectionLabel: section.label, onSectionBreak: section.onSectionBreak, onEditHeaderFooter: headerFooter ? () => setActive('headerFooter') : undefined })))
       const paragraph = document.createElement('section')
       paragraph.className = 'ribbon-group docx-ribbon-group'
       paragraph.setAttribute('aria-label', '段落(选中段落)')

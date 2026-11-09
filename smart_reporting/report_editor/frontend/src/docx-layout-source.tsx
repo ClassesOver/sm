@@ -4,7 +4,8 @@ import { IconCaret, IconColumns, IconMargins, IconOrientation, IconPageSize } fr
 
 type Values = Partial<Pick<SectionSettings,
   'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>>
-type Props = { editable: boolean; settings: SectionSettings | null; onChange: (values: Values) => void; onEditHeaderFooter?: () => void }
+type BreakType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage'
+type Props = { editable: boolean; settings: SectionSettings | null; onChange: (values: Values) => void; onEditHeaderFooter?: () => void; sectionLabel?: string; onSectionBreak?: (type: BreakType) => void }
 
 const paperSizes = { letter: [12240, 15840], a4: [11906, 16838], legal: [12240, 20160] } as const
 const pageSetup = [
@@ -15,7 +16,7 @@ const pageSetup = [
 ] as const
 const unavailable = 'DOCX 原生 section 操作未覆盖此源命令'
 
-export function DocxLayoutSource({ editable, settings: initialSettings, onChange, onEditHeaderFooter }: Props) {
+export function DocxLayoutSource({ editable, settings: initialSettings, onChange, onEditHeaderFooter, sectionLabel, onSectionBreak }: Props) {
   const [settings, setSettings] = useState(initialSettings)
   useLayoutEffect(() => { setSettings(initialSettings) }, [initialSettings])
   const [customPaper, setCustomPaper] = useState(false)
@@ -56,10 +57,11 @@ export function DocxLayoutSource({ editable, settings: initialSettings, onChange
       {field('layout-margin-left', '左边距', settings?.marginLeft, value => change({ marginLeft: value }))}
       {field('layout-header-distance', '页眉距顶端', settings?.headerDist, value => change({ headerDist: value }))}
       {field('layout-footer-distance', '页脚距底端', settings?.footerDist, value => change({ footerDist: value }))}
-      {source('layout-section-break-page', '下一页分节符', '分节符插入及多节 section 写回尚未接入')}
-      {source('layout-section-break-continuous', '连续分节符', '分节符插入及多节 section 写回尚未接入')}
-      {source('layout-section-break-even', '偶数页分节符', '分节符插入及多节 section 写回尚未接入')}
-      {source('layout-section-break-odd', '奇数页分节符', '分节符插入及多节 section 写回尚未接入')}
+      {sectionLabel ? <span className="layout-num" data-source-action="layout-section-label">{sectionLabel}</span> : null}
+      {([['layout-section-break-page', '下一页分节符', 'nextPage'], ['layout-section-break-continuous', '连续分节符', 'continuous'],
+        ['layout-section-break-even', '偶数页分节符', 'evenPage'], ['layout-section-break-odd', '奇数页分节符', 'oddPage']] as const).map(([id, label, type]) => onSectionBreak
+        ? <button key={id} type="button" className="rb-icon docx-source-command" data-source-action={id} disabled={!editable} title={`${label}：在光标所在段落后插入，此前内容成为新的一节`} aria-label={label} onClick={() => onSectionBreak(type)}>{label}</button>
+        : <span key={id}>{source(id, label, '分节符插入及多节 section 写回尚未接入')}</span>)}
     </>)}
     {group('页眉和页脚', <>
       {onEditHeaderFooter

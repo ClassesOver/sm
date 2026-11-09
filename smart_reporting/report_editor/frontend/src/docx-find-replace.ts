@@ -10,7 +10,7 @@ import { searchPluginKey } from './vendor/genoffice-docs/apps/docs/src/renderer/
 
 // Matching/expansion and highlight metadata are reused from pinned GenOffice
 // f8c17004fb730df11f0f743164ffd8b4281bb38c. Writes still use the native guard.
-export function validateDocxReplacement(baseline: DocxPmNode, candidate: DocxPmNode, anchors: DocxAnchor[], schema: Schema, styles: Map<string, DocxStyleInfo>, section?: DocxSectionAnchor, sectionOperation?: NativeOperation) {
+export function validateDocxReplacement(baseline: DocxPmNode, candidate: DocxPmNode, anchors: DocxAnchor[], schema: Schema, styles: Map<string, DocxStyleInfo>, section?: DocxSectionAnchor | readonly DocxSectionAnchor[], sectionOperation?: NativeOperation | NativeOperation[]) {
   const operations = docxOperations(baseline, candidate, anchors, sectionOperation, schema, styles)
   for (const operation of operations) if (typeof operation.text === 'string' && (operation.text.length > 20000 || /[\x00-\x08\x0b-\x1f]/.test(operation.text))) throw new Error('替换后文字超出保存协议限制（每对象最多 20000 字符且不含控制字符）')
   const projected = replayDocxOperations(baseline, operations, anchors, section, schema, styles)
@@ -47,7 +47,7 @@ export function assertReplaceTarget(doc: PmNode, match: FindMatch, anchors: Docx
   if (!boundary(from.parentOffset) || !boundary(to.parentOffset)) throw new Error('替换范围不能拆开 Unicode 字符')
 }
 
-export function createDocxFindReplace(options: { editor: Editor; root: HTMLElement; anchors: DocxAnchor[]; getBaseline: () => DocxPmNode; getSection: () => DocxSectionAnchor | undefined; getSectionOperation: () => NativeOperation | undefined; styles: Map<string, DocxStyleInfo>; isLocked: () => boolean }) {
+export function createDocxFindReplace(options: { editor: Editor; root: HTMLElement; anchors: DocxAnchor[]; getBaseline: () => DocxPmNode; getSection: () => DocxSectionAnchor | readonly DocxSectionAnchor[] | undefined; getSectionOperation: () => NativeOperation | NativeOperation[] | undefined; styles: Map<string, DocxStyleInfo>; isLocked: () => boolean }) {
   const { editor, root, anchors, getBaseline, isLocked } = options
   const panel = document.createElement('section')
   panel.className = 'find-panel docx-find-replace'; panel.hidden = true

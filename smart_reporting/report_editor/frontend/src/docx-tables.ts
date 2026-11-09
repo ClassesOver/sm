@@ -17,6 +17,8 @@ export const TABLE_ACTIONS: Record<string, { kind: TableKind; after?: boolean }>
 export const NativeTableStructure = Extension.create({ name: 'nativeTableStructure', addGlobalAttributes: () => [
   { types: ['docTable'], attributes: { nativeTableStructure: { default: null, rendered: false }, nativeTableInsert: { default: null, rendered: false, keepOnSplit: false } } },
   { types: ['docParagraph'], attributes: { nativeCoverPage: { default: null, rendered: false, keepOnSplit: false } } },
+  // nativeSectionBreak 标记新增分节符的起始方式（docx-operations.ts sectionBreakNode），同样不渲染、不入文件。
+  { types: ['docProtected'], attributes: { nativeSectionBreak: { default: null, rendered: false, keepOnSplit: false } } },
 ] })
 const sourceReason = (reason?: string | null) => {
   const messages: Record<string, string> = {

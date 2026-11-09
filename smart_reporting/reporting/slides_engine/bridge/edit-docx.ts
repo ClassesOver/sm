@@ -5,7 +5,7 @@ import { loadDocxZip } from '../packages/docx-engine/src/zip-load.ts'
 import { attrsOf, findChild, childrenOf, xmlParser, escapeXmlAttr } from '../packages/docx-engine/src/xml-utils.ts'
 import { resolve } from 'node:path'
 import { readFile, writeFile, realpath, stat } from 'node:fs/promises'
-import { PAGE_MARK, parseDocx, saveDocx, patchTableCellTexts, mergePPrFormat, readSections, readSectionSettings, type Block, type GeneratedBlock, type HfParagraph, type HeaderFooter, type HfPartInfo, type Run, type TableModel, type SaveBlock, type ParaFormat, type SectionSettings } from '@genoffice/docx-engine'
+import { PAGE_MARK, parseDocx, saveDocx, patchTableCellTexts, mergePPrFormat, readSections, readSectionSettings, applySectionSettings, applySectionStartType, type Block, type GeneratedBlock, type HfParagraph, type HeaderFooter, type HfPartInfo, type Run, type TableModel, type SaveBlock, type ParaFormat, type SectionSettings } from '@genoffice/docx-engine'
 import { generateTableModelXml, mergeCellParaFormat, pPrWithIndLeft, pPrWithNumPr, PPR_CHILD_ORDER, RPR_CHILD_ORDER, splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate.ts'
 
 type ObjectValue = Record<string, unknown>
@@ -590,8 +590,14 @@ function paragraphStyleEditable(block: Block) {
 }
 const blockId = (block: Block) => hash(`${sourceSha256}:block:${block.docxIndex}`)
 const cellId = (block: Block, row: number, column: number) => hash(`${sourceSha256}:cell:${block.docxIndex}:${row}:${column}`)
-const trailingSection = readSections(parsed).at(-1)!
-const sectionId = hash(`${sourceSha256}:section:${trailingSection.lastBlockIndex}`)
+const allSections = readSections(parsed)
+const trailingSection = allSections.at(-1)!
+const sectionIdOf = (section: { lastBlockIndex: number }) => hash(`${sourceSha256}:section:${section.lastBlockIndex}`)
+const sectionId = sectionIdOf(trailingSection)
+/** 非尾节的设置以其分节段 sectPr 为准；尾节沿用 readSectionSettings（含文档级 gutterAtTop）。 */
+const sectionSettingsOf = (section: typeof trailingSection) => section === trailingSection ? readSectionSettings(parsed) : section.settings
+const SECTION_BREAK_TYPES = ['nextPage', 'continuous', 'evenPage', 'oddPage'] as const
+type SectionBreakType = typeof SECTION_BREAK_TYPES[number]
 /** 尾节某部件变体的当前引用：rId、part XML 与解析信息（未引用 = null/''，锚为空串哈希）。 */
 async function trailingHfPart(part: HeaderFooterPart, variant: HfVariant): Promise<{ rId: string | null; path: string | null; xml: string; info: HfPartInfo | null }> {
   const rId = (part === 'header' ? trailingSection.headerRefs : trailingSection.footerRefs)[variant] ?? null
@@ -616,7 +622,9 @@ const hfPartAnchors = await Promise.all(HF_PART_KEYS.map(async key => {
 const indexed = new Map(blocks.map(block => [blockId(block), block]))
 const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c17004fb730df11f0f743164ffd8b4281bb38c', desktopVerified: false,
   capabilities: { paragraphs: true, basicStyles: true, simpleTableText: true, simpleTableStructure: true, replaceImage: false, headerFooter: true },
-  sections: [{ sectionId, expectedSectionSha256: hash(trailingSection.sectPrXml), settings: readSectionSettings(parsed) }],
+  // 全部节（文档顺序，尾节在最后）：编辑器按光标所在块定位当前节。
+  sections: allSections.map(section => ({ sectionId: sectionIdOf(section), expectedSectionSha256: hash(section.sectPrXml), settings: sectionSettingsOf(section),
+    firstBlockIndex: section.firstBlockIndex, lastBlockIndex: section.lastBlockIndex, startType: section.startType })),
   headersFooters: {
     titlePg: trailingSection.titlePg,
     evenAndOddHeaders: parsed.evenAndOddHeaders ?? false,
@@ -686,7 +694,8 @@ if (request.kind === 'inspect') {
     const op = object(raw)
     if (op.kind === 'setSectionLayout') {
       keys(op, ['kind', 'sectionId', 'expectedSectionSha256', 'values'])
-      if (op.sectionId !== sectionId || op.expectedSectionSha256 !== hash(trailingSection.sectPrXml)) fail('section_anchor_invalid')
+      const target = allSections.find(section => sectionIdOf(section) === op.sectionId)
+      if (!target || op.expectedSectionSha256 !== hash(target.sectPrXml)) fail('section_anchor_invalid')
       const values = object(op.values)
       keys(values, ['orientation', 'pageWidth', 'pageHeight', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'columns', 'headerDist', 'footerDist'])
       if (!Object.keys(values).length) fail('section_layout_invalid')
@@ -695,10 +704,10 @@ if (request.kind === 'inspect') {
       for (const key of ['marginTop', 'marginRight', 'marginBottom', 'marginLeft'] as const) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || values[key] < 0 || values[key] > 14400)) fail('section_layout_invalid')
       if (values.columns !== undefined && (typeof values.columns !== 'number' || !Number.isInteger(values.columns) || values.columns < 1 || values.columns > 3)) fail('section_layout_invalid')
       for (const key of ['headerDist', 'footerDist'] as const) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || values[key] < 0 || values[key] > 31680)) fail('section_layout_invalid')
-      const current = readSectionSettings(parsed)
+      const current = sectionSettingsOf(target)
       if (Number(values.marginLeft ?? current.marginLeft) + Number(values.marginRight ?? current.marginRight) >= Number(values.pageWidth ?? current.pageWidth)
         || Number(values.marginTop ?? current.marginTop) + Number(values.marginBottom ?? current.marginBottom) >= Number(values.pageHeight ?? current.pageHeight)) fail('section_layout_invalid')
-      return { op, sectionValues: values as Partial<SectionSettings> }
+      return { op, sectionValues: values as Partial<SectionSettings>, section: target }
     }
     const block = indexed.get(op.blockId as string)
     if (!block || block.docxIndex === null) fail('anchor_invalid')
@@ -708,6 +717,17 @@ if (request.kind === 'inspect') {
       if (hash(block.originalXml ?? '') !== op.expectedObjectSha256) fail('anchor_invalid')
       if (typeof op.index !== 'number' || !Number.isInteger(op.index)) fail('table_structure_index_invalid')
       return { op, block, tableStructure: editTableStructure(block, op.kind as TableStructureKind, op.index) }
+    }
+    if (op.kind === 'insertSectionBreak') {
+      // 固定源 App.tsx insertSectionBreak：锚块后插入携带当前节 sectPr 副本的分节段，
+      // 原节终止 sectPr 的 w:type 改为所选起始方式（新节如何开始）。
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'type'])
+      if (hash(block.originalXml ?? '') !== op.expectedObjectSha256) fail('anchor_invalid')
+      if (!SECTION_BREAK_TYPES.includes(op.type as SectionBreakType)) fail('section_break_invalid')
+      if (block.hidden || /<w:sectPr\b/.test(block.originalXml ?? '')) fail('section_break_anchor_invalid')
+      const target = allSections.find(section => section.firstBlockIndex <= block.docxIndex! && block.docxIndex! <= section.lastBlockIndex)
+      if (!target) fail('section_break_anchor_invalid')
+      return { op, block, sectionBreak: { section: target, type: op.type as SectionBreakType } }
     }
     if (op.kind === 'restructureTable') {
       // 同一来源表格的多步行列增删（每步坐标基于上一步结果）+ 最终坐标的纯文字修改。
@@ -912,6 +932,13 @@ if (request.kind === 'inspect') {
     structuralTables.add(id)
   }
   for (const item of operations) if (item.cell && structuralTables.has(blockId(item.block))) fail('table_structure_batch_conflict')
+  // 每节每批至多一个分节符；同批不能再改该节页面设置（新节副本须取自原 sectPr）。
+  const brokenSections = new Set<unknown>(), laidOutSections = new Set<unknown>()
+  for (const item of operations) {
+    if (item.sectionBreak) { if (brokenSections.has(item.sectionBreak.section)) fail('section_break_batch_conflict'); brokenSections.add(item.sectionBreak.section) }
+    if (item.section) { if (laidOutSections.has(item.section)) fail('section_layout_batch_conflict'); laidOutSections.add(item.section) }
+  }
+  for (const section of brokenSections) if (laidOutSections.has(section)) fail('section_break_batch_conflict')
   const states = new Map(blocks.map(block => [blockId(block), {
     block, saved: {kind: 'original', docxIndex: block.docxIndex!} as SaveBlock,
     before: [] as SaveBlock[], after: [] as SaveBlock[], deleted: false,
@@ -926,6 +953,9 @@ if (request.kind === 'inspect') {
   let nextNumId = Math.max(2, ...[...parsed.numbering.keys()].map(id => Number(id)).filter(Number.isSafeInteger)) + 1
   const newDefs: { numId: string; kind: 'bullet' | 'ordered' }[] = []
   let sectionValues: Partial<SectionSettings> | undefined
+  // 非尾节：分节段 sectPr 的页面设置 / 起始方式补丁；尾节起始方式经 saveDocx sectionStartType。
+  const sectionPatches = new Map<typeof trailingSection, { values?: Partial<SectionSettings>; type?: SectionBreakType }>()
+  let trailingStartType: SectionBreakType | undefined
   let hfTitlePg: boolean | undefined, hfEvenOdd: boolean | undefined
   let hfFmt: string | null | undefined, hfStart: number | null | undefined
   for (const edit of hfEdits.values()) {
@@ -942,7 +972,18 @@ if (request.kind === 'inspect') {
     return definition.numId
   }
   for (const item of operations) {
-    if (item.sectionValues) { sectionValues = { ...sectionValues, ...item.sectionValues }; continue }
+    if (item.sectionValues) {
+      if (item.section === trailingSection) sectionValues = { ...sectionValues, ...item.sectionValues }
+      else sectionPatches.set(item.section!, { ...sectionPatches.get(item.section!), values: item.sectionValues })
+      continue
+    }
+    if (item.sectionBreak) {
+      const { section, type } = item.sectionBreak
+      states.get(blockId(item.block))!.after.push({ kind: 'xml', xml: `<w:p><w:pPr>${section.sectPrXml}</w:pPr></w:p>` })
+      if (section === trailingSection) trailingStartType = type
+      else sectionPatches.set(section, { ...sectionPatches.get(section), type })
+      continue
+    }
     const state = states.get(blockId(item.block))!
     if (state.deleted) fail('operation_after_delete')
     if (item.styleId) {
@@ -1062,6 +1103,16 @@ if (request.kind === 'inspect') {
     const original = state.block.originalXml ?? fail('paragraph_borders_xml_invalid')
     state.saved = { kind: 'xml', docxIndex: state.block.docxIndex!, xml: paragraphBordersXml(original, state.borders) }
   }
+  for (const [section, patch] of sectionPatches) {
+    const breakBlock = blocks.find(block => block.docxIndex === section.lastBlockIndex)
+    const state = breakBlock && states.get(blockId(breakBlock))
+    const original = breakBlock?.originalXml
+    if (!state || !original || state.saved.kind !== 'original' || !original.includes(section.sectPrXml)) fail('section_break_paragraph_invalid')
+    let sectPr = section.sectPrXml
+    if (patch.values) sectPr = applySectionSettings(sectPr, { ...section.settings, ...patch.values })
+    if (patch.type) sectPr = applySectionStartType(sectPr, patch.type)
+    state.saved = { kind: 'xml', docxIndex: breakBlock.docxIndex!, xml: original.replace(section.sectPrXml, () => sectPr) }
+  }
   const finalBlocks: SaveBlock[] = []
   for (const state of states.values()) finalBlocks.push(...state.before, ...(state.deleted ? [] : [state.saved]), ...state.after)
   // 页码格式/起始：null = 移除该字段；只改其一未提供时沿用当前值（w:pgNumType 整体重写）。
@@ -1079,6 +1130,7 @@ if (request.kind === 'inspect') {
   let output = await saveDocx(parsed, finalBlocks, {
     ...(newDefs.length ? { numbering: { newDefs } } : {}),
     ...(sectionValues ? { section: { ...readSectionSettings(parsed), ...sectionValues } } : {}),
+    ...(trailingStartType ? { sectionStartType: trailingStartType } : {}),
     ...hfOptions,
     ...(hfTitlePg !== undefined ? { titlePg: hfTitlePg } : {}),
     ...(hfEvenOdd !== undefined ? { evenAndOddHeaders: hfEvenOdd } : {}),
@@ -1102,6 +1154,11 @@ if (request.kind === 'inspect') {
       outputZip.file('docProps/core.xml', await core.async('uint8array'))
       output = await outputZip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
     }
+  }
+  if (operations.some(item => item.sectionBreak || (item.section && item.section !== trailingSection))) {
+    // 独立回读：节数随分节符增加，被改的非尾节设置与起始方式已落盘。
+    const reread = readSections(await parseDocx(output))
+    if (reread.length !== allSections.length + brokenSections.size) fail('section_write_not_applied')
   }
   if (operations.some(item => item.op.kind === 'replaceCellText' || item.tableStructure)) {
     const reopened = await parseDocx(output)

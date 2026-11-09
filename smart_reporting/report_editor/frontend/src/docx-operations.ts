@@ -13,7 +13,23 @@ import { safeParagraphStyle, type DocxStyleInfo } from './docx-styles'
 import { restoredDocxHeaderFooterOperations } from './docx-hf'
 export interface DocxAnchor { docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; deletable?: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
-export interface DocxSectionAnchor { sectionId: string; expectedSectionSha256: string; settings: SectionSettings }
+export interface DocxSectionAnchor { sectionId: string; expectedSectionSha256: string; settings: SectionSettings; firstBlockIndex?: number; lastBlockIndex?: number }
+export const SECTION_BREAK_TYPES = ['nextPage', 'continuous', 'evenPage', 'oddPage'] as const
+export type SectionBreakType = typeof SECTION_BREAK_TYPES[number]
+export const SECTION_BREAK_LABELS: Record<SectionBreakType, string> = { nextPage: '分节符（下一页）', continuous: '分节符（连续）', evenPage: '分节符（偶数页）', oddPage: '分节符（奇数页）' }
+/** 编辑器中的新分节符：与固定源一样以只读 docProtected 呈现，nativeSectionBreak 携带起始方式意图。 */
+export function sectionBreakNode(type: SectionBreakType): DocxPmNode {
+  return { type: 'docProtected', attrs: { blockType: 'passthrough', label: SECTION_BREAK_LABELS[type], previewText: '', nativeSectionBreak: type } }
+}
+/** 多节草稿：每节至多一条合并后的 setSectionLayout（节身份逐一校验）。 */
+export function restoredDocxSectionOperations(operations: NativeOperation[], sections: readonly DocxSectionAnchor[]): NativeOperation[] {
+  const byId = new Map(sections.map(section => [section.sectionId, section]))
+  for (const operation of operations) if (operation.kind === 'setSectionLayout' && !byId.has(String(operation.sectionId))) throw new Error('草稿页面设置的节身份与当前来源不一致')
+  return sections.flatMap(section => {
+    const restored = restoredDocxSectionOperation(operations.filter(operation => operation.kind === 'setSectionLayout' && operation.sectionId === section.sectionId), section)
+    return restored ? [restored] : []
+  })
+}
 type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>>
 export function restoredDocxSectionOperation(operations: NativeOperation[], section?: DocxSectionAnchor) {
   let values: SectionValues | undefined
@@ -204,7 +220,7 @@ function styleOf(node: DocxPmNode): Record<string, unknown> {
   return styles[0]
 }
 /** 原始XML和资源路径从不进入保存协议；变化仅映射为后端允许操作。 */
-export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation, schema?: Schema, styles?: Map<string, DocxStyleInfo>, headerFooterOperations?: NativeOperation[]): NativeOperation[] {
+export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation | NativeOperation[], schema?: Schema, styles?: Map<string, DocxStyleInfo>, headerFooterOperations?: NativeOperation[]): NativeOperation[] {
   const before = original.content ?? [], after = current.content ?? []
   const byIndex = new Map(anchors.map(anchor => [anchor.docxIndex, anchor]))
   const retained = after.filter(node => idOf(node) != null)
@@ -240,6 +256,15 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       if (!target) throw new Error('封面后没有可编辑的锚点段落')
       ops.push({ kind: 'insertCoverPage', ...baseOp(byIndex.get(Number(idOf(target)))!), position: 'before', paras })
       index = end
+      continue
+    }
+    if (node.attrs?.nativeSectionBreak != null) {
+      // 新增分节符：紧跟其前的原有块为锚点（分节段插在锚点之后，终止此前内容所在的新节）。
+      const type = node.attrs.nativeSectionBreak as SectionBreakType
+      const previous = after[index - 1]
+      if (node.type !== 'docProtected' || !SECTION_BREAK_TYPES.includes(type)) throw new Error('分节符意图无效，请删除后重新插入')
+      if (!previous || idOf(previous) == null || !byIndex.get(Number(idOf(previous)))) throw new Error('分节符须紧跟在原有段落或表格之后，请先保存再继续插入')
+      ops.push({ kind: 'insertSectionBreak', ...baseOp(byIndex.get(Number(idOf(previous)))!), type })
       continue
     }
     if (node.type === 'docTable') {
@@ -426,15 +451,15 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       if (Object.keys(changed).length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: changed })
     }
   }
-  if (sectionOperation) ops.push(sectionOperation)
+  if (sectionOperation) ops.push(...(Array.isArray(sectionOperation) ? sectionOperation : [sectionOperation]))
   if (headerFooterOperations?.length) ops.push(...headerFooterOperations)
   if (ops.length > 500) throw new Error('操作超过 500 条，请分批保存')
   return ops
 }
 
 /** 从原文件恢复草稿，保持原 docxIndex 和对象身份。 */
-export function replayDocxOperations(original: DocxPmNode, operations: NativeOperation[], anchors: DocxAnchor[], section?: DocxSectionAnchor, schema?: Schema, styles?: Map<string, DocxStyleInfo>, headerFooters?: { anchor?: { sectionId: string; expectedSectionSha256: string }; model?: import('./docx-hf').DocxHeadersFootersModel }): DocxPmNode {
-  restoredDocxSectionOperation(operations, section)
+export function replayDocxOperations(original: DocxPmNode, operations: NativeOperation[], anchors: DocxAnchor[], section?: DocxSectionAnchor | readonly DocxSectionAnchor[], schema?: Schema, styles?: Map<string, DocxStyleInfo>, headerFooters?: { anchor?: { sectionId: string; expectedSectionSha256: string }; model?: import('./docx-hf').DocxHeadersFootersModel }): DocxPmNode {
+  if (Array.isArray(section)) restoredDocxSectionOperations(operations, section); else restoredDocxSectionOperation(operations, section as DocxSectionAnchor | undefined)
   if (headerFooters) restoredDocxHeaderFooterOperations(operations, headerFooters.anchor, headerFooters.model)
   const result = structuredClone(original), originalNodes = new Map((result.content ?? []).map(node => [Number(idOf(node)), node]))
   const byId = new Map(anchors.map(anchor => [anchor.blockId, anchor])), afterCounts = new Map<string, number>()
@@ -581,6 +606,16 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       try { cover = projectCoverNodes(operation.paras as never, schema) } catch { throw new Error('草稿封面字段或来源身份无效') }
       if (result.content!.indexOf(node) < 0) throw new Error('草稿插入锚点已删除')
       result.content!.splice(0, 0, ...cover)
+    }
+    else if (operation.kind === 'insertSectionBreak') {
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'type'].includes(key))
+        || !SECTION_BREAK_TYPES.includes(operation.type as SectionBreakType) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('草稿分节符字段或来源身份无效')
+      const index = result.content!.indexOf(node)
+      if (index < 0) throw new Error('草稿插入锚点已删除')
+      // diff 要求分节符紧邻其锚点，因此它总是该锚点的第一个 after 插入；其后的 after 插入排在分节符之后。
+      if (afterCounts.get(anchor.blockId)) throw new Error('草稿分节符须紧跟锚点')
+      result.content!.splice(index + 1, 0, sectionBreakNode(operation.type as SectionBreakType))
+      afterCounts.set(anchor.blockId, 1)
     }
     else if (operation.kind === 'insertTable') {
       if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'position', 'rows', 'cols', 'cells'].includes(key))
