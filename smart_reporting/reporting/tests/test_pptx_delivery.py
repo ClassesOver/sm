@@ -153,6 +153,26 @@ def test_pptx_audit_exception_keeps_generated_artifact_and_returns_warning(tmp_p
     assert result.issues == ({"page": 0, "message": "PPTX layout audit failed: injected audit failure"},)
 
 
+@pytest.mark.parametrize(("dimensions", "suffix"), [((640, 360), "png"), ((320, 640), "jpeg")])
+def test_pptx_chart_keeps_original_proportions_and_bytes(tmp_path, dimensions, suffix) -> None:
+    chart = tmp_path / (f"图表 #1.{suffix}" if suffix == "jpeg" else f"图表.{suffix}")
+    Image.new("RGB", dimensions, "white").save(chart)
+    destination = tmp_path / "report.pptx"
+    result = build_editable_pptx(
+        output_path=destination, title="经营分析", period="2025年", theme="executive",
+        slides=({"title": "收入", "bullets": ["营业收入"], "chartPath": str(chart)},),
+    )
+    presentation = Presentation(destination)
+    picture = next(shape for shape in presentation.slides[1].shapes if shape.shape_type == MSO_SHAPE_TYPE.PICTURE)
+    assert picture.width / picture.height == pytest.approx(dimensions[0] / dimensions[1], rel=1e-5)
+    assert picture.image.blob == chart.read_bytes()
+    assert picture.left >= presentation.slide_width * 700 / 1280 - 1
+    assert picture.left + picture.width <= presentation.slide_width * 1160 / 1280 + 1
+    assert picture.top >= presentation.slide_height * 220 / 720 - 1
+    assert picture.top + picture.height <= presentation.slide_height * 540 / 720 + 1
+    assert not result.issues
+
+
 def test_pptx_chart_slide_retains_excess_content_and_reports_layout_warning(tmp_path) -> None:
     chart = tmp_path / "chart.png"
     Image.new("RGB", (460, 320), "white").save(chart)

@@ -154,6 +154,8 @@ from .chart_data_descriptors import (
 from .chart_inputs import (
     ChartInputMaterialization,
     _binding_catalog,
+    bound_fact_identities,
+    chart_input_key,
     chart_input_root_for,
     fallback_plan,
     prepare_chart_inputs,
@@ -1171,19 +1173,28 @@ class RuntimeAnalysisMixin:
                     # 范围与标准参数共用一次规划纠错；输入按绑定缓存，参数纠正不重复读取/写入事实。
                     chart_input_cache: dict[str, ChartInputMaterialization | None] = {}
                     render_proof_cache: dict[str, tuple[Mapping[str, Any], ...]] = {}
+                    evidence_sequence = 0
+
+                    async def record_visualization_evidence(event, _task_context):
+                        nonlocal evidence_sequence
+                        evidence_sequence += 1
+                        try:
+                            # 取消不能使已经发生的绘图尝试从耐久记录中消失。
+                            with anyio.CancelScope(shield=True):
+                                await self._apply_durable_command(run_context, ReportingCommand(
+                                    name="record_visualization_evidence",
+                                    commandId=f"visualization-evidence:{task_id}:{evidence_sequence}:{payload_sha256(event)}",
+                                    payload={"sectionCode": section_code, "taskId": task_id, "event": event},
+                                ))
+                        except Exception:
+                            logger.opt(exception=True).warning('report_visualization_evidence_persist_failed')
+
                     planner_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
                         "planner", agent_role="visualization-planner"
                     )
                     coding_metrics_recorder = invocation.model_metrics_settlement.stage_recorder(
                         "coding", agent_role="visualization-coding"
                     )
-
-                    def chart_input_key(plan: VisualizationPlanDraft) -> str:
-                        return payload_sha256({'charts': [
-                            {'chartId': chart.chart_id, 'dataBindings': [item.model_dump(mode='json', by_alias=True)
-                                                                       for item in chart.data_bindings]}
-                            for chart in plan.charts
-                        ]})
 
                     async def materialized_inputs(plan: VisualizationPlanDraft, task_context: RunContext):
                         binding = task_context.dependencies.get('AgentOS 任务执行') if isinstance(task_context.dependencies, Mapping) else None
@@ -1193,13 +1204,45 @@ class RuntimeAnalysisMixin:
                             chart_input_cache[plan_key] = await prepare_chart_inputs(
                                 plan, facts, self._run_workspace(run_context), thread_id=str(coding_task_id),
                                 output_root=_visualization_chart_input_root(root))
+                            inputs = chart_input_cache[plan_key]
+                            file_identities = {item.path: {"path": item.path, "size": len(item.content), "sha256": item.sha256}
+                                               for item in inputs.files} if inputs is not None else {}
+                            await record_visualization_evidence({"event": "inputs", "planKey": plan_key,
+                                "files": list(file_identities.values()),
+                                "chartInputFiles": [{"chartId": entry["chartId"], **file_identities[entry["path"]]}
+                                    for entry in inputs.entries if entry.get("path") in file_identities
+                                    and entry.get("sha256") == file_identities[entry["path"]]["sha256"]
+                                    and "chartId" in entry] if inputs is not None else [],
+                                "fallbackChartIds": sorted(inputs.fallback_chart_ids) if inputs is not None else
+                                                    [chart.chart_id for chart in plan.charts],
+                                "sourceFiles": list(bound_fact_identities(plan, facts).values()),
+                            }, task_context)
                         return chart_input_cache[plan_key]
 
                     async def preflight_plan(plan: VisualizationPlanDraft, task_context: RunContext):
+                        from .standard_chart_contract import resolve_standard_form
                         from .standard_visualization import standard_plan_diagnostics
 
                         inputs = await materialized_inputs(plan, task_context)
-                        return standard_plan_diagnostics(plan, inputs) if inputs is not None else []
+                        diagnostics = standard_plan_diagnostics(plan, inputs) if inputs is not None else []
+                        by_chart = {item["chartId"]: item["code"] for item in diagnostics}
+                        available = ({entry["chartId"] for entry in inputs.entries} - inputs.fallback_chart_ids
+                                     if inputs is not None else set())
+                        outcomes = []
+                        for chart in plan.charts:
+                            chart_id = chart.chart_id
+                            form = ("custom" if getattr(chart, "standard_form", None) == "custom"
+                                    else resolve_standard_form(chart) or "unknown")
+                            diagnostic = by_chart.get(chart_id)
+                            status = ("custom" if form == "custom" else
+                                      "unknown" if chart_id not in available else
+                                      "unsupported" if diagnostic else "supported")
+                            outcomes.append({"chartId": chart_id, "form": form, "status": status,
+                                             **({"diagnosticCode": diagnostic} if diagnostic else {})})
+                        await record_visualization_evidence({"event": "preflight", "planKey": chart_input_key(plan),
+                            "planSha256": payload_sha256(plan.model_dump(mode="json", by_alias=True)),
+                            "charts": outcomes}, task_context)
+                        return diagnostics
 
                     async def generate_plan(
                         request: Mapping[str, Any], task_context: RunContext
@@ -1228,17 +1271,39 @@ class RuntimeAnalysisMixin:
                             )
 
                         async def finalize_plan(candidate: VisualizationPlanDraft) -> VisualizationPlanDraft:
-                            scoped = _section_scoped_chart_ids(
-                                _limit_requested_charts(candidate, report_goal, len(section.analysis_ids),
-                                                        max_charts=context.get("max_charts")), section_code)
-                            scoped = _validate_visualization_plan_bindings(scoped, request)
+                            original = {"event": "original_plan",
+                                        "plan": candidate.model_dump(mode="json", by_alias=True)}
+                            try:
+                                scoped = _section_scoped_chart_ids(
+                                    _limit_requested_charts(candidate, report_goal, len(section.analysis_ids),
+                                                            max_charts=context.get("max_charts")), section_code)
+                                scoped = _validate_visualization_plan_bindings(scoped, request)
+                            except BaseException as error:
+                                await record_visualization_evidence({**original,
+                                    "status": "cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+                                    "errorCode": getattr(error, "code", type(error).__name__)}, task_context)
+                                raise
                             limit = _requested_chart_limit(report_goal, len(section.analysis_ids))
                             if context.get("max_charts") is not None:
                                 limit = min(limit, context["max_charts"]) if limit is not None else context["max_charts"]
                             binding = task_context.dependencies.get("AgentOS 任务执行") if isinstance(task_context.dependencies, Mapping) else None
                             pagination_task_id = (binding.get("externalRunId") if isinstance(binding, Mapping) else None) or task_id
-                            return await prepare_standard_paginated_plan(scoped, facts, self._run_workspace(run_context),
+                            await record_visualization_evidence({**original,
+                                "scopedPlan": scoped.model_dump(mode="json", by_alias=True)}, task_context)
+                            expanded = await prepare_standard_paginated_plan(scoped, facts, self._run_workspace(run_context),
                                 thread_id=str(pagination_task_id), output_root=_visualization_chart_input_root(root), max_charts=limit)
+                            original_ids = {chart.chart_id for chart in scoped.charts}
+                            mapping = {chart.chart_id: [] for chart in scoped.charts}
+                            current = None
+                            for chart in expanded.charts:
+                                if chart.chart_id in original_ids:
+                                    current = chart.chart_id
+                                if current is not None:
+                                    mapping[current].append(chart.chart_id)
+                            await record_visualization_evidence({"event": "pagination", "pageMapping": mapping,
+                                "originalChartCount": len(scoped.charts), "expandedChartCount": len(expanded.charts),
+                                "plan": expanded.model_dump(mode="json", by_alias=True)}, task_context)
+                            return expanded
 
                         if visualization_plan_adapter is not None:
                             return await finalize_plan(visualization_plan_adapter(output, request))
@@ -1381,6 +1446,14 @@ class RuntimeAnalysisMixin:
                                     if isinstance(error, ReportingError) and isinstance(error.details, Mapping)
                                     else None
                                 )
+                                await record_visualization_evidence({"event": "route_fallback", "status": "failed",
+                                    "planKey": chart_input_key(plan),
+                                    "planSha256": payload_sha256(plan.model_dump(mode="json", by_alias=True)),
+                                    "routes": list(getattr(error, 'standard_chart_routes', ())),
+                                    "executionAttempts": list(getattr(error, 'standard_execution_attempts', ())),
+                                    "routeExecution": getattr(error, 'standard_route_execution', None),
+                                    "errorCode": getattr(error, 'code', type(error).__name__),
+                                }, task_context)
                                 logger.warning(
                                     'report_standard_visualization_fallback error={} code={} parameter={}',
                                     type(error).__name__,
@@ -1389,7 +1462,12 @@ class RuntimeAnalysisMixin:
                                 )
                                 diagnostic = (standard_diagnostic if isinstance(standard_diagnostic, Mapping)
                                               else _visualization_failure_diagnostic(plan, error, script_path))
-                        result = standard_result or await code_runner().run(
+                        if standard_result is None:
+                            coding_runner = code_runner()
+                            await record_visualization_evidence({"event": "coding_started", "planKey": chart_input_key(plan),
+                                "planSha256": payload_sha256(plan.model_dump(mode="json", by_alias=True)),
+                                "chartIds": [chart.chart_id for chart in plan.charts]}, task_context)
+                        result = standard_result or await coding_runner.run(
                             coding_context,
                             task_workspace,
                             facts_payload,
@@ -1563,9 +1641,22 @@ class RuntimeAnalysisMixin:
                             ),
                         )
 
+                    async def review_chart_plan(plan, task_context):
+                        from .visualization_section_workflow import review_chart_period_semantics
+
+                        return await review_chart_period_semantics(
+                            plan, await materialized_inputs(plan, task_context),
+                            self.section_generator or visualization_planner or self.visualization_generator,
+                            section_code=section_code, scope=invocation.scope, run_context=task_context,
+                            thinking_request=ThinkingRequest(operation="visualization_plan",
+                                configured_budget_cap=self._analysis_thinking_budget_cap,
+                                thinking_enabled=self._analysis_thinking_enabled),
+                        )
+
                     workflow_kwargs: dict[str, Any] = {
                         "generate_plan": generate_plan,
                         "run_code": run_code,
+                        "record_evidence": record_visualization_evidence,
                         "submit": submit,
                         "record_warnings": record_chart_warnings,
                         "degrade": degrade,
@@ -1575,6 +1666,7 @@ class RuntimeAnalysisMixin:
                     }
                     if benchmark_projection is None:
                         workflow_kwargs['preflight_plan'] = preflight_plan
+                        workflow_kwargs['review_plan'] = review_chart_plan
                     if knowledge_index is not None:
                         workflow_kwargs["record_successful_repair"] = record_successful_repair
                     result = await VisualizationSectionWorkflow(
@@ -1786,6 +1878,7 @@ class RuntimeAnalysisMixin:
                             "aggregation",
                             "periodAggregation",
                             "unit",
+                            "isPercent",
                             "scope",
                             "periodRoles",
                             "periodStart",

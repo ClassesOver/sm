@@ -924,21 +924,56 @@ def finish_standard_layout(fig, policy):
     obstacles = [ax.get_legend().get_window_extent(renderer).expanded(1.02, 1.05)
                  for ax in fig.axes if ax.get_legend() is not None]
     obstacles.extend(ax.title.get_window_extent(renderer) for ax in fig.axes if ax.title.get_text())
+    # Path及裁剪框均转换到显示坐标；双轴、参考线和NaN断点不能按ax.transData猜测。
+    from matplotlib.path import Path
+    from matplotlib.transforms import Bbox
+    line_paths = []
+    for ax in [*fig.axes, *(child for ax in fig.axes for child in ax.child_axes)]:
+        for line in ax.lines:
+            if (not line.get_visible() or line.get_alpha() == 0 or line.get_linewidth() <= 0
+                    or line.get_linestyle() in ("None", "none", "", " ")):
+                continue
+            path = line.get_path().transformed(line.get_transform()).cleaned(remove_nans=True)
+            # intersects_bbox对复合路径会跨MOVETO误判；独立检测Matplotlib保留的连续子路径。
+            starts = [index for index, code in enumerate(path.codes) if code == Path.MOVETO]
+            paths = [Path(path.vertices[start:end]) for start, end in zip(starts, starts[1:] + [len(path.vertices) - 1])
+                     if end - start > 1]
+            clip = line.get_clip_box() if line.get_clip_on() else None
+            clip_path, transform = line.get_transformed_clip_path_and_affine() if line.get_clip_on() else (None, None)
+            line_paths.append((paths, clip, clip_path.transformed(transform) if clip_path is not None else None,
+                               renderer.points_to_pixels(line.get_linewidth()) / 2))
+
+    def crosses_line(bounds):
+        for paths, clip, clip_path, radius in line_paths:
+            visible = bounds.padded(radius + 1)
+            if clip is not None:
+                visible = Bbox.intersection(visible, clip)
+                if visible is None:
+                    continue
+            if clip_path is not None and not clip_path.intersects_bbox(visible, filled=True):
+                continue
+            if any(path.intersects_bbox(visible, filled=False) for path in paths):
+                return True
+        return False
+
     placed = []
     for annotation in annotations:
-        for attempt in range(16):
+        original_x, original_y = annotation.get_position()
+        offsets = [(0, 0)] + [(0, 12 * step) for step in range(1, 16)]
+        offsets += [(0, -12 * step) for step in range(1, 16)]
+        offsets += [(direction * 12 * step, 0) for step in range(1, 16) for direction in (-1, 1)]
+        for dx, dy in offsets:
+            annotation.set_position((original_x + dx, original_y + dy))
+            annotation.update_positions(renderer)
             # Exclude the leader line: only text glyph bounds define collisions.
             from matplotlib.text import Text
             bounds = Text.get_window_extent(annotation, renderer).expanded(1.04, 1.12)
-            if not any(bounds.overlaps(previous) for previous in [*placed, *obstacles]):
-                if policy["crop"] == "canvas" and (bounds.x0 < 0 or bounds.y0 < 0 or
-                        bounds.x1 > fig.bbox.width or bounds.y1 > fig.bbox.height):
-                    raise ValueError("standard_chart_layout_unresolved: 标注超出画布，请扩大尺寸或调整位置")
+            if policy["crop"] == "canvas" and (bounds.x0 < 0 or bounds.y0 < 0 or
+                    bounds.x1 > fig.bbox.width or bounds.y1 > fig.bbox.height):
+                continue
+            if not any(bounds.overlaps(previous) for previous in [*placed, *obstacles]) and not crosses_line(bounds):
                 placed.append(bounds)
                 break
-            x, y = annotation.get_position()
-            annotation.set_position((x, y + 12))
-            annotation.update_positions(renderer)
         else:
             raise ValueError("standard_chart_layout_unresolved: 标注重叠，请减少密度或调整布局")
     for ax in fig.axes:
@@ -1019,7 +1054,8 @@ _ADVANCED = '''def render_advanced(labels, names, raw_series, metadata, policy, 
             target.set_title(alias + ("（独立排序）" if form == "barh" else "（独立纵轴）"), fontsize=10)
         missing = [labels[i] for i, value in enumerate(values) if not math.isfinite(value)]
         if missing:
-            target.text(.01, .02 + .035 * index, name + " 缺失（保留空位）: " + "、".join(missing),
+            alias = overrides.get(name, {}).get("label") or name
+            target.text(.01, .02 + .035 * index, alias + " 缺失（保留空位）: " + "、".join(missing),
                         transform=target.transAxes, fontsize=7, color="#64748b")
     for target in axes:
         target.legend(frameon=False, loc="upper left" if target is axes[0] else "upper right")
@@ -1208,7 +1244,8 @@ for input_path, digest, output_path, title, form, label_column, value_columns, c
     for index, (name, values) in enumerate(zip(names, series, strict=True)):
         missing = [labels[i] for i, value in enumerate(values) if not math.isfinite(value)]
         if missing and axes_policy["allow_nulls"]:
-            ax.text(.01, .02 + .035 * index, name + " 缺失（保留空位）: " + "、".join(missing),
+            alias = next((item["label"] for item in canvas["style"]["series"] if item["series"] == name and item["label"]), name)
+            ax.text(.01, .02 + .035 * index, alias + " 缺失（保留空位）: " + "、".join(missing),
                     transform=ax.transAxes, fontsize=7, color="#64748b")
     for annotation_index, (kind, series_index, first, last) in enumerate(annotations):
         if kind == "range":

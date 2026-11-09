@@ -4,6 +4,9 @@ Vendored from local sheets-web/packages/xlsx-engine, package @sheets-web/xlsx-en
 
 Only this engine and its tests are migrated. Node bridge and report integration are smart_reporting additions. Browser and server import this same package. No runtime dependency on adjacent sheets-web sources.
 
+The local static report image extension in `src/chart-add.ts` reuses the existing drawing, anchor, relationship, and package pipeline. `LOCAL-ADAPTATIONS-SHA256.json` pins the modified engine file. Server-only file identity checks are in `bridge/images.ts`.
+
+
 ## 2026-11-05 selective upstream maintenance
 
 Reviewed GenOffice `4b55db9ed1994575a695160ffc6cfd0bfc866211` (2026-11-04 snapshot). The engine remains the sheets-web browser-safe subset, with three upstream fixes backported: Excel 1900 serial-date grouping (`92ab9c46`), numeric text in baked pivot aggregates/calculated fields (`17cd6e4a`), and deterministic non-finite sort keys (`69880bc8`). See UPSTREAM.md for scope and exclusions. This is not a replacement with the complete latest `@genoffice/xlsx-gateway`.

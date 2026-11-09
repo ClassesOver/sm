@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -21,7 +22,8 @@ from ...model_policy import ThinkingRequest, bind_reporting_thinking, select_rep
 from ...models import ReportingError
 from ...phase import bounded_python_script_diagnostic
 from ..benchmark_variants import BenchmarkProjection
-from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity
+from ..checkpoint import ChartVisualInspectionReceipt, FileIdentity, payload_sha256
+from .chart_inputs import chart_input_key
 from .code_generation import (
     CodeGenerationResult,
     _bounded_forbidden_path_operations,
@@ -178,23 +180,30 @@ def _validate_visualization_plan_bindings(
             if declared_fields is not None and set(binding.fields).issubset(declared_fields):
                 corrected_bindings.append(binding)
                 continue
-            # 先保留精确表索引修正文件，避免收入/成本表同列而被判为歧义。
-            # 字段兜底只在同类数据结构中匹配，不能把 findings 改成 metrics。
+            # 列名是形状证据，不能用来选择业务表。只允许同表的 rows 别名、
+            # 未登记文件的唯一原路径，或同一文件中唯一同结构表的无效索引。
             binding_fields = frozenset(binding.fields)
-            root = binding.data_path.split('[', 1)[0].split('.', 1)[0]
-            candidates = [
-                (path, data_path)
-                for path, data_path, fields in by_analysis.get(binding.analysis_id, ())
-                if binding_fields and binding_fields == set(fields)
-                and data_path.split('[', 1)[0].split('.', 1)[0] == root
+            descriptors = by_analysis.get(binding.analysis_id, ())
+            same_file = [(data_path, fields) for path, data_path, fields in descriptors
+                         if path == binding.fact_path]
+            row_tables = [
+                (binding.fact_path, data_path) for data_path, fields in same_file
+                if data_path == binding.data_path + '.rows' and binding_fields and binding_fields <= fields
             ]
-            exact_tables = [
-                (path, data_path)
-                for path, data_path, fields in by_analysis.get(binding.analysis_id, ())
-                if data_path == binding.data_path and binding_fields and binding_fields <= fields
-            ]
-            if exact_tables:
-                candidates = exact_tables
+            candidates = []
+            if row_tables:
+                candidates = row_tables
+            elif not same_file:
+                exact_tables = [(path, data_path, fields) for path, data_path, fields in descriptors
+                                if data_path == binding.data_path]
+                if len(exact_tables) == 1 and binding_fields and binding_fields <= exact_tables[0][2]:
+                    candidates = [(exact_tables[0][0], exact_tables[0][1])]
+            elif declared_fields is None and binding.data_path.count('[') == 1:
+                shape = re.sub(r'\[\d+\]', '[]', binding.data_path)
+                siblings = [(data_path, fields) for data_path, fields in same_file
+                            if re.sub(r'\[\d+\]', '[]', data_path) == shape]
+                if len(siblings) == 1 and binding_fields and binding_fields == siblings[0][1]:
+                    candidates = [(binding.fact_path, siblings[0][0])]
             if len(candidates) == 1:
                 corrected_path, corrected_data_path = candidates[0]
                 logger.bind(
@@ -591,6 +600,83 @@ def _merge_standard_chart_parameters(chart: ChartDraft, replacement: ChartDraft,
     return result
 
 
+async def review_chart_period_semantics(
+    plan, inputs, agent, *, section_code, scope, run_context, thinking_request,
+) -> tuple[dict[str, Any], ...]:
+    """复用正文语义解释阶段；只比较有原文依据的期间，不猜测标题年份。"""
+    from ...hospital_operation.deterministic_analysis import metric_period_key
+    from .phase_models import SectionSemanticReview
+    from .sections import _run_section_stage, _validated_section_semantic_review
+
+    contexts, references, owners = {}, [], {}
+    files = {item.path: item for item in inputs.files} if inputs is not None else {}
+    for index, chart in enumerate(plan.charts):
+        periods = set()
+        entries = [entry for entry in inputs.entries if entry.get('chartId') == chart.chart_id] if inputs is not None else []
+        for entry in entries:
+            source = files.get(entry.get('path'))
+            if source is None or source.sha256 != entry.get('sha256'):
+                continue
+            document = json.loads(source.content)
+            columns = document.get('columns', ())
+            if 'period' not in columns:
+                continue
+            values = [row[columns.index('period')] for row in document.get('rows', ())]
+            # 简单单表图能逐字验证展示窗口；多源归一、排序截取和视图不从原表猜展示范围。
+            labels = chart.standard_labels
+            if (labels and len(entries) == 1 and chart.standard_form in {'line', 'bar', 'barh'}
+                    and chart.standard_label_field in {None, 'period'}
+                    and not (chart.standard_sources or chart.standard_steps or chart.standard_view)
+                    and chart.standard_presentation.order.limit is None
+                    and not chart.standard_presentation.order.exclude_missing
+                    and set(labels).issubset(values)):
+                values = labels
+            for value in values:
+                key = metric_period_key(value, chart.aggregation_grain if chart.aggregation_grain in {'day', 'month', 'year'} else None) if isinstance(value, str) else None
+                if key is not None:
+                    grain, date = key
+                    periods.add(date.isoformat()[:{'year': 4, 'month': 7, 'day': 10}[grain]])
+        if not periods:
+            continue
+        for field, text in [('title', chart.title), ('altText', chart.alt_text), ('currentPeriod', chart.current_period)]:
+            claim_id = f'chart-{index}-{field}'
+            # 每个字段独立定位，共同上下文只含同图元数据，不能从冻结期间反推原文。
+            context = f'标题：{chart.title}\n替代文本：{chart.alt_text}\n声明期间：{chart.current_period}\n当前字段：{text}'
+            contexts[claim_id] = context
+            references.append({'claimId': claim_id, 'contextId': claim_id,
+                'claimOffset': len(context), 'localText': text + '【当前数值引用】',
+                'displayText': text, 'scope': {}, 'periods': sorted(periods)})
+            current_ambiguous = field == 'currentPeriod' and (chart.comparison_type != 'none' or len(entries) != 1)
+            owners[claim_id] = (chart.chart_id, field, text, sorted(periods), current_ambiguous)
+    if not references:
+        return ()
+    try:
+        review = await _run_section_stage(agent, SectionSemanticReview, 'semantics',
+            {'contexts': contexts, 'references': references, 'quantitySources': []},
+            section_code=section_code, scope=scope, run_context=run_context,
+            thinking_request=thinking_request, response_validator=_validated_section_semantic_review)
+        interpretations = {item.claim_id: item for item in review.interpretations}
+    except Exception:
+        logger.opt(exception=True).warning('report_chart_period_semantics_unavailable')
+        interpretations = {}
+    warnings = []
+    for claim_id, (chart_id, field, text, periods, current_ambiguous) in owners.items():
+        item = interpretations.get(claim_id)
+        grounded = (item is not None and item.periods and item.period_evidence
+                    and all(part.strip() and part in contexts[claim_id] for part in item.period_evidence)
+                    and any(part in text for part in item.period_evidence))
+        mismatch = grounded and (not set(item.periods).issubset(periods)
+                                 if current_ambiguous else sorted(item.periods) != periods)
+        if grounded and not mismatch and not current_ambiguous:
+            continue
+        warnings.append({'code': 'report_chart_period_mismatch' if mismatch else 'report_chart_period_unreviewed',
+            'chartId': chart_id, 'message': f'图表{field}期间与来源不一致，需复核。' if mismatch else f'图表{field}期间语义尚未确认。',
+            'details': {'field': field, 'sourcePeriods': periods,
+                        'interpretedPeriods': list(item.periods) if grounded else [],
+                        'periodEvidence': list(item.period_evidence) if grounded else []}})
+    return tuple(warnings)
+
+
 class VisualizationSectionWorkflow:
     """数据范围与标准参数合并纠正最多一次；执行修复仍独立限次。"""
 
@@ -606,6 +692,8 @@ class VisualizationSectionWorkflow:
         | None = None,
         record_warnings: Callable[[tuple[dict[str, Any], ...], RunContext], Awaitable[None]]
         | None = None,
+        review_plan: Callable[[VisualizationPlanDraft, RunContext], Awaitable[tuple[dict[str, Any], ...]]] | None = None,
+        record_evidence: Callable[[dict[str, Any], RunContext], Awaitable[None]] | None = None,
         thinking_enabled: bool = True,
         thinking_budget_cap: int = 8192,
         benchmark_projection: BenchmarkProjection | None = None,
@@ -614,7 +702,9 @@ class VisualizationSectionWorkflow:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.generate_plan = generate_plan
-        self.run_code = run_code
+        self._run_code = run_code
+        self.record_evidence = record_evidence
+        self.review_plan = review_plan
         self.submit = submit
         self.preflight_plan = preflight_plan
         self.degrade = degrade
@@ -631,6 +721,48 @@ class VisualizationSectionWorkflow:
         self.thinking_enabled = thinking_enabled
         self.thinking_budget_cap = thinking_budget_cap
         self.benchmark_projection = benchmark_projection
+
+    async def _record_evidence(self, event: dict[str, Any], run_context: RunContext) -> None:
+        if self.record_evidence is None:
+            return
+        try:
+            await self.record_evidence(event, run_context)
+        except Exception:
+            logger.opt(exception=True).warning("report_visualization_evidence_persist_failed")
+
+    async def run_code(self, plan, run_context, **kwargs):
+        from .standard_chart_contract import resolve_standard_form
+
+        if self.record_evidence is None:
+            return await self._run_code(plan, run_context, **kwargs)
+        counts: dict[str, int] = {}
+        for chart in plan.charts:
+            form = ('custom' if chart.standard_form == 'custom' else resolve_standard_form(chart)) or 'unknown'
+            counts[form] = counts.get(form, 0) + 1
+        document = plan.model_dump(mode="json", by_alias=True)
+        event = {"event": "execution", "chartCount": len(plan.charts), "formCounts": counts,
+                 "chartIds": [chart.chart_id for chart in plan.charts], "planKey": chart_input_key(plan),
+                 "plan": document, "planSha256": payload_sha256(document)}
+        try:
+            result = await self._run_code(plan, run_context, **kwargs)
+        except BaseException as error:
+            await self._record_evidence({**event,
+                "status": "cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+                "routes": list(getattr(error, "standard_chart_routes", ())),
+                "executionAttempts": list(getattr(error, "standard_execution_attempts", ())),
+                "routeExecution": getattr(error, "standard_route_execution", None),
+                "errorCode": getattr(error, "code", type(error).__name__),
+            }, run_context)
+            raise
+        await self._record_evidence({**event, "status": "completed",
+            "routes": list(result.standard_chart_routes),
+            "executionAttempts": list(result.execution_attempts),
+            "stageTimings": result.stage_timings, "routeTotalMs": result.route_total_ms,
+            "scriptFile": result.script_file.model_dump(mode="json", by_alias=True),
+            "outputFiles": [item.model_dump(mode="json", by_alias=True)
+                            for item in result.execution_receipt.output_files],
+        }, run_context)
+        return result
 
     async def _degrade(self, error: Exception, run_context: RunContext) -> Mapping[str, Any]:
         assert self.degrade is not None
@@ -654,6 +786,20 @@ class VisualizationSectionWorkflow:
         )
 
     async def run(
+        self, payload: Mapping[str, Any], run_context: RunContext
+    ) -> VisualizationWorkflowResult:
+        try:
+            result = await self._run(payload, run_context)
+        except BaseException as error:
+            await self._record_evidence({"event": "workflow",
+                "status": "cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+                "errorCode": getattr(error, "code", type(error).__name__),
+            }, run_context)
+            raise
+        await self._record_evidence({"event": "workflow", "status": result.status}, run_context)
+        return result
+
+    async def _run(
         self, payload: Mapping[str, Any], run_context: RunContext
     ) -> VisualizationWorkflowResult:
         try:
@@ -705,6 +851,7 @@ class VisualizationSectionWorkflow:
             payload = {**payload, 'standardChartCapabilities': standard_chart_capabilities()}
         plan = await self.generate_plan(payload, run_context)
         plan = _validate_visualization_plan_bindings(plan, payload)
+        await self._record_evidence({"event": "plan", "plan": plan.model_dump(mode="json", by_alias=True)}, run_context)
         scope_issues = _ranked_detail_scope_issues(plan)
         standard_issues = []
         if self.preflight_plan is not None:
@@ -770,6 +917,17 @@ class VisualizationSectionWorkflow:
                         len(scope_issues) - len(remaining), len(unsafe))
             if standard_issues:
                 logger.info('report_visualization_standard_plan_repair charts={} retry_limit=1', len(standard_issues))
+        if self.review_plan is not None:
+            try:
+                semantic_warnings = await self.review_plan(plan, run_context)
+                if semantic_warnings:
+                    plan = plan.model_copy(update={"warnings": tuple(dict.fromkeys((*plan.warnings, *(
+                        f"{warning['chartId']}：{warning['message']}" for warning in semantic_warnings
+                    ))))[-100:]})
+                    if self.record_warnings is not None:
+                        await self.record_warnings(semantic_warnings, run_context)
+            except Exception:
+                logger.opt(exception=True).warning('report_chart_period_review_failed')
         benchmark_kwargs = (
             {"benchmark_projection": self.benchmark_projection}
             if self.benchmark_projection is not None
@@ -883,6 +1041,13 @@ class VisualizationSectionWorkflow:
                 inspections = _validated_visual_receipts(generated_result, plan)
                 receipt = await self.submit(plan, inspections, run_context)
                 _raise_rejected_submission(receipt)
+                await self._record_evidence({"event": "submission", "status": "accepted",
+                    "planKey": chart_input_key(plan),
+                    "planSha256": payload_sha256(plan.model_dump(mode="json", by_alias=True)),
+                    "chartIds": [chart.chart_id for chart in plan.charts],
+                    "outputFiles": [item.model_dump(mode="json", by_alias=True)
+                        for item in generated_result.execution_receipt.output_files],
+                }, run_context)
                 if successful_repair is not None and self.record_successful_repair is not None:
                     await self.record_successful_repair(*successful_repair)
                 # 成功软告警只随结果追加；提交前改计划会改变物化输入的缓存键。

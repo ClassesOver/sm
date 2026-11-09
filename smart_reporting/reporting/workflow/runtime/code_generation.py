@@ -516,6 +516,8 @@ class ReportingCodeGenerationRunner:
             agent: Any = None
             input_components: dict[str, dict[str, int | str]] = {}
             terminal_failure_code: str | None = None
+            terminal_error: BaseException | None = None
+            coding_observation: dict[str, Any] = {}
             host_tool_results = 0
             compact_continuation_applied = False
             run_compaction: dict[str, Any] = {
@@ -565,6 +567,9 @@ class ReportingCodeGenerationRunner:
                 model = getattr(agent, "model", None)
                 raw_protocol_reader = getattr(model, "code_run_raw_protocol_correct", None)
                 request_metrics_reader = getattr(model, "code_run_request_metrics", None)
+                drain_spans = getattr(self.code_mode_runtime, "drain_execution_spans", None)
+                coding_spans = (drain_spans(task_context.code_mode_session_id)
+                                if callable(drain_spans) else "unknown")
                 sample = build_coding_metric_sample(
                     duration_ms=max(0, round((perf_counter() - started_at) * 1000)),
                     task_id=task_context.task_id,
@@ -621,13 +626,29 @@ class ReportingCodeGenerationRunner:
                         terminal_failure_code,
                         getattr(toolkit, "last_failure", None),
                     ),
-                    execution_spans=(
-                        self.code_mode_runtime.drain_execution_spans(
-                            task_context.code_mode_session_id
-                        )
-                        if callable(getattr(self.code_mode_runtime, "drain_execution_spans", None))
-                        else "unknown"
-                    ),
+                    execution_spans=coding_spans,
+                )
+                # 与日志共享同次drain；保留真实边界，script不是纯Matplotlib绘图耗时。
+                timings = {"total": sample["durationMs"]}
+                if isinstance(coding_spans, Mapping):
+                    for name, values in coding_spans.items():
+                        if isinstance(values, (list, tuple)) and all(
+                            isinstance(value, (int, float)) and not isinstance(value, bool)
+                            and value >= 0 for value in values
+                        ):
+                            timings[name] = round(sum(values))
+                review_ms = sample["visualReviewDurationMs"]
+                if isinstance(review_ms, int):
+                    timings["inspect"] = review_ms
+                requests = sample["modelRequestMetrics"]
+                if requests and all(isinstance(item["durationMs"], int) for item in requests):
+                    timings["model_wait"] = sum(item["durationMs"] for item in requests)
+                coding_observation.update(
+                    status=("cancelled" if isinstance(terminal_error, asyncio.CancelledError)
+                            else "failed" if terminal_error is not None else "succeeded"),
+                    stageTimings=timings, executionSpans=coding_spans,
+                    modelRequests=sample["modelRequests"], toolCalls=sample["toolCalls"],
+                    timingBoundary="coding_agent_with_cleanup",
                 )
                 if task_context.task_kind == "visualization":
                     # V5：闸门降级提交单独计量，不并入干净通过；类别来自完整回执。
@@ -1021,11 +1042,16 @@ class ReportingCodeGenerationRunner:
                     )
             except ReportingError as error:
                 terminal_failure_code = error.code
+                terminal_error = error
                 raise
             except Exception as error:
                 failure = self._agent_failure(error)
                 terminal_failure_code = failure.code
+                terminal_error = failure
                 raise failure from error
+            except BaseException as error:
+                terminal_error = error
+                raise
             finally:
                 try:
                     await self.code_mode_runtime.shutdown(task_context.code_mode_session_id)
@@ -1036,7 +1062,17 @@ class ReportingCodeGenerationRunner:
                         type(shutdown_error).__name__,
                     )
                 record_coding_metrics()
-            await toolkit.require_current_receipt(receipt)
+                if terminal_error is not None:
+                    terminal_error.standard_execution = dict(coding_observation)
+            try:
+                await toolkit.require_current_receipt(receipt)
+            except BaseException as error:
+                coding_observation.update(
+                    status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
+                    failedStage="current_receipt",
+                )
+                error.standard_execution = dict(coding_observation)
+                raise
             visual_receipts = tuple(
                 binding.visual_inspection_receipts[path]
                 for path in sorted(binding.visual_inspection_receipts)
@@ -1057,6 +1093,9 @@ class ReportingCodeGenerationRunner:
                     if task_context.task_kind == "visualization"
                     else None
                 ),
+                execution_spans=coding_observation["executionSpans"],
+                stage_timings=coding_observation["stageTimings"],
+                execution_attempts=(coding_observation,),
             )
 
     @staticmethod

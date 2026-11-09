@@ -1,0 +1,53 @@
+{
+  "chart_id": "unit-negative-long-chinese",
+  "renderer": "matplotlib",
+  "interactive_path": null,
+  "visual_form": "barh",
+  "standard_form": "barh",
+  "source_path": "standard.png",
+  "title": "2026年二月院区收入与预算（DRG）",
+  "alt_text": "2026年二月院区实际收入和预算对照；保留DRG、MRI，负数为冲销，未上报为空。",
+  "current_period": "2026-02",
+  "comparison_type": "none",
+  "comparability": "strict",
+  "standard_label_field": "科室",
+  "standard_value_fields": [
+    "actual",
+    "budget"
+  ],
+  "standard_canvas": {
+    "sizeMode": "fixed",
+    "width": 14,
+    "height": 8,
+    "dpi": 100
+  },
+  "standard_style": {
+    "labelRotation": 0,
+    "series": [
+      {
+        "series": "actual",
+        "label": "实际收入"
+      },
+      {
+        "series": "budget",
+        "label": "预算收入"
+      }
+    ]
+  },
+  "standard_axes": {
+    "allowNulls": true
+  },
+  "standard_display_unit": "万元",
+  "standard_annotations": [
+    {
+      "kind": "point",
+      "series": "actual",
+      "label": "华东院区超长中文门诊业务管理中心（DRG）",
+      "caption": "冲销金额"
+    }
+  ],
+  "standard_presentation": {
+    "subtitle": "负数表示冲销；缺失不等于零",
+    "sourceNote": "数据来源：合成业务台账；DRG、MRI保留原名。"
+  }
+}
