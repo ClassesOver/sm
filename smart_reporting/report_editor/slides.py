@@ -70,7 +70,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
         raise ReportingError("report_slides_edit_invalid", "页面背景内容无效。")
     if len({item["slideIndex"] for item in backgrounds}) != len(backgrounds):
         raise ReportingError("report_slides_edit_invalid", "同一页面只能设置一次背景。")
-    optional = {"fontSize", "fontFamily", "color", "bold", "rotation"}
+    optional = {"fontSize", "fontFamily", "color", "bold", "rotation", "field"}
     if (
         not isinstance(text_boxes, list) or len(text_boxes) > _MAX_STRUCTURE_EDITS
         or any(
@@ -93,6 +93,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
             or ("color" in item and (not isinstance(item["color"], str) or not _HEX_COLOR.match(item["color"])))
             or ("bold" in item and not isinstance(item["bold"], bool))
             or ("rotation" in item and not _number(item["rotation"], -360, 360))
+            or ("field" in item and item["field"] not in {"slidenum", "datetime1"})
             for item in text_boxes
         )
     ):

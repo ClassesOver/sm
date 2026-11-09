@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import os
 import subprocess
 from pathlib import Path
@@ -722,4 +723,24 @@ def test_slides_bridge_inserts_table_with_pinned_geometry_alongside_other_edits(
     for bad in ({"slideIndex": 0, "rows": 0, "cols": 5}, {"slideIndex": 0, "rows": 2, "cols": 76}, {"slideIndex": 99, "rows": 2, "cols": 2}, {"slideIndex": 0, "rows": 2, "cols": 2, "style": "x"}):
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "tables": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_inserts_slide_number_and_date_fields(tmp_path: Path):
+    """固定源 insertField：文本框中的 <a:fld type="slidenum|datetime1">，缓存文字保留；未知字段拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "fields.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)), "textBoxes": [
+        {"slideIndex": 0, "text": "1", "field": "slidenum", "fontSize": 18, "geometry": {"x": 430, "y": 248, "width": 100, "height": 44}},
+        {"slideIndex": 0, "text": "2026/11/9", "field": "datetime1", "fontSize": 18, "geometry": {"x": 360, "y": 300, "width": 240, "height": 44}},
+    ]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    assert re.search(r'<a:fld id="\{[0-9A-F-]+\}" type="slidenum">.*?<a:t>1</a:t></a:fld>', xml)
+    assert re.search(r'<a:fld id="\{[0-9A-F-]+\}" type="datetime1">.*?<a:t>2026/11/9</a:t></a:fld>', xml)
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "textBoxes": [
+            {"slideIndex": 0, "text": "x", "field": "author", "geometry": {"x": 1, "y": 1, "width": 10, "height": 10}}]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()

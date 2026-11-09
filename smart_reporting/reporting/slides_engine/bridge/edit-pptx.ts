@@ -23,6 +23,8 @@ type TextBox = {
   color?: string
   bold?: boolean
   rotation?: number
+  /** 固定源 insertField：slidenum（幻灯片编号）或 datetime1（日期） */
+  field?: 'slidenum' | 'datetime1'
 }
 type Input = {
   action: 'inspect' | 'edit'
@@ -334,6 +336,7 @@ if (request.action === 'inspect') {
     if (box.color !== undefined && (typeof box.color !== 'string' || !colorPattern.test(box.color))) throw new Error('textbox_color_invalid')
     if (box.bold !== undefined && typeof box.bold !== 'boolean') throw new Error('textbox_font_invalid')
     if (box.rotation !== undefined && (!Number.isFinite(box.rotation) || Math.abs(box.rotation) > 360)) throw new Error('textbox_rotation_invalid')
+    if (box.field !== undefined && !['slidenum', 'datetime1'].includes(box.field)) throw new Error('textbox_field_invalid')
   }
   for (const edit of request.edits ?? []) {
     if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
@@ -512,7 +515,9 @@ if (request.action === 'inspect') {
     const element = addElement(originalSlides[box.slideIndex]!, {
       kind: 'textbox',
       offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
-      paragraphs: box.text.split(/\r?\n/).map((text) => ({ runs: [{
+      // 固定源 insertField：页码/日期为 <a:fld> 动态字段（文字为缓存值），居中。
+      paragraphs: box.text.split(/\r?\n/).map((text) => ({ ...(box.field ? { align: 'center' as const } : {}), runs: [{
+        ...(box.field ? { field: box.field } : {}),
         text,
         fontSize: box.fontSize ?? 18,
         ...(box.fontFamily ? { fontFamily: box.fontFamily } : {}),

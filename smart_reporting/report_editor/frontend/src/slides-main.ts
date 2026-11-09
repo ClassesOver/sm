@@ -31,7 +31,7 @@ type GeneratedImage = { candidateId: string; mediaType: string; previewDataUrl: 
 type ImageEdit = { candidateId: string; slideIndex: number; geometry: { x: number; y: number; width: number; height: number } }
 type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
 type AnimationTrigger = 'onClick' | 'withPrev' | 'afterPrev'
-type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; watermark: boolean }
+type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; field?: 'slidenum' | 'datetime1'; watermark: boolean }
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }
@@ -150,9 +150,12 @@ const resetLayouts = new Set<number>()
 const shapeEdits: ShapeEdit[] = []
 /** 固定源 Insert ▸ Table：待插入表格（行×列，1–75）；位置由引擎按固定源规格计算。 */
 const tableEdits: { slideIndex: number; rows: number; cols: number }[] = []
+// 对话框按需创建、关闭即移除，不常驻编辑器 DOM。
+function openTableDialog() {
 const tableDialog = document.createElement('dialog'); tableDialog.className = 'slides-table-dialog'; tableDialog.setAttribute('aria-label', '插入表格')
 tableDialog.innerHTML = '<h3>插入表格</h3><label>列数 <input name="cols" type="number" min="1" max="75" value="5"></label><label>行数 <input name="rows" type="number" min="1" max="75" value="2"></label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div>'
 host.append(tableDialog)
+tableDialog.addEventListener('close', () => tableDialog.remove())
 tableDialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => tableDialog.close())
 tableDialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', () => {
   const read = (name: string) => Number(tableDialog.querySelector<HTMLInputElement>(`input[name=${name}]`)!.value)
@@ -164,6 +167,8 @@ tableDialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListen
   canvasStatus.textContent = '新增表格将在保存并打开新修订后显示在画布中。'
   renderStructurePending(); markDirty()
 })
+tableDialog.showModal()
+}
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex)
     || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex)
@@ -716,9 +721,20 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     }
     switch (command) {
       case 'addSlide': addNewSlide(); break
+      case 'dateTime':
+      case 'slideNumber': {
+        // 固定源 insertField：居中文本框内的动态字段（PowerPoint 打开时刷新），缓存值为当前页码/日期。
+        if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
+        const isDate = command === 'dateTime', w = isDate ? 240 : 100, h = 44
+        const slideWidth = deck.size.cx / 9525, slideHeight = deck.size.cy / 9525
+        textBoxEdits.push({ slideIndex: selectedSlide, text: isDate ? new Date().toLocaleDateString('zh-CN') : String(order.indexOf(selectedSlide) + 1), field: isDate ? 'datetime1' : 'slidenum', fontSize: 18, fontFamily: 'Microsoft YaHei', color: '#000000', watermark: false,
+          geometry: { x: Math.round((slideWidth - w) / 2), y: Math.round((slideHeight - h) / 2), width: w, height: h } })
+        canvasStatus.textContent = '新增字段将在保存并打开新修订后显示在画布中。'
+        renderStructurePending(); markDirty(); break
+      }
       case 'insertTable':
         if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
-        tableDialog.querySelector('[role=alert]')!.textContent = ''; tableDialog.showModal(); break
+        openTableDialog(); break
       case 'insertShape': {
         const kind = String(value ?? '')
         if (!kind) break
@@ -984,7 +1000,7 @@ function renderStructurePending() {
     text.maxLength = 20000
     text.setAttribute('aria-label', box.watermark ? '水印文字' : '新增文本内容')
     text.addEventListener('input', () => { box.text = text.value; markDirty() })
-    row(`第 ${order.indexOf(box.slideIndex) + 1} 页 · ${box.watermark ? '水印' : '文本'} `, () => {
+    row(`第 ${order.indexOf(box.slideIndex) + 1} 页 · ${box.field === 'slidenum' ? '页码字段' : box.field === 'datetime1' ? '日期字段' : box.watermark ? '水印' : '文本'} `, () => {
       textBoxEdits.splice(textBoxEdits.indexOf(box), 1)
     }, text)
   }
