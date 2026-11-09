@@ -23,7 +23,7 @@ export const PDF_VIEW_RIBBON_GROUPS: PdfViewRibbonGroup[] = [
       { id: 'genoffice.pdf.view.navigation.outline', label: '目录大纲', enabled: true },
       { id: 'genoffice.pdf.view.navigation.comments', label: '批注侧栏', enabled: true },
       unavailable('view.navigation.compare', '比较文档', '第二份 PDF 的来源身份与比较视图尚未接通'),
-      unavailable('view.navigation.attachments', '附件', '附件读取、提取和授权交付尚未接通'),
+      { id: 'genoffice.pdf.view.navigation.attachments', label: '附件', enabled: true },
       { id: 'genoffice.pdf.view.navigation.search', label: '搜索', enabled: true },
       { id: 'genoffice.pdf.view.navigation.pageSpread', label: '双页视图', enabled: true },
       { id: 'genoffice.pdf.view.navigation.nightMode', label: '夜间模式', enabled: true },

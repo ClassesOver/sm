@@ -46,3 +46,10 @@
 .pdf-comment-row { display: flex; flex-direction: column; text-align: start; width: 100%; gap: 4px; border: 1px solid #ccd5e2; border-radius: 5px; background: white; padding: 8px; margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
 .pdf-comment-row span:first-child, .pdf-comment-row small { font-size: 11px; color: #526075; }
 .pdf-comment-row[aria-current=true], .pdf-comment-selected { outline: 2px solid #547eb4; }
+
+.pdf-attachments-sidebar { flex: none; width: min(280px, 80%); overflow: auto; padding: 10px; border-right: 1px solid #ccd5e2; background: #f6f8fc; }
+.pdf-attachments-sidebar[hidden] { display: none; }
+.pdf-attachments-sidebar header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pdf-attachments-list { list-style: none; margin: 0; padding: 0; }
+.pdf-attachments-list li { display: flex; flex-direction: column; gap: 5px; padding: 10px 0; border-bottom: 1px solid #ccd5e2; overflow-wrap: anywhere; }
+.pdf-attachments-list p { margin: 0; white-space: pre-wrap; }

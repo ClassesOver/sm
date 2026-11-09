@@ -24,6 +24,8 @@ import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupTyp
 
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
+import { PdfAttachmentCache, humanBytes, attachmentDownloadName, type PdfAttachmentRow } from './pdf-attachments'
+
 import { PdfAnnotationCache, projectPageComments, filterComments, flattenComments, type CommentNode, type CommentTarget } from './pdf-comments'
 
 import { stagePdfNote, stagePendingPdfNote, type PendingPdfNoteReference, type SavedPdfNote } from './pdf-notes'
@@ -100,9 +102,22 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const commentsList = documentElement('div', 'pdf-comment-list'); commentsList.setAttribute('role', 'list')
   const retryComments = documentElement('button', 'pdf-tool'); retryComments.type = 'button'; retryComments.textContent = '重试未读页面'; retryComments.hidden = true
   commentsPanel.append(commentsHeading, commentsFilter, commentsStatus, retryComments, commentsList)
-  layout.append(thumbs, outlinePanel, commentsPanel, viewport)
+  const attachmentsPanel = documentElement('aside', 'pdf-attachments-sidebar'); attachmentsPanel.hidden = true; attachmentsPanel.setAttribute('aria-label', 'PDF 附件')
+  const attachmentsHeading = documentElement('header'), attachmentsTitle = documentElement('strong'); attachmentsTitle.textContent = '附件'
+  const closeAttachments = documentElement('button', 'pdf-tool'); closeAttachments.type = 'button'; closeAttachments.textContent = '关闭附件侧栏'; attachmentsHeading.append(attachmentsTitle, closeAttachments)
+  const attachmentNotice = documentElement('p'); attachmentNotice.textContent = '可查看和下载已有附件；暂不支持新增或删除。'
+  const attachmentsStatus = documentElement('p'); attachmentsStatus.setAttribute('role', 'status')
+  const attachmentsList = documentElement('ul', 'pdf-attachments-list')
+  const retryAttachments = documentElement('button', 'pdf-tool'); retryAttachments.type = 'button'; retryAttachments.textContent = '重试附件读取'; retryAttachments.hidden = true
+  attachmentsPanel.append(attachmentsHeading, attachmentNotice, attachmentsStatus, retryAttachments, attachmentsList)
+  layout.append(thumbs, outlinePanel, commentsPanel, attachmentsPanel, viewport)
+  const attachmentCache = new PdfAttachmentCache()
+  let attachmentsGeneration = 0
+  const attachmentDownloads = new Map<string, number>()
+  closeAttachments.addEventListener('click', () => setSidebar(null))
+  retryAttachments.addEventListener('click', () => { void loadAttachments() })
   const annotationCache = new PdfAnnotationCache()
-  let sidebar: 'thumbs' | 'outline' | 'comments' | null = 'thumbs', commentsGeneration = 0, commentsLoading = false
+  let sidebar: 'thumbs' | 'outline' | 'comments' | 'attachments' | null = 'thumbs', commentsGeneration = 0, commentsLoading = false
   let commentRoots: CommentNode[] = [], commentsRead = 0, commentsTotal = 0, commentsFailed = 0, selectedComment = ''
   let commentsSnapshot = '', commentsDocument: PDFDocumentProxy | undefined, pendingCommentJump: CommentTarget | null = null
   commentsFilter.addEventListener('input', () => renderComments())
@@ -317,6 +332,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(outlineToggle, 'view.navigation.outline'); outlineToggle.setAttribute('aria-pressed', 'false')
   const commentsToggle = button('批注侧栏', () => setSidebar(sidebar === 'comments' ? null : 'comments'), false)
   sourceCommand(commentsToggle, 'view.navigation.comments'); commentsToggle.setAttribute('aria-pressed', 'false')
+  const attachmentsToggle = button('附件', () => setSidebar(sidebar === 'attachments' ? null : 'attachments'), false)
+  sourceCommand(attachmentsToggle, 'view.navigation.attachments'); attachmentsToggle.setAttribute('aria-pressed', 'false')
   let twoPageView = false
   const pageSpreadToggle = button('双页视图', () => {
     twoPageView = !twoPageView
@@ -632,9 +649,61 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function setSidebar(next: typeof sidebar) {
     if (sidebar === 'comments' && next !== 'comments') { commentsGeneration++; commentsFilter.value = ''; commentsLoading = false }
-    sidebar = next; thumbs.hidden = next !== 'thumbs'; outlinePanel.hidden = next !== 'outline'; commentsPanel.hidden = next !== 'comments'
+    if (sidebar === 'attachments' && next !== 'attachments') attachmentsGeneration++
+    sidebar = next; attachmentsPanel.hidden = next !== 'attachments'; thumbs.hidden = next !== 'thumbs'; outlinePanel.hidden = next !== 'outline'; commentsPanel.hidden = next !== 'comments'
     toggleThumbnails.setAttribute('aria-pressed', String(next === 'thumbs')); outlineToggle.setAttribute('aria-pressed', String(next === 'outline')); commentsToggle.setAttribute('aria-pressed', String(next === 'comments'))
+    attachmentsToggle.setAttribute('aria-pressed', String(next === 'attachments'))
     if (next === 'comments') void loadComments()
+    if (next === 'attachments') void loadAttachments()
+  }
+  function clearAttachments() {
+    attachmentsGeneration++; attachmentsList.replaceChildren(); retryAttachments.hidden = true
+    attachmentsStatus.textContent = '正在读取附件…'
+  }
+  async function loadAttachments() {
+    if (disposed || sidebar !== 'attachments' || !document) return
+    clearAttachments()
+    const epoch = attachmentsGeneration, doc = document
+    const current = () => !disposed && sidebar === 'attachments' && epoch === attachmentsGeneration && doc === document
+    try {
+      const rows = await attachmentCache.rows(doc)
+      if (!current()) return
+      let failures = 0
+      for (const row of rows) {
+        if (!current()) return
+        const item = documentElement('li'), name = documentElement('strong'), description = documentElement('p'), size = documentElement('span')
+        name.textContent = row.filename || '未命名附件'; name.title = row.filename; description.textContent = row.description
+        const download = documentElement('button', 'pdf-tool'); download.type = 'button'; download.textContent = '下载附件'; download.disabled = true
+        item.append(name, description, size, download); attachmentsList.append(item)
+        try {
+          const bytes = await attachmentCache.content(doc, row)
+          if (!current()) return
+          size.textContent = humanBytes(bytes.byteLength); download.disabled = false
+          download.addEventListener('click', () => {
+            if (!current() || previewing || printing) return
+            try { exportAttachment(row, bytes) } catch (error) { showError(error) }
+          })
+        } catch {
+          if (!current()) return
+          failures++; size.textContent = '内容读取失败，暂不能下载'
+        }
+      }
+      if (!current()) return
+      attachmentsStatus.textContent = failures ? `${rows.length} 个附件；${failures} 个内容读取失败` : rows.length ? `${rows.length} 个附件` : '此 PDF 没有附件'
+      retryAttachments.hidden = !failures
+    } catch {
+      if (!current()) return
+      attachmentsStatus.textContent = '附件目录读取失败，请重试'; retryAttachments.hidden = false
+    }
+  }
+  function exportAttachment(row: PdfAttachmentRow, bytes: Uint8Array) {
+    const url = URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer], { type: 'application/octet-stream' }))
+    const link = documentElement('a'); link.href = url; link.download = attachmentDownloadName(row.filename); link.hidden = true
+    try { window.document.body.append(link); link.click() }
+    finally {
+      link.remove()
+      attachmentDownloads.set(url, window.setTimeout(() => { URL.revokeObjectURL(url); attachmentDownloads.delete(url) }, 60000))
+    }
   }
   function renderComments() {
     if (disposed || sidebar !== 'comments') return
@@ -726,7 +795,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     cropFields.disabled = cropApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     undo.disabled ||= !draft.canUndo; redo.disabled ||= !draft.canRedo
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-note-editable]')) control.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed || control.dataset.pdfNoteEditable !== 'true'
-    commentsToggle.disabled = !document || previewing || printing
+    commentsToggle.disabled = attachmentsToggle.disabled = !document || previewing || printing
     noteInput.disabled = locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
     textObjects.disabled = replacement.disabled = stageText.disabled = draft.operations.some(op => op.kind === 'setPageSize') || locked || previewing || !!previewDocument || draft.closed
     for (const control of formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')) control.disabled = control.dataset.pdfEditable !== 'true' || locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
@@ -1009,7 +1078,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   async function leavePreview() {
     for (const task of tasks) task.cancel()
     for (const layer of textLayers) layer.cancel()
-    commentsGeneration++; pendingCommentJump = null; selectedComment = ''
+    commentsGeneration++; pendingCommentJump = null; selectedComment = ''; clearAttachments()
     generation++; indexGeneration++; observer?.disconnect(); visible.clear(); tasks.clear(); textLayers.clear()
     document = sourceDocument; previewDocument = undefined; pagesCached.clear()
     commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = sidebar === 'comments'; renderComments()
@@ -1070,7 +1139,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   async function refresh() {
     if (disposed || !document) return
     searchRendering = true
-    commentsGeneration++
+    commentsGeneration++; clearAttachments()
     if (sidebar === 'comments') { commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = true; renderComments() }
     const structureKey = JSON.stringify(draft.operations.filter(op => !['addMarkup', 'removeMarkup'].includes(op.kind)))
     if (markupStructureKey !== structureKey) { markupStructureKey = structureKey; markupSelection = [] }
@@ -1177,7 +1246,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (pendingZoomAnchor) { restorePdfZoomAnchor(viewport, pendingZoomAnchor, scale); pendingZoomAnchor = null }
     status.textContent = previewDocument ? '正在显示实际写回的 PDF 预览；未执行的修改仍保留原文。返回原稿后可继续调整。' : draft.persistenceError ?? (draft.dirty ? `有 ${draft.operations.length} 项未保存修改；保存会创建新修订。` : response.editingEnabled ? `选择页面文字可添加或切换本次高亮、下划线、波浪线和删除线；文字批注为便签。${textEnabled ? '原位改字需核对实际预览后保存。' : '原位改字尚未开放。'}` : '当前为只读，原生编辑尚未开放；可下载文件。')
     if (textLoadWarning) status.textContent += ` ${textLoadWarning}`
-    searchRendering = false; if (pendingCommentJump) { pendingZoomAnchor = null; jumpComment() }; if (sidebar === 'comments') void loadComments(); runSearch(false, false); renderTextPanel(); updateControls(); onDraftChange?.()
+    searchRendering = false; if (pendingCommentJump) { pendingZoomAnchor = null; jumpComment() }; if (sidebar === 'comments') void loadComments(); if (sidebar === 'attachments') void loadAttachments(); runSearch(false, false); renderTextPanel(); updateControls(); onDraftChange?.()
   }
   setMode('select')
   updateControls()
@@ -1255,6 +1324,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    disposed = true; commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    disposed = true; attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }

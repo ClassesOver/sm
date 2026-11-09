@@ -294,3 +294,14 @@ Per-document cache, partial-page retry, draft/document cancellation and immediat
 preview list clearing have targeted fault/timing evidence. Replies/complex notes
 remain readonly; comparison/attachments and complete source popup/persistence UX
 remain open. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`; no whole-View/PDF claim.
+
+
+## PDF existing attachment read/export continuation (2026-11-09)
+
+The View attachments entry now reads saved attachment metadata/content through
+PDF.js and offers user-triggered browser downloads from the authorized PDF.
+Internal Map IDs, not filenames, bind bytes; empty streams are valid, unreadable
+content shows explicit retry. Sidebar/document lifecycle does not create edits.
+This supersedes the completely unavailable read/export checkpoint, not the pinned
+source's add/remove/desktop workflow. Comparison and remaining source controls
+stay open. Evidence: `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.

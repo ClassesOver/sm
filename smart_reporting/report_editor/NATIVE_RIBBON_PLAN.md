@@ -341,3 +341,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Add inspect-only full-generation sourceRef, immutable-source projection, separate document promise caches, partial-page errors/retry, obsolete callback guards and immediate source/preview list clearing. No reply write API or fabricated identity.
 - [x] Seven new frontend +25 affected checks,one new bridge case,12 existing file/service cases,Chromium with Worker faults/delayed preview,independent pypdf and offline readonly Node22 runtime checks pass. Standard/Slides builds/budgets,36 engine hashes,date-parser hash and zero new bridge diagnostics pass; six baseline diagnostics remain. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`.
 - [ ] Reply writing,rich/complex mutations,full popovers/context/persistence/comparison/attachments and whole PDF/desktop/image/deployed acceptance remain open. This supersedes the prior completely missing sidebar/read-thread gap only; flags off.
+
+
+### PDF existing attachment read/export continuation (2026-11-09)
+
+- [x] Enable View attachments, mutually exclusive with thumbnails/outline/comments. Read names/descriptions/actual sizes and download real embedded bytes from the authorized opened PDF, including empty files and distinct IDs with equal basenames. No new server route or draft/write operation.
+- [x] Separate document caches, shared inflight/success reads, rejected-read retry, explicit directory/partial-content errors and stale callback/document-switch guards. Browser Blob export adapts pinned desktop export; source humanBytes is unchanged.
+- [x] Four new +9 affected frontend checks,real Chromium attachment downloads/fault injection/actual preview/save/readonly/mobile/empty-document checks,independent pypdf and affected comments/View browsers pass. Standard/Slides builds and budgets pass. Engine unchanged; do not recount earlier Node22 evidence. See `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
+- [ ] Attachment add/remove,comparison,full source sidebar/context and overall PDF/desktop/image/deployed acceptance remain open. Flags off.

@@ -167,3 +167,12 @@ read semantics and unmodified extracted date parser have upstream/local hashes i
 handling, immutable sourceRef joins, per-document cache/error retry and existing
 saved/pending card navigation instead of source popovers. Text-note replies are
 readonly; no reply write contract. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`.
+
+
+Attachment reading/export (2026-11-09): pinned AttachmentsPanel/App originals and
+hashes are recorded by `genoffice-pdf-attachments-source.json`; humanBytes is
+unchanged. Native adaptation keeps internal PDF.js6 Map keys distinct from display
+filenames, document promise caches/retry and lifecycle guards. Browser Blob
+export replaces Electron's dialog; already-authorized opened-PDF bytes need no
+new backend route. Attachment add/remove is not implemented. Evidence:
+`NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
