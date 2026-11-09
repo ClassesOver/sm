@@ -537,8 +537,85 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     { id: 'annotate.drawTools.clearRedaction', label: '清除涂黑', reason: '当前编辑器不生成涂黑标记，不能提供清除动作' },
     { id: 'annotate.drawTools.applyRedaction', label: '应用涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
   ], annotateDrawGroup)
+  // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
+  commandGroup = ribbon.group('annotate', 'Signature & Protection')
+  const signatureGroup = commandGroup
+  const signButton = button('签名', () => openSignature(), true)
+  sourceCommand(signButton, 'annotate.signature.sign'); signButton.dataset.pdfDrawShape = 'signature'
+  signButton.title = '签名：手写或键入后在页面上拖出放置区域；这是可视签名，不是证书数字签名'
+  drawButtons.set('signature' as PdfDrawingShape, signButton)
+  const SIGN_FONTS = [
+    { id: 'script', family: `"Snell Roundhand", "Segoe Script", "Brush Script MT", cursive`, italic: true },
+    { id: 'xingkai', family: `"Xingkai SC", "STXingkai", "KaiTi", "Kaiti SC", cursive` },
+    { id: 'kaiti', family: `"Kaiti SC", "STKaiti", "KaiTi", "DFKai-SB", serif` },
+    { id: 'songti', family: `"Songti SC", "SimSun", "Times New Roman", serif` },
+  ]
+  const SIGN_PAD = { width: 480, height: 160 }, SIGN_COLOR: [number, number, number] = [...PDF_DRAW_COLORS[4]!.rgb]
+  let pendingSignature: { paths: number[][] } | undefined
+  const signDialog = documentElement('dialog', 'pdf-sign-dialog'); signDialog.setAttribute('aria-label', '签名')
+  const signTitle = documentElement('h3'); signTitle.textContent = '签名'
+  const signTabs = documentElement('div', 'pdf-sign-tabs')
+  const drawTab = documentElement('button'); drawTab.type = 'button'; drawTab.textContent = '手写'
+  const typeTab = documentElement('button'); typeTab.type = 'button'; typeTab.textContent = '键入'
+  signTabs.append(drawTab, typeTab)
+  const pad = documentElement('canvas', 'pdf-sign-pad'); pad.width = SIGN_PAD.width; pad.height = SIGN_PAD.height; pad.setAttribute('aria-label', '手写签名区域')
+  const padClear = documentElement('button'); padClear.type = 'button'; padClear.textContent = '清除笔迹'
+  const typeRow = documentElement('div', 'pdf-sign-type')
+  const typeText = documentElement('input'); typeText.type = 'text'; typeText.maxLength = 60; typeText.setAttribute('aria-label', '键入签名'); typeText.placeholder = '输入姓名'
+  const typeFont = documentElement('select'); typeFont.setAttribute('aria-label', '签名字体')
+  for (const [index, font] of SIGN_FONTS.entries()) typeFont.add(new Option(['手写体', '行楷', '楷体', '宋体'][index]!, font.id))
+  typeRow.append(typeText, typeFont)
+  const signError = documentElement('p', 'pdf-crop-error'); signError.setAttribute('role', 'alert')
+  const signCancel = documentElement('button'); signCancel.type = 'button'; signCancel.textContent = '取消'
+  const signApply = documentElement('button'); signApply.type = 'button'; signApply.textContent = '确定'
+  const signActions = documentElement('div', 'pdf-link-actions'); signActions.append(signCancel, signApply)
+  signDialog.append(signTitle, signTabs, pad, padClear, typeRow, signError, signActions); root.append(signDialog)
+  let signMode: 'draw' | 'type' = 'draw'
+  let padPaths: number[][] = [], padStroke: number[] | undefined
+  const redrawPad = () => {
+    const context = pad.getContext('2d'); if (!context) return
+    context.clearRect(0, 0, pad.width, pad.height); context.strokeStyle = 'rgb(38,38,38)'; context.lineWidth = 2.4; context.lineCap = 'round'; context.lineJoin = 'round'
+    for (const path of [...padPaths, ...(padStroke ? [padStroke] : [])]) { context.beginPath(); for (let index = 0; index < path.length; index += 2) context[index ? 'lineTo' : 'moveTo'](path[index]!, path[index + 1]!); context.stroke() }
+  }
+  const setSignMode = (next: 'draw' | 'type') => { signMode = next; drawTab.setAttribute('aria-pressed', String(next === 'draw')); typeTab.setAttribute('aria-pressed', String(next === 'type')); pad.hidden = padClear.hidden = next !== 'draw'; typeRow.hidden = next !== 'type' }
+  drawTab.addEventListener('click', () => setSignMode('draw')); typeTab.addEventListener('click', () => setSignMode('type'))
+  const padPoint = (event: PointerEvent) => { const bounds = pad.getBoundingClientRect(); return [Math.round((event.clientX - bounds.left) * pad.width / bounds.width * 10) / 10, Math.round((event.clientY - bounds.top) * pad.height / bounds.height * 10) / 10] }
+  pad.addEventListener('pointerdown', event => { event.preventDefault(); pad.setPointerCapture?.(event.pointerId); padStroke = padPoint(event) })
+  pad.addEventListener('pointermove', event => { if (padStroke && padStroke.length < 4000) { padStroke.push(...padPoint(event)); redrawPad() } })
+  pad.addEventListener('pointerup', () => { if (padStroke && padStroke.length >= 4 && padPaths.length < 20) padPaths.push(padStroke); padStroke = undefined; redrawPad() })
+  padClear.addEventListener('click', () => { padPaths = []; redrawPad() })
+  function openSignature() {
+    if (!document || locked || previewing || previewDocument || !response.editingEnabled || draft.closed) return
+    padPaths = []; padStroke = undefined; typeText.value = ''; signError.textContent = ''; setSignMode('draw'); redrawPad(); signDialog.showModal()
+  }
+  signCancel.addEventListener('click', () => signDialog.close())
+  signApply.addEventListener('click', () => {
+    try {
+      if (signMode === 'draw') {
+        if (!padPaths.length) throw new Error('请先在签名区域书写')
+        pendingSignature = { paths: padPaths.map(path => [...path]) }; pendingImage = ''
+      } else {
+        const text = typeText.value.trim()
+        if (!text) throw new Error('请输入签名文字')
+        // 与固定源 textToImage 相同：按字体实测字形边界紧裁透明画布。
+        const font = SIGN_FONTS.find(item => item.id === typeFont.value) ?? SIGN_FONTS[0]!
+        const canvas = documentElement('canvas'), context = canvas.getContext('2d')
+        if (!context) throw new Error('浏览器不支持画布，无法生成键入签名')
+        const css = `${font.italic ? 'italic ' : ''}200px ${font.family}`
+        context.font = css
+        const metrics = context.measureText(text), padding = 16
+        const left = Math.ceil(metrics.actualBoundingBoxLeft) + padding, ascent = Math.ceil(metrics.actualBoundingBoxAscent) + padding
+        canvas.width = left + Math.ceil(metrics.actualBoundingBoxRight) + padding; canvas.height = ascent + Math.ceil(metrics.actualBoundingBoxDescent) + padding
+        context.font = css; context.fillStyle = 'rgb(38,38,38)'; context.fillText(text, left, ascent)
+        const encoded = canvas.toDataURL('image/png').split(',')[1] ?? ''
+        if (!encoded.startsWith('iVBORw0KGgo')) throw new Error('签名图像生成失败')
+        pendingImage = encoded; pendingSignature = undefined
+      }
+      signDialog.close(); drawShape = pendingSignature ? ('signature' as PdfDrawingShape) : 'image'; setMode('draw')
+      status.textContent = '请在页面上拖出签名放置区域'
+    } catch (error) { signError.textContent = error instanceof Error ? error.message : String(error) }
+  })
   unavailableSourceGroup('annotate', 'Signature & Protection', [
-    { id: 'annotate.signature.sign', label: '签名', reason: '签名图片写回和字段身份验证尚未接入' },
     { id: 'annotate.signature.certificateSign', label: '证书签名', reason: '证书签名需要独立密钥托管与签名服务，浏览器端不持有私钥' },
     { id: 'annotate.protection.protect', label: '保护 PDF', reason: '加密权限修改尚未接入新修订输出与权限复读' },
     { id: 'annotate.signature.signaturePanel', label: '数字签名面板', reason: '数字签名列表与验证状态尚未接入原生 PDF 服务' },
@@ -1420,6 +1497,22 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           const points = drawShape === 'ink' ? [...stroke, toPdf(event.clientX, event.clientY)] : [toPdf(...begin), toPdf(event.clientX, event.clientY)]
           stroke = []
           if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再绘图')
+          if ((drawShape as string) === 'signature') {
+            if (!pendingSignature) throw new Error('请先点击“签名”书写签名')
+            // 笔迹按签名板比例放入拖出的屏幕区域，再经页面视口逆变换到 PDF 坐标（旋转页同样正确）。
+            const left = Math.min(begin[0], event.clientX), top = Math.min(begin[1], event.clientY)
+            const width = Math.abs(event.clientX - begin[0]), height = Math.abs(event.clientY - begin[1])
+            if (width < 4 || height < 4) throw new Error('请拖出更大的签名区域')
+            const fit = Math.min(width / SIGN_PAD.width, height / SIGN_PAD.height)
+            const offsetX = left + (width - SIGN_PAD.width * fit) / 2, offsetY = top + (height - SIGN_PAD.height * fit) / 2
+            const clamp = (value: number[]) => [Math.min(page.cropBox.x + page.cropBox.width, Math.max(page.cropBox.x, value[0]!)), Math.min(page.cropBox.y + page.cropBox.height, Math.max(page.cropBox.y, value[1]!))].map(item => Math.round(item * 100) / 100)
+            const paths = pendingSignature.paths.map(path => { const out: number[] = []; for (let index = 0; index < path.length; index += 2) out.push(...clamp(toPdf(offsetX + path[index]! * fit, offsetY + path[index + 1]! * fit))); return out })
+            const operation: NativeOperation = { kind: 'addDrawing', pageId: page.pageId, shape: 'ink', paths, color: [...SIGN_COLOR], width: 2 }
+            pdfPageState(model.pages, [...draft.operations, operation])
+            pendingSignature = undefined; setMode('select')
+            void append(operation).catch(showError)
+            return
+          }
           if (drawShape === 'image') {
             if (!pendingImage) throw new Error('请先点击“插入图像”选择图像')
             const operation = pdfDrawingOperation(page.pageId, 'image', points, page.cropBox, drawColor, { image: pendingImage })

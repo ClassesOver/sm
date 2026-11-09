@@ -28,6 +28,12 @@
 - Edit ▸ 插入图像：选择 PNG/JPEG（≤10MB），浏览器解码后按最长边 2000px 转为 PNG（编码 ≤6MB），在页面上拖出放置区域；草稿按页面矩阵精确预览（旋转页同样准确）。
 - 桥接校验 PNG 签名、区域在页面内、非图像形状不得携带图像，交给固定引擎 `image` 绘图写成 Stamp 批注。编辑来源中已有图像仍未接入。
 
+## 可视签名（固定源 SignatureDialog）
+
+- Annotate ▸ Signature & Protection ▸ 签名：手写（签名板 480×160，最多 20 笔，矢量笔迹）或键入（固定源字体列表：手写体、行楷、楷体、宋体；按实测字形边界紧裁、透明背景栅格化）。上传图像签名复用“插入图像”。
+- 放置：在页面上拖出区域；手写笔迹按签名板比例居中放入该屏幕区域，再经页面视口逆变换为 PDF 坐标并夹到可见范围，写为 Ink 批注（近黑色）；键入签名写为 Stamp 图像批注。
+- 这是可视签名，不是证书数字签名；签名字段绑定（`formFieldName`）与已保存签名复用尚未接入。
+
 ## 水印与页眉页脚（固定源 StampDialog / stamps.ts）
 
 - Edit ▸ 水印 打开与固定源相同字段的对话框：水印文字、角度 −90…90、不透明度 5–100%、字号 4–22% 页宽、颜色；页眉/页脚左中右、页码（默认开启）、起始页码；支持 `{page}` `{total}`。
@@ -41,6 +47,6 @@
 - `frontend/src/pdf-drawings.test.ts`：拖拽规范化、夹取、各类拒绝及删除页/空白页约束。
 - 链接：`drawings.test.ts` 回读 URI 动作与目标页引用；拒绝 javascript:、双目标、无目标、越界页、已删除页、非链接形状携带链接字段。
 - 水印：`bridge/stamps.test.ts`（真实输出每页图像 XObject 数、新空白页覆盖；拒绝缺页、越界、非 PNG、坏索引、空配置、越界角度、重复、已删页、与页面尺寸同批）；`frontend/src/pdf-stamps.test.ts`（页序、去重、CropBox 平移、结构锁定、覆盖校验）。
-- `frontend/smoke/pdf-draw-smoke.mjs`（Chromium + 真实 Python→PDF 引擎，授权/修订路由为 fixture）：四种拖动工具 + 多边形逐点/双击 + 插入符号单击，切换蓝色 → 编辑链接（拒绝 javascript:、www. 补全、页码链接）→ 8 个草稿 SVG → 上传 PNG 并拖放插入图像 → 设置水印“机密 Confidential”+ 页码并验证删页被拒绝 → 撤销/重做 → 刷新恢复 → 保存修订 2 → 下载字节一致 → pypdf 独立回读 Square/Circle/Line/Ink/Polygon/Caret 与逐项颜色，第 1 页含 1 个 Stamp 图像批注，每页均含水印与页脚图像，表单控件和第 2 页便签保留；pdftoppm 独立栅格化确认倾斜中文水印与“1 / 4”页脚可见，来源摘要不变。
+- `frontend/smoke/pdf-draw-smoke.mjs`（Chromium + 真实 Python→PDF 引擎，授权/修订路由为 fixture）：四种拖动工具 + 多边形逐点/双击 + 插入符号单击，切换蓝色 → 编辑链接（拒绝 javascript:、www. 补全、页码链接）→ 8 个草稿 SVG → 上传 PNG 并拖放插入图像 → 手写签名与键入签名“张三 Zhang”放置 → 设置水印“机密 Confidential”+ 页码并验证删页被拒绝 → 撤销/重做 → 刷新恢复 → 保存修订 2 → 下载字节一致 → pypdf 独立回读 Square/Circle/Line/Ink/Polygon/Caret 与逐项颜色，第 1 页含 2 个 Stamp（图像、键入签名）与签名 Ink 批注，每页均含水印与页脚图像，表单控件和第 2 页便签保留；pdftoppm 独立栅格化确认倾斜中文水印与“1 / 4”页脚可见，来源摘要不变。
 
 注：本次排查发现 `pdf_engine/dist/cli.mjs`（打包测试生成、git 忽略）存在时生产优先使用打包产物；修改桥接后必须重新打包或删除该产物，否则会运行旧 schema。镜像构建会重新打包。
