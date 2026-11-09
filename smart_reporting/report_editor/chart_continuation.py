@@ -28,11 +28,13 @@ def _mapped_ref(identity: Any, path_map: Mapping[str, str]) -> ChartEditFileRef:
     )
 
 
-def _mapped_receipt(receipt: dict[str, Any], path_map: Mapping[str, str]) -> dict[str, Any]:
+def _mapped_receipt(
+    receipt: dict[str, Any], image: ChartEditFileRef, path_map: Mapping[str, str],
+) -> dict[str, Any]:
+    if receipt.get("sourcePath") != image.path or receipt.get("sha256") != image.sha256:
+        return {}
     mapped = dict(receipt)
-    path = mapped.get("sourcePath")
-    if isinstance(path, str):
-        mapped["sourcePath"] = path_map.get(path, path)
+    mapped["sourcePath"] = path_map.get(image.path, image.path)
     return mapped
 
 
@@ -64,6 +66,7 @@ async def migrate_chart_edit_records(
     for record in records:
         pages = chart_edit_pages(record)
         mapped_pages = []
+        receipt_dropped = False
         expected_plot = tuple(_mapped_ref(ref, path_map) for ref in record.plot_data_files)
         expected_script = _mapped_ref(record.script, path_map)
         canonical_dir = PurePosixPath(chart_edit_output_dir(target_markdown_path, record.edit_id))
@@ -86,13 +89,21 @@ async def migrate_chart_edit_records(
                 break
             if traced_image != image or traced_script != expected_script or traced_plot != expected_plot:
                 break
+            receipt = _mapped_receipt(page.visual_inspection_receipt, page.image, path_map)
+            receipt_dropped |= bool(page.visual_inspection_receipt) and not receipt
             mapped_pages.append(page.model_copy(update={
                 "image": image,
-                "visual_inspection_receipt": _mapped_receipt(page.visual_inspection_receipt, path_map),
+                "visual_inspection_receipt": receipt,
             }))
         if len(mapped_pages) != len(pages):
             continue
         first = mapped_pages[0]
+        receipt = _mapped_receipt(record.visual_inspection_receipt, record.image, path_map)
+        receipt_dropped |= bool(record.visual_inspection_receipt) and not receipt
+        warnings = record.warnings
+        if receipt_dropped:
+            warning = "跨版本视觉回执未匹配图片身份，已丢弃；不代表已通过独立视觉审查。"
+            warnings = tuple(dict.fromkeys((*warnings, warning)))[-100:]
         # The new revision now owns these files as its original registered inputs.
         # L2 is a historical action, not a fresh rebind in the new revision.
         migrated = record.model_copy(update={
@@ -106,7 +117,8 @@ async def migrate_chart_edit_records(
             "data_origin": "original",
             "level": ("L1",),
             "data_bindings": (),
-            "visual_inspection_receipt": _mapped_receipt(record.visual_inspection_receipt, path_map),
+            "visual_inspection_receipt": receipt,
+            "warnings": warnings,
         })
         migrated = ChartEditRecord.model_validate(migrated.model_dump(mode="json", by_alias=True))
         accepted.append(migrated)

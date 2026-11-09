@@ -1,6 +1,7 @@
 """Only verified adopted edit groups retain settings in a new revision."""
 
 import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -58,10 +59,12 @@ async def fixture():
 
     pages = tuple(page.model_copy(update={
         "image": ref(page.image.path, f"image{page.page_number}".encode()),
-        "visual_inspection_receipt": {"sourcePath": page.image.path, "reviewed": True},
+        "visual_inspection_receipt": {"sourcePath": page.image.path,
+            "sha256": hashlib.sha256(f"image{page.page_number}".encode()).hexdigest(), "reviewed": True},
     }) for page in record.pages)
     record = ChartEditRecord.model_validate(record.model_copy(update={
         "pages": pages, "image": pages[0].image,
+        "visual_inspection_receipt": pages[0].visual_inspection_receipt,
         "script": ref(record.script.path, b"# chart script"),
         "plot_data_files": tuple(ref(f"reports/revision-1/data-{n}.json", f"data{n}".encode()) for n in (1, 2)),
         "data_origin": "rebound", "level": ("L2",),
@@ -122,6 +125,72 @@ async def test_adopted_groups_keep_complete_metadata_against_source_or_target_in
     assert len(copied.pages) == 2
     assert copied.pages[1].chart == record.pages[1].chart
     assert copied.pages[1].visual_inspection_receipt["sourcePath"] == copied.pages[1].image.path
+    assert copied.pages[1].visual_inspection_receipt["sha256"] == record.pages[1].image.sha256
+    assert copied.visual_inspection_receipt == {
+        "sourcePath": copied.image.path, "sha256": record.image.sha256, "reviewed": True,
+    }
+    assert copied.warnings == record.warnings
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("fault", ["path", "hash", "missing_path", "missing_hash"])
+@pytest.mark.parametrize("location", ["record", "page"])
+async def test_revision_drops_stale_visual_receipts_without_losing_adopted_pages(fault, location):
+    workspace, record, path_map, manifest, index = await fixture()
+    image = record.image if location == "record" else record.pages[1].image
+    receipt = {"sourcePath": image.path, "sha256": image.sha256, "reviewed": True}
+    if fault == "path":
+        receipt["sourcePath"] = "reports/revision-0/old.png"
+    elif fault == "hash":
+        receipt["sha256"] = "0" * 64
+    else:
+        receipt.pop("sourcePath" if fault == "missing_path" else "sha256")
+    if location == "record":
+        record = record.model_copy(update={"visual_inspection_receipt": receipt})
+    else:
+        page = record.pages[1].model_copy(update={"visual_inspection_receipt": receipt})
+        record = record.model_copy(update={"pages": (record.pages[0], page)})
+    source_payload = json.dumps({"version": 1, "records": [record.model_dump(mode="json", by_alias=True)]}).encode()
+    workspace.files[chart_edits_registry_path(SOURCE)] = source_payload
+
+    await migrate(workspace, path_map, manifest, index)
+    copied, = await load_chart_edit_records(workspace, "thread", TARGET)
+
+    assert len(copied.pages) == 2
+    assert copied.pages[0].image.sha256 == record.pages[0].image.sha256
+    assert copied.pages[1].image.sha256 == record.pages[1].image.sha256
+    assert copied.pages[0].visual_inspection_receipt["sha256"] == record.pages[0].image.sha256
+    assert (copied.visual_inspection_receipt if location == "record"
+            else copied.pages[1].visual_inspection_receipt) == {}
+    assert any("视觉回执" in warning for warning in copied.warnings)
+    assert workspace.files[chart_edits_registry_path(SOURCE)] == source_payload
+    # 同一迁移重试不能生成不同登记，也不能恢复被丢弃的回执。
+    await migrate(workspace, path_map, manifest, index)
+    assert (await load_chart_edit_records(workspace, "thread", TARGET)) == (copied,)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+@pytest.mark.parametrize("receipt", [{}, {"reviewed": True}])
+async def test_revision_receipt_warning_does_not_overflow_existing_warnings(receipt):
+    workspace, record, path_map, manifest, index = await fixture()
+    warnings = tuple(f"已有告警 {n}" for n in range(100))
+    record = record.model_copy(update={"visual_inspection_receipt": receipt, "warnings": warnings})
+    workspace.files[chart_edits_registry_path(SOURCE)] = json.dumps({
+        "version": 1, "records": [record.model_dump(mode="json", by_alias=True)],
+    }).encode()
+
+    await migrate(workspace, path_map, manifest, index)
+    copied, = await load_chart_edit_records(workspace, "thread", TARGET)
+
+    assert len(copied.pages) == 2
+    assert copied.visual_inspection_receipt == {}
+    assert len(copied.warnings) == 100
+    if receipt:
+        assert any("视觉回执" in warning for warning in copied.warnings)
+    else:
+        assert copied.warnings == warnings
 
 
 @pytest.mark.anyio
