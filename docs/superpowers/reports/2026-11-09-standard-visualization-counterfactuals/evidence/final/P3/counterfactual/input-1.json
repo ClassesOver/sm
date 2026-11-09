@@ -1,0 +1,22 @@
+{
+  "columnMeta": {
+    "value": {
+      "unit": "元"
+    }
+  },
+  "columns": [
+    "label",
+    "value"
+  ],
+  "researchNote": "无业务含义的合成备注",
+  "rows": [
+    [
+      "2024-02",
+      18
+    ],
+    [
+      "2024-01",
+      9
+    ]
+  ]
+}

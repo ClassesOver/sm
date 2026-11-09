@@ -1,0 +1,74 @@
+{
+  "paired_observations": 22,
+  "pairs": [
+    {
+      "case": "U1",
+      "changed_path": "/plan/charts/0/standardDisplayUnit",
+      "same_input_bytes": true,
+      "same_plan": false
+    },
+    {
+      "case": "U2",
+      "changed_path": "/plan/charts/0/standardDisplayUnit",
+      "same_input_bytes": true,
+      "same_plan": false
+    },
+    {
+      "case": "U3",
+      "changed_path": "/documents/0/columnMeta/base/unit",
+      "same_input_bytes": false,
+      "same_plan": true
+    },
+    {
+      "case": "U4",
+      "changed_path": "/documents/0/columnMeta/value/isPercent",
+      "same_input_bytes": false,
+      "same_plan": true
+    },
+    {
+      "case": "P1",
+      "changed_path": "/plan/charts/0/standardSources/1/periodYear",
+      "same_input_bytes": true,
+      "same_plan": false
+    },
+    {
+      "case": "P2",
+      "changed_path": "/documents/1/rows/0/0",
+      "same_input_bytes": false,
+      "same_plan": true
+    },
+    {
+      "case": "P3",
+      "changed_path": "/documents/1/researchNote",
+      "same_input_bytes": false,
+      "same_plan": true
+    },
+    {
+      "case": "B1",
+      "changed_path": "/plan/charts/0/dataBindings/0/factPath",
+      "same_input_bytes": true,
+      "same_plan": false
+    },
+    {
+      "case": "B2",
+      "changed_path": "/facts/visualizationFacts/0/supplementalEvidenceSources",
+      "same_input_bytes": true,
+      "same_plan": true
+    },
+    {
+      "case": "L1",
+      "changed_path": "/plan/charts/0/standardCanvas/labelWrap",
+      "same_input_bytes": true,
+      "same_plan": false
+    },
+    {
+      "case": "D1",
+      "changed_path": "/documents/0/rows/2/1",
+      "same_input_bytes": false,
+      "same_plan": true
+    }
+  ],
+  "service_tests_passed": 8,
+  "identities_verified": true,
+  "limits": "身份检查不能证明业务与视觉正确；独立oracle在replay.py，外部复现仍待完成"
+}

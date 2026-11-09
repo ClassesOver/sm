@@ -1,0 +1,36 @@
+{
+  "archive": {
+    "path": "harness-trials.tar.gz",
+    "size": 789268,
+    "sha256": "1b6ddd2eeec5349a13fc45e9d122fd6009bf77e9f577e7786285f3886e739e4a"
+  },
+  "trials": [
+    {
+      "run": "run-1",
+      "outcome": "harness_assertion_failed",
+      "reason": "异量纲确实被拒；脚本错误断言必须为StandardChartTransformationError。直接transform返回ValueError。",
+      "fix": "只改异常类型断言，业务拒用要求不变"
+    },
+    {
+      "run": "run-2",
+      "outcome": "harness_serialization_failed",
+      "reason": "L1 Matplotlib柱宽为numpy.int64，json.dumps不能序列化",
+      "fix": "测量时转Python float；NaN序列化为null，并保留缺失断言"
+    },
+    {
+      "run": "run-3",
+      "outcome": "harness_assertion_failed",
+      "reason": "读取分页standardSourceLabels（多源筛选）而非standardLabels（单页类别）；页面数据正确",
+      "fix": "只改取证字段，不改分页实现或预期类别"
+    },
+    {
+      "run": "services",
+      "outcome": "collection_error_exit_4",
+      "reason": "参数化nodeid顺序误写asyncio-.png，实际为.png-asyncio；未执行测试",
+      "fix": "按collect-only结果修正nodeid"
+    }
+  ],
+  "final_replay": "final/results.jsonl",
+  "final_service_checks": "services-2/result.json",
+  "production_changes": false
+}
