@@ -124,3 +124,18 @@ test('inserted images are written as Stamp annotations; non-PNG data and stray i
     { kind: 'addDrawing', pageId, shape: 'rect', rect: [50, 60, 250, 160], image: png, color, width: 2 },
   ]) await assert.rejects(patchPdfWithReceipt(bytes, [operation], model.sourceSha256), undefined, JSON.stringify(operation).slice(0, 160))
 })
+
+
+test('measurement preserves Line endpoints, label and resolvable Helvetica appearance; rejects mixed payloads', async () => {
+  const document = await PDFDocument.create(); document.addPage([400, 500])
+  const bytes = await document.save(), model = await inspectPdf(bytes), pageId = model.pages[0]!.pageId
+  const op = { kind: 'addDrawing', pageId, shape: 'measure', from: [250, 300], to: [150, 200], color, width: 2, label: '2.83 m' }
+  const result = await patchPdfWithReceipt(bytes, [op], model.sourceSha256)
+  const [annot] = await annotations(result.bytes)
+  assert.equal(annot!.get(PDFName.of('Subtype'))!.toString(), '/Line')
+  assert.equal(annot!.get(PDFName.of('Contents'))!.toString(), '<FEFF0032002E003800330020006D>')
+  assert.equal(annot!.get(PDFName.of('L'))!.toString(), '[ 250 300 150 200 ]')
+  const ap = annot!.lookup(PDFName.of('AP'), PDFDict).lookup(PDFName.of('N')) as any
+  assert.ok(ap.dict.lookup(PDFName.of('Resources'), PDFDict).lookup(PDFName.of('Font'), PDFDict).get(PDFName.of('F1')))
+  for (const bad of [{ ...op, label: undefined }, { ...op, label: '米' }, { ...op, label: 'm\n' }, { ...op, shape: 'arrow' }, { ...op, from: [0, -1] }, { ...op, rect: [1, 1, 10, 10] }]) await assert.rejects(patchPdfWithReceipt(bytes, [bad], model.sourceSha256))
+})

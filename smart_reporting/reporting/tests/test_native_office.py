@@ -308,3 +308,30 @@ def test_real_pptx_new_slide_with_layout_and_path_validation(monkeypatch):
     for path in ['ppt/slideLayouts/../../x.xml','ppt/slides/slide1.xml','C:/x.xml',3]:
         with pytest.raises(ValueError):native_office.patch_office('pptx',content,[{'kind':'editSlides','order':[0,1,2],'newSlides':[{'withLayout':path}]}])
     engine.assert_not_called()
+
+
+def test_native_table_cells_forward_and_reject_malformed_before_engine():
+    from smart_reporting.report_editor.native_office import _pptx_arguments
+    item = {'slideIndex': 0, 'elementId': 'table-0', 'row': 1, 'col': 2, 'text': '新文字'}
+    assert _pptx_arguments({'kind': 'editSlides', 'tableCells': [item]})['table_cells'] == [item]
+    for bad in [[{**item, 'row': True}], [{**item, 'col': -1}], [{**item, 'extra': 1}], [item, item], [{**item, 'text': '\x01'}], [{**item, 'text': 4}]]:
+        with pytest.raises(ValueError, match='operations_invalid'):
+            _pptx_arguments({'kind': 'editSlides', 'tableCells': bad})
+
+
+def test_real_native_table_cell_save_and_inspect():
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    from smart_reporting.report_editor.native_office import inspect_office, patch_office
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(3), Inches(2)).table.cell(0, 0).text = 'before'
+    stream = BytesIO()
+    presentation.save(stream)
+    content = stream.getvalue()
+    table = inspect_office('pptx', content)['slides'][0]['elements'][0]
+    output = patch_office('pptx', content, [{'kind': 'editSlides', 'tableCells': [{'slideIndex': 0, 'elementId': table['id'], 'row': 0, 'col': 0, 'text': 'after'}]}])
+    assert Presentation(BytesIO(output)).slides[0].shapes[0].table.cell(0, 0).text == 'after'
+    assert inspect_office('pptx', output)['slides'][0]['elements'][0]['table'][0][0]['text'] == 'after'

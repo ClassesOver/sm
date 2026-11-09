@@ -832,3 +832,75 @@ def test_slides_bridge_changes_shape_preset_keeping_text_and_style(tmp_path: Pat
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "shapeKinds": [bad]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def _table_fixture(path):
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    table = slide.shapes.add_table(3, 3, Inches(1), Inches(1), Inches(6), Inches(3)).table
+    for ri in range(3):
+        for ci in range(3):
+            cell = table.cell(ri, ci)
+            cell.text = f'R{ri}C{ci}'
+            cell.text_frame.paragraphs[0].runs[0].font.bold = True
+            cell.text_frame.paragraphs[0].runs[0].font.size = Pt(19)
+    table.cell(0, 0).merge(table.cell(0, 1))
+    presentation.slides.add_slide(presentation.slide_layouts[6])
+    presentation.save(path)
+
+
+def test_table_cells_preserve_ooxml_merges_grid_styles_and_untouched_parts(tmp_path):
+    from lxml import etree
+    source, output = tmp_path / 'table.pptx', tmp_path / 'edited-table.pptx'
+    _table_fixture(source)
+    metadata = _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)
+    target = next(el for el in metadata['slides'][0]['elements'] if el['type'] == 'table')
+    assert target['table'][0][1]['merged'] is True
+    edits = [{'slideIndex': 0, 'elementId': target['id'], 'row': row, 'col': col, 'text': text}
+             for row, col, text in [(0, 0, '合并起始格'), (1, 2, '保留样式\n第二段 & <xml>')]]
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableCells': edits}, tmp_path)
+    actual = Presentation(output).slides[0].shapes[0].table
+    assert actual.cell(0, 0).text == '合并起始格'
+    assert actual.cell(0, 0).is_merge_origin and actual.cell(0, 1).is_spanned
+    assert actual.cell(1, 2).text == '保留样式\n第二段 & <xml>'
+    for paragraph in actual.cell(1, 2).text_frame.paragraphs:
+        assert paragraph.runs[0].font.bold and paragraph.runs[0].font.size == Pt(19)
+    ns = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+    with ZipFile(source) as before, ZipFile(output) as after:
+        assert {n for n in before.namelist() if not n.endswith("/")} == {n for n in after.namelist() if not n.endswith("/")}
+        for name in before.namelist():
+            if name != 'ppt/slides/slide1.xml':
+                assert before.read(name) == after.read(name), name
+        old = etree.fromstring(before.read('ppt/slides/slide1.xml'))
+        new = etree.fromstring(after.read('ppt/slides/slide1.xml'))
+        for ri, (old_row, new_row) in enumerate(zip(old.xpath('//a:tr', namespaces=ns), new.xpath('//a:tr', namespaces=ns))):
+            for ci, (old_cell, new_cell) in enumerate(zip(old_row, new_row)):
+                if (ri, ci) in {(0, 0), (1, 2)}:
+                    assert etree.tostring(old_cell.find('a:tcPr', ns)) == etree.tostring(new_cell.find('a:tcPr', ns))
+                    assert old_cell.attrib == new_cell.attrib
+                else:
+                    assert etree.tostring(old_cell) == etree.tostring(new_cell)
+        assert etree.tostring(old.find('.//a:tblGrid', ns)) == etree.tostring(new.find('.//a:tblGrid', ns))
+
+
+def test_table_cells_compose_with_duplicate_and_insert_and_reject_unsafe_targets(tmp_path):
+    source, output = tmp_path / 'table.pptx', tmp_path / 'composed.pptx'
+    _table_fixture(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    edit = {'slideIndex': 0, 'elementId': target['id'], 'row': 2, 'col': 2, 'text': 'changed'}
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableCells': [edit],
+             'newSlides': [{'duplicateOf': 0}], 'order': [0, 2, 1], 'tables': [{'slideIndex': 0, 'rows': 2, 'cols': 2}]}, tmp_path)
+    actual = Presentation(output)
+    assert len(actual.slides[0].shapes) == 2
+    assert actual.slides[0].shapes[0].table.cell(2, 2).text == 'changed'
+    assert actual.slides[1].shapes[0].table.cell(2, 2).text == 'R2C2'
+    bad_cases = [[{**edit, 'row': -1}], [{**edit, 'col': True}], [{**edit, 'elementId': 'foreign'}],
+                 [{**edit, 'row': 0, 'col': 1}], [{**edit, 'text': 'bad\x00'}], [edit, edit],
+                 [{**edit, 'extra': 1}], [{**edit, 'text': 'x' * 20001}]]
+    for index, bad in enumerate(bad_cases):
+        rejected = tmp_path / f'rejected-{index}.pptx'
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({'action': 'edit', 'input': str(source), 'output': str(rejected), 'edits': [], 'tableCells': bad}, tmp_path)
+        assert not rejected.exists()
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(source), 'output': str(tmp_path / 'deleted.pptx'), 'edits': [], 'tableCells': [edit], 'deletedSlides': [0], 'order': [1]}, tmp_path)

@@ -541,6 +541,7 @@ class ReportSlidesEditorService:
         reset_layouts: list[int] | None = None,
         shapes: list[dict[str, Any]] | None = None,
         tables: list[dict[str, Any]] | None = None,
+        table_cells: list[dict[str, Any]] | None = None,
         shape_styles: list[dict[str, Any]] | None = None,
         shape_kinds: list[dict[str, Any]] | None = None,
         theme: str | None = None,
@@ -571,6 +572,8 @@ class ReportSlidesEditorService:
                     request["resetLayouts"] = reset_layouts
                 if shapes:
                     request["shapes"] = shapes
+                if table_cells:
+                    request["tableCells"] = table_cells
                 if tables:
                     request["tables"] = tables
                 if shape_styles:

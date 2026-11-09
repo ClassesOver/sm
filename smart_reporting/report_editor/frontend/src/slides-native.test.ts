@@ -769,3 +769,42 @@ it('refuses an unsafe restored source transition without replacing persisted dra
   await expect(openDraft(new NativeDraft(draftIdentity, store), { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })).rejects.toThrow(/原草稿已保留/)
   expect(new NativeDraft(draftIdentity, store).operations).toEqual(operations)
 })
+
+it('edits source table cells, previews, persists recovery, undoes and saves exact cell identity', async () => {
+  const tableDeck = structuredClone(deck) as any
+  tableDeck.slides[0].elements.push({ id: 'table-source-2', type: 'table', name: 'Source Table', text: '', editable: false, deletable: false,
+    table: [[{ text: 'merged root', merged: false }, { text: '', merged: true }], [{ text: 'second row', merged: false }, { text: 'last', merged: false }]] })
+  const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
+  let payload: any
+  const api = { preview: vi.fn(async () => ({ model: tableDeck })), renderTree: vi.fn(async () => ({ slides: [] })), save: vi.fn(async (value: any) => { payload = value; return { revision: 2, revisionRegistered: true, artifacts: { pptx: { downloadUrl: '/table.pptx' } }, editor: { openUrl: '/next' }, validation: { issues: [] } } }) }
+  let { shell, view } = await openDraft(draft, api)
+  const selectTable = () => {
+    const select = shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    select.value = 'table-source-2'; select.dispatchEvent(new Event('change'))
+    return shell.editor.querySelector<HTMLTextAreaElement>('[aria-label="单元格文字"]')!
+  }
+  let text = selectTable()
+  expect(shell.editor.querySelectorAll('[aria-label="表格单元格"] option')).toHaveLength(3)
+  expect(text.value).toBe('merged root')
+  expect(shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!.disabled).toBe(true)
+  text.value = '新文字\n第二段'; text.dispatchEvent(new Event('input'))
+  const expected = { slideIndex: 0, elementId: 'table-source-2', row: 0, col: 0, text: '新文字\n第二段' }
+  expect(draft.operations[0]).toMatchObject({ tableCells: [expected] })
+  view.dispose()
+  const recovered = new NativeDraft(draftIdentity, store)
+  ;({ shell, view } = await openDraft(recovered, api)); text = selectTable()
+  expect(text.value).toBe('新文字\n第二段')
+  shell.save.click(); await vi.waitFor(() => expect(api.save).toHaveBeenCalled())
+  expect(payload.operations[0]).toMatchObject({ tableCells: [expected] })
+  view.dispose()
+})
+
+it('rejects recovered table cell edits into covered merge slots without erasing the draft', async () => {
+  const tableDeck = structuredClone(deck) as any
+  tableDeck.slides[0].elements.push({ id: 'tbl', type: 'table', text: '', editable: false, table: [[{ text: 'root', merged: false }, { text: '', merged: true }]] })
+  const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
+  const operations = [{ kind: 'editSlides', tableCells: [{ slideIndex: 0, elementId: 'tbl', row: 0, col: 1, text: 'bad' }] }]
+  draft.setOperations(operations)
+  await expect(openDraft(draft, { preview: vi.fn(async () => ({ model: tableDeck })), renderTree: vi.fn(async () => ({ slides: [] })) })).rejects.toThrow(/表格单元格/)
+  expect(new NativeDraft(draftIdentity, store).operations).toEqual(operations)
+})

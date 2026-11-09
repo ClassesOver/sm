@@ -1,3 +1,4 @@
+import { parseCalibration, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
 import { stagePdfReply, stagePendingPdfReply, stagePdfLocalReply } from './pdf-replies'
 import { attachmentEditState, attachmentFileOperation, isAttachmentEdit } from './pdf-attachment-edits'
 /** PDF.js canvas/text-layer hosting follows GenOffice PdfPage.tsx at 4b55db9.
@@ -15,7 +16,7 @@ import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
 import { DEFAULT_HEADER_FOOTER, DEFAULT_WATERMARK } from './vendor/genoffice-pdf/renderer/stamps'
-import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, blankPdfBytes, buildPdfStampsOperation, pdfMeasurementOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -518,9 +519,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(note, 'annotate.drawTools.note')
   commandGroup = ribbon.group('annotate', 'Draw Tools')
   const annotateDrawGroup = commandGroup
-  // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；已接通四种，颜色取标注调色板。
-  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
-    const tool = button(label, () => { drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
+  // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；标定测量与几何绘图共用来源坐标和调色板。
+  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['measure', '测量', 'measure'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
+    const tool = button(label, () => { if (shape === 'measure' && mode === 'draw' && drawShape === 'measure') { measureRecalibrate = true; status.textContent = '下一条参考线将重新标定'; return }; drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
     sourceCommand(tool, `annotate.drawTools.${id}`); tool.dataset.pdfDrawShape = shape
     tool.title = shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
     drawButtons.set(shape, tool)
@@ -532,7 +533,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup.append(drawColorSelect)
   commandGroup.append(note)
   unavailableSourceGroup('annotate', 'Draw Tools', [
-    { id: 'annotate.drawTools.measure', label: '测量', reason: '原生视图尚未实现可校准比例与来源坐标绑定的测量工具' },
     { id: 'annotate.drawTools.redact', label: '涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
     { id: 'annotate.drawTools.clearRedaction', label: '清除涂黑', reason: '当前编辑器不生成涂黑标记，不能提供清除动作' },
     { id: 'annotate.drawTools.applyRedaction', label: '应用涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
@@ -841,6 +841,35 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       pdfPageState(model.pages, next)
       draft.setOperations(next); stampDialog.close(); void refresh().catch(showError)
     } catch (error) { stampError.textContent = error instanceof Error ? error.message : String(error) }
+  })
+  // Source MeasureScaleDialog semantics: first reference line calibrates this view only.
+  let measureRecalibrate = false
+  let measureScale: MeasureScale | undefined
+  let measurePending: { page: PdfPageIdentity; points: number[][]; color: [number, number, number]; snapshot: string; doc: PDFDocumentProxy | undefined } | undefined
+  const measureDialog = documentElement('dialog', 'pdf-measure-dialog')
+  measureDialog.setAttribute('aria-label', '标定测量比例')
+  const measureTitle = documentElement('h2'); measureTitle.textContent = '标定测量比例'
+  const measureHint = documentElement('p'); measureHint.textContent = '输入刚画的参考线代表的实际长度。比例仅保留在当前会话；再次点击测量可重新标定。'
+  const measureValue = documentElement('input'); measureValue.type = 'number'; measureValue.min = '0'; measureValue.step = 'any'; measureValue.setAttribute('aria-label', '参考线实际长度')
+  const measureUnit = documentElement('input'); measureUnit.value = 'm'; measureUnit.maxLength = 12; measureUnit.setAttribute('aria-label', '测量单位')
+  const measureError = documentElement('p'); measureError.setAttribute('role', 'alert')
+  const measureCancel = documentElement('button'); measureCancel.textContent = '取消'; measureCancel.type = 'button'
+  const measureApply = documentElement('button'); measureApply.textContent = '应用比例'; measureApply.type = 'button'
+  measureDialog.append(measureTitle, measureHint, measureValue, measureUnit, measureError, measureCancel, measureApply); root.append(measureDialog)
+  measureDialog.addEventListener('close', () => { measurePending = undefined; measureRecalibrate = false })
+  measureCancel.addEventListener('click', () => measureDialog.close())
+  measureApply.addEventListener('click', () => {
+    try {
+      const pending = measurePending
+      if (!pending || !measureDialog.open || disposed || locked || printing || previewing || previewDocument || draft.closed || !response.editingEnabled || pending.doc !== document || pending.snapshot !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请取消后重新绘制参考线')
+      const line = pdfDrawingOperation(pending.page.pageId, 'arrow', pending.points, pending.page.cropBox, pending.color)
+      const from = line.from as number[], to = line.to as number[]
+      const scale = parseCalibration(measureValue.value, measureUnit.value, Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!))
+      if (!scale) throw new Error('请输入大于零的实际长度和有效单位')
+      const operation = pdfMeasurementOperation(pending.page.pageId, pending.points, pending.page.cropBox, pending.color, scale)
+      pdfPageState(model.pages, [...draft.operations, operation])
+      measureScale = scale; measureRecalibrate = false; measureDialog.close(); void append(operation).catch(showError)
+    } catch (error) { measureError.textContent = error instanceof Error ? error.message : '标定失败' }
   })
   const linkDialog = documentElement('dialog', 'pdf-link-dialog')
   linkDialog.setAttribute('aria-label', '添加链接')
@@ -1168,7 +1197,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)) }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)) }
   function updateControls() {
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-saved-reply-editable]')) control.disabled = !canChangeSavedReply()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply() || control.dataset.pdfReplyEditable !== 'true'
@@ -1407,7 +1436,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           shape = window.document.createElementNS(svgNs, 'polyline')
           shape.setAttribute('points', `${x - size},${y + size} ${x},${y - size} ${x + size},${y + size}`)
         } else {
-          const values = operation.shape === 'arrow' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
+          const values = operation.shape === 'arrow' || operation.shape === 'measure' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
           const points: number[][] = []
           for (let index = 0; index < values.length; index += 2) points.push(point([values[index]!, values[index + 1]!]))
           shape = window.document.createElementNS(svgNs, 'polyline')
@@ -1422,6 +1451,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           }
         }
         shape.setAttribute('stroke', rgb); shape.setAttribute('fill', 'none'); shape.setAttribute('stroke-width', String(Number(operation.width) * scale))
+        if (operation.shape === 'measure') {
+          const [fx, fy] = operation.from as [number, number], [tx, ty] = operation.to as [number, number]
+          const angle = Math.atan2(ty - fy, tx - fx), tilt = Math.abs(angle) > Math.PI / 2 ? angle + Math.PI : angle
+          const label = window.document.createElementNS(svgNs, 'text')
+          label.textContent = String(operation.label); label.setAttribute('fill', rgb); label.setAttribute('font-family', 'Helvetica, Arial, sans-serif'); label.setAttribute('font-size', '9')
+          label.setAttribute('transform', `matrix(${pdfViewport.transform.join(' ')}) translate(${(fx + tx) / 2} ${(fy + ty) / 2 + 6}) rotate(${tilt * 180 / Math.PI}) scale(1 -1)`)
+          label.dataset.pdfMeasureLabel = 'true'; svg.append(label)
+        }
         shape.dataset.pdfDrawing = String(operation.shape)
         svg.append(shape)
       }
@@ -1520,6 +1557,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
             pendingImage = ''; setMode('select')
             void append(operation).catch(showError)
             return
+          }
+          if (drawShape === 'measure') {
+            pdfDrawingOperation(page.pageId, 'arrow', points, page.cropBox, drawColor)
+            if (!measureScale || measureRecalibrate) {
+              measurePending = { page, points, color: [...drawColor], snapshot: JSON.stringify(draft.operations), doc: document }
+              measureValue.value = ''; measureError.textContent = ''; measureDialog.showModal(); measureValue.focus(); return
+            }
+            const operation = pdfMeasurementOperation(page.pageId, points, page.cropBox, drawColor, measureScale)
+            pdfPageState(model.pages, [...draft.operations, operation]); void append(operation).catch(showError); return
           }
           if (drawShape === 'link') {
             pdfDrawingOperation(page.pageId, 'link', points, page.cropBox, drawColor, { url: 'https://validate.invalid' })

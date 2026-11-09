@@ -4,7 +4,7 @@
 
 ## 固定源行为
 
-- `apps/pdf/src/renderer/App.tsx` `DRAW_TOOLS`：ink、measure、rect、ellipse、arrow、polygon、caret、note；已接通 **ink / rect / ellipse / arrow / polygon / caret**（measure 仍待标定比例设计），按源顺序放在 Annotate ▸ Draw Tools。
+- `apps/pdf/src/renderer/App.tsx` `DRAW_TOOLS`：ink、measure、rect、ellipse、arrow、polygon、caret、note；已接通 **ink / rect / ellipse / arrow / polygon / caret**；measure 的后续标定闭环见 `NATIVE_PPTX_PDF_NEXT_ACCEPTANCE.md`，按源顺序放在 Annotate ▸ Draw Tools。
 - `DrawLayer.tsx` `DRAW_COLORS`：红 `[0.86,0.22,0.18]`（默认）、黄、绿、蓝、黑；绘图颜色独立于高亮颜色。
 - `save-pdf.ts` `DrawingInput`：`rect`/`ellipse` 为 PDF user space 矩形，`arrow` 为 from/to，`ink` 为路径数组；`polygon` 为顶点数组（≥3）、`caret` 为插入点；引擎写成 Square/Circle/Line(带箭头)/Ink/Polygon/Caret 批注并生成外观流。未新增写入器。
 

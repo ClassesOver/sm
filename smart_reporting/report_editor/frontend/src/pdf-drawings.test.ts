@@ -1,3 +1,5 @@
+import { parseCalibration } from './vendor/genoffice-pdf/renderer/measure'
+import { pdfMeasurementOperation } from './pdf-operations'
 import { describe, expect, it } from 'vitest'
 import { pdfDrawingOperation, pdfPageState, validatePdfDrawing, insertBlankPdfPage, type PdfPageIdentity } from './pdf-operations'
 
@@ -54,4 +56,15 @@ describe('PDF draw tools (pinned DrawLayer rect/ellipse/arrow/ink)', () => {
     expect(() => pdfDrawingOperation('p1', 'image', [[150, 160], [50, 60]], box, red, { image: 'R0lGODlh' })).toThrow('PNG')
     expect(() => pdfDrawingOperation('p1', 'image', [[150, 160], [50, 60]], box, red)).toThrow('PNG')
   })
+})
+
+it('calibrates from clamped PDF coordinates, formats two decimals and rejects unsafe scales', () => {
+  const box = { x: 10, y: 20, width: 200, height: 300 }, red: [number, number, number] = [0.86, 0.22, 0.18]
+  const scale = parseCalibration('2', 'm', 100)!
+  const operation = pdfMeasurementOperation('p1', [[10, 20], [110, 20]], box, red, scale)
+  expect(operation).toMatchObject({ shape: 'measure', from: [10, 20], to: [110, 20], label: '2.00 m' })
+  expect(pdfMeasurementOperation('p1', [[400, 20], [110, 20]], box, red, scale)).toMatchObject({ from: [210, 20], label: '2.00 m' })
+  for (const bad of [{ unitsPerPt: 0, unit: 'm' }, { unitsPerPt: Infinity, unit: 'm' }, { unitsPerPt: 1e-320, unit: 'm' }, { unitsPerPt: 50, unit: '米' }, { unitsPerPt: 50, unit: 'm\n' }]) expect(() => pdfMeasurementOperation('p1', [[10, 20], [110, 20]], box, red, bad)).toThrow()
+  expect(() => pdfMeasurementOperation('p1', [[10, 20], [10.1, 20]], box, red, scale)).toThrow()
+  expect(parseCalibration('0', 'm', 100)).toBeNull()
 })

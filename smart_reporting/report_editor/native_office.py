@@ -18,7 +18,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'tableCells', 'shapeStyles', 'shapeKinds', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -106,6 +106,16 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
     tables = _records(operation, 'tables', {'slideIndex', 'rows', 'cols'})
     if len(tables) > 100 or any(not isinstance(item[key], int) or isinstance(item[key], bool) or not 1 <= item[key] <= 75 for item in tables for key in ('rows', 'cols')):
         raise ValueError('native_office_operations_invalid')
+    table_cells = _records(operation, 'tableCells', {'slideIndex', 'elementId', 'row', 'col', 'text'})
+    cell_keys = set()
+    for item in table_cells:
+        if (not isinstance(item['elementId'], str) or not item['elementId'] or any(not isinstance(item[key], int) or isinstance(item[key], bool) or item[key] < 0 for key in ('row', 'col'))
+            or not isinstance(item['text'], str) or len(item['text']) > 20000 or re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', item['text'])):
+            raise ValueError('native_office_operations_invalid')
+        key = (item['slideIndex'], item['elementId'], item['row'], item['col'])
+        if key in cell_keys:
+            raise ValueError('native_office_operations_invalid')
+        cell_keys.add(key)
     shape_styles = _records(operation, 'shapeStyles', {'slideIndex', 'elementId'}, {'fill', 'stroke'})
     for item in shape_styles:
         fill, stroke = item.get('fill'), item.get('stroke', ...)
@@ -197,7 +207,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
+    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'table_cells': table_cells, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
         'slide_layouts': layouts, 'backgrounds': backgrounds, 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting}
 

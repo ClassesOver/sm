@@ -405,3 +405,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Release only the proven unshared deleted leaf dictionary; a real unlink-only counterexample preserves stale inbound IRT and makes future census readonly. Read back the full surviving annotation sequence/dictionaries; verify root remains replyable and last-reply deletion restores ordinary-root capability.
 - [x] Sidebar edit/delete, undo/redo/reload, actual preview/download/reopen, stale pane/modal and readonly/capability isolation work alongside prior saved/local replies. Five new engine cases plus18 affected, three new frontend plus33 affected, seven real service and14 selected ordinary-note/markup file cases pass; Chromium/pypdf/Node22/build evidence in `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
 - [ ] Root-body/whole-thread subtree mutation, nested/popup/rich/complex threads, authenticated authors and full context/popovers remain open, as do other PDF/full-image/production/desktop gaps. This supersedes only the saved flat-leaf mutation gap. Flags off; no merge/deployment.
+
+
+### PR #207/#208 continuation: PPTX source table cells / PDF calibrated measurement (2026-11-09)
+
+- [x] Reuse pinned `editTableCellText` with immutable source row/tc indices, merge-slot refusal, strict Python/bridge contract, table inspector, render-tree, NativeDraft history/recovery and source-copy-before-edit composition. Independent OOXML comparison preserves untouched cells, grid, merges and file contents.
+- [x] Reuse unchanged pinned calibration/formatting helpers and measure Line writer; first-reference confirmation/cancel, session-only scale, active-tool recalibration, rotated/CropBox coordinates, immutable labels and guarded modal commit. ASCII label restriction documents the fixed Helvetica writer boundary.
+- [ ] Finish the remaining table design/structure/rich selection and PDF saved drawing editing, safe redaction, full forms/certificate/multi-document gaps. No global completion percentage inferred; desktop/production authorization/SQL/full-image acceptance and feature flags unchanged.
+- Acceptance scope and reproducible checks: `NATIVE_PPTX_PDF_NEXT_ACCEPTANCE.md`.

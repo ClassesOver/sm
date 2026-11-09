@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, addTable, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, addTable, editTableCellText, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -36,6 +36,8 @@ type Input = {
   newSlides?: ({ layoutFrom: number } | { duplicateOf: number } | { withLayout: string })[]
   /** 固定源 Insert ▸ Shapes（onPickShape）：预设形状，几何为 96dpi 像素；线条为 1pt 黑色连接符，其他为出厂填充色。 */
   shapes?: { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }[]
+  /** 固定源 editTableCellText：按原始 a:tr/a:tc 索引编辑已有表格的文字，拒绝被合并覆盖的单元格。 */
+  tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]
   /** 固定源 Insert ▸ Table（insertTable + table-insert.ts）：行列数；位置按固定源规格由幻灯片尺寸计算。 */
   tables?: { slideIndex: number; rows: number; cols: number }[]
   /** 固定源 Shape Format ▸ Shape Fill / Shape Outline（setFill / setStroke）：纯色或无填充；描边颜色与线宽（pt）或无轮廓。 */
@@ -217,6 +219,7 @@ if (request.action === 'inspect') {
             } } : {}),
           }
         })() : {}),
+        ...(element.type === 'table' ? { table: element.rows.map(row => row.map(cell => ({ text: (cell.text?.paragraphs ?? []).map(p => p.runs.map(run => run.text).join('')).join('\n'), merged: cell.merged === true }))) } : {}),
         editable: element.type === 'text' || element.type === 'shape',
         deletable: deletableTypes.has(element.type),
         geometry: {
@@ -261,6 +264,16 @@ if (request.action === 'inspect') {
     if (!reset) throw new Error('reset_layout_failed')
     originalSlides[index] = reset
   }
+  const tableCells = request.tableCells ?? []
+  if (!Array.isArray(tableCells) || tableCells.length > 500) throw new Error('table_cells_invalid')
+  const seenCells = new Set<string>()
+  for (const item of tableCells) {
+    if (!item || Object.keys(item).sort().join() !== 'col,elementId,row,slideIndex,text' || !validSlideIndex(item.slideIndex, slideCount) || typeof item.elementId !== 'string' || !Number.isInteger(item.row) || item.row < 0 || !Number.isInteger(item.col) || item.col < 0 || typeof item.text !== 'string' || item.text.length > 20000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(item.text)) throw new Error('table_cell_invalid')
+    const key = JSON.stringify([item.slideIndex, item.elementId, item.row, item.col])
+    const element = originalSlides[item.slideIndex]!.elements.find(el => el.id === item.elementId)
+    if (seenCells.has(key) || !element || element.type !== 'table' || !element.rows[item.row]?.[item.col] || element.rows[item.row]![item.col]!.merged) throw new Error('table_cell_target_invalid')
+    seenCells.add(key)
+  }
   // 表格先校验；插入放在最后（addTable 会把已做的修改写入 XML 后重建页面并改变对象身份）。
   const tables = request.tables ?? []
   if (!Array.isArray(tables) || tables.length > 100) throw new Error('tables_invalid')
@@ -301,7 +314,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.tableCells, request.shapeStyles, request.shapeKinds, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -576,6 +589,16 @@ if (request.action === 'inspect') {
     if ((opened.deck.size.cx !== cx || opened.deck.size.cy !== cy) && !setSlideSize(opened, cx, cy)) {
       throw new Error('slide_size_apply_failed')
     }
+  }
+  // Copies already exist; edit saved-source tables before addTable reparses object IDs.
+  for (const item of tableCells) {
+    const slide = originalSlides[item.slideIndex]!
+    const element = slide.elements.find(el => el.id === item.elementId)
+    if (!element || element.type !== 'table') throw new Error('table_cell_target_invalid')
+    const cell = element.rows[item.row]?.[item.col]
+    if (!cell || cell.merged) throw new Error('table_cell_target_invalid')
+    const paragraphs = applyEditParagraphs(cell.text?.paragraphs ?? [], item.text.split('\n').map(text => ({ runs: [{ text }] })))
+    if (!editTableCellText(slide, item.elementId, item.row, item.col, paragraphs)) throw new Error('table_cell_edit_failed')
   }
   // 固定源 tableInsertSpec：宽 2/3 居中、顶部 10.5%、行高 29.2pt；在全部按对象身份的修改与尺寸缩放之后插入。
   for (const table of tables) {

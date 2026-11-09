@@ -202,3 +202,13 @@ Native adaptations add nonfatal storage, ARIA keyboard/cancellation cleanup,
 measured pane chrome, DPR2 raster caps and document/page lazy bitmap lifetime.
 Initial/preview reading guards stay intact while pagehide during ordinary reflow
 saves stable position/latest fit intent. See `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.
+
+Calibrated measurement continuation (2026-11-09): unchanged pinned
+`apps/pdf/src/renderer/measure.ts` supplies calibration and two-decimal labels;
+`MeasureScaleDialog`/App first-reference, cancellation and recalibration semantics
+are adapted to the native dialog and immutable page/draft scope. Measurements use
+the existing engine's Line/AP/Helvetica writer. The adapter limits units/labels to
+printable ASCII and finite representable scales because that fixed writer embeds
+Helvetica text directly. Session calibration is not persisted; committed labels
+are immutable draft data. See `NATIVE_PPTX_PDF_NEXT_ACCEPTANCE.md` for provenance,
+independent file checks and the remaining source differences.

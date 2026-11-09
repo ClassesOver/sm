@@ -384,3 +384,8 @@ to avoid stale inbound IRT. Source/preview/readonly/capability guards cover pane
 and page-card actions; ordinary note editing remains independent. The new source
 annot-delete.ts is a pinned primary reference, not a claimed executed PDFium path.
 See `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`; no new Ribbon count is claimed.
+
+
+## PR #207/#208 follow-up: existing table cells and PDF measurement
+
+PPTX exposes existing source table cells through the inspector, with exact row/tc indices and covered merge slots excluded. This is not a completed Table Design/Layout ribbon. PDF Annotate ▸ measure now has an executable reference-line calibration flow and a strict measure operation; unavailable-placeholder status is superseded for this one command. See `NATIVE_PPTX_PDF_NEXT_ACCEPTANCE.md` for primary-source identities, differences and independent file checks.
