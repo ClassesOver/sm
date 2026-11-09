@@ -224,3 +224,10 @@ REPORT_SLIDES_CONTEXT_FILE=/absolute/path/to/context.json REPORT_EDITOR_EVIDENCE
 - AI 检查会使用当前配置模型与额度；不开启开关时不调用模型。输出包含截图、`browser-result.json`，写入模式另存 PPTX 和 mode 0600 的授权回执。
 
 这属于编辑器验收，不等于真实数据源的 AgentOS 报告生成，也不等于 Microsoft PowerPoint 桌面验收。容器或新环境首次使用模型前，应按部署配置预热 tiktoken 编码缓存；本地观察到首次下载会阻塞请求，缓存完成后恢复正常。
+
+## 2026-11-09 对齐批次真实浏览器验收
+
+- `workbook-ribbon-gui-smoke.mjs`：XLSX 缩进、格式刷（单次）、行高/列宽对话框、自动调整行高、复制→粘贴；保存经真实 `patch_office`，openpyxl 回读。
+- `docx-insert-gui-smoke.mjs`：Word 封面、分页符、空白页、插入表格并输入；保存经真实 `patch_docx`，python-docx/XML 回读。
+
+两者与既有 smoke 相同：vite 前端 + Playwright 替身 context/file 路由。需先 `npm run bundle:bridges`（workbook_engine、slides_engine）。在 Playwright 版本与预装浏览器不一致的环境中，用 `REPORT_EDITOR_CHROMIUM_EXECUTABLE` 指向本机 Chromium。
