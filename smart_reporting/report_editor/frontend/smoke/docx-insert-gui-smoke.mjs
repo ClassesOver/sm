@@ -55,7 +55,8 @@ else:
             body.append(['tbl', len(rows), len(rows[0].findall(qn('w:tc'))), [''.join(t.text or '' for t in tc.iter(qn('w:t'))) for tc in rows[0].findall(qn('w:tc'))]])
     marks = [b.get(qn('w:name')) for b in document.element.body.iter(qn('w:bookmarkStart'))]
     sections = [{'start': str(sec.start_type), 'orientation': str(sec.orientation), 'width': sec.page_width.twips, 'left': sec.left_margin.twips} for sec in document.sections]
-    print(json.dumps({'model': inspect_docx(content), 'body': body, 'bookmarks': marks, 'sections': sections}, ensure_ascii=False))
+    runs = [[[run.text, bool(run.bold), bool(run.italic)] for run in paragraph.runs] for paragraph in document.paragraphs]
+    print(json.dumps({'model': inspect_docx(content), 'body': body, 'bookmarks': marks, 'sections': sections, 'runs': runs}, ensure_ascii=False))
 `], { cwd: repo, env: { ...process.env, PYTHONPATH: repo }, input: JSON.stringify(input), encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(result.stderr || `python exited ${result.status}`)
   return result.stdout.trim()
@@ -111,7 +112,22 @@ try {
     const download = await page.evaluate(async url => { const r = await fetch(url); return Array.from(new Uint8Array(await r.arrayBuffer())) }, `/fixture-insert-download-${revision}.docx`)
     return JSON.parse(runPython({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
   }
-  if (smokeCase === 'sections') {
+  if (smokeCase === 'format') {
+    // 开始▸加粗作用于选中文字：选中“一段”（第 2-3 字）加粗，“第三段”整段（光标折叠）倾斜。
+    await page.locator('[data-tab-id="home"]').click()
+    await editor.locator('p').filter({ hasText: '第一段正文' }).click()
+    await page.keyboard.press('Home'); await page.keyboard.press('ArrowRight')
+    await page.keyboard.press('Shift+ArrowRight'); await page.keyboard.press('Shift+ArrowRight')
+    await page.locator('[data-action="bold"]').click()
+    await editor.locator('p').filter({ hasText: '第三段' }).click()
+    await page.locator('[data-action="italic"]').click()
+    const revision2 = await save(2)
+    console.log(JSON.stringify({ ok: true, case: smokeCase, browserVersion: browser.version(), ops: savePayloads.get(1).operations.map(op => [op.kind, op.from, op.to, op.style]), runs: revision2.runs, pageErrors }))
+    assert.deepEqual(savePayloads.get(1).operations.map(op => op.kind), ['formatRange', 'formatParagraph'])
+    assert.deepEqual(revision2.runs[0], [['第', false, false], ['一段', true, false], ['正文', false, false]])
+    assert.deepEqual(revision2.runs[2], [['第三段', false, true]])
+    assert.deepEqual(pageErrors, [])
+  } else if (smokeCase === 'sections') {
     // 修订 1：在“第二段”后插入连续分节符（一节拆为两节）。
     await editor.locator('p').filter({ hasText: '第二段' }).click()
     await page.locator('[data-tab-id="layout"]').click()

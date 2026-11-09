@@ -198,6 +198,39 @@ function applyLink(node: DocxPmNode, from: number, to: number, href: string | nu
   })
   compatibleLinkGroups(node)
 }
+function runStyle(run: DocxPmNode): Record<string, unknown> {
+  const style: Record<string, unknown> = { bold: false, italic: false, underline: false, strike: false }
+  for (const mark of run.marks ?? []) {
+    if (['bold', 'italic', 'underline', 'strike'].includes(mark.type)) style[mark.type] = true
+    else if (mark.type === 'textStyle' || mark.type === 'docTextStyle') for (const [key, value] of Object.entries(mark.attrs ?? {})) {
+      if (value == null || value === false) continue
+      if (key === 'color') style.color = String(value).replace(/^#/, '')
+      else if (key === 'sizeHalfPoints' || key === 'fontSize') style.fontSize = key === 'sizeHalfPoints' ? Number(value) / 2 : Number(value)
+      else if (key === 'font' || key === 'fontFamily') style.fontFamily = value
+      else throw new Error('此文字样式暂不支持保存')
+    }
+    else throw new Error('此文字样式暂不支持保存')
+  }
+  return style
+}
+/** 文字不变时的局部字符格式差分：按 UTF-16 偏移给出最小变化区间（每段变化键与新值相同）。 */
+export function formatRangeChanges(node: DocxPmNode, edited: DocxPmNode): { from: number; to: number; style: Record<string, unknown> }[] {
+  const expand = (paragraph: DocxPmNode) => (paragraph.content ?? []).flatMap(run => run.type === 'text'
+    ? Array.from({ length: (run.text ?? '').length }, () => runStyle(run)) : [])
+  const before = expand(node), after = expand(edited)
+  if (before.length !== after.length) throw new Error('局部格式修改要求段落文字不变')
+  const segments: { from: number; to: number; style: Record<string, unknown> }[] = []
+  after.forEach((style, at) => {
+    const old = before[at]!
+    for (const key of ['color', 'fontFamily', 'fontSize']) if (key in old && !(key in style)) throw new Error('暂不支持清除局部字体、字号或颜色')
+    const delta = Object.fromEntries(Object.entries(style).filter(([key, value]) => !same(value, old[key])))
+    const last = segments[segments.length - 1]
+    if (!Object.keys(delta).length) return
+    if (last && last.to === at && same(last.style, delta)) last.to = at + 1
+    else segments.push({ from: at, to: at + 1, style: delta })
+  })
+  return segments
+}
 function styleOf(node: DocxPmNode): Record<string, unknown> {
   const runs = (node.content ?? []).filter(child => child.type === 'text')
   if (!runs.length) throw new Error('空段落暂不支持样式修改')
@@ -445,7 +478,21 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: { highlight: safeDocxHighlight(newHighlight) } })
     }
     if ((edited.content ?? []).some(child => child.type === 'text') && !same(markSequence(withoutHighlight(withoutVerticalAlign(withoutLinks(node)))), markSequence(withoutHighlight(withoutVerticalAlign(withoutLinks(edited)))))) {
-      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(withoutHighlight(withoutVerticalAlign(withoutLinks(node)))) : { bold: false, italic: false, underline: false, strike: false }, next = styleOf(withoutHighlight(withoutVerticalAlign(withoutLinks(edited))))
+      const plainBefore = withoutHighlight(withoutVerticalAlign(withoutLinks(node))), plainAfter = withoutHighlight(withoutVerticalAlign(withoutLinks(edited)))
+      const inline = (paragraph: DocxPmNode) => (paragraph.content ?? []).every(child => child.type === 'text')
+      if (!textChanged && inline(node) && inline(edited) && (node.content ?? []).some(child => child.type === 'text')) {
+        // 文字未变：局部格式按区间保存；整段一致的单一区间沿用 formatParagraph。
+        const ranges = formatRangeChanges(plainBefore, plainAfter), length = textOf(edited).length
+        if (ranges.length === 1 && ranges[0]!.from === 0 && ranges[0]!.to === length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: ranges[0]!.style })
+        else for (const range of ranges) {
+          if (!validDocxLinkRange(textOf(edited), range.from, range.to)) throw new Error('局部格式范围不能拆开 Unicode 字符')
+          ops.push({ kind: 'formatRange', ...baseOp(anchor), ...range })
+        }
+        continue
+      }
+      let next: Record<string, unknown>
+      try { next = styleOf(plainAfter) } catch (error) { throw new Error(textChanged && (error as Error).message.includes('局部样式') ? '同一段落修改文字后，局部格式请先保存再设置' : (error as Error).message) }
+      const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(plainBefore) : { bold: false, italic: false, underline: false, strike: false }
       if (['color', 'fontFamily', 'fontSize'].some(key => key in old && !(key in next))) throw new Error('暂不支持清除段落字体、字号或颜色')
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => !same(value, old[key])))
       if (Object.keys(changed).length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: changed })
@@ -674,6 +721,37 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
           mark.attrs = { ...mark.attrs, [attr]: key === 'fontSize' ? Number(style[key]) * 2 : style[key] }
         }
       }
+    } else if (operation.kind === 'formatRange') {
+      const style = operation.style as Record<string, unknown>
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'style'].includes(key))
+        || !style || typeof style !== 'object' || Array.isArray(style) || !Object.keys(style).length
+        || Object.keys(style).some(key => !['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontFamily', 'color'].includes(key))
+        || (node.content ?? []).some(run => run.type !== 'text') || !validDocxLinkRange(textOf(node), operation.from, operation.to)) throw new Error('草稿局部格式字段或来源身份无效')
+      for (const key of ['bold', 'italic', 'underline', 'strike']) if (key in style && typeof style[key] !== 'boolean') throw new Error('草稿文字格式无效')
+      if ('fontSize' in style && (typeof style.fontSize !== 'number' || !Number.isFinite(style.fontSize) || style.fontSize < 1 || style.fontSize > 200 || !Number.isInteger(style.fontSize * 2))) throw new Error('草稿字号无效')
+      if ('fontFamily' in style && (typeof style.fontFamily !== 'string' || !style.fontFamily.trim() || style.fontFamily.length > 128 || /[\x00-\x1f]/.test(style.fontFamily))) throw new Error('草稿字体无效')
+      if ('color' in style && (typeof style.color !== 'string' || !/^[a-f\d]{6}$/i.test(style.color))) throw new Error('草稿字体颜色无效')
+      const from = Number(operation.from), to = Number(operation.to)
+      let offset = 0
+      node.content = (node.content ?? []).flatMap(run => {
+        const start = offset, end = offset += (run.text ?? '').length
+        const cuts = [start, ...[from, to].filter(at => at > start && at < end), end].sort((a, b) => a - b)
+        return cuts.slice(0, -1).map((at, index) => {
+          const part: DocxPmNode = { ...run, text: run.text!.slice(at - start, cuts[index + 1] - start), marks: [...(run.marks ?? []).map(mark => ({ ...mark, attrs: mark.attrs && { ...mark.attrs } }))] }
+          if (at < from || at >= to) return part
+          for (const key of ['bold', 'italic', 'underline', 'strike']) if (key in style) {
+            part.marks = part.marks!.filter(mark => mark.type !== key)
+            if (style[key]) part.marks.push({ type: key })
+          }
+          for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font' })) if (key in style) {
+            let mark = part.marks!.find(item => item.type === 'docTextStyle' || item.type === 'textStyle')
+            if (!mark) { mark = { type: 'docTextStyle', attrs: {} }; part.marks!.push(mark) }
+            mark.attrs = { ...mark.attrs, [attr]: key === 'fontSize' ? Number(style[key]) * 2 : style[key] }
+          }
+          return part
+        })
+      })
     } else if (operation.kind === 'replaceCellText') {
       const position = anchor.cells?.flatMap((row, r) => row.map((cell, c) => ({ ...cell, r, c }))).find(cell => cell.cellId === operation.cellId)
       const cell = position && node.content?.[position.r].content?.[position.c]

@@ -428,12 +428,17 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     }
     throw new Error('请先选择正文段落')
   }
+  /** 有选区时只作用于选中文字（保存为 formatRange）；光标折叠时作用于整段（formatParagraph）。 */
+  const formatTarget = () => {
+    const { from, to, empty } = editor.state.selection
+    return empty ? selectParagraph() : { from, to }
+  }
   const applyMark = (name: string) => {
-    const range = selectParagraph()
+    const range = formatTarget()
     editor.chain().focus().setTextSelection(range).toggleMark(name).run()
   }
   const applyTextStyle = (style: Record<string, unknown>) => {
-    const range = selectParagraph()
+    const range = formatTarget()
     const attrs: Record<string, unknown> = {}
     if ('fontFamily' in style) attrs.font = style.fontFamily
     if ('fontSize' in style) attrs.sizeHalfPoints = Number(style.fontSize) * 2
@@ -441,7 +446,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     editor.chain().focus().setTextSelection(range).setMark('docTextStyle', attrs).run()
   }
   const adjustFontSize = (delta: number) => {
-    const range = selectParagraph()
+    const range = formatTarget()
     let size = 12
     let found = false
     editor.state.doc.nodesBetween(range.from, range.to, node => {

@@ -66,6 +66,23 @@ function linkedRuns(runs: Run[], from: number, to: number, href: string | null):
   if (!compatibleLinkGroups(result)) fail('link_metadata_merge_unsupported')
   return result
 }
+/** formatRange：按 UTF-16 偏移拆分 run，区间内 run 合并字符格式（区间外 run 原样保留）。 */
+function formattedRuns(runs: Run[], from: number, to: number, formatting: Partial<Run>): Run[] {
+  const result: Run[] = []
+  let offset = 0
+  for (const run of runs) {
+    const end = offset + run.text.length
+    if (!run.text.length) { result.push({ ...run }); continue }
+    const points = [...new Set([offset, end, Math.max(offset, Math.min(end, from)), Math.max(offset, Math.min(end, to))])].sort((a, b) => a - b)
+    for (let index = 0; index < points.length - 1; index++) {
+      const start = points[index]!, stop = points[index + 1]!
+      const part: Run = { ...run, text: run.text.slice(start - offset, stop - offset) }
+      result.push(start >= from && stop <= to ? { ...part, ...formatting } : part)
+    }
+    offset = end
+  }
+  return result
+}
 function compatibleLinkGroups(runs: Run[]): boolean {
   let previous: Run['link']
   for (const run of runs) {
@@ -826,6 +843,14 @@ if (request.kind === 'inspect') {
       if (formatting.highlight !== undefined && !block.runs!.some(run => run.text.length)) fail('highlight_empty')
       return { op, block, formatting }
     }
+    if (op.kind === 'formatRange') {
+      // 同段局部字符格式；高亮仍走整段 formatParagraph（固定源局部高亮另有清除语义）。
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'style'])
+      if (op.style && typeof op.style === 'object' && 'highlight' in (op.style as object)) fail('style_invalid')
+      const formatting = style(op.style)
+      linkRange(op, block.runs!.map(run => run.text).join(''))
+      return { op, block, formatting }
+    }
     if (op.kind === 'setParagraphLink') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'href'])
       if (op.href !== null && !safeLinkHref(op.href)) fail('link_href_invalid')
@@ -1024,6 +1049,9 @@ if (request.kind === 'inspect') {
           : { ...run, vertAlign: item.op.value as 'superscript' | 'subscript' })
       } else if (item.op.kind === 'formatParagraph') {
         block.runs = (block.runs.length ? block.runs : [{ text: '' }]).map(run => ({...run, ...item.formatting}))
+      } else if (item.op.kind === 'formatRange') {
+        const range = linkRange(item.op, block.runs.map(run => run.text).join(''))
+        block.runs = formattedRuns(block.runs, range.from, range.to, item.formatting!)
       } else if (item.op.kind === 'setParagraphLink') {
         const range = linkRange(item.op, block.runs.map(run => run.text).join(''))
         block.runs = linkedRuns(block.runs, range.from, range.to, item.op.href as string | null)

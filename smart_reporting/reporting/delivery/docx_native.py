@@ -13,7 +13,7 @@ _MAX_BYTES = 24 * 1024 * 1024
 _OPERATION_KINDS = frozenset({
     'replaceParagraph', 'insertParagraph', 'insertParagraphImage', 'insertTable', 'insertCoverPage', 'deleteParagraph',
     'insertTableRow', 'deleteTableRow', 'insertTableColumn', 'deleteTableColumn', 'restructureTable', 'insertSectionBreak',
-    'formatParagraph', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceCellText', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpacing', 'setParagraphStyle', 'setParagraphShading', 'setParagraphBorders', 'setParagraphPageBreakBefore', 'setSectionLayout', 'setHeaderFooter',
+    'formatParagraph', 'formatRange', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceCellText', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpacing', 'setParagraphStyle', 'setParagraphShading', 'setParagraphBorders', 'setParagraphPageBreakBefore', 'setSectionLayout', 'setHeaderFooter',
 })
 
 
