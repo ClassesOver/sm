@@ -18,7 +18,8 @@ const GEOMETRY_THRESHOLD_PX = 2
 
 export interface GeometryChanges {
   readonly columns: ReadonlyArray<{ sheet: string; index: number; widthChars: number }>
-  readonly rows: ReadonlyArray<{ sheet: string; index: number; heightPoints: number }>
+  /// heightPoints null = back to automatic height (AutoFit on a custom-height row)
+  readonly rows: ReadonlyArray<{ sheet: string; index: number; heightPoints: number | null }>
 }
 
 /// Grid-dragged geometry (readback, pixels) vs the imported model (chars /
@@ -29,7 +30,7 @@ export function geometryChanges(
   readback: ReadbackWorkbook,
 ): GeometryChanges {
   const columns: Array<{ sheet: string; index: number; widthChars: number }> = []
-  const rows: Array<{ sheet: string; index: number; heightPoints: number }> = []
+  const rows: Array<{ sheet: string; index: number; heightPoints: number | null }> = []
   const modelSheetByName = new Map(model.sheets.map((sheet) => [sheet.name, sheet]))
   for (const sheet of readback.sheets) {
     const modelSheet = modelSheetByName.get(sheet.name)
@@ -64,6 +65,10 @@ export function geometryChanges(
       const expected = expectedHeightPx.get(index)
       if (expected !== undefined && Math.abs(expected - pixels) < GEOMETRY_THRESHOLD_PX) continue
       rows.push({ sheet: sheet.name, index, heightPoints: pixels / PIXELS_PER_POINT })
+    }
+    // AutoFit Row Height turns a sized row automatic: only a row the file sized needs a reset.
+    for (const index of sheet.autoHeightRows ?? []) {
+      if (expectedHeightPx.has(index)) rows.push({ sheet: sheet.name, index, heightPoints: null })
     }
   }
   return { columns, rows }

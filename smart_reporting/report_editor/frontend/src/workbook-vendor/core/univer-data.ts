@@ -13,6 +13,7 @@ import {
   type SparklineSpec,
   type WorkbookModel,
 } from '@sheets-web/xlsx-engine'
+import { CellValueType } from '@univerjs/core'
 import { logicalStyleOf, toUniverStyle, type LogicalStyle } from './style-map'
 
 export const MINIMUM_SHEET_ROW_COUNT = 1000
@@ -20,6 +21,9 @@ export const MINIMUM_SHEET_COLUMN_COUNT = 26
 
 export interface UniverCellData {
   v?: string | number | boolean | undefined
+  /// Univer cell value type marker (CellValueType); grid features like the
+  /// official sort branch on it, so the projection always sets it for values.
+  t?: number | undefined
   f?: string | undefined
   /// style map key ('' when the cell has no style)
   s?: string | undefined
@@ -32,11 +36,8 @@ export interface UniverSheetData {
   columnCount: number
   cellData: Record<number, Record<number, UniverCellData>>
   mergeData?: Array<{ startRow: number; startColumn: number; endRow: number; endColumn: number }>
-  columnData?: Record<
-    number,
-    { width?: number | undefined; hidden?: boolean | undefined }
-  >
-  rowData?: Record<number, { height?: number | undefined; hidden?: boolean | undefined }>
+  columnData?: Record<number, UniverColumnData>
+  rowData?: Record<number, UniverRowData>
   /// engine CF rules the loader feeds to Univer's conditional formatting
   cfRules?: ReadonlyArray<CfReadableRule>
   /// sparkline specs the render extension draws (x14, read back for display)
@@ -44,6 +45,15 @@ export interface UniverSheetData {
   /// anchored chart specs the render extension draws (column/bar/line/pie v1)
   charts?: ReadonlyArray<ChartReadSpec>
 }
+
+/// Univer 0.25.1 IColumnData / IRowData keys: width `w` and height `h` in
+/// pixels, hidden `hd` as BooleanNumber (1 = hidden). The sheets-web snapshot
+/// this file was migrated from wrote `width`/`height`/`hidden`, which Univer
+/// ignores — file geometry was not shown and grid resizes/hides never reached
+/// the save diff. GenOffice f8c17004 univer-sync.ts uses these real keys.
+export interface UniverColumnData { w?: number | undefined; hd?: number | undefined }
+export interface UniverRowData { h?: number | undefined; ia?: number | undefined; ah?: number | undefined; hd?: number | undefined }
+export const isHiddenAxisEntry = (entry: { hd?: number | undefined } | null | undefined): boolean => entry?.hd === 1
 
 export interface UniverWorkbookData {
   id: string
@@ -125,8 +135,8 @@ export function buildWorkbookData(
       if (column.width === undefined && !column.hidden) continue
       for (let index = column.start - 1; index < column.end && index < 200; index += 1) {
         columnData[index] = {
-          ...(column.width !== undefined ? { width: columnWidthToPixels(column.width) } : {}),
-          ...(column.hidden ? { hidden: true } : {}),
+          ...(column.width !== undefined ? { w: columnWidthToPixels(column.width) } : {}),
+          ...(column.hidden ? { hd: 1 } : {}),
         }
       }
     }
@@ -134,8 +144,10 @@ export function buildWorkbookData(
     for (const row of sheet.rows) {
       if (row.height === undefined && !row.hidden) continue
       rowData[row.row - 1] = {
-        ...(row.height !== undefined ? { height: rowHeightToPixels(row.height) } : {}),
-        ...(row.hidden ? { hidden: true } : {}),
+        // file heights are explicit (Excel customHeight): ia 0, as setRowHeightsForced writes,
+        // so AutoFit Row Height (ia 1) is distinguishable from an untouched row
+        ...(row.height !== undefined ? { h: rowHeightToPixels(row.height), ia: 0 } : {}),
+        ...(row.hidden ? { hd: 1 } : {}),
       }
     }
     if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {
@@ -180,7 +192,11 @@ function univerCellOf(cell: ModelCell, styleId: string | undefined): UniverCellD
   if (cell.value === null || cell.value === undefined) {
     return styleId === undefined ? {} : { s: styleId }
   }
-  return { v: cell.value, ...(styleId !== undefined ? { s: styleId } : {}) }
+  // Univer features (official sort, statistic bar) branch on the cell type
+  // marker; without `t` numbers compare as strings and sort lexicographically.
+  const valueType = typeof cell.value === 'number' ? CellValueType.NUMBER
+    : typeof cell.value === 'boolean' ? CellValueType.BOOLEAN : CellValueType.STRING
+  return { v: cell.value, t: valueType, ...(styleId !== undefined ? { s: styleId } : {}) }
 }
 
 /// A1 → Univer (row, column) helper for the sync layer.

@@ -1,11 +1,28 @@
-import { LocaleType, mergeLocales } from '@univerjs/core'
+import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note'
+import NoteZhCN from '@univerjs/preset-sheets-note/locales/zh-CN'
+import '@univerjs/preset-sheets-note/lib/index.css'
+import { adjacentNote, validateNoteCommand, captureNoteTarget, validateNoteTarget, noteSource, noteStructureReason, withWorkbookNotes, workbookNoteOperations, validateNoteBudget, createNoteDialog, type NoteWorkbook } from './workbook-notes'
+import { withWorkbookFilters, workbookFilterOperations, type FilterWorkbook } from './workbook-filters'
+import { withWorkbookView } from './workbook-view'
+import { ICommandService, IUndoRedoService, LocaleType, mergeLocales } from '@univerjs/core'
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
+import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace'
+import { UniverSheetsDrawingPreset } from '@univerjs/preset-sheets-drawing'
+import { UniverSheetsTablePreset } from '@univerjs/preset-sheets-table'
+import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort'
+import '@univerjs/preset-sheets-sort/lib/index.css'
+import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter'
+import '@univerjs/preset-sheets-filter/lib/index.css'
+import FilterUiZhCN from '@univerjs/sheets-filter-ui/locale/zh-CN'
 import CoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
+import FindReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
+import SortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 import '@univerjs/preset-sheets-core/lib/index.css'
-import { readWorkbook, type WorkbookModel } from '@sheets-web/xlsx-engine'
+import { matchMarginPreset, readWorkbook, type WorkbookModel } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { createUniver } from './workbook-vendor/grid/create-univer'
-import { loadWorkbookData, readBack } from './workbook-vendor/grid/sync'
+import { loadWorkbookData, readBack, openFindReplace } from './workbook-vendor/grid/sync'
+import { validateWorkbookReplacement, workbookReplacementCommand } from './workbook-find-replace'
 import { buildWorkbookData } from './workbook-vendor/core/univer-data'
 import { diffToEdits } from './workbook-vendor/core/session-core'
 import { geometryChanges } from './workbook-vendor/core/data-tools'
@@ -13,21 +30,54 @@ import { WorkbookDraft, workbookSaveOutcome, type WorkbookOperation, type Workbo
 import type { EditorShell } from './shell'
 import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot } from './workbook-grid-operations'
 import { withWorkbookLocked } from './workbook-grid-guards'
+import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
+import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
+import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
+import { assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
+import { installCalculation, type CalculationControl } from './workbook-calculation'
+import { createSortDialog, type SortRange } from './workbook-sort-dialog'
+import { createFormatCellsDialog } from './workbook-numfmt-dialog'
+import { applyFillSeries, createFillSeriesDialog, fillSeriesDefaultType, fillSeriesDirection } from './workbook-fill-series'
+import { createGoToDialog, resolveGoToRef } from './workbook-goto'
+import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
+import { applyFormatPainterClick, formatPainterActive, formatPainterReady, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
+import {
+  applyWorkbookRibbonCommand, selectedWorkbookRotation,
+  mountWorkbookRibbon,
+  type RibbonWorkbook,
+  type WorkbookPageSetupState,
+} from './workbook-ribbon'
+import { selectedWorkbookFormat, captureNumberFormatTarget, applyCapturedNumberFormat, validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook, type NumberFormatTarget } from './workbook-format'
+import {
+  absoluteRangeRef, applyDefinedNameAction, createNameManagerDialog, definedNamesPlanOperation,
+  liveDefinedNames, type DefinedNameWorkbook,
+} from './workbook-defined-names'
 import { requestJson } from './api-request'
+import type { NativeDraft, NativeOperation } from './native-draft'
+import { buildSheetPrintHtml, printDocument, PRINT_MARGIN_PRESETS, printSourceFromSnapshotSheet, type SheetPrintSetup, type SheetPrintSource } from './workbook-print'
 import './workbook.css'
 
 type AIStatus = { editId: string; status: string; snapshotSha256: string; proposal?: WorkbookProposal; error?: { message: string } }
 
-export async function createWorkbookEditorView(shell: EditorShell) {
+export interface WorkbookEditorOptions {
+  request?: <T>(path: string, payload?: unknown) => Promise<T>
+  file?: () => Promise<{ bytes: ArrayBuffer; sha256: string }>
+  native?: boolean
+  draft?: NativeDraft
+}
+
+export async function createWorkbookEditorView(shell: EditorShell, options: WorkbookEditorOptions = {}) {
   const base = location.pathname.replace(/\/$/, '')
   const draft = new WorkbookDraft()
-  const request = <T>(path: string, payload?: unknown): Promise<T> => requestJson(
+  const nativeDraft = options.native ? options.draft : undefined
+  const request = options.request ?? (<T>(path: string, payload?: unknown): Promise<T> => requestJson(
     `${base}/api/${path}`,
     payload === undefined ? {} : { method: 'POST', body: JSON.stringify(payload) },
     'report_workbook_csrf',
-  )
+  ))
   shell.editor.innerHTML = `
-    <section class="workbook-ai" aria-label="工作簿 AI 编辑"><form><label for="workbook-instruction">Ask AI</label><textarea id="workbook-instruction" maxlength="2000" rows="2" placeholder="描述要调整的单元格、公式或样式"></textarea><button type="submit">生成候选</button><button type="button" class="workbook-undo" disabled>撤销 AI 采纳</button></form><div class="workbook-feedback" role="status" aria-live="polite"></div><div class="workbook-candidate" hidden><strong></strong><pre></pre><button type="button" class="workbook-accept">采纳到草稿</button><button type="button" class="workbook-reject">拒绝</button></div><div class="workbook-actions" role="toolbar" aria-label="单元格布局"><button type="button" data-workbook-command="sheet.command.add-worksheet-merge-all">合并单元格</button><button type="button" data-workbook-command="sheet.command.remove-worksheet-merge">取消合并</button></div></section>
+    <section class="workbook-ai" aria-label="工作簿 AI 编辑"><form><label for="workbook-instruction">Ask AI</label><textarea id="workbook-instruction" maxlength="2000" rows="2" placeholder="描述要调整的单元格、公式或样式"></textarea><button type="submit">生成候选</button><button type="button" class="workbook-undo" disabled>撤销 AI 采纳</button></form><div class="workbook-feedback" role="status" aria-live="polite"></div><div class="workbook-candidate" hidden><strong></strong><pre></pre><button type="button" class="workbook-accept">采纳到草稿</button><button type="button" class="workbook-reject">拒绝</button></div></section>
+    <div class="workbook-ribbon-host"></div>
     <div id="workbook-grid" class="workbook-grid" aria-label="报告工作簿"></div>`
   const feedback = shell.editor.querySelector<HTMLElement>('.workbook-feedback')!
   const form = shell.editor.querySelector<HTMLFormElement>('form')!
@@ -37,6 +87,7 @@ export async function createWorkbookEditorView(shell: EditorShell) {
   const accept = candidate.querySelector<HTMLButtonElement>('.workbook-accept')!
   const reject = candidate.querySelector<HTMLButtonElement>('.workbook-reject')!
   const undo = form.querySelector<HTMLButtonElement>('.workbook-undo')!
+  if (options.native) { form.hidden = true; form.inert = true; submit.disabled = true }
   let original: Uint8Array
   let currentModel!: WorkbookModel
   let expectedSha256 = ''
@@ -47,76 +98,1127 @@ export async function createWorkbookEditorView(shell: EditorShell) {
   // 新修订已登记后不再从当前底稿保存，避免重复生成修订。
   let saved = false
   let loading = true
-  let structural: NonNullable<ReturnType<typeof structuralMutation>>[] = []
+  let saving = false
+  let disposed = false
+  let gridChanged = false
+  let captureGeneration = 0
+  let persistence = Promise.resolve()
+  // 结构日志：行列增删（Univer mutation）与插入/删除单元格移位（命令 + 撤销元素），按发生顺序回放。
+  let structural: (NonNullable<ReturnType<typeof structuralMutation>> | CellShiftEntry)[] = []
+  const undone: CellShiftEntry[] = []
+  // 单元格移位/其撤销重做同步执行期间，Univer 为扩容附带的 insert/remove-col|row mutation 不进行列日志。
+  let suppressStructural = false
+  // 审阅▸保护：按原工作表 id（sheet-N）记录切换后的期望状态；undefined/缺省 = 文件原状态。
+  const sheetProtection = new Map<string, boolean>()
+  let structureLock: boolean | undefined
+  // 公式▸显示公式：按 Univer 工作表 id 记录公式视图（文件 sheetView/@showFormulas 为基线）；计算模式为编辑器状态。
+  const formulaSheets = new Set<string>()
+  let calculation: CalculationControl | undefined
   let acceptedSnapshot = ''
   const runtime = createUniver({
-    locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN) },
-    presets: [UniverSheetsCorePreset({ container: 'workbook-grid', header: false, toolbar: true, contextMenu: true, formulaBar: true, footer: { sheetBar: true, statisticBar: true } })],
+    locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, FindReplaceZhCN, SortZhCN, NoteZhCN, FilterUiZhCN) },
+    presets: [
+      UniverSheetsCorePreset({ container: 'workbook-grid', header: false, toolbar: true, contextMenu: true, formulaBar: true, footer: { sheetBar: true, statisticBar: true } }),
+      UniverSheetsFindReplacePreset(),
+      UniverSheetsDrawingPreset(),
+      UniverSheetsTablePreset(),
+      UniverSheetsSortPreset(),
+      UniverSheetsFilterPreset(),
+      UniverSheetsNotePreset(),
+    ],
   })
   const markDirty = () => {
+    if (loading || saving || saved || disposed) return
     dirty = true
+    gridChanged = true
     shell.statusLabel.textContent = '有未保存修改'
     if (!candidate.hidden) feedback.textContent = '内容已变化时需重新生成 AI 候选。'
+    if (nativeDraft) {
+      // 连续 mutation 只采集最新网格；异步结构操作不得让旧快照覆盖新草稿。
+      const generation = ++captureGeneration
+      persistence = persistence.then(async () => {
+        if (generation !== captureGeneration || disposed) return
+        const operations = await currentOperations()
+        if (generation !== captureGeneration || disposed) return
+        nativeDraft.setOperations(operations as NativeOperation[])
+        if (nativeDraft.persistenceError) feedback.textContent = nativeDraft.persistenceError
+      }).catch(error => { feedback.textContent = `本地草稿暂未更新：${(error as Error).message}` })
+    }
   }
-  for (const button of shell.editor.querySelectorAll<HTMLButtonElement>('[data-workbook-command]')) {
-    button.addEventListener('click', async () => {
-      button.disabled = true
+  const indentUnavailable = () => {
+    const name = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+    return currentModel?.sheets.find(sheet => sheet.name === name)?.indentReadOnlyReason ? '此工作表包含尚不能完整回读的继承格式，暂不支持缩进编辑' : undefined
+  }
+  const rotationUnavailable = () => {
+    const name = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+    return currentModel?.sheets.find(sheet => sheet.name === name)?.rotationReadOnlyReason ? '此工作表包含尚不能完整回读的继承格式，暂不支持旋转编辑' : undefined
+  }
+  const editable = () => !loading && !saving && !saved && !disposed && !shell.editor.inert && !shell.editor.closest('[inert]')
+  const formatWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as FormatWorkbook | null
+  const formatState = () => selectedWorkbookFormat(formatWorkbook(), currentModel)
+  // 行高/列宽对话框：打开时冻结选区（同数字格式对话框），应用经 worksheet facade 写入网格，
+  // 保存时由既有 geometryChanges 差分写回 applyRowHeights/applyColumnWidths。
+  const axisDialog = createAxisSizeDialog(shell.editor, (target, value) => {
+    applyAxisSize(target, runtime.univerAPI.getActiveWorkbook() as never, value, editable())
+    markDirty()
+    ribbon.refreshState?.()
+    feedback.textContent = `${target.axis === 'row' ? '行高' : '列宽'}已更新，修改尚未保存。`
+  })
+  const originalSheet = (sheetId: string | undefined) => {
+    const index = /^sheet-(\d+)$/.exec(sheetId ?? '')?.[1]
+    return index === undefined ? undefined : currentModel?.sheets[Number(index)]
+  }
+  const sheetProtected = (sheetId: string | undefined) =>
+    sheetId !== undefined && (sheetProtection.get(sheetId) ?? originalSheet(sheetId)?.protection?.protected ?? false)
+  const structureLocked = () => structureLock ?? currentModel?.workbookProtection?.lockStructure ?? false
+  const activeSheetId = () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook() as { getActiveSheet?(): { getSheetId?(): string } | null } | null
+    return workbook?.getActiveSheet?.()?.getSheetId?.()
+  }
+  const protectionView = () => {
+    const sheetId = activeSheetId(), password = originalSheet(sheetId)?.protection?.hasPassword
+    return {
+      sheet: { protected: sheetProtected(sheetId), reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
+      workbook: { locked: structureLocked(), reason: currentModel?.workbookProtection?.hasPassword ? '工作簿结构受密码保护，暂不支持撤销或修改其保护' : undefined },
+    }
+  }
+  // 无注入器的测试替身没有撤销栈：单元格移位仍记日志，只是不能按撤销元素认领。
+  const undoStack = () => typeof runtime.univer.__getInjector === 'function'
+    ? runtime.univer.__getInjector().get<{ pitchTopUndoElement(): unknown; pitchTopRedoElement(): unknown }>(IUndoRedoService) : undefined
+  const runCellsChoice = (mode: CellsMode, choice: CellsChoice, range: CellRange) => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    void runtime.univerAPI.executeCommand(cellsCommandId(mode, choice), cellsCommandParams(mode, choice, range)).then(applied => {
+      if (!applied) feedback.textContent ||= mode === 'insert' ? '插入单元格未应用' : '删除单元格未应用'
+    }, (error: unknown) => { feedback.textContent = (error as Error).message })
+  }
+  let cellsRange: CellRange | undefined
+  const cellsDialog = createCellsDialog(shell.editor, (mode, choice) => {
+    if (!cellsRange) throw new Error('请先选择单元格或区域')
+    runCellsChoice(mode, choice, cellsRange)
+  })
+  // 数据▸自定义排序：打开时冻结选区，确定后执行官方 sort-range（批注/值/样式在网格内迁移，保存走既有差分）。
+  const sortDialog = createSortDialog(shell.editor, (range, hasTitle, orderRules) => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    const workbook = runtime.univerAPI.getActiveWorkbook()!, sheet = workbook.getActiveSheet()!
+    const reason = noteStructureReason(currentModel, noteWorkbook(), { id: 'sheet.command.sort-range' })
+    if (reason) throw new Error(reason)
+    const applied = runtime.univerAPI.syncExecuteCommand('sheet.command.sort-range', { range, orderRules, hasTitle, unitId: workbook.getId(), subUnitId: sheet.getSheetId() })
+    if (!applied) throw new Error(feedback.textContent || '排序未应用')
+    markDirty(); ribbon.refreshState?.()
+    feedback.textContent = `已按 ${orderRules.length} 个关键字排序${hasTitle ? '（首行为标题）' : ''}，修改尚未保存。`
+  })
+  // 开始▸编辑▸填充▸序列（固定源 fill-series-apply.ts）：写入为普通 set-values，可撤销、走保存差分。
+  const fillSeriesDialog = createFillSeriesDialog(shell.editor, options => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet(), active = workbook?.getActiveRange()
+    if (!sheet || !active) return '请先选择单元格或区域'
+    const failure = applyFillSeries(sheet as never, active as never, options)
+    if (!failure) { markDirty(); ribbon.refreshState?.(); feedback.textContent = '已填充序列，修改尚未保存。' }
+    return failure
+  })
+  // 开始▸编辑▸定位（固定源 data-tools-actions.ts goToReference）：仅移动选区，只读亦可用。
+  const goToDialog = createGoToDialog(shell.editor, reference => {
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+    if (!workbook || !sheet) return '工作簿尚未就绪'
+    const trimmed = reference.trim()
+    if (!trimmed) return '请输入引用位置'
+    const resolved = resolveGoToRef(trimmed, definedNameRows().map(row => ({ name: row.name, ref: row.refersTo })))
+    if (resolved === null) return `无法定位到“${trimmed}”：不是有效的引用或已定义名称`
+    try {
+      const range = sheet.getRange(resolved)
+      const target = workbook.getSheetBySheetId(range.getSheetId()) ?? sheet
+      if (target.getSheetId() !== sheet.getSheetId()) workbook.setActiveSheet(target)
+      workbook.setActiveRange(range)
+      feedback.textContent = `已定位到 ${trimmed}。`
+      return null
+    } catch (error) {
+      const detail = (error as Error).message ?? ''
+      return detail.includes('Range not found') ? `找不到“${trimmed}”所在的工作表` : `无法定位到“${trimmed}”`
+    }
+  })
+  const numberFormatDialog = createNumberFormatDialog(shell.editor, {
+    initial: () => formatState().numberFormat,
+    apply: (target, pattern) => {
+      if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+      if (!target) throw new Error('请先选择单元格或区域')
+      if (formatState().numberFormat.kind === 'unavailable') throw new Error('来源格式未完整投影，暂不能安全编辑数字格式')
+      validateNumberFormatBudget(runtime.univerAPI.getActiveWorkbook()!.getSnapshot(), currentModel, staged, structural.length, target, pattern)
+      applyCapturedNumberFormat(target, formatWorkbook(), pattern, editable())
+      markDirty(); ribbon.refreshState?.()
+      feedback.textContent = '数字格式已更新，值和公式保持不变；修改尚未保存。'
+    },
+  })
+  // 开始▸单元格▸格式▸设置单元格格式（数字页）：分类+选项生成格式代码，经同一校验与预算写入。
+  let formatCellsTarget: ReturnType<typeof captureNumberFormatTarget>
+  const formatCellsDialog = createFormatCellsDialog(shell.editor, {
+    current: () => {
+      const state = formatState().numberFormat
+      const range = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange()
+      const value = range?.getValue?.()
+      return { pattern: state.kind === 'value' ? String(state.value) : undefined, anchor: typeof value === 'number' || typeof value === 'string' ? value : null }
+    },
+    apply: pattern => {
+      if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+      if (!formatCellsTarget) throw new Error('请先选择单元格或区域')
+      if (formatState().numberFormat.kind === 'unavailable') throw new Error('来源格式未完整投影，暂不能安全编辑数字格式')
+      validateNumberFormatBudget(runtime.univerAPI.getActiveWorkbook()!.getSnapshot(), currentModel, staged, structural.length, formatCellsTarget, pattern)
+      applyCapturedNumberFormat(formatCellsTarget, formatWorkbook(), pattern, editable())
+      markDirty(); ribbon.refreshState?.()
+      feedback.textContent = `数字格式已设为 ${pattern}，值和公式保持不变；修改尚未保存。`
+    },
+  })
+  const noteWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as NoteWorkbook | null
+  const filterWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as FilterWorkbook | null
+  const noteDialog = createNoteDialog(shell.editor, (target, text) => {
+    const workbook = noteWorkbook(), sheet = validateNoteTarget(target, workbook, editable())
+    noteSource(currentModel, sheet.getSheetName())
+    const old = sheet.getRange(target.row, target.column).getNote()
+    if (!runtime.univerAPI.syncExecuteCommand('sheet.command.update-note', { unitId: workbook!.getId(), subUnitId: target.sheetId,
+      row: target.row, col: target.column, note: { ...old, note: text, width: old?.width ?? 240, height: old?.height ?? 140 } })) throw new Error('批注未应用')
+    feedback.textContent = '批注已更新，修改尚未保存。'
+  })
+  // 名称管理器（Formulas ▸ 定义的名称）：实时读 FWorkbook.getDefinedNames()
+  // 的全局名；动作走 Univer defined-name 命令，落盘差分由 currentOperations
+  // 经既有 applyDefinedNames 协议收集（工作簿 scope，引擎限制见模块注释）。
+  const definedNameWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as DefinedNameWorkbook | null
+  // facade 缺少 getDefinedNames（版本方差）时返回 undefined，对话框按空列表
+  // 展示，保存差分跳过 defined names（绝不能把"读不到"当成"已全部删除"）。
+  const definedNameRows = () => liveDefinedNames(definedNameWorkbook()) ?? []
+  const nameManagerDialog = createNameManagerDialog(shell.editor, {
+    rows: definedNameRows,
+    apply: action => {
+      if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+      const failure = applyDefinedNameAction(definedNameWorkbook(), action, definedNameRows())
+      if (failure === null) {
+        markDirty()
+        ribbon.refreshState?.()
+        feedback.textContent = '定义名称已更新，修改尚未保存。'
+      }
+      return failure
+    },
+  })
+  // 页面设置日志（Page Layout 族）：Univer 没有页面设置 facade（网格从不渲染
+  // 打印设置），与固定源一致按 sheetId 记录补丁，保存差分经 applyPageSetups
+  // 落盘；currentModel（引擎读模型）+ 日志补丁即当前生效状态。
+  const pageSetupJournal = new Map<string, Record<string, unknown>>()
+  const mergedPageSetup = (sheetName: string, patch: Record<string, unknown>): WorkbookPageSetupState => {
+    const before = currentModel.sheets.find(item => item.name === sheetName)
+    const setup = before?.pageSetup
+    const fitToPage = (patch.fitToPage as boolean | undefined) ?? setup?.fitToPage ?? false
+    return {
+      margins: (patch.margins as WorkbookPageSetupState['margins'] | undefined) ?? matchMarginPreset(before?.margins),
+      orientation: (patch.orientation as 'portrait' | 'landscape' | undefined) ?? setup?.orientation,
+      paperSize: (patch.paperSize as number | undefined) ?? setup?.paperSize,
+      fitToWidth: (patch.fitToWidth as number | undefined) ?? (fitToPage ? setup?.fitToWidth ?? 1 : undefined),
+      fitToHeight: (patch.fitToHeight as number | undefined) ?? (fitToPage ? setup?.fitToHeight ?? 1 : undefined),
+      printGridlines: (patch.printGridlines as boolean | undefined) ?? before?.printGridlines ?? false,
+      printHeadings: (patch.printHeadings as boolean | undefined) ?? before?.printHeadings ?? false,
+      printArea: (patch.printArea as string | null | undefined) === undefined ? before?.printArea : (patch.printArea as string | null) ?? undefined,
+    }
+  }
+  const activePageSetupContext = () => {
+    const liveWorkbook = runtime.univerAPI.getActiveWorkbook()
+    const sheet = liveWorkbook?.getActiveSheet()
+    if (!liveWorkbook || !sheet) return undefined
+    return { liveWorkbook, sheet, before: currentModel.sheets.find(item => item.name === sheet.getSheetName()) }
+  }
+  const ribbon = mountWorkbookRibbon(
+    shell.editor.querySelector<HTMLElement>('.workbook-ribbon-host')!,
+    (command, capturedTarget) => {
+      if (command === 'print' || command === 'undo' || command === 'redo') {
+        // 固定源 File/Edit 菜单语义：打印为只读操作（与查找一致，保存后仍可
+        // 用）；撤销/恢复重放 Univer 历史（与网格快捷键同一命令栈），需可编辑态。
+        const blocked = loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')
+        if (command === 'print' ? loading || disposed : blocked) return
+        try {
+          const workbook = runtime.univerAPI.getActiveWorkbook()
+          const sheet = workbook?.getActiveSheet()
+          if (!workbook || !sheet) throw new Error('工作簿尚未就绪')
+          if (command === 'undo' || command === 'redo') {
+            void (command === 'undo' ? runtime.univerAPI.undo() : runtime.univerAPI.redo()).then(applied => {
+              feedback.textContent = applied
+                ? command === 'undo' ? '已撤销上一步修改，修改尚未保存。' : '已恢复上一步修改，修改尚未保存。'
+                : command === 'undo' ? '没有可撤销的修改。' : '没有可恢复的修改。'
+            }, (error: unknown) => { feedback.textContent = (error as Error).message })
+            return
+          }
+          // File ▸ 打印（web 等效子集）：按当前生效页面设置（文件值 + 会话
+          // 页面设置日志）构建打印文档并经隐藏 iframe 提交浏览器打印。浏览器
+          // 打印对话框仍掌管打印机/份数/页码范围；页眉页脚、单元格边框与数字
+          // 格式显示值不在本子集内（如实反馈，不静默）。
+          const sheetId = typeof (sheet as { getSheetId?: () => string }).getSheetId === 'function'
+            ? (sheet as { getSheetId: () => string }).getSheetId() : undefined
+          const before = currentModel.sheets.find(item => item.name === sheet.getSheetName())
+          const patch = sheetId === undefined ? {} : pageSetupJournal.get(sheetId) ?? {}
+          const marginsPreset = patch.margins as keyof typeof PRINT_MARGIN_PRESETS | undefined
+          const fileMargins = before?.margins
+          const setup: SheetPrintSetup = {
+            orientation: (patch.orientation as SheetPrintSetup['orientation'] | undefined) ?? before?.pageSetup?.orientation ?? 'portrait',
+            paperSize: (patch.paperSize as number | undefined) ?? before?.pageSetup?.paperSize ?? 9,
+            scale: before?.pageSetup?.scale ?? 100,
+            fitToPage: (patch.fitToPage as boolean | undefined) ?? before?.pageSetup?.fitToPage ?? false,
+            fitToWidth: (patch.fitToWidth as number | undefined) ?? (before?.pageSetup?.fitToPage ? before?.pageSetup?.fitToWidth ?? 1 : 0),
+            fitToHeight: (patch.fitToHeight as number | undefined) ?? (before?.pageSetup?.fitToPage ? before?.pageSetup?.fitToHeight ?? 1 : 0),
+            margins: marginsPreset && marginsPreset in PRINT_MARGIN_PRESETS
+              ? PRINT_MARGIN_PRESETS[marginsPreset]
+              : fileMargins
+                ? { left: fileMargins.left, right: fileMargins.right, top: fileMargins.top, bottom: fileMargins.bottom }
+                : PRINT_MARGIN_PRESETS.normal,
+            printGridlines: (patch.printGridlines as boolean | undefined) ?? before?.printGridlines ?? false,
+            printHeadings: (patch.printHeadings as boolean | undefined) ?? before?.printHeadings ?? false,
+            printArea: (patch.printArea as string | null | undefined) === undefined
+              ? before?.printArea ?? null
+              : (patch.printArea as string | null) ?? null,
+            printTitles: (patch.printTitles as string | null | undefined) === undefined
+              ? before?.printTitles ?? null
+              : (patch.printTitles as string | null) ?? null,
+            rowBreaks: (patch.rowBreaks as readonly number[] | undefined) ?? before?.rowBreaks ?? [],
+            colBreaks: (patch.colBreaks as readonly number[] | undefined) ?? before?.colBreaks ?? [],
+          }
+          const snapshotSheets = (workbook.getSnapshot() as { sheets?: Record<string, unknown> }).sheets ?? {}
+          const snapshotSheet = (sheetId !== undefined ? snapshotSheets[sheetId] : undefined)
+            ?? Object.values(snapshotSheets).find(entry => (entry as { name?: string }).name === sheet.getSheetName())
+          const source: SheetPrintSource = printSourceFromSnapshotSheet(snapshotSheet, (workbook.getSnapshot() as { styles?: Record<string, import('./workbook-vendor/core/style-map').UniverStyleData> }).styles)
+          const html = buildSheetPrintHtml(source, setup)
+          if (!html) throw new Error('没有可打印的内容。')
+          const printed = printDocument(html)
+          feedback.textContent = printed
+            ? '已提交浏览器打印：纸张、方向、页边距、打印区域、标题行、分页符与缩放已按页面设置生效；打印机、份数与页码范围由浏览器打印对话框掌管，页眉页脚与单元格边框不在本次打印内。'
+            : '当前浏览器不支持框架内打印，未发送打印任务；请改用浏览器菜单的打印功能。'
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'toggle-show-formulas' || command === 'calculate-now' || command === 'calculate-sheet' || command.startsWith('calc-mode:')) {
+        // 仅改变显示/计算结果，只读与保存后亦可用；公式视图在可编辑时随保存写回 sheetView/@showFormulas。
+        if (loading || disposed) return
+        try {
+          const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+          if (!sheet || !calculation) throw new Error('工作簿尚未就绪')
+          if (command === 'toggle-show-formulas') {
+            const sheetId = sheet.getSheetId(), next = !formulaSheets.has(sheetId)
+            if (next) formulaSheets.add(sheetId); else formulaSheets.delete(sheetId)
+            calculation.syncFormulaView(next)
+            if (editable()) markDirty()
+            feedback.textContent = next ? '正在显示公式（保存后写入工作表视图）。' : '正在显示计算结果。'
+          } else if (command === 'calculate-now' || command === 'calculate-sheet') {
+            if (command === 'calculate-now') calculation.calculateNow()
+            else calculation.calculateSheet({ unitId: runtime.univerAPI.getActiveWorkbook()!.getId(), sheetId: sheet.getSheetId(), sheetName: sheet.getSheetName(), rows: sheet.getMaxRows(), columns: sheet.getMaxColumns() })
+            feedback.textContent = command === 'calculate-now' ? '已重新计算工作簿；计算结果不作为修改保存。' : '已重新计算当前工作表；计算结果不作为修改保存。'
+          } else {
+            const manual = command === 'calc-mode:manual'
+            calculation.setManual(manual)
+            feedback.textContent = manual ? '计算模式为手动：修改后按“开始计算”或“计算工作表”更新结果（仅当前编辑会话）。' : '计算模式为自动，已重新计算。'
+          }
+          ribbon.refreshState?.()
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'zoom-in' || command === 'zoom-out' || command === 'zoom-reset') {
+        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+        try {
+          const active = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+          if (!active) throw new Error('工作簿尚未就绪')
+          const current = typeof active.getZoom === 'function' ? active.getZoom() : 1
+          const next = command === 'zoom-reset' ? 1 : Math.min(Math.max(current + (command === 'zoom-in' ? 0.1 : -0.1), 0.1), 4)
+          const rounded = Math.round(next * 100) / 100
+          // SetZoomRatioCommand 的嵌套 handler 异步返回，CommandService 记录
+          // 警告但操作已生效——按观察到的缩放状态判定，不信同步返回值。
+          let cause: unknown
+          try { runtime.univerAPI.syncExecuteCommand('sheet.command.set-zoom-ratio', {
+            unitId: runtime.univerAPI.getActiveWorkbook()!.getId(), subUnitId: active.getSheetId(), zoomRatio: rounded,
+          }) } catch (caught) { cause = caught }
+          const observed = typeof active.getZoom === 'function' ? active.getZoom() : 1
+          if (Math.round(observed * 100) !== Math.round(rounded * 100)) {
+            if (cause) throw cause
+            throw new Error('缩放未应用')
+          }
+          // 固定源缩放为视图状态且随保存落盘（applyPageSetups zoomScale）。
+          markDirty()
+          ribbon.refreshState?.()
+          feedback.textContent = `缩放已调整为 ${Math.round(rounded * 100)}%，修改尚未保存。`
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'freeze-panes') {
+        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+        try {
+          const active = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+          if (!active) throw new Error('工作簿尚未就绪')
+          const anchor = active.getSelection()?.getActiveRange()
+          if (!anchor) throw new Error('请先选择单元格或区域')
+          // Excel 语义：冻结选区左上角的上侧与左侧；再次冻结同点=取消冻结。
+          const frozenRows = anchor.getRow(), frozenColumns = anchor.getColumn()
+          const current = active.getFreeze?.()
+          const same = current && current.ySplit === frozenRows && current.xSplit === frozenColumns
+          const targetRows = same ? 0 : frozenRows, targetColumns = same ? 0 : frozenColumns
+          if (!runtime.univerAPI.syncExecuteCommand('sheet.command.set-frozen', {
+            unitId: runtime.univerAPI.getActiveWorkbook()!.getId(), subUnitId: active.getSheetId(),
+            startRow: targetRows, startColumn: targetColumns, ySplit: targetRows, xSplit: targetColumns,
+          })) throw new Error('冻结未应用')
+          markDirty()
+          ribbon.refreshState?.()
+          feedback.textContent = same ? '冻结已取消，修改尚未保存。' : '冻结窗格已更新，修改尚未保存。'
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'print-gridlines' || command === 'print-headings' ||
+        /^(page-margins|page-orientation|page-paper|print-area|page-breaks|print-titles|page-fit):/.test(command)) {
+        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+        try {
+          const context = activePageSetupContext()
+          if (!context) throw new Error('工作簿尚未就绪')
+          const { sheet, before } = context
+          const sheetId = sheet.getSheetId()
+          const patch = { ...(pageSetupJournal.get(sheetId) ?? {}) }
+          const state = mergedPageSetup(sheet.getSheetName(), patch)
+          const note = (message: string) => {
+            pageSetupJournal.set(sheetId, patch)
+            markDirty()
+            ribbon.refreshState?.()
+            feedback.textContent = `${message}，修改尚未保存。`
+          }
+          if (command === 'print-gridlines' || command === 'print-headings') {
+            const key = command === 'print-gridlines' ? 'printGridlines' : 'printHeadings'
+            patch[key] = !state[key]
+            note(`${key === 'printGridlines' ? '打印网格线' : '打印标题（行号列标）'}已${state[key] ? '关闭' : '开启'}`)
+            return
+          }
+          const [pageKey, pageValue] = command.split(/:(.*)/s).slice(0, 2)
+          if (pageKey === 'page-margins') {
+            const preset = pageValue as 'normal' | 'wide' | 'narrow'
+            if (!['normal', 'wide', 'narrow'].includes(preset)) throw new Error('未知页边距预设')
+            patch.margins = preset
+            note(`页边距已设为${preset === 'normal' ? '常规' : preset === 'wide' ? '宽' : '窄'}`)
+            return
+          }
+          if (pageKey === 'page-orientation') {
+            if (pageValue !== 'portrait' && pageValue !== 'landscape') throw new Error('未知纸张方向')
+            patch.orientation = pageValue
+            note(`纸张方向已设为${pageValue === 'portrait' ? '纵向' : '横向'}`)
+            return
+          }
+          if (pageKey === 'page-paper') {
+            const code = Number(pageValue)
+            if (!Number.isInteger(code) || code < 1 || code > 118) throw new Error('未知纸张大小')
+            patch.paperSize = code
+            const PAPER_NAMES: Record<number, string> = { 1: 'Letter', 3: 'Tabloid', 5: 'Legal', 7: 'Executive', 8: 'A3', 9: 'A4', 11: 'A5' }
+            note(`纸张大小已设为 ${PAPER_NAMES[code] ?? `代码 ${code}`}`)
+            return
+          }
+          if (pageKey === 'print-area') {
+            if (pageValue === 'clear') {
+              patch.printArea = null
+              note('打印区域已清除')
+              return
+            }
+            const range = sheet.getSelection()?.getActiveRange()
+            if (!range) throw new Error('请先选择单元格或区域')
+            const columnLabel = (index: number) => {
+              let label = ''
+              for (let value = index; value >= 0; value = Math.floor(value / 26) - 1) {
+                label = String.fromCharCode(65 + (value % 26)) + label
+              }
+              return label
+            }
+            const area = `${columnLabel(range.getColumn())}${range.getRow() + 1}:${columnLabel(range.getColumn() + range.getWidth() - 1)}${range.getRow() + range.getHeight()}`
+            patch.printArea = area
+            note(`打印区域已设为 ${area}`)
+            return
+          }
+          if (pageKey === 'page-breaks') {
+            const rowBreaks = [...((patch.rowBreaks as number[] | undefined) ?? before?.rowBreaks ?? [])]
+            const colBreaks = [...((patch.colBreaks as number[] | undefined) ?? before?.colBreaks ?? [])]
+            if (pageValue === 'reset') {
+              patch.rowBreaks = []; patch.colBreaks = []
+              note('手动分页符已全部重置')
+              return
+            }
+            const range = sheet.getSelection()?.getActiveRange()
+            if (!range) throw new Error('请先选择单元格或区域')
+            // Excel 语义：整行选区只插横向分页符，整列选区只插纵向分页符；
+            // 单元格两者都插；首行/首列之前无可插位置。
+            const fullRow = range.getWidth() >= sheet.getMaxColumns()
+            const fullColumn = range.getHeight() >= sheet.getMaxRows()
+            const wantRow = !fullColumn && range.getRow() > 0
+            const wantColumn = !fullRow && range.getColumn() > 0
+            if (pageValue === 'insert') {
+              if (!wantRow && !wantColumn) throw new Error('请在首行/首列之外的单元格或区域插入分页符')
+              if (wantRow && !rowBreaks.includes(range.getRow())) rowBreaks.push(range.getRow())
+              if (wantColumn && !colBreaks.includes(range.getColumn())) colBreaks.push(range.getColumn())
+              patch.rowBreaks = rowBreaks.sort((a, b) => a - b)
+              patch.colBreaks = colBreaks.sort((a, b) => a - b)
+              note('分页符已插入')
+              return
+            }
+            const nextRows = rowBreaks.filter(id => !(wantRow && id === range.getRow()))
+            const nextColumns = colBreaks.filter(id => !(wantColumn && id === range.getColumn()))
+            if (nextRows.length === rowBreaks.length && nextColumns.length === colBreaks.length) {
+              feedback.textContent = '当前位置没有可移除的分页符。'
+              return
+            }
+            patch.rowBreaks = nextRows; patch.colBreaks = nextColumns
+            note('分页符已移除')
+            return
+          }
+          if (pageKey === 'print-titles') {
+            if (pageValue === 'clear') {
+              patch.printTitles = null
+              note('打印标题已清除')
+              return
+            }
+            if (pageValue === 'first-row') {
+              patch.printTitles = '1:1'
+              note('打印标题已设为第 1 行')
+              return
+            }
+            const range = sheet.getSelection()?.getActiveRange()
+            if (!range) throw new Error('请先选择单元格或区域')
+            // 固定源 clampTitleRows：过长选区保留顶部 21 行标题而非整体丢弃。
+            const start = range.getRow() + 1
+            const rows = `${start}:${Math.min(range.getRow() + range.getHeight(), start + 20)}`
+            patch.printTitles = rows
+            note(`打印标题已设为 ${rows}`)
+            return
+          }
+          if (pageKey === 'page-fit') {
+            const [axis, rawPages] = (pageValue ?? '').split(':')
+            const pages = Number(rawPages)
+            if ((axis !== 'width' && axis !== 'height') || !Number.isInteger(pages) || pages < 0 || pages > 1000) {
+              throw new Error('未知调整为合适大小设置')
+            }
+            // Excel 语义：进入 fit-to-page 后另一轴按自动（0）处理。
+            patch.fitToWidth = axis === 'width' ? pages : state.fitToWidth ?? 0
+            patch.fitToHeight = axis === 'height' ? pages : state.fitToHeight ?? 0
+            patch.fitToPage = (patch.fitToWidth as number) > 0 || (patch.fitToHeight as number) > 0
+            note(`调整为${axis === 'width' ? '宽度' : '高度'} ${pages === 0 ? '自动' : `${pages} 页`}`)
+            return
+          }
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'filter-toggle' || command === 'filter-clear' || command === 'filter-reapply') {
+        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+        const official = command === 'filter-toggle' ? 'sheet.command.smart-toggle-filter'
+          : command === 'filter-clear' ? 'sheet.command.clear-filter-criteria' : 'sheet.command.re-calc-filter'
+        try {
+          // The pinned smart-toggle chain completes synchronously but a nested
+          // handler resolves a promise, so CommandService logs after applying;
+          // the observed filter state decides the feedback, not the throw.
+          let cause: unknown
+          try { runtime.univerAPI.syncExecuteCommand(official) } catch (caught) { cause = caught }
+          const installed = !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getFilter?.()
+          if (command === 'filter-reapply') {
+            feedback.textContent = '已重新应用筛选（行显示按条件重算，保存时行隐藏状态一并写回文件）。'
+            return
+          }
+          if (command === 'filter-toggle' && !installed) {
+            if (cause) throw cause
+            throw new Error('当前工作表未安装筛选')
+          }
+          markDirty()
+          ribbon.refreshState?.()
+          feedback.textContent = command === 'filter-toggle' ? '筛选已切换，修改尚未保存。' : '筛选条件已清除，修改尚未保存。'
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'name-manager-open' || command === 'define-name') {
+        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+        try {
+          const workbook = runtime.univerAPI.getActiveWorkbook()
+          if (!workbook) throw new Error('工作簿尚未就绪')
+          // 固定源语义：define-name 携带当前选区的绝对地址快速定义；
+          // name-manager-open 打开空表单。
+          let initialRef: string | undefined
+          if (command === 'define-name') {
+            const active = workbook.getActiveSheet()
+            const range = active?.getSelection()?.getActiveRange()
+            if (!active || !range) throw new Error('请先选择单元格或区域')
+            initialRef = absoluteRangeRef(active.getSheetName(), range.getRow(), range.getColumn(),
+              range.getRow() + range.getHeight() - 1, range.getColumn() + range.getWidth() - 1)
+          }
+          nameManagerDialog.open({ ref: initialRef })
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command.startsWith('use-in-formula:')) {
+        // 固定源语义：把名称作为公式插入活动单元格，仅当单元格为空时；
+        // 拒绝静默覆盖已有值或公式。
+        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+        try {
+          const workbook = runtime.univerAPI.getActiveWorkbook()
+          const active = workbook?.getActiveSheet()
+          const range = active?.getSelection()?.getActiveRange()
+          if (!active || !range) throw new Error('请先选择单元格或区域')
+          const name = command.slice('use-in-formula:'.length)
+          const cell = active.getRange(range.getRow(), range.getColumn()) as unknown as {
+            getValue?(): unknown
+            getFormula?(): string | null
+            setFormula(formula: string): unknown
+          }
+          const value = typeof cell.getValue === 'function' ? cell.getValue() : undefined
+          const formula = typeof cell.getFormula === 'function' ? cell.getFormula() : null
+          if (formula || (value !== null && value !== undefined && value !== '')) {
+            throw new Error('用于公式需要一个空单元格，已有内容不能被静默覆盖')
+          }
+          cell.setFormula(`=${name}`)
+          markDirty()
+          ribbon.refreshState?.()
+          feedback.textContent = `已在活动单元格插入 =${name}，修改尚未保存。`
+        } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'find' || command === 'replace') {
+        if (loading || disposed || command === 'replace' && (saving || saved || shell.editor.inert || shell.editor.closest('[inert]'))) return
+        void openFindReplace(runtime, command === 'replace').catch(error => { feedback.textContent = (error as Error).message })
+        return
+      }
+      if (command === 'format-painter' || command === 'format-painter:dblclick') {
+        // 固定源 ribbon-actions format-painter：单击刷一次、双击锁定、再次单击或 Esc 取消；
+        // 刷出的样式经 set-range-values 写入网格，保存时由样式差分写回。
+        if (!editable()) return
+        try {
+          const action = applyFormatPainterClick(runtime, command === 'format-painter' ? 1 : 2)
+          if (action === 'once') feedback.textContent = '已复制格式，选择目标区域即可应用（一次）。'
+          else if (action === 'lock') feedback.textContent = '格式刷已锁定，可连续应用；按 Esc 或再次点击取消。'
+          else if (action === 'cancel') feedback.textContent = '格式刷已取消。'
+          else if (action === 'not-ready') feedback.textContent = '格式刷正在初始化，请稍候再试。'
+        } catch (error) { feedback.textContent = (error as Error).message }
+        ribbon.refreshState?.()
+        return
+      }
+      if (CLIPBOARD_COMMANDS[command]) {
+        // 固定源 ribbon-actions：复制为只读安全命令；剪切/粘贴/选择性粘贴需可编辑态。
+        // 粘贴经 Univer sheet 剪贴板（Clipboard API 不可用时回退内部复制缓存），写入走
+        // sheet.mutation.*（已标记未保存），保存时由值/样式/合并/列宽差分写回。
+        if (command === 'copy' ? loading || disposed : !editable()) return
+        void runtime.univerAPI.executeCommand(CLIPBOARD_COMMANDS[command]!, clipboardCommandParams(command)).then(applied => {
+          if (!applied) { feedback.textContent = command === 'copy' || command === 'cut' ? '请先选择单元格或区域' : '剪贴板中没有可粘贴的内容，或浏览器未授予剪贴板读取权限'; return }
+          if (command === 'copy') feedback.textContent = '已复制选区。'
+          else if (command === 'cut') feedback.textContent = '已剪切选区；粘贴后原位置内容移出，修改尚未保存。'
+          else { markDirty(); ribbon.refreshState?.(); feedback.textContent = '已粘贴，修改尚未保存。' }
+        }, (error: unknown) => { feedback.textContent = (error as Error).message })
+        return
+      }
+      const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle'].includes(command)
+      // 定位只移动选区（固定源只读安全）：保存中/已保存/只读亦可用。
+      if (command === 'goto-open') {
+        if (loading || disposed) return
+        goToDialog.open(definedNameRows().map(row => ({ name: row.name, ref: row.refersTo })))
+        return
+      }
+      if (readingNote ? loading || saving || disposed : !editable()) return
+      const workbook = runtime.univerAPI.getActiveWorkbook()
+      if (!workbook) return
       try {
-        const applied = await runtime.univerAPI.executeCommand(button.dataset.workbookCommand!)
-        feedback.textContent = applied ? '合并布局已更新，尚未保存。' : '请选择要合并或取消合并的单元格区域。'
+        if (command.startsWith('note-')) {
+          const target = captureNoteTarget(noteWorkbook())
+          if (!target) throw new Error('请先选择单个单元格')
+          const sheet = validateNoteTarget(target, noteWorkbook(), readingNote || editable())
+          const source = noteSource(currentModel, sheet.getSheetName())
+          if (command === 'note-open') noteDialog.open(target, source, editable())
+          else if (command === 'note-prev' || command === 'note-next') {
+            const next = adjacentNote(sheet.getNotes(), target.row, target.column, command === 'note-next')
+            if (!next) throw new Error('当前工作表没有批注')
+            sheet.setActiveSelection(sheet.getRange(next.row, next.col))
+            const captured = captureNoteTarget(noteWorkbook())
+            if (captured) noteDialog.open(captured, source, editable())
+          } else if (command === 'note-show-toggle') {
+            if (!runtime.univerAPI.syncExecuteCommand('sheet.command.toggle-note-popup')) throw new Error('当前单元格没有可显示的批注')
+            feedback.textContent = '批注显示已切换（仅当前视图，不修改文件的 VML 显示状态）。'
+          } else if (command === 'note-delete') {
+            if (!sheet.getRange(target.row, target.column).getNote()) throw new Error('当前单元格没有批注')
+            if (!runtime.univerAPI.syncExecuteCommand('sheet.command.delete-note')) throw new Error('批注未删除')
+            feedback.textContent = '批注已删除，修改尚未保存。'
+          }
+          return
+        }
+        if (command === 'autofit-row-height' || command === 'autofit-col-width') {
+          const axis = command === 'autofit-row-height' ? 'row' : 'col'
+          const sheet = workbook.getActiveSheet()
+          const range = sheet?.getSelection()?.getActiveRange()
+          if (!sheet || !range) throw new Error('请先选择单元格或区域')
+          const ranges = autofitSpans(axis, range.getRange(), sheet.getMaxRows(), sheet.getMaxColumns())
+          void runtime.univerAPI.executeCommand(AUTOFIT_COMMANDS[axis], { unitId: workbook.getId(), subUnitId: sheet.getSheetId(), ranges }).then(applied => {
+            if (!applied) { feedback.textContent = axis === 'row' ? '自动调整行高未应用' : '自动调整列宽未应用'; return }
+            markDirty(); ribbon.refreshState?.()
+            feedback.textContent = `${axis === 'row' ? '行高' : '列宽'}已按内容自动调整，修改尚未保存。`
+          }, (error: unknown) => { feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'sheet-protect') {
+          const sheetId = activeSheetId(), view = protectionView()
+          if (!sheetId) throw new Error('请先选择工作表')
+          if (view.sheet.reason) throw new Error(view.sheet.reason)
+          const next = !view.sheet.protected
+          if (next === (originalSheet(sheetId)?.protection?.protected ?? false)) sheetProtection.delete(sheetId)
+          else sheetProtection.set(sheetId, next)
+          markDirty(); ribbon.refreshState?.()
+          feedback.textContent = next ? '工作表已设为受保护（无密码，Excel 默认权限），保存后写入文件；受保护期间不能编辑此工作表。' : '工作表保护将在保存后移除。'
+          return
+        }
+        if (command === 'workbook-protect') {
+          const view = protectionView()
+          if (view.workbook.reason) throw new Error(view.workbook.reason)
+          const next = !view.workbook.locked
+          structureLock = next === (currentModel.workbookProtection?.lockStructure ?? false) ? undefined : next
+          markDirty(); ribbon.refreshState?.()
+          feedback.textContent = next ? '工作簿结构已设为受保护（无密码），保存后写入文件；期间不能增删、重命名、移动或隐藏工作表。' : '工作簿结构保护将在保存后移除。'
+          return
+        }
+        if (command === 'fill-down' || command === 'fill-right') {
+          void runtime.univerAPI.executeCommand(command === 'fill-down' ? 'sheet.command.copy-down' : 'sheet.command.copy-right').then(applied => {
+            feedback.textContent = applied ? `已${command === 'fill-down' ? '向下' : '向右'}填充，修改尚未保存。` : feedback.textContent || '填充未应用'
+          }, (error: unknown) => { feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'fill-up' || command === 'fill-left') {
+          // 固定源：Univer 只有 copy-down/right，向上/向左以选区末行/末列为源走 auto-fill COPY。
+          const sheet = workbook.getActiveSheet(), active = workbook.getActiveRange()
+          if (!sheet || !active) throw new Error('请先选择单元格或区域')
+          const up = command === 'fill-up'
+          const { startRow, startColumn } = active.getRange()
+          let { endRow, endColumn } = active.getRange()
+          if (up && startRow === endRow) { if (endRow + 1 >= sheet.getMaxRows()) throw new Error('下方没有可作为来源的行'); endRow += 1 }
+          else if (!up && startColumn === endColumn) { if (endColumn + 1 >= sheet.getMaxColumns()) throw new Error('右侧没有可作为来源的列'); endColumn += 1 }
+          void runtime.univerAPI.executeCommand('sheet.command.auto-fill', {
+            unitId: workbook.getId(), subUnitId: sheet.getSheetId(),
+            sourceRange: { startRow: up ? endRow : startRow, endRow, startColumn: up ? startColumn : endColumn, endColumn },
+            targetRange: { startRow, endRow, startColumn, endColumn }, applyType: 'COPY',
+          }).then(applied => {
+            feedback.textContent = applied ? `已${up ? '向上' : '向左'}填充，修改尚未保存。` : feedback.textContent || '填充未应用'
+          }, (error: unknown) => { feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'fill-series-open') {
+          const active = workbook.getActiveRange()
+          if (!active) throw new Error('请先选择单元格或区域')
+          const numberFormat = formatState().numberFormat
+          const dateFormatted = numberFormat.kind === 'value' && /[ymd]/i.test(String(numberFormat.value).replace(/"[^"]*"|\[[^\]]*\]/g, ''))
+          fillSeriesDialog.open(fillSeriesDirection(active), fillSeriesDefaultType(dateFormatted))
+          return
+        }
+        if (command === 'sort-custom-open') {
+          const range = workbook.getActiveSheet()?.getSelection()?.getActiveRange()?.getRange() as SortRange | undefined
+          if (!range) throw new Error('请先选择要排序的区域')
+          sortDialog.open({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn })
+          return
+        }
+        if (command === 'insert-cells' || command === 'delete-cells') {
+          const sheet = workbook.getActiveSheet()
+          const range = sheet?.getSelection()?.getActiveRange()?.getRange() as CellRange | undefined
+          if (!sheet || !range) throw new Error('请先选择单元格或区域')
+          const mode: CellsMode = command === 'insert-cells' ? 'insert' : 'delete'
+          const decision = decideCellsAction({ range, rowCount: sheet.getMaxRows(), columnCount: sheet.getMaxColumns() })
+          cellsRange = { startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn }
+          if (decision.kind === 'direct') runCellsChoice(mode, decision.choice, cellsRange)
+          else cellsDialog.open(mode)
+          return
+        }
+        if (command === 'row-height-open' || command === 'col-width-open') {
+          const target = captureAxisTarget(runtime.univerAPI.getActiveWorkbook() as never, command === 'row-height-open' ? 'row' : 'col')
+          if (!target) throw new Error('请先选择单元格或区域')
+          axisDialog.open(target)
+          return
+        }
+        if (command === 'format-cells') {
+          formatCellsTarget = captureNumberFormatTarget(formatWorkbook())
+          if (!formatCellsTarget) throw new Error('请先选择单元格或区域')
+          const state = formatState().numberFormat
+          if (state.kind === 'unavailable') throw new Error(state.reason)
+          formatCellsDialog.open()
+          return
+        }
+        if (command === 'format:custom-open') {
+          const target = capturedTarget ?? captureNumberFormatTarget(formatWorkbook())
+          if (!target) throw new Error('请先选择单元格或区域')
+          numberFormatDialog.open(target)
+          return
+        }
+        if (command === 'sort:asc' || command === 'sort:desc') {
+          // The official sort migrates notes in-grid; readOnlyReason notes stay
+          // blocked through the same structural reason.
+          const reason = noteStructureReason(currentModel, noteWorkbook(), { id: 'sheet.command.sort-range' })
+          if (reason) throw new Error(reason)
+        }
+        if (command.startsWith('rotate:') && rotationUnavailable()) throw new Error(rotationUnavailable())
+        if (command.startsWith('indent-step:') && indentUnavailable()) throw new Error(indentUnavailable())
+        const applied = applyWorkbookRibbonCommand(
+          command,
+          workbook as unknown as RibbonWorkbook,
+          step => stepSelectionDecimals(runtime, step),
+          value => { if (!runtime.univerAPI.syncExecuteCommand('sheet.command.set-text-rotation', { value })) throw new Error('文字旋转未应用') },
+          (bounds, ascending) => runtime.univerAPI.syncExecuteCommand('sheet.command.sort-range', {
+            range: { startRow: bounds.startRow, endRow: bounds.endRow, startColumn: bounds.startColumn, endColumn: bounds.endColumn },
+            orderRules: [{ colIndex: bounds.colIndex, type: ascending ? 'asc' : 'desc' }],
+            unitId: workbook.getId(), subUnitId: workbook.getActiveSheet().getSheetId(), hasTitle: false,
+          }),
+          // 官方清除命令（formats/all）；保存差分把清除后的样式缺席捕获为 styleReset。
+          kind => !!runtime.univerAPI.syncExecuteCommand(kind === 'all'
+            ? 'sheet.command.clear-selection-all'
+            : 'sheet.command.clear-selection-format'),
+        )
+        if (!applied) {
+          feedback.textContent = '请先选择单元格或区域'
+          return
+        }
+        markDirty()
+        ribbon.refreshState?.()
+        feedback.textContent = command === 'insert-sheet'
+          ? '已添加工作表，修改尚未保存。'
+          : '选区已更新，修改尚未保存。'
       } catch (error) { feedback.textContent = (error as Error).message }
-      finally { button.disabled = false }
-    })
-  }
-  runtime.univerAPI.onCommandExecuted(command => {
-    if (!loading && command.id.startsWith('sheet.mutation.')) {
-      const mutation = structuralMutation(command.id, command.params)
-      if (mutation) structural.push(mutation)
+    },
+    {
+      rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null),
+      editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
+      formatPainterActive: () => formatPainterActive(runtime),
+      protection: protectionView,
+      calculation: () => ({ formulaView: formulaSheets.has(activeSheetId() ?? ''), manual: calculation?.manual() ?? false }),
+      formatPainterReady: () => formatPainterReady(runtime),
+      hasSelection: () => !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange(),
+      captureTarget: () => captureNumberFormatTarget(formatWorkbook()),
+      pageSetup: () => {
+        const context = activePageSetupContext()
+        return context ? mergedPageSetup(context.sheet.getSheetName(), pageSetupJournal.get(context.sheet.getSheetId()) ?? {}) : undefined
+      },
+      definedNames: () => definedNameRows().map(row => row.name),
+      noteReason: command => {
+        try {
+          const target = captureNoteTarget(noteWorkbook())
+          if (!target) return '请先选择单个单元格'
+          const sheet = noteWorkbook()!.getActiveSheet()!
+          noteSource(currentModel, sheet.getSheetName())
+          if (command === 'note-delete' || command === 'note-show-toggle') return sheet.getRange(target.row, target.column).getNote() ? undefined : '当前单元格没有批注'
+          if (command === 'note-prev' || command === 'note-next') return sheet.getNotes().length ? undefined : '当前工作表没有批注'
+        } catch (error) { return (error as Error).message }
+      },
+    },
+  )
+  let selectionListener: { dispose(): void } | undefined
+  let replacing = false
+  let pendingShiftUndo: { id: string; element: unknown } | undefined
+  runtime.univerAPI.addEvent(runtime.univerAPI.Event.BeforeCommandExecute, command => {
+    if (omitCalculatedNumberFormats(command, runtime.univerAPI.getActiveWorkbook()?.getSnapshot())) return
+    if (!loading) {
+      const reason = noteStructureReason(currentModel, noteWorkbook(), command)
+      if (reason) { command.cancel = true; feedback.textContent = reason; return }
+    }
+    if (!loading) {
+      const target = (command.params as { subUnitId?: string } | undefined)?.subUnitId ?? activeSheetId()
+      const reason = protectionBlockReason(command.id, sheetProtected(target), structureLocked())
+      if (reason) { command.cancel = true; feedback.textContent = reason; return }
+    }
+    if (!loading && CELL_SHIFT_COMMANDS[command.id]) {
+      if (!editable()) { command.cancel = true; feedback.textContent = '当前工作簿不可编辑或正在保存'; return }
+      suppressStructural = true; queueMicrotask(() => { suppressStructural = false })
+    }
+    if (/^sheet\.(?:command|mutation)\.(?:update-note|remove-note|delete-note|toggle-note-popup|update-note-position)$/.test(command.id)) {
+      if (loading) return
+      try {
+        if (command.id.endsWith('update-note-position')) {
+          // Official semantics: this mutation re-anchors a note to another cell
+          // (model row/col change), not popup layout. Structure followers emit
+          // it during sorts and row/column changes; the save pairs the
+          // relocation and the engine keeps the original author, so the move
+          // round-trips without identity loss and stays permitted here.
+          validateNoteCommand(noteWorkbook(), command)
+          return
+        }
+        const viewOnly = command.id.endsWith('toggle-note-popup')
+        if (viewOnly ? saving || disposed : !editable()) throw new Error('当前工作簿不可编辑或正在保存')
+        const workbook = noteWorkbook()
+        const { sheet, notes } = validateNoteCommand(workbook, command)
+        if (!viewOnly) {
+          noteSource(currentModel, sheet.getSheetName())
+          const proposed = { getSheets: () => workbook!.getSheets().map(item => item.getSheetId() === sheet.getSheetId()
+            ? { getSheetName: () => item.getSheetName(), getNotes: () => notes } : item) } as unknown as NoteWorkbook
+          validateNoteBudget(workbookNoteOperations(currentModel, proposed), staged, structural.length)
+        }
+      } catch (error) { command.cancel = true; feedback.textContent = (error as Error).message }
+      return
+    }
+    // 源 FILTER_COMMAND_PATTERN 六命令：不可编辑/保存态拒绝；条件不可写回
+    // （readOnlyReason）时拒绝并展示引擎理由，避免落盘前静默丢弃条件。
+    if (/^sheet\.command\.(?:set-filter-range|remove-sheet-filter|smart-toggle-filter|set-filter-criteria|clear-filter-criteria|re-calc-filter)$/.test(command.id)) {
+      if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) {
+        command.cancel = true
+        feedback.textContent = '当前工作簿处于只读、保存或关闭状态，不能修改筛选。'
+        return
+      }
+      const sheetName = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+      const filter = currentModel?.sheets.find(item => item.name === sheetName)?.filter
+      // dateGroups 同样无法由网格承载（未灌入网格），拒绝网格内新建/改写以免覆盖。
+      const reason = filter?.readOnlyReason ?? (filter?.columns.some(column => column.dateGroups !== undefined)
+        ? '筛选含日期分组条件，网格暂不能编辑回写（仅服务端路径可写 dateGroups）' : undefined)
+      if (reason) { command.cancel = true; feedback.textContent = reason }
+      return
+    }
+    const valueCommand = replacing && command.id === 'sheet.command.set-range-values'
+    if (!workbookReplacementCommand(command.id) && !valueCommand) return
+    if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) {
+      command.cancel = true
+      feedback.textContent = '当前工作簿处于只读、保存或关闭状态，不能执行替换。'
+      return
+    }
+    if (command.id === 'ui.operation.open-replace-dialog') return
+    if (command.id === 'ui.command.replace-current-match') {
+      // The pinned provider delegates the single replacement synchronously before
+      // its first await. Limit this scope to that turn, including error/no-match.
+      replacing = true
+      queueMicrotask(() => { replacing = false })
+      return
+    }
+    if (command.id === 'ui.command.replace-all-matches') return
+    try {
+      const workbook = runtime.univerAPI.getActiveWorkbook()
+      if (!workbook) throw new Error('工作簿尚未就绪')
+      validateWorkbookReplacement(command, workbook.getSnapshot(), currentModel, staged, structural.length)
+    } catch (error) {
+      command.cancel = true
+      feedback.textContent = (error as Error).message
+    }
+  })
+  // Facade 的 BeforeCommandExecute 不派发 undo/redo；直接挂命令服务，在栈顶元素出栈前认领单元格移位。
+  const historyListener = typeof runtime.univer.__getInjector !== 'function' ? undefined : runtime.univer.__getInjector().get<ICommandService>(ICommandService).beforeCommandExecuted(command => {
+    if (loading || (command.id !== 'univer.command.undo' && command.id !== 'univer.command.redo')) return
+    const top = command.id === 'univer.command.undo' ? undoStack()?.pitchTopUndoElement() : undoStack()?.pitchTopRedoElement()
+    const owned = command.id === 'univer.command.undo'
+      ? structural.some(item => 'cellShift' in item && item.element === top) : undone.some(item => item.element === top)
+    if (top && owned) {
+      pendingShiftUndo = { id: command.id, element: top }
+      suppressStructural = true; queueMicrotask(() => { suppressStructural = false })
+    }
+  })
+  runtime.univerAPI.onCommandExecuted((command, options) => {
+    if (command.id === 'ui.command.replace-current-match' || command.id === 'ui.command.replace-all-matches') replacing = false
+    if (!loading && command.id.includes('worksheet-activ')) calculation?.syncFormulaView(formulaSheets.has(activeSheetId() ?? ''))
+    ribbon.refreshState?.()
+    // Cached values and inferred source number formats are calculation results,
+    // not user edits. The before hook removes only incoming calculated n.
+    if (command.id === 'sheet.mutation.set-range-values' && options?.fromFormula === true && options?.applyFormulaCalculationResult === true) return
+    // Popup toggles are view-only and never reach the file; note position
+    // re-anchors ARE captured through the following markDirty diff.
+    if (/^sheet\.mutation\.toggle-note-popup$/.test(command.id)) return
+    // Defined-name 变更（名称管理器对话框与 Undo 重放）：Univer 顶层命令为
+    // sheet.command.{insert,remove,set}-defined-name，落模型的是 formula
+    // 引擎的 formula.mutation.{set,remove}-defined-name；不在结构日志里，
+    // 撤销经实时差分自然回归空集。
+    if (/^formula\.mutation\.(?:set|remove)-defined-name$/.test(command.id) ||
+      /^sheet\.command\.(?:insert|remove|set)-defined-name$/.test(command.id)) {
+      if (!loading && !saving && !saved) markDirty()
+      return
+    }
+    if (!loading && !saving && !saved && CELL_SHIFT_COMMANDS[command.id]) {
+      const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+      const range = (command.params as { range?: CellRange } | undefined)?.range ?? sheet?.getSelection()?.getActiveRange()?.getRange() as CellRange | undefined
+      if (sheet && range) {
+        structural.push({ sheetId: sheet.getSheetId(), cellShift: { range: cellShiftRange(range), shift: CELL_SHIFT_COMMANDS[command.id]! }, element: undoStack()?.pitchTopUndoElement() })
+        undone.length = 0
+        markDirty()
+        // 引擎按同一规则预演；不支持移位的来源特性（表格、验证、共享公式等）立即撤销并说明原因。
+        const entry = structural[structural.length - 1]
+        void currentOperations().catch((error: unknown) => {
+          const message = (error as Error).message ?? ''
+          if (!message.includes('插入/删除单元格已拒绝')) return
+          const element = (entry as CellShiftEntry).element
+          if (element && undoStack()?.pitchTopUndoElement() === element) void runtime.univerAPI.undo()
+          feedback.textContent = message
+        })
+      }
+      return
+    }
+    if (pendingShiftUndo && command.id === pendingShiftUndo.id) {
+      const element = pendingShiftUndo.element
+      pendingShiftUndo = undefined
+      if (command.id === 'univer.command.undo') {
+        const index = structural.findIndex(item => 'cellShift' in item && item.element === element)
+        if (index >= 0) undone.push(structural.splice(index, 1)[0] as CellShiftEntry)
+      } else {
+        const index = undone.findIndex(item => item.element === element)
+        if (index >= 0) structural.push(undone.splice(index, 1)[0]!)
+      }
+      if (!saving && !saved) markDirty()
+      return
+    }
+    if (!loading && !saving && !saved && command.id.startsWith('sheet.mutation.')) {
+      const mutation = suppressStructural ? undefined : structuralMutation(command.id, command.params)
+      if (mutation) {
+        const trigger = (command.params as { trigger?: string }).trigger
+        const inverse = mutation.op.kind.startsWith('insert-')
+          ? mutation.op.kind.replace('insert-', 'remove-') : mutation.op.kind.replace('remove-', 'insert-')
+        const reverted = trigger === 'univer.command.undo' ? structural.findLastIndex(item => 'op' in item &&
+          item.sheetId === mutation.sheetId && item.op.kind === inverse &&
+          item.op.index === mutation.op.index && item.op.count === mutation.op.count) : -1
+        // 仅真实 Univer Undo 撤回对应结构日志；手动删后插仍须保留破坏性引用语义。
+        if (reverted >= 0) structural.splice(reverted, 1)
+        else structural.push(mutation)
+      }
       markDirty()
     }
   })
+  // 格式刷状态镜像到功能区（aria-pressed），并绑定 Esc 取消；无 painter 服务的替身跳过。
+  let painterListener: { dispose(): void } | undefined
+  try { painterListener = installFormatPainter(runtime, () => ribbon.refreshState?.()) } catch { painterListener = undefined }
   const currentOperations = async (): Promise<WorkbookOperation[]> => {
     const readback = readBack(runtime)
     const workbook = runtime.univerAPI.getActiveWorkbook()
     const snapshot = workbook!.getSnapshot() as unknown as GridSnapshot
     const plan = planGridSheets(currentModel.sheets.map(sheet => sheet.name), snapshot)
     const ops: WorkbookOperation[] = [...staged]
+    const protection = planProtection(currentModel, sheetProtection, structureLock, id => snapshot.sheets[id]?.name)
+    ops.push(...protection.leading)
+    const editsFrom = ops.length
     const sheetChanged = plan.renames.length || plan.additions.length || plan.removals.length ||
       plan.order.some((name, index) => name !== currentModel.sheets[index]?.name)
     if (sheetChanged) ops.push({ kind: 'applySheetEdits', plan })
     for (const mutation of structural) {
       const name = snapshot.sheets[mutation.sheetId]?.name
-      if (name) ops.push({ kind: 'applyRowColumnOps', sheetName: name, ops: [mutation.op] })
+      if (name) ops.push('cellShift' in mutation
+        ? { kind: 'applyCellShift', sheetName: name, ...mutation.cellShift }
+        : { kind: 'applyRowColumnOps', sheetName: name, ops: [mutation.op] })
     }
     const baseline = sheetChanged || structural.length
       ? await readWorkbook(await applyWorkbookOperations(original, ops)) : currentModel
+    // 公式缓存由 Univer 自动重算，不属于编辑；恢复后不得因此追加重复操作并更换重试身份。
+    for (const sheet of readback.sheets) {
+      const before = baseline.sheets.find(item => item.name === sheet.name)
+      for (const [address, cell] of Object.entries(sheet.cells)) {
+        const originalCell = before?.cells[address]
+        if (cell.formula && cell.formula === originalCell?.formula) cell.value = originalCell.value
+      }
+    }
     const edits = diffToEdits(baseline, readback)
     const geometry = geometryChanges(baseline, readback)
     if (edits.length) ops.push({ kind: 'applyCellEdits', edits })
     for (const change of gridMergeChanges(baseline, readback)) ops.push({ kind: 'applySheetMerges', ...change })
     for (const change of geometry.columns) ops.push({ kind: 'applyColumnWidths', sheetName: change.sheet, entries: [{ index: change.index, widthChars: change.widthChars }] })
     for (const change of geometry.rows) ops.push({ kind: 'applyRowHeights', sheetName: change.sheet, entries: [{ index: change.index, heightPoints: change.heightPoints }] })
+    ops.push(...workbookNoteOperations(baseline, noteWorkbook()))
+    ops.push(...workbookFilterOperations(baseline, filterWorkbook()))
+    // 冻结窗格：readBack 不含 freeze，直接对比实时 Univer 冻结状态与 baseline，
+    // 差异经既有 applyPageSetups 协议（frozenRows/frozenColumns）落盘。
+    const freezeSetups: { sheetName: string; frozenRows: number; frozenColumns: number }[] = []
+    const liveWorkbook = runtime.univerAPI.getActiveWorkbook()
+    for (const sheet of liveWorkbook?.getSheets() ?? []) {
+      const liveFreeze = (sheet.getFreeze?.() as { ySplit?: number; xSplit?: number } | undefined) ?? { ySplit: 0, xSplit: 0 }
+      const frozenRows = liveFreeze.ySplit ?? 0, frozenColumns = liveFreeze.xSplit ?? 0
+      const before = baseline.sheets.find(item => item.name === sheet.getSheetName())?.freeze
+      if ((before?.frozenRows ?? 0) !== frozenRows || (before?.frozenColumns ?? 0) !== frozenColumns) {
+        freezeSetups.push({ sheetName: sheet.getSheetName(), frozenRows, frozenColumns })
+      }
+    }
+    if (freezeSetups.length) ops.push({ kind: 'applyPageSetups', setups: freezeSetups })
+    // 网格线：同一 applyPageSetups 协议（showGridlines），与 baseline 对比。
+    const gridlineSetups: { sheetName: string; showGridlines: boolean }[] = []
+    for (const sheet of liveWorkbook?.getSheets() ?? []) {
+      const liveVisible = !(sheet.hasHiddenGridLines?.() ?? false)
+      const baselineVisible = baseline.sheets.find(item => item.name === sheet.getSheetName())?.showGridlines ?? true
+      if (liveVisible !== baselineVisible) gridlineSetups.push({ sheetName: sheet.getSheetName(), showGridlines: liveVisible })
+    }
+    const zoomSetups: { sheetName: string; zoomScale: number }[] = []
+    for (const sheet of liveWorkbook?.getSheets() ?? []) {
+      const liveZoom = typeof sheet.getZoom === 'function' ? Math.round((sheet.getZoom() ?? 1) * 100) : 100
+      const baselineZoom = baseline.sheets.find(item => item.name === sheet.getSheetName())?.zoomScale ?? 100
+      if (liveZoom !== baselineZoom) zoomSetups.push({ sheetName: sheet.getSheetName(), zoomScale: liveZoom })
+    }
+    // 公式视图：同一 applyPageSetups 协议（showFormulas），与 baseline 对比。
+    const formulaViewSetups: { sheetName: string; showFormulas: boolean }[] = []
+    for (const sheet of liveWorkbook?.getSheets() ?? []) {
+      if (typeof sheet.getSheetId !== 'function') continue
+      const live = formulaSheets.has(sheet.getSheetId())
+      if (live !== (baseline.sheets.find(item => item.name === sheet.getSheetName())?.showFormulas ?? false)) formulaViewSetups.push({ sheetName: sheet.getSheetName(), showFormulas: live })
+    }
+    const viewSetups: Array<{ sheetName: string } & Record<string, unknown>> = [...freezeSetups, ...gridlineSetups, ...zoomSetups, ...formulaViewSetups]
+    // 页面设置日志差分：与 baseline 逐字段对比，只提交实际变化的字段；
+    // 打印区域/标题 null（清除）仅在文件确有值时落盘。
+    for (const sheet of liveWorkbook?.getSheets() ?? []) {
+      // 非 Univer 真实工作表（测试桩）没有 getSheetId，也无日志可差分。
+      const sheetId = typeof sheet.getSheetId === 'function' ? sheet.getSheetId() : undefined
+      const patch = sheetId === undefined ? undefined : pageSetupJournal.get(sheetId)
+      if (!patch) continue
+      const before = baseline.sheets.find(item => item.name === sheet.getSheetName())
+      const beforeSetup = before?.pageSetup
+      const entry: Record<string, unknown> = { sheetName: sheet.getSheetName() }
+      for (const key of ['orientation', 'paperSize', 'scale', 'fitToWidth', 'fitToHeight', 'fitToPage'] as const) {
+        const value = patch[key]
+        if (value === undefined || value === (beforeSetup?.[key] ?? undefined)) continue
+        entry[key] = value
+      }
+      if (patch.margins !== undefined && patch.margins !== matchMarginPreset(before?.margins)) entry.margins = patch.margins
+      for (const key of ['printGridlines', 'printHeadings'] as const) {
+        const value = patch[key]
+        if (value === undefined || value === (before?.[key] ?? false)) continue
+        entry[key] = value
+      }
+      if (patch.printArea !== undefined && patch.printArea !== (before?.printArea ?? null)) entry.printArea = patch.printArea
+      if (patch.printTitles !== undefined && patch.printTitles !== (before?.printTitles ?? null)) entry.printTitles = patch.printTitles
+      for (const key of ['rowBreaks', 'colBreaks'] as const) {
+        const value = patch[key]
+        if (value === undefined) continue
+        if (JSON.stringify(value) === JSON.stringify(before?.[key] ?? [])) continue
+        entry[key] = value
+      }
+      if (Object.keys(entry).length > 1) viewSetups.push(entry as { sheetName: string })
+    }
+    if (viewSetups.length) ops.push({ kind: 'applyPageSetups', setups: viewSetups })
+    // 定义名称：readBack 不含 definedNames，直接对比实时 Univer defined-name
+    // 状态（全局 scope）与 baseline；差异经既有 applyDefinedNames 协议
+    // （sets/removes）落盘。工作表级名称（_xlnm.Print_Area 族）由 page-setup
+    // 维护，不在此收集。
+    if (liveWorkbook) {
+      const liveNames = liveDefinedNames(liveWorkbook as unknown as DefinedNameWorkbook)
+      // liveNames === undefined：facade 读不到 defined names，跳过差分。
+      const namesOperation = liveNames
+        ? definedNamesPlanOperation(baseline.definedNames ?? [], liveNames) : undefined
+      if (namesOperation) ops.push(namesOperation)
+    }
+    // 保护：本次前后都受保护的工作表/工作簿结构不得被本次修改触及（草稿重放同样受限）。
+    assertProtectionRespected(ops.slice(editsFrom), protection,
+      (currentModel.workbookProtection?.lockStructure ?? false) && structureLock !== false)
+    ops.push(...protection.trailing)
     return ops
   }
   const loadOperations = async (ops: WorkbookOperation[]) => {
     loading = true
     const bytes = ops.length ? await applyWorkbookOperations(original, ops) : original
     currentModel = await readWorkbook(bytes)
-    loadWorkbookData(runtime, buildWorkbookData(currentModel, 'report-workbook', '报告工作簿'))
+    // 批注、筛选、视图状态随快照资源/工作表配置一并灌入，保存差分才有真实基线。
+    loadWorkbookData(runtime, withWorkbookView(withWorkbookFilters(withWorkbookNotes(buildWorkbookData(currentModel, 'report-workbook', '报告工作簿'), currentModel), currentModel), currentModel))
+    formulaSheets.clear()
+    currentModel.sheets.forEach((sheet, index) => { if (sheet.showFormulas) formulaSheets.add(`sheet-${index}`) })
+    // 无注入器的测试替身不提供拦截器服务：公式视图与计算选项不可用。
+    if (!calculation && typeof runtime.univer.__getInjector === 'function') {
+      try { calculation = installCalculation(runtime as never, sheetId => formulaSheets.has(sheetId)) } catch { calculation = undefined }
+    }
+    calculation?.syncFormulaView(formulaSheets.has(activeSheetId() ?? ''))
+    selectionListener?.dispose()
+    selectionListener = runtime.univerAPI.getActiveWorkbook()?.onSelectionChange?.(() => ribbon.refreshState?.())
     staged = structuredClone(ops)
     structural = []
+    undone.length = 0
+    sheetProtection.clear(); structureLock = undefined
     loading = false
+    ribbon.refreshState?.()
   }
   const hideCandidate = () => { candidate.hidden = true; draft.reject(); aiId = '' }
   try {
-    const response = await fetch(`${base}/api/file`, { credentials: 'same-origin' })
-    if (!response.ok) throw new Error('工作簿载入失败，请刷新重试。')
-    expectedSha256 = response.headers.get('X-Workbook-Sha256') ?? ''
-    original = new Uint8Array(await response.arrayBuffer())
-    await loadOperations([])
+    if (options.file) {
+      const file = await options.file()
+      expectedSha256 = file.sha256
+      original = new Uint8Array(file.bytes)
+    } else {
+      const response = await fetch(`${base}/api/file`, { credentials: 'same-origin' })
+      if (!response.ok) throw new Error('工作簿载入失败，请刷新重试。')
+      expectedSha256 = response.headers.get('X-Workbook-Sha256') ?? ''
+      original = new Uint8Array(await response.arrayBuffer())
+    }
+    if (nativeDraft && nativeDraft.identity.sourceSha256 !== expectedSha256) throw new Error('工作簿来源已变化，草稿已保留，请重新打开。')
+    await loadOperations(nativeDraft?.operations ?? [])
+    dirty = nativeDraft?.dirty ?? false
     shell.editor.setAttribute('aria-busy', 'false')
     shell.status.setAttribute('aria-busy', 'false')
-    shell.statusLabel.textContent = '已保存'
+    shell.statusLabel.textContent = dirty ? '有未保存修改 · 已恢复本地草稿' : '已保存'
+    if (nativeDraft?.persistenceError) feedback.textContent = nativeDraft.persistenceError
     const revision = base.split('/').at(-1)
     document.querySelector<HTMLElement>('.revision-label')!.textContent = `工作簿 · 修订 ${revision}`
     document.querySelector<HTMLElement>('.structure-status')!.textContent = `${currentModel.sheets.length} 个工作表`
@@ -128,10 +1230,12 @@ export async function createWorkbookEditorView(shell: EditorShell) {
     shell.statusLabel.textContent = '载入失败'
     shell.save.disabled = true
     submit.disabled = true
+    if (options.native) { runtime.univer.dispose(); throw error }
     return
   }
   form.addEventListener('submit', async event => {
     event.preventDefault()
+    if (options.native) return
     submit.disabled = true
     hideCandidate()
     feedback.textContent = '正在生成候选；包含当前未保存修改。'
@@ -157,6 +1261,7 @@ export async function createWorkbookEditorView(shell: EditorShell) {
     feedback.textContent = '已拒绝候选，草稿保持原样。'
   })
   accept.addEventListener('click', async () => {
+    if (options.native) return
     accept.disabled = true
     shell.save.disabled = true
     try {
@@ -187,24 +1292,47 @@ export async function createWorkbookEditorView(shell: EditorShell) {
     markDirty()
     feedback.textContent = '已撤销 AI 采纳，恢复采纳前草稿。'
   })
-  shell.save.addEventListener('click', async () => {
-    if (saved) return
+  const save = async () => {
+    if (saved || saving) return
+    saving = true
+    // 保存期间网格不可编辑：解除单次/锁定格式刷，避免保存中或保存后继续刷写。
+    turnOffFormatPainter(runtime)
+    ribbon.refreshState?.()
     shell.save.disabled = true
     shell.editor.inert = true
     shell.statusLabel.textContent = '正在保存'
     try {
-      const result = await request<WorkbookSaveResult & { xlsx: { downloadUrl?: string }; validation: { ok: boolean; issues: { message: string }[] } }>('save', { expectedSha256, operations: await currentOperations() })
+      await persistence
+      // 未继续编辑的恢复草稿原样重试，保留服务端幂等请求身份。
+      const operations = nativeDraft && !gridChanged ? nativeDraft.operations : await currentOperations()
+      nativeDraft?.setOperations(operations as NativeOperation[])
+      const result = await request<WorkbookSaveResult & { xlsx: { downloadUrl?: string }; validation: { ok: boolean; issues: { message: string }[] } }>('save', { expectedSha256, operations })
       const outcome = workbookSaveOutcome(result)
       dirty = outcome.kind === 'retry'
       saved = outcome.kind !== 'retry'
       shell.statusLabel.textContent = outcome.status
       if (result.xlsx.downloadUrl) { shell.exportXlsx.href = result.xlsx.downloadUrl; shell.exportXlsx.hidden = false }
       feedback.textContent = result.validation.issues.map(issue => issue.message).join('；') || '新修订已保存。'
-      if (outcome.kind === 'reopen') location.assign(outcome.url)
+      if (outcome.kind === 'reopen') {
+        if (!options.native) location.assign(outcome.url)
+        else {
+          const reopen = document.createElement('a'); reopen.className = 'native-next-revision'; reopen.href = outcome.url; reopen.textContent = '打开新修订继续编辑'
+          feedback.append(' · ', reopen)
+        }
+      }
     } catch (error) { shell.statusLabel.textContent = '保存失败，草稿已保留'; feedback.textContent = (error as Error).message }
-    finally { shell.save.disabled = saved; shell.editor.inert = saved }
-  })
-  window.addEventListener('beforeunload', event => {
+    finally {
+      saving = false
+      shell.save.disabled = saved
+      shell.editor.inert = saved && !options.native
+      ribbon.refreshState?.()
+      if (options.native && saved) shell.editor.querySelector<HTMLElement>('.workbook-grid')!.inert = true
+    }
+  }
+  shell.save.addEventListener('click', save)
+  const beforeLeave = (event: BeforeUnloadEvent) => {
     if (dirty) { event.preventDefault(); event.returnValue = '' }
-  })
+  }
+  window.addEventListener('beforeunload', beforeLeave)
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

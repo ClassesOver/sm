@@ -166,6 +166,24 @@ def test_engine_dir_defaults_to_vendored_engines(monkeypatch):
     assert (office_engine.engine_dir("workbook") / "bridge" / "cli.ts").is_file()
 
 
+def test_pdf_bridge_runs_the_configured_standalone_bundle(monkeypatch, tmp_path):
+    """PDF 与既有 Office 引擎共用执行入口，部署目录可脱离源码。"""
+    monkeypatch.setenv("AGENT_REPORTING_PDF_ENGINE_DIR", str(tmp_path))
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "cli.mjs").write_text(
+        "import { readFileSync } from 'node:fs';\n"
+        "const request = JSON.parse(readFileSync(process.argv[2], 'utf8'));\n"
+        "console.log(JSON.stringify({ kind: request.kind, engine: 'pdf' }));\n"
+    )
+    request = tmp_path / "request.json"
+    request.write_text('{"kind":"inspect"}')
+
+    result = office_engine.run_bridge("pdf", "cli", request)
+
+    assert result.returncode == 0, result.stderr
+    assert office_engine.last_json_line(result.stdout) == {"kind": "inspect", "engine": "pdf"}
+
+
 @pytest.mark.parametrize("stdout", ["", "  \n", "log line\nnot json"])
 def test_last_json_line_rejects_missing_or_invalid_receipt(stdout):
     with pytest.raises(ValueError):

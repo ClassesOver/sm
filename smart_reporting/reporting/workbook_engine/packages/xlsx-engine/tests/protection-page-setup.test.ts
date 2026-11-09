@@ -1,15 +1,21 @@
 import { describe, expect, it } from 'vitest'
 
+import { stripPrintReferenceSheetPrefix } from '../src/workbook-read'
 import {
+  applyPageSetups,
   applyPageSetupState,
   applyPrintAreas,
   applyProtectedRanges,
   applySheetProtection,
   applyWorkbookProtection,
   buildHeaderFooterXml,
+  createBlankWorkbook,
+  matchMarginPreset,
   PageSetupError,
+  readWorkbook,
   SheetProtectionError,
 } from '../src'
+import { assemblePackage, createBufferEntrySource } from '../src/zip'
 
 const SHEET_XML =
   '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -162,5 +168,68 @@ describe('page setup', () => {
       '<headerFooter><oddHeader>&amp;C&amp;A</oddHeader></headerFooter>',
     )
     expect(buildHeaderFooterXml(undefined, undefined)).toBe('')
+  })
+})
+
+describe('page setup read model', () => {
+  it('reads back pageSetup, margins, print options, breaks and print names after a write', async () => {
+    const written = await applyPageSetups(await createBlankWorkbook(), [{
+      sheetName: 'Sheet1', orientation: 'landscape', paperSize: 9, scale: 80,
+      fitToWidth: 2, fitToHeight: 0, fitToPage: true, margins: 'wide',
+      printGridlines: true, printHeadings: true, rowBreaks: [3, 1, 3], colBreaks: [2],
+      printArea: 'A1:C9', printTitles: '1:2',
+    }])
+    const sheet = (await readWorkbook(written)).sheets[0]!
+    expect(sheet.pageSetup).toEqual({
+      orientation: 'landscape', paperSize: 9, scale: 80,
+      fitToWidth: 2, fitToHeight: 0, fitToPage: true,
+    })
+    expect(matchMarginPreset(sheet.margins)).toBe('wide')
+    expect(sheet.margins).toEqual({ left: 1, right: 1, top: 1, bottom: 1, header: 0.5, footer: 0.5 })
+    expect(sheet.printGridlines).toBe(true)
+    expect(sheet.printHeadings).toBe(true)
+    expect(sheet.rowBreaks).toEqual([1, 3])
+    expect(sheet.colBreaks).toEqual([2])
+    expect(sheet.printArea).toBe('A1:C9')
+    expect(sheet.printTitles).toBe('1:2')
+  })
+
+  it('strips the sheet prefix from every print-area and print-title component', async () => {
+    // 多打印区域 / 行+列打印标题的每个分量都带 'Sheet'! 前缀；只剥第一个会让
+    // web 打印静默丢掉第二个区域或重复列标题。
+    // 引擎写入路径只产出单区域，多区域来自 Excel 等外部文件，故直接校验读侧归一化。
+    expect(stripPrintReferenceSheetPrefix("'Sheet1'!$A$1:$B$4,'Sheet1'!$D$1:$E$4")).toBe('A1:B4,D1:E4')
+    expect(stripPrintReferenceSheetPrefix("'Q1, 汇总!'!$A$1:$B$4,'Q1, 汇总!'!$D$1:$E$4")).toBe('A1:B4,D1:E4')
+    expect(stripPrintReferenceSheetPrefix('Sheet1!$1:$2,Sheet1!$A:$B')).toBe('1:2,A:B')
+  })
+
+  it('applies OOXML defaults when the sheet has no page-setup parts', async () => {
+    const sheet = (await readWorkbook(await createBlankWorkbook())).sheets[0]!
+    expect(sheet.pageSetup).toEqual({})
+    expect(matchMarginPreset(sheet.margins)).toBe('normal')
+    expect(sheet.margins).toEqual({ left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 })
+    expect(sheet.printGridlines).toBe(false)
+    expect(sheet.printHeadings).toBe(false)
+    expect(sheet.rowBreaks).toEqual([])
+    expect(sheet.colBreaks).toEqual([])
+    expect(sheet.printArea).toBeUndefined()
+    expect(sheet.printTitles).toBeUndefined()
+  })
+
+  it('maps non-preset margins to custom and drops Excel-cached automatic breaks', async () => {
+    const written = await applyPageSetups(await createBlankWorkbook(), [{ sheetName: 'Sheet1', margins: 'wide', rowBreaks: [2] }])
+    const source = await createBufferEntrySource(written)
+    const path = (await source.paths()).find(candidate => /^xl\/worksheets\/[^/]+\.xml$/.test(candidate))!
+    const xml = await source.readText(path)
+    const mutated = (await assemblePackage(written, {
+      replaced: new Map([[path,
+        xml.replace(/left="1"/, 'left="0.9"').replace('<brk id="2" max="16383" man="1"/>', '<brk id="2" max="16383" man="1"/><brk id="5" max="16383" man="0"/>'),
+      ]]),
+      added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [], touchedEntries: [path],
+    })).buffer
+    const sheet = (await readWorkbook(mutated)).sheets[0]!
+    expect(matchMarginPreset(sheet.margins)).toBe('custom')
+    expect(sheet.margins!.left).toBe(0.9)
+    expect(sheet.rowBreaks).toEqual([2])
   })
 })

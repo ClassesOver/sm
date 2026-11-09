@@ -32,11 +32,17 @@ const specifiedResolved = (selector: string, property: string): string => {
   return resolveTokens(rule.style.getPropertyValue(property))
 }
 
+const isMarkdownReportEditorSelector = (selector: string): boolean => {
+  const editorIndex = selector.indexOf('#report-editor')
+  const documentShellIndex = selector.indexOf('.editor-format-document')
+  return editorIndex >= 0 && documentShellIndex >= 0 && documentShellIndex < editorIndex
+}
+
 describe('report editor visual hierarchy', () => {
   beforeEach(() => {
     document.head.innerHTML = `<style>${stylesheet}</style>`
     document.body.innerHTML = `
-      <main class="report-app">
+      <main class="report-app editor-format-document">
         <section class="editor-surface">
           <div id="report-editor">
             <div class="ProseMirror">
@@ -65,7 +71,7 @@ describe('report editor visual hierarchy', () => {
       rule instanceof CSSMediaRule &&
       rule.conditionText === '(min-width: 769px)' &&
       Array.from(rule.cssRules).some((nested) =>
-        nested instanceof CSSStyleRule && nested.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror p'),
+        nested instanceof CSSStyleRule && nested.selectorText.split(/,\s*/).includes('.editor-format-document #report-editor .ProseMirror p'),
       ),
     )!
     const fontFor = (selector: string) => Array.from(desktop.cssRules).find(
@@ -74,16 +80,51 @@ describe('report editor visual hierarchy', () => {
     )!.style.fontFamily
 
     for (const selector of [
-      '#report-editor .ProseMirror p',
-      '#report-editor .ProseMirror li',
-      '#report-editor .ProseMirror blockquote',
-      '#report-editor .ProseMirror figcaption',
+      '.editor-format-document #report-editor .ProseMirror p',
+      '.editor-format-document #report-editor .ProseMirror li',
+      '.editor-format-document #report-editor .ProseMirror blockquote',
+      '.editor-format-document #report-editor .ProseMirror figcaption',
     ]) {
       expect(fontFor(selector)).toContain('Noto Serif CJK SC')
     }
-    expect(fontFor('#report-editor .ProseMirror table p')).toContain('Noto Sans CJK SC')
-    expect(fontFor('#report-editor .ProseMirror table li')).toContain('Noto Sans CJK SC')
+    expect(fontFor('.editor-format-document #report-editor .ProseMirror table p')).toContain('Noto Sans CJK SC')
+    expect(fontFor('.editor-format-document #report-editor .ProseMirror table li')).toContain('Noto Sans CJK SC')
     expect(getComputedStyle(document.querySelector('h1')!).fontFamily).toContain('Noto Sans CJK SC')
+  })
+
+  it('limits markdown-only paragraph and table spacing to the report document editor', () => {
+    document.body.innerHTML += `
+      <section class="editor-format-docx"><div id="report-editor"><div class="docx-native">
+        <div class="ProseMirror"><p>原生 Word 段落</p><table><tbody><tr><td>原生单元格</td></tr></tbody></table></div>
+      </div></div></section>`
+
+    const wordParagraph = document.querySelector('.docx-native .ProseMirror p')!
+    const wordCell = document.querySelector('.docx-native td')!
+
+    expect(getComputedStyle(wordParagraph).marginTop).not.toBe('13.12px')
+    expect(getComputedStyle(wordCell).paddingTop).not.toBe('8px')
+  })
+
+  it('scopes every report-editor selector to the Markdown document shell', () => {
+    const unscoped: string[] = []
+    const inspect = (rules: CSSRuleList) => {
+      for (const rule of Array.from(rules)) {
+        if (rule instanceof CSSStyleRule) {
+          for (const selector of rule.selectorText.split(/,\s*/)) {
+            if (selector.includes('#report-editor') && !isMarkdownReportEditorSelector(selector)) {
+              unscoped.push(selector.trim())
+            }
+          }
+        } else if ('cssRules' in rule) {
+          inspect((rule as CSSGroupingRule).cssRules)
+        }
+      }
+    }
+    expect(isMarkdownReportEditorSelector('#report-editor .ProseMirror h1')).toBe(false)
+    expect(isMarkdownReportEditorSelector('.editor-format-document #report-editor .ProseMirror h1')).toBe(true)
+    expect(isMarkdownReportEditorSelector('.source-preview-is-open .editor-format-document #report-editor .ProseMirror')).toBe(true)
+    inspect(document.styleSheets[0].cssRules)
+    expect(unscoped).toEqual([])
   })
 
   it('keeps code-block insertion carets visible on the dark surface', () => {
@@ -91,16 +132,16 @@ describe('report editor visual hierarchy', () => {
       .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
     const style = (selector: string) => rules.find((rule) => rule.selectorText === selector)!.style
 
-    expect(style('#report-editor .ProseMirror pre').caretColor).toBe('#8ee7ff')
-    expect(style('#report-editor .ProseMirror pre code').caretColor).toBe('#8ee7ff')
-    expect(resolveTokens(style('#report-editor .ProseMirror pre:focus-within').borderColor)).toBe('rgb(86, 180, 233)')
-    expect(style('#report-editor .ProseMirror pre:focus-within').boxShadow).toContain('0 0 0 3px')
+    expect(style('.editor-format-document #report-editor .ProseMirror pre').caretColor).toBe('#8ee7ff')
+    expect(style('.editor-format-document #report-editor .ProseMirror pre code').caretColor).toBe('#8ee7ff')
+    expect(resolveTokens(style('.editor-format-document #report-editor .ProseMirror pre:focus-within').borderColor)).toBe('rgb(86, 180, 233)')
+    expect(style('.editor-format-document #report-editor .ProseMirror pre:focus-within').boxShadow).toContain('0 0 0 3px')
   })
 
   it('uses a quiet rule for document separators', () => {
     const rules = Array.from(document.styleSheets[0].cssRules)
       .filter((rule): rule is CSSStyleRule => rule instanceof CSSStyleRule)
-    const rule = rules.find((item) => item.selectorText === '#report-editor .ProseMirror hr')!.style
+    const rule = rules.find((item) => item.selectorText === '.editor-format-document #report-editor .ProseMirror hr')!.style
 
     expect(rule.background).toBe('transparent')
     expect(rule.height).toBe('1px')
@@ -109,13 +150,13 @@ describe('report editor visual hierarchy', () => {
     expect(rule.padding).toBe('0px')
 
     const selected = rules.find(
-      (item) => item.selectorText === '#report-editor .ProseMirror hr.ProseMirror-selectednode',
+      (item) => item.selectorText === '.editor-format-document #report-editor .ProseMirror hr.ProseMirror-selectednode',
     )!.style
     expect(selected.background).toBe('transparent')
     expect(selected.borderTopColor).toBe('rgb(145, 172, 190)')
 
     const selectedOverlay = rules.find(
-      (item) => item.selectorText === '#report-editor .ProseMirror hr.ProseMirror-selectednode::before',
+      (item) => item.selectorText === '.editor-format-document #report-editor .ProseMirror hr.ProseMirror-selectednode::before',
     )!.style
     expect(selectedOverlay.display).toBe('none')
   })
@@ -128,7 +169,7 @@ describe('report editor visual hierarchy', () => {
     const desktop = Array.from(document.styleSheets[0].cssRules).find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === '(min-width: 769px)' &&
       Array.from(rule.cssRules).some((nested) =>
-        nested instanceof CSSStyleRule && nested.selectorText === '#report-editor .ProseMirror h1',
+        nested instanceof CSSStyleRule && nested.selectorText === '.editor-format-document #report-editor .ProseMirror h1',
       ),
     )
     expect(desktop).toBeDefined()
@@ -137,11 +178,11 @@ describe('report editor visual hierarchy', () => {
       (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === selector,
     )!.style
 
-    expect(style('#report-editor .ProseMirror h1').marginBottom).toBe('1.15em')
-    expect(style('#report-editor .ProseMirror h2').marginTop).toBe('1.75em')
-    expect(style('#report-editor .ProseMirror table').width).toBe('100%')
-    expect(style('#report-editor .ProseMirror table').fontVariantNumeric).toBe('tabular-nums')
-    expect(style('#report-editor .milkdown-image-block').marginTop).toBe('1.45em')
+    expect(style('.editor-format-document #report-editor .ProseMirror h1').marginBottom).toBe('1.15em')
+    expect(style('.editor-format-document #report-editor .ProseMirror h2').marginTop).toBe('1.75em')
+    expect(style('.editor-format-document #report-editor .ProseMirror table').width).toBe('100%')
+    expect(style('.editor-format-document #report-editor .ProseMirror table').fontVariantNumeric).toBe('tabular-nums')
+    expect(style('.editor-format-document #report-editor .milkdown-image-block').marginTop).toBe('1.45em')
   })
 
   it('keeps tables and callouts quiet so data remains the focus', () => {
@@ -447,7 +488,7 @@ describe('report editor visual hierarchy', () => {
     const desktop = Array.from(document.styleSheets[0].cssRules).find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === '(min-width: 769px)' &&
       Array.from(rule.cssRules).some((nested) =>
-        nested instanceof CSSStyleRule && nested.selectorText === '#report-editor .milkdown-toolbar',
+        nested instanceof CSSStyleRule && nested.selectorText === '.editor-format-document #report-editor .milkdown-toolbar',
       ),
     )
     expect(desktop).toBeDefined()
@@ -457,17 +498,17 @@ describe('report editor visual hierarchy', () => {
         rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes(selector),
     )!.style
 
-    expect(resolveTokens(style('#report-editor .milkdown-toolbar').borderRadius)).toBe('6px')
-    expect(style('#report-editor .milkdown-toolbar .toolbar-item svg').width).toBe('18px')
-    expect(resolveTokens(style('#report-editor .milkdown-slash-menu').borderRadius)).toBe('8px')
-    expect(resolveTokens(style('#report-editor .milkdown-link-preview > .link-preview').borderRadius)).toBe('6px')
+    expect(resolveTokens(style('.editor-format-document #report-editor .milkdown-toolbar').borderRadius)).toBe('6px')
+    expect(style('.editor-format-document #report-editor .milkdown-toolbar .toolbar-item svg').width).toBe('18px')
+    expect(resolveTokens(style('.editor-format-document #report-editor .milkdown-slash-menu').borderRadius)).toBe('8px')
+    expect(resolveTokens(style('.editor-format-document #report-editor .milkdown-link-preview > .link-preview').borderRadius)).toBe('6px')
     // AI 面板与 diff 动作条的 chrome 已下沉到基础层（移动端与桌面一致），从顶层规则读取。
     const baseStyle = (selector: string) => Array.from(document.styleSheets[0].cssRules).find(
       (rule): rule is CSSStyleRule =>
         rule instanceof CSSStyleRule && rule.selectorText.split(/,\s*/).includes(selector),
     )!.style
-    expect(resolveTokens(baseStyle('#report-editor .milkdown-ai-instruction > .ai-instruction').borderRadius)).toBe('8px')
-    expect(resolveTokens(baseStyle('#report-editor .milkdown-ai-diff-actions').borderRadius)).toBe('8px')
+    expect(resolveTokens(baseStyle('.editor-format-document #report-editor .milkdown-ai-instruction > .ai-instruction').borderRadius)).toBe('8px')
+    expect(resolveTokens(baseStyle('.editor-format-document #report-editor .milkdown-ai-diff-actions').borderRadius)).toBe('8px')
   })
 
   it('keeps keyboard focus visible inside outline links', () => {
@@ -484,11 +525,11 @@ describe('report editor visual hierarchy', () => {
   })
 
   it('shows keyboard focus on previewable report images', () => {
-    document.body.insertAdjacentHTML(
+    document.querySelector('#report-editor .ProseMirror')!.insertAdjacentHTML(
       'beforeend',
-      '<div id="report-editor"><div class="ProseMirror"><img src="chart.png" tabindex="0"></div></div>',
+      '<img src="chart.png" tabindex="0">',
     )
-    const image = document.querySelector<HTMLImageElement>('#report-editor img')!
+    const image = document.querySelector<HTMLImageElement>('.editor-format-document #report-editor img')!
     image.focus()
     const style = getComputedStyle(image)
 
@@ -636,19 +677,19 @@ describe('report editor visual hierarchy', () => {
     const desktop = Array.from(document.styleSheets[0].cssRules).find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === '(min-width: 769px)' &&
       Array.from(rule.cssRules).some((nested) =>
-        nested instanceof CSSStyleRule && nested.selectorText === '#report-editor .milkdown-toolbar',
+        nested instanceof CSSStyleRule && nested.selectorText === '.editor-format-document #report-editor .milkdown-toolbar',
       ),
     )!
     const style = (selector: string) => Array.from(desktop.cssRules).find(
       (rule): rule is CSSStyleRule => rule instanceof CSSStyleRule && rule.selectorText === selector,
     )!.style
 
-    expect(style('#report-editor .milkdown-toolbar').padding).toBe('3px')
-    expect(style('#report-editor .milkdown-toolbar .toolbar-item.active').background).toBe('rgb(220, 236, 246)')
-    expect(style('#report-editor .milkdown-slash-menu .menu-group li > span').whiteSpace).toBe('nowrap')
-    expect(style('#report-editor .milkdown-link-edit > .link-edit').minWidth).toBe('360px')
-    expect(style('#report-editor .milkdown-ai-instruction > .ai-instruction').width).toBe('400px')
-    expect(style('#report-editor .milkdown-ai-instruction > .ai-instruction').maxWidth).toBe('calc(100vw - 40px)')
+    expect(style('.editor-format-document #report-editor .milkdown-toolbar').padding).toBe('3px')
+    expect(style('.editor-format-document #report-editor .milkdown-toolbar .toolbar-item.active').background).toBe('rgb(220, 236, 246)')
+    expect(style('.editor-format-document #report-editor .milkdown-slash-menu .menu-group li > span').whiteSpace).toBe('nowrap')
+    expect(style('.editor-format-document #report-editor .milkdown-link-edit > .link-edit').minWidth).toBe('360px')
+    expect(style('.editor-format-document #report-editor .milkdown-ai-instruction > .ai-instruction').width).toBe('400px')
+    expect(style('.editor-format-document #report-editor .milkdown-ai-instruction > .ai-instruction').maxWidth).toBe('calc(100vw - 40px)')
   })
 
   it('docks the persistent formatting bar below the app bar and hides it in focus and print modes', () => {
@@ -658,7 +699,7 @@ describe('report editor visual hierarchy', () => {
         rule instanceof CSSStyleRule && rule.selectorText === selector,
     )!
 
-    const bar = find('#report-editor .milkdown-top-bar').style
+    const bar = find('.editor-format-document #report-editor .milkdown-top-bar').style
     expect(bar.top).toBe('var(--app-bar-height, 66px)')
     expect(bar.zIndex).toBe('15')
     expect(find('.focus-mode .milkdown-top-bar').style.display).toBe('none')
@@ -666,10 +707,10 @@ describe('report editor visual hierarchy', () => {
     const mobile = rules.find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === '(max-width: 768px)' &&
       Array.from(rule.cssRules).some((nested) =>
-        nested instanceof CSSStyleRule && nested.selectorText === '#report-editor .milkdown-top-bar',
+        nested instanceof CSSStyleRule && nested.selectorText === '.editor-format-document #report-editor .milkdown-top-bar',
       ),
     )!
-    expect(find('#report-editor .milkdown-top-bar', Array.from(mobile.cssRules)).style.position).toBe('static')
+    expect(find('.editor-format-document #report-editor .milkdown-top-bar', Array.from(mobile.cssRules)).style.position).toBe('static')
 
     const print = rules.find((rule): rule is CSSMediaRule =>
       rule instanceof CSSMediaRule && rule.conditionText === 'print',
@@ -684,8 +725,8 @@ describe('report editor visual hierarchy', () => {
     const rules = Array.from(document.styleSheets[0].cssRules)
     const headingBlock = rules.find((rule): rule is CSSStyleRule =>
       rule instanceof CSSStyleRule &&
-      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1') &&
-      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h6'),
+      rule.selectorText.split(/,\s*/).includes('.editor-format-document #report-editor .ProseMirror h1') &&
+      rule.selectorText.split(/,\s*/).includes('.editor-format-document #report-editor .ProseMirror h6'),
     )!
     expect(headingBlock.style.scrollMarginTop).toBe('calc(var(--app-bar-height, 66px) + 74px)')
 
@@ -693,12 +734,12 @@ describe('report editor visual hierarchy', () => {
       rule instanceof CSSMediaRule && rule.conditionText === '(max-width: 768px)' &&
       Array.from(rule.cssRules).some((nested) =>
         nested instanceof CSSStyleRule &&
-        nested.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1'),
+        nested.selectorText.split(/,\s*/).includes('.editor-format-document #report-editor .ProseMirror h1'),
       ),
     )!
     const mobileHeadings = Array.from(mobile.cssRules).find((rule): rule is CSSStyleRule =>
       rule instanceof CSSStyleRule &&
-      rule.selectorText.split(/,\s*/).includes('#report-editor .ProseMirror h1'),
+      rule.selectorText.split(/,\s*/).includes('.editor-format-document #report-editor .ProseMirror h1'),
     )!
     expect(mobileHeadings.style.scrollMarginTop).toBe('calc(var(--app-bar-height, 56px) + 16px)')
   })

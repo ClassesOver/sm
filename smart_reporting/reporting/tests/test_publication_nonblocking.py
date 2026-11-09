@@ -173,6 +173,9 @@ _SIGNING_CHAIN = {
     ),
     "smart_reporting/report_editor/slides.py": ("save_revision",),
     "smart_reporting/report_editor/workbook.py": ("save_revision",),
+    "smart_reporting/report_editor/native_publication.py": (
+        "save_revision", "_save_reserved", "_publish_artifacts", "_issue_links",
+    ),
 }
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。

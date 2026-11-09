@@ -2004,11 +2004,11 @@ button {
   }
 }
 
-#report-editor {
+.editor-format-document #report-editor {
   min-height: calc(100vh - 110px);
 }
 
-#report-editor .milkdown {
+.editor-format-document #report-editor .milkdown {
   min-height: inherit;
   --crepe-color-primary: var(--color-primary);
   --crepe-color-secondary: var(--color-accent);
@@ -2021,13 +2021,13 @@ button {
   --crepe-color-diff-removed: var(--color-danger);
 }
 
-#report-editor .milkdown-toolbar {
+.editor-format-document #report-editor .milkdown-toolbar {
   border: 1px solid var(--color-border);
   box-shadow: 0 10px 28px rgb(27 42 65 / 14%);
 }
 
 /* 常驻格式栏：停靠在应用栏下方，作为正文编辑的第二行工具条 */
-#report-editor .milkdown-top-bar {
+.editor-format-document #report-editor .milkdown-top-bar {
   top: var(--app-bar-height, 66px);
   z-index: 15;
   min-height: 42px;
@@ -2037,31 +2037,31 @@ button {
   backdrop-filter: blur(6px);
 }
 
-#report-editor .milkdown-top-bar .top-bar-inner {
+.editor-format-document #report-editor .milkdown-top-bar .top-bar-inner {
   gap: 0;
 }
 
-#report-editor .milkdown-top-bar .top-bar-item {
+.editor-format-document #report-editor .milkdown-top-bar .top-bar-item {
   width: 30px;
   height: 30px;
   margin: 4px 2px;
 }
 
-#report-editor .milkdown-top-bar .top-bar-item svg {
+.editor-format-document #report-editor .milkdown-top-bar .top-bar-item svg {
   width: 20px;
   height: 20px;
 }
 
-#report-editor .milkdown-top-bar .top-bar-divider {
+.editor-format-document #report-editor .milkdown-top-bar .top-bar-divider {
   height: 20px;
   margin: 4px 10px;
 }
 
-#report-editor .milkdown-top-bar .top-bar-heading-selector {
+.editor-format-document #report-editor .milkdown-top-bar .top-bar-heading-selector {
   padding: 4px 6px 4px 0;
 }
 
-#report-editor .milkdown-top-bar .top-bar-heading-button {
+.editor-format-document #report-editor .milkdown-top-bar .top-bar-heading-button {
   height: 30px;
 }
 
@@ -2069,7 +2069,7 @@ button {
   display: none;
 }
 
-#report-editor .ProseMirror {
+.editor-format-document #report-editor .ProseMirror {
   min-height: inherit;
   padding: 68px clamp(44px, 8vw, 92px) 108px;
   color: var(--color-ink);
@@ -2081,12 +2081,12 @@ button {
   outline: none;
 }
 
-#report-editor .ProseMirror h1,
-#report-editor .ProseMirror h2,
-#report-editor .ProseMirror h3,
-#report-editor .ProseMirror h4,
-#report-editor .ProseMirror h5,
-#report-editor .ProseMirror h6 {
+.editor-format-document #report-editor .ProseMirror h1,
+.editor-format-document #report-editor .ProseMirror h2,
+.editor-format-document #report-editor .ProseMirror h3,
+.editor-format-document #report-editor .ProseMirror h4,
+.editor-format-document #report-editor .ProseMirror h5,
+.editor-format-document #report-editor .ProseMirror h6 {
   color: var(--color-ink);
   font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   letter-spacing: 0;
@@ -2095,7 +2095,7 @@ button {
   scroll-margin-top: calc(var(--app-bar-height, 66px) + 74px);
 }
 
-#report-editor .ProseMirror h1 {
+.editor-format-document #report-editor .ProseMirror h1 {
   margin-top: 0.2em;
   margin-bottom: 1.35em;
   padding-bottom: 14px;
@@ -2105,7 +2105,7 @@ button {
   line-height: 1.35;
 }
 
-#report-editor .ProseMirror h2 {
+.editor-format-document #report-editor .ProseMirror h2 {
   margin-top: 2em;
   margin-bottom: 0.8em;
   padding-bottom: 8px;
@@ -2116,7 +2116,7 @@ button {
   line-height: 1.45;
 }
 
-#report-editor .ProseMirror h3 {
+.editor-format-document #report-editor .ProseMirror h3 {
   margin-top: 1.6em;
   margin-bottom: 0.65em;
   padding-left: 12px;
@@ -2127,7 +2127,7 @@ button {
   line-height: 1.5;
 }
 
-#report-editor .ProseMirror h4 {
+.editor-format-document #report-editor .ProseMirror h4 {
   margin-top: 1.4em;
   margin-bottom: 0.55em;
   padding-left: 10px;
@@ -2138,7 +2138,7 @@ button {
   line-height: 1.55;
 }
 
-#report-editor .ProseMirror h5 {
+.editor-format-document #report-editor .ProseMirror h5 {
   margin-top: 1.2em;
   margin-bottom: 0.5em;
   color: var(--color-ink-2);
@@ -2147,7 +2147,7 @@ button {
   line-height: 1.6;
 }
 
-#report-editor .ProseMirror h6 {
+.editor-format-document #report-editor .ProseMirror h6 {
   margin-top: 1.2em;
   margin-bottom: 0.5em;
   color: var(--color-text-muted);
@@ -2158,30 +2158,30 @@ button {
 }
 
 @media (min-width: 769px) {
-  #report-editor .ProseMirror p,
-  #report-editor .ProseMirror li,
-  #report-editor .ProseMirror blockquote,
-  #report-editor .ProseMirror figcaption {
+  .editor-format-document #report-editor .ProseMirror p,
+  .editor-format-document #report-editor .ProseMirror li,
+  .editor-format-document #report-editor .ProseMirror blockquote,
+  .editor-format-document #report-editor .ProseMirror figcaption {
     font-family: "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif;
   }
 
-  #report-editor .ProseMirror table,
-  #report-editor .ProseMirror table p,
-  #report-editor .ProseMirror table li {
+  .editor-format-document #report-editor .ProseMirror table,
+  .editor-format-document #report-editor .ProseMirror table p,
+  .editor-format-document #report-editor .ProseMirror table li {
     font-family: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   }
 }
 
-#report-editor .ProseMirror p {
+.editor-format-document #report-editor .ProseMirror p {
   margin: 0.82em 0;
 }
-#report-editor .ProseMirror :is(h1, h2, h3, h4) + p { margin-top: 0.4em; }
+.editor-format-document #report-editor .ProseMirror :is(h1, h2, h3, h4) + p { margin-top: 0.4em; }
 
-#report-editor .ProseMirror .milkdown-list-item-block .content-dom > p {
+.editor-format-document #report-editor .ProseMirror .milkdown-list-item-block .content-dom > p {
   margin: 0;
 }
 
-#report-editor .ProseMirror blockquote {
+.editor-format-document #report-editor .ProseMirror blockquote {
   position: relative;
   margin: 1.25em 0;
   padding: 14px 18px;
@@ -2192,19 +2192,19 @@ button {
   color: #44566c;
 }
 
-#report-editor .ProseMirror blockquote::before {
+.editor-format-document #report-editor .ProseMirror blockquote::before {
   display: none;
 }
 
-#report-editor .ProseMirror blockquote > :first-child {
+.editor-format-document #report-editor .ProseMirror blockquote > :first-child {
   margin-top: 0;
 }
 
-#report-editor .ProseMirror blockquote > :last-child {
+.editor-format-document #report-editor .ProseMirror blockquote > :last-child {
   margin-bottom: 0;
 }
 
-#report-editor .ProseMirror th {
+.editor-format-document #report-editor .ProseMirror th {
   background: #f4f7f9;
   color: var(--color-ink-2);
   font-size: var(--font-size-base);
@@ -2214,11 +2214,11 @@ button {
   white-space: normal;
 }
 
-#report-editor .ProseMirror .table-wrapper {
+.editor-format-document #report-editor .ProseMirror .table-wrapper {
   overflow-x: auto;
 }
 
-#report-editor .ProseMirror table {
+.editor-format-document #report-editor .ProseMirror table {
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -2229,47 +2229,47 @@ button {
   table-layout: auto;
 }
 
-#report-editor .ProseMirror td,
-#report-editor .ProseMirror th {
+.editor-format-document #report-editor .ProseMirror td,
+.editor-format-document #report-editor .ProseMirror th {
   padding: 8px 12px;
   border-color: #dbe5ed;
   vertical-align: top;
 }
-#report-editor .ProseMirror tbody tr { transition: background var(--motion-fast) ease; }
+.editor-format-document #report-editor .ProseMirror tbody tr { transition: background var(--motion-fast) ease; }
 
-#report-editor .ProseMirror tbody tr:nth-child(even) {
+.editor-format-document #report-editor .ProseMirror tbody tr:nth-child(even) {
   background: #fafcfd;
 }
 
-#report-editor .ProseMirror tbody tr:hover {
+.editor-format-document #report-editor .ProseMirror tbody tr:hover {
   background: #f1f7fb;
 }
 
-#report-editor .ProseMirror td[align="right"],
-#report-editor .ProseMirror th[align="right"],
-#report-editor .ProseMirror td[style*="text-align: right"],
-#report-editor .ProseMirror th[style*="text-align: right"] {
+.editor-format-document #report-editor .ProseMirror td[align="right"],
+.editor-format-document #report-editor .ProseMirror th[align="right"],
+.editor-format-document #report-editor .ProseMirror td[style*="text-align: right"],
+.editor-format-document #report-editor .ProseMirror th[style*="text-align: right"] {
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
-#report-editor .ProseMirror td[align="right"],
-#report-editor .ProseMirror td[style*="text-align: right"] {
+.editor-format-document #report-editor .ProseMirror td[align="right"],
+.editor-format-document #report-editor .ProseMirror td[style*="text-align: right"] {
   white-space: nowrap;
 }
 
-#report-editor .ProseMirror tbody td:first-child {
+.editor-format-document #report-editor .ProseMirror tbody td:first-child {
   color: #40556b;
   font-weight: 600;
   white-space: nowrap;
 }
 
-#report-editor .ProseMirror table p {
+.editor-format-document #report-editor .ProseMirror table p {
   margin: 0;
   line-height: 1.65;
 }
 
-#report-editor .ProseMirror code {
+.editor-format-document #report-editor .ProseMirror code {
   padding: 0.15em 0.38em;
   border: 1px solid #dbe5ed;
   border-radius: var(--radius-sm);
@@ -2278,7 +2278,7 @@ button {
   font: 0.88em/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-#report-editor .ProseMirror pre {
+.editor-format-document #report-editor .ProseMirror pre {
   position: relative;
   margin: 1.35em 0;
   padding: 18px 20px;
@@ -2292,14 +2292,14 @@ button {
   font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-#report-editor .ProseMirror pre:focus-within {
+.editor-format-document #report-editor .ProseMirror pre:focus-within {
   border-color: var(--color-accent-soft);
   box-shadow:
     0 0 0 3px var(--color-focus-soft),
     0 10px 26px rgb(18 38 58 / 18%);
 }
 
-#report-editor .ProseMirror pre code {
+.editor-format-document #report-editor .ProseMirror pre code {
   padding: 0;
   border: 0;
   background: transparent;
@@ -2308,7 +2308,7 @@ button {
   font: inherit;
 }
 
-#report-editor .ProseMirror hr {
+.editor-format-document #report-editor .ProseMirror hr {
   height: 1px;
   margin: 0.5em 0;
   padding: 0;
@@ -2317,27 +2317,27 @@ button {
   background: transparent;
 }
 
-#report-editor .ProseMirror hr.ProseMirror-selectednode {
+.editor-format-document #report-editor .ProseMirror hr.ProseMirror-selectednode {
   border-top-color: #91acbe;
   background: transparent;
 }
 
-#report-editor .ProseMirror hr.ProseMirror-selectednode::before {
+.editor-format-document #report-editor .ProseMirror hr.ProseMirror-selectednode::before {
   display: none;
 }
 
-#report-editor .ProseMirror li::marker {
+.editor-format-document #report-editor .ProseMirror li::marker {
   color: var(--color-accent);
   font-weight: 700;
 }
 
-#report-editor .ProseMirror a {
+.editor-format-document #report-editor .ProseMirror a {
   color: var(--color-accent);
   text-decoration-color: rgb(0 126 167 / 35%);
   text-underline-offset: 3px;
 }
 
-#report-editor .ProseMirror img {
+.editor-format-document #report-editor .ProseMirror img {
   max-width: 100%;
   height: auto;
   border-radius: var(--radius-lg);
@@ -2345,7 +2345,7 @@ button {
   cursor: zoom-in;
 }
 
-#report-editor .ProseMirror img:focus-visible {
+.editor-format-document #report-editor .ProseMirror img:focus-visible {
   outline-width: 3px;
   outline-style: solid;
   outline-color: var(--color-accent-soft);
@@ -2353,48 +2353,48 @@ button {
 }
 
 @media (min-width: 769px) {
-  #report-editor .ProseMirror h1 {
+  .editor-format-document #report-editor .ProseMirror h1 {
     margin-bottom: 1.15em;
   }
 
-  #report-editor .ProseMirror h2 {
+  .editor-format-document #report-editor .ProseMirror h2 {
     margin-top: 1.75em;
   }
 
-  #report-editor .ProseMirror h3 {
+  .editor-format-document #report-editor .ProseMirror h3 {
     margin-top: 1.45em;
   }
 
-  #report-editor .ProseMirror h4 {
+  .editor-format-document #report-editor .ProseMirror h4 {
     margin-top: 1.35em;
   }
 
-  #report-editor .ProseMirror p {
+  .editor-format-document #report-editor .ProseMirror p {
     margin-top: 0.72em;
     margin-bottom: 0.72em;
   }
 
-  #report-editor .ProseMirror blockquote {
+  .editor-format-document #report-editor .ProseMirror blockquote {
     margin-top: 1.15em;
     margin-bottom: 1.15em;
   }
 
-  #report-editor .ProseMirror .milkdown-list-item-block {
+  .editor-format-document #report-editor .ProseMirror .milkdown-list-item-block {
     margin: 0.2em 0;
   }
 
-  #report-editor .ProseMirror table {
+  .editor-format-document #report-editor .ProseMirror table {
     width: 100%;
     margin: 1.3em 0 1.55em;
     border-spacing: 0;
     font-variant-numeric: tabular-nums;
   }
 
-  #report-editor .milkdown-image-block {
+  .editor-format-document #report-editor .milkdown-image-block {
     margin: 1.45em 0 1.6em;
   }
 
-  #report-editor .milkdown-image-block > .caption-input {
+  .editor-format-document #report-editor .milkdown-image-block > .caption-input {
     margin-top: 8px;
     color: var(--color-text-muted);
     font-size: var(--font-size-md);
@@ -2798,7 +2798,7 @@ button {
   }
 }
 
-#report-editor .ai-instruction-input {
+.editor-format-document #report-editor .ai-instruction-input {
   display: none;
 }
 
@@ -2841,7 +2841,7 @@ button {
 }
 
 /* AI 选区面板的边框/圆角/阴影全端一致（原先只在 ≥769px 才有，移动端是 Crepe 默认外观）。 */
-#report-editor .milkdown-ai-instruction > .ai-instruction {
+.editor-format-document #report-editor .milkdown-ai-instruction > .ai-instruction {
   width: min(360px, calc(100vw - 24px));
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
@@ -2849,13 +2849,13 @@ button {
   animation: motion-pop-in var(--motion-fast) var(--motion-ease-out) backwards;
 }
 
-#report-editor .ai-instruction-section-header {
+.editor-format-document #report-editor .ai-instruction-section-header {
   padding: 7px 12px 4px;
   letter-spacing: 0;
   text-transform: none;
 }
 
-#report-editor .ai-instruction-item {
+.editor-format-document #report-editor .ai-instruction-item {
   gap: 10px;
   padding: 7px 12px;
   border-radius: var(--radius-sm);
@@ -2863,15 +2863,15 @@ button {
 }
 
 /* 焦点环不只桌面端（原先只写在 ≥769px 媒体块里）。 */
-#report-editor .ai-instruction-item:focus-visible,
-#report-editor .ai-instruction-back:focus-visible,
-#report-editor .milkdown-ai-diff-actions-btn:focus-visible {
+.editor-format-document #report-editor .ai-instruction-item:focus-visible,
+.editor-format-document #report-editor .ai-instruction-back:focus-visible,
+.editor-format-document #report-editor .milkdown-ai-diff-actions-btn:focus-visible {
   outline: 3px solid var(--color-focus-soft);
   outline-offset: 2px;
 }
 
 
-#report-editor .milkdown-ai-diff-actions {
+.editor-format-document #report-editor .milkdown-ai-diff-actions {
   gap: 2px;
   padding: 5px;
   border-color: var(--color-border-strong);
@@ -2880,25 +2880,25 @@ button {
   animation: motion-pop-in var(--motion-fast) var(--motion-ease-out) backwards;
 }
 
-#report-editor .milkdown-ai-diff-actions-btn {
+.editor-format-document #report-editor .milkdown-ai-diff-actions-btn {
   padding: 7px 12px;
   border-radius: var(--radius-sm);
   transition: background var(--motion-fast) var(--motion-ease-out), color var(--motion-fast) var(--motion-ease-out);
 }
 
-#report-editor .milkdown-ai-streaming-indicator {
+.editor-format-document #report-editor .milkdown-ai-streaming-indicator {
   animation: motion-fade-in var(--motion-fast) var(--motion-ease-out) backwards;
 }
 
 @media (min-width: 769px) {
-  #report-editor .milkdown-toolbar {
+  .editor-format-document #report-editor .milkdown-toolbar {
     padding: 3px;
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
   }
 
-  #report-editor .milkdown-toolbar .toolbar-item {
+  .editor-format-document #report-editor .milkdown-toolbar .toolbar-item {
     width: 30px;
     height: 30px;
     margin: 0;
@@ -2906,98 +2906,98 @@ button {
     transition: background var(--motion-fast) ease, color var(--motion-fast) ease;
   }
 
-  #report-editor .milkdown-toolbar .toolbar-item.active {
+  .editor-format-document #report-editor .milkdown-toolbar .toolbar-item.active {
     background: #dcecf6;
   }
 
-  #report-editor .milkdown-toolbar .toolbar-item svg {
+  .editor-format-document #report-editor .milkdown-toolbar .toolbar-item svg {
     width: 18px;
     height: 18px;
   }
 
-  #report-editor .milkdown-toolbar .divider {
+  .editor-format-document #report-editor .milkdown-toolbar .divider {
     height: 18px;
     margin: 6px;
   }
 
-  #report-editor .milkdown-block-handle .operation-item {
+  .editor-format-document #report-editor .milkdown-block-handle .operation-item {
     width: 30px;
     height: 30px;
     padding: 6px;
   }
 
-  #report-editor .milkdown-block-handle .operation-item svg {
+  .editor-format-document #report-editor .milkdown-block-handle .operation-item svg {
     width: 18px;
     height: 18px;
   }
 
-  #report-editor .milkdown-slash-menu {
+  .editor-format-document #report-editor .milkdown-slash-menu {
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-popover);
   }
 
-  #report-editor .milkdown-slash-menu .tab-group {
+  .editor-format-document #report-editor .milkdown-slash-menu .tab-group {
     padding: 8px 8px 0;
   }
 
-  #report-editor .milkdown-slash-menu .tab-group ul {
+  .editor-format-document #report-editor .milkdown-slash-menu .tab-group ul {
     gap: 6px;
     padding: 6px 8px;
   }
 
-  #report-editor .milkdown-slash-menu .tab-group li {
+  .editor-format-document #report-editor .milkdown-slash-menu .tab-group li {
     padding: 5px 8px;
     border-radius: var(--radius-sm);
   }
 
-  #report-editor .milkdown-slash-menu .menu-groups {
+  .editor-format-document #report-editor .milkdown-slash-menu .menu-groups {
     max-height: 360px;
     padding: 0 8px 8px;
   }
 
-  #report-editor .milkdown-slash-menu .menu-group h6 {
+  .editor-format-document #report-editor .milkdown-slash-menu .menu-group h6 {
     padding: 10px 8px 6px;
     letter-spacing: 0;
     text-transform: none;
   }
 
-  #report-editor .milkdown-slash-menu .menu-group li {
+  .editor-format-document #report-editor .milkdown-slash-menu .menu-group li {
     min-width: 208px;
     gap: 10px;
     padding: 10px 8px;
     border-radius: var(--radius-sm);
   }
 
-  #report-editor .milkdown-slash-menu .menu-group li svg {
+  .editor-format-document #report-editor .milkdown-slash-menu .menu-group li svg {
     width: 20px;
     height: 20px;
   }
 
-  #report-editor .milkdown-slash-menu .menu-group li > span {
+  .editor-format-document #report-editor .milkdown-slash-menu .menu-group li > span {
     white-space: nowrap;
   }
 
-  #report-editor .milkdown-link-preview > .link-preview,
-  #report-editor .milkdown-link-edit > .link-edit {
+  .editor-format-document #report-editor .milkdown-link-preview > .link-preview,
+  .editor-format-document #report-editor .milkdown-link-edit > .link-edit {
     border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-sm);
     box-shadow: var(--shadow-md);
   }
 
-  #report-editor .milkdown-link-edit > .link-edit {
+  .editor-format-document #report-editor .milkdown-link-edit > .link-edit {
     min-width: 360px;
   }
 
-  #report-editor .milkdown-ai-instruction > .ai-instruction {
+  .editor-format-document #report-editor .milkdown-ai-instruction > .ai-instruction {
     width: 400px;
     max-width: calc(100vw - 40px);
   }
 
-  #report-editor .milkdown-toolbar .toolbar-item:focus-visible,
-  #report-editor .milkdown-block-handle .operation-item:focus-visible,
-  #report-editor .ai-instruction-back:focus-visible,
-  #report-editor .milkdown-ai-diff-actions-btn:focus-visible {
+  .editor-format-document #report-editor .milkdown-toolbar .toolbar-item:focus-visible,
+  .editor-format-document #report-editor .milkdown-block-handle .operation-item:focus-visible,
+  .editor-format-document #report-editor .ai-instruction-back:focus-visible,
+  .editor-format-document #report-editor .milkdown-ai-diff-actions-btn:focus-visible {
     outline: 3px solid var(--color-focus-soft);
     outline-offset: 2px;
   }
@@ -3119,7 +3119,7 @@ button {
 @media (min-width: 1200px) {
   .source-preview-is-open .report-workspace { width: calc(100% - 460px); margin-left: 20px; margin-right: 440px; grid-template-columns: 190px minmax(0, 1fr); gap: 18px; }
   .source-preview-is-open .report-workspace.outline-collapsed { grid-template-columns: minmax(0, 1fr); }
-  .source-preview-is-open #report-editor .ProseMirror { padding: 40px 30px 100px; }
+  .source-preview-is-open .editor-format-document #report-editor .ProseMirror { padding: 40px 30px 100px; }
 }
 @media (max-width: 640px) {
   .report-source-preview { inset: auto 8px 8px; width: calc(100vw - 16px); height: 78dvh; border-radius: 18px 18px 10px 10px; }
@@ -3154,13 +3154,13 @@ button {
 }
 
 /* 纯协议段落由文档装饰识别，不让光标占位节点撑开标题与表格的间距。 */
-#report-editor .ProseMirror p.report-table-protocol-paragraph,
-#report-editor .ProseMirror p:has(> .report-table-marker:only-child),
-#report-editor .ProseMirror p:has(> .report-table-close-marker:only-child) {
+.editor-format-document #report-editor .ProseMirror p.report-table-protocol-paragraph,
+.editor-format-document #report-editor .ProseMirror p:has(> .report-table-marker:only-child),
+.editor-format-document #report-editor .ProseMirror p:has(> .report-table-close-marker:only-child) {
   display: none;
 }
 
-#report-editor .ProseMirror p.report-table-protocol-paragraph:has(> .report-table-marker) + .milkdown-table-block table.children {
+.editor-format-document #report-editor .ProseMirror p.report-table-protocol-paragraph:has(> .report-table-marker) + .milkdown-table-block table.children {
   margin-top: 0;
 }
 
@@ -3185,18 +3185,18 @@ button {
     background: var(--color-surface);
   }
 
-  #report-editor .milkdown-top-bar {
+  .editor-format-document #report-editor .milkdown-top-bar {
     position: static;
     padding: 2px 12px;
   }
 
   /* 窄屏格式栏随文档滚动，标题定位只需避开 sticky 应用栏本身 */
-  #report-editor .ProseMirror h1,
-  #report-editor .ProseMirror h2,
-  #report-editor .ProseMirror h3,
-  #report-editor .ProseMirror h4,
-  #report-editor .ProseMirror h5,
-  #report-editor .ProseMirror h6 {
+  .editor-format-document #report-editor .ProseMirror h1,
+  .editor-format-document #report-editor .ProseMirror h2,
+  .editor-format-document #report-editor .ProseMirror h3,
+  .editor-format-document #report-editor .ProseMirror h4,
+  .editor-format-document #report-editor .ProseMirror h5,
+  .editor-format-document #report-editor .ProseMirror h6 {
     scroll-margin-top: calc(var(--app-bar-height, 56px) + 16px);
   }
 
@@ -3434,19 +3434,19 @@ button {
     box-shadow: none;
   }
 
-  #report-editor,
-  #report-editor .milkdown {
+  .editor-format-document #report-editor,
+  .editor-format-document #report-editor .milkdown {
     min-height: calc(100vh - 56px);
   }
 
-  #report-editor .ProseMirror {
+  .editor-format-document #report-editor .ProseMirror {
     padding: 38px 20px 104px;
     font-size: var(--font-size-lg);
     line-height: 1.75;
     overflow-wrap: anywhere;
   }
 
-  #report-editor .ProseMirror h1 {
+  .editor-format-document #report-editor .ProseMirror h1 {
     padding-bottom: 10px;
     font-size: var(--font-size-2xl);
   }
@@ -3619,25 +3619,25 @@ button {
     display: none;
   }
 
-  #report-editor,
-  #report-editor .milkdown,
-  #report-editor .ProseMirror {
+  .editor-format-document #report-editor,
+  .editor-format-document #report-editor .milkdown,
+  .editor-format-document #report-editor .ProseMirror {
     min-height: auto;
   }
 
-  #report-editor .ProseMirror {
+  .editor-format-document #report-editor .ProseMirror {
     padding: 0;
     color: var(--color-ink);
     font-size: 11pt;
     line-height: 1.75;
   }
 
-  #report-editor .ProseMirror h1 {
+  .editor-format-document #report-editor .ProseMirror h1 {
     margin-top: 0;
     font-size: 22pt;
   }
 
-  #report-editor .ProseMirror h2 {
+  .editor-format-document #report-editor .ProseMirror h2 {
     padding-bottom: 6pt;
     border-bottom: 0.5pt solid #c8d4dd;
     color: var(--color-ink-2);
@@ -3645,29 +3645,29 @@ button {
     break-after: avoid;
   }
 
-  #report-editor .ProseMirror h3 {
+  .editor-format-document #report-editor .ProseMirror h3 {
     padding-left: 8pt;
     border-left: 2pt solid var(--color-accent-soft);
     font-size: 13pt;
     break-after: avoid;
   }
 
-  #report-editor .ProseMirror h4 {
+  .editor-format-document #report-editor .ProseMirror h4 {
     padding-left: 7pt;
     border-left: 1.5pt solid #c3d3de;
     font-size: 12pt;
     break-after: avoid;
   }
 
-  #report-editor .ProseMirror h5,
-  #report-editor .ProseMirror h6 {
+  .editor-format-document #report-editor .ProseMirror h5,
+  .editor-format-document #report-editor .ProseMirror h6 {
     font-size: 11pt;
     break-after: avoid;
   }
 
-  #report-editor .ProseMirror table,
-  #report-editor .ProseMirror img,
-  #report-editor .ProseMirror blockquote {
+  .editor-format-document #report-editor .ProseMirror table,
+  .editor-format-document #report-editor .ProseMirror img,
+  .editor-format-document #report-editor .ProseMirror blockquote {
     break-inside: avoid;
   }
 

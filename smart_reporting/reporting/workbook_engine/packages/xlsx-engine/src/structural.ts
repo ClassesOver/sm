@@ -6,7 +6,7 @@
 /// corrupt references.
 
 import { columnIndex, columnLabel } from './cell-address'
-import { decodeXmlText, escapeXmlText } from './xml'
+import { decodeXmlText, escapeXmlText, readXmlAttribute } from './xml'
 import { FORMULA_REFERENCE_PATTERN, qualifierMatches } from './sheets-edit'
 
 export type StructuralOp =
@@ -19,6 +19,9 @@ export interface ShiftSpec {
   readonly start: number
   /// positive for inserts, negative for deletes
   readonly delta: number
+  /// Insert/Delete Cells shifts only this inclusive cross-axis span (rows for
+  /// a column shift, columns for a row shift); absent = whole rows/columns.
+  readonly band?: { readonly start: number; readonly end: number }
 }
 
 export class StructuralShiftError extends Error {}
@@ -34,6 +37,25 @@ export function shiftIndex(index: number, spec: ShiftSpec): number | null {
   if (spec.delta > 0) return index + spec.delta
   if (index < spec.start - spec.delta) return null
   return index + spec.delta
+}
+
+/// Cell coordinates after the shift (null when deleted); outside a band the
+/// cell does not move.
+export function shiftCellIndex(row: number, column: number, spec: ShiftSpec): { row: number; column: number } | null {
+  const cross = spec.axis === 'row' ? column : row
+  if (spec.band && (cross < spec.band.start || cross > spec.band.end)) return { row, column }
+  const shifted = shiftIndex(spec.axis === 'row' ? row : column, spec)
+  if (shifted === null) return null
+  return spec.axis === 'row' ? { row: shifted, column } : { row, column: shifted }
+}
+
+/// Excel's Insert/Delete Cells rewrites a reference only when its cross-axis
+/// extent lies wholly inside the shifted band; others stay as written.
+function insideBand(spec: ShiftSpec, first: RefPart, second: RefPart = first): boolean {
+  if (!spec.band) return true
+  const a = spec.axis === 'row' ? first.col : first.row
+  const b = spec.axis === 'row' ? second.col : second.row
+  return Math.min(a, b) >= spec.band.start && Math.max(a, b) <= spec.band.end
 }
 
 // ── formula shifting (genoffice domain/formula-shift semantics) ──────────
@@ -118,6 +140,7 @@ function shiftSegment(
         row: Number(aRow) - 1,
       }
       if (bCol === undefined) {
+        if (!insideBand(spec, first)) return match
         const shifted = shiftRefPart(first, spec)
         return shifted ? `${prefix}${formatRef(shifted)}` : `${prefix}#REF!`
       }
@@ -127,6 +150,7 @@ function shiftSegment(
         rowAbs: bAbsR,
         row: Number(bRow) - 1,
       }
+      if (!insideBand(spec, first, second)) return match
       let shiftedFirst = shiftRefPart(first, spec)
       let shiftedSecond = shiftRefPart(second, spec)
       if (!shiftedFirst && !shiftedSecond) return `${prefix}#REF!`
@@ -135,7 +159,8 @@ function shiftSegment(
       return `${prefix}${formatRef(shiftedFirst)}:${formatRef(shiftedSecond)}`
     },
   )
-  if (spec.axis === 'column') {
+  // whole-column/row spans cross every band, so a banded shift leaves them
+  if (spec.axis === 'column' && !spec.band) {
     out = out.replace(COLUMN_SPAN_RE, (match, quoted, bare, aAbs, aCol, bAbs, bCol) => {
       if (!appliesTo(quoted, bare, formulaSheetMatchesOp, opSheetName)) return match
       const prefix = prefixOf(quoted, bare)
@@ -154,7 +179,7 @@ function shiftSegment(
       return `${prefix}${formatCol(first)}:${formatCol(second)}`
     })
   }
-  if (spec.axis === 'row') {
+  if (spec.axis === 'row' && !spec.band) {
     out = out.replace(ROW_SPAN_RE, (match, quoted, bare, aAbs, aRow, bAbs, bRow) => {
       if (!appliesTo(quoted, bare, formulaSheetMatchesOp, opSheetName)) return match
       const prefix = prefixOf(quoted, bare)
@@ -566,15 +591,65 @@ function shiftSqrefAttribute(sqref: string, spec: ShiftSpec): { sqref: string; a
   return { sqref: alive.join(' '), allDead: false }
 }
 
-/// Shifts autoFilter@ref, dataValidation sqrefs, conditionalFormatting sqref,
-/// and hyperlink ref anchors with the op. Elements whose every reference dies
-/// are dropped (the rows they annotated are gone).
+/// First column (0-based) of an A1 range token; 0 when unparseable.
+function refStartColumn(reference: string): number {
+  const token = reference.split(':')[0] ?? reference
+  const match = token.match(/^(\$?)([A-Z]{1,3})/)
+  return match?.[2] ? columnIndex(match[2]) : 0
+}
+
+/// One worksheet-level autoFilter element along the op: the ref moves, and on
+/// column ops the filterColumn colIds follow (a colId is an offset from the
+/// range's first column, so its base moves with the ref — the same rebase
+/// Excel performs, and the table-part shift already mirrors). Columns deleted
+/// out of the range drop their filterColumn; a fully deleted ref drops the
+/// element. Row ops never touch colIds. Criteria bodies (values/customs/
+/// dateGroupItem buckets) carry no coordinates of their own — a dateGroupItem
+/// describes an attribute bucket (year/month/day/...), not a cell address —
+/// so they ride along verbatim inside the shifted element.
+function shiftAutoFilterElement(
+  attributes: string,
+  body: string | undefined,
+  spec: ShiftSpec,
+): string | null {
+  const reference = readXmlAttribute(attributes, 'ref')
+  if (reference === undefined) return null
+  const shifted = shiftRangeReference(reference, spec)
+  if (shifted === null) return null
+  const shiftedAttributes = attributes.replace(reference, () => shifted)
+  if (body === undefined) return `<autoFilter${shiftedAttributes}/>`
+  let shiftedBody = body
+  if (spec.axis === 'column') {
+    const oldStart = refStartColumn(reference)
+    const newStart = refStartColumn(shifted)
+    shiftedBody = body.replace(
+      /<filterColumn\b([^>]*?)(\/>|>[\s\S]*?<\/filterColumn>)/g,
+      (element, columnAttributes: string) => {
+        const raw = readXmlAttribute(columnAttributes, 'colId')
+        if (raw === undefined || !/^\d+$/.test(raw)) return element
+        const moved = shiftIndex(oldStart + Number(raw), spec)
+        if (moved === null) return '' // column deleted → its criteria die with it
+        return element.replace(
+          /(\bcolId=")([0-9]+)(")/,
+          (_m, prefix: string, _value: string, suffix: string) =>
+            `${prefix}${moved - newStart}${suffix}`,
+        )
+      },
+    )
+  }
+  return `<autoFilter${shiftedAttributes}>${shiftedBody}</autoFilter>`
+}
+
+/// Shifts autoFilter@ref (with per-column criteria), dataValidation sqrefs,
+/// conditionalFormatting sqref, and hyperlink ref anchors with the op.
+/// Elements whose every reference dies are dropped (the rows they annotated
+/// are gone).
 export function shiftRangedFeatures(worksheetXml: string, spec: ShiftSpec): string {
   let xml = worksheetXml.replace(
-    /<autoFilter\b[^>]*?\bref="([^"]+)"[^>]*\/>/g,
-    (full, reference: string) => {
-      const shifted = shiftRangeReference(reference, spec)
-      return shifted === null ? '' : full.replace(reference, () => shifted)
+    /<autoFilter\b([^>]*?)(\/>|>([\s\S]*?)<\/autoFilter>)/g,
+    (_full, attributes: string, _tail: string, body: string | undefined) => {
+      const shifted = shiftAutoFilterElement(attributes, body, spec)
+      return shifted ?? ''
     },
   )
   xml = xml.replace(

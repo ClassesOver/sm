@@ -9,7 +9,12 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from ..reporting.delivery.publishing import content_disposition
 from ..reporting.models import ReportingError
-from ._api_helpers import read_editor_json, reporting_http_error, require_editor_csrf
+from ._api_helpers import (
+    read_editor_json,
+    reporting_editor_error,
+    reporting_http_error,
+    require_editor_csrf,
+)
 from .service import ReportEditorGrantService
 
 SLIDES_SESSION_COOKIE = "report_slides_session"
@@ -70,10 +75,6 @@ def create_report_slides_editor_router(
             raise HTTPException(status_code=503, detail={"code": "report_slides_chart_unavailable", "message": "图表 AI 编辑暂不可用。",
             })
         return slides_charts
-
-    def report_ai_error(error: ReportingError) -> HTTPException:
-        status = 403 if "permission_denied" in error.code else 409
-        return reporting_http_error(error, status_code=status)
 
     @router.get("/reports/v1/slides/open/{raw_grant}", include_in_schema=False)
     async def open_slides_editor(raw_grant: str) -> RedirectResponse:
@@ -241,7 +242,7 @@ def create_report_slides_editor_router(
         try:
             return await require_chart_service().list_charts(session)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.post("/reports/v1/slides/{report_id}/{revision}/api/charts/start", include_in_schema=False)
     async def start_slide_chart(report_id: str, revision: int, request: Request):
@@ -255,7 +256,7 @@ def create_report_slides_editor_router(
                 session, payload.get('slideIndex'), payload.get('elementId'), payload.get('instruction'),
             )
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.get("/reports/v1/slides/{report_id}/{revision}/api/charts/{candidate_id}", include_in_schema=False)
     async def read_slide_chart(
@@ -266,7 +267,7 @@ def create_report_slides_editor_router(
         try:
             return await require_chart_service().edit_status(session, candidate_id, wait_ms=wait_ms)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.post("/reports/v1/slides/{report_id}/{revision}/api/charts/{candidate_id}/cancel", include_in_schema=False)
     async def cancel_slide_chart(report_id: str, revision: int, candidate_id: str, request: Request):
@@ -275,7 +276,7 @@ def create_report_slides_editor_router(
         try:
             return await require_chart_service().cancel_edit(session, candidate_id)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/start", include_in_schema=False)
     async def start_slides_ai_edit(report_id: str, revision: int, request: Request):
@@ -287,7 +288,7 @@ def create_report_slides_editor_router(
             instruction = payload.get("instruction") if isinstance(payload, dict) else None
             return await service.start_edit(session, instruction)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.get("/reports/v1/slides/{report_id}/{revision}/api/ai/{edit_id}", include_in_schema=False)
     async def read_slides_ai_status(
@@ -302,7 +303,7 @@ def create_report_slides_editor_router(
         try:
             return await service.wait_edit_status(session, edit_id, wait_ms=wait_ms)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/{edit_id}/cancel", include_in_schema=False)
     async def cancel_slides_ai_edit(report_id: str, revision: int, edit_id: str, request: Request):
@@ -312,7 +313,7 @@ def create_report_slides_editor_router(
         try:
             return await service.cancel_edit(session, edit_id)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/{edit_id}/accept", include_in_schema=False)
     async def accept_slides_ai_edit(report_id: str, revision: int, edit_id: str, request: Request):
@@ -322,7 +323,7 @@ def create_report_slides_editor_router(
         try:
             return await service.mark_accepted(session, edit_id)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     @router.post("/reports/v1/slides/{report_id}/{revision}/api/ai/image", include_in_schema=False)
     async def generate_slides_image(report_id: str, revision: int, request: Request):
@@ -334,6 +335,6 @@ def create_report_slides_editor_router(
             prompt = payload.get("prompt") if isinstance(payload, dict) else None
             return await service.generate_candidate(session, prompt)
         except ReportingError as error:
-            raise report_ai_error(error) from None
+            raise reporting_editor_error(error) from None
 
     return router

@@ -16,8 +16,9 @@ export interface ColumnWidthEntry {
 export interface RowHeightEntry {
   /// 0-based row index
   readonly index: number
-  /// height in points
-  readonly heightPoints: number
+  /// height in points; null = back to automatic height (drop ht/customHeight,
+  /// Excel's AutoFit Row Height on a custom-height row)
+  readonly heightPoints: number | null
 }
 
 interface ColRange {
@@ -103,10 +104,10 @@ function setRowAttributes(rowXml: string, heightPoints: number): string {
 /// row carrying only ht/customHeight is valid OOXML).
 export function setRowHeightsXml(worksheetXml: string, entries: readonly RowHeightEntry[]): string {
   if (entries.length === 0) return worksheetXml
-  const wanted = new Map<number, number>()
+  const wanted = new Map<number, number | null>()
   for (const entry of entries) {
-    if (entry.index < 0 || entry.index >= 1_048_576) throw new Error(`行 ${entry.index + 1} 超出工作表高度。`)
-    if (!(entry.heightPoints > 0) || entry.heightPoints > 409) throw new Error(`行高 ${entry.heightPoints} 必须在 0–409 磅之间。`)
+    if (!Number.isInteger(entry.index) || entry.index < 0 || entry.index >= 1_048_576) throw new Error(`行 ${entry.index + 1} 超出工作表高度。`)
+    if (entry.heightPoints !== null && (!(entry.heightPoints > 0) || entry.heightPoints > 409)) throw new Error(`行高 ${entry.heightPoints} 必须在 0–409 磅之间。`)
     wanted.set(entry.index + 1, entry.heightPoints)
   }
 
@@ -122,6 +123,12 @@ export function setRowHeightsXml(worksheetXml: string, entries: readonly RowHeig
   for (const [rowNumber, height] of wanted) {
     const rowPattern = new RegExp(`<row\\b[^>]*\\br="${rowNumber}"(?:[^>]*)(?:/>|>[\\s\\S]*?</row>)`)
     const existingRow = inner.match(rowPattern)
+    if (height === null) {
+      // auto height: drop the explicit height on the row element only (cells kept);
+      // a row the file never sized is already automatic.
+      if (existingRow) inner = inner.replace(rowPattern, (full) => full.replace(/^<row\b[^>]*/, (open) => open.replace(/\s+ht="[^"]*"/, '').replace(/\s+customHeight="[^"]*"/, '')))
+      continue
+    }
     if (existingRow) {
       inner = inner.replace(rowPattern, (full) => setRowAttributes(full, height))
       continue

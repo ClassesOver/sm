@@ -4,9 +4,11 @@
 /// the `<legacyDrawing>` element, and the [Content_Types].xml entries.
 /// Non-note VML shapes (checkboxes, buttons) survive a rewrite untouched.
 
-import { ensureRelationshipNamespace } from './xml'
+import { shiftIndex, type ShiftSpec } from './structural'
+import { readSheetNotes, noteKey, NOTE_LIMIT, NOTE_TEXT_LIMIT, type LegacyNote } from './note-read'
+import { ensureRelationshipNamespace, readXmlAttribute } from './xml'
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
-import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
+import { assemblePackage, createBufferEntrySource, type EntrySource, type MutationPlan } from './zip'
 
 export class NoteEditError extends Error {}
 
@@ -324,4 +326,258 @@ export async function applySheetNotes(
     touchedEntries: parts.touchedEntries,
   }
   return (await assemblePackage(sourceBytes, plan)).buffer
+}
+
+export interface NoteShiftPlan {
+  readonly replaced: Map<string, string>
+  readonly removedEntries: string[]
+  readonly touchedEntries: string[]
+}
+
+function shiftedAnchorMark(position: number, offset: number, spec: ShiftSpec): [number, number] {
+  const shifted = shiftIndex(position, spec)
+  if (shifted !== null) return [shifted, offset]
+  return [spec.start, 0]
+}
+
+function shiftNoteShape(shape: string, row: number, column: number, specs: readonly ShiftSpec[]): string {
+  const rowTag = '(?:[\\w.-]+:)?Row'
+  const columnTag = '(?:[\\w.-]+:)?Column'
+  const anchorTag = '(?:[\\w.-]+:)?Anchor'
+  let next = shape
+    .replace(new RegExp(`(<${rowTag}\\b[^>]*>)[^<]*(</${rowTag}>)`), (full, open: string, close: string) => `${open}${row}${close}`)
+    .replace(new RegExp(`(<${columnTag}\\b[^>]*>)[^<]*(</${columnTag}>)`), (full, open: string, close: string) => `${open}${column}${close}`)
+  next = next.replace(new RegExp(`(<${anchorTag}\\b[^>]*>)([^<]*)(</${anchorTag}>)`), (_full, open: string, body: string, close: string) => {
+    const values = body.split(',').map((part) => Number(part.trim()))
+    if (values.length !== 8 || values.some((value) => !Number.isFinite(value))) return _full
+    const shifted = [...values]
+    for (const spec of specs) {
+      const start = spec.axis === 'row' ? 2 : 0
+      const end = start + 4
+      ;[shifted[start], shifted[start + 1]] = shiftedAnchorMark(shifted[start]!, shifted[start + 1]!, spec)
+      ;[shifted[end], shifted[end + 1]] = shiftedAnchorMark(shifted[end]!, shifted[end + 1]!, spec)
+    }
+    return `${open}${shifted.join(',')}${close}`
+  })
+  return next
+}
+
+/** Shift legacy comment refs and only their Note VML shapes with worksheet structure. */
+export async function shiftSheetNotes(
+  source: EntrySource,
+  worksheetPath: string,
+  specs: readonly ShiftSpec[],
+  worksheetXmlOverride?: string,
+): Promise<NoteShiftPlan> {
+  const empty: NoteShiftPlan = { replaced: new Map(), removedEntries: [], touchedEntries: [] }
+  if (specs.length === 0) return empty
+  // VML-only form controls and unrelated protected sheets retain the old structural path.
+  const relationshipsPath = worksheetRelsPath(worksheetPath)
+  const relationships = await source.has(relationshipsPath) ? await source.readText(relationshipsPath) : ''
+  const ownsComments = [...relationships.matchAll(/<Relationship\b[^>]*\/?\s*>/g)].some(match => {
+    const type = readXmlAttribute(match[0], 'Type') ?? ''
+    return type === COMMENTS_REL_TYPE || /threadedcomments|\/persons?$/i.test(type)
+  })
+  if (!ownsComments) return empty
+  const model = await readSheetNotes(source, worksheetPath)
+  if (model.readOnlyReason) throw new NoteEditError(model.readOnlyReason)
+  if (!model.commentsPath || !model.vmlPath || !model.commentsXml || !model.vmlXml) return empty
+  const moved = new Map<string, LegacyNote>()
+  const destinations = new Set<string>()
+  for (const note of model.notes) {
+    let row = note.row
+    let column = note.column
+    let removed = false
+    for (const spec of specs) {
+      // Insert/Delete Cells: notes outside the band stay with their cells.
+      if (spec.band && ((spec.axis === 'row' ? column : row) < spec.band.start || (spec.axis === 'row' ? column : row) > spec.band.end)) continue
+      const shifted = spec.axis === 'row' ? shiftIndex(row, spec) : shiftIndex(column, spec)
+      if (shifted === null) { removed = true; break }
+      if (shifted < 0 || shifted > (spec.axis === 'row' ? 1048575 : 16383)) throw new NoteEditError('批注移位超出工作表边界')
+      if (spec.axis === 'row') row = shifted
+      else column = shifted
+    }
+    const oldKey = noteKey(note.row, note.column)
+    if (removed) continue
+    const newKey = noteKey(row, column)
+    if (destinations.has(newKey)) throw new NoteEditError('结构变更导致批注目标冲突')
+    destinations.add(newKey)
+    moved.set(oldKey, { ...note, row, column })
+  }
+  const commentReplacements = new Map<string, string>()
+  const shapeReplacements = new Map<string, string>()
+  for (const note of model.notes) {
+    const oldKey = noteKey(note.row, note.column)
+    const next = moved.get(oldKey)
+    const raw = model.commentXml.get(oldKey)!
+    const shape = model.shapeXml.get(oldKey)!
+    commentReplacements.set(raw, next ? raw.replace(/(\bref=")[^"]*(")/, (_full, open: string, close: string) => `${open}${columnName(next.column)}${next.row + 1}${close}`) : '')
+    shapeReplacements.set(shape, next ? shiftNoteShape(shape, next.row, next.column, specs) : '')
+  }
+  // One pass over original elements prevents cascading A1→A2→A3 replacements.
+  const comments = model.commentsXml.replace(/<comment\b[^>]*>[\s\S]*?<\/comment>/g, raw => commentReplacements.get(raw) ?? raw)
+  const drawing = model.vmlXml.replace(/<(?:[\w.-]+:)?shape\b[^>]*>[\s\S]*?<\/(?:[\w.-]+:)?shape>/g, raw => shapeReplacements.get(raw) ?? raw)
+  const replaced = new Map<string, string>()
+  const removedEntries: string[] = []
+  const touchedEntries: string[] = []
+  if (moved.size === 0) {
+    removedEntries.push(model.commentsPath)
+    const hasForeignShapes = /<(?:[\w.-]+:)?shape\b/.test(drawing)
+    if (hasForeignShapes) replaced.set(model.vmlPath, drawing)
+    else {
+      removedEntries.push(model.vmlPath)
+      const relsPath = worksheetRelsPath(worksheetPath)
+      const rels = await source.readText(relsPath)
+      replaced.set(relsPath, removeRel(rels, VML_REL_TYPE))
+      touchedEntries.push(relsPath)
+      const worksheetXml = worksheetXmlOverride ?? await source.readText(worksheetPath)
+      replaced.set(worksheetPath, worksheetXml.replace(/<legacyDrawing\b[^>]*\/>/, ''))
+      touchedEntries.push(worksheetPath)
+    }
+    const relsPath = worksheetRelsPath(worksheetPath)
+    const rels = replaced.get(relsPath) ?? await source.readText(relsPath)
+    replaced.set(relsPath, removeRel(rels, COMMENTS_REL_TYPE))
+    touchedEntries.push(relsPath)
+    const contentTypes = await source.readText(CONTENT_TYPES_PATH)
+    const deletedPaths = new Set(removedEntries.map(entry => `/${entry}`))
+    const cleaned = contentTypes.replace(/<Override\b[^>]*\/>/g, entry => deletedPaths.has(readXmlAttribute(entry, 'PartName') ?? '') ? '' : entry)
+    if (cleaned !== contentTypes) replaced.set(CONTENT_TYPES_PATH, cleaned)
+  } else {
+    replaced.set(model.commentsPath, comments)
+    replaced.set(model.vmlPath, drawing)
+    touchedEntries.push(model.commentsPath, model.vmlPath)
+  }
+  return { replaced, removedEntries, touchedEntries: [...new Set([...touchedEntries, ...replaced.keys(), ...removedEntries])] }
+}
+
+/** Move keeps the source note's author and text; the engine resolves the
+ *  author from the source itself, so clients never supply identity. */
+export interface NoteMoveChange { fromRow: number; fromColumn: number; toRow: number; toColumn: number }
+export type NotePatchChange = { row: number; column: number; text: string | null } | NoteMoveChange
+
+const isMoveChange = (change: NotePatchChange): change is NoteMoveChange =>
+  (change as NoteMoveChange).fromRow !== undefined
+
+const inCellRange = (row: number, column: number) =>
+  Number.isInteger(row) && row >= 0 && row <= 1048575 && Number.isInteger(column) && column >= 0 && column <= 16383
+
+/** Single-cell patches retain all untouched comment elements and original VML shapes. */
+export async function patchSheetNotes(sourceBytes: Uint8Array, sheetName: string, sourceIdentity: string,
+  changes: readonly NotePatchChange[]): Promise<Uint8Array> {
+  if (!/^[a-f0-9]{64}$/.test(sourceIdentity) || !Array.isArray(changes) || changes.length > NOTE_LIMIT) throw new NoteEditError('批注请求身份或预算无效')
+  const source = await createBufferEntrySource(sourceBytes)
+  const element = parseSheetElements(await source.readText('xl/workbook.xml')).find(s => s.name === sheetName)
+  if (!element?.relationshipId) throw new NoteEditError('批注来源工作表不存在')
+  const path = await resolveWorksheetPath(source, element.relationshipId)
+  const original = await readSheetNotes(source, path)
+  if (original.readOnlyReason) throw new NoteEditError(original.readOnlyReason)
+  if (original.sourceIdentity !== sourceIdentity) throw new NoteEditError('批注来源身份已变化，请刷新后重试')
+  const plainKeys = new Set<string>()
+  const moveFroms = new Set<string>()
+  const moveTargets = new Set<string>()
+  const notes = new Map(original.notes.map(n => [noteKey(n.row, n.column), n]))
+  const moves: { change: NoteMoveChange; moving: { row: number; column: number; author: string; text: string } }[] = []
+  const edits: { key: string; change: { row: number; column: number; text: string | null } }[] = []
+  for (const change of changes) {
+    if (isMoveChange(change)) {
+      if (!inCellRange(change.fromRow, change.fromColumn) || !inCellRange(change.toRow, change.toColumn)) throw new NoteEditError('批注移动地址超出范围')
+      const fromKey = noteKey(change.fromRow, change.fromColumn), toKey = noteKey(change.toRow, change.toColumn)
+      // Cyclic permutations make one key both a target and another move's
+      // source, so from/to keys may overlap across moves; only duplicate
+      // froms, duplicate targets and plain-change collisions collide.
+      if (fromKey === toKey || moveFroms.has(fromKey) || moveTargets.has(toKey) || plainKeys.has(fromKey) || plainKeys.has(toKey)) throw new NoteEditError('批注目标重复')
+      const moving = notes.get(fromKey)
+      if (!moving) throw new NoteEditError('批注移动来源不存在')
+      moveFroms.add(fromKey)
+      moveTargets.add(toKey)
+      moves.push({ change, moving })
+      continue
+    }
+    if (!inCellRange(change.row, change.column) ||
+      change.text !== null && (typeof change.text !== 'string' || change.text.length > NOTE_TEXT_LIMIT || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(change.text))) throw new NoteEditError('批注文本或地址超出预算')
+    const key = noteKey(change.row, change.column)
+    if (plainKeys.has(key) || moveFroms.has(key) || moveTargets.has(key)) throw new NoteEditError('批注目标重复')
+    plainKeys.add(key)
+    edits.push({ key, change })
+  }
+  // Order-independent application: frees first, then move targets, then text edits.
+  for (const change of changes) {
+    const key = isMoveChange(change) ? noteKey(change.fromRow, change.fromColumn) : change.text === null ? noteKey(change.row, change.column) : null
+    if (key) notes.delete(key)
+  }
+  for (const { change, moving } of moves) notes.set(noteKey(change.toRow, change.toColumn), { ...moving, row: change.toRow, column: change.toColumn })
+  for (const { key, change } of edits) {
+    if (change.text === null) continue
+    notes.set(key, { row: change.row, column: change.column, author: notes.get(key)?.author ?? '用户', text: change.text })
+  }
+  if (notes.size > NOTE_LIMIT || [...notes.values()].reduce((sum, n) => sum + n.text.length, 0) > 1024 * 1024) throw new NoteEditError('批注集合超出预算')
+  if (!changes.length) return sourceBytes
+  if (!original.commentsPath) return applySheetNotes(sourceBytes, sheetName, [...notes.values()])
+  const replaced = new Map<string, string>(), removedEntries: string[] = []
+  const relsPath = worksheetRelsPath(path)
+  let comments = original.commentsXml!, drawing = original.vmlXml!
+  if (!notes.size) {
+    removedEntries.push(original.commentsPath)
+    for (const shape of original.shapeXml.values()) drawing = drawing.replace(shape, () => '')
+    const keepVml = /<(?:[\w.-]+:)?shape\b/.test(drawing)
+    if (keepVml) replaced.set(original.vmlPath!, drawing)
+    else {
+      removedEntries.push(original.vmlPath!)
+      replaced.set(path, (await source.readText(path)).replace(/<legacyDrawing\b[^>]*\/>/, ''))
+    }
+    let rels = await source.readText(relsPath)
+    rels = rels.replace(/<Relationship\b[^>]*\/>/g, relationship => {
+      const type = readXmlAttribute(relationship, 'Type')
+      return type === COMMENTS_REL_TYPE || !keepVml && type === VML_REL_TYPE ? '' : relationship
+    })
+    replaced.set(relsPath, rels)
+    const contentTypes = await source.readText(CONTENT_TYPES_PATH)
+    const deletedPaths = new Set(removedEntries.map(entry => `/${entry}`))
+    const cleanedTypes = contentTypes.replace(/<Override\b[^>]*\/>/g, entry => deletedPaths.has(readXmlAttribute(entry, 'PartName') ?? '') ? '' : entry)
+    if (cleanedTypes !== contentTypes) replaced.set(CONTENT_TYPES_PATH, cleanedTypes)
+  } else {
+    const removals = new Set<string>()
+    const creations: { key: string; text: string; author: string }[] = []
+    for (const change of changes) {
+      if (isMoveChange(change)) {
+        const fromKey = noteKey(change.fromRow, change.fromColumn), toKey = noteKey(change.toRow, change.toColumn)
+        removals.add(fromKey)
+        creations.push({ key: toKey, text: notes.get(toKey)!.text, author: original.notes.find(n => noteKey(n.row, n.column) === fromKey)!.author })
+        continue
+      }
+      const key = noteKey(change.row, change.column)
+      if (change.text === null) removals.add(key)
+      else if (original.commentXml.has(key)) {
+        const raw = original.commentXml.get(key)!
+        comments = comments.replace(raw, () => raw.replace(/<text>[\s\S]*?<\/text>/, () => `<text><t xml:space="preserve">${escapeXml(change.text).replace(/\r/g, '&#13;')}</t></text>`))
+      } else creations.push({ key, text: change.text, author: '用户' })
+    }
+    for (const key of removals) {
+      const raw = original.commentXml.get(key), shape = original.shapeXml.get(key)
+      if (raw) comments = comments.replace(raw, () => '')
+      if (shape) drawing = drawing.replace(shape, () => '')
+    }
+    for (const creation of creations) {
+      const [row, column] = creation.key.split(':').map(Number) as [number, number]
+      let authorId = original.authors.indexOf(creation.author)
+      if (authorId < 0) {
+        authorId = original.authors.length; original.authors.push(creation.author)
+        comments = comments.replace('</authors>', `<author>${escapeXml(creation.author)}</author></authors>`)
+      }
+      const comment = `<comment ref="${columnName(column)}${row + 1}" authorId="${authorId}"><text><t xml:space="preserve">${escapeXml(creation.text).replace(/\r/g, '&#13;')}</t></text></comment>`
+      comments = comments.replace('</commentList>', () => comment + '</commentList>')
+      let index = 0
+      while (drawing.includes(`_x0000_s${1025 + index}`)) index++
+      // Source VML producers use ns0/ns1 prefixes. Bind the writer's prefixes locally.
+      let nextShape = noteShape(notes.get(creation.key)!, index).replace('<v:shape ', '<v:shape xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" ')
+      const type = drawing.match(/<(?:[\w.-]+:)?shapetype\b[^>]*\bid="([^"]+)"/)?.[1]
+      if (!type) throw new NoteEditError('VML 批注图形类型缺失')
+      nextShape = nextShape.replace('type="#_x0000_t202"', () => `type="#${type}"`)
+      drawing = drawing.replace(/(<\/(?:[\w.-]+:)?xml>\s*)$/, (_match, end: string) => nextShape + end)
+    }
+    replaced.set(original.commentsPath, comments)
+    replaced.set(original.vmlPath!, drawing)
+  }
+  return (await assemblePackage(sourceBytes, { replaced, added: new Map(), addedBinary: new Map(), removedEntries,
+    addedEntries: [], touchedEntries: [...replaced.keys(), ...removedEntries] })).buffer
 }
