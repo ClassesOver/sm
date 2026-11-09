@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, addTable, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, addTable, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -40,6 +40,8 @@ type Input = {
   tables?: { slideIndex: number; rows: number; cols: number }[]
   /** 固定源 Shape Format ▸ Shape Fill / Shape Outline（setFill / setStroke）：纯色或无填充；描边颜色与线宽（pt）或无轮廓。 */
   shapeStyles?: { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }[]
+  /** 固定源 Shape Format ▸ Change Shape（changeShape → setShapePresetGeometry）：仅形状（非线条、非文本框），保留位置、填充、轮廓与文字。 */
+  shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -299,7 +301,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -312,6 +314,14 @@ if (request.action === 'inspect') {
     deleted.add(key)
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
+  if (!Array.isArray(request.shapeKinds ?? []) || (request.shapeKinds ?? []).length > 500) throw new Error('shape_kinds_invalid')
+  const reshaped = new Set<string>()
+  for (const item of request.shapeKinds ?? []) {
+    if (!item || typeof item !== 'object' || Object.keys(item).some(key => !['slideIndex', 'elementId', 'kind'].includes(key)) || !validSlideIndex(item.slideIndex, slideCount) || typeof item.elementId !== 'string'
+      || typeof item.kind !== 'string' || !shapePresets.presets.includes(item.kind) || shapePresets.lines.includes(item.kind)
+      || touchesDeleted(item.slideIndex, item.elementId) || reshaped.has(`${item.slideIndex}:${item.elementId}`)) throw new Error('shape_kind_invalid')
+    reshaped.add(`${item.slideIndex}:${item.elementId}`)
+  }
   if (!Array.isArray(request.shapeStyles ?? []) || (request.shapeStyles ?? []).length > 500) throw new Error('shape_styles_invalid')
   const styled = new Set<string>()
   for (const style of request.shapeStyles ?? []) {
@@ -442,6 +452,11 @@ if (request.action === 'inspect') {
   }
   for (const deletion of deletions) {
     if (!deleteElement(opened, originalSlides[deletion.slideIndex]!, deletion.elementId)) throw new Error('delete_target_invalid')
+  }
+  for (const item of request.shapeKinds ?? []) {
+    const slide = originalSlides[item.slideIndex]!
+    const element = slide.elements.find(candidate => candidate.id === item.elementId)
+    if (!element || element.type !== 'shape' || !setShapePresetGeometry(slide, item.elementId, item.kind)) throw new Error('shape_kind_target_invalid')
   }
   for (const style of request.shapeStyles ?? []) {
     const slide = originalSlides[style.slideIndex]!

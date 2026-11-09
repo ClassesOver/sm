@@ -25,6 +25,12 @@
 - 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
 - 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
 
+## 更改形状（固定源 Shape Format ▸ Change Shape / changeShape）
+
+- 仅对形状可用（与固定源一致：不含线条与文本框）；选择器为固定源形状库去掉线条组的预设。保留位置、尺寸、填充、轮廓与文字，仅替换 `prstGeom`（固定引擎 `setShapePresetGeometry`，先固化已做修改）。
+- 草稿 `shapeKinds: [{slideIndex, elementId, kind}]`，桥接与 Python 均按同一白名单拒绝线条/未知预设，桥接另拒绝非形状目标。
+- 证据：`test_slides_bridge_changes_shape_preset_keeping_text_and_style`、Ribbon 单测、`new-slide` 冒烟把夹具圆角矩形改为六边形（副本保留原形状）。
+
 ## 插入表格（固定源 Insert ▸ Table / table-insert.ts）
 
 - Insert ▸ Tables ▸ Table 打开行列对话框（默认 5 列 × 2 行，1–75），表格进入待保存清单。

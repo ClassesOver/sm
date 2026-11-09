@@ -18,7 +18,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -45,7 +45,9 @@ _NUMBERING_TYPES = {'arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPer
 _MAX_PARAGRAPH_EMU = 51206400
 _HEX_COLOR = re.compile(r'^#[0-9a-fA-F]{6}$')
 # 固定源形状库（与前端 shape-gallery-data.ts 同源），只允许这些 prstGeom。
-_SHAPE_PRESETS = frozenset(json.loads((Path(__file__).parents[1] / 'reporting' / 'slides_engine' / 'bridge' / 'shape-presets.json').read_text(encoding='utf-8'))['presets'])
+_SHAPE_DATA = json.loads((Path(__file__).parents[1] / 'reporting' / 'slides_engine' / 'bridge' / 'shape-presets.json').read_text(encoding='utf-8'))
+_SHAPE_PRESETS = frozenset(_SHAPE_DATA['presets'])
+_LINE_PRESETS = frozenset(_SHAPE_DATA['lines'])
 
 
 def _content(format: str, content: bytes) -> None:
@@ -112,6 +114,10 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or (stroke is not ... and stroke is not None and (not isinstance(stroke, dict) or set(stroke) != {'color', 'widthPt'}
                 or not isinstance(stroke['color'], str) or not _HEX_COLOR.fullmatch(stroke['color']) or not _number(stroke['widthPt'], 0.01, 100)))):
             raise ValueError('native_office_operations_invalid')
+    shape_kinds = _records(operation, 'shapeKinds', {'slideIndex', 'elementId', 'kind'})
+    if any(not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['kind'], str)
+           or item['kind'] not in _SHAPE_PRESETS or item['kind'] in _LINE_PRESETS for item in shape_kinds):
+        raise ValueError('native_office_operations_invalid')
     reset_layouts = operation.get('resetLayouts', [])
     if (not isinstance(reset_layouts, list) or len(reset_layouts) > 500 or any(not _slide_index(index) for index in reset_layouts)
         or len(set(reset_layouts)) != len(reset_layouts)):
@@ -191,7 +197,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
+    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
         'slide_layouts': layouts, 'backgrounds': backgrounds, 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting}
 
