@@ -801,3 +801,34 @@ def test_slides_bridge_table_coexists_with_element_edits_on_the_same_slide(tmp_p
     assert sum(shape.has_table for shape in shapes) == 1
     with ZipFile(output) as archive:
         assert 'srgbClr val="2E7D32"' in archive.read("ppt/slides/slide1.xml").decode()
+
+
+def test_slides_bridge_changes_shape_preset_keeping_text_and_style(tmp_path: Path):
+    """固定源 Change Shape：只换 prstGeom，保留位置、文字与同批样式；线条/未知预设/文本框拒绝。"""
+    from pptx.util import Inches
+    from pptx.enum.shapes import MSO_SHAPE
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "reshaped.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(1), Inches(1), Inches(3), Inches(2))
+    shape.text = "形状文字"
+    slide.shapes.add_textbox(Inches(5), Inches(1), Inches(3), Inches(1)).text = "文本框"
+    presentation.save(source)
+    elements = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"][0]["elements"]
+    target = next(item for item in elements if item["text"] == "形状文字")
+    textbox = next(item for item in elements if item["text"] == "文本框")
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [],
+             "shapeKinds": [{"slideIndex": 0, "elementId": target["id"], "kind": "hexagon"}],
+             "shapeStyles": [{"slideIndex": 0, "elementId": target["id"], "fill": "#2E7D32"}]}, tmp_path)
+    with ZipFile(output) as archive:
+        sp = next(item for item in re.findall(r"<p:sp>.*?</p:sp>", archive.read("ppt/slides/slide1.xml").decode(), re.S) if "形状文字" in item)
+    assert 'prst="hexagon"' in sp and 'prst="roundRect"' not in sp and "2E7D32" in sp
+    reopened = Presentation(str(output)).slides[0].shapes[0]
+    assert (reopened.left, reopened.top, reopened.width, reopened.height) == (shape.left, shape.top, shape.width, shape.height)
+    for bad in ({"slideIndex": 0, "elementId": target["id"], "kind": "lineArrow"},
+                {"slideIndex": 0, "elementId": target["id"], "kind": "notAShape"},
+                {"slideIndex": 0, "elementId": textbox["id"], "kind": "hexagon"}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "shapeKinds": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()

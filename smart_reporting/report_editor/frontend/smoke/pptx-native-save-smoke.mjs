@@ -43,6 +43,8 @@ if payload['mode'] == 'create':
         p = other.text_frame.paragraphs[0]; p.line_spacing = 1.37; p.space_before = Pt(8.25); p.space_after = Pt(9.75)
         p.runs[0].font.bold = True
     if payload.get('extraSlide'):
+        from pptx.enum.shapes import MSO_SHAPE
+        slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(6), Inches(4), Inches(2), Inches(1)).name = 'Fixture Shape'
         extra = presentation.slides.add_slide(presentation.slide_layouts[6])
         extra.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1)).text = 'Second source slide'
     if payload.get('listsSample'):
@@ -248,6 +250,12 @@ try {
     await page.locator('input[data-command="shapeFill"]').fill('#2e7d32')
     await page.locator('select[data-command="shapeOutlineWidth"]').selectOption('3')
     await page.locator('.structure-pending li').filter({ hasText: '填充 #2E7D32、轮廓 #000000 3 磅' }).waitFor()
+    // 更改形状（固定源 onChangeShape）：圆角矩形 → 六边形
+    const fixtureShape = inspected.slides[0].elements.find(item => item.type === 'shape')
+    await page.locator('#object-select').selectOption(fixtureShape.id)
+    await page.locator('[data-ribbon-tab="shapeFormat"]').click()
+    await page.locator('select[data-command="changeShape"]').selectOption('hexagon')
+    await page.locator('.structure-pending li').filter({ hasText: '更改为六边形' }).waitFor()
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
@@ -421,6 +429,7 @@ try {
     assert.deepEqual(operation.resetLayouts, [0])
     assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
     assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
+    assert.deepEqual(operation.shapeKinds, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'shape').id, kind: 'hexagon' }])
     assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
     assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2']])
     assert.deepEqual(operation.order, [2, 0, 3, 4])
@@ -468,6 +477,9 @@ try {
     assert.equal(fieldXml.stdout.trim(), '1')
     const styleXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") for sp in re.findall(r"<p:sp>.*?</p:sp>", z.read(n).decode(), re.S) if "Native browser formatting fixture" in sp and "2E7D32" in sp and "<a:ln w=\\"38100\\"" in sp))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(styleXml.stdout.trim(), '1')
+    const kindXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum(s.count("prst=\\"hexagon\\"") for s in x), sum(s.count("prst=\\"roundRect\\"") for s in x))'], { input: downloaded, encoding: 'utf8' })
+    // 原页六边形 1 个；圆角矩形 2 个 = 副本保留原形状 + 新插入的圆角矩形
+    assert.equal(kindXml.stdout.trim(), '1 2')
   }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))
