@@ -23,3 +23,9 @@ Row/column insertions and deletions now migrate note references, VML Row/Column/
 `sheet-ops.ts` adds `sortRangeRows` for the server/AI-tool path: the raw `<c>` records inside the range are permuted at the worksheet-XML level, so values, type markers and style indexes travel with their row (matching the official grid reorder) while row attributes stay in place. Ranges containing formulas or notes fail closed with explicit reasons; the bridge `sortRange` case now routes there (`tests/sort-rows.test.ts`).
 
 `filter-read.ts` and `filters.ts` add a local adapter for plain worksheet-level auto filters: the first sheet-level `<autoFilter>` (customSheetViews copies ignored) is read into the workbook model with values/blank and custom-filter columns, and `applySheetFilter` writes or clears the element declaratively together with row visibility, rejecting unsupported conditions (color/icon/dateGroup/top10/dynamic), table overlaps and contradictory requests without touching the bytes. Column insert/remove shifts the filter ref and rebases filterColumn offsets; row insert/remove shifts the ref. Threaded into the bridge as `applySheetFilter` (`tests/filters.test.ts`, `test_workbook_legacy_filter_cli.py`). dateGroup/color/top10/dynamic conditions remain read-refused; table-scope filter routing and calendarType preservation are not implemented.
+
+2026-11-09 `applyRowHeights` accepts `heightPoints: null` to return a row to
+automatic height (drops `ht`/`customHeight` on the row element, cells and other
+attributes kept; rows the file never sized are left alone). Used by the editor's
+AutoFit Row Height. `src/geometry.ts` and `tests/geometry.test.ts` are pinned in
+UPSTREAM-PATCHES-SHA256.json.

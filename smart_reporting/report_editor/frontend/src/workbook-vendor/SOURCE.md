@@ -68,3 +68,11 @@ conversions are unchanged (`columnWidthToPixels`, `rowHeightToPixels`), so an
 untouched load still diffs nothing. `isHiddenAxisEntry` is shared with the
 filter visibility snapshot and the print source. LOCAL-ADAPTATIONS-SHA256
 records both files; SOURCE-SHA256 is unchanged.
+
+2026-11-09 AutoFit Row Height: the loader marks file row heights explicit
+(`ia: 0`, as `setRowHeightsForced` writes); `readBackSnapshot` reports rows the
+grid sizes automatically (`ia: 1`) as `autoHeightRows`; `geometryChanges`
+(`core/data-tools.ts`, now recorded in LOCAL-ADAPTATIONS-SHA256) emits
+`heightPoints: null` for such rows only when the file had sized them, which the
+engine writes as a height reset. `core/session-core.ts` carries the new
+readback field.

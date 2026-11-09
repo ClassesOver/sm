@@ -19,5 +19,7 @@
   "packages/xlsx-engine/tests/filters.test.ts": "1696a65cbcff80a3e33341f4a261fb06fa492364c2bccaba365781a17937dc94",
   "packages/xlsx-engine/src/structural.ts": "96d0042fdb16855565bdf4c2a34004f98d3e51fcbb7e656fc08f6eb13a54d24f",
   "packages/xlsx-engine/src/page-setup.ts": "894442d9e6976584db3f0e316e8d2663ebfc16bbb978b1714f630a4298427919",
-  "packages/xlsx-engine/tests/protection-page-setup.test.ts": "d5fdbc87bec238bd75c9c88f014167c5cc54f299e22f505b329db499ee3fa06a"
+  "packages/xlsx-engine/tests/protection-page-setup.test.ts": "d5fdbc87bec238bd75c9c88f014167c5cc54f299e22f505b329db499ee3fa06a",
+  "packages/xlsx-engine/src/geometry.ts": "d637793629d80af7efe9ae29d76713ddf2721bfef2eb68f86c1778a6de0ec2e0",
+  "packages/xlsx-engine/tests/geometry.test.ts": "a64a51e49c9a33729a2da27e63c00a06fe68b935e14b25b2f74a28fca32d4443"
 }

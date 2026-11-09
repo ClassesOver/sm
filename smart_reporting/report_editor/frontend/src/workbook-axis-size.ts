@@ -87,3 +87,18 @@ export function createAxisSizeDialog(root: HTMLElement, apply: (target: AxisTarg
     dispose: modal.remove,
   }
 }
+
+/**
+ * AutoFit Row Height / Column Width (fixed-source ribbon-actions.ts:695-712 and
+ * autofit-selection.ts): every row (or column) the selection touches is sized
+ * by all of its cells, through the official commands. Row AutoFit marks rows
+ * automatic (Univer ia = 1) and saves as a height reset on rows the file had
+ * sized; column AutoFit writes measured widths that the geometry diff saves.
+ */
+export const AUTOFIT_COMMANDS = { row: 'sheet.command.set-row-is-auto-height', col: 'sheet.command.set-col-auto-width' } as const
+type Span = { startRow: number; endRow: number; startColumn: number; endColumn: number }
+export function autofitSpans(axis: SizeAxis, selection: Span, rowCount: number, columnCount: number): Span[] {
+  return axis === 'row'
+    ? [{ ...selection, startColumn: 0, endColumn: Math.max(0, columnCount - 1) }]
+    : [{ ...selection, startRow: 0, endRow: Math.max(0, rowCount - 1) }]
+}

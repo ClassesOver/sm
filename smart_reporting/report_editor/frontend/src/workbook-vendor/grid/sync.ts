@@ -235,8 +235,10 @@ export function readBackSnapshot(data: unknown): ReadbackWorkbook {
       if (column?.w !== undefined) columnWidths[Number(columnKey)] = column.w
     }
     const rowHeights: Record<number, number | undefined> = {}
+    const autoHeightRows: number[] = []
     for (const [rowKey, row] of Object.entries(sheet.rowData ?? {})) {
-      if (row?.h !== undefined) rowHeights[Number(rowKey)] = row.h
+      if (row?.ia === 1) autoHeightRows.push(Number(rowKey))
+      else if (row?.h !== undefined) rowHeights[Number(rowKey)] = row.h
     }
     return [{
       name: sheet.name,
@@ -244,6 +246,7 @@ export function readBackSnapshot(data: unknown): ReadbackWorkbook {
       ...(merges.length > 0 ? { merges } : {}),
       ...(Object.keys(columnWidths).length > 0 ? { columnWidths } : {}),
       ...(Object.keys(rowHeights).length > 0 ? { rowHeights } : {}),
+      ...(autoHeightRows.length > 0 ? { autoHeightRows } : {}),
     }]
   })
   return { sheets }

@@ -32,7 +32,7 @@ import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot
 import { withWorkbookLocked } from './workbook-grid-guards'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS } from './workbook-clipboard'
-import { applyAxisSize, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
+import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
 import { applyFormatPainterClick, formatPainterActive, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
   applyWorkbookRibbonCommand, selectedWorkbookRotation,
@@ -590,6 +590,19 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
             if (!runtime.univerAPI.syncExecuteCommand('sheet.command.delete-note')) throw new Error('批注未删除')
             feedback.textContent = '批注已删除，修改尚未保存。'
           }
+          return
+        }
+        if (command === 'autofit-row-height' || command === 'autofit-col-width') {
+          const axis = command === 'autofit-row-height' ? 'row' : 'col'
+          const sheet = workbook.getActiveSheet()
+          const range = sheet?.getSelection()?.getActiveRange()
+          if (!sheet || !range) throw new Error('请先选择单元格或区域')
+          const ranges = autofitSpans(axis, range.getRange(), sheet.getMaxRows(), sheet.getMaxColumns())
+          void runtime.univerAPI.executeCommand(AUTOFIT_COMMANDS[axis], { unitId: workbook.getId(), subUnitId: sheet.getSheetId(), ranges }).then(applied => {
+            if (!applied) { feedback.textContent = axis === 'row' ? '自动调整行高未应用' : '自动调整列宽未应用'; return }
+            markDirty(); ribbon.refreshState?.()
+            feedback.textContent = `${axis === 'row' ? '行高' : '列宽'}已按内容自动调整，修改尚未保存。`
+          }, (error: unknown) => { feedback.textContent = (error as Error).message })
           return
         }
         if (command === 'row-height-open' || command === 'col-width-open') {

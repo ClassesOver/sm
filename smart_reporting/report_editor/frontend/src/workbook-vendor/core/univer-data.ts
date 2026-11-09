@@ -144,7 +144,9 @@ export function buildWorkbookData(
     for (const row of sheet.rows) {
       if (row.height === undefined && !row.hidden) continue
       rowData[row.row - 1] = {
-        ...(row.height !== undefined ? { h: rowHeightToPixels(row.height) } : {}),
+        // file heights are explicit (Excel customHeight): ia 0, as setRowHeightsForced writes,
+        // so AutoFit Row Height (ia 1) is distinguishable from an untouched row
+        ...(row.height !== undefined ? { h: rowHeightToPixels(row.height), ia: 0 } : {}),
         ...(row.hidden ? { hd: 1 } : {}),
       }
     }

@@ -52,6 +52,8 @@ export interface ReadbackSheet {
   columnWidths?: Readonly<Record<number, number | undefined>>
   /// per-row pixel heights keyed by 0-based row index (geometry persistence)
   rowHeights?: Readonly<Record<number, number | undefined>>
+  /// rows the grid sizes automatically (Univer rowData.ia = 1), e.g. after AutoFit Row Height
+  autoHeightRows?: readonly number[]
 }
 
 export interface ReadbackWorkbook {
