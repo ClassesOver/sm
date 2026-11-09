@@ -134,6 +134,8 @@ def standard_plan_diagnostics(plan: VisualizationPlanDraft, inputs: ChartInputMa
                 if isinstance(document, dict):
                     issue['sources'].append({
                         'sourceIndex': index, 'source': document.get('source'),
+                        # 只登记已通过上方 SHA 核验的实际字节身份，不信任 JSON 自述或 entry.size。
+                        'inputFile': {'path': file.path, 'size': len(file.content), 'sha256': file.sha256},
                         'columns': document.get('columns'), 'columnMeta': document.get('columnMeta', {}),
                     })
             if result.diagnostic['code'] in {'standard_series_empty', 'standard_source_alignment_failed',

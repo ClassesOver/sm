@@ -1,5 +1,8 @@
 """标准图回退应保留可修复的结构诊断及精确来源身份。"""
 
+import hashlib
+import json
+
 import pytest
 
 from smart_reporting.reporting.tests.test_reporting_fixed_phase_workflows import (
@@ -93,12 +96,48 @@ def test_alignment_failure_exposes_specific_reason_and_source_metadata(fault, re
     assert result.diagnostic['details']['sourceIndex'] == 1
 
 
-@pytest.mark.parametrize('fault', ['malformed', 'identity'])
+@pytest.mark.parametrize('fault,reason', [
+    ('unit', 'source_unit_missing'),
+    ('window', 'source_label_sets_differ'),
+])
+def test_diagnostic_metadata_binds_same_columns_to_actual_frozen_file(fault, reason):
+    first, second = monthly(), monthly()
+    first['columnMeta']['value']['periods'] = ['2025-01', '2025-02']
+    if fault == 'unit':
+        second.pop('columnMeta')
+    else:
+        second['rows'][1][0] = '2025-03-01'
+    # 同列名来源必须靠已核验文件身份区分，不依赖 JSON 中自称的身份或登记 size。
+    second['inputFile'] = {'path': 'foreign.json', 'size': 1, 'sha256': '0' * 64}
+    plan, inputs = plan_and_inputs([first, second], standardValueFields=['本期', '同期'],
+        standardSources=[{'sourceIndex': index, 'labelField': 'period', 'valueField': 'value',
+                          'seriesName': name} for index, name in enumerate(['本期', '同期'])])
+    files = tuple(ChartInputFile(file.path, json.dumps(document, ensure_ascii=False).encode())
+                  for file, document in zip(inputs.files, (first, second), strict=True))
+    entries = tuple({**entry, 'sha256': file.sha256, 'size': 1}
+                    for entry, file in zip(inputs.entries, files, strict=True))
+    inputs = type(inputs)(files=tuple(reversed(files)), entries=entries)
+
+    issue, = standard_plan_diagnostics(plan, inputs)
+
+    assert issue['code'] == 'standard_source_alignment_failed'
+    assert issue['details'] == {'reason': reason, 'sourceIndex': 1}
+    assert issue['bindingCorrectionAllowed'] is True
+    assert [source['sourceIndex'] for source in issue['sources']] == [0, 1]
+    assert [source['inputFile'] for source in issue['sources']] == [
+        {'path': file.path, 'size': len(file.content),
+         'sha256': hashlib.sha256(file.content).hexdigest()} for file in files
+    ]
+    assert issue['sources'][0]['columnMeta'] == first['columnMeta']
+
+
+@pytest.mark.parametrize('fault', ['malformed', 'identity', 'missing', 'not_object'])
 def test_diagnostic_metadata_does_not_trust_invalid_or_changed_inputs(fault):
     plan, inputs = plan_and_inputs([monthly()])
-    file = ChartInputFile(inputs.files[0].path, b'{' if fault == 'malformed' else inputs.files[0].content)
-    entry = {**inputs.entries[0], 'sha256': file.sha256 if fault == 'malformed' else '0' * 64}
-    inputs = type(inputs)(files=(file,), entries=(entry,))
+    content = b'{' if fault == 'malformed' else b'[]' if fault == 'not_object' else inputs.files[0].content
+    file = ChartInputFile(inputs.files[0].path, content)
+    entry = {**inputs.entries[0], 'sha256': '0' * 64 if fault == 'identity' else file.sha256}
+    inputs = type(inputs)(files=() if fault == 'missing' else (file,), entries=(entry,))
     issues = standard_plan_diagnostics(plan, inputs)
     assert issues[0]['sources'] == []
 
