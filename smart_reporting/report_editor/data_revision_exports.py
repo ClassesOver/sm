@@ -91,7 +91,8 @@ def render_data_revision_formats(*, root, snapshot, tables, job, output_root):
         # 分页补图也纳入三种Office格式；文档附加页在正文后显式展示。
         images = [(ref, chart.get('title', chart_id))]
         for page_number, page in enumerate(chart.get('pages', []), 2):
-            page_path = target / 'pages' / f'chart-{n}-page-{page_number}.png'
+            suffix = Path(page['image']['path']).suffix.lower()
+            page_path = target / 'pages' / f'chart-{n}-page-{page_number}{suffix}'
             _checked_path(root, page_path)
             page_path.parent.mkdir(parents=True, exist_ok=True)
             page_path.write_bytes(_read(root, page['image']))

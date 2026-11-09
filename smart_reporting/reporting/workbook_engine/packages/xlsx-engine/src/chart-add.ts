@@ -6,7 +6,7 @@
 
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { createBufferEntrySource, assemblePackage, type EntrySource, type MutationPlan } from './zip'
-import { ensureRelationshipNamespace, escapeXmlAttribute, escapeXmlText } from './xml'
+import { ensureRelationshipNamespace, escapeXmlAttribute, escapeXmlText, readXmlAttribute } from './xml'
 
 export class ChartAddError extends Error {}
 
@@ -336,17 +336,21 @@ async function appendAnchor(
     (root[0].includes('xmlns:a=')
       ? ''
       : ' xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"')
-  const marker = (row: number, column: number, rowOffset: number, columnOffset: number) =>
-    `<xdr:col>${column}</xdr:col><xdr:colOff>${columnOffset}</xdr:colOff>` +
-    `<xdr:row>${row}</xdr:row><xdr:rowOff>${rowOffset}</xdr:rowOff>`
   const element =
     `<xdr:twoCellAnchor${namespaceFix}>` +
-    `<xdr:from>${marker(anchor.fromRow, anchor.fromColumn, anchor.fromRowOffset, anchor.fromColumnOffset)}</xdr:from>` +
-    `<xdr:to>${marker(anchor.toRow, anchor.toColumn, anchor.toRowOffset, anchor.toColumnOffset)}</xdr:to>` +
+    anchorMarkersXml(anchor) +
     buildInner(nextShapeId(xml)) +
     '<xdr:clientData/>' +
     '</xdr:twoCellAnchor>'
   overlay.set(drawingPath, xml.slice(0, closeAt) + element + xml.slice(closeAt))
+}
+
+function anchorMarkersXml(anchor: DrawingAnchor): string {
+  const marker = (row: number, column: number, rowOffset: number, columnOffset: number) =>
+    `<xdr:col>${column}</xdr:col><xdr:colOff>${columnOffset}</xdr:colOff>` +
+    `<xdr:row>${row}</xdr:row><xdr:rowOff>${rowOffset}</xdr:rowOff>`
+  return `<xdr:from>${marker(anchor.fromRow, anchor.fromColumn, anchor.fromRowOffset, anchor.fromColumnOffset)}</xdr:from>` +
+    `<xdr:to>${marker(anchor.toRow, anchor.toColumn, anchor.toRowOffset, anchor.toColumnOffset)}</xdr:to>`
 }
 
 function chartFrameXml(shapeId: number, chartRelId: string): string {
@@ -852,7 +856,7 @@ export interface StaticImageAddition {
   readonly imageId: string
   readonly bytes: Uint8Array
   readonly contentType: 'image/png' | 'image/jpeg'
-  /** A trusted existing media part replaces pixels without changing the anchor. */
+  /** A trusted existing media part replaces pixels and refits the anchor. */
   readonly replaceMediaPart?: string | undefined
 }
 
@@ -874,6 +878,22 @@ export async function applyStaticImage(
     if (!/^xl\/media\/image\d+\.(png|jpeg)$/.test(mediaPart) || !await source.has(mediaPart)) {
       throw new Error('workbook_image_replacement_invalid')
     }
+    const drawing = await ensureSheetDrawing(source, overlay, addedEntries, worksheetPath, touchedEntries)
+    const rels = await readPart(source, overlay, relsPathFor(drawing.path))
+    const relationship = [...rels.matchAll(/<Relationship\b[^>]*\/?>(?:<\/Relationship>)?/g)]
+      .find(match => resolveRelTarget(drawing.path, readXmlAttribute(match[0], 'Target') ?? '') === mediaPart)
+    const relId = relationship && readXmlAttribute(relationship[0], 'Id')
+    let replaced = 0
+    const xml = (await readPart(source, overlay, drawing.path)).replace(/<xdr:twoCellAnchor\b[^>]*>[\s\S]*?<\/xdr:twoCellAnchor>/g, anchor => {
+      const name = anchor.match(/<xdr:cNvPr\b[^>]*>/)?.[0] ?? ''
+      const blip = anchor.match(/<a:blip\b[^>]*>/)?.[0] ?? ''
+      if (!relId || readXmlAttribute(name, 'name') !== addition.imageId || readXmlAttribute(blip, 'r:embed') !== relId) return anchor
+      replaced += 1
+      return anchor.replace(/<xdr:from>[\s\S]*?<\/xdr:to>/, anchorMarkersXml(addition.anchor))
+    })
+    if (replaced !== 1) throw new Error('workbook_image_replacement_anchor_missing')
+    overlay.set(drawing.path, xml)
+    touchedEntries.add(drawing.path)
   } else {
     const drawing = await ensureSheetDrawing(source, overlay, addedEntries, worksheetPath, touchedEntries)
     const relsPath = relsPathFor(drawing.path)

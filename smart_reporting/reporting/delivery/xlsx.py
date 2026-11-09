@@ -91,12 +91,13 @@ def _verified_images(images: tuple[dict[str, Any], ...] | list[dict[str, Any]]) 
             with Image.open(BytesIO(content)) as bitmap:
                 if bitmap.format not in {'PNG', 'JPEG'}:
                     raise ValueError('workbook_image_format_invalid')
+                pixel_width, pixel_height = bitmap.size
                 bitmap.verify()
             for source in image.get('sourceFiles', ()):
                 source_bytes = Path(source['path']).read_bytes()
                 if len(source_bytes) != source['size'] or hashlib.sha256(source_bytes).hexdigest() != source['sha256']:
                     raise ValueError('workbook_image_source_identity_changed')
-            accepted.append(image)
+            accepted.append({**image, 'pixelWidth': pixel_width, 'pixelHeight': pixel_height})
         except (OSError, ValueError, KeyError, TypeError) as error:
             issues.append({'code': 'workbook_image_rejected', 'imageId': image.get('imageId', ''), 'message': str(error)})
     return accepted, issues

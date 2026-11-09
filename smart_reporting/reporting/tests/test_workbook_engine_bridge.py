@@ -4,6 +4,7 @@ import hashlib
 from io import BytesIO
 from zipfile import ZipFile
 
+import pytest
 from openpyxl import load_workbook
 
 
@@ -135,11 +136,11 @@ def test_workbook_bridge_reuses_sort_structure_rules_table_pivot_and_page_setup(
     assert book['透视']['B5'].value == 10
 
 
-def _static_image(tmp_path, *, kind='PNG', color='navy', image_id='revenue'):
+def _static_image(tmp_path, *, kind='PNG', color='navy', image_id='revenue', size=(120, 80)):
     from PIL import Image
 
     path = tmp_path / f'{image_id}.{kind.lower()}'
-    Image.new('RGB', (120, 80), color=color).save(path, format=kind)
+    Image.new('RGB', size, color=color).save(path, format=kind)
     content = path.read_bytes()
     return {
         'imageId': image_id, 'path': str(path), 'size': len(content),
@@ -148,6 +149,67 @@ def _static_image(tmp_path, *, kind='PNG', color='navy', image_id='revenue'):
         'chartRevision': 'revision-1',
         'sourceRanges': [{'sheetName': '汇总', 'range': 'A1:B2'}],
     }
+
+
+def _assert_fitted_image(anchor, size):
+    # D2:F5: columns 145/hidden/75 px; rows 32/hidden/24/40 px.
+    # These literal dimensions come from the fixture, independently of the bridge.
+    def point(marker):
+        return (
+            sum([145, 0, 75][:marker.col - 3]) + marker.colOff / 9525,
+            sum([32, 0, 24, 40][:marker.row - 1]) + marker.rowOff / 9525,
+        )
+
+    assert 3 <= anchor._from.col <= anchor.to.col <= 6
+    assert 1 <= anchor._from.row <= anchor.to.row <= 5
+    left, top = point(anchor._from)
+    right, bottom = point(anchor.to)
+    assert 0 <= left < right <= 220.001
+    assert 0 <= top < bottom <= 96.001
+    assert (right - left) / (bottom - top) == pytest.approx(size[0] / size[1], abs=1e-5)
+    assert left + right == pytest.approx(220, abs=.001)
+    assert top + bottom == pytest.approx(96, abs=.001)
+    assert max((right - left) / 220, (bottom - top) / 96) == pytest.approx(1, abs=1e-5)
+
+
+@pytest.mark.parametrize('kind', ['PNG', 'JPEG'])
+@pytest.mark.parametrize('size', [(120, 40), (80, 80), (40, 120)])
+def test_workbook_images_fit_actual_cell_geometry_and_refit_on_replacement(tmp_path, kind, size):
+    from openpyxl import Workbook
+
+    from smart_reporting.reporting.delivery.xlsx import inspect_workbook, patch_workbook
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = '汇总'
+    sheet['A1'] = '原始数据'
+    sheet['B2'] = 180
+    sheet.sheet_format.defaultColWidth = 10
+    sheet.sheet_format.defaultRowHeight = 18
+    sheet.column_dimensions['D'].width = 20
+    sheet.column_dimensions['E'].hidden = True
+    sheet.row_dimensions[2].height = 24
+    sheet.row_dimensions[3].hidden = True
+    sheet.row_dimensions[5].height = 30
+    content = BytesIO()
+    book.save(content)
+    image = {**_static_image(tmp_path, kind=kind, size=size), 'range': 'D2:F5'}
+    original = patch_workbook(content.getvalue(), [{'kind': 'applyStaticImages', 'images': [image]}])
+    embedded = load_workbook(BytesIO(original))['汇总']._images
+    assert len(embedded) == 1, inspect_workbook(original)['sourceMapping']
+    _assert_fitted_image(embedded[0].anchor, size)
+    # A different aspect ratio must update the anchor as well as the media bytes.
+    changed_size = (size[1], size[0] * 2)
+    replacement = {**_static_image(tmp_path, kind=kind, size=changed_size, color='teal'), 'range': 'D2:F5'}
+    changed = patch_workbook(original, [{'kind': 'applyStaticImages', 'images': [replacement]}])
+    changed_sheet = load_workbook(BytesIO(changed))['汇总']
+    assert changed_sheet['B2'].value == 180
+    assert len(changed_sheet._images) == 1
+    _assert_fitted_image(changed_sheet._images[0].anchor, changed_size)
+    with ZipFile(BytesIO(changed)) as archive:
+        from pathlib import Path
+        media = inspect_workbook(changed)['images'][0]['mediaPart']
+        assert archive.read(media) == Path(replacement['path']).read_bytes()
 
 
 def test_workbook_image_mapping_keeps_relative_identity_without_host_read_paths(tmp_path):

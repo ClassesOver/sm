@@ -1059,7 +1059,10 @@ def apply(
         reports = payload.setdefault("reportDataRevisions", {})
         if not isinstance(reports, dict):
             raise ReportingStateError("report_state_invalid", "数据修订状态损坏。")
-        history = reports.setdefault(record.report_id, {"latestSnapshotId": None, "revisions": {}})
+        report = reports.setdefault(record.report_id, {})
+        if not isinstance(report, dict):
+            raise ReportingStateError("report_state_invalid", "数据修订状态损坏。")
+        history = report.setdefault(str(record.base_revision), {"latestSnapshotId": None, "revisions": {}})
         if not isinstance(history, dict) or not isinstance(history.get("revisions"), dict):
             raise ReportingStateError("report_state_invalid", "数据修订历史损坏。")
         if history.get("latestSnapshotId") != expected:
@@ -1077,7 +1080,7 @@ def apply(
             context = ReportEditorContext.model_validate(
                 payload.get("reportEditorContexts", {}).get(str(record.base_revision))
             )
-            history = payload.get("reportDataRevisions", {}).get(record.report_id, {})
+            history = payload.get("reportDataRevisions", {}).get(record.report_id, {}).get(str(record.base_revision), {})
             source = ReportDataRevision.model_validate(history.get("revisions", {}).get(record.snapshot_id))
         except (ValueError, TypeError, AttributeError) as error:
             raise ReportingStateError("report_data_export_invalid", "导出记录或已登记快照无效。") from error

@@ -152,7 +152,7 @@ class ReportDataRevisionService:
 
     async def _history(self, context):
         state = await self.editor.state_repository.get(context.workflow_run_id)
-        return state.payload.get('reportDataRevisions', {}).get(context.report_id, {})
+        return state.payload.get('reportDataRevisions', {}).get(context.report_id, {}).get(str(context.revision), {})
 
     async def read(self, expected, snapshot_id=None):
         context = await self.editor._restore(expected)
@@ -302,7 +302,8 @@ class ReportDataRevisionService:
             raise ReportingError('report_host_workspace_missing', '图表工作区尚未恢复。')
         workspace = self.editor.workspace.workspace(thread_id)
         root = PurePosixPath(context.markdown_path).parent / '.data-revisions' / snapshot['snapshotId'] / f'chart-{position}'
-        script_path, output_path = str(root / 'draw.py'), str(root / 'chart.png')
+        suffix = PurePosixPath(chart['originalRelativePath']).suffix.lower()
+        script_path, output_path = str(root / 'draw.py'), str(root / f'chart{suffix}')
         plot_files = []
         for table_id in chart['tableIds']:
             ref = FileIdentity.model_validate(snapshot['tables'][table_id]['file'])

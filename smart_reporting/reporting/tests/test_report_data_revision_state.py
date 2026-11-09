@@ -17,13 +17,13 @@ def state_with_report():
     return state
 
 
-def commit(state, snapshot='snapshot-1', parent=None, *, report='report-1', digest='a' * 64):
+def commit(state, snapshot='snapshot-1', parent=None, *, report='report-1', digest='a' * 64, base_revision=1):
     return ReportingStateReducer.apply(state, {
         'name': 'record_report_data_revision', 'commandId': f'{snapshot}-{digest}',
         'payload': {
             'expectedSnapshotId': parent,
             'revision': {
-                'reportId': report, 'baseRevision': 1, 'snapshotId': snapshot,
+                'reportId': report, 'baseRevision': base_revision, 'snapshotId': snapshot,
                 'parentSnapshotId': parent,
                 'manifest': {'path': f'reports/data/{snapshot}/manifest.json', 'size': 100, 'sha256': digest},
             },
@@ -34,9 +34,9 @@ def commit(state, snapshot='snapshot-1', parent=None, *, report='report-1', dige
 def test_data_revision_preserves_parent_and_immutable_history():
     baseline = state_with_report()
     first = commit(baseline)
-    frozen = deepcopy(first.payload['reportDataRevisions']['report-1']['revisions']['snapshot-1'])
+    frozen = deepcopy(first.payload['reportDataRevisions']['report-1']['1']['revisions']['snapshot-1'])
     second = commit(first, 'snapshot-2', 'snapshot-1')
-    history = second.payload['reportDataRevisions']['report-1']
+    history = second.payload['reportDataRevisions']['report-1']['1']
     assert history['latestSnapshotId'] == 'snapshot-2'
     assert history['revisions']['snapshot-1'] == frozen
     assert history['revisions']['snapshot-2']['parentSnapshotId'] == 'snapshot-1'
@@ -51,6 +51,28 @@ def test_data_revision_rejects_stale_parent_even_after_state_version_retry():
         commit(second, 'snapshot-3', 'snapshot-1')
     assert caught.value.code == 'report_data_revision_conflict'
     assert second.model_dump(mode='json') == before
+
+
+def test_editor_revisions_have_independent_snapshot_cas_and_export_history():
+    state = state_with_report()
+    state.payload['reportEditorContexts']['2'] = {
+        **state.payload['reportEditorContexts']['1'], 'revision': 2, 'markdownPath': 'reports/revision-2/report.md',
+    }
+    first = record_export(commit(state))
+    second = commit(first, 'revision-2-baseline', base_revision=2)
+    third = commit(second, 'snapshot-2', 'snapshot-1')
+    fourth = record_export(third, export_id='revision-2-export', baseRevision=2,
+        snapshotId='revision-2-baseline', revision=4)
+    histories = fourth.payload['reportDataRevisions']['report-1']
+    assert histories['1']['latestSnapshotId'] == 'snapshot-2'
+    assert histories['2']['latestSnapshotId'] == 'revision-2-baseline'
+    assert set(histories['1']['exports']) == {'export-1'}
+    assert set(histories['2']['exports']) == {'revision-2-export'}
+    assert histories['1']['revisions']['snapshot-1'] == first.payload['reportDataRevisions']['report-1']['1']['revisions']['snapshot-1']
+    with pytest.raises(ReportingStateError):
+        commit(fourth, 'wrong-parent', 'snapshot-2', base_revision=2)
+    with pytest.raises(ReportingStateError):
+        record_export(fourth, export_id='wrong-snapshot', baseRevision=2)
 
 
 @pytest.mark.parametrize('fault', ['foreign_report', 'overwrite_id', 'bad_identity', 'bad_parent'])
@@ -100,11 +122,11 @@ def test_data_export_records_reexports_without_changing_snapshot_history():
     state = commit(state_with_report())
     first = record_export(state)
     second = record_export(first, 'export-2', revision=3)
-    history = second.payload['reportDataRevisions']['report-1']
-    assert history['revisions'] == state.payload['reportDataRevisions']['report-1']['revisions']
+    history = second.payload['reportDataRevisions']['report-1']['1']
+    assert history['revisions'] == state.payload['reportDataRevisions']['report-1']['1']['revisions']
     assert history['latestSnapshotId'] == 'snapshot-1'
     assert set(history['exports']) == {'export-1', 'export-2'}
-    assert history['exports']['export-1'] == first.payload['reportDataRevisions']['report-1']['exports']['export-1']
+    assert history['exports']['export-1'] == first.payload['reportDataRevisions']['report-1']['1']['exports']['export-1']
     assert history['exports']['export-2']['snapshotId'] == 'snapshot-1'
 
 

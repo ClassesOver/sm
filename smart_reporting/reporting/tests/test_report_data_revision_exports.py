@@ -174,7 +174,8 @@ def test_real_exporters_embed_the_same_chinese_chart_and_workbook_cells(tmp_path
 
 
 @pytest.mark.integration
-async def test_native_paginated_data_revision_redraws_and_exports_current_images(workspace):  # noqa: F811
+@pytest.mark.parametrize('image_suffix', ['.png', '.jpg', '.jpeg'])
+async def test_native_paginated_data_revision_redraws_and_exports_current_images(workspace, image_suffix):  # noqa: F811
     from agno.tools.code import CodeMode
     from openpyxl import load_workbook
     from PIL import Image
@@ -195,7 +196,7 @@ async def test_native_paginated_data_revision_redraws_and_exports_current_images
         ReportingCodeGenerationRunner,
     )
 
-    service, context, repository, files, editor = service_case(paginated=True)
+    service, context, repository, files, editor = service_case(paginated=True, image_suffix=image_suffix)
     thread = workspace.identity.workspace_key
     context.scope.update(threadId=thread, database='test', companyId='company-1', sessionId='session-1')
     fixture = Path(__file__).parent / 'fixtures' / 'data_revision'
@@ -204,8 +205,8 @@ async def test_native_paginated_data_revision_redraws_and_exports_current_images
         _editorExportSettings={'cover': False, 'toc': False, 'sources': False})
     repository.state = repository.state.model_copy(update={'thread_id': thread})
     repository.state.payload['reportEditorContexts']['1'] = context.model_dump(mode='json', by_alias=True)
-    markdown = (fixture / 'report.md').read_text().replace('(revenue.png)', '(chart_a.png)')
-    markdown += '\n![未修改图](chart_c.png)\n'
+    markdown = (fixture / 'report.md').read_text().replace('(revenue.png)', f'(chart_a{image_suffix})')
+    markdown += f'\n![未修改图](chart_c{image_suffix})\n'
     files[context.markdown_path] = markdown.encode()
     load = editor.trace.load_manifest_and_index
 
@@ -251,6 +252,7 @@ async def test_native_paginated_data_revision_redraws_and_exports_current_images
         ]})
         chart = revised['charts']['chart_a']
         images = [chart['image'], chart['pages'][0]['image']]
+        assert all(Path(ref['path']).suffix == image_suffix for ref in images)
         assert set(reviews) == {(ref['path'], ref['sha256']) for ref in images}
         assert len(chart['standardRenderProof']) == 2
         assert chart['image']['sha256'] != baseline['charts']['chart_a']['image']['sha256']
@@ -261,10 +263,17 @@ async def test_native_paginated_data_revision_redraws_and_exports_current_images
         assert exported['exportRegistered']
         copies = {item.artifact: b''.join(storage.chunks[item.artifact_key]) for item in storage.records.values()}
         assert set(copies) == {'pdf', 'word', 'pptx', 'xlsx'}, exported['validation']
+        assert not any(issue['code'] == 'report_data_document_validation_failed'
+            for issue in exported['validation']['issues'])
         raw_pages = [(workspace.identity.root / image['path']).read_bytes() for image in images]
-        pdf_pixels = [image.image.convert('RGB').tobytes()
-            for page in PdfReader(BytesIO(copies['pdf'])).pages for image in page.images]
-        assert all(Image.open(BytesIO(raw)).convert('RGB').tobytes() in pdf_pixels for raw in raw_pages)
+        pdf_images = [image for page in PdfReader(BytesIO(copies['pdf'])).pages for image in page.images]
+        if image_suffix == '.png':
+            pdf_pixels = [image.image.convert('RGB').tobytes() for image in pdf_images]
+            assert all(Image.open(BytesIO(raw)).convert('RGB').tobytes() in pdf_pixels for raw in raw_pages)
+        else:
+            # pypdf's extracted JPEG is decoded again; verify the original DCT stream.
+            embedded = [image.indirect_reference.get_object().get_data() for image in pdf_images]
+            assert set(raw_pages) <= set(embedded)
         for label, prefix in [('word', 'word/media/'), ('pptx', 'ppt/media/'), ('xlsx', 'xl/media/')]:
             with ZipFile(BytesIO(copies[label])) as archive:
                 media = {archive.read(name) for name in archive.namelist() if name.startswith(prefix)}

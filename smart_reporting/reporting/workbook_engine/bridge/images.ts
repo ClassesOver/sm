@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { basename, isAbsolute } from 'node:path'
 import JSZip from 'jszip'
 import { z } from 'zod'
-import { applyStaticImage, parseRange, readWorkbook } from '@sheets-web/xlsx-engine'
+import { applyStaticImage, parseRange, readWorkbook, readXmlAttribute, type SheetModel } from '@sheets-web/xlsx-engine'
 
 const relativeIdentityPath = z.string().min(1).refine(value => !isAbsolute(value) && !value.includes('\\') && !value.split('/').includes('..'), 'workbook_identity_path_invalid')
 const identity = z.object({ path: z.string().min(1), size: z.number().int().positive(), sha256: z.string().regex(/^[a-f0-9]{64}$/), identityPath: relativeIdentityPath.optional() })
@@ -13,6 +13,7 @@ const imageSchema = identity.extend({
   imageId: z.string().min(1), sheetName: z.string().min(1), range: z.string().min(1),
   chartId: z.string().min(1), snapshotId: z.string().min(1), chartRevision: z.string().min(1),
   sourceRanges: z.array(sourceRange).min(1), sourceFiles: z.array(identity).optional(),
+  pixelWidth: z.number().int().positive(), pixelHeight: z.number().int().positive(),
 }).strict()
 const MAPPING = 'smart-reporting/source-mapping.json'
 
@@ -28,6 +29,41 @@ async function verifiedBytes(file: z.infer<typeof identity>): Promise<Uint8Array
     throw new Error('workbook_image_identity_changed')
   }
   return bytes
+}
+
+function fittedAnchor(sheet: SheetModel, xml: string, image: z.infer<typeof imageSchema>) {
+  const bounds = parseRange(image.range)
+  const defaults = xml.match(/<sheetFormatPr\b([^>]*)/)?.[1] ?? ''
+  const defaultWidth = Number(readXmlAttribute(defaults, 'defaultColWidth') ?? 8.43)
+  const defaultHeight = Number(readXmlAttribute(defaults, 'defaultRowHeight') ?? 15)
+  const rows = new Map(sheet.rows.map(row => [row.row, row]))
+  // Calibri 11 geometry at 96 dpi; offsets are stored in EMUs (9525 per pixel).
+  const widths = Array.from({ length: bounds.endColumn - bounds.startColumn + 1 }, (_, index) => {
+    const column = sheet.columns.find(col => col.start <= bounds.startColumn + index + 1 && col.end >= bounds.startColumn + index + 1)
+    const width = column?.width ?? defaultWidth
+    return column?.hidden ? 0 : Math.round(width < 1 ? width * 12 : width * 7 + 5) * 9525
+  })
+  const heights = Array.from({ length: bounds.endRow - bounds.startRow + 1 }, (_, index) => {
+    const row = rows.get(bounds.startRow + index + 1)
+    return row?.hidden ? 0 : Math.round((row?.height ?? defaultHeight) * 12700)
+  })
+  const width = widths.reduce((sum, value) => sum + value, 0)
+  const height = heights.reduce((sum, value) => sum + value, 0)
+  if (!(width > 0 && height > 0)) throw new Error('workbook_image_range_not_visible')
+  const scale = Math.min(width / image.pixelWidth, height / image.pixelHeight)
+  const fittedWidth = image.pixelWidth * scale, fittedHeight = image.pixelHeight * scale
+  function marker(sizes: number[], position: number, start: number) {
+    let index = 0
+    let offset = Math.round(position)
+    while (index < sizes.length && offset >= sizes[index]!) offset -= sizes[index++]!
+    return { index: start + index, offset }
+  }
+  const left = marker(widths, (width - fittedWidth) / 2, bounds.startColumn)
+  const right = marker(widths, (width + fittedWidth) / 2, bounds.startColumn)
+  const top = marker(heights, (height - fittedHeight) / 2, bounds.startRow)
+  const bottom = marker(heights, (height + fittedHeight) / 2, bounds.startRow)
+  return { fromRow: top.index, fromColumn: left.index, fromRowOffset: top.offset, fromColumnOffset: left.offset,
+    toRow: bottom.index, toColumn: right.index, toRowOffset: bottom.offset, toColumnOffset: right.offset }
 }
 
 export async function workbookSourceMapping(bytes: Uint8Array): Promise<any> {
@@ -49,6 +85,7 @@ export async function applyStaticImages(
   const stored: any[] = [...(mapping.images ?? [])]
   const issues: Record<string, any>[] = [...rejectedIssues]
   const model = await readWorkbook(bytes)
+  const geometry = await JSZip.loadAsync(bytes)
   const sheetNames = new Set(model.sheets.map(sheet => sheet.name))
   const seen = new Set<string>()
   for (const raw of images) {
@@ -60,7 +97,6 @@ export async function applyStaticImages(
       if (sources.chartRevisions?.[image.chartId] !== undefined && sources.chartRevisions[image.chartId] !== image.chartRevision) {
         throw new Error('workbook_image_chart_revision_mismatch')
       }
-      const bounds = parseRange(image.range)
       for (const range of [{ sheetName: image.sheetName, range: image.range }, ...image.sourceRanges]) {
         const area = parseRange(range.range)
         if (!sheetNames.has(range.sheetName) || area.endRow > 1048575 || area.endColumn > 16383) throw new Error('workbook_image_range_invalid')
@@ -73,11 +109,11 @@ export async function applyStaticImages(
       const png = Buffer.from(content.subarray(0, 8)).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
       const jpeg = content[0] === 255 && content[1] === 216 && content[2] === 255
       if (!png && !jpeg) throw new Error('workbook_image_format_invalid')
+      const sheet = model.sheets.find(sheet => sheet.name === image.sheetName)!
       const result = await applyStaticImage(bytes, {
         worksheetSheetName: image.sheetName, imageId: image.imageId, bytes: content,
         contentType: png ? 'image/png' : 'image/jpeg', replaceMediaPart: previous?.mediaPart,
-        anchor: { fromRow: bounds.startRow, fromColumn: bounds.startColumn, fromRowOffset: 0, fromColumnOffset: 0,
-          toRow: bounds.endRow + 1, toColumn: bounds.endColumn + 1, toRowOffset: 0, toColumnOffset: 0 },
+        anchor: fittedAnchor(sheet, await geometry.file(sheet.path)!.async('string'), image),
       })
       bytes = result.bytes
       const { identityPath: _identityPath, sourceFiles: _sourceFiles, ...metadata } = image

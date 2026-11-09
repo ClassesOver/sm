@@ -21,7 +21,7 @@ from smart_reporting.workspace import WorkspacePathConflict
 pytestmark = [pytest.mark.anyio, pytest.mark.parametrize('anyio_backend', ['asyncio'])]
 
 
-def service_case(*, paginated=False):
+def service_case(*, paginated=False, image_suffix='.png'):
     from smart_reporting.report_editor.data_revisions import ReportDataRevisionService
     snapshot, contents = case()
     state = state_with_report()
@@ -31,6 +31,15 @@ def service_case(*, paginated=False):
     # 宿主只接受已登记图片；此层冻结不重新签发视觉通过。
     from smart_reporting.reporting.tests.test_report_editor_chart_ai import _png_bytes
     png = _png_bytes()
+    if image_suffix != '.png':
+        from io import BytesIO
+
+        from PIL import Image
+
+        buffer = BytesIO()
+        Image.open(BytesIO(png)).convert('RGB').save(buffer, format='JPEG')
+        png = buffer.getvalue()
+        markdown = markdown.replace(b'.png)', f'{image_suffix})'.encode())
 
     def ref(path, raw, resource=None):
         value = SimpleNamespace(path=path, size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
@@ -44,7 +53,7 @@ def service_case(*, paginated=False):
     for table_id, raw in contents.items():
         ref(snapshot['tables'][table_id]['file']['path'], raw, table_id)
     for chart_id, table_id in [('chart_a', 'table_a'), ('chart_b', 'table_b'), ('chart_c', 'table_c')]:
-        image = ref(f'reports/{chart_id}.png', png, f'image_{chart_id}')
+        image = ref(f'reports/{chart_id}{image_suffix}', png, f'image_{chart_id}')
         charts.append(SimpleNamespace(chart_id=chart_id, **{key: getattr(image, key) for key in ('path', 'size', 'sha256')}))
         proof = None
         if paginated and chart_id == 'chart_a':
@@ -100,7 +109,7 @@ async def test_freeze_registers_baseline_and_reads_only_registered_historical_sn
     baseline = await service.freeze(context)
     assert baseline['status'] == 'ready'
     assert len(baseline['tables']) == 3 and len(baseline['charts']) == 3
-    assert repository.state.payload['reportDataRevisions']['report-1']['latestSnapshotId'] == baseline['snapshotId']
+    assert repository.state.payload['reportDataRevisions']['report-1']['1']['latestSnapshotId'] == baseline['snapshotId']
     for table in baseline['tables'].values():
         assert table['file']['path'] != table['originalFile']['path']
         assert files[table['file']['path']] == original[table['originalFile']['path']]
@@ -118,7 +127,7 @@ async def test_prepare_writes_new_inputs_without_activating_or_overwriting_paren
         {'tableId': 'table_a', 'row': 1, 'column': 'value', 'expectedValue': 150, 'value': 180},
     ]})
     assert candidate['invalidatedChartIds'] == ['chart_a', 'chart_b']
-    assert repository.state.payload['reportDataRevisions']['report-1']['latestSnapshotId'] == baseline['snapshotId']
+    assert repository.state.payload['reportDataRevisions']['report-1']['1']['latestSnapshotId'] == baseline['snapshotId']
     assert await service.read(context, baseline['snapshotId']) == before[0]
     assert all(files[key] == raw for key, raw in before[1].items())
     for key in ['table_a', 'table_b']:
@@ -139,7 +148,7 @@ async def test_frozen_manifest_or_table_tampering_never_activates_candidate():
             {'tableId': 'table_a', 'row': 1, 'column': 'value', 'expectedValue': 150, 'value': 180},
         ]})
     assert repository.state == before
-    record = before.payload['reportDataRevisions']['report-1']['revisions'][baseline['snapshotId']]
+    record = before.payload['reportDataRevisions']['report-1']['1']['revisions'][baseline['snapshotId']]
     files[record['manifest']['path']] = canonical_json_bytes({'snapshotId': 'forged'})
     with pytest.raises(ReportingError):
         await service.read(context, baseline['snapshotId'])
@@ -207,7 +216,7 @@ async def test_revise_redraws_only_affected_charts_and_commits_fresh_receipts():
         assert chart['visualReceipts'][0]['sha256'] == chart['image']['sha256']
     assert (await service.read(context)) == revised
     assert (await service.read(context, baseline['snapshotId'])) == baseline
-    assert repository.state.payload['reportDataRevisions']['report-1']['latestSnapshotId'] == revised['snapshotId']
+    assert repository.state.payload['reportDataRevisions']['report-1']['1']['latestSnapshotId'] == revised['snapshotId']
 
 
 async def test_residual_visual_problems_are_visible_soft_warnings():
@@ -250,18 +259,39 @@ async def test_revise_expands_verified_standard_pages_and_requires_current_recei
     assert await service.read(context, baseline['snapshotId']) == baseline
 
 
-async def test_new_editor_revision_cannot_silently_reuse_old_revision_snapshot():
-    service, context, _repository, _files, editor = service_case()
-    await service.freeze(context)
-    newer = context.model_copy(update={'revision': 2})
+async def test_new_editor_revision_freezes_independently_and_preserves_old_snapshot():
+    service, context, repository, files, editor = service_case()
+    baseline = await service.freeze(context)
+    newer = context.model_copy(update={'revision': 2, 'markdown_path': 'reports/revision-2/report.md'})
+    files[newer.markdown_path] = files[context.markdown_path]
+    repository.state.payload['reportEditorContexts']['2'] = newer.model_dump(mode='json', by_alias=True)
+    load = editor.trace.load_manifest_and_index
 
     async def restore(expected):
-        return newer
+        return expected
+
+    async def load_new(expected):
+        manifest, index = await load(expected)
+        manifest.markdown = SimpleNamespace(path=newer.markdown_path,
+            size=len(files[newer.markdown_path]), sha256=hashlib.sha256(files[newer.markdown_path]).hexdigest())
+        # 每个版本的登记图片位于其Markdown目录内。
+        for chart, trace in zip(manifest.charts, index.chart_traces, strict=True):
+            ref = next(ref for ref in index.files if ref.resource_id == trace.image_file_resource_id)
+            path = f'reports/revision-2/{chart.chart_id}.png'
+            files[path] = files[ref.path]
+            chart.path = ref.path = path
+        return manifest, index
 
     editor._restore = restore
+    editor.trace.load_manifest_and_index = load_new
+    frozen = await service.freeze(newer)
+    assert frozen['baseRevision'] == 2 and frozen['snapshotId'] != baseline['snapshotId']
+    assert await service.read(newer) == frozen
+    assert await service.read(context) == baseline
+    assert await service.read(context, baseline['snapshotId']) == baseline
     with pytest.raises(ReportingError) as caught:
-        await service.freeze(newer)
-    assert caught.value.code == 'report_data_base_revision_conflict'
+        await service.read(newer, baseline['snapshotId'])
+    assert caught.value.code == 'report_data_revision_unknown'
 
 
 @pytest.mark.parametrize('fault', ['draw', 'old_review'])
@@ -274,7 +304,7 @@ async def test_redraw_failure_or_old_review_preserves_latest_and_original_files(
         await service.revise(context, {'expectedSnapshotId': baseline['snapshotId'], 'edits': [
             {'tableId': 'table_a', 'row': 1, 'column': 'value', 'expectedValue': 150, 'value': 180},
         ]})
-    assert repository.state.payload['reportDataRevisions']['report-1']['latestSnapshotId'] == baseline['snapshotId']
+    assert repository.state.payload['reportDataRevisions']['report-1']['1']['latestSnapshotId'] == baseline['snapshotId']
     assert all(files[path] == raw for path, raw in originals.items())
 
 
@@ -299,6 +329,6 @@ async def test_concurrent_revisions_have_one_cas_winner_without_overwriting_hist
     assert sum(isinstance(item, Exception) for item in results) == 1
     conflict = next(item for item in results if isinstance(item, Exception))
     assert isinstance(conflict, ReportingError) and conflict.code == 'report_data_revision_conflict'
-    history = repository.state.payload['reportDataRevisions']['report-1']
+    history = repository.state.payload['reportDataRevisions']['report-1']['1']
     assert len(history['revisions']) == 2
     assert (await service.read(context, baseline['snapshotId'])) == baseline
