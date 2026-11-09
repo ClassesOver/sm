@@ -23,6 +23,7 @@ import { setResolverFontTable } from './vendor/genoffice-docs/apps/docs/src/rend
 import { setStaticAsciiResolver } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/protected-render'
 import './vendor/genoffice-docs/scoped.css'
 import './docx.css'
+import './office-theme.css'
 
 interface WordModel { sourceSha256: string; blocks: (Omit<DocxAnchor, 'docxIndex'> & { type: string })[]; sections: { sectionId: string; expectedSectionSha256: string; settings: ReturnType<typeof readSectionSettings>; firstBlockIndex?: number; lastBlockIndex?: number }[]; headersFooters?: DocxHeadersFootersModel }
 const sha256 = (bytes: ArrayBuffer | Uint8Array<ArrayBuffer>) => bytesSha256(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))

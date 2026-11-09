@@ -1,0 +1,269 @@
+/*
+ * 原生 Office 编辑器统一视觉语言（Word / Excel / PowerPoint / PDF），以 Markdown 报告编辑器为基准。
+ *
+ * 基准来源（style.css）：
+ *   - 命令按钮：`.report-actions button`（透明底、ink-2 文字、hover #f2f6f9 + border-strong、
+ *     按下/选中 primary-soft + border-strong、禁用 0.55 透明度、焦点 2px #8fc9df）
+ *   - 分组分隔：`.toolbar-group + .toolbar-group::before`（1px #dfe8ef）
+ *   - 导航与选中：`.outline-link`（hover / 当前项 primary-soft + primary）
+ *   - 主操作：`.report-actions button[data-action="save"]`（primary 实底，hover accent）
+ *   - 画布与纸面：页面底色 --color-bg，纸面 `.editor-surface` 边框与阴影
+ * 四种格式只保留结构差异，颜色、尺寸、交互状态一律引用 --office-*；不得再引入格式专属强调色
+ * （例如旧 PDF/PPTX 青绿色）。这些 token 只作用于编辑器外壳，不改源文档内容的字体与颜色。
+ */
+:root {
+  --office-accent: var(--color-primary);
+  --office-accent-hover: var(--color-accent);
+  --office-accent-soft: var(--color-primary-soft);
+  --office-ink: var(--color-ink);
+  --office-ink-2: var(--color-ink-2);
+  --office-muted: var(--color-text-muted);
+  --office-chrome: var(--color-surface);
+  --office-tabbar: var(--color-bg-soft);
+  --office-border: var(--color-border);
+  --office-border-soft: var(--color-border-soft);
+  --office-border-strong: var(--color-border-strong);
+  --office-separator: #dfe8ef;
+  --office-hover-bg: #f2f6f9;
+  --office-hover-border: var(--color-border-strong);
+  --office-pressed-bg: var(--color-primary-soft);
+  --office-pressed-border: var(--color-border-strong);
+  --office-pressed-ink: var(--color-ink-2);
+  --office-selection: var(--color-select-border);
+  --office-disabled-opacity: 0.55;
+  --office-focus-ring: #8fc9df;
+  --office-canvas: var(--color-bg);
+  --office-sidebar: var(--color-bg-soft);
+  --office-page-border: #d5dfe6;
+  --office-page-shadow: 0 1px 2px rgb(27 42 65 / 4%), 0 14px 36px rgb(27 42 65 / 8%);
+  --office-primary-shadow: 0 2px 7px rgb(11 79 138 / 18%);
+  --office-radius: var(--radius-sm);
+  --office-font-size: var(--font-size-md);
+  --office-label-size: var(--font-size-xs);
+  --office-tabbar-height: 40px;
+  --office-tab-height: 36px;
+  --office-body-height: 110px;
+  --office-control-height: 32px;
+  --office-big-control-height: 58px;
+}
+
+/* ---- Ribbon 外壳：PDF 与 PowerPoint 采用与 Word/Excel 相同的标签栏、分组和控件 ---- */
+:is(.pdf-ribbon, .slides-native-ribbon) {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  background: var(--office-chrome);
+  border-bottom: 1px solid var(--office-border);
+  color: var(--office-ink);
+  font-family: inherit;
+  font-size: var(--office-font-size);
+  line-height: 1.4;
+}
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-height: var(--office-tabbar-height);
+  box-sizing: border-box;
+  overflow-x: auto;
+  padding: 4px 12px 0;
+  border-bottom: 1px solid var(--office-border);
+  background: var(--office-tabbar);
+  scrollbar-width: thin;
+}
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab] {
+  flex: 0 0 auto;
+  min-height: var(--office-tab-height);
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--office-radius) var(--office-radius) 0 0;
+  background: transparent;
+  color: var(--office-muted);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast);
+}
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab]:hover:not(:disabled) { background: var(--office-accent-soft); color: var(--office-accent); }
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab][aria-selected=true] { border-bottom-color: var(--office-accent); background: var(--office-chrome); color: var(--office-accent); font-weight: 600; }
+:is(.pdf-ribbon, .slides-native-ribbon) [role=tabpanel] {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  min-height: var(--office-body-height);
+  box-sizing: border-box;
+  overflow-x: auto;
+  padding: 10px 12px 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--office-border-strong) transparent;
+}
+:is(.pdf-ribbon, .slides-native-ribbon) [role=tabpanel][hidden] { display: none; }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: flex-start;
+  gap: 4px;
+  min-width: max-content;
+  padding: 0 12px 22px;
+  border-right: 1px solid var(--office-separator);
+}
+:is(.pdf-ribbon-group, .slides-native-ribbon-group):first-child { padding-left: 0; }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group):last-child { border-right: 0; }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) h3 {
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  margin: 0;
+  color: var(--office-muted);
+  font-size: var(--office-label-size);
+  font-weight: 500;
+  text-align: center;
+}
+:is(.pdf-ribbon-group, .slides-native-ribbon-group):first-child h3 { left: 0; }
+:is(.pdf-ribbon-group .pdf-tool, .pdf-ribbon-group .pdf-original-download, .slides-native-ribbon-group button) {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  max-width: 180px;
+  min-height: var(--office-control-height);
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--office-radius);
+  background: transparent;
+  color: var(--office-ink-2);
+  font: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
+:is(.pdf-ribbon-group .pdf-tool, .pdf-ribbon-group .pdf-original-download, .slides-native-ribbon-group button):hover:not(:disabled) { border-color: var(--office-hover-border); background: var(--office-hover-bg); }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) :is(button, .pdf-tool):is([aria-pressed=true], [aria-expanded=true]) { border-color: var(--office-pressed-border); background: var(--office-pressed-bg); color: var(--office-pressed-ink); }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) button[aria-pressed=mixed] { border-color: var(--office-border-strong); border-style: dashed; background: var(--office-tabbar); }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) :is(select, input:not([type=checkbox]):not([type=radio]):not([type=color]):not([type=range]), textarea) {
+  max-width: 180px;
+  min-height: var(--office-control-height);
+  box-sizing: border-box;
+  padding: 4px 8px;
+  border: 1px solid var(--office-border-strong);
+  border-radius: var(--office-radius);
+  background: var(--office-chrome);
+  color: var(--office-ink);
+  font: inherit;
+}
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) textarea { width: 150px; min-height: 48px; resize: vertical; }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) input[type=color] { width: var(--office-control-height); height: var(--office-control-height); box-sizing: border-box; padding: 4px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); cursor: pointer; }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) :is(button, select, input, textarea, .pdf-tool):disabled { opacity: var(--office-disabled-opacity); cursor: not-allowed; }
+:is(.pdf-ribbon, .slides-native-ribbon) :is(button, input, select, textarea, a):focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
+.pdf-ribbon-big { display: inline-flex !important; flex-direction: column; min-width: 64px; min-height: var(--office-big-control-height); gap: 4px; padding: 6px 10px; }
+
+@media (max-width: 768px) {
+  :is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) { padding-inline: 8px; }
+  :is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab] { min-height: var(--office-tabbar-height); padding-inline: 12px; }
+  :is(.pdf-ribbon, .slides-native-ribbon) [role=tabpanel] { padding-inline: 8px; }
+  :is(.pdf-ribbon-group, .slides-native-ribbon-group) { padding-inline: 8px; }
+}
+
+/* ---- 画布、纸面、侧栏、状态栏：四种格式同一底色、纸面边框与阴影 ---- */
+.native-pdf-editor,
+.native-pdf-editor .pdf-document-pages,
+.docx-native .editor-scroll,
+.editor-format-docx .editor-surface,
+.editor-format-pptx .editor-surface,
+.editor-format-pptx .slides-stage { background: var(--office-canvas); }
+.pdf-page-content,
+.docx-native .doc-page,
+.slides-canvas .konvajs-content { outline: 1px solid var(--office-page-border); box-shadow: var(--office-page-shadow); }
+.pdf-thumbnails,
+.pdf-outline,
+.pdf-comments-sidebar,
+.pdf-attachments-sidebar,
+.slides-sidebar,
+.slides-inspector { background: var(--office-chrome); border-color: var(--office-border); }
+.pdf-page.is-active { border-color: var(--office-selection); }
+.pdf-sidebar-resizer { background: var(--office-border-soft); }
+.pdf-sidebar-resizer:is(:hover, :focus-visible, .is-resizing) { background: var(--office-border-strong); }
+.pdf-outline-link:hover { background: var(--office-accent-soft); color: var(--office-accent); }
+.pdf-comment-row[aria-current=true], .pdf-comment-selected { outline-color: var(--office-accent); }
+.pdf-view-status,
+.docx-native .docx-view-status,
+.slides-statusbar {
+  min-height: 28px;
+  box-sizing: border-box;
+  border-top: 1px solid var(--office-border-soft);
+  background: var(--office-tabbar);
+  color: var(--office-muted);
+  font-size: var(--office-label-size);
+}
+.pdf-view-status button { min-width: 24px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); color: var(--office-ink-2); }
+.pdf-editor-message,
+.docx-native .docx-notice { background: var(--office-tabbar); color: var(--office-muted); font-size: var(--office-font-size); }
+
+/* ---- PowerPoint 外壳：去掉独立青绿色主题，主操作和选中态回到 md 报告主色 ---- */
+.save-button,
+.ai-form button:not(.ai-cancel):not(.undo-button),
+.ai-accept { border-color: var(--office-accent); border-radius: var(--office-radius); background: var(--office-accent); color: var(--office-chrome); box-shadow: var(--office-primary-shadow); }
+:is(.save-button, .ai-form button:not(.ai-cancel):not(.undo-button), .ai-accept):hover:not(:disabled) { border-color: var(--office-accent-hover); background: var(--office-accent-hover); }
+.download-link svg,
+.slides-brand svg,
+.revision-link { color: var(--office-accent); }
+.slides-topbar,
+.slides-ai,
+.editor-format-pptx .app-bar { border-color: var(--office-border); }
+.slides-image-tools { background: var(--office-tabbar); border-color: var(--office-border); }
+.sidebar-heading,
+.inspector-heading,
+.animation-controls,
+.structure-controls,
+.ai-preview { border-color: var(--office-border-soft); color: var(--office-ink-2); }
+.slide-row[data-selected="true"] { border-color: var(--office-pressed-border); background: var(--office-accent-soft); }
+.slide-row[data-selected="true"] .slide-open { color: var(--office-accent); }
+.slide-row > button:not(.slide-open):hover:not(:disabled) { background: var(--office-hover-bg); color: var(--office-ink-2); }
+.slides-inspector .animation-add,
+.image-form button,
+.image-add,
+.structure-row button,
+.slides-ai .ai-form .undo-button,
+.ai-form .ai-cancel { border-color: var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); color: var(--office-ink-2); }
+:is(.slides-inspector .animation-add, .image-form button, .image-add, .structure-row button, .ai-form .ai-cancel, .slides-ai .ai-form .undo-button):hover:not(:disabled) { border-color: var(--office-hover-border); background: var(--office-hover-bg); }
+:is(.slides-inspector, .slides-ai, .slides-image-tools) :is(select, textarea, input:not([type=color])) { border-color: var(--office-border-strong); border-radius: var(--office-radius); color: var(--office-ink); }
+.ai-form label,
+.image-form label,
+.field-label,
+.geometry-grid label { color: var(--office-muted); }
+.slides-inspector :is(select, textarea):focus-visible,
+.geometry-grid input:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
+.status-dot { background: var(--color-success); }
+
+/* ---- 外壳：顶部栏里的文件链接（下载原件 / XLSX / PPTX）与 md 工具栏按钮同形；PPTX 与其他格式同样嵌入 md 纸面卡片 ---- */
+:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions a:not([hidden]) {
+  display: inline-flex;
+  height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--office-radius);
+  background: transparent;
+  color: var(--office-ink-2);
+  font-size: var(--font-size-base);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color var(--motion-fast) ease, background var(--motion-fast) ease;
+}
+:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions a:not([hidden]):hover { border-color: var(--office-hover-border); background: var(--office-hover-bg); }
+:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions a:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
+@media (min-width: 901px) {
+  .editor-format-pptx .report-workspace { width: calc(100% - 40px); margin: 22px auto 20px; }
+}

@@ -9,11 +9,12 @@ import workerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import 'pdfjs-dist/web/pdf_viewer.css'
 import './pdf.css'
 import './pdf-ribbon.css'
+import './office-theme.css'
 import type { NativeContextResponse, createNativeApi } from './native-api'
 import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
-import { PDF_PAPER_SIZES, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { PDF_PAPER_SIZES, blankPdfBytes, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -627,6 +628,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       if (!activeId) return
       draft.setOperations(deletePdfPage(model.pages, draft.operations, activeId)); await refresh()
     },
+    'genoffice.pdf.page.insertBlank': async () => {
+      if (disposed || !document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed) return
+      if (hasUnstagedText()) throw new Error('请先完成当前文字编辑')
+      const before = new Set(state().map(page => page.pageId))
+      draft.setOperations(insertBlankPdfPage(model.pages, draft.operations, activeId || null))
+      activeId = state().find(page => !before.has(page.pageId))?.pageId ?? activeId
+      await refresh()
+    },
     'genoffice.pdf.page.reverse': async () => {
       draft.setOperations(reversePdfPages(model.pages, draft.operations)); await refresh()
     },
@@ -993,6 +1002,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     rotateAll.setAttribute('aria-description', rotateAll.title)
     pageButtons.get('genoffice.pdf.page.delete')!.disabled ||= !activeId || (!!document && state().length <= 1)
     pageButtons.get('genoffice.pdf.page.reverse')!.disabled ||= !document || state().length <= 1
+    const insertBlank = pageButtons.get('genoffice.pdf.page.insertBlank')!
+    insertBlank.disabled ||= !document || draft.operations.length + 2 > 500
+    insertBlank.title = draft.operations.length + 2 > 500 ? '插入空白页将超过 500 条修改；请先保存当前修改' : '在当前页之后插入与当前页同尺寸的空白页'
+    const activeBlank = !!document && state().some(page => page.pageId === activeId && page.blank)
+    if (activeBlank) { crop.disabled = true; crop.title = '新插入的空白页请先保存并重新打开后再裁切' }
     for (const { button, type } of markupButtons) {
       const state = markupSelectionState(markupSelection, draft.operations, type)
       const savedRemoval = state.active && state.matches.some(match => match.pending < 0 && match.saved && (model.capabilities?.removeMarkup !== true || !match.saved.removable))
@@ -1091,7 +1105,20 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (!document) throw new Error('PDF 尚未载入')
     if (previewDocument) index = state().findIndex(page => page.index === index)
     let page = pagesCached.get(index)
+    if (!page && !previewDocument && index >= model.pages.length) page = await blankSourcePage(index)
     if (!page) { page = await document.getPage(index + 1); pagesCached.set(index, page) }
+    return page
+  }
+  // 草稿空白页没有来源页：按其尺寸生成最小单页 PDF 供 PDF.js 渲染；保存/实际预览由引擎写入真实页面。
+  const blankDocuments = new Map<string, ReturnType<typeof getDocument>>()
+  async function blankSourcePage(index: number) {
+    const identity = state().find(page => page.blank && page.index === index)
+    if (!identity) throw new Error('页面身份已过期，请重新打开文件')
+    const key = `${identity.mediaBox.width}x${identity.mediaBox.height}`
+    let loading = blankDocuments.get(key)
+    if (!loading) { loading = getDocument({ data: blankPdfBytes(identity.mediaBox.width, identity.mediaBox.height), enableXfa: false }); blankDocuments.set(key, loading) }
+    const page = await (await loading.promise).getPage(1)
+    pagesCached.set(index, page)
     return page
   }
   function overlays(holder: HTMLElement, page: PdfPageIdentity, pdfViewport: ReturnType<PDFPageProxy['getViewport']>) {
@@ -1258,7 +1285,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1276,7 +1303,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -1410,7 +1437,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const dimensions = displayViewport(original, page, scale)
       const card = documentElement('section', 'pdf-page'); card.dataset.pageId = page.pageId; card.style.width = `${dimensions.width}px`; card.style.boxSizing = 'content-box'
       card.setAttribute('aria-label', `第 ${position + 1} 页`)
-      const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
+      const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = page.blank ? `第 ${position + 1} 页（新插入的空白页，保存后写入）` : `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
       const content = documentElement('div', 'pdf-page-content'); content.style.width = `${dimensions.width}px`; content.style.height = `${dimensions.height}px`
       heading.addEventListener('click', () => { activeId = page.pageId; updateControls(); renderTextPanel(); for (const node of pageNodes.values()) node.classList.toggle('is-active', node === card) })
       card.addEventListener('pointerdown', () => { activeId = page.pageId; updateControls(); renderTextPanel() })

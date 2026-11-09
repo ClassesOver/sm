@@ -2,14 +2,14 @@
 .docx-native .docx-tools { min-width:0; padding:0; background:var(--color-surface); border-bottom:1px solid var(--color-border); }
 /* Interface tokens stay inside the ribbon; source document styles are untouched. */
 .docx-native .docx-ribbon { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); min-width:0; max-width:100%; overflow:visible; background:var(--color-surface); color:var(--color-ink); font-family:inherit; font-size:var(--font-size-md); line-height:1.4; }
-.docx-native .docx-ribbon .ribbon-tabs { -webkit-app-region:no-drag; display:flex; align-items:stretch; min-width:0; min-height:40px; margin:0; padding:4px 12px 0; overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--color-bg-soft); scrollbar-width:thin; }
+.docx-native .docx-ribbon .ribbon-tabs { -webkit-app-region:no-drag; display:flex; align-items:stretch; min-width:0; min-height:var(--office-tabbar-height); margin:0; padding:4px 12px 0; overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--office-tabbar); scrollbar-width:thin; }
 .docx-native .docx-ribbon .ribbon-tab { position:relative; flex:0 0 auto; min-height:36px; border:0; border-radius:var(--radius-sm) var(--radius-sm) 0 0; padding:0 14px; background:transparent; color:var(--color-text-muted); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
-.docx-native .docx-ribbon .ribbon-tab:hover:not(:disabled) { background:var(--color-primary-soft); color:var(--color-primary); }
-.docx-native .docx-ribbon .ribbon-tab.active { background:var(--color-surface); color:var(--color-primary); font-weight:600; }
-.docx-native .docx-ribbon .ribbon-tab.active::after { position:absolute; right:12px; bottom:0; left:12px; height:2px; background:var(--color-primary); content:""; }
+.docx-native .docx-ribbon .ribbon-tab:hover:not(:disabled) { background:var(--office-accent-soft); color:var(--office-accent); }
+.docx-native .docx-ribbon .ribbon-tab.active { background:var(--office-chrome); color:var(--office-accent); font-weight:600; }
+.docx-native .docx-ribbon .ribbon-tab.active::after { position:absolute; right:12px; bottom:0; left:12px; height:2px; background:var(--office-accent); content:""; }
 .docx-native .docx-ribbon .ribbon-body { height:auto; min-height:112px; max-height:none; padding:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; scrollbar-color:var(--color-border-strong) transparent; }
 .docx-native .docx-ribbon .ribbon-content { display:flex; align-items:stretch; width:max-content; min-width:100%; min-height:110px; padding:10px 12px 6px; box-sizing:border-box; }
-.docx-native .docx-ribbon .ribbon-group { display:flex; flex:0 0 auto; flex-direction:column; align-items:stretch; justify-content:space-between; min-width:64px; gap:6px; margin:0; padding:0 12px; border-right:1px solid var(--color-border-soft); }
+.docx-native .docx-ribbon .ribbon-group { display:flex; flex:0 0 auto; flex-direction:column; align-items:stretch; justify-content:space-between; min-width:64px; gap:6px; margin:0; padding:0 12px; border-right:1px solid var(--office-separator); }
 .docx-native .docx-ribbon .ribbon-group:first-child { padding-left:0; }
 .docx-native .docx-ribbon .ribbon-group:last-child { border-right:0; }
 .docx-native .docx-ribbon .ribbon-group-items { display:flex; flex-wrap:wrap; align-content:flex-start; align-items:center; justify-content:flex-start; gap:4px; }
@@ -23,14 +23,14 @@
 .docx-native .docx-ribbon .rb-icon { display:inline-flex; flex:0 0 auto; width:32px; height:32px; align-items:center; justify-content:center; gap:2px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
 .docx-native .docx-ribbon .rb-icon svg { flex-shrink:0; max-width:24px; max-height:24px; }
 .docx-native .docx-ribbon .rb-icon:hover:not(:disabled),
-.docx-native .docx-ribbon .rb-big:hover:not(:disabled) { border-color:var(--color-select-border); background:var(--color-primary-soft); color:var(--color-primary); }
+.docx-native .docx-ribbon .rb-big:hover:not(:disabled) { border-color:var(--office-hover-border); background:var(--office-hover-bg); }
 .docx-native .docx-ribbon .rb-icon.active,
-.docx-native .docx-ribbon button[aria-pressed="true"] { border-color:var(--color-select-border); background:var(--color-primary-soft); color:var(--color-primary); }
-.docx-native .docx-ribbon :disabled { opacity:1; color:var(--color-text-muted); cursor:not-allowed; }
-.docx-native .docx-ribbon button:disabled { background:var(--color-bg-soft); border-color:transparent; }
-.docx-native .docx-ribbon :is(button,input,select):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.docx-native .docx-ribbon button:is([aria-pressed="true"],[aria-expanded="true"]) { border-color:var(--office-pressed-border); background:var(--office-pressed-bg); color:var(--office-pressed-ink); }
+.docx-native .docx-ribbon :disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+.docx-native .docx-ribbon button:disabled { background:transparent; border-color:transparent; }
+.docx-native .docx-ribbon :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:2px; }
 .docx-native .docx-ribbon :is(.rb-select,.layout-num input,.layout-num select) { height:32px; box-sizing:border-box; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); padding:4px 8px; background:var(--color-surface); color:var(--color-ink); font:inherit; }
-.docx-native .docx-ribbon :is(input,select):disabled { background:var(--color-bg-soft); border-color:var(--color-border-soft); }
+.docx-native .docx-ribbon :is(input,select):disabled { border-color:var(--office-border-soft); }
 .docx-native .docx-ribbon .rb-font-family { width:136px; }
 .docx-native .docx-ribbon .rb-font-size { width:62px; }
 .docx-native .docx-ribbon .rb-color-input { width:32px; height:32px; padding:4px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); cursor:pointer; }
@@ -69,12 +69,12 @@
 .docx-native .docx-find-replace .find-results { max-height:180px; overflow:auto; }
 .docx-native .docx-find-replace .find-result { display:block; width:100%; margin-top:4px; text-align:left; white-space:normal; }
 .docx-native .docx-find-replace :is([data-find-status],.find-results-note) { margin:8px 0 0; color:var(--color-text-muted); font-size:var(--font-size-sm); line-height:1.5; }
-.docx-native .docx-notice { margin:0; padding:8px 14px; color:#526174; background:#f3f6fb; font-size:13px; }
-.docx-native .editor-scroll { overflow:auto; max-height:calc(100vh - 230px); background:#e8ecf1; padding:24px; }
+.docx-native .docx-notice { margin:0; padding:8px 14px; color:var(--office-muted); background:var(--office-tabbar); font-size:13px; }
+.docx-native .editor-scroll { overflow:auto; max-height:calc(100vh - 230px); background:var(--office-canvas); padding:24px; }
 .docx-native .doc-zoom { width:max-content; min-width:100%; }
-.docx-native .doc-page { margin:auto; background:white; color:#111; box-shadow:0 2px 10px #0002; outline:none; }
+.docx-native .doc-page { margin:auto; background:white; color:#111; box-shadow:0 2px 10px rgb(27 42 65 / 13%); outline:none; }
 .docx-native .pagination-preview { z-index:100; }
-.editor-format-docx .editor-surface { padding:0; background:#e8ecf1; }
+.editor-format-docx .editor-surface { padding:0; background:var(--office-canvas); }
 .editor-format-docx #report-editor { max-width:none; padding:0; }
 @media(max-width:768px) {
   .docx-native .docx-ribbon .ribbon-tabs { padding-inline:8px; }
@@ -86,4 +86,4 @@
 .docx-native .table-picker-form { display: grid; grid-template-columns: auto auto; gap: 6px 8px; align-items: center; padding: 6px 2px 2px; font-size: 12px; }
 .docx-native .table-picker-form label { display: contents; }
 .docx-native .table-picker-form input { width: 64px; font: inherit; }
-.docx-native .table-picker-error { margin: 6px 2px 0; max-width: 220px; color: #b42318; font-size: 12px; }
+.docx-native .table-picker-error { margin: 6px 2px 0; max-width: 220px; color: var(--color-danger); font-size: 12px; }

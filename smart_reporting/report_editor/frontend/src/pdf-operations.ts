@@ -19,7 +19,7 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
   return result
 }
 export interface PdfBox { x: number; y: number; width: number; height: number }
-export interface PdfPageIdentity { pageId: string; index: number; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean }
+export interface PdfPageIdentity { pageId: string; index: number; blank?: boolean; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
 export interface PdfModel extends PdfAttachmentModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
@@ -34,7 +34,15 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
   const deleted = new Set<string>()
   const removed = new Set<string>()
   let order = pages.map(page => page.pageId)
+  let blanks = 0
   for (const operation of operations) {
+    if (operation.kind === 'insertBlankPage') {
+      // 与引擎 blankPages 一致：空白页按插入顺序追加在来源页之后，索引为 来源页数 + k。
+      const blank = pdfBlankPageIdentity(operation, pages.length + blanks++)
+      if (byId.has(blank.pageId)) throw new Error('空白页身份重复')
+      byId.set(blank.pageId, blank); order = [...order, blank.pageId]
+      continue
+    }
     if (operation.kind === 'reorderPages') {
       if (!Array.isArray(operation.pageIds) || operation.pageIds.some(id => typeof id !== 'string' || !byId.has(id)) || new Set(operation.pageIds).size !== operation.pageIds.length) throw new Error('页面排序无效')
       order = operation.pageIds as string[]
@@ -43,6 +51,7 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
     if (['setFormValue', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(operation.kind)) continue
     const page = byId.get(String(operation.pageId))
     if (!page) throw new Error('页面身份已过期，请重新打开文件')
+    if (page.blank && operation.kind !== 'rotatePage') throw new Error(PDF_BLANK_PAGE_EDIT_REASON)
     if (operation.kind === 'deletePage') deleted.add(page.pageId)
     else if (operation.kind === 'rotatePage') {
       if (![90, 180, 270].includes(Number(operation.delta))) throw new Error('页面旋转无效')
@@ -74,7 +83,7 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
     } else if (!['addMarkup', 'highlight', 'addTextAnnotation', 'replaceText'].includes(operation.kind)) throw new Error('不支持的 PDF 操作')
   }
   const remaining = order.filter(id => !deleted.has(id))
-  if (remaining.length !== pages.length - deleted.size) throw new Error('页面排序必须包含所有保留页面')
+  if (remaining.length !== byId.size - deleted.size) throw new Error('页面排序必须包含所有保留页面')
   if (!remaining.length) throw new Error('不能删除全部页面')
   return remaining.map(id => byId.get(id)!)
 }
@@ -112,7 +121,8 @@ export function cropPdfPage(pages: PdfPageIdentity[], operations: NativeOperatio
 /** Prepare every surviving page before committing one NativeDraft history step. */
 export async function cropAllPdfPages(pages: PdfPageIdentity[], operations: NativeOperation[], margins: number[], getViewport: (page: PdfPageIdentity) => Promise<PdfViewportInverse>): Promise<NativeOperation[]> {
   const snapshot = structuredClone(operations), selection = [...margins]
-  const survivors = pdfPageState(pages, snapshot)
+  // 未保存的空白页没有来源内容可裁切，全部裁切只作用于来源页。
+  const survivors = pdfPageState(pages, snapshot).filter(page => !page.blank)
   let result = snapshot
   for (const page of survivors) {
     const viewport = await getViewport(page)
@@ -188,7 +198,53 @@ export function deletePdfPage(pages: PdfPageIdentity[], operations: NativeOperat
   if (!order.includes(pageId)) throw new Error('页面不存在')
   if (order.length === 1) throw new Error('不能删除全部页面')
   // 删除同时丢弃该页未保存的标注/旋转；撤销会恢复完整前一个操作快照。
-  return withOrder([...operations.filter(operation => operation.pageId !== pageId), { kind: 'deletePage', pageId }], order.filter(id => id !== pageId))
+  // 未保存的空白页没有来源页：删除即撤回插入本身，不产生 deletePage。
+  const kept = operations.filter(operation => operation.pageId !== pageId)
+  return withOrder(isPdfBlankPageId(pageId) ? kept : [...kept, { kind: 'deletePage', pageId }], order.filter(id => id !== pageId))
+}
+
+/**
+ * 固定源 insertBlankPage：在当前页之后插入一张与当前页显示尺寸相同的空白页（无当前页时为 A4），
+ * 作为待保存修改立即可见、可移动、可撤销，保存时由引擎 blankPages 写入。
+ * 空白页只有本地草稿身份，保存重开前不接受标注、裁切、改字等需要来源身份的修改。
+ */
+export const PDF_A4_POINTS = { width: 595.28, height: 841.89 } as const
+export const PDF_BLANK_PAGE_EDIT_REASON = '新插入的空白页只能旋转、移动或删除；请先保存并重新打开后再编辑其内容'
+const BLANK_ID = /^blank:[a-z0-9-]{1,64}$/
+export function isPdfBlankPageId(pageId: unknown): pageId is string { return typeof pageId === 'string' && BLANK_ID.test(pageId) }
+export function pdfBlankPageIdentity(operation: NativeOperation, index: number): PdfPageIdentity {
+  const { pageId, width, height } = operation as { pageId?: unknown; width?: unknown; height?: unknown }
+  if (Object.keys(operation).some(key => !['kind', 'pageId', 'width', 'height', 'sourceSha256'].includes(key)) || !isPdfBlankPageId(pageId) || ![width, height].every(value => typeof value === 'number' && Number.isFinite(value) && value >= 1 && value <= 14400)) throw new Error('空白页尺寸或身份无效')
+  const box = { x: 0, y: 0, width: width as number, height: height as number }
+  return { pageId, index, blank: true, mediaBox: box, cropBox: { ...box }, rotation: 0, textObjects: [], markups: [], markupReadSafe: false, notes: [], notesReadSafe: false }
+}
+export function insertBlankPdfPage(pages: PdfPageIdentity[], operations: NativeOperation[], afterPageId: string | null, newId: () => string = () => crypto.randomUUID()): NativeOperation[] {
+  const current = pdfPageState(pages, operations)
+  if (operations.length + 2 > 500) throw new Error('插入空白页将超过 500 条修改；请先保存当前修改')
+  const at = afterPageId === null ? -1 : current.findIndex(page => page.pageId === afterPageId)
+  if (afterPageId !== null && at < 0) throw new Error('页面不存在')
+  const neighbor = current[Math.max(0, at)]
+  const quarter = neighbor ? neighbor.rotation % 180 !== 0 : false
+  const size = neighbor ? { width: quarter ? neighbor.cropBox.height : neighbor.cropBox.width, height: quarter ? neighbor.cropBox.width : neighbor.cropBox.height } : PDF_A4_POINTS
+  const pageId = `blank:${newId().toLowerCase()}`
+  if (!isPdfBlankPageId(pageId)) throw new Error('空白页身份无效')
+  const order = current.map(page => page.pageId)
+  order.splice(at + 1, 0, pageId)
+  const width = Math.round(Math.min(14400, Math.max(1, size.width)) * 100) / 100, height = Math.round(Math.min(14400, Math.max(1, size.height)) * 100) / 100
+  const next = withOrder([...structuredClone(operations), { kind: 'insertBlankPage', pageId, width, height }], order)
+  pdfPageState(pages, next)
+  return next
+}
+
+/** 最小单页 PDF（仅 MediaBox），供 PDF.js 渲染草稿空白页；不参与保存，保存由引擎生成实际页面。 */
+export function blankPdfBytes(width: number, height: number): Uint8Array {
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${width} ${height}] /Resources << >> >>`]
+  let body = '%PDF-1.4\n'
+  const offsets: number[] = []
+  objects.forEach((object, index) => { offsets.push(body.length); body += `${index + 1} 0 obj\n${object}\nendobj\n` })
+  const xref = body.length
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return new TextEncoder().encode(body)
 }
 
 /** 使用 PDF.js 的逆变换处理 CropBox、UserUnit、旋转和缩放，避免再次实现页面变换。 */

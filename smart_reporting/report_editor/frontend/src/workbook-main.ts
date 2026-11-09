@@ -56,6 +56,7 @@ import { requestJson } from './api-request'
 import type { NativeDraft, NativeOperation } from './native-draft'
 import { buildSheetPrintHtml, printDocument, PRINT_MARGIN_PRESETS, printSourceFromSnapshotSheet, type SheetPrintSetup, type SheetPrintSource } from './workbook-print'
 import './workbook.css'
+import './office-theme.css'
 
 type AIStatus = { editId: string; status: string; snapshotSha256: string; proposal?: WorkbookProposal; error?: { message: string } }
 

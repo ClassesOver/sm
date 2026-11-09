@@ -49,6 +49,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
   z.object({ kind: z.literal('rotatePage'), ...page, delta: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),
   z.object({ kind: z.literal('deletePage'), ...page }).strict(),
+  z.object({ kind: z.literal('insertBlankPage'), ...identity, pageId: z.string().regex(/^blank:[a-z0-9-]{1,64}$/), width: z.number().finite().min(1).max(14400), height: z.number().finite().min(1).max(14400) }).strict(),
   z.object({ kind: z.literal('reorderPages'), ...identity, pageIds: z.array(z.string()).min(1).max(10000) }).strict(),
 ])
 const operationsSchema = z.array(operation).max(500)
@@ -151,6 +152,15 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   if (sizeOps.length > 1 || (sizeOps.length && ops.some(op => ['cropPage', 'replaceText'].includes(op.kind)))) throw new Error('PDF 页面尺寸不能重复或与裁切、原位改字混用；请先保存重开')
   if (sizeOps.length && !model.capabilities.pageSize) throw new Error(model.capabilities.pageSizeReason ?? 'pdf_page_size_source_unsupported')
   const byId = new Map(model.pages.map((page) => [page.pageId, page]))
+  // 固定源 blankPages：空白页按插入顺序追加为原始索引 pageCount + k，再由 pageOrder 放到目标位置。
+  // 空白页只有本地草稿身份，只接受旋转；其他依赖来源身份的修改需保存重开后进行。
+  const blankIndex = new Map<string, number>()
+  for (const op of ops) {
+    if (op.kind !== 'insertBlankPage') continue
+    if (blankIndex.has(op.pageId)) throw new Error('PDF 空白页身份重复')
+    blankIndex.set(op.pageId, model.pages.length + blankIndex.size)
+  }
+  if (blankIndex.size > 200) throw new Error('PDF 空白页数量超过 200')
   const crops = new Map<string, [number, number, number, number]>()
   const removals: MarkupRemoval[] = []
   const noteEdits: NoteContentEdit[] = []
@@ -159,7 +169,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const deleted = new Set<string>()
   const touched = new Set<string>()
   let reordered = false
-  const request: SavePdfRequest = { path: '', markups: [], drawings: [], formValues: [], stamps: [], rotations: [], deletedPages: [] }
+  const request: SavePdfRequest = { path: '', markups: [], drawings: [], formValues: [], stamps: [], rotations: [], deletedPages: [], blankPages: ops.flatMap(op => op.kind === 'insertBlankPage' ? [{ pageIndex: blankIndex.get(op.pageId)!, width: op.width, height: op.height }] : []) }
   const formOps = ops.filter((op): op is Extract<typeof op, { kind: 'setFormValue' }> => op.kind === 'setFormValue')
   if (formOps.length) {
     if (model.formFields.some(field => field.kind === 'signature')) throw new Error('含有签名字段的 PDF 不允许表单值写回')
@@ -189,11 +199,17 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   for (const op of ops) {
     if (op.kind === 'setFormValue') continue
     if (op.sourceSha256 !== undefined && op.sourceSha256 !== model.sourceSha256) throw new Error('PDF 操作来源摘要不匹配')
-    if (op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment') continue
+    if (op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment' || op.kind === 'insertBlankPage') continue
     if (op.kind === 'reorderPages') {
-      if (reordered || new Set(op.pageIds).size !== op.pageIds.length || op.pageIds.some((id) => !byId.has(id))) throw new Error('PDF 页面排序无效')
+      if (reordered || new Set(op.pageIds).size !== op.pageIds.length || op.pageIds.some((id) => !byId.has(id) && !blankIndex.has(id))) throw new Error('PDF 页面排序无效')
       reordered = true
-      request.pageOrder = op.pageIds.map((id) => byId.get(id)!.index)
+      request.pageOrder = op.pageIds.map((id) => byId.get(id)?.index ?? blankIndex.get(id)!)
+      continue
+    }
+    const blank = blankIndex.get(op.pageId)
+    if (blank !== undefined) {
+      if (op.kind !== 'rotatePage') throw new Error('PDF 新插入的空白页只能旋转、移动或删除；请先保存重开后再编辑')
+      request.rotations!.push({ pageIndex: blank, delta: op.delta })
       continue
     }
     const target = byId.get(op.pageId)
@@ -268,7 +284,9 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   }
   const survivors = model.pages.filter((page) => !deleted.has(page.pageId))
   if (!survivors.length) throw new Error('PDF 不能删除全部页面')
-  if (request.pageOrder && (request.pageOrder.length !== survivors.length || request.pageOrder.some((index) => deleted.has(model.pages[index]!.pageId)))) throw new Error('PDF 排序必须完整包含保留页面')
+  if (request.pageOrder && (request.pageOrder.length !== survivors.length + blankIndex.size || request.pageOrder.some((index) => index < model.pages.length && deleted.has(model.pages[index]!.pageId)))) throw new Error('PDF 排序必须完整包含保留页面')
+  // 未重排时空白页按插入顺序追加在末尾；后续裁切/批注定位统一使用这一最终顺序。
+  const finalOrder = request.pageOrder ?? [...survivors.map(page => page.index), ...blankIndex.values()]
   const prepared = hasText ? await prepareTextEdits(content, model.pages, ops) : { edits: [], indices: [], skipped: [] as SkippedOperation[] }
   request.textEdits = prepared.edits
   const skippedOperations = [...prepared.skipped]
@@ -283,12 +301,12 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       bytes = ops.some(op => !['replaceText', 'editNote', 'removeNote', 'removeMarkup', 'addAttachment', 'removeAttachment'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
     } else bytes = result.bytes
   }
-  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), request.pageOrder ?? survivors.map(page => page.index))
+  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), finalOrder)
   if (crops.size) {
     // Same CropBox primitive as pinned cropPagesBytes; absolute source-space
     // bounds keep ordered crop/rotation commands stable through final reorder.
     const output = await PDFDocument.load(bytes, { updateMetadata: false })
-    const order = request.pageOrder ?? survivors.map(page => page.index)
+    const order = finalOrder
     for (const [pageId, [x1, y1, x2, y2]] of crops) {
       const sourceIndex = byId.get(pageId)!.index
       output.getPage(order.indexOf(sourceIndex)).setCropBox(x1, y1, x2 - x1, y2 - y1)
@@ -301,8 +319,8 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     bytes = await setPageSizeBytes(bytes, width, height)
   }
   bytes = await patchAttachments(bytes, model, attachmentOps)
-  bytes = await appendNoteReplies(bytes, replies, request.pageOrder ?? survivors.map(page => page.index))
-  bytes = await appendLocalNoteReplies(bytes, localRoots, pendingReplies, request.pageOrder ?? survivors.map(page => page.index))
+  bytes = await appendNoteReplies(bytes, replies, finalOrder)
+  bytes = await appendLocalNoteReplies(bytes, localRoots, pendingReplies, finalOrder)
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,
   // runtime WASM identity, requested operations and all application decisions.

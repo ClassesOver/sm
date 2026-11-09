@@ -1,4 +1,5 @@
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import './office-theme.css'
 import { BULLET_GLYPHS, BULLET_GLYPH_LABELS, BULLET_SYMBOLS, NUMBER_TYPES, BULLET_COLORS, PARAGRAPH_LIST_COMMANDS } from './slides-paragraph'
 import { ArrowDown, ArrowUp, Bold, Download, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
 import { createElement as reactElement, type ComponentType } from 'react'
@@ -219,9 +220,6 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   const root = document.createElement('section')
   root.className = 'slides-native-ribbon'
   root.setAttribute('aria-label', 'PowerPoint ribbon')
-  const style = document.createElement('style')
-  style.textContent = `.slides-native-ribbon{flex:none;background:#fff;border-bottom:1px solid #d5dcd9;color:#273532}.slides-native-ribbon-tabs{display:flex;gap:2px;overflow:auto;padding:5px 8px 0;border-bottom:1px solid #e5e9e7}.slides-native-ribbon-tabs [role=tab]{flex:none;border:0;border-bottom:2px solid transparent;padding:7px 11px;background:transparent;color:inherit;font:inherit;cursor:pointer}.slides-native-ribbon-tabs [aria-selected=true]{border-bottom-color:#247f70;color:#176b5e}.slides-native-ribbon [role=tabpanel]{display:flex;min-height:80px;gap:8px;overflow:auto;padding:8px}.slides-native-ribbon [role=tabpanel][hidden]{display:none}.slides-native-ribbon-group{position:relative;display:flex;align-items:center;align-content:flex-start;flex-wrap:wrap;gap:5px;min-width:max-content;padding:0 9px 15px;border-right:1px solid #e1e6ec}.slides-native-ribbon-group h3{position:absolute;bottom:0;left:0;right:0;margin:0;text-align:center;color:#687487;font-size:10px;font-weight:400}.slides-native-ribbon-group button,.slides-native-ribbon-group select,.slides-native-ribbon-group input,.slides-native-ribbon-group textarea{max-width:180px;min-height:30px;border:1px solid #ccd5d2;border-radius:3px;padding:5px 7px;background:#fff;color:#263431;font-size:11px}.slides-native-ribbon-group button:disabled,.slides-native-ribbon-group select:disabled,.slides-native-ribbon-group input:disabled{opacity:.52;cursor:not-allowed}.slides-native-ribbon-group textarea{width:150px;min-height:48px;resize:vertical}@media(max-width:700px){.slides-native-ribbon-tabs [role=tab]{padding:7px 8px}.slides-native-ribbon [role=tabpanel]{min-height:72px;padding:6px}.slides-native-ribbon-group{gap:4px;padding-inline:6px}}`
-  root.append(style)
   const tablist = document.createElement('div')
   tablist.className = 'slides-native-ribbon-tabs'
   tablist.setAttribute('role', 'tablist')

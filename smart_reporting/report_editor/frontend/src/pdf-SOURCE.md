@@ -22,7 +22,7 @@ The Pages tab preserves the source control order in four groups: rotation;
 delete/extract/insert/replace; crop/page size; reverse/split/merge. Its semantic
 IDs use the local `genoffice.pdf.page.*` namespace because the source has no
 stable DOM command IDs. Left/right rotation, delete, extract, import, replace,
-crop, sizing, reverse, split and merge actions are individually mapped. Left/right rotation, clockwise rotate-all, delete, and reverse have verified
+crop, sizing, reverse, split and merge actions are individually mapped. Left/right rotation, clockwise rotate-all, delete, insert blank page, and reverse have verified
 bridge operation paths; the other
 source actions stay disabled with their own bridge or publication reason. The
 local move-previous/move-next controls remain in a separate draft-controls
