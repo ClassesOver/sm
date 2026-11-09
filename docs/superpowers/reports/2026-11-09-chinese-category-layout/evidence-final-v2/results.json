@@ -1,0 +1,1024 @@
+[
+  {
+    "actual": {
+      "bar_values": [
+        -12.0
+      ],
+      "category_labels": [
+        "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+      ],
+      "compiled_script": {
+        "path": "compiled.py",
+        "sha256": "abd2fc64cae9bab1bf9a9a0db48efda846a1befe5dce61ffd234c43d3b352ab5",
+        "size": 58989
+      },
+      "error": "standard_chart_layout_unresolved: 分类标签超出画布，请调整边距或扩大画布",
+      "execution": "rejected",
+      "geometry": {
+        "canvas_px": [
+          600.0,
+          450.0
+        ],
+        "fonts": {
+          "NotoSansCJK-Bold.ttc": {
+            "path": "NotoSansCJK-Bold.ttc",
+            "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+            "size": 20050760
+          },
+          "NotoSansCJK-Regular.ttc": {
+            "path": "NotoSansCJK-Regular.ttc",
+            "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+            "size": 19484784
+          }
+        },
+        "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+        "missing_glyphs": [],
+        "text_bbox_intersections": [],
+        "texts": [
+          {
+            "bbox": [
+              297.0,
+              7.416666666666675,
+              42.0,
+              20.833333333333332
+            ],
+            "outside_canvas": false,
+            "text": "人次"
+          },
+          {
+            "bbox": [
+              28.68181818181813,
+              36.58333333333334,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-14"
+          },
+          {
+            "bbox": [
+              103.22727272727275,
+              36.58333333333334,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-12"
+          },
+          {
+            "bbox": [
+              177.77272727272725,
+              36.58333333333334,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-10"
+          },
+          {
+            "bbox": [
+              257.3181818181818,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-8"
+          },
+          {
+            "bbox": [
+              331.8636363636364,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-6"
+          },
+          {
+            "bbox": [
+              406.4090909090909,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-4"
+          },
+          {
+            "bbox": [
+              480.95454545454544,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-2"
+          },
+          {
+            "bbox": [
+              559.0,
+              36.58333333333334,
+              10.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "0"
+          },
+          {
+            "bbox": [
+              -96.66666666666666,
+              208.765625,
+              152.0,
+              57.21875
+            ],
+            "outside_canvas": true,
+            "text": "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+          },
+          {
+            "bbox": [
+              39.0,
+              412.071875,
+              261.0,
+              29.828125
+            ],
+            "outside_canvas": false,
+            "text": "合成数据：金额对照"
+          }
+        ]
+      },
+      "image": {
+        "path": "rejected-debug.png",
+        "sha256": "7f7e7244098f62da0db222536a9c5b187f1aeb90bf0e925f3d83540b812455c6",
+        "size": 21828
+      },
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            72.0,
+            72.00000000000001,
+            492.0,
+            333.0
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -13.2,
+            0.0
+          ],
+          "ylim": [
+            0.352,
+            -0.352
+          ]
+        }
+      ],
+      "preflight_diagnostic": null,
+      "value_axis_label": "人次",
+      "warnings": []
+    },
+    "differences_from_frozen_L1_wrap8": [],
+    "frozen": {
+      "path": "frozen.json",
+      "sha256": "31812552dbe91ed3df2ea8973fc6cc5c3fa823edd8fedce7ec667526f784df6b",
+      "size": 4204
+    },
+    "inputs": [
+      {
+        "path": "input-0.json",
+        "sha256": "646f8cc92acd46ea59ddaacdc3b9a50b88d59d762a0b01e3f067001233976e02",
+        "size": 236
+      }
+    ],
+    "variant": "wrap-8-manual",
+    "visual_review": "not_run"
+  },
+  {
+    "actual": {
+      "bar_values": [
+        -12.0
+      ],
+      "category_labels": [
+        "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+      ],
+      "compiled_script": {
+        "path": "compiled.py",
+        "sha256": "9691ab0af71985cdb4cc0151c910167d0474a897f64e106023456588313e12a3",
+        "size": 58988
+      },
+      "execution": "rendered",
+      "geometry": {
+        "canvas_px": [
+          600.0,
+          450.0
+        ],
+        "fonts": {
+          "NotoSansCJK-Bold.ttc": {
+            "path": "NotoSansCJK-Bold.ttc",
+            "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+            "size": 20050760
+          },
+          "NotoSansCJK-Regular.ttc": {
+            "path": "NotoSansCJK-Regular.ttc",
+            "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+            "size": 19484784
+          }
+        },
+        "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+        "missing_glyphs": [],
+        "text_bbox_intersections": [],
+        "texts": [
+          {
+            "bbox": [
+              360.8333333333333,
+              23.583333333333332,
+              42.0,
+              20.833333333333332
+            ],
+            "outside_canvas": false,
+            "text": "人次"
+          },
+          {
+            "bbox": [
+              130.86363636363637,
+              52.75,
+              27.0,
+              18.75
+            ],
+            "outside_canvas": false,
+            "text": "-15"
+          },
+          {
+            "bbox": [
+              272.2146464646465,
+              52.75,
+              27.0,
+              18.75
+            ],
+            "outside_canvas": false,
+            "text": "-10"
+          },
+          {
+            "bbox": [
+              418.5656565656566,
+              52.75,
+              17.0,
+              18.75
+            ],
+            "outside_canvas": false,
+            "text": "-5"
+          },
+          {
+            "bbox": [
+              563.4166666666666,
+              52.75,
+              10.0,
+              18.75
+            ],
+            "outside_canvas": false,
+            "text": "0"
+          },
+          {
+            "bbox": [
+              26.583333333333343,
+              177.11406249999993,
+              152.0,
+              57.21875
+            ],
+            "outside_canvas": false,
+            "text": "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+          },
+          {
+            "bbox": [
+              39.0,
+              412.071875,
+              261.0,
+              29.828125
+            ],
+            "outside_canvas": false,
+            "text": "合成数据：金额对照"
+          }
+        ]
+      },
+      "image": {
+        "path": "chart.png",
+        "sha256": "3e2ceca2f47f6bd9979dc58159322a5c36eab3dabda70153c7eafa4b93387c43",
+        "size": 28684
+      },
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            195.25,
+            88.16666666666667,
+            373.16666666666663,
+            237.36354166666655
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -13.2,
+            0.0
+          ],
+          "ylim": [
+            0.352,
+            -0.352
+          ]
+        }
+      ],
+      "preflight_diagnostic": null,
+      "value_axis_label": "人次",
+      "warnings": []
+    },
+    "differences_from_frozen_L1_wrap8": [
+      "/plan/charts/0/standardCanvas/layout"
+    ],
+    "frozen": {
+      "path": "frozen.json",
+      "sha256": "daa1da30549b226d39f3b9ee344f83da3b9ef5060c8d0aeec43189fe8422894e",
+      "size": 4203
+    },
+    "inputs": [
+      {
+        "path": "input-0.json",
+        "sha256": "646f8cc92acd46ea59ddaacdc3b9a50b88d59d762a0b01e3f067001233976e02",
+        "size": 236
+      }
+    ],
+    "variant": "wrap-8-tight",
+    "visual_review": "not_run"
+  },
+  {
+    "actual": {
+      "bar_values": [
+        -12.0
+      ],
+      "category_labels": [
+        "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+      ],
+      "compiled_script": {
+        "path": "compiled.py",
+        "sha256": "cec58497ebf592a026d23d59147f7f25a058d3e571bde86d0b26ee076dab16b8",
+        "size": 58994
+      },
+      "execution": "rendered",
+      "geometry": {
+        "canvas_px": [
+          600.0,
+          450.0
+        ],
+        "fonts": {
+          "NotoSansCJK-Bold.ttc": {
+            "path": "NotoSansCJK-Bold.ttc",
+            "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+            "size": 20050760
+          },
+          "NotoSansCJK-Regular.ttc": {
+            "path": "NotoSansCJK-Regular.ttc",
+            "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+            "size": 19484784
+          }
+        },
+        "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+        "missing_glyphs": [],
+        "text_bbox_intersections": [],
+        "texts": [
+          {
+            "bbox": [
+              357.08333333333326,
+              15.25050000000002,
+              42.0,
+              20.833333333333332
+            ],
+            "outside_canvas": false,
+            "text": "人次"
+          },
+          {
+            "bbox": [
+              113.78093939393943,
+              44.41716666666669,
+              42.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-15.0"
+          },
+          {
+            "bbox": [
+              186.19236616161618,
+              44.41716666666669,
+              42.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-12.5"
+          },
+          {
+            "bbox": [
+              258.6037929292929,
+              44.41716666666669,
+              42.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-10.0"
+          },
+          {
+            "bbox": [
+              336.01521969696967,
+              44.41716666666669,
+              32.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-7.5"
+          },
+          {
+            "bbox": [
+              408.4266464646464,
+              44.41716666666669,
+              32.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-5.0"
+          },
+          {
+            "bbox": [
+              480.83807323232315,
+              44.41716666666669,
+              32.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-2.5"
+          },
+          {
+            "bbox": [
+              556.7494999999999,
+              44.41716666666669,
+              25.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "0.0"
+          },
+          {
+            "bbox": [
+              18.250500000000017,
+              178.15522916666666,
+              152.0,
+              57.21875
+            ],
+            "outside_canvas": false,
+            "text": "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+          },
+          {
+            "bbox": [
+              39.0,
+              413.921375,
+              261.0,
+              29.828125
+            ],
+            "outside_canvas": false,
+            "text": "合成数据：金额对照"
+          }
+        ]
+      },
+      "image": {
+        "path": "chart.png",
+        "sha256": "7c17cdd9caab6612ab1bdc2738b1c3513f94ff6272c8f36784e040b6e83dd01f",
+        "size": 31514
+      },
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            186.91716666666667,
+            79.83383333333336,
+            382.3323333333332,
+            256.1115416666666
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -13.2,
+            0.0
+          ],
+          "ylim": [
+            0.352,
+            -0.352
+          ]
+        }
+      ],
+      "preflight_diagnostic": null,
+      "value_axis_label": "人次",
+      "warnings": []
+    },
+    "differences_from_frozen_L1_wrap8": [
+      "/plan/charts/0/standardCanvas/layout"
+    ],
+    "frozen": {
+      "path": "frozen.json",
+      "sha256": "dcff17b78d0cadfe365975e2d07db1967b301c1ac4d366c594f5f71f5e617936",
+      "size": 4209
+    },
+    "inputs": [
+      {
+        "path": "input-0.json",
+        "sha256": "646f8cc92acd46ea59ddaacdc3b9a50b88d59d762a0b01e3f067001233976e02",
+        "size": 236
+      }
+    ],
+    "variant": "wrap-8-constrained",
+    "visual_review": "not_run"
+  },
+  {
+    "actual": {
+      "bar_values": [
+        -12.0
+      ],
+      "category_labels": [
+        "合成机构超长中文分类标签用于验证画布边缘完整显示"
+      ],
+      "compiled_script": {
+        "path": "compiled.py",
+        "sha256": "536a9079e558867d4798531328cd18fe0deba9ee8a8cef14e9c425d57fba806c",
+        "size": 58990
+      },
+      "error": "standard_chart_layout_unresolved: 分类标签超出画布，请调整边距或扩大画布",
+      "execution": "rejected",
+      "geometry": {
+        "canvas_px": [
+          600.0,
+          450.0
+        ],
+        "fonts": {
+          "NotoSansCJK-Bold.ttc": {
+            "path": "NotoSansCJK-Bold.ttc",
+            "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+            "size": 20050760
+          },
+          "NotoSansCJK-Regular.ttc": {
+            "path": "NotoSansCJK-Regular.ttc",
+            "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+            "size": 19484784
+          }
+        },
+        "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+        "missing_glyphs": [],
+        "text_bbox_intersections": [],
+        "texts": [
+          {
+            "bbox": [
+              297.0,
+              7.416666666666675,
+              42.0,
+              20.833333333333332
+            ],
+            "outside_canvas": false,
+            "text": "人次"
+          },
+          {
+            "bbox": [
+              28.68181818181813,
+              36.58333333333334,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-14"
+          },
+          {
+            "bbox": [
+              103.22727272727275,
+              36.58333333333334,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-12"
+          },
+          {
+            "bbox": [
+              177.77272727272725,
+              36.58333333333334,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-10"
+          },
+          {
+            "bbox": [
+              257.3181818181818,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-8"
+          },
+          {
+            "bbox": [
+              331.8636363636364,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-6"
+          },
+          {
+            "bbox": [
+              406.4090909090909,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-4"
+          },
+          {
+            "bbox": [
+              480.95454545454544,
+              36.58333333333334,
+              17.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-2"
+          },
+          {
+            "bbox": [
+              559.0,
+              36.58333333333334,
+              10.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "0"
+          },
+          {
+            "bbox": [
+              -400.6666666666667,
+              227.8203125,
+              456.0,
+              19.109375
+            ],
+            "outside_canvas": true,
+            "text": "合成机构超长中文分类标签用于验证画布边缘完整显示"
+          },
+          {
+            "bbox": [
+              39.0,
+              412.071875,
+              261.0,
+              29.828125
+            ],
+            "outside_canvas": false,
+            "text": "合成数据：金额对照"
+          }
+        ]
+      },
+      "image": {
+        "path": "rejected-debug.png",
+        "sha256": "923b43c5f7f62a9cb880daa182df3c79b79c3f0f0742b1c3665df35d806015ee",
+        "size": 18775
+      },
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            72.0,
+            72.00000000000001,
+            492.0,
+            333.0
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -13.2,
+            0.0
+          ],
+          "ylim": [
+            0.352,
+            -0.352
+          ]
+        }
+      ],
+      "preflight_diagnostic": null,
+      "value_axis_label": "人次",
+      "warnings": []
+    },
+    "differences_from_frozen_L1_wrap8": [
+      "/plan/charts/0/standardCanvas/labelWrap"
+    ],
+    "frozen": {
+      "path": "frozen.json",
+      "sha256": "b4e51a89563efc259706760247e5638b5372fb79eafe22efef1ca9446378c941",
+      "size": 4205
+    },
+    "inputs": [
+      {
+        "path": "input-0.json",
+        "sha256": "646f8cc92acd46ea59ddaacdc3b9a50b88d59d762a0b01e3f067001233976e02",
+        "size": 236
+      }
+    ],
+    "variant": "wrap-40-manual",
+    "visual_review": "not_run"
+  },
+  {
+    "actual": {
+      "bar_values": [
+        -12.0
+      ],
+      "category_labels": [
+        "合成机构超长中文分类标签用于验证画布边缘完整显示"
+      ],
+      "compiled_script": {
+        "path": "compiled.py",
+        "sha256": "3056e72bc9edfa8981d368197bfc24cfc8e274b1d9efbd7dac2e6931f71548e6",
+        "size": 58989
+      },
+      "execution": "rendered",
+      "geometry": {
+        "canvas_px": [
+          600.0,
+          450.0
+        ],
+        "fonts": {
+          "NotoSansCJK-Bold.ttc": {
+            "path": "NotoSansCJK-Bold.ttc",
+            "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+            "size": 20050760
+          },
+          "NotoSansCJK-Regular.ttc": {
+            "path": "NotoSansCJK-Regular.ttc",
+            "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+            "size": 19484784
+          }
+        },
+        "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+        "missing_glyphs": [],
+        "text_bbox_intersections": [],
+        "texts": [
+          {
+            "bbox": [
+              512.8333333333334,
+              23.583333333333332,
+              42.0,
+              20.833333333333332
+            ],
+            "outside_canvas": false,
+            "text": "人次"
+          },
+          {
+            "bbox": [
+              450.11868686868695,
+              52.75,
+              27.0,
+              18.75
+            ],
+            "outside_canvas": false,
+            "text": "-20"
+          },
+          {
+            "bbox": [
+              502.5176767676768,
+              52.75,
+              27.0,
+              18.75
+            ],
+            "outside_canvas": false,
+            "text": "-10"
+          },
+          {
+            "bbox": [
+              563.4166666666666,
+              52.75,
+              10.0,
+              18.75
+            ],
+            "outside_canvas": false,
+            "text": "0"
+          },
+          {
+            "bbox": [
+              26.58333333333337,
+              196.16874999999993,
+              456.0,
+              19.109375
+            ],
+            "outside_canvas": false,
+            "text": "合成机构超长中文分类标签用于验证画布边缘完整显示"
+          },
+          {
+            "bbox": [
+              39.0,
+              412.071875,
+              261.0,
+              29.828125
+            ],
+            "outside_canvas": false,
+            "text": "合成数据：金额对照"
+          }
+        ]
+      },
+      "image": {
+        "path": "chart.png",
+        "sha256": "2fa755d3967d0e21091788ebc7346ccaf5ef685654cdc4dcad7cdbf0a83042c7",
+        "size": 27489
+      },
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            499.25000000000006,
+            88.16666666666667,
+            69.16666666666657,
+            237.36354166666655
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -13.2,
+            0.0
+          ],
+          "ylim": [
+            0.352,
+            -0.352
+          ]
+        }
+      ],
+      "preflight_diagnostic": null,
+      "value_axis_label": "人次",
+      "warnings": []
+    },
+    "differences_from_frozen_L1_wrap8": [
+      "/plan/charts/0/standardCanvas/labelWrap",
+      "/plan/charts/0/standardCanvas/layout"
+    ],
+    "frozen": {
+      "path": "frozen.json",
+      "sha256": "ee22191cb0301e1c02df48d32476b04f4c9be433f9605bba37b01dfa3018146a",
+      "size": 4204
+    },
+    "inputs": [
+      {
+        "path": "input-0.json",
+        "sha256": "646f8cc92acd46ea59ddaacdc3b9a50b88d59d762a0b01e3f067001233976e02",
+        "size": 236
+      }
+    ],
+    "variant": "wrap-40-tight",
+    "visual_review": "not_run"
+  },
+  {
+    "actual": {
+      "bar_values": [
+        -12.0
+      ],
+      "category_labels": [
+        "合成机构超长中文分类标签用于验证画布边缘完整显示"
+      ],
+      "compiled_script": {
+        "path": "compiled.py",
+        "sha256": "00bf600e356a8cd6f617e0a3e44398411e6270e8dfbaee2c072acea594c5dd68",
+        "size": 58995
+      },
+      "execution": "rendered",
+      "geometry": {
+        "canvas_px": [
+          600.0,
+          450.0
+        ],
+        "fonts": {
+          "NotoSansCJK-Bold.ttc": {
+            "path": "NotoSansCJK-Bold.ttc",
+            "sha256": "faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb",
+            "size": 20050760
+          },
+          "NotoSansCJK-Regular.ttc": {
+            "path": "NotoSansCJK-Regular.ttc",
+            "sha256": "b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+            "size": 19484784
+          }
+        },
+        "limitation": "bbox相交不等于感知遮挡；未测全部图元；未进行独立视觉审查",
+        "missing_glyphs": [],
+        "text_bbox_intersections": [],
+        "texts": [
+          {
+            "bbox": [
+              512.8333333333333,
+              15.25050000000002,
+              42.0,
+              20.833333333333332
+            ],
+            "outside_canvas": false,
+            "text": "人次"
+          },
+          {
+            "bbox": [
+              433.2005101010102,
+              44.41716666666669,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-20"
+          },
+          {
+            "bbox": [
+              498.22500505050505,
+              44.41716666666669,
+              27.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "-10"
+          },
+          {
+            "bbox": [
+              571.7494999999999,
+              44.41716666666669,
+              10.0,
+              18.750000000000007
+            ],
+            "outside_canvas": false,
+            "text": "0"
+          },
+          {
+            "bbox": [
+              18.250499999999988,
+              197.20991666666666,
+              456.0,
+              19.109375
+            ],
+            "outside_canvas": false,
+            "text": "合成机构超长中文分类标签用于验证画布边缘完整显示"
+          },
+          {
+            "bbox": [
+              39.0,
+              413.921375,
+              261.0,
+              29.828125
+            ],
+            "outside_canvas": false,
+            "text": "合成数据：金额对照"
+          }
+        ]
+      },
+      "image": {
+        "path": "chart.png",
+        "sha256": "3e5e45084c4cb04644f8de6b08d94ab69140adba48f4dd27eb94bd6887a95d85",
+        "size": 27702
+      },
+      "plot_geometry": [
+        {
+          "bbox_px": [
+            490.9171666666667,
+            79.83383333333336,
+            85.83233333333322,
+            256.1115416666666
+          ],
+          "tick_font_sizes": [
+            9.0
+          ],
+          "xlim": [
+            -13.2,
+            0.0
+          ],
+          "ylim": [
+            0.352,
+            -0.352
+          ]
+        }
+      ],
+      "preflight_diagnostic": null,
+      "value_axis_label": "人次",
+      "warnings": []
+    },
+    "differences_from_frozen_L1_wrap8": [
+      "/plan/charts/0/standardCanvas/labelWrap",
+      "/plan/charts/0/standardCanvas/layout"
+    ],
+    "frozen": {
+      "path": "frozen.json",
+      "sha256": "a4a5ea346d74595c0e456770ea1137709a3646d7a3a05e9cf830804a4415ff14",
+      "size": 4210
+    },
+    "inputs": [
+      {
+        "path": "input-0.json",
+        "sha256": "646f8cc92acd46ea59ddaacdc3b9a50b88d59d762a0b01e3f067001233976e02",
+        "size": 236
+      }
+    ],
+    "variant": "wrap-40-constrained",
+    "visual_review": "not_run"
+  }
+]

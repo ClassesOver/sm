@@ -1,0 +1,108 @@
+{
+  "baseline_commit": "b84437eee5cfed9ba808329a853b9b14e107d7aa",
+  "probe_command": [
+    "python",
+    "docs/superpowers/reports/2026-11-09-chinese-category-layout/probe.py",
+    "--output",
+    "docs/superpowers/reports/2026-11-09-chinese-category-layout/evidence-final-v2"
+  ],
+  "probe_exit_code": 0,
+  "pytest_command": [
+    "/home/junge/pros/smart_reporting/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "smart_reporting/reporting/tests/test_standard_chart_category_clipping.py",
+    "smart_reporting/reporting/tests/test_standard_visualization_line_layout.py::test_missing_note_uses_registered_chinese_series_label",
+    "smart_reporting/reporting/tests/test_standard_visualization.py::test_standard_canvas_fixed_export_has_exact_pixels",
+    "smart_reporting/reporting/tests/test_standard_chart_combinations.py::test_opt_in_online_planner_uses_production_standard_instructions",
+    "--junitxml=docs/superpowers/reports/2026-11-09-chinese-category-layout/evidence-final-v2/junit-final.xml"
+  ],
+  "pytest_exit_code": 0,
+  "pytest_passed": 12,
+  "same_input_identities_all_six": true,
+  "same_x_domain_all_six": [
+    -13.2,
+    0.0
+  ],
+  "single_factor_pairs": [
+    {
+      "control": "wrap-8-manual",
+      "candidate": "wrap-8-tight",
+      "changed": "standardCanvas.layout"
+    },
+    {
+      "control": "wrap-8-manual",
+      "candidate": "wrap-8-constrained",
+      "changed": "standardCanvas.layout"
+    },
+    {
+      "control": "wrap-40-tight",
+      "candidate": "wrap-8-tight",
+      "changed": "standardCanvas.labelWrap"
+    },
+    {
+      "control": "wrap-40-constrained",
+      "candidate": "wrap-8-constrained",
+      "changed": "standardCanvas.labelWrap"
+    }
+  ],
+  "sources": [
+    {
+      "path": "docs/superpowers/reports/2026-11-09-chinese-category-layout/probe.py",
+      "size": 3745,
+      "sha256": "33aae22eb366aa7f22a299be26fc53a3749ac905f31aff552fed50acdcf1de9f"
+    },
+    {
+      "path": "smart_reporting/reporting/instructions.py",
+      "size": 29115,
+      "sha256": "c16fb00c144a9a81fb5628d9b3fb1fa65abeaf8ddf0e4c3aede2e1a36c02941c"
+    },
+    {
+      "path": "smart_reporting/reporting/tests/test_standard_chart_category_clipping.py",
+      "size": 3275,
+      "sha256": "cb1c549d93487dc3ab96f1e565c5d4e9daeb6ce8ab57983ba9ffe47ef8f0ac68"
+    },
+    {
+      "path": "smart_reporting/reporting/tests/test_standard_visualization_line_layout.py",
+      "size": 5631,
+      "sha256": "7f097d862d82351f093003689f895be84945d54abfa6861ae2b61d94f61a4e9e"
+    },
+    {
+      "path": "smart_reporting/reporting/tests/test_standard_visualization.py",
+      "size": 33745,
+      "sha256": "02d0ec034024954ec7e4bfc324a5efc65f579f3901b9c152366d606d43fe743c"
+    },
+    {
+      "path": "smart_reporting/reporting/tests/test_standard_chart_combinations.py",
+      "size": 7328,
+      "sha256": "6f52bc0c272ba055953304d32580a83b94786803d95378c0034cf0833a3161de"
+    }
+  ],
+  "limitations": [
+    "No live model or AgentOS evaluation",
+    "No independent visual or business review",
+    "12 tests passed; no full suite",
+    "Runtime renderer unchanged; prompt effectiveness unverified",
+    "The first two successful exploratory outputs were moved to /tmp and are not delivered; final six-variant measurements are retained"
+  ],
+  "metadata_correction": "Explicitly distinguish current runtime baseline from earlier frozen-input baseline; six measured observations exactly equal before and after correction",
+  "pre_review_pytest_command": [
+    "/home/junge/pros/smart_reporting/.venv/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "smart_reporting/reporting/tests/test_standard_chart_category_clipping.py",
+    "smart_reporting/reporting/tests/test_standard_visualization_line_layout.py::test_missing_note_uses_registered_chinese_series_label",
+    "smart_reporting/reporting/tests/test_standard_visualization.py::test_standard_canvas_fixed_export_has_exact_pixels",
+    "smart_reporting/reporting/tests/test_standard_chart_combinations.py::test_opt_in_online_planner_uses_production_standard_instructions",
+    "--junitxml=/tmp/sr-chinese-layout-targeted.xml"
+  ],
+  "pre_review_instruction_identity": {
+    "path": "smart_reporting/reporting/instructions.py",
+    "size": 29032,
+    "sha256": "4857b9aa5b7e6508ee4756b398f1362bcb5a0a56db0bc0121787fe5dcdb77a0c"
+  },
+  "pre_review_pytest_seconds": 15.12,
+  "final_validation": "12 targeted cases rerun after review wording correction; logs and junit-final.xml saved"
+}

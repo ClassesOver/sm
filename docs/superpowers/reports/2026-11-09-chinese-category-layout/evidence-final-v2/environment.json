@@ -1,0 +1,1392 @@
+{
+  "available_locales": [
+    "C",
+    "C.utf8",
+    "POSIX",
+    "en_AG",
+    "en_AG.utf8",
+    "en_AU.utf8",
+    "en_BW.utf8",
+    "en_CA.utf8",
+    "en_DK.utf8",
+    "en_GB.utf8",
+    "en_HK.utf8",
+    "en_IE.utf8",
+    "en_IL",
+    "en_IL.utf8",
+    "en_IN",
+    "en_IN.utf8",
+    "en_NG",
+    "en_NG.utf8",
+    "en_NZ.utf8",
+    "en_PH.utf8",
+    "en_SG.utf8",
+    "en_US.utf8",
+    "en_ZA.utf8",
+    "en_ZM",
+    "en_ZM.utf8",
+    "en_ZW.utf8",
+    "zh_CN.utf8",
+    "zh_SG.utf8"
+  ],
+  "backend": "Agg",
+  "baseline_commit": "b84437eee5cfed9ba808329a853b9b14e107d7aa",
+  "flint": {
+    "commit": "a794557384adcc3293a77043f6b9aff1c33d152c",
+    "upstream_tests": "not_run: no installed local dependencies; no installation attempted"
+  },
+  "frozen_input_baseline_commit": "7550d1da392dcf928e81c3b8478b953c49c433b5",
+  "installed_distributions": [
+    [
+      "Authlib",
+      "1.8.0"
+    ],
+    [
+      "CairoSVG",
+      "2.9.1"
+    ],
+    [
+      "ImageHash",
+      "4.3.2"
+    ],
+    [
+      "Jinja2",
+      "3.1.6"
+    ],
+    [
+      "Mako",
+      "1.4.1"
+    ],
+    [
+      "MarkupSafe",
+      "3.0.3"
+    ],
+    [
+      "PyJWT",
+      "2.14.0"
+    ],
+    [
+      "PyMySQL",
+      "1.2.3"
+    ],
+    [
+      "PyWavelets",
+      "1.10.0"
+    ],
+    [
+      "PyYAML",
+      "6.0.3"
+    ],
+    [
+      "Pygments",
+      "2.21.0"
+    ],
+    [
+      "SQLAlchemy",
+      "2.0.54"
+    ],
+    [
+      "SecretStorage",
+      "3.5.0"
+    ],
+    [
+      "adjustText",
+      "1.4.0"
+    ],
+    [
+      "ag-ui-protocol",
+      "0.1.22"
+    ],
+    [
+      "agno",
+      "3.1.2"
+    ],
+    [
+      "agnoctl",
+      "0.2.1"
+    ],
+    [
+      "aiofile",
+      "3.12.3"
+    ],
+    [
+      "alembic",
+      "1.20.0"
+    ],
+    [
+      "altair",
+      "6.3.0"
+    ],
+    [
+      "annotated-doc",
+      "0.0.5"
+    ],
+    [
+      "annotated-types",
+      "0.8.0"
+    ],
+    [
+      "anyio",
+      "4.15.1"
+    ],
+    [
+      "argon2-cffi",
+      "25.1.0"
+    ],
+    [
+      "argon2-cffi-bindings",
+      "26.1.0"
+    ],
+    [
+      "asttokens",
+      "3.0.2"
+    ],
+    [
+      "asyncmy2",
+      "0.2.21"
+    ],
+    [
+      "attrs",
+      "26.1.0"
+    ],
+    [
+      "beartype",
+      "0.22.9"
+    ],
+    [
+      "beautifulsoup4",
+      "4.15.0"
+    ],
+    [
+      "black",
+      "26.5.1"
+    ],
+    [
+      "bokeh",
+      "3.10.0"
+    ],
+    [
+      "brotli",
+      "1.2.0"
+    ],
+    [
+      "cachetools",
+      "7.2.0"
+    ],
+    [
+      "caio",
+      "0.12.4"
+    ],
+    [
+      "cairocffi",
+      "1.7.1"
+    ],
+    [
+      "certifi",
+      "2026.7.22"
+    ],
+    [
+      "cffi",
+      "2.1.1"
+    ],
+    [
+      "charset-normalizer",
+      "3.5.1"
+    ],
+    [
+      "choreographer",
+      "1.4.0"
+    ],
+    [
+      "click",
+      "8.5.0"
+    ],
+    [
+      "cloudpickle",
+      "3.1.2"
+    ],
+    [
+      "comm",
+      "0.2.3"
+    ],
+    [
+      "contourpy",
+      "1.4.0"
+    ],
+    [
+      "cryptography",
+      "50.0.1"
+    ],
+    [
+      "cssselect2",
+      "0.10.1"
+    ],
+    [
+      "cycler",
+      "0.12.1"
+    ],
+    [
+      "cyclopts",
+      "4.25.3"
+    ],
+    [
+      "dacite",
+      "1.9.2"
+    ],
+    [
+      "debugpy",
+      "1.8.22"
+    ],
+    [
+      "defusedxml",
+      "0.7.1"
+    ],
+    [
+      "dill",
+      "0.3.9"
+    ],
+    [
+      "dingyi-agno",
+      "0.5.4"
+    ],
+    [
+      "distro",
+      "1.9.0"
+    ],
+    [
+      "dnspython",
+      "2.8.0"
+    ],
+    [
+      "docstring-to-markdown",
+      "0.17"
+    ],
+    [
+      "docstring_parser",
+      "0.18.0"
+    ],
+    [
+      "duckdb",
+      "1.5.5"
+    ],
+    [
+      "email-validator",
+      "2.3.0"
+    ],
+    [
+      "et_xmlfile",
+      "2.0.0"
+    ],
+    [
+      "exceptiongroup",
+      "1.3.1"
+    ],
+    [
+      "executing",
+      "2.2.1"
+    ],
+    [
+      "fastapi",
+      "0.141.1"
+    ],
+    [
+      "fastmcp",
+      "4.1.0"
+    ],
+    [
+      "fastmcp-slim",
+      "4.1.0"
+    ],
+    [
+      "fg-data-profiling",
+      "4.20.0"
+    ],
+    [
+      "filelock",
+      "4.0.0"
+    ],
+    [
+      "filetype",
+      "1.2.0"
+    ],
+    [
+      "fonttools",
+      "4.65.0"
+    ],
+    [
+      "formulaic",
+      "1.2.2"
+    ],
+    [
+      "fsspec",
+      "2026.7.0"
+    ],
+    [
+      "graphviz",
+      "0.21"
+    ],
+    [
+      "greenlet",
+      "3.5.6"
+    ],
+    [
+      "griffelib",
+      "2.3.0"
+    ],
+    [
+      "h11",
+      "0.16.0"
+    ],
+    [
+      "h2",
+      "4.4.1"
+    ],
+    [
+      "hf-xet",
+      "1.6.0"
+    ],
+    [
+      "hpack",
+      "4.2.0"
+    ],
+    [
+      "httpcore",
+      "1.0.9"
+    ],
+    [
+      "httpcore2",
+      "2.13.1"
+    ],
+    [
+      "httptools",
+      "0.8.0"
+    ],
+    [
+      "httpx",
+      "0.28.1"
+    ],
+    [
+      "httpx2",
+      "2.13.1"
+    ],
+    [
+      "huggingface_hub",
+      "1.32.0"
+    ],
+    [
+      "hyperframe",
+      "6.1.0"
+    ],
+    [
+      "hypothesis",
+      "6.170.5"
+    ],
+    [
+      "idna",
+      "3.20"
+    ],
+    [
+      "importlib_metadata",
+      "9.0.1"
+    ],
+    [
+      "iniconfig",
+      "2.3.0"
+    ],
+    [
+      "interface_meta",
+      "2.0.1"
+    ],
+    [
+      "ipykernel",
+      "6.31.0"
+    ],
+    [
+      "ipython",
+      "9.17.1"
+    ],
+    [
+      "ipython_pygments_lexers",
+      "1.1.1"
+    ],
+    [
+      "jaraco.classes",
+      "3.4.0"
+    ],
+    [
+      "jaraco.context",
+      "6.1.2"
+    ],
+    [
+      "jaraco.functools",
+      "4.6.0"
+    ],
+    [
+      "jedi",
+      "0.20.0"
+    ],
+    [
+      "jeepney",
+      "0.9.0"
+    ],
+    [
+      "jiter",
+      "0.17.0"
+    ],
+    [
+      "jmespath",
+      "1.0.1"
+    ],
+    [
+      "joblib",
+      "1.6.0"
+    ],
+    [
+      "joserfc",
+      "1.7.5"
+    ],
+    [
+      "jsonpointer",
+      "3.1.1"
+    ],
+    [
+      "jsonref",
+      "1.1.0"
+    ],
+    [
+      "jsonschema",
+      "4.26.0"
+    ],
+    [
+      "jsonschema-path",
+      "0.5.0"
+    ],
+    [
+      "jsonschema-specifications",
+      "2025.9.1"
+    ],
+    [
+      "jupyter_client",
+      "8.10.0"
+    ],
+    [
+      "jupyter_core",
+      "5.9.1"
+    ],
+    [
+      "kaleido",
+      "1.4.0"
+    ],
+    [
+      "keyring",
+      "25.7.0"
+    ],
+    [
+      "kiwisolver",
+      "1.5.1"
+    ],
+    [
+      "lark",
+      "1.3.1"
+    ],
+    [
+      "librt",
+      "0.15.0"
+    ],
+    [
+      "llvmlite",
+      "0.45.1"
+    ],
+    [
+      "logistro",
+      "2.0.1"
+    ],
+    [
+      "loguru",
+      "0.7.3"
+    ],
+    [
+      "lxml",
+      "6.1.1"
+    ],
+    [
+      "markdown-it-py",
+      "4.2.0"
+    ],
+    [
+      "matplotlib",
+      "3.11.1"
+    ],
+    [
+      "matplotlib-inline",
+      "0.2.2"
+    ],
+    [
+      "mcp",
+      "2.3.0"
+    ],
+    [
+      "mcp-types",
+      "2.3.0"
+    ],
+    [
+      "mdurl",
+      "0.1.2"
+    ],
+    [
+      "minify_html",
+      "0.18.1"
+    ],
+    [
+      "mizani",
+      "0.14.6"
+    ],
+    [
+      "more-itertools",
+      "11.1.0"
+    ],
+    [
+      "mpmath",
+      "1.3.0"
+    ],
+    [
+      "multimethod",
+      "1.12"
+    ],
+    [
+      "mypy",
+      "1.20.2"
+    ],
+    [
+      "mypy_extensions",
+      "1.1.0"
+    ],
+    [
+      "narwhals",
+      "2.26.0"
+    ],
+    [
+      "nest-asyncio",
+      "1.6.0"
+    ],
+    [
+      "networkx",
+      "3.6.1"
+    ],
+    [
+      "numba",
+      "0.62.1"
+    ],
+    [
+      "numpy",
+      "2.3.5"
+    ],
+    [
+      "odfpy",
+      "1.4.1"
+    ],
+    [
+      "openai",
+      "2.54.0"
+    ],
+    [
+      "openapi-pydantic",
+      "0.5.1"
+    ],
+    [
+      "openinference-instrumentation",
+      "0.1.65"
+    ],
+    [
+      "openinference-instrumentation-agno",
+      "0.1.38"
+    ],
+    [
+      "openinference-semantic-conventions",
+      "0.1.38"
+    ],
+    [
+      "openpyxl",
+      "3.1.5"
+    ],
+    [
+      "opentelemetry-api",
+      "1.44.0"
+    ],
+    [
+      "opentelemetry-instrumentation",
+      "0.65b0"
+    ],
+    [
+      "opentelemetry-sdk",
+      "1.44.0"
+    ],
+    [
+      "opentelemetry-semantic-conventions",
+      "0.65b0"
+    ],
+    [
+      "orjson",
+      "3.12.0"
+    ],
+    [
+      "packaging",
+      "25.0"
+    ],
+    [
+      "pandas",
+      "2.3.3"
+    ],
+    [
+      "parso",
+      "0.8.7"
+    ],
+    [
+      "pathable",
+      "0.6.0"
+    ],
+    [
+      "pathspec",
+      "1.1.1"
+    ],
+    [
+      "patsy",
+      "1.0.3"
+    ],
+    [
+      "pdfminer.six",
+      "20260107"
+    ],
+    [
+      "pdfplumber",
+      "0.11.10"
+    ],
+    [
+      "pexpect",
+      "4.9.0"
+    ],
+    [
+      "phik",
+      "0.12.5"
+    ],
+    [
+      "pikepdf",
+      "10.13.0.post1"
+    ],
+    [
+      "pillow",
+      "12.3.0"
+    ],
+    [
+      "platformdirs",
+      "4.11.10"
+    ],
+    [
+      "playwright",
+      "1.63.0"
+    ],
+    [
+      "plotly",
+      "6.9.0"
+    ],
+    [
+      "plotnine",
+      "0.15.8"
+    ],
+    [
+      "pluggy",
+      "1.6.0"
+    ],
+    [
+      "polars",
+      "1.43.2"
+    ],
+    [
+      "polars-runtime-32",
+      "1.43.2"
+    ],
+    [
+      "prompt_toolkit",
+      "3.0.53"
+    ],
+    [
+      "psutil",
+      "7.2.2"
+    ],
+    [
+      "psycopg",
+      "3.3.5"
+    ],
+    [
+      "psycopg-binary",
+      "3.3.5"
+    ],
+    [
+      "ptyprocess",
+      "0.7.0"
+    ],
+    [
+      "pure_eval",
+      "0.2.4"
+    ],
+    [
+      "puremagic",
+      "2.2.0"
+    ],
+    [
+      "pwdlib",
+      "0.3.1"
+    ],
+    [
+      "py-key-value-aio",
+      "0.4.5"
+    ],
+    [
+      "pyarrow",
+      "25.0.1"
+    ],
+    [
+      "pycparser",
+      "3.0"
+    ],
+    [
+      "pydantic",
+      "2.13.5"
+    ],
+    [
+      "pydantic-settings",
+      "2.15.0"
+    ],
+    [
+      "pydantic_core",
+      "2.46.5"
+    ],
+    [
+      "pydyf",
+      "0.12.1"
+    ],
+    [
+      "pyee",
+      "13.0.1"
+    ],
+    [
+      "pygal",
+      "3.1.3"
+    ],
+    [
+      "pymupdf",
+      "1.28.2"
+    ],
+    [
+      "pypandoc",
+      "1.17"
+    ],
+    [
+      "pyparsing",
+      "3.3.2"
+    ],
+    [
+      "pypdf",
+      "6.14.2"
+    ],
+    [
+      "pypdfium2",
+      "5.13.0"
+    ],
+    [
+      "pyperclip",
+      "1.11.0"
+    ],
+    [
+      "pyphen",
+      "0.18.1"
+    ],
+    [
+      "pytest",
+      "9.1.1"
+    ],
+    [
+      "pytest-base-url",
+      "2.1.0"
+    ],
+    [
+      "pytest-playwright",
+      "0.9.0"
+    ],
+    [
+      "python-dateutil",
+      "2.9.0.post0"
+    ],
+    [
+      "python-docx",
+      "1.2.0"
+    ],
+    [
+      "python-dotenv",
+      "1.2.3"
+    ],
+    [
+      "python-lsp-jsonrpc",
+      "1.1.2"
+    ],
+    [
+      "python-lsp-server",
+      "1.15.0"
+    ],
+    [
+      "python-multipart",
+      "0.0.32"
+    ],
+    [
+      "python-pptx",
+      "1.0.2"
+    ],
+    [
+      "python-slugify",
+      "8.0.4"
+    ],
+    [
+      "pytokens",
+      "0.4.1"
+    ],
+    [
+      "pytz",
+      "2026.3.post1"
+    ],
+    [
+      "pyzmq",
+      "27.2.0"
+    ],
+    [
+      "questionary",
+      "2.1.1"
+    ],
+    [
+      "referencing",
+      "0.37.0"
+    ],
+    [
+      "regex",
+      "2026.9.10"
+    ],
+    [
+      "reportlab",
+      "5.0.1"
+    ],
+    [
+      "requests",
+      "2.34.2"
+    ],
+    [
+      "rich",
+      "15.0.0"
+    ],
+    [
+      "rich-rst",
+      "2.1.0"
+    ],
+    [
+      "rpds-py",
+      "2026.6.3"
+    ],
+    [
+      "ruff",
+      "0.16.8"
+    ],
+    [
+      "scipy",
+      "1.16.3"
+    ],
+    [
+      "seaborn",
+      "0.13.2"
+    ],
+    [
+      "setuptools",
+      "80.10.2"
+    ],
+    [
+      "shapely",
+      "2.1.2"
+    ],
+    [
+      "shellingham",
+      "1.5.4"
+    ],
+    [
+      "simplejson",
+      "4.1.2"
+    ],
+    [
+      "six",
+      "1.17.0"
+    ],
+    [
+      "sniffio",
+      "1.3.1"
+    ],
+    [
+      "sortedcontainers",
+      "2.4.0"
+    ],
+    [
+      "soupsieve",
+      "2.9.2"
+    ],
+    [
+      "sqlglot",
+      "28.10.1"
+    ],
+    [
+      "sse-starlette",
+      "3.4.11"
+    ],
+    [
+      "stack-data",
+      "0.6.3"
+    ],
+    [
+      "starlette",
+      "1.6.0"
+    ],
+    [
+      "starrocks",
+      "1.3.3"
+    ],
+    [
+      "statsmodels",
+      "0.15.0"
+    ],
+    [
+      "sympy",
+      "1.14.0"
+    ],
+    [
+      "tabulate",
+      "0.10.0"
+    ],
+    [
+      "text-unidecode",
+      "1.3"
+    ],
+    [
+      "tiktoken",
+      "0.14.0"
+    ],
+    [
+      "tinycss2",
+      "1.5.1"
+    ],
+    [
+      "tinyhtml5",
+      "2.1.0"
+    ],
+    [
+      "tokenizers",
+      "0.23.2"
+    ],
+    [
+      "tornado",
+      "6.5.10"
+    ],
+    [
+      "tqdm",
+      "4.70.1"
+    ],
+    [
+      "traitlets",
+      "5.16.1"
+    ],
+    [
+      "truststore",
+      "0.10.5"
+    ],
+    [
+      "typeguard",
+      "4.6.0"
+    ],
+    [
+      "typer",
+      "0.27.2"
+    ],
+    [
+      "types-python-dateutil",
+      "2.9.0.20260807"
+    ],
+    [
+      "typing-inspection",
+      "0.4.4"
+    ],
+    [
+      "typing_extensions",
+      "4.16.0"
+    ],
+    [
+      "tzdata",
+      "2026.4"
+    ],
+    [
+      "ujson",
+      "6.0.0"
+    ],
+    [
+      "uncalled-for",
+      "0.4.0"
+    ],
+    [
+      "unidiff",
+      "0.7.5"
+    ],
+    [
+      "urllib3",
+      "2.8.0"
+    ],
+    [
+      "uvicorn",
+      "0.53.0"
+    ],
+    [
+      "uvloop",
+      "0.22.1"
+    ],
+    [
+      "visions",
+      "0.8.1"
+    ],
+    [
+      "watchfiles",
+      "1.2.0"
+    ],
+    [
+      "wcwidth",
+      "0.8.4"
+    ],
+    [
+      "weasyprint",
+      "69.0"
+    ],
+    [
+      "webencodings",
+      "0.6.1"
+    ],
+    [
+      "websockets",
+      "17.1"
+    ],
+    [
+      "wordcloud",
+      "1.9.6"
+    ],
+    [
+      "wrapt",
+      "2.4.1"
+    ],
+    [
+      "xlrd",
+      "2.0.2"
+    ],
+    [
+      "xlsxwriter",
+      "3.2.9"
+    ],
+    [
+      "xlwt",
+      "1.3.0"
+    ],
+    [
+      "xyzservices",
+      "2026.9.1"
+    ],
+    [
+      "zipp",
+      "4.1.0"
+    ],
+    [
+      "zopfli",
+      "0.4.3"
+    ]
+  ],
+  "locale": "LC_CTYPE=C.UTF-8;LC_NUMERIC=C;LC_TIME=C;LC_COLLATE=C;LC_MONETARY=C;LC_MESSAGES=C;LC_PAPER=C;LC_NAME=C;LC_ADDRESS=C;LC_TELEPHONE=C;LC_MEASUREMENT=C;LC_IDENTIFICATION=C",
+  "machine": "x86_64",
+  "node": "v24.18.0",
+  "os_release": {
+    "BUG_REPORT_URL": "https://bugs.launchpad.net/ubuntu/",
+    "HOME_URL": "https://www.ubuntu.com/",
+    "ID": "ubuntu",
+    "ID_LIKE": "debian",
+    "LOGO": "ubuntu-logo",
+    "NAME": "Ubuntu",
+    "PRETTY_NAME": "Ubuntu 24.04.4 LTS",
+    "PRIVACY_POLICY_URL": "https://www.ubuntu.com/legal/terms-and-policies/privacy-policy",
+    "SUPPORT_URL": "https://help.ubuntu.com/",
+    "UBUNTU_CODENAME": "noble",
+    "VERSION": "24.04.4 LTS (Noble Numbat)",
+    "VERSION_CODENAME": "noble",
+    "VERSION_ID": "24.04"
+  },
+  "platform": "Linux-6.8.0-134-generic-x86_64-with-glibc2.39",
+  "probe_script": {
+    "path": "probe.py",
+    "sha256": "33aae22eb366aa7f22a299be26fc53a3749ac905f31aff552fed50acdcf1de9f",
+    "size": 3745
+  },
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "replay_source": {
+    "path": "2026-11-09-standard-visualization-counterfactuals/replay.py",
+    "sha256": "55bef714be046ff386e7cb098c6d3ce0583bcfa7a77579e1837af0a931cc115b",
+    "size": 23643
+  },
+  "runner_commit": "b84437eee5cfed9ba808329a853b9b14e107d7aa",
+  "source_and_lock_identities": [
+    {
+      "path": "uv.lock",
+      "sha256": "db0e946dbead2ed085c79d85a5a0bf46906c2f0892fc168a838e7eb8e6764bbf",
+      "size": 1035595
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "74f13ccd513d4a1a6a0825495eb967cd4bdfffb26fa99b201b7caa3c5adc3ba8",
+      "size": 3453
+    },
+    {
+      "path": "smart_reporting/reporting/units.py",
+      "sha256": "4a9578f633e3b7a8161ef8547d8dd4f0073c800a2cc5b127bad70339264765c3",
+      "size": 1979
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/__init__.py",
+      "sha256": "5186367433c7b2aec8a2df2cd6a992b4173f31b7ff3763effbf80e9766012ba6",
+      "size": 1560
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/analysis.py",
+      "sha256": "74937b5da236fe073c75f54dafe908eccad75e0c67707a5f2d25608023eb8444",
+      "size": 277973
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/analysis_coverage.py",
+      "sha256": "843426ad81a9c475a9611ba430c1a3fc58c69054099edd733efebc0aa03e8d40",
+      "size": 11349
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/analysis_item_workflow.py",
+      "sha256": "e9177d14d1f935a9c5824401e4de9b60da39875c96ec7a42026df8009645df78",
+      "size": 122058
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/base.py",
+      "sha256": "ba02a483d0474329177945385f63ca60ed250591d29c3b470682effa9d075816",
+      "size": 110943
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/chart_data_descriptors.py",
+      "sha256": "f42caf5f08fd883d4035fa43588f006b5683045d892c3d8e1ca8e0bcc5f4a769",
+      "size": 5141
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/chart_inputs.py",
+      "sha256": "056c741248c433c286292876f3976ada968e50dbebdf0f6cbea2222a455ce805",
+      "size": 23770
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/code_generation.py",
+      "sha256": "4b09d08bc3a1343c8df9ac6f63c47c378f57eb4a3fe3f3a9f16986407b86370d",
+      "size": 62794
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/datasets.py",
+      "sha256": "a9d87c1fb9c22b22cd140a60312328421da9f3964c89cf4720edc652961d73f7",
+      "size": 41959
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/evidence_coverage.py",
+      "sha256": "57a2b833977f4072fd70e063fd1af18f08c472bc255bcf26a56a917b7324e967",
+      "size": 7236
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/facade.py",
+      "sha256": "77a70e1ebfa915fb51352edc8b73603622a2bab64a52bce11fe4347689cab551",
+      "size": 871
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/fact_summary.py",
+      "sha256": "afc7f661c300aa98f78ee8d1ce03735499dff1b24b1d252af3f68113a9079b20",
+      "size": 7681
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/finding_evidence.py",
+      "sha256": "e2f37868b988b37bc6d76c264178a750facf7b4c5774ef665779091dc3eb1f70",
+      "size": 5562
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/models.py",
+      "sha256": "af8e84f10b835afb7106aa7813c30f80fe1b60e349d32039e04ad1154c2915bb",
+      "size": 19073
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/phase_models.py",
+      "sha256": "3a25c47aee95830c298ce9f11aaf36c7ffb84316bca9e95afaca28f70d1e9395",
+      "size": 63933
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/planning.py",
+      "sha256": "a25c91187cf235ade6200988f944751cd4c722ebb2560eaf761a48375285e911",
+      "size": 192756
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/publication.py",
+      "sha256": "4c5028c741f1535a918069d96f13b4a43e6f69e9c26298afda5a02e579ed354b",
+      "size": 118284
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/reference_materials.py",
+      "sha256": "4b9bedb0f3b9fe20cc8dd289362970c3b4b4b2c3c736af745e690909a50dd150",
+      "size": 12343
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/reporting_draft_workflow.py",
+      "sha256": "b77c66c63ed3f5e50db75328d4bd05d1253bc866ae9dd587aa33b491e361b9d8",
+      "size": 21377
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/section_workflow.py",
+      "sha256": "5ad7f136d59c9b0973e0cbf25a29be8291217fb46877ec25afb7249731912315",
+      "size": 8379
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/sections.py",
+      "sha256": "224421c82ad0bee83c4a9ed14b59c8d9de31fdf390866948e4cdda0ed439f9f6",
+      "size": 282795
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/slides.py",
+      "sha256": "cad69984df393bb35ad62130e429bbb051e7cb38b708556441e2e3142a516ad3",
+      "size": 21013
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_alignment.py",
+      "sha256": "190ff7c932f397a6e3656a180924b3ff6a26440195d44c21a8ba78c261a14e50",
+      "size": 6229
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_box_summary.py",
+      "sha256": "68468d99300c008a6803c031a94e1fe75753ff34200a298403342e0a6fd7a97b",
+      "size": 16460
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_breaks.py",
+      "sha256": "c73e2be7c73591a3a4fa11e70295f57eb9ed8367c562388b8065992e7fb42705",
+      "size": 15304
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_contract.py",
+      "sha256": "5fd97724784d95a6b8bb0cdec148ade13fc5bd5cdc01a5983b41741447681384",
+      "size": 3039
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_domains.py",
+      "sha256": "c669eb41e36d5758bdb6059e9ac3b3d4c26779b698a7df42c63015b85ffdde03",
+      "size": 15926
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_dual_stack.py",
+      "sha256": "9492ea114508e8ff8e20c685eee63ffdf6a67d5295a646febc1415b10bad00a6",
+      "size": 11859
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_encoding.py",
+      "sha256": "4c6beecbb600328339305e677cb8a7d51e9c89b1eda1e72cf015aa8e17be89ba",
+      "size": 36852
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_families.py",
+      "sha256": "eb709088510287f22b721324ba3d4176fed04eba9e74267e920c4c9bf31aca3f",
+      "size": 49450
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_horizontal_breaks.py",
+      "sha256": "abd1ee629beb99173a81e3c6e66b55f7fa8c720c5433adf12c6a9390a751f5f3",
+      "size": 10622
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_numeric.py",
+      "sha256": "b7e071b8ad9226c16f544a4150992a89e5e308a703b8312109a283493ef402ea",
+      "size": 143
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_pagination.py",
+      "sha256": "db02f75f6bb3d3b917a629b08dc1f2df230b36da0f987363b09012f2599864f5",
+      "size": 12971
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_presentation.py",
+      "sha256": "daee9b62d42497847bc9201af771b4fce3c7a1498824932e6d9f91e56944f5e8",
+      "size": 15327
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_proof.py",
+      "sha256": "f74f0d8136128cd47719ccd5e0d9ab7b7b377a1d81843b4baf2b1121c04378b2",
+      "size": 6888
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_routing.py",
+      "sha256": "0ca1da6dfa868b5f8620b1ec309547d8c4bc50585db1c4f79cbe7336c70ea72b",
+      "size": 29494
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_statistics.py",
+      "sha256": "842d64ce2c9876023ba0916be82759beb6219c3603d9b492f2172fed9eadf0e1",
+      "size": 20292
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_chart_transform.py",
+      "sha256": "f4e3c0924c901d17601d9926457cd3b419c4972005c59284052cb1509b97006f",
+      "size": 14702
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_supplemental.py",
+      "sha256": "b81e496c8018e6da7e03da19a6f176f5f199643d995318642fd88ec2ee92f5d4",
+      "size": 105863
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_supplemental_input.py",
+      "sha256": "a92e45259061ec668ad828265f50fe0a13960734414b66bb8e11db84ab3e2a17",
+      "size": 1049
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/standard_visualization.py",
+      "sha256": "15e260f638c68b8c91f224c1dd3a4d6b8598e07a4d1976d570ee44de33ec7b14",
+      "size": 90540
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/validation.py",
+      "sha256": "21db3c9932dab5d3a094275ad09b6ba80c0304215ec7af3fe50c3539024aa744",
+      "size": 46290
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/visualization_field_rules.py",
+      "sha256": "cf16a07e15820dceaf5a39a2ab046e213c16ec82406718a90be35a1d0b244c0e",
+      "size": 5475
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/visualization_section_workflow.py",
+      "sha256": "ef6377e59098e15e4ec7c4cdd98acdf778bd0a9e6104250b67772485fbc4424d",
+      "size": 59424
+    },
+    {
+      "path": "smart_reporting/reporting/workflow/runtime/workbook.py",
+      "sha256": "facde49aebed828abbf66ba665b353251752db614c559f5d43a29eaabfe64668",
+      "size": 14500
+    },
+    {
+      "path": "smart_reporting/reporting/slides_engine/package-lock.json",
+      "sha256": "efd1bdcf7b320f0c4335730043363213e131de6092d14116c55552f8a8c38b1a",
+      "size": 71806
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/package-lock.json",
+      "sha256": "3b07ba2769a8a8457767ffd5c03ed530f6da1f5672934a6138c641d8fbef1611",
+      "size": 77429
+    }
+  ]
+}
