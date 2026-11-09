@@ -144,9 +144,10 @@ def test_planner_summary_keeps_units_real_extents_and_explicitly_partial_labels(
 
 
 class StandardRunner(FakeRunner):
-    def __init__(self,png):
+    def __init__(self,png,receipt_fault=None):
         super().__init__(png)
         self.standard_calls=[]
+        self.receipt_fault=receipt_fault
 
     async def run_standard_visualization(self,context,workspace,source,facts):
         from smart_reporting.reporting.workflow.checkpoint import ChartVisualInspectionReceipt
@@ -159,7 +160,17 @@ class StandardRunner(FakeRunner):
         receipts=[]
         for output in context.declared_output_paths:
             image,_=await workspace.afile_bytes(context.workspace_key,output)
-            receipts.append(ChartVisualInspectionReceipt(sourcePath=output,sha256=_sha(image),reviewed=True,requiresRevision=False,modelId='fixture-only'))
+            receipt_path=output
+            receipt_sha=_sha(image)
+            if output.endswith('chart--page-2.png'):
+                if self.receipt_fault=='path':
+                    receipt_path='reports/revision-0/old.png'
+                elif self.receipt_fault=='sha256':
+                    receipt_sha='0'*64
+                elif self.receipt_fault=='missing':
+                    continue
+            receipts.append(ChartVisualInspectionReceipt(sourcePath=receipt_path,sha256=receipt_sha,reviewed=True,requiresRevision=False,modelId='fixture-only'))
+        receipts.sort(key=lambda receipt:receipt.source_path.endswith('/chart.png'))  # 主图回执不必位于首位。
         return SimpleNamespace(script_file={'path':context.script_path},execution_receipt=SimpleNamespace(output_files=()),
             visual_inspection_receipts=tuple(receipts),visual_repair_diagnostic=None)
 
@@ -240,6 +251,76 @@ async def test_real_paginated_edit_reedit_from_page2_inherits_whole_cohort_and_s
     assert response['pages'][1]['pageCount']==3
     assert all(len(json.loads(file.content)['rows'])==3 for file in [
         SimpleNamespace(content=(await fixture.workspace.afile_bytes(fixture.thread_id,ref.path))[0]) for ref in result.plot_data_files])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend',['asyncio'])
+@pytest.mark.parametrize('fault',[None,'sha256','path','missing'])
+async def test_paginated_edit_drops_receipts_not_matching_each_output_identity(tmp_path,fault):
+    fixture=await _make_editor_with_chart(tmp_path,template_ready=True)
+    runner=StandardRunner(fixture.chart_bytes,receipt_fault=fault)
+
+    async def planner(request):
+        binding=next(item for item in request['registeredBindings'] if item['dataPath'].endswith('.periodValues'))
+        return ChartEditPlan(level=['L2'],title='收入分页',altText='冻结期间收入',visualForm='barh',drawInstruction='逐页完整显示',
+            dataBindings=[{k:binding[k] for k in ('analysisId','factPath','dataPath','fields','role')}],
+            standard={'standardValueFields':['value'],'standardPagination':{'pageSize':1}})
+
+    service=_service(fixture,runner,planner=planner,timeout_seconds=60)
+    started=await service.start_edit(fixture.context,SimpleNamespace(capabilities=None),'chart_001',ChartAIEditRequest(instruction='分页显示冻结期间'))
+    result=await _await_edit(service,fixture.context,'chart_001',started['editId'])
+
+    assert result['status']=='succeeded',result
+    records=await load_chart_edit_records(fixture.workspace,fixture.thread_id,fixture.context.markdown_path)
+    record=records[-1]
+    assert len(record.pages)==len(result['pages'])==3
+    assert record.visual_inspection_receipt['sourcePath']==record.image.path
+    assert record.visual_inspection_receipt['sha256']==record.image.sha256
+    assert record.pages[0].visual_inspection_receipt['sha256']==record.pages[0].image.sha256
+    if fault:
+        assert record.pages[1].visual_inspection_receipt=={}
+        assert any('视觉回执' in warning for warning in record.warnings)
+    else:
+        assert record.pages[1].visual_inspection_receipt['sha256']==record.pages[1].image.sha256
+        assert not any('视觉回执' in warning for warning in record.warnings)
+    assert record.pages[2].visual_inspection_receipt['sourcePath']==record.pages[2].image.path
+    assert record.pages[2].visual_inspection_receipt['sha256']==record.pages[2].image.sha256
+    assert result['visualInspection']['reviewed'] is (fault is None)
+    assert len(result['pages'])==3 and all(page['imageSrc'] for page in result['pages'])
+    await service.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend',['asyncio'])
+@pytest.mark.parametrize('fault',['path','sha256','stale_before_valid'])
+async def test_single_edit_registers_only_receipt_for_actual_image(tmp_path,fault):
+    fixture=await _make_editor_with_chart(tmp_path)
+
+    class ReceiptRunner(FakeRunner):
+        async def run(self,*args,**kwargs):
+            result=await super().run(*args,**kwargs)
+            valid=result.visual_inspection_receipts[0]
+            stale=valid.model_copy(update={'source_path':'reports/revision-0/old.png'} if fault=='path'
+                else {'sha256':'0'*64})
+            result.visual_inspection_receipts=(stale,valid) if fault=='stale_before_valid' else (stale,)
+            return result
+
+    service=_service(fixture,ReceiptRunner(fixture.chart_bytes))
+    started=await service.start_edit(fixture.context,SimpleNamespace(capabilities=None),'chart_001',ChartAIEditRequest(instruction='调整颜色'))
+    result=await _await_edit(service,fixture.context,'chart_001',started['editId'])
+
+    assert result['status']=='succeeded',result
+    records=await load_chart_edit_records(fixture.workspace,fixture.thread_id,fixture.context.markdown_path)
+    record=records[-1]
+    if fault=='stale_before_valid':
+        assert record.visual_inspection_receipt['sha256']==record.image.sha256
+        assert result['visualInspection']['reviewed'] is True
+    else:
+        assert record.visual_inspection_receipt=={}
+        assert result['visualInspection']['reviewed'] is False
+    assert any('视觉回执' in warning for warning in result['warnings'])
+    assert result['imageSrc']
+    await service.aclose()
 
 
 @pytest.mark.anyio
