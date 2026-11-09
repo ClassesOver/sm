@@ -3,7 +3,7 @@
  * Verify exact counts and suffix payload before changing only the newly added dates.
  */
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRef, PDFString } from 'pdf-lib'
-export interface AddedNoteDate { pageIndex: number; contents: string; rect: number[]; createdMs?: number }
+export interface AddedNoteDate { pageIndex: number; contents: string; rect: number[]; createdMs?: number; replyToRef?: string }
 export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes: Uint8Array, notes: AddedNoteDate[], markupPages: number[], outputOrder: number[]) {
   if (!notes.length) return outputBytes
   const base = await PDFDocument.load(baseBytes, { updateMetadata: false })
@@ -34,6 +34,7 @@ export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes
       const contents = annotation.lookup(PDFName.of('Contents'))
       const rect = annotation.lookupMaybe(PDFName.of('Rect'), PDFArray)?.asArray()
       if (String(annotation.get(PDFName.of('Subtype'))) !== '/Text' || !(contents instanceof PDFString || contents instanceof PDFHexString) || contents.decodeText() !== note.contents || !rect || rect.length !== 4 || rect.some((value, i) => !(value instanceof PDFNumber) || value.asNumber() !== note.rect[i])) throw new Error('pdf_added_note_append_identity_changed')
+      if (note.replyToRef !== undefined && (String(annotation.get(PDFName.of('IRT'))) !== note.replyToRef || String(annotation.get(PDFName.of('RT'))) !== '/R')) throw new Error('pdf_reply_parent_reference_changed')
       if (note.createdMs === undefined) {
         // Legacy drafts have no trustworthy creation instant. Keep optional dates unknown.
         annotation.delete(PDFName.of('CreationDate')); annotation.delete(PDFName.of('M'))

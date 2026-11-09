@@ -27,7 +27,9 @@ history. The inspect-only optional `sourceRef` preserves object number and gener
 exactly; it is never a write identifier. Writes still require original annotation ID
 and dictionary digest. Unmatched references navigate to the page with a warning.
 Linked/reply, complex/protected and ambiguous source mutations remain refused.
-There is no reply creation/edit/delete protocol.
+At this read checkpoint there was no reply creation/edit/delete protocol.
+The later bounded saved-root creation protocol supersedes that part only; see
+`NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
 
 A document-keyed promise cache shares inflight reads and successful page reads;
 failed/malformed pages are evicted for retry. Partial failures show unread page

@@ -381,3 +381,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Browser file add, saved remove/keep and pending cancel, NativeDraft history/reload, snapshot-bound asynchronous reads, actual preview and nonblocking saved download/reopen. Existing same-basename/empty-file read/export stays available.
 - [x] Seven new engine cases, four new frontend cases (25 selected frontend checks), three affected engine cases and seven actual service cases pass. Chromium compound scenario and independent pypdf/Node22 offline output pass; see `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md` for final build/provenance boundaries.
 - [ ] Complex attachment trees/associations/protected sources, text-replacement combinations, full host/shortcuts/comparison, reply writes and other PDF families remain open. Existing24 MiB online source ceiling is unchanged; larger outputs retain download but are outside online reopen scope. Whole image/production/desktop acceptance remains open; flags off. This supersedes only the previous wholly missing attachment mutation checkpoint.
+
+
+### PDF saved flat-root reply continuation (2026-11-09)
+
+- [x] Reuse pinned note reply drawing for safe saved flat roots with source/page/annotation/dictionary identity and strict reference/protection census. Reject parent mutation/geometry/text mixtures. Verify exact IRT/RT, counts/payload, UTC dates and every existing annotation before accepting output; never accept the writer's orphan fallback.
+- [x] Full-document pane stages replies, edits/cancels pending replies, preserves creation time/history/reload and rejects obsolete pane/modal callbacks. Original root body becomes immutable while replies are pending; readonly/preview and source capability remain authoritative.
+- [x] Five new engine cases plus nine affected engine cases, two new frontend cases plus28 affected checks and eight real service cases pass. Chromium compound path, independent pypdf and Node22 offline exact-parent/forged-output refusal pass; see `NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
+- [ ] Pending-root/local-ID replies, nested/popup/rich/complex threads, saved-reply edit/delete, authenticated author integration, full source popovers/context and the other PDF/desktop/full-image/production gaps remain open. This supersedes only the wholly missing reply-write checkpoint. Flags off; no merge/deployment.

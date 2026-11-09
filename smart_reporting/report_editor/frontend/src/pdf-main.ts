@@ -1,3 +1,4 @@
+import { stagePdfReply, stagePendingPdfReply } from './pdf-replies'
 import { attachmentEditState, attachmentFileOperation, isAttachmentEdit } from './pdf-attachment-edits'
 /** PDF.js canvas/text-layer hosting follows GenOffice PdfPage.tsx at 4b55db9.
  * Desktop IPC is replaced by the native API; original source page IDs stay authoritative.
@@ -593,7 +594,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sizeOptions.append(sizeCancel); sizeDialog.append(sizeTitle, sizeHint, sizeError, sizeOptions); root.append(sizeDialog)
   function pageSizeUnavailable() {
     if (model.capabilities?.pageSize !== true) return model.capabilities?.pageSizeReason ?? '当前 PDF 引擎未确认页面尺寸写回能力'
-    if (draft.operations.some(op => ['cropPage', 'replaceText'].includes(op.kind))) return '请先保存裁切或原位改字并重开，再变更页面尺寸'
+    if (draft.operations.some(op => ['cropPage', 'replaceText', 'replyNote'].includes(op.kind))) return '请先保存裁切、原位改字或回复并重开，再变更页面尺寸'
     return null
   }
   async function openPageSize() {
@@ -711,14 +712,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const next = stagePendingPdfNote(model.pages, draft.operations, reference, contents)
     pdfPageState(model.pages, next); draft.setOperations(next); await refresh()
   }
-  async function editNoteContents(contents: string, applyContents: (value: string) => Promise<void>) {
+  async function editNoteContents(contents: string, applyContents: (value: string) => Promise<void>, actionLabel = '应用便签修改', inputLabel = '编辑便签正文') {
     if (locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed) throw new Error('当前便签只读')
     const snapshot = JSON.stringify(draft.operations)
     const dialog = documentElement('dialog', 'pdf-note-edit-dialog'), form = documentElement('form')
     form.method = 'dialog'
-    const label = documentElement('label'); label.textContent = '便签正文'
-    const input = documentElement('textarea'); input.value = contents; input.maxLength = 10000; input.required = true; input.setAttribute('aria-label', '编辑便签正文'); label.append(input)
-    const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = '应用便签修改'
+    const label = documentElement('label'); label.textContent = inputLabel.replace(/^编辑/, '')
+    const input = documentElement('textarea'); input.value = contents; input.maxLength = 10000; input.required = true; input.setAttribute('aria-label', inputLabel); label.append(input)
+    const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = actionLabel
     const cancel = documentElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.addEventListener('click', () => dialog.close())
     form.append(label, apply, cancel); dialog.append(form); root.append(dialog)
     try {
@@ -829,6 +830,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       attachmentDownloads.set(url, window.setTimeout(() => { URL.revokeObjectURL(url); attachmentDownloads.delete(url) }, 60000))
     }
   }
+  function canReply() { return !disposed && !!document && !locked && !previewing && !printing && !previewDocument && response.editingEnabled && !draft.closed && model.capabilities?.noteReplies === true }
+  async function changePendingReply(reference: PendingPdfNoteReference, contents: string | null) {
+    if (!canReply()) return
+    const next = stagePendingPdfReply(model.pages, draft.operations, reference, contents)
+    pdfPageState(model.pages, next); draft.setOperations(next); await refresh()
+  }
   function renderComments() {
     if (disposed || sidebar !== 'comments') return
     commentsList.replaceChildren()
@@ -852,9 +859,30 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const item = documentElement('div'); item.setAttribute('role', 'listitem'); item.append(row(root))
       const replies = flattenComments(root).slice(1)
       if (replies.length) {
-        const details = documentElement('details'), summary = documentElement('summary'); summary.textContent = `${replies.length} 条回复（只读）`; details.append(summary)
-        for (const { node, depth } of replies) { const control = row(node); control.style.marginInlineStart = `${Math.min(depth, 6) * 8}px`; details.append(control) }
+        const details = documentElement('details'), summary = documentElement('summary'); summary.textContent = `${replies.length} 条回复`; details.append(summary)
+        for (const { node, depth } of replies) {
+          const control = row(node); control.style.marginInlineStart = `${Math.min(depth, 6) * 8}px`; details.append(control)
+          if (node.pendingReply && node.pendingIndex !== undefined) {
+            const reference = {index:node.pendingIndex,snapshot:commentsSnapshot}, replyDoc = commentsDocument, replyEpoch = commentsGeneration
+            for (const [label,action] of [['编辑待保存回复',()=>editNoteContents(node.contents,value=>{if(sidebar!=='comments'||replyEpoch!==commentsGeneration||replyDoc!==document||!canReply())throw Error('批注列表已变化，请重新选择回复');return changePendingReply(reference,value)},'应用回复修改','编辑回复正文')],['取消待保存回复',()=>changePendingReply(reference,null)]] as const) {
+              const button = documentElement('button','pdf-tool'); button.type='button';button.textContent=label;button.dataset.pdfReplyEditable='true';button.disabled=!canReply()
+              button.addEventListener('click',()=>{if(sidebar==='comments' && replyEpoch===commentsGeneration && replyDoc===document && reference.snapshot===JSON.stringify(draft.operations) && canReply())void Promise.resolve().then(action).catch(showError)});details.append(button)
+            }
+          }
+        }
         item.append(details)
+      }
+      if (root.replyAnnotationId && !previewDocument) {
+        const reply = documentElement('button','pdf-tool'), snapshot = commentsSnapshot, doc = commentsDocument, epoch = commentsGeneration
+        reply.type='button';reply.textContent='回复此线程';reply.dataset.pdfReplyEditable='true';reply.disabled=!canReply()
+        reply.addEventListener('click',()=>{
+          if (!canReply() || sidebar!=='comments' || epoch!==commentsGeneration || doc!==document || snapshot!==JSON.stringify(draft.operations)) return
+          void editNoteContents('',async contents=>{
+            if (!canReply() || sidebar!=='comments' || epoch!==commentsGeneration || doc!==document || snapshot!==JSON.stringify(draft.operations)) throw Error('批注列表已变化，请重新选择线程')
+            const next=stagePdfReply(model.pages,draft.operations,root.pageId,root.replyAnnotationId!,contents)
+            pdfPageState(model.pages,next);draft.setOperations(next);await refresh()
+          },'加入回复草稿','回复正文').catch(showError)
+        });item.append(reply)
       }
       commentsList.append(item)
     }
@@ -914,6 +942,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function setMode(next: typeof mode) { mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)) }
   function updateControls() {
+    for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply()
     addAttachment.disabled = attachmentFile.disabled = !canEditAttachments()
     addAttachment.title = document ? model.attachmentsReason || '选择本地文件加入草稿，保存时写入 PDF' : '请先打开 PDF'
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-attachment-editable]')) control.disabled = !canEditAttachments()
@@ -1218,7 +1247,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1236,7 +1265,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -1384,10 +1413,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         for (const comment of comments) {
           const article = documentElement('article', 'pdf-saved-note'); article.dataset.noteId = comment.annotationId
           const text = documentElement('p'); text.textContent = comment.contents; article.append(text)
-          const canEdit = response.editingEnabled && !draft.closed && !locked && !previewing && !previewDocument && model.capabilities?.notes === true && page.notesReadSafe && comment.editable
+          const pendingReply = draft.operations.some(op => op.kind === 'replyNote' && op.annotationId === comment.annotationId)
+          const canEdit = response.editingEnabled && !draft.closed && !locked && !previewing && !previewDocument && model.capabilities?.notes === true && page.notesReadSafe && comment.editable && !pendingReply
           for (const [label, action] of [['编辑便签', () => editSavedNote(page.pageId, comment)], ['删除便签', () => changeSavedNote(page.pageId, comment.annotationId, null)]] as const) {
-            const control = documentElement('button', 'pdf-tool'); control.type = 'button'; control.textContent = label; control.disabled = !canEdit; control.dataset.pdfNoteEditable = String(model.capabilities?.notes === true && page.notesReadSafe === true && comment.editable)
-            control.title = canEdit ? label : comment.removalReason || '当前修订、预览或引擎不支持编辑已有便签'
+            const control = documentElement('button', 'pdf-tool'); control.type = 'button'; control.textContent = label; control.disabled = !canEdit; control.dataset.pdfNoteEditable = String(model.capabilities?.notes === true && page.notesReadSafe === true && comment.editable && !pendingReply)
+            control.title = canEdit ? label : pendingReply ? '请先保存或取消此便签的回复' : comment.removalReason || '当前修订、预览或引擎不支持编辑已有便签'
             control.addEventListener('click', () => { void Promise.resolve().then(action).catch(showError) }); article.append(control)
           }
           details.append(article)
@@ -1523,6 +1553,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   if (draft.operations.some(operation => ['editNote', 'removeNote'].includes(operation.kind)) && model.capabilities?.notes !== true) throw new Error('当前引擎未确认已有便签修改能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'removeMarkup') && model.capabilities?.removeMarkup !== true) throw new Error('当前引擎未确认已保存标注移除能力；原草稿已保留')
+  if (draft.operations.some(op => op.kind === 'replyNote') && model.capabilities?.noteReplies !== true) throw new Error('当前引擎未确认回复写回能力；原草稿已保留')
   if (draft.operations.some(isAttachmentEdit)) attachmentEditState(model, draft.operations)
   if (draft.operations.some(operation => operation.kind === 'setPageSize') && model.capabilities?.pageSize !== true) throw new Error('当前来源未确认尺寸变更能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'cropPage') && model.capabilities?.cropPage !== true) throw new Error('当前 PDF 引擎未确认裁切能力；原草稿已保留')

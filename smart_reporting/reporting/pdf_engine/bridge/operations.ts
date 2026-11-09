@@ -1,3 +1,4 @@
+import { inspectReplyTargets, appendNoteReplies, type NoteReply } from './note-replies'
 import { inspectAttachments, patchAttachments, validAttachmentName, ATTACHMENT_FILE_MAX } from './attachments'
 import { normalizeAddedNoteDates, type AddedNoteDate } from './note-timestamps'
 import { markupRemovalLinks, markupRemovalIdentity, removeSourceMarkups, type MarkupRemoval, type NoteContentEdit } from './markup-delete'
@@ -31,6 +32,7 @@ const color = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.num
 const rect = z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])
 const fieldIdentity = { fieldId: z.string().regex(/^[a-f0-9]{64}$/), expectedFieldSha256: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().min(1).max(256), fieldKind: z.enum(['text', 'checkbox', 'radio', 'choice']) }
 const operation = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('replyNote'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/), contents: z.string().trim().min(1).max(10000), createdMs: z.number().int().min(0).max(253402300799999) }).strict(),
   z.object({ kind: z.literal('addAttachment'), ...identity, name: z.string().refine(validAttachmentName), bytesBase64: z.string().max(4 * Math.ceil(ATTACHMENT_FILE_MAX / 3)), description: z.string().max(4000).optional() }).strict(),
   z.object({ kind: z.literal('removeAttachment'), ...identity, attachmentId: z.string().regex(/^[a-f0-9]{64}$/), expectedAttachmentSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('setFormValue'), ...fieldIdentity, value: z.string().max(4000).optional(), checked: z.boolean().optional() }).strict(),
@@ -73,6 +75,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     return { ...model, fieldId: sha256(Buffer.from(`${sourceSha256}:${name}:${kind}`)), expectedFieldSha256 }
   })
   const removalLinks = markupRemovalLinks(document, formFields.some(field => field.kind === 'signature') || sourceHasXfa || document.catalog.has(PDFName.of('Perms')))
+  const replyTargets = inspectReplyTargets(document, sourceSha256, removalLinks.protectedSource)
   const pages = document.getPages().map((page, index) => ({
     pageId: `sha256:${sourceSha256}:page:${index}`, index,
     ...(textPages ? { textObjects: textPages[index] } : {}),
@@ -107,7 +110,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
             || (raw instanceof PDFRef && removalLinks.references.get(raw.toString()) !== 1)
             || (flags !== undefined && (!(flags instanceof PDFNumber) || !Number.isInteger(flags.asNumber()) || flags.asNumber() < 0 || (flags.asNumber() & 704) !== 0))
           const reason = identity.removalReason ?? (unsafe ? '此便签含共享引用、锁定、富文本或状态信息，暂不支持编辑/删除' : null)
-          return [{ ...identity, sourceRef: raw instanceof PDFRef ? `${raw.objectNumber}R${raw.generationNumber || ''}` : null, contents, editable: reason === null, removable: reason === null, removalReason: reason }]
+          return [{ ...identity, replyable: replyTargets.has(identity.annotationId), sourceRef: raw instanceof PDFRef ? `${raw.objectNumber}R${raw.generationNumber || ''}` : null, contents, editable: reason === null, removable: reason === null, removalReason: reason }]
         }) : []
         return { notes, notesReadSafe: true }
       } catch { return { notes: [], notesReadSafe: false } }
@@ -115,7 +118,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, noteReplies: true, ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
@@ -123,6 +126,11 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const hasText = ops.some(op => op.kind === 'replaceText')
   const model = await inspectPdf(content, hasText)
   if (expectedSha256 !== model.sourceSha256) throw new Error('PDF 来源摘要不匹配')
+  const replyOps = ops.filter(op => op.kind === 'replyNote')
+  if (replyOps.length && ops.some(op => ['replaceText', 'setPageSize', 'cropPage'].includes(op.kind))) throw new Error('回复与原位改字、页面尺寸或裁切请分别保存重开')
+  if (replyOps.some(reply => ops.some(op => (op.kind === 'editNote' || op.kind === 'removeNote') && op.annotationId === reply.annotationId))) throw new Error('回复根便签不能在同一批编辑或删除')
+  const replyTargets = replyOps.length ? inspectReplyTargets(await PDFDocument.load(content, { updateMetadata: false }), model.sourceSha256, false) : new Map()
+  const replies: NoteReply[] = []
   const attachmentOps = ops.filter(op => op.kind === 'addAttachment' || op.kind === 'removeAttachment')
   if (attachmentOps.length && hasText) throw new Error('附件修改与原位改字请分别保存重开')
   const sizeOps = ops.filter(op => op.kind === 'setPageSize')
@@ -192,6 +200,11 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       continue
     }
     if (op.kind === 'replaceText') continue
+    if (op.kind === 'replyNote') {
+      const note = target.notes.find(note => note.annotationId === op.annotationId), parent = replyTargets.get(op.annotationId)
+      if (!target.notesReadSafe || !note?.replyable || !parent || note.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || parent.pageIndex !== target.index) throw new Error('pdf_reply_parent_invalid_or_readonly')
+      replies.push({ target: parent, contents: op.contents, createdMs: op.createdMs }); continue
+    }
     if (op.kind === 'editNote' || op.kind === 'removeNote') {
       const note = target.notes.find(note => note.annotationId === op.annotationId)
       if (!target.notesReadSafe || !note?.editable || !note.removable || note.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_note_identity_invalid_or_readonly')
@@ -246,7 +259,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = await removeSourceMarkups(content, model.sourceSha256, removals, noteEdits)
   const annotationBaseBytes = bytes
-  if (remaining.some(op => !['editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment'].includes(op.kind))) {
+  if (remaining.some(op => !['editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote'].includes(op.kind))) {
     const result = await applySaveRequest(bytes, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
@@ -272,6 +285,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     bytes = await setPageSizeBytes(bytes, width, height)
   }
   bytes = await patchAttachments(bytes, model, attachmentOps)
+  bytes = await appendNoteReplies(bytes, replies, request.pageOrder ?? survivors.map(page => page.index))
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,
   // runtime WASM identity, requested operations and all application decisions.
@@ -284,7 +298,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

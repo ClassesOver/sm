@@ -1,6 +1,6 @@
 import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
-export interface SavedPdfNote { sourceRef?: string | null; annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
+export interface SavedPdfNote { sourceRef?: string | null; replyable?: boolean; annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
 export function validatePdfNoteOperation(operation: NativeOperation, page: PdfPageIdentity): SavedPdfNote {
   const allowed = ['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256', ...(operation.kind === 'editNote' ? ['contents', 'modifiedAt'] : [])]
   const note = page.notes?.find(note => note.annotationId === operation.annotationId)
@@ -16,6 +16,7 @@ export function stagePdfNote(pages: PdfPageIdentity[], operations: NativeOperati
   const page = pages.find(page => page.pageId === pageId), note = page?.notes?.find(note => note.annotationId === annotationId)
   if (!page || !note || operations.some(op => op.kind === 'deletePage' && op.pageId === pageId)) throw new Error('便签来源页面已过期或已删除')
   const operation = { kind: contents === null ? 'removeNote' : 'editNote', pageId, annotationId, expectedAnnotationSha256: note.expectedAnnotationSha256, ...(contents === null ? {} : { contents: contents.trim(), modifiedAt }) }
+  if (operations.some(op => op.kind === 'replyNote' && op.annotationId === annotationId)) throw new Error('请先保存或取消此便签的回复')
   validatePdfNoteOperation(operation, page)
   const next = structuredClone(operations).filter(op => !(op.pageId === pageId && op.annotationId === annotationId && ['editNote', 'removeNote'].includes(op.kind)))
   if (contents === null || contents.trim() !== note.contents) next.push(operation)

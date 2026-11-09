@@ -1,11 +1,11 @@
 /** Native adaptation of pinned GenOffice CommentsPanel/note-threads read semantics.
- * Provenance and differences: genoffice-pdf-comments-source.json. No reply write support.
+ * Provenance and differences: genoffice-pdf-comments-source.json. Saved flat roots can stage replies via strict native identities.
  */
 import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
 import { parsePdfDate } from './genoffice-pdf-comment-date'
 export interface CommentAnnotation { id: string; annotationType: number; subtype?: string; hidden?: boolean; replyType?: string; inReplyTo?: string | null; contentsObj?: { str: string }; titleObj?: { str: string }; creationDate?: string | null; modificationDate?: string | null }
-export interface CommentNode { key: string; pageId: string; pageNo: number; contents: string; author: string; timeMs: number | null; cardId: string | null; pendingIndex?: number; readonly: boolean; issue?: string; replies: CommentNode[] }
+export interface CommentNode { key: string; pageId: string; pageNo: number; contents: string; author: string; timeMs: number | null; cardId: string | null; pendingIndex?: number; pendingReply?: boolean; replyAnnotationId?: string; readonly: boolean; issue?: string; replies: CommentNode[] }
 export interface CommentTarget { node: CommentNode; snapshot: string; document: object }
 export class PdfAnnotationCache {
   private entries = new WeakMap<object, Map<number, Promise<CommentAnnotation[]>>>()
@@ -47,7 +47,7 @@ export function projectPageComments(raw: CommentAnnotation[], page: PdfPageIdent
     const native = !preview && matches.length === 1 ? matches[0] : undefined
     if (native && operations.some(op => op.kind === 'removeNote' && op.pageId === page.pageId && op.annotationId === native.annotationId)) continue
     const edit = native && operations.find(op => op.kind === 'editNote' && op.pageId === page.pageId && op.annotationId === native.annotationId)
-    const node: CommentNode = { key: `${page.pageId}:saved:${item.id}:${index}`, pageId: page.pageId, pageNo, contents: edit ? String(edit.contents) : native?.contents ?? (typeof item.contentsObj?.str === 'string' ? item.contentsObj.str : ''), author: typeof item.titleObj?.str === 'string' ? item.titleObj.str : '', timeMs: parsePdfDate(typeof item.creationDate === 'string' ? item.creationDate : null) ?? parsePdfDate(typeof item.modificationDate === 'string' ? item.modificationDate : null), cardId: native?.annotationId ?? (preview || !page.notesReadSafe ? item.subtype === 'Text' && item.contentsObj?.str ? `readonly:${cardIndex}` : null : null), readonly: preview || !native?.editable, replies: [] }
+    const node: CommentNode = { key: `${page.pageId}:saved:${item.id}:${index}`, pageId: page.pageId, pageNo, contents: edit ? String(edit.contents) : native?.contents ?? (typeof item.contentsObj?.str === 'string' ? item.contentsObj.str : ''), author: typeof item.titleObj?.str === 'string' ? item.titleObj.str : '', timeMs: parsePdfDate(typeof item.creationDate === 'string' ? item.creationDate : null) ?? parsePdfDate(typeof item.modificationDate === 'string' ? item.modificationDate : null), cardId: native?.annotationId ?? (preview || !page.notesReadSafe ? item.subtype === 'Text' && item.contentsObj?.str ? `readonly:${cardIndex}` : null : null), readonly: preview || !native?.editable, replyAnnotationId: native?.replyable ? native.annotationId : undefined, replies: [] }
     nodes.push(node); nodeRefs.set(node, item.id)
     const list = references.get(item.id) ?? []; list.push(node); references.set(item.id, list)
     if (item.inReplyTo) parents.set(node, item.inReplyTo)
@@ -75,5 +75,9 @@ export function projectPageComments(raw: CommentAnnotation[], page: PdfPageIdent
   for (const node of nodes) { const parent = parentOf.get(node); if (parent) parent.replies.push(node); else roots.push(node) }
   for (const node of nodes) { node.replies.sort(byTime); if (parentOf.has(node) || node.replies.length) node.readonly = true }
   if (!preview) for (const [index, op] of operations.entries()) if (op.kind === 'addTextAnnotation' && op.pageId === page.pageId) roots.push({ key: `${page.pageId}:pending:${index}`, pageId: page.pageId, pageNo, contents: String(op.text), author: '', timeMs: typeof op.createdMs === 'number' ? op.createdMs : null, cardId: null, pendingIndex: index, readonly: false, replies: [] })
+  if (!preview) for (const [index, op] of operations.entries()) if (op.kind === 'replyNote' && op.pageId === page.pageId) {
+    const target = nodes.find(node => node.replyAnnotationId === op.annotationId)
+    if (target) { target.readonly = true; target.replies.push({key:`${page.pageId}:reply:${index}`,pageId:page.pageId,pageNo,contents:String(op.contents),author:'',timeMs:typeof op.createdMs==='number'?op.createdMs:null,cardId:null,pendingIndex:index,pendingReply:true,readonly:false,replies:[]}) }
+  }
   return roots
 }

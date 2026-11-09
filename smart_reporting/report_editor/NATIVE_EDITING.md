@@ -166,7 +166,9 @@ PDF 搜索现复用固定源索引/匹配与Unicode辅助算法，按逐处匹�
 旧草稿未知创建时间不补造，见 `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`。
 全文便签侧栏现支持回复只读展示、正文/作者筛选、跨页定位，点击复用现有卡片的安全
 编辑/删除。缩略图/目录/批注互斥；分页面读取失败可重试，预览与原稿缓存隔离。
-回复写入、复杂来源修改及完整弹层仍未完成，见 `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`。
+安全既有平铺根线程现支持追加回复，回复草稿可编辑/取消及撤销重做，实际预览、
+保存下载与重开核验父引用。未保存根、复杂/嵌套/弹窗线程、已保存回复修改及
+完整弹层仍未完成，见 `NATIVE_PDF_COMMENTS_ACCEPTANCE.md` 与 `NATIVE_PDF_REPLIES_ACCEPTANCE.md`。
 
 
 PDF View“附件”可查看名称/说明/实际大小并下载已有附件，支持只读修订、

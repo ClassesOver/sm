@@ -349,3 +349,15 @@ identity/budget guards, encoded name-byte ordering and post-save content checks.
 This closes only safe flat-tree add/remove; complex/shared/associated/protected
 sources remain read/export-only. Removal is not secure erasure. New browser,
 engine/service and independent file evidence: `NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.
+
+
+## PDF saved flat-root reply writing (2026-11-09)
+
+Safe saved roots now expose a separate reply capability, including roots with
+existing standard flat replies whose bodies remain readonly. Exact-source
+identities replace source rect/content fallback at the public boundary; pinned
+note drawing is retained and output must contain the precise IRT parent and RT/R.
+Pending replies reuse draft history/modal editing and source/preview isolation.
+New counterexamples prove missing/wrong-parent output is refused. Pending roots,
+saved-reply mutations and complex thread families remain open. See
+`NATIVE_PDF_REPLIES_ACCEPTANCE.md`.

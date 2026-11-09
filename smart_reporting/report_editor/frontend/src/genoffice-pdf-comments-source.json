@@ -17,6 +17,9 @@
     "full-generation reference keys and exact native identity mapping",
     "iterative safe readonly graph and filter traversal",
     "per-document promise cache and partial-page errors",
-    "navigate existing native note cards instead of source popovers"
+    "navigate existing native note cards instead of source popovers",
+    "safe saved flat-root reply draft/modal actions with exact native parent identities",
+    "post-write IRT/RT and source annotation verification reject original writer orphan fallback",
+    "pending reply edit/cancel/history with immutable creation time; stale pane/modal guards"
   ]
 }
