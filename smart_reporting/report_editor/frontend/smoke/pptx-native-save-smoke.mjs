@@ -221,6 +221,10 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
     assert.equal(await layoutPicker.inputValue(), '')
     assert.equal(await page.locator('.slide-row').nth(3).locator('.slide-title').textContent(), '新建幻灯片 · Title Slide（保存后写入）')
+    // 重置版式（固定源 onResetLayout）：作用于来源页，进入待保存清单。
+    await page.locator('.slide-row').filter({ hasText: 'Native browser' }).first().locator('.slide-open').click()
+    await page.locator('[data-command="resetLayout"][data-source-action="onResetLayout"]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '重置版式' }).waitFor()
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
@@ -391,6 +395,7 @@ try {
   } else if (smokeMode === 'new-slide') {
     assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }, { duplicateOf: 0 }, { withLayout: inspected.layouts.find(item => item.name === 'Title Slide').path }])
     assert.deepEqual(operation.deletedSlides, [1])
+    assert.deepEqual(operation.resetLayouts, [0])
     assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)

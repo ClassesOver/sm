@@ -2,7 +2,7 @@ import { patchTransitionPreservingMetadata, transitionEditAvailability } from '.
 import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, insertSlideWithLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -31,6 +31,8 @@ type Input = {
   order?: number[]
   /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
   newSlides?: ({ layoutFrom: number } | { duplicateOf: number } | { withLayout: string })[]
+  /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
+  resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
   deletedSlides?: number[]
   theme?: 'executive' | 'clinical' | 'modern'
@@ -220,6 +222,13 @@ if (request.action === 'inspect') {
   // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
   const originalSlides = [...opened.deck.slides]
   const slideCount = originalSlides.length
+  const resetLayouts = request.resetLayouts ?? []
+  if (!Array.isArray(resetLayouts) || new Set(resetLayouts).size !== resetLayouts.length || resetLayouts.some(index => !validSlideIndex(index, slideCount))) throw new Error('reset_layouts_invalid')
+  for (const index of resetLayouts) {
+    const reset = resetSlideLayout(opened, index)
+    if (!reset) throw new Error('reset_layout_failed')
+    originalSlides[index] = reset
+  }
   if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
     throw new Error('paragraph_format_invalid')
   }

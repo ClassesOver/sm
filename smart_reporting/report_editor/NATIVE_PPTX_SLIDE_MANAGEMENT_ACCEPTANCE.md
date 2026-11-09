@@ -13,6 +13,12 @@
 - Home ▸ Slides 的 New Slide with Layout 为版式选择器（打开后由 `setLayouts` 填入演示文稿版式，选后复位）；新页插在当前页之后。
 - 草稿 `newSlides` 项 `{ withLayout: 版式路径 }`；桥接校验版式在包内后调用固定引擎 `insertSlideWithLayout`（生成版式占位符）并放在末尾，再由 `order` 落位；Python 端校验路径格式（拒绝 `..`、非版式路径、盘符）。
 
+## 重置版式（固定源 onResetLayout → resetSlideLayout）
+
+- Home ▸ Slides ▸ Reset Layout 作用于当前来源页，进入待保存清单（可单独撤销）。
+- 草稿 `resetLayouts: [来源页]`；桥接最先调用固定引擎 `resetSlideLayout`（占位符去掉显式 xfrm，回到版式/母版继承位置），同批其他修改叠加在重置后的页面上。新建页不适用；已加入重置的页不能再复制或删除（与其他待保存修改一致）。
+- 证据：`test_slides_bridge_reset_layout_restores_inherited_placeholder_geometry`（移位标题回到继承几何、文字保留，非法索引无输出）、Ribbon 单测、`new-slide` 冒烟中重置并保存。
+
 ## 复制幻灯片（固定源 duplicateSlide）
 
 - 草稿 `newSlides` 项为 `{ duplicateOf: 来源页 }`；桥接调用固定引擎 `duplicateSlide` 后移到末尾，再由 `order` 落位。

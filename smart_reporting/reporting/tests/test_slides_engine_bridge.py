@@ -635,3 +635,30 @@ def test_slides_bridge_adds_slide_with_chosen_layout_placeholders(tmp_path: Path
         _invoke({"action": "edit", "input": str(source), "output": str(rejected), "edits": [],
                  "newSlides": [{"withLayout": "ppt/slideLayouts/missing.xml"}], "order": [*range(count + 1)]}, tmp_path)
     assert not rejected.exists()
+
+
+def test_slides_bridge_reset_layout_restores_inherited_placeholder_geometry(tmp_path: Path):
+    """固定源 onResetLayout：占位符移位后重置回版式继承位置；同批对其他对象的修改照常叠加。"""
+    from pptx.util import Emu
+    source = tmp_path / "source.pptx"
+    moved = tmp_path / "moved.pptx"
+    output = tmp_path / "reset.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    title = slide.shapes.title
+    title.text = "标题"
+    inherited = (title.left, title.top, title.width, title.height)
+    presentation.save(source)
+    shifted = Presentation(source)
+    shape = shifted.slides[0].shapes.title
+    shape.left, shape.top = Emu(inherited[0] + 914400), Emu(inherited[1] + 914400)
+    shifted.save(moved)
+    assert Presentation(moved).slides[0].shapes.title.left == inherited[0] + 914400
+    _invoke({"action": "edit", "input": str(moved), "output": str(output), "edits": [], "resetLayouts": [0]}, tmp_path)
+    reset = Presentation(output).slides[0].shapes.title
+    assert (reset.left, reset.top, reset.width, reset.height) == inherited
+    assert reset.text == "标题"
+    for bad in ([0, 0], [5], ["0"]):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(moved), "output": str(tmp_path / "bad.pptx"), "edits": [], "resetLayouts": bad}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()

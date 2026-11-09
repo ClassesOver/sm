@@ -484,3 +484,16 @@ it('offers New Slide with Layout as a layout picker that dispatches the chosen p
   expect([...picker.options].map(option => option.textContent)).toEqual(['新建指定版式幻灯片…', 'Blank'])
   ribbon.dispose()
 })
+
+it('enables the pinned Reset Layout command', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const command = host.querySelector<HTMLButtonElement>('[data-command="resetLayout"]')!
+  expect(command.dataset.sourceAction).toBe('onResetLayout')
+  expect(command.disabled).toBe(false)
+  command.click()
+  expect(onAction).toHaveBeenCalledWith('resetLayout')
+  ribbon.dispose()
+})
