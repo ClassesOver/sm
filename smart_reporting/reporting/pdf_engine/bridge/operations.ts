@@ -52,7 +52,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
   // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
-  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link']), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
+  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link', 'image']), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
@@ -266,8 +266,9 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       const [left, bottom, right, top] = current ?? [b.x, b.y, b.x + b.width, b.y + b.height]
       const inside = (x: number, y: number) => x >= left && x <= right && y >= bottom && y <= top
       const base = { pageIndex: target.index, color: op.color, width: op.width }
+      if (op.image !== undefined && op.shape !== 'image') throw new Error('PDF 绘图参数无效')
       if (op.shape === 'rect' || op.shape === 'ellipse') {
-        if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined) throw new Error('PDF 绘图参数无效')
+        if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.image !== undefined) throw new Error('PDF 绘图参数无效')
         const [x1, y1, x2, y2] = op.rect
         if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 绘图范围无效')
         request.drawings.push({ ...base, kind: op.shape, rect: op.rect })
@@ -277,9 +278,17 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       } else if (op.shape === 'polygon') {
         if (!op.vertices || op.rect || op.from || op.to || op.paths || op.point || op.url !== undefined || op.destPage !== undefined || op.vertices.some(vertex => !inside(...vertex))) throw new Error('PDF 多边形顶点无效')
         request.drawings.push({ ...base, kind: 'polygon', vertices: op.vertices })
+      } else if (op.shape === 'image') {
+        // 固定源 ImageDialogs 插入图像：PNG 位图写为 Stamp 批注。
+        if (!op.rect || !op.image || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined) throw new Error('PDF 图像参数无效')
+        const bytes = Buffer.from(op.image, 'base64')
+        if (bytes.toString('base64') !== op.image || !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) throw new Error('PDF 图像须为 PNG')
+        const [x1, y1, x2, y2] = op.rect
+        if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 图像范围无效')
+        request.drawings.push({ kind: 'image', pageIndex: target.index, image: op.image, rect: op.rect })
       } else if (op.shape === 'link') {
         // 固定源 LinkDialog：外部 URL 或文档内页码二选一；仅允许 http/https/mailto。destPage 为来源页序号（引擎按删除/重排前页表解析）。
-        if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || (op.url === undefined) === (op.destPage === undefined)) throw new Error('PDF 链接目标无效')
+        if (!op.rect || op.image !== undefined || op.from || op.to || op.paths || op.vertices || op.point || (op.url === undefined) === (op.destPage === undefined)) throw new Error('PDF 链接目标无效')
         const [x1, y1, x2, y2] = op.rect
         if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 链接范围无效')
         if (op.destPage !== undefined) {

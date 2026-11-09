@@ -160,6 +160,16 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 7, null, { timeout: 30000 })
   await addLink([0.45, 0.4], [0.75, 0.45], async () => page.getByLabel('链接页码').fill('2'))
   await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 8, null, { timeout: 30000 })
+  // 插入图像：选择 PNG 后在页面上拖出区域，保存为 Stamp 批注。
+  const pngBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
+  await page.locator('input[aria-label="选择要插入的图像"]').setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: pngBytes })
+  await page.waitForFunction(() => document.querySelector('.pdf-editor-message')?.textContent?.includes('已选择图像 logo.png'))
+  {
+    const box = await content.boundingBox()
+    await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.15); await page.mouse.down()
+    await page.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.22, { steps: 3 }); await page.mouse.up()
+  }
+  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 9, null, { timeout: 30000 })
   // 水印与页眉页脚（固定源 StampDialog）：水印文字 + 默认页码，按当前页序渲染位图覆盖全部页面。
   await page.locator('[data-source-command-id="genoffice.pdf.edit.objects.watermark"]').click()
   await page.locator('.pdf-stamp-dialog').waitFor({ state: 'visible' })
@@ -178,7 +188,7 @@ try {
   await page.locator('[data-source-command-id="genoffice.pdf.page.delete"]').click()
   await page.waitForFunction(() => document.querySelector('.pdf-editor-message')?.textContent?.includes('已设置水印/页眉页脚'))
   assert.equal((await readDraft()).length, drafted.length)
-  assert.deepEqual(drafted.slice(0, 8).map(op => op.shape), ['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link', 'link'])
+  assert.deepEqual(drafted.slice(0, 9).map(op => op.shape), ['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link', 'link', 'image'])
   assert.equal(drafted[6].url, 'https://www.example.com/report')
   assert.equal(drafted[7].destPage, 2)
   assert.equal(drafted[4].vertices.length, 3)
@@ -192,7 +202,7 @@ try {
   await page.getByRole('button', { name: /^(重做|Redo)$/ }).click(); assert.deepEqual(await readDraft(), drafted)
   await page.reload(); await page.locator('.pdf-ribbon').waitFor({ timeout: 60000 })
   assert.deepEqual(await readDraft(), drafted)
-  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 8, null, { timeout: 30000 })
+  await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-drawings [data-pdf-drawing]').length === 9, null, { timeout: 30000 })
   await page.locator('[data-action="save"]').click()
   try { await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 }) }
   catch { if (process.env.PDF_DRAW_SCREENSHOT) await page.screenshot({ path: process.env.PDF_DRAW_SCREENSHOT + '.fail.png' }); throw new Error(JSON.stringify({ saveDisabled: await page.locator('[data-action="save"]').isDisabled(), saveTitle: await page.locator('[data-action="save"]').getAttribute('title'), saved: !!savePayload, label: await page.locator('.save-state-label').textContent(), status: await page.locator('.pdf-editor-message').textContent(), pageErrors })) }
@@ -209,10 +219,11 @@ try {
   assert.deepEqual(drawn.map(([subtype]) => subtype).sort(), ['/Caret', '/Circle', '/Ink', '/Line', '/Polygon', '/Square'])
   const subtypeOf = { rect: '/Square', ellipse: '/Circle', arrow: '/Line', ink: '/Ink', polygon: '/Polygon', caret: '/Caret' }
   assert.equal(annots.filter(([subtype]) => subtype === '/Link').length, 2)
+  assert.equal(annots.filter(([subtype]) => subtype === '/Stamp').length, 1)
   const xobjects = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys; from io import BytesIO; from pypdf import PdfReader; r=PdfReader(BytesIO(sys.stdin.buffer.read())); print(json.dumps([len((p.get("/Resources") or {}).get("/XObject") or {}) for p in r.pages]))'], { input: downloadedBytes, encoding: 'utf8' })
   if (xobjects.status !== 0) throw new Error(xobjects.stderr)
   assert.ok(JSON.parse(xobjects.stdout).every(count => count >= 2), `every page carries watermark + footer images: ${xobjects.stdout}`)
-  for (const op of drafted.filter(item => item.kind === 'addDrawing' && item.shape !== 'link')) assert.deepEqual(drawn.find(([subtype]) => subtype === subtypeOf[op.shape])[1], op.color.map(value => Math.round(value * 100) / 100))
+  for (const op of drafted.filter(item => item.kind === 'addDrawing' && !['link', 'image'].includes(item.shape))) assert.deepEqual(drawn.find(([subtype]) => subtype === subtypeOf[op.shape])[1], op.color.map(value => Math.round(value * 100) / 100))
   assert.ok(annots.filter(([subtype]) => subtype === '/Widget').length >= 4, 'form widgets retained')
   assert.deepEqual(annots.at(-1), ['page2', ['/Text']])
   assert.equal(createHash('sha256').update(sourceBytes).digest('hex'), sourceSha)

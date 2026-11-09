@@ -106,3 +106,21 @@ test('links write Link annotations to a URL or a source page and reject unsafe o
     [{ kind: 'addDrawing', pageId: first, shape: 'rect', rect: [20, 20, 120, 50], url: 'https://a.example', color, width: 2 }],
   ]) await assert.rejects(patchPdfWithReceipt(bytes, operations, model.sourceSha256), undefined, JSON.stringify(operations))
 })
+
+test('inserted images are written as Stamp annotations; non-PNG data and stray image fields are rejected', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+  const document = await PDFDocument.create(); document.addPage([400, 500])
+  const bytes = await document.save()
+  const model = await inspectPdf(bytes)
+  const pageId = model.pages[0]!.pageId
+  const result = await patchPdfWithReceipt(bytes, [{ kind: 'addDrawing', pageId, shape: 'image', rect: [50, 60, 250, 160], image: png, color, width: 2 }], model.sourceSha256)
+  const annots = await annotations(result.bytes)
+  assert.deepEqual(annots.map(item => item.get(PDFName.of('Subtype'))?.toString()), ['/Stamp'])
+  assert.ok(annots[0]!.get(PDFName.of('AP')))
+  for (const operation of [
+    { kind: 'addDrawing', pageId, shape: 'image', rect: [50, 60, 250, 160], image: Buffer.from('GIF89a not png').toString('base64'), color, width: 2 },
+    { kind: 'addDrawing', pageId, shape: 'image', rect: [50, 60, 950, 160], image: png, color, width: 2 },
+    { kind: 'addDrawing', pageId, shape: 'image', rect: [50, 60, 250, 160], color, width: 2 },
+    { kind: 'addDrawing', pageId, shape: 'rect', rect: [50, 60, 250, 160], image: png, color, width: 2 },
+  ]) await assert.rejects(patchPdfWithReceipt(bytes, [operation], model.sourceSha256), undefined, JSON.stringify(operation).slice(0, 160))
+})

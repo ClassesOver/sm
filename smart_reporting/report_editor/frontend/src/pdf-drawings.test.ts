@@ -48,4 +48,10 @@ describe('PDF draw tools (pinned DrawLayer rect/ellipse/arrow/ink)', () => {
     expect(() => pdfPageState(two, [{ ...page, destPage: 3 }])).toThrow('链接目标页不存在或已删除')
     expect(() => pdfPageState(two, [{ kind: 'deletePage', pageId: 'p2' }, page])).toThrow('链接目标页不存在或已删除')
   })
+  it('builds image placements only for PNG data within the page', () => {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+    expect(pdfDrawingOperation('p1', 'image', [[150, 160], [50, 60]], box, red, { image: png })).toMatchObject({ shape: 'image', rect: [50, 60, 150, 160], image: png })
+    expect(() => pdfDrawingOperation('p1', 'image', [[150, 160], [50, 60]], box, red, { image: 'R0lGODlh' })).toThrow('PNG')
+    expect(() => pdfDrawingOperation('p1', 'image', [[150, 160], [50, 60]], box, red)).toThrow('PNG')
+  })
 })

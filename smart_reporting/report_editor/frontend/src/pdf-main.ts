@@ -683,7 +683,28 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }, false)
   backToSource.hidden = true
   commandGroup = ribbon.group('edit', '图像、链接与水印')
-  for (const label of ['插入图像', '编辑图像']) { const action = documentElement('button', 'pdf-tool'); action.type = 'button'; action.textContent = label; action.disabled = true; action.title = '对象级图像写回尚未接入 PDF 操作契约'; action.setAttribute('aria-label', `${label}，${action.title}`); commandGroup.append(action) }
+  // 固定源 ImageDialogs ▸ 插入图像：选择 PNG/JPEG，浏览器转为 PNG 后在页面上拖出位置，保存为 Stamp 批注。
+  let pendingImage = ''
+  const imageFile = documentElement('input'); imageFile.type = 'file'; imageFile.accept = 'image/png,image/jpeg'; imageFile.hidden = true; imageFile.setAttribute('aria-label', '选择要插入的图像')
+  root.append(imageFile)
+  const insertImage = button('插入图像', () => { if (!document || locked || previewing || previewDocument || !response.editingEnabled || draft.closed) return; imageFile.value = ''; imageFile.click() }, true)
+  sourceCommand(insertImage, 'edit.objects.insertImage'); insertImage.dataset.pdfDrawShape = 'image'
+  insertImage.title = '插入图像：选择 PNG 或 JPEG，再在页面上拖出放置区域；保存后写入 PDF'
+  drawButtons.set('image', insertImage)
+  imageFile.addEventListener('change', () => { void (async () => {
+    const file = imageFile.files?.[0]
+    if (!file) return
+    if (!['image/png', 'image/jpeg'].includes(file.type) || file.size > 10 * 1024 * 1024) throw new Error('请选择不超过 10MB 的 PNG 或 JPEG 图像')
+    const bitmap = await createImageBitmap(file)
+    const ratio = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height))
+    const canvas = documentElement('canvas'); canvas.width = Math.max(1, Math.round(bitmap.width * ratio)); canvas.height = Math.max(1, Math.round(bitmap.height * ratio))
+    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close()
+    const encoded = canvas.toDataURL('image/png').split(',')[1] ?? ''
+    if (!encoded.startsWith('iVBORw0KGgo') || encoded.length > 6_000_000) throw new Error('图像转换后过大，请换一张较小的图像')
+    pendingImage = encoded; drawShape = 'image'; setMode('draw')
+    status.textContent = `已选择图像 ${file.name}（${canvas.width}×${canvas.height}）；请在页面上拖出放置区域`
+  })().catch(showError) })
+  { const action = documentElement('button', 'pdf-tool'); action.type = 'button'; action.textContent = '编辑图像'; action.disabled = true; action.title = '编辑来源 PDF 中已有图像需要图像对象身份与内容流改写，尚未接入'; action.setAttribute('aria-label', `编辑图像，${action.title}`); commandGroup.append(action) }
   // 固定源 editLink：在页面上拖出链接区域，再选择外部地址或文档内页码。
   const linkTool = button('编辑链接', () => { drawShape = 'link'; setMode(mode === 'draw' && linkTool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
   sourceCommand(linkTool, 'edit.objects.editLink'); linkTool.dataset.pdfDrawShape = 'link'
@@ -1269,7 +1290,23 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       svg.append(group); layer.append(svg)
     }
-    const drawings = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing')
+    const placedImages = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape === 'image')
+    if (placedImages.length) {
+      const svgNs = 'http://www.w3.org/2000/svg'
+      const svg = window.document.createElementNS(svgNs, 'svg')
+      svg.setAttribute('class', 'pdf-pending-drawings'); svg.setAttribute('width', String(pdfViewport.width)); svg.setAttribute('height', String(pdfViewport.height))
+      const group = window.document.createElementNS(svgNs, 'g'); group.setAttribute('transform', `matrix(${pdfViewport.transform.join(' ')})`)
+      for (const operation of placedImages) {
+        const [x1, y1, x2, y2] = operation.rect as [number, number, number, number]
+        const image = window.document.createElementNS(svgNs, 'image')
+        image.setAttribute('href', `data:image/png;base64,${operation.image}`)
+        image.setAttribute('x', String(x1)); image.setAttribute('y', String(-y2)); image.setAttribute('width', String(x2 - x1)); image.setAttribute('height', String(y2 - y1))
+        image.setAttribute('transform', 'scale(1 -1)'); image.setAttribute('preserveAspectRatio', 'none'); image.dataset.pdfDrawing = 'image'
+        group.append(image)
+      }
+      svg.append(group); layer.append(svg)
+    }
+    const drawings = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape !== 'image')
     if (drawings.length) {
       const svgNs = 'http://www.w3.org/2000/svg'
       const svg = window.document.createElementNS(svgNs, 'svg')
@@ -1383,6 +1420,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           const points = drawShape === 'ink' ? [...stroke, toPdf(event.clientX, event.clientY)] : [toPdf(...begin), toPdf(event.clientX, event.clientY)]
           stroke = []
           if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再绘图')
+          if (drawShape === 'image') {
+            if (!pendingImage) throw new Error('请先点击“插入图像”选择图像')
+            const operation = pdfDrawingOperation(page.pageId, 'image', points, page.cropBox, drawColor, { image: pendingImage })
+            pdfPageState(model.pages, [...draft.operations, operation])
+            pendingImage = ''; setMode('select')
+            void append(operation).catch(showError)
+            return
+          }
           if (drawShape === 'link') {
             pdfDrawingOperation(page.pageId, 'link', points, page.cropBox, drawColor, { url: 'https://validate.invalid' })
             linkPending = { page, points }; linkUrl.value = ''; linkPage.value = ''; linkError.textContent = ''
