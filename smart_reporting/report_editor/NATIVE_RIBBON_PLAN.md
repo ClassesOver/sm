@@ -339,7 +339,7 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 
 - [x] Enable View comments with exclusive thumbnails/outline/comments panels. Read Text-note roots/replies across surviving pages, filter body/author, sort current page/time and navigate exact existing saved/pending cards. Existing safe edit/delete/history is reused; reply threads stay readonly.
 - [x] Add inspect-only full-generation sourceRef, immutable-source projection, separate document promise caches, partial-page errors/retry, obsolete callback guards and immediate source/preview list clearing. No reply write API or fabricated identity.
-- [x] Seven new frontend +25 affected checks,one new bridge case,12 existing file/service cases,Chromium with Worker faults/delayed preview,independent pypdf and offline readonly Node22 runtime checks pass. Standard/Slides builds/budgets,36 engine hashes,date-parser hash and zero new bridge diagnostics pass; six baseline diagnostics remain. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`.
+- [x] Seven new frontend +25 affected checks,one new bridge case,12 existing file/service cases,Chromium with Worker faults/delayed preview,independent pypdf and offline readonly Node22 runtime checks pass. Standard/Slides builds/configured Standard budget,36 engine hashes,date-parser hash and zero new bridge diagnostics pass; six baseline diagnostics remain. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`.
 - [ ] Reply writing,rich/complex mutations,full popovers/context/persistence/comparison/attachments and whole PDF/desktop/image/deployed acceptance remain open. This supersedes the prior completely missing sidebar/read-thread gap only; flags off.
 
 
@@ -347,5 +347,13 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 
 - [x] Enable View attachments, mutually exclusive with thumbnails/outline/comments. Read names/descriptions/actual sizes and download real embedded bytes from the authorized opened PDF, including empty files and distinct IDs with equal basenames. No new server route or draft/write operation.
 - [x] Separate document caches, shared inflight/success reads, rejected-read retry, explicit directory/partial-content errors and stale callback/document-switch guards. Browser Blob export adapts pinned desktop export; source humanBytes is unchanged.
-- [x] Four new +9 affected frontend checks,real Chromium attachment downloads/fault injection/actual preview/save/readonly/mobile/empty-document checks,independent pypdf and affected comments/View browsers pass. Standard/Slides builds and budgets pass. Engine unchanged; do not recount earlier Node22 evidence. See `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
+- [x] Four new +9 affected frontend checks,real Chromium attachment downloads/fault injection/actual preview/save/readonly/mobile/empty-document checks,independent pypdf and affected comments/View browsers pass. Standard/Slides builds and configured Standard budget pass. Engine unchanged; do not recount earlier Node22 evidence. See `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
 - [ ] Attachment add/remove,comparison,full source sidebar/context and overall PDF/desktop/image/deployed acceptance remain open. Flags off.
+
+
+### PDF reading-position continuation (2026-11-09)
+
+- [x] Reuse unchanged pinned view-state storage/sanitization/pruning,300ms debounce/two-frame restore and pagehide flush. Bind native records to full immutable scope/document/revision/SHA and original page identity; restore fractional DOM rows and custom zoom/recomputed basic fit. Handle missing pages/blocked storage without editing or blocking viewing.
+- [x] Preserve scroll without changing selected page on refresh; explicit navigation/zoom/search/comments win. Keep preview from writing source position and restore source snapshot on return, with readiness/generation/disposal guards.
+- [x] Seven new +7 affected checks,Chromium delayed restore/resize/reorder/preview/unload/scope/readonly/storage/selection scenarios,independent pypdf and four affected browser scenarios pass. Final Standard/Slides builds and configured Standard budget pass; no new runtime check or full suite claimed. See `NATIVE_PDF_READING_ACCEPTANCE.md`.
+- [ ] Complete source fit/continuous resize/spread layout,shortcuts,comparison,reply/attachment mutation and overall PDF/desktop/image/deployed acceptance remain open. Earlier Slides-budget wording is corrected: its named log repeated the Standard budget script; no configured equivalent Slides budget is claimed. Flags off.

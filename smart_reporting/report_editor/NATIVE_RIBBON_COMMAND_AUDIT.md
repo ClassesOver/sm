@@ -305,3 +305,14 @@ content shows explicit retry. Sidebar/document lifecycle does not create edits.
 This supersedes the completely unavailable read/export checkpoint, not the pinned
 source's add/remove/desktop workflow. Comparison and remaining source controls
 stay open. Evidence: `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
+
+
+## PDF reading-position continuation (2026-11-09)
+
+Reading-position persistence is now connected through unchanged pinned view-state
+helpers, scoped immutable source identity, actual DOM rows and guarded two-frame
+restoration. Custom zoom/basic fit reopen, reorder, readonly and source/preview
+separation have browser evidence; source Ctrl-wheel/search/comment priority stays
+intact. Selection and scroll are distinct. This supersedes the wholly missing
+reading-position checkpoint, not full fit/resize/keyboard/View parity. See
+`NATIVE_PDF_READING_ACCEPTANCE.md`. Budget applies to Standard output only.

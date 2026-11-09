@@ -24,6 +24,9 @@ import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupTyp
 
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
+import { loadViewState, saveViewState, type PdfFitMode, type PdfViewState } from './genoffice-pdf-reading-state'
+import { pdfReadingKey, capturePdfReading, restorePdfReading } from './pdf-reading-state'
+
 import { PdfAttachmentCache, humanBytes, attachmentDownloadName, type PdfAttachmentRow } from './pdf-attachments'
 
 import { PdfAnnotationCache, projectPageComments, filterComments, flattenComments, type CommentNode, type CommentTarget } from './pdf-comments'
@@ -54,7 +57,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   let textLoaded = !textEnabled, textLoadWarning = ''
   let reportedSelectionPage = ''
   let textSelectionPage = '', selectedTextId = '', lastOperationsKey = JSON.stringify(draft.operations)
-  let scale = 1
+  let scale = 1, fitMode: PdfFitMode = null
+  const readingKey = pdfReadingKey(draft.identity)
+  const readingStorage = { getItem: (key: string) => window.localStorage.getItem(key), setItem: (key: string, value: string) => window.localStorage.setItem(key, value) }
+  let pendingReadingRestore: PdfViewState | null = null, sourceReadingBeforePreview: PdfViewState | null = null
+  let readingRestoresSelection = false
+  let readingReady = false, readingTimer: number | undefined
   let pendingZoomAnchor: PdfZoomAnchor | null = null
   let markupColor: [number, number, number] = [...MARKUP_COLORS.highlight]
   let markupSelection: PdfMarkupSelection[] = []
@@ -94,6 +102,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const outlinePanel = documentElement('nav', 'pdf-outline'); outlinePanel.hidden = true; outlinePanel.setAttribute('aria-label', 'PDF 目录大纲')
   const viewport = documentElement('div', 'pdf-document-pages')
   viewport.setAttribute('aria-label', 'PDF 页面'); viewport.tabIndex = 0
+  const saveReading = () => {
+    if (readingTimer !== undefined) window.clearTimeout(readingTimer)
+    if (!readingReady || disposed || !document || previewDocument || previewing || printing || searchRendering || pendingReadingRestore) return
+    const current = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode)
+    if (current) saveViewState(readingKey, current, readingStorage)
+  }
+  const scheduleReading = () => { if (readingTimer !== undefined) window.clearTimeout(readingTimer); readingTimer = window.setTimeout(saveReading, 300) }
+  const cancelReadingRestore = () => { pendingReadingRestore = null; readingRestoresSelection = false }
+  viewport.addEventListener('scroll', scheduleReading, { passive: true, signal: abort.signal })
+  for (const event of ['pointerdown', 'wheel', 'keydown']) root.addEventListener(event, cancelReadingRestore, { capture: true, passive: true, signal: abort.signal })
+  window.addEventListener('pagehide', saveReading, { signal: abort.signal })
   const commentsPanel = documentElement('aside', 'pdf-comments-sidebar'); commentsPanel.hidden = true; commentsPanel.setAttribute('aria-label', '全文便签批注')
   const commentsHeading = documentElement('header'), commentsTitle = documentElement('strong'); commentsTitle.textContent = '便签批注'
   const closeComments = documentElement('button', 'pdf-tool'); closeComments.type = 'button'; closeComments.textContent = '关闭批注侧栏'; commentsHeading.append(commentsTitle, closeComments)
@@ -259,14 +278,19 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   homeZoom.setAttribute('aria-label', '页面缩放')
   for (const value of PDF_ZOOM_STEPS) { const option = documentElement('option'); option.value = String(value); option.textContent = `${Math.round(value * 100)}%`; homeZoom.append(option) }
   homeZoom.value = '1'; homeZoom.addEventListener('change', () => setZoom(Number(homeZoom.value))); commandGroup.append(homeZoom)
-  const fitScale = (mode: 'width' | 'page') => {
+  const fittedScale = (mode: 'width' | 'page') => {
     const page = state().find(item => item.pageId === activeId)
     const original = page && pagesCached.get(previewDocument ? state().findIndex(item => item.index === page.index) : page.index)
     if (!page || !original) return
     const availableWidth = Math.max(1, viewport.clientWidth - 36)
     const availableHeight = Math.max(1, viewport.clientHeight - 36)
     const unit = displayViewport(original, page, 1)
-    setZoom(Math.min(availableWidth / unit.width, mode === 'page' ? availableHeight / unit.height : Number.POSITIVE_INFINITY))
+    return clampPdfZoom(Math.min(availableWidth / unit.width, mode === 'page' ? availableHeight / unit.height : Number.POSITIVE_INFINITY))
+  }
+  const fitScale = (mode: 'width' | 'page') => {
+    const next = fittedScale(mode)
+    if (next === undefined) return
+    fitMode = mode; setZoom(next, 0, 0, false); scheduleReading()
   }
   const homeZoomOut = button('缩小', () => setZoom(stepPdfZoom(scale, -1)), false)
   const homeZoomIn = button('放大', () => setZoom(stepPdfZoom(scale, 1)), false)
@@ -353,16 +377,18 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const viewPageInput = createPageInput('view.pageZoom.goToPage')
   viewZoomGroup.append(viewPageInput.row)
   commandGroup = viewZoomGroup
-  const setZoom = (value: number, vx = 0, vy = 0) => {
+  const syncZoomControls = () => {
+    if (![...homeZoom.options].some(item => Number(item.value) === scale)) { const added = documentElement('option'); added.value = String(scale); added.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(added) }
+    homeZoom.value = String(scale); zoomSlider.value = String(Math.round(scale * 100)); zoomValue.textContent = `${Math.round(scale * 100)}%`
+  }
+  const setZoom = (value: number, vx = 0, vy = 0, manual = true) => {
     let next: number
     try { next = clampPdfZoom(value) } catch (error) { showError(error); return }
-    if (next === scale) return
+    if (manual) fitMode = null
+    if (next === scale) { scheduleReading(); return }
     pendingZoomAnchor ??= capturePdfZoomAnchor(viewport, scale, vx, vy)
     scale = next
-    const option = [...homeZoom.options].find(item => Number(item.value) === scale)
-    if (!option) { const added = documentElement('option'); added.value = String(scale); added.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(added) }
-    homeZoom.value = String(scale)
-    zoomSlider.value = String(Math.round(scale * 100)); zoomValue.textContent = `${Math.round(scale * 100)}%`
+    syncZoomControls()
     void refresh().catch(showError)
   }
   const zoomOut = button('缩小', () => setZoom(stepPdfZoom(scale, -1)), false)
@@ -1076,11 +1102,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   async function leavePreview() {
+    readingReady = false
     for (const task of tasks) task.cancel()
     for (const layer of textLayers) layer.cancel()
     commentsGeneration++; pendingCommentJump = null; selectedComment = ''; clearAttachments()
     generation++; indexGeneration++; observer?.disconnect(); visible.clear(); tasks.clear(); textLayers.clear()
     document = sourceDocument; previewDocument = undefined; pagesCached.clear()
+    if (sourceReadingBeforePreview) { pendingReadingRestore = sourceReadingBeforePreview; readingRestoresSelection = true }
     commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = sidebar === 'comments'; renderComments()
     const loading = previewLoading; previewLoading = undefined; await loading?.destroy()
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
@@ -1099,6 +1127,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (hasUnstagedText()) throw new Error('请先点击“加入文字修改”，再生成预览或保存')
     if (previewing || locked || draft.closed) throw new Error('正在处理 PDF，请稍后重试')
     const operations = structuredClone(draft.operations), key = JSON.stringify(operations)
+    if (!previewDocument) { saveReading(); sourceReadingBeforePreview = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode) }
     previewing = true; updateControls(); status.textContent = '正在生成实际 PDF 预览…'
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
@@ -1138,6 +1167,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function refresh() {
     if (disposed || !document) return
+    if (readingReady && !previewDocument && !previewing && !pendingReadingRestore) { pendingReadingRestore = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode); readingRestoresSelection = false }
     searchRendering = true
     commentsGeneration++; clearAttachments()
     if (sidebar === 'comments') { commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = true; renderComments() }
@@ -1152,6 +1182,20 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       if (previewDocument) { await leavePreview(); await rebuildTextIndex() }
     }
     const renderGeneration = ++generation
+    if (!previewDocument && pendingReadingRestore) {
+      const saved = pendingReadingRestore
+      const readingPageId = state().find(page => page.index === Math.min(model.pages.length - 1, Math.max(0, saved.page - 1)))?.pageId ?? state()[0].pageId
+      if (readingRestoresSelection) activeId = readingPageId
+      if (!state().some(page => page.pageId === activeId)) activeId = state()[0].pageId
+      fitMode = saved.fitMode; scale = clampPdfZoom(saved.scale)
+      // Fit values depend on the reopened viewport; resolve source dimensions
+      // before rendering rather than invoking a second concurrent refresh.
+      const page = state().find(page => page.pageId === activeId)!
+      await sourcePage(page.index)
+      if (disposed || renderGeneration !== generation) return
+      if (fitMode) scale = fittedScale(fitMode) ?? scale
+      syncZoomControls()
+    }
     observer?.disconnect()
     for (const task of tasks) task.cancel()
     for (const layer of textLayers) layer.cancel()
@@ -1243,9 +1287,20 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       outlinePanel.append(link)
     }
     if (pendingCommentJump) pendingZoomAnchor = null
+    const zoomOwnsPosition = !!pendingZoomAnchor
     if (pendingZoomAnchor) { restorePdfZoomAnchor(viewport, pendingZoomAnchor, scale); pendingZoomAnchor = null }
     status.textContent = previewDocument ? '正在显示实际写回的 PDF 预览；未执行的修改仍保留原文。返回原稿后可继续调整。' : draft.persistenceError ?? (draft.dirty ? `有 ${draft.operations.length} 项未保存修改；保存会创建新修订。` : response.editingEnabled ? `选择页面文字可添加或切换本次高亮、下划线、波浪线和删除线；文字批注为便签。${textEnabled ? '原位改字需核对实际预览后保存。' : '原位改字尚未开放。'}` : '当前为只读，原生编辑尚未开放；可下载文件。')
     if (textLoadWarning) status.textContent += ` ${textLoadWarning}`
+    if (!previewDocument && pendingReadingRestore) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      if (disposed || renderGeneration !== generation) return
+      if (pendingReadingRestore && !zoomOwnsPosition && !pendingZoomAnchor && !pendingCommentJump && !searchJumpPending) {
+        const pageId = restorePdfReading(viewport, model.pages.map(page => page.pageId), pendingReadingRestore)
+        if (pageId && readingRestoresSelection) activeId = pageId
+      }
+      pendingReadingRestore = null; sourceReadingBeforePreview = null; readingRestoresSelection = false
+    }
+    readingReady = true; scheduleReading()
     searchRendering = false; if (pendingCommentJump) { pendingZoomAnchor = null; jumpComment() }; if (sidebar === 'comments') void loadComments(); if (sidebar === 'attachments') void loadAttachments(); runSearch(false, false); renderTextPanel(); updateControls(); onDraftChange?.()
   }
   setMode('select')
@@ -1321,9 +1376,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   if (draft.operations.some(operation => operation.kind === 'setPageSize') && model.capabilities?.pageSize !== true) throw new Error('当前来源未确认尺寸变更能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'cropPage') && model.capabilities?.cropPage !== true) throw new Error('当前 PDF 引擎未确认裁切能力；原草稿已保留')
   void rebuildTextIndex().catch(showError)
+  pendingReadingRestore = loadViewState(readingKey, readingStorage); readingRestoresSelection = !!pendingReadingRestore
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    disposed = true; attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }

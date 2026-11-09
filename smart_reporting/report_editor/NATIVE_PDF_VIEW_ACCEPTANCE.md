@@ -91,3 +91,9 @@ host adaptation, rather than every source row/layout rule. Night filter changes
 screen colors only and is not document color correction. Source View/whole PDF
 parity, other Page/Form Design/conversion families and desktop/deployed/full-app
 image acceptance remain open. Flags stay off.
+
+
+2026-11-09 follow-up: `NATIVE_PDF_READING_ACCEPTANCE.md` supersedes the previously
+missing reading-position persistence checkpoint. Comments and attachment read/export
+have separate bounded acceptance records. Comparison/full source shortcuts and fit/
+layout remain open. The configured budget script checks Standard assets only.

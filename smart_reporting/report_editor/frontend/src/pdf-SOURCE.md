@@ -176,3 +176,12 @@ filenames, document promise caches/retry and lifecycle guards. Browser Blob
 export replaces Electron's dialog; already-authorized opened-PDF bytes need no
 new backend route. Attachment add/remove is not implemented. Evidence:
 `NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
+
+
+Reading persistence (2026-11-09): view-state.ts is copied unchanged with SHA in
+`genoffice-pdf-reading-source.json`; source App open/restore/300ms/pagehide lifecycle
+is the primary reference. Native adaptation scopes keys to immutable authorized
+identity and measures DOM rows instead of assuming desktop row heights. Numeric
+page retains original source ordinal, not mutable output order; preview view state
+never overwrites source. Existing basic fit recalculates on reopen, not full source
+fit/continuous resize parity. See `NATIVE_PDF_READING_ACCEPTANCE.md`.

@@ -68,7 +68,7 @@ a delayed-preview browser check verifies no stale-source list flashes.
   inspect metadata/thread boundaries pass, sourceRef-as-write request refuses without
   an output file, and replay of actual browser operations produces byte-identical
   download. This does not replace full application-image acceptance.
-- Final Standard37.55s/Slides36.68s builds and both actual budgets pass. Standalone
+- Final Standard37.55s/Slides36.68s builds and the configured Standard budget pass. Slides has no equivalent configured budget. Standalone
   bridge typing retains six baseline desktop declaration diagnostics, zero new.
   Thirty-six local engine hashes and date-parser extraction hash pass. Existing
   chunk-size warnings remain; no full suite is repeated.

@@ -60,7 +60,7 @@ desktop attachment workflow are not credited as implemented.
   widget appearances and original notes; the requested new note exists.
 - Affected comments and View browser scenarios pass, including delayed-preview
   clearing, exact note navigation/history, night mode, zoom/anchor and print canvas.
-- Final Standard36.23s/Slides39.35s builds and both budgets pass. Smoke syntax and
+- Final Standard36.23s/Slides39.35s builds and the configured Standard budget pass. Slides has no equivalent configured budget. Smoke syntax and
   git diff checks pass; primary-source hashes/unchanged formatter are verified.
   No backend/runtime/dependency source changed and no whole suite was repeated.
 
