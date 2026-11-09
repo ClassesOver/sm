@@ -2,7 +2,7 @@ import { patchTransitionPreservingMetadata, transitionEditAvailability } from '.
 import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
-import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, insertBlankSlide, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, insertBlankSlide, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -31,6 +31,8 @@ type Input = {
   order?: number[]
   /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
   newSlides?: { layoutFrom: number }[]
+  /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
+  deletedSlides?: number[]
   theme?: 'executive' | 'clinical' | 'modern'
   slideSize?: { cx: number; cy: number }
   images?: {
@@ -247,6 +249,12 @@ if (request.action === 'inspect') {
       throw new Error('paragraph_format_invalid')
     }
   }
+  const deletedSlides = request.deletedSlides ?? []
+  if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
+  if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
+  const removedSlides = new Set(deletedSlides)
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting]
+  if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(item?.layoutFrom))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
   for (const deletion of deletions) {
@@ -398,12 +406,18 @@ if (request.action === 'inspect') {
     if (item.layoutFrom + 1 !== last) moveSlide(opened, item.layoutFrom + 1, last)
   }
   if (newSlides.length && !request.order) throw new Error('new_slides_require_order')
+  // 原始编号 = 来源页 + 新建页；删除按部件路径执行，order 用原始编号列出全部保留页。
+  const originalPaths = opened.deck.slides.map((slide) => slide.path)
+  if (deletedSlides.length >= originalPaths.length) throw new Error('deleted_slides_all')
+  for (const index of deletedSlides) {
+    const current = opened.deck.slides.findIndex((slide) => slide.path === originalPaths[index])
+    if (current < 0 || !deleteSlide(opened, current)) throw new Error('slide_delete_failed')
+  }
   if (request.order) {
-    if (request.order.length !== opened.deck.slides.length || new Set(request.order).size !== request.order.length || request.order.some((n) => !Number.isInteger(n) || n < 0 || n >= request.order!.length)) {
+    if (request.order.length !== opened.deck.slides.length || new Set(request.order).size !== request.order.length || request.order.some((n) => !Number.isInteger(n) || n < 0 || n >= originalPaths.length || removedSlides.has(n))) {
       throw new Error('slide_order_invalid')
     }
-    const originalPaths = [...opened.deck.slides]
-    const desired = request.order.map((index) => originalPaths[index]!.path)
+    const desired = request.order.map((index) => originalPaths[index]!)
     for (let target = 0; target < desired.length; target++) {
       const current = opened.deck.slides.findIndex((slide) => slide.path === desired[target])
       if (current !== target) moveSlide(opened, current, target)

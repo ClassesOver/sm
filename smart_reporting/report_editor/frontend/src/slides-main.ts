@@ -34,7 +34,7 @@ type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y:
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 type SlideChanges = {
-  edits?: Edit[]; order?: number[]; newSlides?: { layoutFrom: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
+  edits?: Edit[]; order?: number[]; newSlides?: { layoutFrom: number }[]; deletedSlides?: number[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
@@ -137,6 +137,23 @@ objectDelete.prepend(createElement(Trash2, { width: 15, height: 15, 'aria-hidden
 const order: number[] = []
 /** 固定源 onAddSlide：新建空白页只记录版式来源页；其索引为 来源页数 + k，位置由 order 决定，保存后由引擎写入。 */
 const newSlides: { layoutFrom: number }[] = []
+/** 固定源缩略图 deleteSlide：删除的来源页；保存时按部件路径删除，order 只列保留页。 */
+const deletedSlides = new Set<number>()
+function slideHasPendingEdits(slideIndex: number) {
+  return [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex)
+    || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex)
+    || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
+    || newSlides.some(item => item.layoutFrom === slideIndex)
+}
+function deleteSourceSlide(slideIndex: number) {
+  if (!deck || locked() || isNewSlide(slideIndex) || order.length <= 1) return
+  if (slideHasPendingEdits(slideIndex)) { statusMessage.textContent = '该页有待保存修改或被新建页沿用版式，请先撤销或保存后再删除'; return }
+  const position = order.indexOf(slideIndex)
+  order.splice(position, 1); deletedSlides.add(slideIndex)
+  selectedSlide = order[Math.min(position, order.length - 1)]!; selectedElement = ''
+  undoSnapshot = undefined; undoButton.disabled = true
+  renderSlides(); renderInspector(); markDirty()
+}
 const NEW_SLIDE_REASON = '新建的幻灯片保存并重新打开后才能编辑内容、背景、版式与转场'
 const isNewSlide = (slideIndex: number) => !!deck && slideIndex >= deck.slides.length
 function slideAt(slideIndex: number): DeckSlide {
@@ -297,7 +314,7 @@ function markDirty() {
 
 function slideChanges(): SlideChanges {
   return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
-    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
@@ -308,7 +325,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft() {
   if (!nativeDraft) return
   const operations = nativeDraft.operations
-  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -318,8 +335,10 @@ function restoreNativeDraft() {
   if (native && transitions.some(item => !transitionEditingAllowed(deck.slides[item.slideIndex]))) throw new Error('来源含尚不能安全修改的转场兼容性内容；原草稿已保留')
   const restoredNew = changes.newSlides ?? []
   if (!Array.isArray(restoredNew) || restoredNew.length > 50 || restoredNew.some(item => !item || Object.keys(item).join() !== 'layoutFrom' || !Number.isInteger(item.layoutFrom) || item.layoutFrom < 0 || item.layoutFrom >= deck.slides.length) || (restoredNew.length && changes.order === undefined)) throw new Error('草稿中的新建幻灯片无效；原草稿已保留')
+  const restoredDeleted = changes.deletedSlides ?? []
+  if (!Array.isArray(restoredDeleted) || new Set(restoredDeleted).size !== restoredDeleted.length || restoredDeleted.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length) || (restoredDeleted.length && changes.order === undefined)) throw new Error('草稿中的删除幻灯片无效；原草稿已保留')
   const slideTotal = deck.slides.length + restoredNew.length
-  if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== slideTotal || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= slideTotal))) throw new Error('草稿页面顺序无效；原草稿已保留')
+  if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== slideTotal - restoredDeleted.length || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= slideTotal || restoredDeleted.includes(index)))) throw new Error('草稿页面顺序无效；原草稿已保留')
   // Validate every step before mutating the recovered view or the persisted history.
   try {
     if ((changes.paragraphFormatting?.length ?? 0) > 500) throw new Error('段落格式操作超过 500 条；请分批保存')
@@ -350,6 +369,7 @@ function restoreNativeDraft() {
   animationEdits.splice(0, animationEdits.length, ...(changes.animations ?? []))
   textBoxEdits.splice(0, textBoxEdits.length, ...(changes.textBoxes ?? []).map(box => ({ ...box, watermark: box.rotation === -25 })))
   newSlides.splice(0, newSlides.length, ...restoredNew.map(item => ({ layoutFrom: item.layoutFrom })))
+  deletedSlides.clear(); for (const index of restoredDeleted) deletedSlides.add(index)
   order.splice(0, order.length, ...(changes.order ?? deck.slides.map(slide => slide.slideIndex)))
   if (!order.includes(selectedSlide)) selectedSlide = order[0] ?? 0
   selectedTheme = changes.theme
@@ -395,6 +415,13 @@ function renderSlides() {
     up.addEventListener('click', () => move(position, -1))
     down.addEventListener('click', () => move(position, 1))
     row.append(open, up, down)
+    if (!isNewSlide(slideIndex)) {
+      row.dataset.sourceSlide = 'true'
+      const remove = buttonIcon(Trash2, '删除幻灯片')
+      remove.disabled = locked() || order.length <= 1
+      remove.addEventListener('click', () => deleteSourceSlide(slideIndex))
+      row.append(remove)
+    }
     if (isNewSlide(slideIndex)) {
       row.dataset.newSlide = 'true'
       const remove = buttonIcon(X, '移除新建的幻灯片')
@@ -1064,7 +1091,7 @@ aiCancel.addEventListener('click', async () => {
 
 aiAccept.addEventListener('click', async () => {
   if (locked() || !pendingAIProposal || !pendingAIEditId) return
-  if (newSlides.length) { statusMessage.textContent = '请先保存新建的幻灯片，再采纳 AI 页面修改'; return }
+  if (newSlides.length || deletedSlides.size) { statusMessage.textContent = '请先保存新建或删除的幻灯片，再采纳 AI 页面修改'; return }
   ++mutationPending
   aiAccept.disabled = true
   try {

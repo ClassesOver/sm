@@ -18,7 +18,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -85,6 +85,11 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
     if (not isinstance(new_slides, list) or len(new_slides) > 50
         or any(not isinstance(item, dict) or set(item) != {'layoutFrom'} or not _slide_index(item['layoutFrom']) for item in new_slides)
         or (new_slides and order is None)):
+        raise ValueError('native_office_operations_invalid')
+    # 删除来源页（固定源 deleteSlide）：只列来源索引；order 必须给出保留页，引擎再核对引用与页数。
+    deleted_slides = operation.get('deletedSlides', [])
+    if (not isinstance(deleted_slides, list) or len(deleted_slides) > 500 or any(not _slide_index(index) for index in deleted_slides)
+        or len(set(deleted_slides)) != len(deleted_slides) or (deleted_slides and order is None)):
         raise ValueError('native_office_operations_invalid')
     slide_size = operation.get('slideSize')
     if slide_size is not None and (
@@ -156,7 +161,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
+    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
         'slide_layouts': layouts, 'backgrounds': backgrounds, 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting}
 

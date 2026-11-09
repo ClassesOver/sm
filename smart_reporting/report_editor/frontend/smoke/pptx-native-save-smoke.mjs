@@ -42,6 +42,9 @@ if payload['mode'] == 'create':
         other = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1)); other.text = 'Untouched object'
         p = other.text_frame.paragraphs[0]; p.line_spacing = 1.37; p.space_before = Pt(8.25); p.space_after = Pt(9.75)
         p.runs[0].font.bold = True
+    if payload.get('extraSlide'):
+        extra = presentation.slides.add_slide(presentation.slide_layouts[6])
+        extra.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1)).text = 'Second source slide'
     if payload.get('listsSample'):
         for index, paragraph in enumerate(shape.text_frame.paragraphs):
             paragraph._p.get_or_add_pPr().set('lvl', '0' if index == 0 else '8')
@@ -90,7 +93,7 @@ elif payload['mode'] == 'patch':
   return result.stdout.trim()
 }
 
-const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists'].includes(smokeMode), listsSample: smokeMode === 'paragraph-lists' }), 'base64')
+const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists'].includes(smokeMode), listsSample: smokeMode === 'paragraph-lists', extraSlide: smokeMode === 'new-slide' }), 'base64')
 const sourceIdentity = createHash('sha256').update(sourceBytes).digest('hex')
 const sourceSha = sourceIdentity
 let activeBytes = sourceBytes
@@ -187,15 +190,22 @@ try {
     const add = page.locator('[data-command="addSlide"][data-source-action="onAddSlide"]').first()
     assert.equal(await add.isEnabled(), true)
     await add.click()
-    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
     assert.equal(await page.locator('.slide-row').nth(1).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
     assert.equal(await page.locator('.slide-row').nth(1).getAttribute('data-selected'), 'true')
     assert.equal(await page.locator('#background-color').isDisabled(), true)
     await page.locator('.slides-canvas canvas').first().waitFor()
     await add.click()
-    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
     await page.locator('.slide-row').nth(2).getByRole('button', { name: '移除新建的幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    // 删除幻灯片：新页沿用其版式的来源页不可删除；另一来源页可删除，保存时由引擎按部件路径删除。
+    await page.locator('.slide-row').nth(0).getByRole('button', { name: '删除幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelector('.slides-statusbar')?.textContent?.includes('被新建页沿用版式'))
+    assert.equal(await page.locator('.slide-row').count(), 3)
+    await page.locator('.slide-row').nth(2).getByRole('button', { name: '删除幻灯片' }).click()
     await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    assert.equal(await page.locator('.slide-row').filter({ hasText: 'Second source slide' }).count(), 0)
     await page.locator('.slide-row').nth(1).locator('.slide-open').click()
     await page.locator('[data-command="movePrevious"]').first().click()
     assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
@@ -368,7 +378,8 @@ try {
     assert.deepEqual(operation.paragraphFormatting.reduce((value, patch) => ({ ...value, ...patch }), {}), { slideIndex: 0, elementId: target.id, align: 'right', lineSpacingPct: 200, spaceBeforePt: 12.5, spaceAfterPt: 0 })
   } else if (smokeMode === 'new-slide') {
     assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }])
-    assert.deepEqual(operation.order, [1, 0])
+    assert.deepEqual(operation.deletedSlides, [1])
+    assert.deepEqual(operation.order, [2, 0])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
     if (smokeMode === 'slide-size-presets') assert.deepEqual(operation.edits[0].geometry, { x: 75, y: 80, width: 300, height: 90 })

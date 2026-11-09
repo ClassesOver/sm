@@ -41,7 +41,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .slide-count { margin-left: auto; color: var(--office-muted); font-weight: 500; }
 .slide-list { margin: 0; padding: 8px; list-style: none; }
 .slide-row { min-height: 59px; display: grid; grid-template-columns: minmax(0, 1fr) 28px 28px; align-items: center; gap: 2px; padding: 4px; border: 1px solid transparent; border-radius: var(--office-radius); }
-.slide-row[data-new-slide="true"] { grid-template-columns: minmax(0, 1fr) 28px 28px 28px; }
+.slide-row:is([data-new-slide="true"], [data-source-slide="true"]) { grid-template-columns: minmax(0, 1fr) 28px 28px 28px; }
 .slide-row[data-selected="true"] { border-color: var(--office-border-strong); background: var(--office-accent-soft); }
 .slide-open { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 4px; border: 0; background: transparent; text-align: left; color: var(--office-ink-2); cursor: pointer; }
 .slide-number { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; border-radius: 3px; background: var(--office-canvas); color: var(--office-muted); font-size: 11px; }

@@ -536,6 +536,7 @@ class ReportSlidesEditorService:
         edits: list[dict[str, Any]] | None = None,
         order: list[int] | None = None,
         new_slides: list[dict[str, Any]] | None = None,
+        deleted_slides: list[int] | None = None,
         theme: str | None = None,
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
@@ -558,6 +559,8 @@ class ReportSlidesEditorService:
                 request.update({"output": str(output_path), "edits": edits or [], "order": order})
                 if new_slides:
                     request["newSlides"] = new_slides
+                if deleted_slides:
+                    request["deletedSlides"] = deleted_slides
                 if theme is not None:
                     request["theme"] = theme
                 if slide_size is not None:

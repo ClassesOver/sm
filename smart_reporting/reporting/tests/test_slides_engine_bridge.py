@@ -533,3 +533,55 @@ def test_slides_bridge_rejects_invalid_new_slides_without_output(tmp_path: Path,
     with pytest.raises(subprocess.CalledProcessError):
         _invoke(request, tmp_path)
     assert not output.exists()
+
+
+def test_slides_bridge_deletes_source_slides_with_new_slides_and_order(tmp_path: Path):
+    """固定源 deleteSlide：删除来源页后 order 只列保留页（含新建页），其余页内容与按索引的修改保持正确。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "deleted.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    slides = _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"]
+    count = len(slides)
+    kept = [index for index in range(count) if index != 1]
+    _invoke({
+        "action": "edit", "input": str(source), "output": str(output), "edits": [],
+        "deletedSlides": [1], "newSlides": [{"layoutFrom": 0}],
+        "order": [count, *reversed(kept)], "transitions": [{"slideIndex": 0, "kind": "fade"}],
+    }, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == count
+    assert reopened[0]["elements"] == []
+    expected = [slides[index] for index in reversed(kept)]
+    assert [len(slide["elements"]) for slide in reopened[1:]] == [len(slide["elements"]) for slide in expected]
+    assert reopened[-1].get("transition") == "fade"
+    with ZipFile(output) as archive:
+        assert len([name for name in archive.namelist() if name.startswith("ppt/slides/slide") and name.endswith(".xml")]) == count
+    assert len(Presentation(str(output)).slides) == count
+
+
+@pytest.mark.parametrize("request_patch", [
+    {"deletedSlides": [1], "order": "keep-deleted"},
+    {"deletedSlides": [1, 1]},
+    {"deletedSlides": [99]},
+    {"deletedSlides": [1], "transitions": [{"slideIndex": 1, "kind": "fade"}]},
+    {"deletedSlides": [0], "newSlides": [{"layoutFrom": 0}]},
+    {"deletedSlides": "all"},
+])
+def test_slides_bridge_rejects_invalid_slide_deletions_without_output(tmp_path: Path, request_patch: dict[str, object]):
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "rejected.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    request: dict[str, object] = {"action": "edit", "input": str(source), "output": str(output), "edits": []}
+    request.update(request_patch)
+    if request.get("order") == "keep-deleted":
+        request["order"] = list(range(count - 1))
+    elif request["deletedSlides"] == "all":
+        request["deletedSlides"], request["order"] = list(range(count)), []
+    else:
+        removed = set(request["deletedSlides"]) if isinstance(request["deletedSlides"], list) else set()
+        extra = len(request.get("newSlides", []))
+        request["order"] = [index for index in range(count + extra) if index not in removed]
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke(request, tmp_path)
+    assert not output.exists()
