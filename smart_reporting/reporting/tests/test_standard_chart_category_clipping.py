@@ -45,3 +45,28 @@ def test_tight_crop_keeps_long_chinese_label_and_negative_value(render, form):  
     # tight 导出按图元边界扩大文件；不以 nominal canvas 限制其标签。
     with Image.open('chart.png') as image:
         assert image.width > figure.bbox.width or image.height > figure.bbox.height
+
+
+@pytest.mark.parametrize('layout', ['tight', 'constrained'])
+def test_native_layout_reserves_wrapped_chinese_labels_on_same_fixed_canvas(render, layout):  # noqa: F811
+    from PIL import Image
+
+    plan, inputs, label = chinese_label_plan('barh', 'canvas', layout)
+    plan.charts[0].standard_canvas = plan.charts[0].standard_canvas.model_copy(
+        update={'label_wrap': 8},
+    )
+    figure = render(plan, inputs)
+    axis = figure.axes[0]
+    ticks = axis.get_yticklabels()
+    assert ''.join(tick.get_text() for tick in ticks).replace('\n', '') == label
+    assert all(tick.get_fontsize() == 9 for tick in ticks)
+    assert [bar.get_width() for bar in axis.containers[0]] == [-12]
+    assert json.loads(inputs.files[0].content)['rows'] == [[label, -12]]
+    with Image.open('chart.png') as image:
+        assert image.size == (600, 450)
+    # 本合成案例的可读性约束：不能靠把绘图区挤成细条“通过”边界检查。
+    assert axis.bbox.width >= 300 and axis.bbox.height >= 200
+    renderer = figure.canvas.get_renderer()
+    boxes = [tick.get_window_extent(renderer) for tick in ticks]
+    assert all(box.x0 >= 0 and box.y0 >= 0 and box.x1 <= 600 and box.y1 <= 450
+               for box in boxes)
