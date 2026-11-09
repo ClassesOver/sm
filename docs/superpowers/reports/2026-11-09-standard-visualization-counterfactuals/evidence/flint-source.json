@@ -1,0 +1,90 @@
+{
+  "repository": "https://github.com/microsoft/flint-chart",
+  "commit": "a794557384adcc3293a77043f6b9aff1c33d152c",
+  "tracked_changes": "",
+  "untracked_count": 0,
+  "dependencies_present": [
+    [
+      "node_modules",
+      false
+    ],
+    [
+      "packages/flint-js/node_modules",
+      false
+    ]
+  ],
+  "tests_executed": false,
+  "reason": "No installed local dependencies; no install attempted; historical EALLOWREMOTE retained as historical evidence only",
+  "files": [
+    {
+      "path": "package-lock.json",
+      "size": 420482,
+      "sha256": "64e380870e1e82aad1629d8a45a6b01cbfc5e9594c17c2043e1f547b2d239a0e"
+    },
+    {
+      "path": "packages/flint-js/package.json",
+      "size": 5880,
+      "sha256": "322d995de8a39e0c70b366c54ed1487bf21181889b7b1b53ffe78e2fbe66d211"
+    },
+    {
+      "path": "LICENSE",
+      "size": 1074,
+      "sha256": "7df20dcdf9197e9945c14858d41c60f11b52b93e5b69e2b63416b874d598d322"
+    },
+    {
+      "path": "packages/flint-js/src/core/field-semantics.ts",
+      "size": 47036,
+      "sha256": "ce846fb3c35f8c9f96e00d9ae4ffe63b6b3381828b7abbfef819ae93f80e7065"
+    },
+    {
+      "path": "packages/flint-js/src/core/type-registry.ts",
+      "size": 15093,
+      "sha256": "741150310e038cb63c5973ab149659d5c981c41b57034fedcb6b85d799c9c0d5"
+    },
+    {
+      "path": "packages/flint-js/src/core/temporal-parse.ts",
+      "size": 4532,
+      "sha256": "7cd7ea63e3c4469b82c98fd8189ff2f3d4cb3d0cda50831a604a66bc2298f061"
+    },
+    {
+      "path": "packages/flint-js/src/core/furniture-reserve.ts",
+      "size": 12084,
+      "sha256": "c7a114be521846714db253f68b157457c81193a76ed597f126cc0ed56d381fd2"
+    },
+    {
+      "path": "packages/flint-js/src/core/canvas-fit.ts",
+      "size": 16002,
+      "sha256": "a3cdf8a9138c74bf69ead8aaadf7743cc74f933d7bab6d67f33dd998e5c787d7"
+    },
+    {
+      "path": "packages/flint-js/src/vegalite/assemble.ts",
+      "size": 75184,
+      "sha256": "22b0951a7dda46da6688d36235d8d004186e064a2bcbb38496e1541605cf9b2b"
+    },
+    {
+      "path": "packages/flint-js/tests/unit-display.test.ts",
+      "size": 2907,
+      "sha256": "a77a267866b4e75d9c8553c6860386126bc043b589c26d895045af28d7b4ce98"
+    },
+    {
+      "path": "packages/flint-js/tests/temporal-parse.test.ts",
+      "size": 3940,
+      "sha256": "e26c96177396b82899772d4e05b8e4a354f2f857832c1d1c095ed7e5c11f549d"
+    },
+    {
+      "path": "packages/flint-js/tests/furniture-reserve.test.ts",
+      "size": 2913,
+      "sha256": "71c59218e39c3235d3b8dfc8b840fcd184eb1d14e2764c0fccdee342e26476bb"
+    },
+    {
+      "path": "packages/flint-js/tests/canvas-fit.test.ts",
+      "size": 23541,
+      "sha256": "d918b0327751c96815e4055a5b2e1781ef16d577dc6a37f521a0ed6636129d94"
+    },
+    {
+      "path": "packages/flint-js/tests/year-band-dodge.test.ts",
+      "size": 2924,
+      "sha256": "cd735d682df29e0f5344440c6ca53e40692c57351a639bb7ed113ff4c230207d"
+    }
+  ]
+}

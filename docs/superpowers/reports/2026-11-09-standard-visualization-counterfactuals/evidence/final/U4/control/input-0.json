@@ -1,0 +1,18 @@
+{
+  "columnMeta": {
+    "value": {
+      "isPercent": true,
+      "unit": "%"
+    }
+  },
+  "columns": [
+    "label",
+    "value"
+  ],
+  "rows": [
+    [
+      "合成类别1",
+      0.125
+    ]
+  ]
+}

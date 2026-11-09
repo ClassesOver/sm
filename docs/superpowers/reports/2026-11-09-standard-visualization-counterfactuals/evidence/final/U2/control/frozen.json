@@ -1,0 +1,164 @@
+{
+  "documents": [
+    {
+      "columnMeta": {
+        "value": {
+          "unit": "元/人次"
+        }
+      },
+      "columns": [
+        "label",
+        "value"
+      ],
+      "rows": [
+        [
+          "合成类别1",
+          250
+        ],
+        [
+          "合成类别2",
+          -12.5
+        ]
+      ]
+    }
+  ],
+  "plan": {
+    "charts": [
+      {
+        "aggregationGrain": "category",
+        "altText": "合成类别金额，负数与缺失保持原义",
+        "chartId": "synthetic",
+        "citationIds": [
+          "synthetic"
+        ],
+        "comparability": "strict",
+        "comparisonPeriod": null,
+        "comparisonType": "none",
+        "currentPeriod": "2025-01",
+        "dataBindings": [
+          {
+            "analysisId": "synthetic",
+            "dataPath": "rows",
+            "factPath": "facts.json",
+            "fields": [
+              "label",
+              "value"
+            ],
+            "role": "合成冻结数据"
+          }
+        ],
+        "metricCodes": [
+          "synthetic"
+        ],
+        "sourceDatasetId": "synthetic",
+        "sourcePath": "chart.png",
+        "standardAnnotations": [],
+        "standardAxes": {
+          "allowNulls": false,
+          "leftDisplayUnit": null,
+          "linearThreshold": 1.0,
+          "mode": "single",
+          "panelDescending": true,
+          "panelLimit": null,
+          "rightDisplayUnit": null,
+          "rightFields": [],
+          "scale": "linear",
+          "zeroBaseline": false,
+          "zoomBounds": [
+            0.56,
+            0.5,
+            0.4,
+            0.4
+          ],
+          "zoomEnd": null,
+          "zoomStart": null
+        },
+        "standardBands": [],
+        "standardBoxSummary": null,
+        "standardBreak": null,
+        "standardCanvas": {
+          "bottom": 0.16,
+          "crop": "canvas",
+          "dpi": 150,
+          "height": 7.0,
+          "labelWrap": 14,
+          "layout": "tight",
+          "left": 0.12,
+          "legendPosition": "auto",
+          "maxCategoryTicks": 18,
+          "padding": 0.25,
+          "right": 0.94,
+          "sizeMode": "auto",
+          "tickFontSize": 9,
+          "top": 0.9,
+          "width": 12.0
+        },
+        "standardComposition": null,
+        "standardDerivations": [],
+        "standardDisplayUnit": "元/人次",
+        "standardDistribution": null,
+        "standardDomains": null,
+        "standardEncoding": null,
+        "standardForm": "barh",
+        "standardFunnel": null,
+        "standardLabelField": "label",
+        "standardLabelFields": [],
+        "standardLabels": [],
+        "standardPagination": null,
+        "standardPresentation": {
+          "labelFormats": [],
+          "labelMode": "source",
+          "order": {
+            "descending": false,
+            "excludeMissing": false,
+            "field": null,
+            "fields": [],
+            "labels": [],
+            "limit": null,
+            "mode": "source"
+          },
+          "sourceNote": null,
+          "subtitle": null,
+          "summaries": []
+        },
+        "standardRadar": null,
+        "standardSankey": null,
+        "standardSourceLabels": [],
+        "standardSources": [],
+        "standardSteps": [],
+        "standardStyle": {
+          "annotationColor": "series",
+          "annotationFontSize": 8,
+          "annotationLeader": false,
+          "annotationOffsetX": 8,
+          "annotationOffsetY": 8,
+          "axisFontSize": 10,
+          "background": "#ffffff",
+          "barGroupWidth": 0.64,
+          "decimals": 2,
+          "grid": "y",
+          "gridAlpha": 0.2,
+          "labelRotation": 45,
+          "legendColumns": 1,
+          "legendFontSize": 9,
+          "legendLocation": "auto",
+          "palette": "report",
+          "points": [],
+          "series": [],
+          "theme": "report",
+          "titleFontSize": 14,
+          "valueMargin": 0.1
+        },
+        "standardTotalField": null,
+        "standardValueFields": [
+          "value"
+        ],
+        "standardView": null,
+        "standardWaterfall": null,
+        "title": "合成数据：金额对照",
+        "visualForm": "barh"
+      }
+    ],
+    "warnings": []
+  }
+}
