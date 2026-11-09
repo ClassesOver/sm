@@ -32,7 +32,7 @@
 | 填写表单 | 受限 text/checkbox/radio/choice 及字段导航通过 | 静态表单填写、复杂字段、签名字段与完整行为未对齐 |
 | Form Design | 未接通 | 新建/检测/排列/修改/删除字段及严格 widget 身份 |
 | 转换导出 | 当前格式下载 | PDF到Word/Excel/PPT/Markdown及完整转换服务未接通 |
-| 图片/链接/水印 | 编辑链接已接通：拖出区域后填写 http/https/mailto 地址或页码（二选一，与固定源 LinkDialog 一致；不安全协议拒绝），页码按来源页绑定、目标页删除时拒绝，保存后回读 Link 批注（`NATIVE_PDF_DRAW_ACCEPTANCE.md`） | 插入/编辑图像、水印；已有链接的编辑删除 |
+| 图片/链接/水印 | 水印与页眉页脚/页码已接通（固定源 StampDialog + 原样复用 stamps.ts 渲染，覆盖全部页面、页码按当前页序；设置后锁定页面结构直至保存或撤销），编辑链接已接通：拖出区域后填写 http/https/mailto 地址或页码（二选一，与固定源 LinkDialog 一致；不安全协议拒绝），页码按来源页绑定、目标页删除时拒绝，保存后回读 Link 批注（`NATIVE_PDF_DRAW_ACCEPTANCE.md`） | 插入/编辑图像；已有链接/已保存水印的编辑删除；页眉页脚字号与颜色调节（固定源对话框亦未提供） |
 | 保护/加密与签名 | 未接通 | 密码/权限、既有签名验证、可见签名和证书签名均未完成 |
 | AI 入口/审阅/批注处理 | 源三个快捷入口与审阅未接通 | 本会话没有固定源服务身份/等价任务契约验收；不能标为完成 |
 
@@ -40,7 +40,7 @@
 
 - `NATIVE_PDF_ROTATE_ALL_ACCEPTANCE.md`
 - `NATIVE_PDF_INSERT_BLANK_ACCEPTANCE.md`
-- `NATIVE_PDF_DRAW_ACCEPTANCE.md`
+- `NATIVE_PDF_DRAW_ACCEPTANCE.md`（含编辑链接、水印与页眉页脚）
 - `NATIVE_PDF_CROP_ACCEPTANCE.md` / `NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`
 - `NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`
 - `NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`

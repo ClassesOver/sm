@@ -14,7 +14,8 @@ import type { NativeContextResponse, createNativeApi } from './native-api'
 import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
-import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, blankPdfBytes, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { DEFAULT_HEADER_FOOTER, DEFAULT_WATERMARK } from './vendor/genoffice-pdf/renderer/stamps'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -688,7 +689,61 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(linkTool, 'edit.objects.editLink'); linkTool.dataset.pdfDrawShape = 'link'
   linkTool.title = '编辑链接：在页面上拖出链接区域，再填写 http/https/mailto 地址或页码；保存后写入 PDF'
   drawButtons.set('link', linkTool)
-  { const action = documentElement('button', 'pdf-tool'); action.type = 'button'; action.textContent = '水印'; action.disabled = true; action.title = '水印写回尚未接入 PDF 操作契约'; action.setAttribute('aria-label', `水印，${action.title}`); commandGroup.append(action) }
+  // 固定源 Edit ▸ 水印 → StampDialog：水印与页眉页脚/页码一次设置，按当前页序渲染位图。
+  const stampButton = button('水印', () => openStamps(), true)
+  sourceCommand(stampButton, 'edit.objects.watermark')
+  stampButton.title = '水印与页眉页脚：设置后覆盖全部页面，保存时写入页面内容'
+  const stampDialog = documentElement('dialog', 'pdf-stamp-dialog')
+  stampDialog.setAttribute('aria-label', '水印与页眉页脚')
+  const stampForm = documentElement('div', 'pdf-stamp-form')
+  const stampField = (label: string, input: HTMLInputElement) => { const row = documentElement('label'); const text = documentElement('span'); text.textContent = label; row.append(text, input); stampForm.append(row); return input }
+  const stampInput = (type: string, attrs: Record<string, string> = {}) => { const input = documentElement('input'); input.type = type; for (const [key, value] of Object.entries(attrs)) input.setAttribute(key, value); return input }
+  const stampHeading = (text: string) => { const heading = documentElement('h4'); heading.textContent = text; stampForm.append(heading) }
+  const stampTitle = documentElement('h3'); stampTitle.textContent = '水印与页眉页脚'
+  stampHeading('水印')
+  const wmText = stampField('水印文字', stampInput('text', { maxlength: '200', placeholder: '例如：机密' }))
+  const wmAngle = stampField('角度（°）', stampInput('range', { min: '-90', max: '90' }))
+  const wmOpacity = stampField('不透明度（%）', stampInput('range', { min: '5', max: '100' }))
+  const wmSize = stampField('字号（页宽 %）', stampInput('range', { min: '4', max: '22' }))
+  const wmColor = stampField('颜色', stampInput('color'))
+  stampHeading('页眉页脚')
+  const hfInputs = Object.fromEntries((['headerLeft', 'headerCenter', 'headerRight', 'footerLeft', 'footerCenter', 'footerRight'] as const).map((key, index) => [key, stampField(['页眉左', '页眉中', '页眉右', '页脚左', '页脚中', '页脚右'][index]!, stampInput('text', { maxlength: '200' }))])) as Record<'headerLeft' | 'headerCenter' | 'headerRight' | 'footerLeft' | 'footerCenter' | 'footerRight', HTMLInputElement>
+  const hfPageNumber = stampField('页脚居中显示页码（第 n / 共 N 页）', stampInput('checkbox'))
+  const hfStartAt = stampField('起始页码', stampInput('number', { min: '1', max: '100000' }))
+  const stampHint = documentElement('p'); stampHint.textContent = '页眉页脚可用 {page} 与 {total} 表示页码与总页数。设置后在保存或撤销前不能再调整页面顺序、数量、裁切或尺寸。'
+  const stampError = documentElement('p', 'pdf-crop-error'); stampError.setAttribute('role', 'alert')
+  const stampCancel = documentElement('button'); stampCancel.type = 'button'; stampCancel.textContent = '取消'
+  const stampClear = documentElement('button'); stampClear.type = 'button'; stampClear.textContent = '清除水印与页眉页脚'
+  const stampApply = documentElement('button'); stampApply.type = 'button'; stampApply.textContent = '确定'
+  const stampActions = documentElement('div', 'pdf-link-actions'); stampActions.append(stampCancel, stampClear, stampApply)
+  stampDialog.append(stampTitle, stampForm, stampHint, stampError, stampActions); root.append(stampDialog)
+  function openStamps() {
+    if (!document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed) return
+    const existing = draft.operations.find(op => op.kind === 'setStamps') as { watermark?: typeof DEFAULT_WATERMARK | null; headerFooter?: typeof DEFAULT_HEADER_FOOTER | null } | undefined
+    const wm = existing?.watermark ?? DEFAULT_WATERMARK, hf = existing ? existing.headerFooter ?? { ...DEFAULT_HEADER_FOOTER, pageNumber: false } : DEFAULT_HEADER_FOOTER
+    wmText.value = existing?.watermark?.text ?? ''; wmAngle.value = String(wm.angle); wmOpacity.value = String(Math.round(wm.opacity * 100)); wmSize.value = String(Math.round(wm.sizeRatio * 100)); wmColor.value = wm.color
+    for (const [key, input] of Object.entries(hfInputs)) input.value = hf[key as keyof typeof hfInputs]
+    hfPageNumber.checked = hf.pageNumber; hfStartAt.value = String(hf.startAt)
+    stampClear.disabled = !existing; stampError.textContent = ''
+    stampDialog.showModal(); wmText.focus()
+  }
+  stampCancel.addEventListener('click', () => stampDialog.close())
+  stampClear.addEventListener('click', () => {
+    draft.setOperations(draft.operations.filter(op => op.kind !== 'setStamps')); stampDialog.close(); void refresh().catch(showError)
+  })
+  stampApply.addEventListener('click', () => {
+    try {
+      const watermark = wmText.value.trim() ? { text: wmText.value.trim(), angle: Number(wmAngle.value), opacity: Number(wmOpacity.value) / 100, color: wmColor.value, sizeRatio: Number(wmSize.value) / 100 } : null
+      const headerFooter = { ...DEFAULT_HEADER_FOOTER, ...Object.fromEntries(Object.entries(hfInputs).map(([key, input]) => [key, input.value])), pageNumber: hfPageNumber.checked, startAt: Math.max(1, Math.floor(Number(hfStartAt.value) || 1)) }
+      const used = headerFooter.pageNumber || Object.keys(hfInputs).some(key => String(headerFooter[key as keyof typeof hfInputs]).trim())
+      if (!watermark && !used) throw new Error('请填写水印文字，或启用页码/页眉页脚')
+      const base = draft.operations.filter(op => op.kind !== 'setStamps')
+      const operation = buildPdfStampsOperation(pdfPageState(model.pages, base), watermark, used ? headerFooter : null)
+      const next = [...base, operation]
+      pdfPageState(model.pages, next)
+      draft.setOperations(next); stampDialog.close(); void refresh().catch(showError)
+    } catch (error) { stampError.textContent = error instanceof Error ? error.message : String(error) }
+  })
   const linkDialog = documentElement('dialog', 'pdf-link-dialog')
   linkDialog.setAttribute('aria-label', '添加链接')
   const linkTitle = documentElement('h3'); linkTitle.textContent = '添加链接'
@@ -1195,6 +1250,25 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         layer.append(overlay)
       }
     }
+    const stampsOp = draft.operations.find(op => op.kind === 'setStamps') as { images: string[]; stamps: { pageId: string; image: number; rect: number[]; opacity?: number }[] } | undefined
+    const pageStamps = stampsOp?.stamps.filter(stamp => stamp.pageId === page.pageId) ?? []
+    if (pageStamps.length) {
+      // 位图按 PDF user space 放置：经页面视口矩阵变换，并在矩形内翻转 y 轴，旋转页同样准确。
+      const svgNs = 'http://www.w3.org/2000/svg'
+      const svg = window.document.createElementNS(svgNs, 'svg')
+      svg.setAttribute('class', 'pdf-pending-drawings pdf-pending-stamps'); svg.setAttribute('width', String(pdfViewport.width)); svg.setAttribute('height', String(pdfViewport.height))
+      const group = window.document.createElementNS(svgNs, 'g'); group.setAttribute('transform', `matrix(${pdfViewport.transform.join(' ')})`)
+      for (const stamp of pageStamps) {
+        const [x1, y1, x2, y2] = stamp.rect as [number, number, number, number]
+        const image = window.document.createElementNS(svgNs, 'image')
+        image.setAttribute('href', `data:image/png;base64,${stampsOp!.images[stamp.image]}`)
+        image.setAttribute('x', String(x1)); image.setAttribute('y', String(-y2)); image.setAttribute('width', String(x2 - x1)); image.setAttribute('height', String(y2 - y1))
+        image.setAttribute('transform', 'scale(1 -1)'); image.setAttribute('preserveAspectRatio', 'none'); image.setAttribute('opacity', String(stamp.opacity ?? 1))
+        image.dataset.pdfStamp = 'true'
+        group.append(image)
+      }
+      svg.append(group); layer.append(svg)
+    }
     const drawings = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing')
     if (drawings.length) {
       const svgNs = 'http://www.w3.org/2000/svg'
@@ -1435,7 +1509,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接', setStamps: '水印与页眉页脚' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1453,7 +1527,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing', 'setStamps'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')

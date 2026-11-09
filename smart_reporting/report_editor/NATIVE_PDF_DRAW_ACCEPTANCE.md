@@ -23,11 +23,19 @@
 - 与固定源的差异：固定源接受任意 scheme；本系统只接受 `http`、`https`、`mailto`，拒绝 `javascript:` 等。
 - 页码按当前显示顺序输入，保存为来源页序号（引擎按删除/重排前页表解析），目标页在同一草稿被删除时前端与桥接均拒绝。
 
+## 水印与页眉页脚（固定源 StampDialog / stamps.ts）
+
+- Edit ▸ 水印 打开与固定源相同字段的对话框：水印文字、角度 −90…90、不透明度 5–100%、字号 4–22% 页宽、颜色；页眉/页脚左中右、页码（默认开启）、起始页码；支持 `{page}` `{total}`。
+- 位图由 `frontend/src/vendor/genoffice-pdf/renderer/stamps.ts`（与固定源逐字节一致，见同目录 `SOURCE.md`）的 `buildStamps` 按当前页序渲染；同尺寸页共享水印位图，矩形按 CropBox 原点平移。
+- 草稿为 `setStamps{watermark, headerFooter, images, stamps}`；桥接校验 PNG 签名、总量 ≤12MB、位置在页面内、恰好覆盖全部保留页（含新空白页）、只能一次且不与页面尺寸同批，交给引擎 `stamps` 写入页面内容。
+- 与固定源的差异：固定源在保存时按最终页序重新渲染；本系统的桥接在 Node 端无画布，因此设置后锁定重排、删页、插页、裁切、改尺寸（会提示原因），撤销或保存后再调整；重新设置会替换原设置。
+
 ## 证据
 
 - `reporting/pdf_engine/bridge/drawings.test.ts`：真实引擎输出四种批注子类型、颜色、外观流和矩形范围；越界、错参、过短箭头、奇数路径、越界路径、非法颜色/宽度、外来页、空白页目标全部拒绝。
 - `frontend/src/pdf-drawings.test.ts`：拖拽规范化、夹取、各类拒绝及删除页/空白页约束。
 - 链接：`drawings.test.ts` 回读 URI 动作与目标页引用；拒绝 javascript:、双目标、无目标、越界页、已删除页、非链接形状携带链接字段。
-- `frontend/smoke/pdf-draw-smoke.mjs`（Chromium + 真实 Python→PDF 引擎，授权/修订路由为 fixture）：四种拖动工具 + 多边形逐点/双击 + 插入符号单击，切换蓝色 → 编辑链接（拒绝 javascript:、www. 补全、页码链接）→ 8 个草稿 SVG → 撤销/重做 → 刷新恢复 → 保存修订 2 → 下载字节一致 → pypdf 独立回读 Square/Circle/Line/Ink/Polygon/Caret 与逐项颜色，表单控件和第 2 页便签保留，来源摘要不变。
+- 水印：`bridge/stamps.test.ts`（真实输出每页图像 XObject 数、新空白页覆盖；拒绝缺页、越界、非 PNG、坏索引、空配置、越界角度、重复、已删页、与页面尺寸同批）；`frontend/src/pdf-stamps.test.ts`（页序、去重、CropBox 平移、结构锁定、覆盖校验）。
+- `frontend/smoke/pdf-draw-smoke.mjs`（Chromium + 真实 Python→PDF 引擎，授权/修订路由为 fixture）：四种拖动工具 + 多边形逐点/双击 + 插入符号单击，切换蓝色 → 编辑链接（拒绝 javascript:、www. 补全、页码链接）→ 8 个草稿 SVG → 设置水印“机密 Confidential”+ 页码并验证删页被拒绝 → 撤销/重做 → 刷新恢复 → 保存修订 2 → 下载字节一致 → pypdf 独立回读 Square/Circle/Line/Ink/Polygon/Caret 与逐项颜色，每页均含水印与页脚图像，表单控件和第 2 页便签保留；pdftoppm 独立栅格化确认倾斜中文水印与“1 / 4”页脚可见，来源摘要不变。
 
 注：本次排查发现 `pdf_engine/dist/cli.mjs`（打包测试生成、git 忽略）存在时生产优先使用打包产物；修改桥接后必须重新打包或删除该产物，否则会运行旧 schema。镜像构建会重新打包。

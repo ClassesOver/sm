@@ -69,10 +69,16 @@
 .native-pdf-editor[data-pdf-mode=draw] .pdf-page-content { cursor: crosshair; touch-action: none; }
 .native-pdf-editor[data-pdf-mode=draw] .textLayer { pointer-events: none; user-select: none; }
 .pdf-pending-drawings { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-.pdf-link-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--office-border); border-radius: var(--radius-md); padding: 20px; box-shadow: var(--shadow-popover); }
-.pdf-link-dialog::backdrop { background: var(--color-scrim); }
-.pdf-link-dialog label { display: grid; gap: 6px; margin: 10px 0; color: var(--office-ink-2); font-size: var(--font-size-md); }
-.pdf-link-dialog input { min-height: 34px; padding: 4px 8px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; }
+.pdf-link-dialog, .pdf-stamp-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--office-border); border-radius: var(--radius-md); padding: 20px; box-shadow: var(--shadow-popover); }
+.pdf-link-dialog::backdrop, .pdf-stamp-dialog::backdrop { background: var(--color-scrim); }
+.pdf-link-dialog label, .pdf-stamp-dialog label { display: grid; gap: 6px; margin: 10px 0; color: var(--office-ink-2); font-size: var(--font-size-md); }
+.pdf-link-dialog input, .pdf-stamp-dialog input { min-height: 34px; padding: 4px 8px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; }
 .pdf-link-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .pdf-link-actions button { min-height: 34px; padding: 0 14px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); font: inherit; cursor: pointer; }
 .pdf-link-actions button:last-child { border-color: var(--office-accent); background: var(--office-accent); color: var(--office-chrome); }
+.pdf-stamp-dialog.pdf-stamp-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; }
+.pdf-stamp-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+.pdf-stamp-form h4 { grid-column: 1 / -1; margin: 12px 0 0; color: var(--office-ink); font-size: var(--font-size-base); }
+.pdf-stamp-form label { margin: 6px 0; }
+.pdf-stamp-form input[type=checkbox] { justify-self: start; min-height: 0; }
+.pdf-stamp-dialog > p { color: var(--office-muted); font-size: var(--font-size-sm); line-height: 1.6; }

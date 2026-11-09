@@ -3,6 +3,7 @@ import { validateAttachmentEdits, type PdfAttachmentModel } from './pdf-attachme
 import { validatePendingPdfNote, validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
 import { validatePdfMarkup, type SavedPdfMarkup } from './pdf-markup'
 import type { NativeOperation } from './native-draft'
+import { buildStamps, type HeaderFooterConfig, type WatermarkConfig } from './vendor/genoffice-pdf/renderer/stamps'
 import type { PDFPageProxy } from 'pdfjs-dist'
 
 export const PDF_PAPER_SIZES = [{ label: 'A3', width: 842, height: 1191 }, { label: 'A4', width: 595, height: 842 }, { label: 'A5', width: 420, height: 595 }, { label: 'Letter', width: 612, height: 792 }, { label: 'Legal', width: 612, height: 1008 }] as const
@@ -35,7 +36,10 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
   const removed = new Set<string>()
   let order = pages.map(page => page.pageId)
   let blanks = 0
+  let stamped = false
   for (const operation of operations) {
+    if (stamped && ['reorderPages', 'deletePage', 'insertBlankPage', 'setPageSize', 'cropPage'].includes(operation.kind)) throw new Error(PDF_STAMPS_STRUCTURE_REASON)
+    if (operation.kind === 'setStamps') { if (stamped) throw new Error('水印/页眉页脚只能设置一次'); stamped = true; continue }
     if (operation.kind === 'insertBlankPage') {
       // 与引擎 blankPages 一致：空白页按插入顺序追加在来源页之后，索引为 来源页数 + k。
       const blank = pdfBlankPageIdentity(operation, pages.length + blanks++)
@@ -91,11 +95,46 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
     if (!destination || deleted.has(destination.pageId)) throw new Error('链接目标页不存在或已删除')
   }
   const remaining = order.filter(id => !deleted.has(id))
+  const stampsOp = operations.find(operation => operation.kind === 'setStamps')
+  if (stampsOp) validatePdfStamps(stampsOp, remaining.map(id => byId.get(id)!))
   if (remaining.length !== byId.size - deleted.size) throw new Error('页面排序必须包含所有保留页面')
   if (!remaining.length) throw new Error('不能删除全部页面')
   return remaining.map(id => byId.get(id)!)
 }
 
+
+/**
+ * 固定源 StampDialog → setStamps：水印与页眉页脚/页码按当前页面顺序由固定源 buildStamps 渲染成 PNG，
+ * 位置按 CropBox 原点平移后交给引擎 stamps。页码依赖页面顺序与尺寸，因此设置后不能再重排、删除、
+ * 插入、裁切或改尺寸（撤销或保存后再调整）。
+ */
+export const PDF_STAMPS_STRUCTURE_REASON = '已设置水印/页眉页脚：请先保存或撤销，再调整页面顺序、数量、裁切或尺寸'
+export type PdfStampBuilder = typeof buildStamps
+export function buildPdfStampsOperation(pages: PdfPageIdentity[], watermark: WatermarkConfig | null, headerFooter: HeaderFooterConfig | null, build: PdfStampBuilder = buildStamps): NativeOperation {
+  if (!watermark?.text.trim() && !headerFooter) throw new Error('请填写水印文字或页眉页脚')
+  const built = build(pages.map((page, index) => ({ origIdx: index, pw: page.cropBox.width, ph: page.cropBox.height, displayNo: index + 1 })), watermark?.text.trim() ? watermark : null, headerFooter)
+  const images: string[] = [], indexOf = new Map<string, number>()
+  const stamps = built.map(stamp => {
+    const page = pages[stamp.pageIndex]!
+    if (!indexOf.has(stamp.image)) { indexOf.set(stamp.image, images.length); images.push(stamp.image) }
+    const [x1, y1, x2, y2] = stamp.rect
+    return { pageId: page.pageId, image: indexOf.get(stamp.image)!, rect: [x1 + page.cropBox.x, y1 + page.cropBox.y, x2 + page.cropBox.x, y2 + page.cropBox.y], ...(stamp.opacity === undefined ? {} : { opacity: stamp.opacity }) }
+  })
+  if (!stamps.length) throw new Error('浏览器未能渲染水印/页眉页脚位图')
+  return { kind: 'setStamps', watermark: watermark?.text.trim() ? { ...watermark } : null, headerFooter: headerFooter ? { ...headerFooter } : null, images, stamps }
+}
+export function validatePdfStamps(operation: NativeOperation, pages: PdfPageIdentity[]) {
+  const { images, stamps, watermark, headerFooter } = operation as { images?: unknown; stamps?: unknown; watermark?: unknown; headerFooter?: unknown }
+  if (Object.keys(operation).some(key => !['kind', 'watermark', 'headerFooter', 'images', 'stamps', 'sourceSha256'].includes(key)) || (!watermark && !headerFooter) || !Array.isArray(images) || !images.length || !Array.isArray(stamps) || !stamps.length) throw new Error('水印/页眉页脚设置无效')
+  const byId = new Map(pages.map(page => [page.pageId, page]))
+  const covered = new Set<string>()
+  for (const stamp of stamps as { pageId: string; image: number; rect: number[] }[]) {
+    const page = byId.get(stamp.pageId)
+    if (!page || !Number.isInteger(stamp.image) || stamp.image < 0 || stamp.image >= images.length) throw new Error('水印/页眉页脚页面身份已过期')
+    covered.add(stamp.pageId)
+  }
+  if (covered.size !== pages.length) throw new Error('水印/页眉页脚须覆盖全部页面，请重新设置')
+}
 
 /** 固定源 DrawLayer 的矩形/椭圆/箭头/手绘；坐标为未旋转 PDF user space，须位于当前可见范围内。 */
 export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'ink' | 'polygon' | 'caret' | 'link'
@@ -231,6 +270,11 @@ export async function renderPdfPrintHost(root: HTMLElement, pages: PdfPageIdenti
   }
 }
 
+/** 结构变更在写入草稿前完整校验（例如已设置水印/页眉页脚时拒绝重排或删页）。 */
+function validated(pages: PdfPageIdentity[], operations: NativeOperation[]): NativeOperation[] {
+  pdfPageState(pages, operations)
+  return operations
+}
 function withOrder(operations: NativeOperation[], pageIds: string[]): NativeOperation[] {
   return [...operations.filter(operation => operation.kind !== 'reorderPages'), { kind: 'reorderPages', pageIds }]
 }
@@ -239,12 +283,12 @@ export function movePdfPage(pages: PdfPageIdentity[], operations: NativeOperatio
   const index = order.indexOf(pageId), destination = index + direction
   if (index < 0 || destination < 0 || destination >= order.length) return structuredClone(operations)
   ;[order[index], order[destination]] = [order[destination], order[index]]
-  return withOrder(operations, order)
+  return validated(pages, withOrder(operations, order))
 }
 export function reversePdfPages(pages: PdfPageIdentity[], operations: NativeOperation[]): NativeOperation[] {
   const order = pdfPageState(pages, operations).map(page => page.pageId)
   if (order.length <= 1) return structuredClone(operations)
-  return withOrder(operations, order.reverse())
+  return validated(pages, withOrder(operations, order.reverse()))
 }
 /** Pinned source rotateAllPages(90): one draft action over surviving source IDs. */
 export function rotateAllPdfPages(pages: PdfPageIdentity[], operations: NativeOperation[]): NativeOperation[] {
@@ -259,7 +303,7 @@ export function deletePdfPage(pages: PdfPageIdentity[], operations: NativeOperat
   // 删除同时丢弃该页未保存的标注/旋转；撤销会恢复完整前一个操作快照。
   // 未保存的空白页没有来源页：删除即撤回插入本身，不产生 deletePage。
   const kept = operations.filter(operation => operation.pageId !== pageId)
-  return withOrder(isPdfBlankPageId(pageId) ? kept : [...kept, { kind: 'deletePage', pageId }], order.filter(id => id !== pageId))
+  return validated(pages, withOrder(isPdfBlankPageId(pageId) ? kept : [...kept, { kind: 'deletePage', pageId }], order.filter(id => id !== pageId)))
 }
 
 /**
