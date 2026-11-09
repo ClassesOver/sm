@@ -159,3 +159,11 @@ reason if exceeded. Existing edit/preview/print/save/readonly locks apply and
 text-preview approval is invalidated by the changed complete snapshot. Source
 provenance and actual evidence are in `NATIVE_PDF_ROTATE_ALL_ACCEPTANCE.md`;
 this does not close Task 5 or implement other page operations.
+
+
+Whole-document comments (2026-11-09): pinned `note-threads.ts`/`CommentsPanel.tsx`
+read semantics and unmodified extracted date parser have upstream/local hashes in
+`genoffice-pdf-comments-source.json`. Native changes use iterative malformed-thread
+handling, immutable sourceRef joins, per-document cache/error retry and existing
+saved/pending card navigation instead of source popovers. Text-note replies are
+readonly; no reply write contract. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`.

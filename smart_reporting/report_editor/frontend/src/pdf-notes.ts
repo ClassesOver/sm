@@ -1,6 +1,6 @@
 import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
-export interface SavedPdfNote { annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
+export interface SavedPdfNote { sourceRef?: string | null; annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
 export function validatePdfNoteOperation(operation: NativeOperation, page: PdfPageIdentity): SavedPdfNote {
   const allowed = ['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256', ...(operation.kind === 'editNote' ? ['contents', 'modifiedAt'] : [])]
   const note = page.notes?.find(note => note.annotationId === operation.annotationId)

@@ -7,7 +7,7 @@ it('keeps the source View navigation and page zoom commands in order with verifi
     ['genoffice.pdf.view.pageZoom.goToPage', 'genoffice.pdf.view.pageZoom.zoomOut', 'genoffice.pdf.view.pageZoom.zoomIn', 'genoffice.pdf.view.pageZoom.fitWidth', 'genoffice.pdf.view.pageZoom.fitPage'],
   ])
   expect(PDF_VIEW_RIBBON_GROUPS.flatMap(group => group.commands.filter(command => command.enabled).map(command => command.id))).toEqual([
-    'genoffice.pdf.view.navigation.thumbnails', 'genoffice.pdf.view.navigation.outline', 'genoffice.pdf.view.navigation.search', 'genoffice.pdf.view.navigation.pageSpread', 'genoffice.pdf.view.navigation.nightMode',
+    'genoffice.pdf.view.navigation.thumbnails', 'genoffice.pdf.view.navigation.outline', 'genoffice.pdf.view.navigation.comments', 'genoffice.pdf.view.navigation.search', 'genoffice.pdf.view.navigation.pageSpread', 'genoffice.pdf.view.navigation.nightMode',
     'genoffice.pdf.view.pageZoom.goToPage', 'genoffice.pdf.view.pageZoom.zoomOut', 'genoffice.pdf.view.pageZoom.zoomIn',
     'genoffice.pdf.view.pageZoom.fitWidth', 'genoffice.pdf.view.pageZoom.fitPage',
   ])

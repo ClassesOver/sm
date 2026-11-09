@@ -196,3 +196,11 @@ The actual output SHA now binds their preview receipt. No global TZ/clock overri
 is used in product code. Source-writer cross-zone counterexample, guards, actual
 preview/save/download and legacy compatibility proof are documented in
 `report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`. Vendor SOURCE hashes unchanged.
+
+
+Inspect note references (2026-11-09): optional note `sourceRef` is the original
+indirect object's full number/generation key matching PDF.js IDs (`80R3`, zero
+`80R`, direct dictionary null). It supports a readonly sidebar join only; strict
+write schemas still reject it and require annotationId/dictionary digest. The
+new focused bridge test covers nonzero generations and direct-note readonly.
+No upstream vendor source or write protocol changed. LOCAL-SHA256 has36 entries.

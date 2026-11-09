@@ -33,7 +33,7 @@ try {
   const night = page.locator('[data-source-command-id="genoffice.pdf.view.navigation.nightMode"]')
   const navigation = await night.locator('..').locator('[data-source-command-id]').evaluateAll(nodes => nodes.map(node => ({ id: node.dataset.sourceCommandId, disabled: node.disabled, title: node.title })))
   assert.deepEqual(navigation.map(row => row.id.split('.').at(-1)), ['thumbnails', 'outline', 'comments', 'compare', 'attachments', 'search', 'pageSpread', 'nightMode'])
-  for (const id of ['comments', 'compare', 'attachments']) assert.ok(navigation.find(row => row.id.endsWith(`.${id}`)).disabled && navigation.find(row => row.id.endsWith(`.${id}`)).title)
+  for (const id of ['compare', 'attachments']) assert.ok(navigation.find(row => row.id.endsWith(`.${id}`)).disabled && navigation.find(row => row.id.endsWith(`.${id}`)).title)
   await night.click(); assert.equal(await night.getAttribute('aria-pressed'), 'true')
   const filters = await page.locator('.pdf-page-content canvas').evaluateAll(nodes => nodes.map(node => getComputedStyle(node).filter))
   assert.ok(filters.every(filter => filter.includes('invert(1)') && filter.includes('180deg')))

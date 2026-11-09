@@ -38,3 +38,11 @@
 .pdf-pending-comments p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .pdf-pending-note { border-top: 1px solid #c2d3ee; padding: 6px 0; }
 .pdf-pending-note button { margin-right: 6px; }
+
+.pdf-comments-sidebar { flex: none; width: min(280px, 80%); overflow: auto; padding: 10px; border-right: 1px solid #ccd5e2; background: #f6f8fc; }
+.pdf-comments-sidebar[hidden], .pdf-thumbnails[hidden], .pdf-outline[hidden] { display: none; }
+.pdf-comments-sidebar header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pdf-comments-sidebar input { width: 100%; margin-top: 8px; }
+.pdf-comment-row { display: flex; flex-direction: column; text-align: start; width: 100%; gap: 4px; border: 1px solid #ccd5e2; border-radius: 5px; background: white; padding: 8px; margin: 6px 0; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+.pdf-comment-row span:first-child, .pdf-comment-row small { font-size: 11px; color: #526075; }
+.pdf-comment-row[aria-current=true], .pdf-comment-selected { outline: 2px solid #547eb4; }

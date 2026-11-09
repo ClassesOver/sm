@@ -104,7 +104,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
             || (raw instanceof PDFRef && removalLinks.references.get(raw.toString()) !== 1)
             || (flags !== undefined && (!(flags instanceof PDFNumber) || !Number.isInteger(flags.asNumber()) || flags.asNumber() < 0 || (flags.asNumber() & 704) !== 0))
           const reason = identity.removalReason ?? (unsafe ? '此便签含共享引用、锁定、富文本或状态信息，暂不支持编辑/删除' : null)
-          return [{ ...identity, contents, editable: reason === null, removable: reason === null, removalReason: reason }]
+          return [{ ...identity, sourceRef: raw instanceof PDFRef ? `${raw.objectNumber}R${raw.generationNumber || ''}` : null, contents, editable: reason === null, removable: reason === null, removalReason: reason }]
         }) : []
         return { notes, notesReadSafe: true }
       } catch { return { notes: [], notesReadSafe: false } }

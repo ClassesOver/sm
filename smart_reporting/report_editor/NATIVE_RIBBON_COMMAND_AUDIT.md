@@ -229,7 +229,8 @@ mechanical App callback nodes are counted as completed source parity.
 
 Fixed App viewNavGroup also has comments, comparison and attachments. Their
 previous omission means the five-entry native list was not a complete source
-inventory; all three are now explicit disabled controls in source order. Night
+inventory; all three were first inventoried as disabled controls in source order. The later
+comments continuation below enables bounded note reading/navigation. Night
 reading and18-step10–800% zoom/status/wheel/DOM-anchor behavior are accepted in
 `NATIVE_PDF_VIEW_ACCEPTANCE.md`; those three families, reading-position persistence,
 complete shortcuts and every source fit/layout rule remain open. No whole-View
@@ -281,3 +282,15 @@ createdMs is staged once; verified appended note dates use canonical UTC and old
 untimed drafts retain unknown dates. Pinned AP/writer/round2 behavior is preserved,
 with explicit append-count/payload drift refusal. This closes the prior preview/
 time gap, not replies/threads/sidebar parity. Evidence: `NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`.
+
+
+## PDF whole-document comments continuation (2026-11-09)
+
+View comments now reads/navigates Text-note roots/replies across surviving pages,
+with body/author filter, current-page/time ordering, exclusive sidebar state,
+exact existing-card navigation and existing safe mutation controls. Readonly
+sourceRef is an exact PDF.js reference join, not an accepted mutation field.
+Per-document cache, partial-page retry, draft/document cancellation and immediate
+preview list clearing have targeted fault/timing evidence. Replies/complex notes
+remain readonly; comparison/attachments and complete source popup/persistence UX
+remain open. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`; no whole-View/PDF claim.

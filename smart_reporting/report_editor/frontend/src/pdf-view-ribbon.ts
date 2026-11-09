@@ -21,7 +21,7 @@ export const PDF_VIEW_RIBBON_GROUPS: PdfViewRibbonGroup[] = [
     commands: [
       { id: 'genoffice.pdf.view.navigation.thumbnails', label: '缩略图', enabled: true },
       { id: 'genoffice.pdf.view.navigation.outline', label: '目录大纲', enabled: true },
-      unavailable('view.navigation.comments', '批注侧栏', '批注汇总、定位、编辑和回复侧栏尚未接通'),
+      { id: 'genoffice.pdf.view.navigation.comments', label: '批注侧栏', enabled: true },
       unavailable('view.navigation.compare', '比较文档', '第二份 PDF 的来源身份与比较视图尚未接通'),
       unavailable('view.navigation.attachments', '附件', '附件读取、提取和授权交付尚未接通'),
       { id: 'genoffice.pdf.view.navigation.search', label: '搜索', enabled: true },
