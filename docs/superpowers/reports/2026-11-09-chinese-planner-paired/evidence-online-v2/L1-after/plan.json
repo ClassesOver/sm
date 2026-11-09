@@ -1,0 +1,144 @@
+{
+  "charts": [
+    {
+      "aggregationGrain": "category",
+      "altText": "横向柱图仅含 1 个中文分类（合成机构超长中文分类标签用于验证画布边缘完整显示），2025-01 人次净变化为 -12 人次，为负值并以零线为基准延伸；仅本期单行数据，未与其他期间比较。",
+      "chartId": "synthetic",
+      "citationIds": [
+        "synthetic"
+      ],
+      "comparability": "strict",
+      "comparisonPeriod": null,
+      "comparisonType": "none",
+      "currentPeriod": "2025-01",
+      "dataBindings": [
+        {
+          "analysisId": "synthetic",
+          "dataPath": "rows",
+          "factPath": "facts.json",
+          "fields": [
+            "label",
+            "value"
+          ],
+          "role": "合成冻结数据的分类标签与人次净变化值"
+        }
+      ],
+      "metricCodes": [
+        "synthetic"
+      ],
+      "sourceDatasetId": "synthetic",
+      "sourcePath": "chart.png",
+      "standardAnnotations": [],
+      "standardAxes": {
+        "allowNulls": false,
+        "leftDisplayUnit": "人次",
+        "linearThreshold": 1.0,
+        "mode": "single",
+        "panelDescending": true,
+        "panelLimit": null,
+        "rightDisplayUnit": null,
+        "rightFields": [],
+        "scale": "linear",
+        "zeroBaseline": true,
+        "zoomBounds": [
+          0.56,
+          0.5,
+          0.4,
+          0.4
+        ],
+        "zoomEnd": null,
+        "zoomStart": null
+      },
+      "standardBands": [],
+      "standardBoxSummary": null,
+      "standardBreak": null,
+      "standardCanvas": {
+        "bottom": 0.16,
+        "crop": "canvas",
+        "dpi": 150,
+        "height": 3.0,
+        "labelWrap": 10,
+        "layout": "tight",
+        "left": 0.12,
+        "legendPosition": "auto",
+        "maxCategoryTicks": 18,
+        "padding": 0.25,
+        "right": 0.94,
+        "sizeMode": "fixed",
+        "tickFontSize": 9,
+        "top": 0.9,
+        "width": 4.0
+      },
+      "standardComposition": null,
+      "standardDerivations": [],
+      "standardDisplayUnit": null,
+      "standardDistribution": null,
+      "standardDomains": null,
+      "standardEncoding": null,
+      "standardForm": "barh",
+      "standardFunnel": null,
+      "standardLabelField": "label",
+      "standardLabelFields": [],
+      "standardLabels": [],
+      "standardPagination": null,
+      "standardPresentation": {
+        "labelFormats": [],
+        "labelMode": "source",
+        "order": {
+          "descending": false,
+          "excludeMissing": false,
+          "field": null,
+          "fields": [],
+          "labels": [],
+          "limit": null,
+          "mode": "source"
+        },
+        "sourceNote": "数据来源：合成冻结数据，期间 2025-01，类别粒度，单位：人次",
+        "subtitle": "单分类、单期人次净变化",
+        "summaries": []
+      },
+      "standardRadar": null,
+      "standardSankey": null,
+      "standardSourceLabels": [],
+      "standardSources": [],
+      "standardSteps": [],
+      "standardStyle": {
+        "annotationColor": "series",
+        "annotationFontSize": 8,
+        "annotationLeader": false,
+        "annotationOffsetX": 8,
+        "annotationOffsetY": 8,
+        "axisFontSize": 9,
+        "background": "#ffffff",
+        "barGroupWidth": 0.64,
+        "decimals": 0,
+        "grid": "x",
+        "gridAlpha": 0.2,
+        "labelRotation": 0,
+        "legendColumns": 1,
+        "legendFontSize": 9,
+        "legendLocation": "auto",
+        "palette": "report",
+        "points": [],
+        "series": [],
+        "theme": "report",
+        "titleFontSize": 14,
+        "valueMargin": 0.1
+      },
+      "standardTotalField": null,
+      "standardValueFields": [
+        "value"
+      ],
+      "standardView": null,
+      "standardWaterfall": null,
+      "title": "2025-01 该中文分类人次净变化为 -12 人次",
+      "visualForm": "横向柱图完整展示该中文分类 2025-01 的人次净变化，保留负值单行数据，长标签折行显示，不与其他期间比较"
+    }
+  ],
+  "warnings": [
+    "绑定数据仅 1 行（1 个中文分类），图中不构成分布或排名，也不代表完整总体。",
+    "该分类人次净变化为负值 -12 人次，以零线为基准绘制；未提供其他期间，故不做同比或环比比较。",
+    "分类标签较长，在固定 4×3 英寸画布下采用折行显示以保留完整标签与绘图区可读性，未删行、未截断标签、未缩小字号。",
+    "数值单位按冻结元数据登记为“人次”，非金额，不套用人民币换算。"
+  ]
+}

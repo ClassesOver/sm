@@ -1,0 +1,160 @@
+{
+  "charts": [
+    {
+      "aggregationGrain": "category",
+      "altText": "横向柱图展示2025-01三个类别的门诊量：普通门诊12人次、特需门诊-3人次，合成缺失类别无数据并保留空位；虚线为普通门诊对应的基准门诊量。",
+      "chartId": "synthetic",
+      "citationIds": [
+        "synthetic"
+      ],
+      "comparability": "strict",
+      "comparisonPeriod": null,
+      "comparisonType": "none",
+      "currentPeriod": "2025-01",
+      "dataBindings": [
+        {
+          "analysisId": "synthetic",
+          "dataPath": "rows",
+          "factPath": "facts.json",
+          "fields": [
+            "label",
+            "value"
+          ],
+          "role": "合成冻结数据"
+        }
+      ],
+      "metricCodes": [
+        "synthetic"
+      ],
+      "sourceDatasetId": "synthetic",
+      "sourcePath": "chart.png",
+      "standardAnnotations": [
+        {
+          "caption": "基准门诊量",
+          "color": null,
+          "endLabel": null,
+          "endRowLabel": null,
+          "highlight": false,
+          "kind": "reference",
+          "label": "普通门诊",
+          "position": "auto",
+          "rowLabel": null,
+          "series": "value"
+        }
+      ],
+      "standardAxes": {
+        "allowNulls": true,
+        "leftDisplayUnit": "人次",
+        "linearThreshold": 1.0,
+        "mode": "single",
+        "panelDescending": true,
+        "panelLimit": null,
+        "rightDisplayUnit": null,
+        "rightFields": [],
+        "scale": "linear",
+        "zeroBaseline": true,
+        "zoomBounds": [
+          0.56,
+          0.5,
+          0.4,
+          0.4
+        ],
+        "zoomEnd": null,
+        "zoomStart": null
+      },
+      "standardBands": [],
+      "standardBoxSummary": null,
+      "standardBreak": null,
+      "standardCanvas": {
+        "bottom": 0.16,
+        "crop": "canvas",
+        "dpi": 150,
+        "height": 4.0,
+        "labelWrap": 14,
+        "layout": "tight",
+        "left": 0.12,
+        "legendPosition": "auto",
+        "maxCategoryTicks": 18,
+        "padding": 0.25,
+        "right": 0.94,
+        "sizeMode": "fixed",
+        "tickFontSize": 9,
+        "top": 0.9,
+        "width": 6.0
+      },
+      "standardComposition": null,
+      "standardDerivations": [],
+      "standardDisplayUnit": null,
+      "standardDistribution": null,
+      "standardDomains": null,
+      "standardEncoding": null,
+      "standardForm": "barh",
+      "standardFunnel": null,
+      "standardLabelField": null,
+      "standardLabelFields": [],
+      "standardLabels": [
+        "普通门诊",
+        "合成缺失类别",
+        "特需门诊"
+      ],
+      "standardPagination": null,
+      "standardPresentation": {
+        "labelFormats": [],
+        "labelMode": "source",
+        "order": {
+          "descending": false,
+          "excludeMissing": false,
+          "field": null,
+          "fields": [],
+          "labels": [],
+          "limit": null,
+          "mode": "source"
+        },
+        "sourceNote": "数据来源：门诊业务统计，期间2025-01；合成缺失类别无数据，保留空位未按0处理。",
+        "subtitle": "2025-01 · 分类粒度：类别",
+        "summaries": []
+      },
+      "standardRadar": null,
+      "standardSankey": null,
+      "standardSourceLabels": [],
+      "standardSources": [],
+      "standardSteps": [],
+      "standardStyle": {
+        "annotationColor": "series",
+        "annotationFontSize": 8,
+        "annotationLeader": false,
+        "annotationOffsetX": 8,
+        "annotationOffsetY": 8,
+        "axisFontSize": 9,
+        "background": "#ffffff",
+        "barGroupWidth": 0.64,
+        "decimals": 0,
+        "grid": "x",
+        "gridAlpha": 0.2,
+        "labelRotation": 0,
+        "legendColumns": 1,
+        "legendFontSize": 9,
+        "legendLocation": "auto",
+        "palette": "report",
+        "points": [],
+        "series": [],
+        "theme": "report",
+        "titleFontSize": 11,
+        "valueMargin": 0.15
+      },
+      "standardTotalField": null,
+      "standardValueFields": [
+        "value"
+      ],
+      "standardView": null,
+      "standardWaterfall": null,
+      "title": "2025-01各类别门诊量：普通门诊12人次为基准，特需门诊-3人次，合成缺失类别无数据",
+      "visualForm": "按类别横向柱图展示门诊量，保留缺失类别的空位并附中文缺失说明，以普通门诊冻结值绘制基准参考线。"
+    }
+  ],
+  "warnings": [
+    "合成缺失类别的门诊量为空，图中保留为空位并附中文缺失说明，未按0补齐，也不参与数值比较。",
+    "特需门诊门诊量为负值，按冻结原值绘制，未做截断或修正。",
+    "基准参考线取普通门诊的冻结门诊量，未在文案中另填或推算参考数值。"
+  ]
+}

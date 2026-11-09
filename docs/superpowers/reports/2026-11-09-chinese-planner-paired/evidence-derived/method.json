@@ -1,0 +1,12 @@
+{
+  "created_after_online_responses": true,
+  "current_evaluator_sha256": "792f0078f4c526219dabd841af5bfb0780a78cdc9ecf185b388f792d1298cb70",
+  "current_protocol_sha256": "a26fccac12f3af98016a8dae9652f2926a27ae33ce6bd9ef22193a70184ce508",
+  "derivation": "posthoc_offline_replay",
+  "posthoc_oracle": "analysisId/factPath/dataPath/fields exact; role assessed separately",
+  "source_committed_protocol_sha256": "07a2b37172d1dd1e3b691d90c8fb8c38c23d74eee6f3b210013329a3041e3559",
+  "source_evidence": "evidence-online-v2",
+  "source_manifest_sha256": "6e014a332ff097ab0ad229665d007ee3f783c736f47d4fd333f4ec95d3b0bcc3",
+  "strict_oracle": "entire dataBindings entry equals frozen binding",
+  "visual_review": "not_run"
+}

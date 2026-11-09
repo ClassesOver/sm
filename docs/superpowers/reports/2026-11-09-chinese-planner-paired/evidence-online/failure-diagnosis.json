@@ -1,0 +1,8 @@
+{
+  "status": "failed_before_provider",
+  "provider_requests": 0,
+  "script_commit": "39cc1443",
+  "error_type": "TypeError",
+  "cause": "RunContext missing required session_id; confirmed by constructor signature and empty capture/metrics",
+  "resolution": "supply session_id; run complete four-slot offline substitute before any online request"
+}

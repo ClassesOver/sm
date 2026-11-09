@@ -1,0 +1,114 @@
+[
+  {
+    "case": "L1",
+    "duration_ms": 21877,
+    "judgement": {
+      "custom": false,
+      "identity": true,
+      "identity_mismatches": [],
+      "redraws": 0,
+      "render_attempts": 0,
+      "render_error": "FileNotFoundError",
+      "visual_review": "not_run"
+    },
+    "planner_duration_ms": 20917,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 0,
+        "durationMs": 20712,
+        "inputTokens": 19895,
+        "outputTokens": 2786,
+        "providerRequestId": "chatcmpl-ab5d840d-9353-4996-b48b-592b6672101a",
+        "reasoningTokens": 2246,
+        "requestIndex": 1,
+        "status": "completed"
+      }
+    ],
+    "status": "planned",
+    "variant": "before"
+  },
+  {
+    "case": "L1",
+    "duration_ms": 13959,
+    "judgement": {
+      "custom": false,
+      "identity": true,
+      "identity_mismatches": [],
+      "redraws": 0,
+      "render_attempts": 0,
+      "render_error": "FileNotFoundError",
+      "visual_review": "not_run"
+    },
+    "planner_duration_ms": 13959,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 1536,
+        "durationMs": 13759,
+        "inputTokens": 20049,
+        "outputTokens": 1991,
+        "providerRequestId": "chatcmpl-b7862466-a94b-44b0-8f5e-a5281e39f194",
+        "reasoningTokens": 1297,
+        "requestIndex": 1,
+        "status": "completed"
+      }
+    ],
+    "status": "planned",
+    "variant": "after"
+  },
+  {
+    "case": "U1",
+    "duration_ms": 17307,
+    "judgement": {
+      "custom": false,
+      "identity": true,
+      "identity_mismatches": [],
+      "redraws": 0,
+      "render_attempts": 0,
+      "render_error": "FileNotFoundError",
+      "visual_review": "not_run"
+    },
+    "planner_duration_ms": 17307,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 19712,
+        "durationMs": 17109,
+        "inputTokens": 20072,
+        "outputTokens": 2532,
+        "providerRequestId": "chatcmpl-ba6118ba-3f48-4a4c-860c-7a548c6fe7fe",
+        "reasoningTokens": 1973,
+        "requestIndex": 2,
+        "status": "completed"
+      }
+    ],
+    "status": "planned",
+    "variant": "after"
+  },
+  {
+    "case": "U1",
+    "duration_ms": 13059,
+    "judgement": {
+      "custom": false,
+      "identity": true,
+      "identity_mismatches": [],
+      "redraws": 0,
+      "render_attempts": 0,
+      "render_error": "FileNotFoundError",
+      "visual_review": "not_run"
+    },
+    "planner_duration_ms": 11373,
+    "provider_requests": [
+      {
+        "cacheReadTokens": 19456,
+        "durationMs": 11172,
+        "inputTokens": 19918,
+        "outputTokens": 1585,
+        "providerRequestId": "chatcmpl-eaef0557-057c-49d1-b25d-48fc62146f86",
+        "reasoningTokens": 1030,
+        "requestIndex": 2,
+        "status": "completed"
+      }
+    ],
+    "status": "planned",
+    "variant": "before"
+  }
+]
