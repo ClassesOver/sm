@@ -36,6 +36,7 @@ import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams
 import { assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
 import { installCalculation, type CalculationControl } from './workbook-calculation'
 import { createSortDialog, type SortRange } from './workbook-sort-dialog'
+import { createFormatCellsDialog } from './workbook-numfmt-dialog'
 import { applyFillSeries, createFillSeriesDialog, fillSeriesDefaultType, fillSeriesDirection } from './workbook-fill-series'
 import { createGoToDialog, resolveGoToRef } from './workbook-goto'
 import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
@@ -245,6 +246,25 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       applyCapturedNumberFormat(target, formatWorkbook(), pattern, editable())
       markDirty(); ribbon.refreshState?.()
       feedback.textContent = '数字格式已更新，值和公式保持不变；修改尚未保存。'
+    },
+  })
+  // 开始▸单元格▸格式▸设置单元格格式（数字页）：分类+选项生成格式代码，经同一校验与预算写入。
+  let formatCellsTarget: ReturnType<typeof captureNumberFormatTarget>
+  const formatCellsDialog = createFormatCellsDialog(shell.editor, {
+    current: () => {
+      const state = formatState().numberFormat
+      const range = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange()
+      const value = range?.getValue?.()
+      return { pattern: state.kind === 'value' ? String(state.value) : undefined, anchor: typeof value === 'number' || typeof value === 'string' ? value : null }
+    },
+    apply: pattern => {
+      if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+      if (!formatCellsTarget) throw new Error('请先选择单元格或区域')
+      if (formatState().numberFormat.kind === 'unavailable') throw new Error('来源格式未完整投影，暂不能安全编辑数字格式')
+      validateNumberFormatBudget(runtime.univerAPI.getActiveWorkbook()!.getSnapshot(), currentModel, staged, structural.length, formatCellsTarget, pattern)
+      applyCapturedNumberFormat(formatCellsTarget, formatWorkbook(), pattern, editable())
+      markDirty(); ribbon.refreshState?.()
+      feedback.textContent = `数字格式已设为 ${pattern}，值和公式保持不变；修改尚未保存。`
     },
   })
   const noteWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as NoteWorkbook | null
@@ -800,6 +820,14 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           axisDialog.open(target)
           return
         }
+        if (command === 'format-cells') {
+          formatCellsTarget = captureNumberFormatTarget(formatWorkbook())
+          if (!formatCellsTarget) throw new Error('请先选择单元格或区域')
+          const state = formatState().numberFormat
+          if (state.kind === 'unavailable') throw new Error(state.reason)
+          formatCellsDialog.open()
+          return
+        }
         if (command === 'format:custom-open') {
           const target = capturedTarget ?? captureNumberFormatTarget(formatWorkbook())
           if (!target) throw new Error('请先选择单元格或区域')
@@ -1306,5 +1334,5 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

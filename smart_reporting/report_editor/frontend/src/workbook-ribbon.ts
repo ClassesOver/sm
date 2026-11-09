@@ -69,6 +69,7 @@ type RibbonCommand =
   | 'format-painter:dblclick'
   | 'row-height-open'
   | 'insert-cells'
+  | 'format-cells'
   | 'goto-open'
   | 'fill-down'
   | 'fill-right'
@@ -371,7 +372,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     ] },
     { title: '样式', actions: ['cf-open', 'format-as-table', 'cell-style'].map(id => action(id, id)) },
     { title: '单元格', actions: [
-      action('设置单元格格式', 'format-cells'),
+      action('设置单元格格式', 'format-cells', 'format-cells'),
       action('插入行', 'insert-row-here', 'insert-row-here'),
       action('删除行', 'delete-row-here', 'delete-row-here'),
       action('插入列', 'insert-col-here', 'insert-col-here'),
@@ -512,7 +513,6 @@ const disabledReasons: Record<string, string> = {
   'cf-open': '尚未接入条件格式草稿编辑',
   'format-as-table': '尚未接入表格创建的文件回写',
   'cell-style': '尚未接入单元格样式预设的文件回写',
-  'format-cells': '尚无完整单元格格式对话框；可使用数字组的自定义数字格式',
   'insert-checkbox': '尚未接入复选框绘图及文件回写',
   'recommended-charts-open': '尚未接入静态图表创建对话框与文件回写',
   'insert-chart:column': '尚未接入静态图表创建对话框与文件回写',

@@ -21,7 +21,7 @@ payload = json.load(sys.stdin)
 if payload['mode'] == 'create':
     book = Workbook(); sheet = book.active; sheet.title = 'Summary'
     sheet['A1'] = 'alpha'; sheet['A1'].font = Font(bold=True)
-    sheet['A2'] = 'beta'; sheet['B1'] = 'wide'; sheet['C1'] = 'gamma'; sheet['D5'] = '=A2'
+    sheet['A2'] = 'beta'; sheet['B1'] = 'wide'; sheet['C3'] = -1234.5; sheet['C1'] = 'gamma'; sheet['D5'] = '=A2'
     sheet.row_dimensions[2].height = 40
     sheet.column_dimensions['B'].width = 30
     stream = BytesIO(); book.save(stream); print(base64.b64encode(stream.getvalue()).decode())
@@ -38,7 +38,7 @@ else:
       'colB': round(s.column_dimensions['B'].width or 0, 2), 'colD': round(s.column_dimensions['D'].width or 0, 2),
       'A3': [s['A3'].value, s['A3'].font.bold, s['A3'].alignment.indent], 'B3': [s['B3'].value, s['B3'].font.bold, s['B3'].alignment.indent],
       'E1': [s['E1'].value, s['E1'].font.bold], 'F1': s['F1'].value, 'B1': s['B1'].value, 'D5': s['D5'].value,
-      'showFormulas': bool(s.sheet_view.showFormulas), 'sheetProtected': bool(s.protection.sheet), 'structureLocked': bool(book.security and book.security.lockStructure),
+      'C3fmt': [s['C3'].value, s['C3'].number_format], 'showFormulas': bool(s.sheet_view.showFormulas), 'sheetProtected': bool(s.protection.sheet), 'structureLocked': bool(book.security and book.security.lockStructure),
       'sheets': book.sheetnames, 'newSheetA1': [book.worksheets[-1]['A1'].value, book.worksheets[-1]['A1'].font.bold] if len(book.worksheets) > 1 else None}))
 `], { cwd: repo, env: { ...process.env, PYTHONPATH: repo }, input: JSON.stringify(input), encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(result.stderr || `python exited ${result.status}`)
@@ -81,7 +81,24 @@ try {
   const clickCell = async (x, y) => { await page.locator('.workbook-grid').click({ position: { x, y } }); await delay(300) }
   const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32], A3 = [90, 109], B3 = [240, 109], E1 = [569, 32], B1 = [240, 32]
 
-  if (process.env.WORKBOOK_RIBBON_CASE === 'fill') {
+  if (process.env.WORKBOOK_RIBBON_CASE === 'numfmt') {
+    // 设置单元格格式▸数字：C3 选货币、¥、负数括号；保存后 openpyxl 回读 number_format，值不变。
+    await clickCell(...A1); await clickCell(393, 109); await command('format-cells')
+    const dialog = page.locator('.workbook-ribbon-numfmt-dialog')
+    await dialog.locator('[data-numfmt-category="currency"]').click()
+    await dialog.locator('[data-numfmt-symbol]').selectOption('¥')
+    await dialog.locator('[data-numfmt-negative]').selectOption('parens')
+    assert.equal(await dialog.locator('[data-numfmt-preview]').innerText(), '(¥1,234.50)')
+    await dialog.locator('.workbook-ribbon-format-apply').click()
+    assert.match(await feedback(), /数字格式已设为/)
+    await page.locator('[data-action="save"]').click()
+    await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 })
+    const download = await page.evaluate(async () => { const r = await fetch('/fixture-gui-download.xlsx'); return Array.from(new Uint8Array(await r.arrayBuffer())) })
+    const reopened = JSON.parse(python({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
+    console.log(JSON.stringify({ ok: true, case: 'numfmt', browserVersion: browser.version(), operations: savePayload.operations, reopened, pageErrors }))
+    assert.deepEqual(reopened.C3fmt, [-1234.5, '¥#,##0.00_);(¥#,##0.00)'])
+    assert.deepEqual(pageErrors, [])
+  } else if (process.env.WORKBOOK_RIBBON_CASE === 'fill') {
     // 填充：A1:A3 向下（alpha 粗体到 A2/A3）；C1:D1 向左（以 D1 为源，空值覆盖 gamma）；定位到 B3。
     await clickCell(...A1); await page.keyboard.down('Shift'); await clickCell(...A3); await page.keyboard.up('Shift')
     await page.locator('[data-ribbon-menu="fill"]').selectOption('fill-down')
