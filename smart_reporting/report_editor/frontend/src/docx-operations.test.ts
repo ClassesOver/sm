@@ -370,3 +370,10 @@ describe('粘贴图片 insertParagraphImage（docProtected/genImage 的协议内
     expect(() => replayDocxOperations(base, [{ ...valid, note: 'x' }], anchors)).toThrow(/字段或来源身份/)
   })
 })
+
+it('toggles a list on a paragraph carrying the null local cover-page marker (dropped by docListItem)', () => {
+  const original = { type: 'doc', content: [{ ...para(0, '原文'), attrs: { docxIndex: 0, nativeCoverPage: null, align: 'center' } }, base.content[1]] }
+  const current = structuredClone(original) as any
+  current.content[0] = { ...current.content[0], type: 'docListItem', attrs: { docxIndex: 0, align: 'center', kind: 'bullet', numId: 'native-bullet', ilvl: 0 } }
+  expect(docxOperations(original, current, anchors)).toEqual([{ kind: 'setParagraphList', blockId: 'a', expectedObjectSha256: 'hash-a', list: 'bullet' }])
+})

@@ -378,6 +378,10 @@ def test_slides_bridge_audit_exception_retains_edited_pptx(tmp_path: Path):
     (isolated / 'bridge').mkdir(parents=True)
     for name in ('node_modules', 'packages', 'package.json'):
         (isolated / name).symlink_to(ENGINE / name, target_is_directory=(ENGINE / name).is_dir())
+    # 只替换 edit-pptx.ts；其余桥接模块（如 pptx-transition.ts）原样链接，避免新增依赖时隔离副本缺件。
+    for sibling in (ENGINE / 'bridge').iterdir():
+        if sibling.name != 'edit-pptx.ts':
+            (isolated / 'bridge' / sibling.name).symlink_to(sibling)
     bridge = (ENGINE / 'bridge/edit-pptx.ts').read_text(encoding='utf-8').replace(
         "import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'",
         "const auditDeck = async (_bytes: Uint8Array): Promise<never> => { await readFile(request.output!); throw new Error('injected edit audit failure') }",
