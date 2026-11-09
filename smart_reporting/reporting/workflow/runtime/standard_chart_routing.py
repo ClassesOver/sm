@@ -16,7 +16,7 @@ from ...models import ReportingError
 from .chart_inputs import ChartInputMaterialization
 from .phase_models import StandardChartCanvas
 from .standard_chart_proof import create_standard_render_proofs
-from .standard_visualization import standard_visualization_preflight
+from .standard_visualization import StandardVisualizationPreflight, standard_visualization_preflight
 
 
 async def run_standard_chart_routes(
@@ -101,7 +101,8 @@ async def _run_standard_chart_routes(
         route_state["initialCompileStatus"] = "succeeded"
         if len(plan.charts) == 1:
             result = await _run_standard_with_layout_retry(
-                runner, context, workspace, plan, inputs, facts, deterministic=True
+                runner, context, workspace, plan, inputs, facts, deterministic=True,
+                initial_preflight=complete,
             )
         else:
             result = await runner.run_standard_visualization(
@@ -126,7 +127,7 @@ async def _run_standard_chart_routes(
         try:
             if len(plan.charts) == 1:
                 result = await _run_standard_with_layout_retry(
-                    runner, context, workspace, plan, inputs, facts
+                    runner, context, workspace, plan, inputs, facts, initial_preflight=complete,
                 )
             else:
                 result = await runner.run_standard_visualization(
@@ -386,8 +387,10 @@ def _diagnostic(chart_id, diagnostic):
 
 
 async def _run_standard_with_layout_retry(
-    runner, context, workspace, plan, inputs, facts, *, deterministic=False
+    runner, context, workspace, plan, inputs, facts, *, deterministic=False,
+    initial_preflight: StandardVisualizationPreflight | None = None,
 ):
+    """仅复用同次调用、同一计划/输入的预检；扩容候选与产物证明仍重新编译。"""
     current = plan
     route_started = perf_counter()
     attempts = []
@@ -399,10 +402,14 @@ async def _run_standard_with_layout_retry(
         result = None
         attempt_error = None
         try:
-            try:
-                preflight = standard_visualization_preflight(current, inputs)
-            finally:
-                compile_ms = max(0, round((perf_counter() - compile_started) * 1000))
+            if attempt == 0 and initial_preflight is not None:
+                # 同次路由刚完成的预检；耗时由外层登记，不重复编译或累计。
+                preflight = initial_preflight
+            else:
+                try:
+                    preflight = standard_visualization_preflight(current, inputs)
+                finally:
+                    compile_ms = max(0, round((perf_counter() - compile_started) * 1000))
             if preflight.source is None:
                 raise ReportingError(
                     "report_standard_layout_retry_invalid",

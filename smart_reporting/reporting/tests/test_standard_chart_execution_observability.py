@@ -268,10 +268,9 @@ async def test_failed_outer_route_keeps_initial_compile_cost_and_original_diagno
             deterministic=deterministic,
         )
     assert caught.value is failure
-    assert failure.standard_route_total_ms == (18 if chart_count == 1 else 15)
-    assert failure.standard_route_execution["stageTimings"]["compile"] == (
-        6 if chart_count == 1 else 3
-    )
+    # 首次预检复用后：3ms 编译 + 12ms 执行，不再重复计入第二次相同编译。
+    assert failure.standard_route_total_ms == 15
+    assert failure.standard_route_execution["stageTimings"]["compile"] == 3
     assert failure.standard_route_execution["initialCompileMs"] == 3
     assert failure.standard_route_execution["status"] == (
         "cancelled" if failure_type is asyncio.CancelledError else "failed"
@@ -279,7 +278,7 @@ async def test_failed_outer_route_keeps_initial_compile_cost_and_original_diagno
     assert failure.standard_route_execution["executionSpans"] == {"scriptProcess": [7]}
     if failure_type is ReportingError:
         assert failure.details["originalDetails"] is original_details
-        assert failure.details["standardRouteTotalMs"] == (18 if chart_count == 1 else 15)
+        assert failure.details["standardRouteTotalMs"] == 15
 
 
 @pytest.mark.parametrize("deterministic", [True, False])
@@ -329,13 +328,14 @@ async def test_outer_route_failed_retry_includes_initial_compile_without_fake_at
             deterministic=deterministic,
         )
     assert caught.value is failure
-    assert failure.standard_route_total_ms == 33
+    assert failure.standard_route_total_ms == 30
     assert failure.standard_route_execution["stageTimings"] == {
         "draw": 14,
         "total": 24,
-        "compile": 9,
+        "compile": 6,
     }
     assert failure.standard_route_execution["executionSpans"] == {"scriptProcess": [7, 7]}
     assert len(failure.standard_execution_attempts) == 2
-    assert [item["durationMs"] for item in failure.standard_execution_attempts] == [15, 15]
+    assert [item["durationMs"] for item in failure.standard_execution_attempts] == [12, 15]
+    assert [item["stageTimings"]["compile"] for item in failure.standard_execution_attempts] == [0, 3]
     assert calls == ([{"deterministic": True}] * 2 if deterministic else [{}, {}])
