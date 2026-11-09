@@ -8,11 +8,12 @@ Flint 值得参考的是三项工程机制：把类型属性分解为正交决�
 
 ## 本次完成与限制
 
+- 这是阶段性研究交付，计划最终验收尚未完成。逐项状态与最小后续顺序见 [`acceptance-checklist.md`](acceptance-checklist.md)。
 - 固定 Microsoft Flint 源码提交、版本、license、lockfile 身份；阅读编译入口、语义、单位/时间、domain、布局 reserve 和对应测试源码。
 - 从当前项目 HEAD 跟踪 chart draft / frozen chart-input / preflight / per-chart route / pagination / static Matplotlib 实现，并运行已有定向回归。
 - 增加只含合成数字的 Decimal/Fraction oracle、PNG、几何边界探针和 JSON 证据记录。
 - 用当前生产变换、分页和值域、来源 SHA 对同一组合成输入做 6 个离线回放案例；结果写入 `evidence/current-replay.jsonl`。
-- 项目定向回归 `354 passed`；测试清单见 `source-map.md` 的链路引用，完整命令可从 shell history/本次执行记录复现；未跑全套。
+- 项目定向回归 `354 passed`；完整命令列于本文末尾；未跑全套。
 - Flint 上游测试未能运行：锁定依赖安装被当前环境的 `EALLOWREMOTE` 拦截。不能把 Flint 源码测试标为通过。
 - 没有访问真实业务数据、生产回执、线上 trace，也没有两名独立视觉审阅人或外部业务审阅人。业务正确性、独立视觉结论和生产收益保持未裁决。
 

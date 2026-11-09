@@ -19,8 +19,8 @@
 | 正交语义 registry | `packages/flint-js/src/core/type-registry.ts:41-69, 75-81` | type 映射至 aggregation role、domain shape、diverging、format class、zero-baseline、zeroPad 等多个决策维度；未知类型注释规定落到 `Unknown`/nominal/plain。 | `source_present`；便于集中改规则，但 registry 属性本身仍是领域判断，不构成其正确性的独立证明。 |
 | 字段语义 | `packages/flint-js/src/core/field-semantics.ts:1143-1180` | 从语义 annotation 和实际值计算 format、默认可视类型、aggregation、domain、ordering、cyclic、binning 等字段语义。 | `source_present`；调用者需把“金额/数量/比例”等标注正确传入。 |
 | 通道语义 | `packages/flint-js/src/core/resolve-semantics.ts:612-671` | 对每个编码解析 field semantics，再结合 channel 决定可视类型、sort、ticks、颜色、temporal 等；部分 chart marks 的零基线在 `analyze.ts:154-168` 按 mark 决策。 | `source_present`；需要沿目标 chart template 继续核对，不能只看 registry 推出最终 spec。 |
-| 显示单位 | `packages/flint-js/src/core/field-semantics.ts:377-490`；`tests/unit-display.test.ts:32-72` | 显示 unit 来自显式 annotation；测试覆盖不从 semantic type 猜可见单位、常规缩写、词性单位放标题及拒绝 prose 当单位。 | `source_present` + `upstream_tested`（读取测试文本，未执行）。它是显示策略，不等于跨单位数值换算或单位兼容证明。 |
-| 时间解析 | `packages/flint-js/src/core/temporal-parse.ts`；`tests/temporal-parse.test.ts:9-60` | typed parser 支持若干明确年月/日期文本形式，对非法月份和 impossible date 返回 null；没有被类型指示时不强制将整数变日期。 | `source_present` + `upstream_tested`（未执行）；仍需业务数据契约决定日期粒度与时区。 |
+| 显示单位 | `packages/flint-js/src/core/field-semantics.ts:377-490`；`tests/unit-display.test.ts:32-72` | 显示 unit 来自显式 annotation；测试源码断言不从 semantic type 猜可见单位、常规缩写、词性单位放标题及拒绝 prose 当单位。 | `source_present`（含测试源码审阅，未执行）。它是显示策略，不等于跨单位数值换算或单位兼容证明。 |
+| 时间解析 | `packages/flint-js/src/core/temporal-parse.ts`；`tests/temporal-parse.test.ts:9-60` | typed parser 支持若干明确年月/日期文本形式，对非法月份和 impossible date 返回 null；没有被类型指示时不强制将整数变日期。 | `source_present`（含测试源码审阅，未执行）；仍需业务数据契约决定日期粒度与时区。 |
 | 值域 | `packages/flint-js/src/core/measure-domain.ts:161-210` | 可读取 intrinsic domain；若声明特定语义可推固定范围；结合 mark、channel、数值计算 domain。 | `source_present`；须审查规则与业务语义匹配，不能推成通用金融轴政策。 |
 | 布局 reserve | `packages/flint-js/src/core/furniture-reserve.ts:14-62, 68-96` | 把家具分解为轴标签、标题、图例等占用量；使用 text measurer、轴标签/值域计算宽度。 | `source_present`。 |
 | 布局 fit | `packages/flint-js/src/core/canvas-fit.ts:17-30, 116-125` | 对 around、labels、stretch、scale、aspect、minSide 定量判断 canvas 是否拥挤；`plan.ts:157-186` 将语义和值域组合进入布局。 | `source_present`；规则使用估计与阈值，仍需具体 renderer 实测验证。 |
@@ -34,6 +34,22 @@
 | `packages/flint-js/tests/temporal-parse.test.ts:9-60` | 多种 YearMonth/Date 输入、非法日期拒绝、解析依赖语义类型。 | 不能证明任意 locale、时区、财政期或本项目比较窗口口径。 |
 | `packages/flint-js/tests/furniture-reserve.test.ts:17-51` | 图例和 y-label 预留空间、更多家具时 band step 变化、replan 保留空间。 | 不能证明中文字体、Matplotlib PNG 文本无重叠；Flint 的测试渲染布局与本项目 renderer 不同。 |
 | `packages/flint-js/tests/canvas-fit.test.ts` | 文件存在，但本次未读取全文件或执行。 | 不把文件存在称作测试覆盖或通过。 |
+
+## 原始修复记录与反例
+
+已读取 [Flint PR #147](https://github.com/microsoft/flint-chart/pull/147) 的说明和文件差异，公开说明快照见 [`evidence/flint-pr147.json`](evidence/flint-pr147.json)，逐文件差异见 [`evidence/flint-pr147-files.json`](evidence/flint-pr147-files.json)。合并提交为 `3e99e1bfcfc5acbd4eebb37826ed28840fc6f505`。本地固定基线包含对应测试 `packages/flint-js/tests/year-band-dodge.test.ts`。
+
+- **触发输入：** 12 个连续年份、每年只有四个系列中的两个，`x` 声明为 `Year`、数值为 `Quantity`，Grouped Bar 使用 `dodge: local`。时间语义不变，但模板将年份轴按类别 band 绘制。
+- **修复前：** `templates/bar.ts` 按 x 的 nominal/ordinal 类型选择分组轴；Year 仍是 temporal，于是误选 y，形成 `groupby: ['y']`。PR 作者记录柱宽归零的 SVG 路径。
+- **修复后：** instantiate 按 assembler 已选择的 `xOffset/yOffset` 定位轴；Grouped Bar 与 Boxplot 的选项检查改用布局同一个 `detectBandedAxisForceDiscrete` 决策，避免重复猜测。
+- **回归断言：** 完整系列情形检查 `xOffset`；稀疏系列情形检查两条 lane transform 都按 `['x']` 分组；Boxplot 检查 local dodge 选项适用。测试没有独立检查中文字体、PNG 重叠或本项目业务绑定。
+- **证据边界：** 差异和测试源码为 `source_present`。PR 作者陈述修复前失败、修复后通过及 2854 项测试通过，属于公开作者运行陈述；本机没有执行这些测试，不能记作本地通过。
+
+这个反例支持的建议是：语义声明、布局计划和后端输出应共享可核验决策，不能由各层单独按类型猜测。它不证明本项目存在相同缺陷，也不支持新增图种或引入 Flint renderer。
+
+历史检索限制：本地 checkout 是浅克隆，`git log` 只有冻结 HEAD。GitHub 路径提交查询在该冻结版本的 `furniture-reserve.ts` 下只返回发布 squash 提交 `60324d2fa31acd46bb2e79bc4503930da69f2619`（#146）；不能从聚合提交说明还原每项修复的独立前后状态，因此没有凑满 5 项案例。`CHANGELOG.md:203-215,251-275` 的显式单位、端点标签 packing 和 reserve 描述只作历史索引，不作效果证明。
+
+README 链接论文 `arXiv:2607.20775`，本次只确认该索引，未审阅全文方法、附录或逐样本数据，也未复算论文结果。论文相关结论保持 `not_reviewed`。
 
 ## 本项目链路及对照边界
 
