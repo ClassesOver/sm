@@ -204,9 +204,16 @@ it('preserves Insert table, image, shape and chart source actions while disablin
     const group = host.querySelector<HTMLElement>(`[aria-label="${groupName}"]`)!
     const controls = [...group.querySelectorAll<HTMLButtonElement>('[data-source-action]')]
     expect(controls.map(control => control.dataset.sourceAction)).toEqual(actions)
-    expect(controls.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
-    expect(controls.every(control => control.querySelector('svg'))).toBe(true)
+    const unsupported = controls.filter(control => control.dataset.sourceAction !== 'onPickShape')
+    expect(unsupported.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
+    expect(unsupported.every(control => control.querySelector('svg'))).toBe(true)
   }
+  // Shapes 已接通：固定源形状库 7 组 109 个预设
+  const shapes = host.querySelector<HTMLSelectElement>('select[data-command="insertShape"]')!
+  expect(shapes.closest('[data-source-action]')?.getAttribute('data-source-action') ?? shapes.dataset.sourceAction).toBe('onPickShape')
+  expect(shapes.disabled).toBe(false)
+  expect(shapes.querySelectorAll('optgroup')).toHaveLength(7)
+  expect(shapes.querySelectorAll('optgroup option')).toHaveLength(109)
   const images = host.querySelector<HTMLElement>('[aria-label="Images"]')!
   const picture = images.querySelector<HTMLButtonElement>('[data-source-action="onInsertImage"]')!
   expect(picture.disabled).toBe(true)

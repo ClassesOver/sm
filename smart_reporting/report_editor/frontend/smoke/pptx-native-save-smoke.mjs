@@ -225,6 +225,13 @@ try {
     await page.locator('.slide-row').filter({ hasText: 'Native browser' }).first().locator('.slide-open').click()
     await page.locator('[data-command="resetLayout"][data-source-action="onResetLayout"]').click()
     await page.locator('.structure-pending li').filter({ hasText: '重置版式' }).waitFor()
+    // 插入形状（固定源形状库 onPickShape）：圆角矩形与箭头线条。
+    const shapePicker = page.locator('select[data-command="insertShape"]')
+    await page.locator('[data-ribbon-tab="insert"]').click()
+    await shapePicker.selectOption('roundRect'); await shapePicker.selectOption('lineArrow')
+    assert.equal(await shapePicker.inputValue(), '')
+    await page.locator('.structure-pending li').filter({ hasText: '形状 圆角矩形' }).waitFor()
+    await page.locator('.structure-pending li').filter({ hasText: '形状 箭头' }).waitFor()
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
@@ -396,6 +403,7 @@ try {
     assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }, { duplicateOf: 0 }, { withLayout: inspected.layouts.find(item => item.name === 'Title Slide').path }])
     assert.deepEqual(operation.deletedSlides, [1])
     assert.deepEqual(operation.resetLayouts, [0])
+    assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
     assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
@@ -422,7 +430,7 @@ try {
   assert.equal(reopened.revision, 2)
   assert.equal(reopened.sha256, saveReceipt.artifacts.pptx.sha256)
   if (smokeMode === 'new-slide') {
-    const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame]] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
+    const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame and sh.text],len(s.shapes)] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
     if (independent.status !== 0) throw new Error(independent.stderr)
     const slides = JSON.parse(independent.stdout)
     assert.equal(slides.length, 4)
@@ -430,7 +438,11 @@ try {
     assert.deepEqual(slides[0][1], [])
     assert.equal(slides[0][0], slides[1][0])
     assert.deepEqual(slides[1][1], ['Native browser formatting fixture'])
-    assert.deepEqual(slides[2], slides[1])
+    // 副本复制的是已保存内容（不含同批新增形状）；原页多出两个形状
+    assert.deepEqual(slides[2].slice(0, 2), slides[1].slice(0, 2))
+    assert.equal(slides[1][2], slides[2][2] + 2)
+    const shapeXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "prst=\\"roundRect\\"" in z.read(n).decode() and "C43E1C" in z.read(n).decode()))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(shapeXml.stdout.trim(), '1')
   }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))

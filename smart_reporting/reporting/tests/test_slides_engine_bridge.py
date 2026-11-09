@@ -662,3 +662,35 @@ def test_slides_bridge_reset_layout_restores_inherited_placeholder_geometry(tmp_
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({"action": "edit", "input": str(moved), "output": str(tmp_path / "bad.pptx"), "edits": [], "resetLayouts": bad}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_inserts_gallery_shapes_with_pinned_default_styles(tmp_path: Path):
+    """固定源 Insert ▸ Shapes：预设形状写入 prstGeom；普通形状出厂填充 #C43E1C，线条为 1pt 黑色；未知预设拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "shapes.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    before = len(Presentation(source).slides[0].shapes)
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)), "shapes": [
+        {"slideIndex": 0, "kind": "roundRect", "geometry": {"x": 100, "y": 100, "width": 200, "height": 120}},
+        {"slideIndex": 0, "kind": "lineArrow", "geometry": {"x": 100, "y": 300, "width": 200, "height": 1}},
+    ]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    assert 'prst="roundRect"' in xml and 'srgbClr val="C43E1C"' in xml
+    assert 'prst="straightConnector1"' in xml and '<a:ln w="12700"' in xml
+    assert len(Presentation(output).slides[0].shapes) == before + 2
+    for bad in ({"slideIndex": 0, "kind": "notAShape", "geometry": {"x": 1, "y": 1, "width": 10, "height": 10}},
+                {"slideIndex": 0, "kind": "rect", "geometry": {"x": 1, "y": 1, "width": 10, "height": 10}, "fill": "#000000"},
+                {"slideIndex": 0, "kind": "rect", "geometry": {"x": 1, "y": 1, "width": 0, "height": 10}}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "shapes": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_bridge_shape_allow_list_matches_frontend_gallery():
+    import re
+    frontend = Path(__file__).parents[2] / "report_editor/frontend/src/vendor/genoffice-slides/components/shape-gallery-data.ts"
+    presets = json.loads((ENGINE / "bridge/shape-presets.json").read_text(encoding="utf-8"))["presets"]
+    assert presets == re.findall(r'prst: "([^"]+)"', frontend.read_text(encoding="utf-8"))
+    assert len(presets) == 109

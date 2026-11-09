@@ -1,4 +1,5 @@
 import { applyTransitionToAll, restoredTransitions, SLIDE_TRANSITIONS, type SlideTransition } from './slides-transitions'
+import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS, SHAPE_PRESETS } from './vendor/genoffice-slides/components/shape-gallery-data'
 import { PARAGRAPH_LIST_COMMANDS, BULLET_GLYPHS, paragraphCommandPatch, projectParagraphs, uniformParagraphValue, type ParagraphFormatting, type ParagraphSourceFormatting, type ParagraphList } from './slides-paragraph'
 import { createElement, ArrowDown, ArrowUp, Copy, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
 import './slides.css'
@@ -33,9 +34,10 @@ type AnimationTrigger = 'onClick' | 'withPrev' | 'afterPrev'
 type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; watermark: boolean }
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
+type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }
 type NewSlide = { layoutFrom: number } | { duplicateOf: number } | { withLayout: string }
 type SlideChanges = {
-  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
+  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
@@ -144,9 +146,11 @@ const newSlideSource = (item: NewSlide): number | null => 'duplicateOf' in item 
 const deletedSlides = new Set<number>()
 /** 固定源 onResetLayout：保存时先把这些来源页的占位符位置恢复为版式继承，再叠加同批其他修改。 */
 const resetLayouts = new Set<number>()
+/** 固定源 Insert ▸ Shapes：待插入的预设形状（96dpi 像素几何），保存后由引擎写入。 */
+const shapeEdits: ShapeEdit[] = []
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex)
-    || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex)
+    || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex)
     || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
     || (!ignoreNewSlideSources && newSlides.some(item => newSlideSource(item) === slideIndex))
 }
@@ -355,7 +359,7 @@ function markDirty() {
 
 function slideChanges(): SlideChanges {
   return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
-    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
@@ -366,7 +370,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft() {
   if (!nativeDraft) return
   const operations = nativeDraft.operations
-  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -380,6 +384,8 @@ function restoreNativeDraft() {
   if (!Array.isArray(restoredDeleted) || new Set(restoredDeleted).size !== restoredDeleted.length || restoredDeleted.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length) || (restoredDeleted.length && changes.order === undefined) || restoredNew.some(item => restoredDeleted.includes(newSlideSource(item) ?? -1))) throw new Error('草稿中的删除幻灯片无效；原草稿已保留')
   const restoredReset = changes.resetLayouts ?? []
   if (!Array.isArray(restoredReset) || new Set(restoredReset).size !== restoredReset.length || restoredReset.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length || restoredDeleted.includes(index))) throw new Error('草稿中的重置版式无效；原草稿已保留')
+  const restoredShapes = changes.shapes ?? []
+  if (!Array.isArray(restoredShapes) || restoredShapes.length > 500 || restoredShapes.some(item => !item || Object.keys(item).sort().join() !== 'geometry,kind,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex) || !SHAPE_PRESETS.includes(item.kind) || !item.geometry || !(item.geometry.width >= 1) || !(item.geometry.height >= 1))) throw new Error('草稿中的新增形状无效；原草稿已保留')
   const slideTotal = deck.slides.length + restoredNew.length
   if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== slideTotal - restoredDeleted.length || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= slideTotal || restoredDeleted.includes(index)))) throw new Error('草稿页面顺序无效；原草稿已保留')
   // Validate every step before mutating the recovered view or the persisted history.
@@ -414,6 +420,7 @@ function restoreNativeDraft() {
   newSlides.splice(0, newSlides.length, ...restoredNew.map((item): NewSlide => 'duplicateOf' in item ? { duplicateOf: item.duplicateOf } : 'withLayout' in item ? { withLayout: item.withLayout } : { layoutFrom: item.layoutFrom }))
   deletedSlides.clear(); for (const index of restoredDeleted) deletedSlides.add(index)
   resetLayouts.clear(); for (const index of restoredReset) resetLayouts.add(index)
+  shapeEdits.splice(0, shapeEdits.length, ...restoredShapes.map(item => ({ slideIndex: item.slideIndex, kind: item.kind, geometry: { ...item.geometry } })))
   order.splice(0, order.length, ...(changes.order ?? deck.slides.map(slide => slide.slideIndex)))
   if (!order.includes(selectedSlide)) selectedSlide = order[0] ?? 0
   selectedTheme = changes.theme
@@ -690,6 +697,17 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     }
     switch (command) {
       case 'addSlide': addNewSlide(); break
+      case 'insertShape': {
+        const kind = String(value ?? '')
+        if (!kind) break
+        if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
+        if (!SHAPE_PRESETS.includes(kind) || shapeEdits.length >= 500) { statusMessage.textContent = '形状不可用或已达 500 个待插入形状'; break }
+        const width = deck.size.cx / 9525, height = deck.size.cy / 9525
+        const line = LINE_SHAPE_KINDS.includes(kind)
+        shapeEdits.push({ slideIndex: selectedSlide, kind, geometry: { x: Math.round(width * 0.35), y: Math.round(height * (line ? 0.5 : 0.35)), width: Math.round(width * 0.3), height: line ? 1 : Math.round(height * 0.3) } })
+        canvasStatus.textContent = '新增形状将在保存并打开新修订后显示在画布中。'
+        renderStructurePending(); markDirty(); break
+      }
       case 'resetLayout':
         if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
         resetLayouts.add(selectedSlide); renderStructurePending()
@@ -931,6 +949,7 @@ function renderStructurePending() {
     item.append(remove)
     structurePending.append(item)
   }
+  for (const [index, shape] of shapeEdits.entries()) row(`第 ${order.indexOf(shape.slideIndex) + 1} 页 · 形状 ${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(item => item.prst === shape.kind)?.label ?? shape.kind}`, () => shapeEdits.splice(index, 1))
   for (const slideIndex of resetLayouts) row(`第 ${order.indexOf(slideIndex) + 1} 页 · 重置版式`, () => resetLayouts.delete(slideIndex))
   for (const [slideIndex, color] of backgroundEdits) {
     row(`第 ${order.indexOf(slideIndex) + 1} 页 · 背景 ${color}`, () => backgroundEdits.delete(slideIndex))

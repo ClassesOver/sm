@@ -2,6 +2,7 @@ import { patchTransitionPreservingMetadata, transitionEditAvailability } from '.
 import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
+import shapePresets from './shape-presets.json' with { type: 'json' }
 import { addElement, addPicture, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
@@ -31,6 +32,8 @@ type Input = {
   order?: number[]
   /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
   newSlides?: ({ layoutFrom: number } | { duplicateOf: number } | { withLayout: string })[]
+  /** 固定源 Insert ▸ Shapes（onPickShape）：预设形状，几何为 96dpi 像素；线条为 1pt 黑色连接符，其他为出厂填充色。 */
+  shapes?: { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }[]
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -288,6 +291,10 @@ if (request.action === 'inspect') {
     if (!validSlideIndex(background.slideIndex, slideCount)) throw new Error('background_slide_index_invalid')
     if (typeof background.color !== 'string' || !colorPattern.test(background.color)) throw new Error('background_color_invalid')
   }
+  if ((request.shapes ?? []).length > 500) throw new Error('shapes_invalid')
+  for (const shape of request.shapes ?? []) {
+    if (!shape || typeof shape !== 'object' || Object.keys(shape).some(key => !['slideIndex', 'kind', 'geometry'].includes(key)) || !validSlideIndex(shape.slideIndex, slideCount) || typeof shape.kind !== 'string' || !shapePresets.presets.includes(shape.kind) || !validGeometry(shape.geometry)) throw new Error('shape_invalid')
+  }
   for (const box of request.textBoxes ?? []) {
     if (!validSlideIndex(box.slideIndex, slideCount)) throw new Error('textbox_slide_index_invalid')
     if (typeof box.text !== 'string' || box.text.length > 20000) throw new Error('textbox_text_invalid')
@@ -480,6 +487,15 @@ if (request.action === 'inspect') {
   }
   for (const background of request.backgrounds ?? []) {
     setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
+  }
+  for (const shape of request.shapes ?? []) {
+    const { x, y, width, height } = shape.geometry
+    const line = shapePresets.lines.includes(shape.kind)
+    addElement(originalSlides[shape.slideIndex]!, {
+      kind: shape.kind,
+      offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
+      ...(line ? { stroke: { color: '#000000', widthEmu: 12700 } } : { fillColor: '#C43E1C' }),
+    })
   }
   for (const box of request.textBoxes ?? []) {
     const { x, y, width, height } = box.geometry

@@ -19,6 +19,13 @@
 - 草稿 `resetLayouts: [来源页]`；桥接最先调用固定引擎 `resetSlideLayout`（占位符去掉显式 xfrm，回到版式/母版继承位置），同批其他修改叠加在重置后的页面上。新建页不适用；已加入重置的页不能再复制或删除（与其他待保存修改一致）。
 - 证据：`test_slides_bridge_reset_layout_restores_inherited_placeholder_geometry`（移位标题回到继承几何、文字保留，非法索引无输出）、Ribbon 单测、`new-slide` 冒烟中重置并保存。
 
+## 插入形状（固定源 Insert ▸ Shapes / onPickShape）
+
+- Insert ▸ Illustrations ▸ Shapes 为分组选择器：固定源 `SHAPE_GALLERY_GROUPS` 7 组 109 个预设，中文名称取自固定源语言包（`components/shape-gallery-data.ts`，来源与哈希见 `SOURCE.md`）。选后复位，形状加入待保存清单（可单独撤销）。
+- 插入默认值与固定源一致：普通形状填充 `#C43E1C`（`default-shape.ts` 出厂样式），线条类为 1pt 黑色连接符（`insert-actions.ts`）；初始位置居中、宽 30%。
+- 草稿 `shapes: [{slideIndex, kind, geometry}]`；桥接与 Python 只接受同一份 109 项白名单（`bridge/shape-presets.json`，测试保证与前端数据一致），交给固定引擎 `addElement`。画布在保存重开后显示新形状（与新增文本框一致）。
+- 证据：`test_slides_bridge_inserts_gallery_shapes_with_pinned_default_styles`、`test_bridge_shape_allow_list_matches_frontend_gallery`、Ribbon 单测（7 组 109 项）、`new-slide` 冒烟插入圆角矩形与箭头并核对保存的 XML。
+
 ## 复制幻灯片（固定源 duplicateSlide）
 
 - 草稿 `newSlides` 项为 `{ duplicateOf: 来源页 }`；桥接调用固定引擎 `duplicateSlide` 后移到末尾，再由 `order` 落位。
