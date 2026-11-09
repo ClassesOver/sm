@@ -81,7 +81,27 @@ try {
   const clickCell = async (x, y) => { await page.locator('.workbook-grid').click({ position: { x, y } }); await delay(300) }
   const A1 = [90, 32], A2 = [90, 70], A2_AFTER_ROW1 = [90, 88], C1 = [393, 32], D1 = [481, 32], A3 = [90, 109], B3 = [240, 109], E1 = [569, 32], B1 = [240, 32]
 
-  if (process.env.WORKBOOK_RIBBON_CASE === 'sort') {
+  if (process.env.WORKBOOK_RIBBON_CASE === 'fill') {
+    // 填充：A1:A3 向下（alpha 粗体到 A2/A3）；C1:D1 向左（以 D1 为源，空值覆盖 gamma）；定位到 B3。
+    await clickCell(...A1); await page.keyboard.down('Shift'); await clickCell(...A3); await page.keyboard.up('Shift')
+    await page.locator('[data-ribbon-menu="fill"]').selectOption('fill-down')
+    await page.waitForFunction(() => /已向下填充/.test(document.querySelector('.workbook-feedback')?.textContent ?? ''), null, { timeout: 15000 })
+    await clickCell(...C1); await page.keyboard.down('Shift'); await clickCell(...D1); await page.keyboard.up('Shift')
+    await page.locator('[data-ribbon-menu="fill"]').selectOption('fill-left')
+    await page.waitForFunction(() => /已向左填充/.test(document.querySelector('.workbook-feedback')?.textContent ?? ''), null, { timeout: 15000 })
+    await command('goto-open')
+    await page.locator('[data-goto-reference]').fill('B3'); await page.locator('.workbook-ribbon-goto-dialog .workbook-ribbon-format-apply').click()
+    assert.match(await feedback(), /已定位到 B3/)
+    await page.locator('[data-action="save"]').click()
+    await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 60000 })
+    const download = await page.evaluate(async () => { const r = await fetch('/fixture-gui-download.xlsx'); return Array.from(new Uint8Array(await r.arrayBuffer())) })
+    const reopened = JSON.parse(python({ mode: 'inspect', bytes: Buffer.from(download).toString('base64') }))
+    console.log(JSON.stringify({ ok: true, case: 'fill', browserVersion: browser.version(), operationKinds: savePayload.operations.map(op => op.kind), reopened, pageErrors }))
+    assert.deepEqual(reopened.A2.slice(0, 2), ['alpha', true])
+    assert.deepEqual(reopened.A3.slice(0, 2), ['alpha', true])
+    assert.deepEqual(reopened.C1, [null, false])
+    assert.deepEqual(pageErrors, [])
+  } else if (process.env.WORKBOOK_RIBBON_CASE === 'sort') {
     // 数据▸自定义排序：A1:A2 不含标题、按 A 列降序（粗体随 alpha 移动）。
     await clickCell(...A1); await page.keyboard.down('Shift'); await clickCell(...A2); await page.keyboard.up('Shift')
     await page.locator('[data-ribbon-tab="Data"]').click(); await command('sort-custom-open')

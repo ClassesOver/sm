@@ -36,6 +36,8 @@ import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams
 import { assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
 import { installCalculation, type CalculationControl } from './workbook-calculation'
 import { createSortDialog, type SortRange } from './workbook-sort-dialog'
+import { applyFillSeries, createFillSeriesDialog, fillSeriesDefaultType, fillSeriesDirection } from './workbook-fill-series'
+import { createGoToDialog, resolveGoToRef } from './workbook-goto'
 import { AUTOFIT_COMMANDS, applyAxisSize, autofitSpans, captureAxisTarget, createAxisSizeDialog } from './workbook-axis-size'
 import { applyFormatPainterClick, formatPainterActive, formatPainterReady, installFormatPainter, turnOffFormatPainter } from './workbook-format-painter'
 import {
@@ -203,6 +205,35 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (!applied) throw new Error(feedback.textContent || '排序未应用')
     markDirty(); ribbon.refreshState?.()
     feedback.textContent = `已按 ${orderRules.length} 个关键字排序${hasTitle ? '（首行为标题）' : ''}，修改尚未保存。`
+  })
+  // 开始▸编辑▸填充▸序列（固定源 fill-series-apply.ts）：写入为普通 set-values，可撤销、走保存差分。
+  const fillSeriesDialog = createFillSeriesDialog(shell.editor, options => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet(), active = workbook?.getActiveRange()
+    if (!sheet || !active) return '请先选择单元格或区域'
+    const failure = applyFillSeries(sheet as never, active as never, options)
+    if (!failure) { markDirty(); ribbon.refreshState?.(); feedback.textContent = '已填充序列，修改尚未保存。' }
+    return failure
+  })
+  // 开始▸编辑▸定位（固定源 data-tools-actions.ts goToReference）：仅移动选区，只读亦可用。
+  const goToDialog = createGoToDialog(shell.editor, reference => {
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+    if (!workbook || !sheet) return '工作簿尚未就绪'
+    const trimmed = reference.trim()
+    if (!trimmed) return '请输入引用位置'
+    const resolved = resolveGoToRef(trimmed, definedNameRows().map(row => ({ name: row.name, ref: row.refersTo })))
+    if (resolved === null) return `无法定位到“${trimmed}”：不是有效的引用或已定义名称`
+    try {
+      const range = sheet.getRange(resolved)
+      const target = workbook.getSheetBySheetId(range.getSheetId()) ?? sheet
+      if (target.getSheetId() !== sheet.getSheetId()) workbook.setActiveSheet(target)
+      workbook.setActiveRange(range)
+      feedback.textContent = `已定位到 ${trimmed}。`
+      return null
+    } catch (error) {
+      const detail = (error as Error).message ?? ''
+      return detail.includes('Range not found') ? `找不到“${trimmed}”所在的工作表` : `无法定位到“${trimmed}”`
+    }
   })
   const numberFormatDialog = createNumberFormatDialog(shell.editor, {
     initial: () => formatState().numberFormat,
@@ -649,6 +680,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         return
       }
       const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle'].includes(command)
+      // 定位只移动选区（固定源只读安全）：保存中/已保存/只读亦可用。
+      if (command === 'goto-open') {
+        if (loading || disposed) return
+        goToDialog.open(definedNameRows().map(row => ({ name: row.name, ref: row.refersTo })))
+        return
+      }
       if (readingNote ? loading || saving || disposed : !editable()) return
       const workbook = runtime.univerAPI.getActiveWorkbook()
       if (!workbook) return
@@ -706,6 +743,38 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           structureLock = next === (currentModel.workbookProtection?.lockStructure ?? false) ? undefined : next
           markDirty(); ribbon.refreshState?.()
           feedback.textContent = next ? '工作簿结构已设为受保护（无密码），保存后写入文件；期间不能增删、重命名、移动或隐藏工作表。' : '工作簿结构保护将在保存后移除。'
+          return
+        }
+        if (command === 'fill-down' || command === 'fill-right') {
+          void runtime.univerAPI.executeCommand(command === 'fill-down' ? 'sheet.command.copy-down' : 'sheet.command.copy-right').then(applied => {
+            feedback.textContent = applied ? `已${command === 'fill-down' ? '向下' : '向右'}填充，修改尚未保存。` : feedback.textContent || '填充未应用'
+          }, (error: unknown) => { feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'fill-up' || command === 'fill-left') {
+          // 固定源：Univer 只有 copy-down/right，向上/向左以选区末行/末列为源走 auto-fill COPY。
+          const sheet = workbook.getActiveSheet(), active = workbook.getActiveRange()
+          if (!sheet || !active) throw new Error('请先选择单元格或区域')
+          const up = command === 'fill-up'
+          const { startRow, startColumn } = active.getRange()
+          let { endRow, endColumn } = active.getRange()
+          if (up && startRow === endRow) { if (endRow + 1 >= sheet.getMaxRows()) throw new Error('下方没有可作为来源的行'); endRow += 1 }
+          else if (!up && startColumn === endColumn) { if (endColumn + 1 >= sheet.getMaxColumns()) throw new Error('右侧没有可作为来源的列'); endColumn += 1 }
+          void runtime.univerAPI.executeCommand('sheet.command.auto-fill', {
+            unitId: workbook.getId(), subUnitId: sheet.getSheetId(),
+            sourceRange: { startRow: up ? endRow : startRow, endRow, startColumn: up ? startColumn : endColumn, endColumn },
+            targetRange: { startRow, endRow, startColumn, endColumn }, applyType: 'COPY',
+          }).then(applied => {
+            feedback.textContent = applied ? `已${up ? '向上' : '向左'}填充，修改尚未保存。` : feedback.textContent || '填充未应用'
+          }, (error: unknown) => { feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'fill-series-open') {
+          const active = workbook.getActiveRange()
+          if (!active) throw new Error('请先选择单元格或区域')
+          const numberFormat = formatState().numberFormat
+          const dateFormatted = numberFormat.kind === 'value' && /[ymd]/i.test(String(numberFormat.value).replace(/"[^"]*"|\[[^\]]*\]/g, ''))
+          fillSeriesDialog.open(fillSeriesDirection(active), fillSeriesDefaultType(dateFormatted))
           return
         }
         if (command === 'sort-custom-open') {
@@ -1237,5 +1306,5 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
+  return { dispose() { disposed = true; painterListener?.dispose(); selectionListener?.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); historyListener?.dispose(); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose() } }
 }

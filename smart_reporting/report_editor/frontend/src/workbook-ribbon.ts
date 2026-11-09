@@ -69,6 +69,12 @@ type RibbonCommand =
   | 'format-painter:dblclick'
   | 'row-height-open'
   | 'insert-cells'
+  | 'goto-open'
+  | 'fill-down'
+  | 'fill-right'
+  | 'fill-up'
+  | 'fill-left'
+  | 'fill-series-open'
   | 'sort-custom-open'
   | 'toggle-show-formulas'
   | 'calculate-now'
@@ -379,8 +385,8 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '编辑', actions: [
       ...(['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'] as const).map((fn, index) =>
         action(['自动求和', '平均值', '计数值', '最大值', '最小值'][index]!, `autofn:${fn}`, `autofn:${fn}`)),
-      action('排序', 'sort-custom-open'), action('查找', 'find', 'find'),
-      action('替换', 'replace', 'replace'), action('定位', 'goto-open'),
+      action('排序', 'sort-custom-open', 'sort-custom-open'), action('查找', 'find', 'find'),
+      action('替换', 'replace', 'replace'), action('定位', 'goto-open', 'goto-open'),
     ] },
   ],
   Insert: [
@@ -764,8 +770,8 @@ export function mountWorkbookRibbon(
       // 打印 is read-only (available like 查找 even while read-only/saved);
       // 撤销/恢复 replay history mutations and follow editability.
       // 复制只读选区（固定源 read-only-safe），只读/已保存时仍可用。
-      const readOnlySafe = noteViewAction || id === 'copy'
-      button.disabled = id === 'find' || id === 'print' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo', 'sheet-protect', 'workbook-protect'].includes(id))
+      const readOnlySafe = noteViewAction || id === 'copy' || id === 'goto-open'
+      button.disabled = id === 'find' || id === 'print' || id === 'goto-open' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo', 'sheet-protect', 'workbook-protect'].includes(id))
       button.title = button.disabled ? !editable && !readOnlySafe ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
       // 公式视图/重新计算只改变显示与计算结果，不修改文件内容，只读时亦可用。
       if (['toggle-show-formulas', 'calculate-now', 'calculate-sheet'].includes(id)) {
@@ -857,7 +863,13 @@ export function mountWorkbookRibbon(
         String(pageState?.[key] ?? 0))
     }
     // 页面布局动作下拉依赖页面设置读模型；选择性粘贴下拉由上方剪贴板状态单独管理。
-    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"])')) {
+    const fillMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="fill"]')
+    if (fillMenu) {
+      const sheetProtected = !!view.protection?.().sheet.protected
+      fillMenu.disabled = !editable || !selected || sheetProtected
+      fillMenu.title = !editable ? '当前工作簿不可编辑或正在保存' : sheetProtected ? PROTECTED_SHEET_REASON : !selected ? '请先选择单元格或区域' : '填充'
+    }
+    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
@@ -959,6 +971,16 @@ export function mountWorkbookRibbon(
           status.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick() } })
           wrapper.append(input, status); section.append(wrapper)
         }
+      }
+      if (active === 'Home' && group.title === '编辑') {
+        // 固定源 Fill 菜单（ExcelShell.tsx:4149-4153）：选中后回弹到菜单标题。
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '填充'); select.dataset.ribbonMenu = 'fill'
+        select.append(...[['', '填充'], ['fill-down', '向下'], ['fill-right', '向右'], ['fill-up', '向上'], ['fill-left', '向左'], ['fill-series-open', '序列…']].map(([value, label]) => {
+          const option = document.createElement('option'); option.value = value!; option.textContent = label!; return option
+        }))
+        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
+        section.append(select)
       }
       if (active === 'Home' && group.title === '剪贴板') {
         // 固定源粘贴分体按钮的下拉：选中后回弹到菜单标题（同页面布局动作下拉）。
