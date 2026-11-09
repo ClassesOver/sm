@@ -18,7 +18,7 @@ LOCAL-SHA256.json records every current TS/MJS source and test, local package ma
 
 The bridge reads a JSON request file at argv[2], returns one JSON receipt on the last stdout line, and writes errors to stderr with a nonzero status. inspect requests are `{kind:"inspect",input}`; patch requests are `{kind:"patch",input,output,sourceSha256,operations}`. It calls upstream applySaveRequest, takes the returned bytes and writes a new destination using exclusive creation (`wx`); existing output files, source aliases, hard links and symbolic links are not overwritten. It never calls savePdfToPath or its verification-before-write path.
 
-At most 500 operations are accepted. Only highlight, addMarkup, removeMarkup, editNote, removeNote, replyNote, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, addAttachment, removeAttachment, setFormValue, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
+At most 500 operations are accepted. Only highlight, addMarkup, removeMarkup, editNote, removeNote, replyNote, replyPendingNote, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, addAttachment, removeAttachment, setFormValue, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
 
 Page IDs are `sha256:<source SHA-256>:page:<original zero-based index>`. The source digest is required at patch request level; optional per-operation sourceSha256 must agree if present. IDs are stable within one immutable source; after saving, inspect the new bytes to obtain new IDs. Operations reference original source page IDs. An optional single reorderPages must list every surviving page exactly once, even when deletePage appears later in the list. A page cannot be both deleted and otherwise edited in one request. Multiple rotatePage deltas on one retained page accumulate via upstream order. Empty operation lists return the exact original bytes.
 
@@ -242,3 +242,20 @@ payload, IRT/RT, UTC dates and every pre-existing annotation are verified after.
 Root edit/delete and text/crop/page-size mixtures are refused. Five new engine
 cases include actual original-writer orphan and wrong-identical-parent
 counterexamples. See `report_editor/NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
+
+
+## Native pending-root reply adapter (2026-11-09)
+
+`bridge/local-note-replies.ts` uses the pinned note drawing's localId and
+replyToLocalId fields unchanged. Strict addTextAnnotation accepts an optional
+32-hex localId; replyPendingNote requires same-source page ID, parentLocalId,
+contents and creation instant. Duplicates, absent/cross-page parents, protected
+sources and unsupported geometry/text mixtures fail before creating output.
+Referenced roots are deferred out of the ordinary drawing stage, then all roots
+are written before their replies after supported page/form/note/attachment work.
+Appended-note verification maps actual new references to roots, rejects aliases
+to old or other new notes, checks root/IRT/RT and payload/date contracts, and
+preserves every existing annotation dictionary/reference. Draft local IDs are not
+written into PDF metadata. The source/visit census is shared with saved-root reply
+validation. Existing ordinary-note/text combinations retain their prior checks.
+See `report_editor/NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.

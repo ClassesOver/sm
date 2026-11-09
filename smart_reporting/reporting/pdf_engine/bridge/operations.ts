@@ -1,4 +1,5 @@
-import { inspectReplyTargets, appendNoteReplies, type NoteReply } from './note-replies'
+import { appendLocalNoteReplies, type LocalNoteRoot, type LocalNoteReply } from './local-note-replies'
+import { inspectReplyTargets, appendNoteReplies, canAppendPendingReplies, type NoteReply } from './note-replies'
 import { inspectAttachments, patchAttachments, validAttachmentName, ATTACHMENT_FILE_MAX } from './attachments'
 import { normalizeAddedNoteDates, type AddedNoteDate } from './note-timestamps'
 import { markupRemovalLinks, markupRemovalIdentity, removeSourceMarkups, type MarkupRemoval, type NoteContentEdit } from './markup-delete'
@@ -32,6 +33,7 @@ const color = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.num
 const rect = z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])
 const fieldIdentity = { fieldId: z.string().regex(/^[a-f0-9]{64}$/), expectedFieldSha256: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().min(1).max(256), fieldKind: z.enum(['text', 'checkbox', 'radio', 'choice']) }
 const operation = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('replyPendingNote'), ...page, parentLocalId: z.string().regex(/^[a-f0-9]{32}$/), contents: z.string().trim().min(1).max(10000), createdMs: z.number().int().min(0).max(253402300799999) }).strict(),
   z.object({ kind: z.literal('replyNote'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/), contents: z.string().trim().min(1).max(10000), createdMs: z.number().int().min(0).max(253402300799999) }).strict(),
   z.object({ kind: z.literal('addAttachment'), ...identity, name: z.string().refine(validAttachmentName), bytesBase64: z.string().max(4 * Math.ceil(ATTACHMENT_FILE_MAX / 3)), description: z.string().max(4000).optional() }).strict(),
   z.object({ kind: z.literal('removeAttachment'), ...identity, attachmentId: z.string().regex(/^[a-f0-9]{64}$/), expectedAttachmentSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
@@ -42,7 +44,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
-  z.object({ kind: z.literal('addTextAnnotation'), ...page, rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
+  z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
   z.object({ kind: z.literal('rotatePage'), ...page, delta: z.union([z.literal(90), z.literal(180), z.literal(270)]) }).strict(),
@@ -118,7 +120,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, noteReplies: true, ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, noteReplies: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
@@ -126,8 +128,16 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const hasText = ops.some(op => op.kind === 'replaceText')
   const model = await inspectPdf(content, hasText)
   if (expectedSha256 !== model.sourceSha256) throw new Error('PDF 来源摘要不匹配')
+  const localReplies = ops.filter(op => op.kind === 'replyPendingNote')
+  const identifiedRoots = ops.filter((op): op is Extract<(typeof ops)[number], {kind:'addTextAnnotation'}> => op.kind === 'addTextAnnotation' && op.localId !== undefined)
+  const rootIds = identifiedRoots.map(op => op.localId!)
+  if (new Set(rootIds).size !== rootIds.length) throw new Error('pdf_local_reply_duplicate_root')
+  if (localReplies.length && !model.capabilities.pendingNoteReplies) throw new Error('pdf_local_reply_source_readonly')
+  const deferredIds = new Set(localReplies.map(op => op.parentLocalId))
+  for (const reply of localReplies) if (!identifiedRoots.some(root => root.localId === reply.parentLocalId && root.pageId === reply.pageId)) throw new Error('pdf_local_reply_parent_invalid')
+  const localRoots: LocalNoteRoot[] = [], pendingReplies: LocalNoteReply[] = []
   const replyOps = ops.filter(op => op.kind === 'replyNote')
-  if (replyOps.length && ops.some(op => ['replaceText', 'setPageSize', 'cropPage'].includes(op.kind))) throw new Error('回复与原位改字、页面尺寸或裁切请分别保存重开')
+  if ((replyOps.length || localReplies.length) && ops.some(op => ['replaceText', 'setPageSize', 'cropPage'].includes(op.kind))) throw new Error('回复与原位改字、页面尺寸或裁切请分别保存重开')
   if (replyOps.some(reply => ops.some(op => (op.kind === 'editNote' || op.kind === 'removeNote') && op.annotationId === reply.annotationId))) throw new Error('回复根便签不能在同一批编辑或删除')
   const replyTargets = replyOps.length ? inspectReplyTargets(await PDFDocument.load(content, { updateMetadata: false }), model.sourceSha256, false) : new Map()
   const replies: NoteReply[] = []
@@ -200,6 +210,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       continue
     }
     if (op.kind === 'replaceText') continue
+    if (op.kind === 'replyPendingNote') { pendingReplies.push({ parentLocalId: op.parentLocalId, pageIndex: target.index, contents: op.contents, createdMs: op.createdMs }); continue }
     if (op.kind === 'replyNote') {
       const note = target.notes.find(note => note.annotationId === op.annotationId), parent = replyTargets.get(op.annotationId)
       if (!target.notesReadSafe || !note?.replyable || !parent || note.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || parent.pageIndex !== target.index) throw new Error('pdf_reply_parent_invalid_or_readonly')
@@ -246,6 +257,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     } else {
       // 上游便签固定为 20×18pt；矩形只定位左上角，避免改变上游绘制器。
       if (x1 + 20 > box.x + box.width || y2 - 18 < box.y) throw new Error('PDF 文字批注超出页面范围')
+      if (op.localId !== undefined && deferredIds.has(op.localId)) { localRoots.push({localId:op.localId,pageIndex:target.index,rect:op.rect,contents:op.text,color:op.color??[1,.85,0],...(op.createdMs===undefined?{}:{createdMs:op.createdMs})}); continue }
       request.drawings.push({ kind: 'note', pageIndex: target.index, at: [x1, y2], contents: op.text, color: op.color ?? [1, 0.85, 0], createdMs: op.createdMs ?? 0 })
       addedNoteDates.push({ pageIndex: target.index, contents: op.text, rect: [x1, y2 - 18, x1 + 20, y2].map(value => Math.round(value * 100) / 100), ...(op.createdMs === undefined ? {} : { createdMs: op.createdMs }) })
     }
@@ -259,7 +271,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = await removeSourceMarkups(content, model.sourceSha256, removals, noteEdits)
   const annotationBaseBytes = bytes
-  if (remaining.some(op => !['editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote'].includes(op.kind))) {
+  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
     const result = await applySaveRequest(bytes, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
@@ -286,6 +298,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   }
   bytes = await patchAttachments(bytes, model, attachmentOps)
   bytes = await appendNoteReplies(bytes, replies, request.pageOrder ?? survivors.map(page => page.index))
+  bytes = await appendLocalNoteReplies(bytes, localRoots, pendingReplies, request.pageOrder ?? survivors.map(page => page.index))
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,
   // runtime WASM identity, requested operations and all application decisions.
@@ -298,7 +311,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

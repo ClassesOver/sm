@@ -361,3 +361,15 @@ Pending replies reuse draft history/modal editing and source/preview isolation.
 New counterexamples prove missing/wrong-parent output is refused. Pending roots,
 saved-reply mutations and complex thread families remain open. See
 `NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
+
+
+## PDF pending-root reply identity/lifecycle (2026-11-09)
+
+The existing thread reply entry now supports roots still in the immutable-source
+draft. First reply assigns one32-hex local identity and stages the reply in one
+history transaction. Editing preserves identity; deleting the root removes its
+children atomically. Native writes use the unchanged localId/replyToLocalId branch
+and verify actual fresh references rather than rect/content matching. Legacy
+unknown dates remain unknown; protected/ambiguous sources and complex thread
+families stay outside the write boundary. No new Ribbon-command count is claimed.
+See `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.

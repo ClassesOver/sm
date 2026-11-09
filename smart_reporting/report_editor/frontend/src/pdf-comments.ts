@@ -5,7 +5,7 @@ import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
 import { parsePdfDate } from './genoffice-pdf-comment-date'
 export interface CommentAnnotation { id: string; annotationType: number; subtype?: string; hidden?: boolean; replyType?: string; inReplyTo?: string | null; contentsObj?: { str: string }; titleObj?: { str: string }; creationDate?: string | null; modificationDate?: string | null }
-export interface CommentNode { key: string; pageId: string; pageNo: number; contents: string; author: string; timeMs: number | null; cardId: string | null; pendingIndex?: number; pendingReply?: boolean; replyAnnotationId?: string; readonly: boolean; issue?: string; replies: CommentNode[] }
+export interface CommentNode { key: string; pageId: string; pageNo: number; contents: string; author: string; timeMs: number | null; cardId: string | null; pendingIndex?: number; pendingReply?: boolean; replyAnnotationId?: string; localRootId?: string; readonly: boolean; issue?: string; replies: CommentNode[] }
 export interface CommentTarget { node: CommentNode; snapshot: string; document: object }
 export class PdfAnnotationCache {
   private entries = new WeakMap<object, Map<number, Promise<CommentAnnotation[]>>>()
@@ -74,10 +74,10 @@ export function projectPageComments(raw: CommentAnnotation[], page: PdfPageIdent
   const roots: CommentNode[] = []
   for (const node of nodes) { const parent = parentOf.get(node); if (parent) parent.replies.push(node); else roots.push(node) }
   for (const node of nodes) { node.replies.sort(byTime); if (parentOf.has(node) || node.replies.length) node.readonly = true }
-  if (!preview) for (const [index, op] of operations.entries()) if (op.kind === 'addTextAnnotation' && op.pageId === page.pageId) roots.push({ key: `${page.pageId}:pending:${index}`, pageId: page.pageId, pageNo, contents: String(op.text), author: '', timeMs: typeof op.createdMs === 'number' ? op.createdMs : null, cardId: null, pendingIndex: index, readonly: false, replies: [] })
-  if (!preview) for (const [index, op] of operations.entries()) if (op.kind === 'replyNote' && op.pageId === page.pageId) {
-    const target = nodes.find(node => node.replyAnnotationId === op.annotationId)
-    if (target) { target.readonly = true; target.replies.push({key:`${page.pageId}:reply:${index}`,pageId:page.pageId,pageNo,contents:String(op.contents),author:'',timeMs:typeof op.createdMs==='number'?op.createdMs:null,cardId:null,pendingIndex:index,pendingReply:true,readonly:false,replies:[]}) }
+  if (!preview) for (const [index, op] of operations.entries()) if (op.kind === 'addTextAnnotation' && op.pageId === page.pageId) roots.push({ key: `${page.pageId}:pending:${index}`, pageId: page.pageId, pageNo, contents: String(op.text), localRootId: typeof op.localId==='string'?op.localId:undefined, author: '', timeMs: typeof op.createdMs === 'number' ? op.createdMs : null, cardId: null, pendingIndex: index, readonly: false, replies: [] })
+  if (!preview) for (const [index, op] of operations.entries()) if (['replyNote','replyPendingNote'].includes(op.kind) && op.pageId === page.pageId) {
+    const target = op.kind==='replyNote' ? nodes.find(node => node.replyAnnotationId === op.annotationId) : roots.find(node => node.localRootId === op.parentLocalId)
+    if (target) { if(op.kind==='replyNote')target.readonly = true; target.replies.push({key:`${page.pageId}:reply:${index}`,pageId:page.pageId,pageNo,contents:String(op.contents),author:'',timeMs:typeof op.createdMs==='number'?op.createdMs:null,cardId:null,pendingIndex:index,pendingReply:true,readonly:false,replies:[]}) }
   }
   return roots
 }

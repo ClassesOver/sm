@@ -31,7 +31,8 @@ export function pendingPdfNoteReference(operations: NativeOperation[], index: nu
 /** Same strict pending-note payload accepted by the existing writer; IDs remain source-page IDs. */
 export function validatePendingPdfNote(operation: NativeOperation, page: PdfPageIdentity) {
   const rect = operation.rect, color = operation.color, box = page.cropBox
-  if (operation.kind !== 'addTextAnnotation' || operation.pageId !== page.pageId || Object.keys(operation).some(key => !['kind', 'pageId', 'rect', 'text', 'color', 'createdMs', 'sourceSha256'].includes(key)) || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error('新增便签记录或来源身份无效')
+  if (operation.kind !== 'addTextAnnotation' || operation.pageId !== page.pageId || Object.keys(operation).some(key => !['kind', 'pageId', 'rect', 'text', 'color', 'createdMs', 'sourceSha256', 'localId'].includes(key)) || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error('新增便签记录或来源身份无效')
+  if (operation.localId !== undefined && (typeof operation.localId !== 'string' || !/^[a-f0-9]{32}$/.test(operation.localId))) throw new Error('待保存根便签身份无效')
   if (operation.createdMs !== undefined && (typeof operation.createdMs !== 'number' || !Number.isSafeInteger(operation.createdMs) || operation.createdMs < 0 || operation.createdMs > 253402300799999)) throw new Error('新增便签创建时间无效')
   if (typeof operation.text !== 'string' || !operation.text.trim() || operation.text.trim().length > 10000) throw new Error('便签正文须为 1–10000 个字符')
   if (!Array.isArray(rect) || rect.length !== 4 || !rect.every(value => typeof value === 'number' && Number.isFinite(value)) || rect[0] >= rect[2] || rect[1] >= rect[3] || rect[0] < box.x || rect[1] < box.y || rect[2] > box.x + box.width || rect[3] > box.y + box.height || rect[0] + 20 > box.x + box.width || rect[3] - 18 < box.y) throw new Error('新增便签必须完整位于当前页面内')
@@ -44,7 +45,10 @@ export function stagePendingPdfNote(pages: PdfPageIdentity[], operations: Native
   if (!page || operations.some(op => op.kind === 'deletePage' && op.pageId === page.pageId)) throw new Error('待保存便签来源页面已过期或已删除')
   validatePendingPdfNote(target, page)
   const next = structuredClone(operations)
-  if (contents === null) next.splice(reference.index, 1)
+  if (contents === null) {
+    next.splice(reference.index, 1)
+    if (target.localId !== undefined) return next.filter(op => !(op.kind === 'replyPendingNote' && op.parentLocalId === target.localId))
+  }
   else { next[reference.index].text = contents.trim(); validatePendingPdfNote(next[reference.index], page) }
   return next
 }

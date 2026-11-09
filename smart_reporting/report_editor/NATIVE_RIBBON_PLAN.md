@@ -389,3 +389,11 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Full-document pane stages replies, edits/cancels pending replies, preserves creation time/history/reload and rejects obsolete pane/modal callbacks. Original root body becomes immutable while replies are pending; readonly/preview and source capability remain authoritative.
 - [x] Five new engine cases plus nine affected engine cases, two new frontend cases plus28 affected checks and eight real service cases pass. Chromium compound path, independent pypdf and Node22 offline exact-parent/forged-output refusal pass; see `NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
 - [ ] Pending-root/local-ID replies, nested/popup/rich/complex threads, saved-reply edit/delete, authenticated author integration, full source popovers/context and the other PDF/desktop/full-image/production gaps remain open. This supersedes only the wholly missing reply-write checkpoint. Flags off; no merge/deployment.
+
+
+### PDF pending-root/local-ID reply continuation (2026-11-09)
+
+- [x] Strict source-page/local-root identities, duplicate/orphan/cross-page/protected-source refusal and canonical parent-before-child writes through the pinned localId/replyToLocalId drawing branch. Verify new references are fresh/unique, root is not itself a reply, exact IRT/RT and appended payload/counts/dates, plus every old annotation.
+- [x] Atomically assign legacy roots an identity on first reply; preserve unknown creation time, stable identity through root edits, cascade root removal with children, undo/redo and scoped draft restore. Existing pending reply editor/cancel and modal/pane identity guards work for both kinds.
+- [x] Four new engine cases plus14 affected cases, three new frontend cases plus30 affected cases and five real service cases pass. Compound production-static Chromium, independent pypdf and Node22 offline parent/forged-ID refusal pass; Standard/Slides/budget/source/typing boundaries are recorded in `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+- [ ] Nested/popup/rich/complex threads, saved-reply edit/delete, authenticated authors, full context/popovers and the other PDF/desktop/full-image/production gaps remain open. This supersedes only the pending-root/local-ID reply checkpoint; flags off and no merge/deployment.

@@ -2,6 +2,10 @@
 
 2026-11-09; bounded continuation in PR #196, not full comment/PDF/desktop parity.
 
+This saved-root checkpoint is retained as historical evidence. The later bounded
+local-ID implementation supersedes its wholly missing pending-root reply gap;
+see `NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+
 ## Original materials and counterexample
 
 Pinned GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c`: App.tsx replyToNote,

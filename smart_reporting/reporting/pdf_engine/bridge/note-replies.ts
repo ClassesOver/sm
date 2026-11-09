@@ -4,26 +4,34 @@ import { applySaveRequest } from '../src/main/save-pdf'
 import { markupDictionaryHash, markupSourceId } from './markup-delete'
 import { normalizeAddedNoteDates } from './note-timestamps'
 export interface ReplyTarget { annotationId: string; expectedAnnotationSha256: string; sourceRef: string; pageIndex: number; rect: [number,number,number,number]; contents: string; color: [number,number,number] }
-export function inspectReplyTargets(doc: PDFDocument, sourceSha: string, protectedSource: boolean): Map<string,ReplyTarget> {
-  const targets = new Map<string,ReplyTarget>()
+function replyReferences(doc: PDFDocument, protectedSource: boolean): Map<string,number> | null {
+  if (protectedSource) return null
   try {
-    if (protectedSource) return targets
-    const objects = doc.context.enumerateIndirectObjects(); if (objects.length > 20000) return targets
+    const objects = doc.context.enumerateIndirectObjects(); if (objects.length > 20000) return null
     const refs = new Map<string,number>(), containers = new Set<object>(), stack = objects.map(([,obj])=>obj)
     let budget = 200000
     while (stack.length) {
-      if (--budget < 0) return new Map()
+      if (--budget < 0) return null
       const obj = stack.pop()!
       if (obj instanceof PDFRef) { refs.set(obj.toString(),(refs.get(obj.toString())??0)+1); continue }
       if (obj instanceof PDFRawStream) { stack.push(obj.dict); continue }
       if (obj instanceof PDFDict || obj instanceof PDFArray) {
-        if (containers.has(obj)) return new Map(); containers.add(obj)
+        if (containers.has(obj)) return null; containers.add(obj)
         if (obj instanceof PDFDict) {
-          if (obj.has(PDFName.of('ByteRange')) || String(obj.get(PDFName.of('Type')))==='/Sig') return new Map()
+          if (obj.has(PDFName.of('ByteRange')) || String(obj.get(PDFName.of('Type')))==='/Sig') return null
           for (const value of obj.values()) stack.push(value)
         } else for (const value of obj.asArray()) stack.push(value)
       }
     }
+    return refs
+  } catch { return null }
+}
+export function canAppendPendingReplies(doc: PDFDocument, protectedSource: boolean) { return replyReferences(doc,protectedSource)!==null }
+export function inspectReplyTargets(doc: PDFDocument, sourceSha: string, protectedSource: boolean): Map<string,ReplyTarget> {
+  const targets = new Map<string,ReplyTarget>()
+  try {
+    if (protectedSource) return targets
+    const refs = replyReferences(doc, false); if (!refs) return targets
     const nodes: {raw:PDFRef;dict:PDFDict;pageIndex:number;index:number}[] = [], occurrences = new Map<string,number>()
     for (const [pageIndex,page] of doc.getPages().entries()) {
       const annots = page.node.lookupMaybe(PDFName.of('Annots'),PDFArray)
