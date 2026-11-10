@@ -342,3 +342,43 @@ def test_table_design_schema_forwards_only_pinned_palette_and_border_presets():
     for item in [{**patch, 'shadingColor': []}, {**patch, 'shadingColor': '#123456'}, {**patch, 'borderPreset': 'diagonal'}, {**patch, 'xml': '<xml>'}]:
         with pytest.raises(ValueError):
             _pptx_arguments({'kind': 'editSlides', 'tableStyles': [item]})
+
+
+def test_table_structure_schema_forwards_explicit_source_intentions_and_rejects_malformed():
+    from smart_reporting.report_editor.native_office import _pptx_arguments
+    op = {'slideIndex': 0, 'elementId': 'tbl_1', 'kind': 'insert-row', 'index': 2, 'before': False}
+    assert _pptx_arguments({'kind': 'editSlides', 'tableStructures': [op]})['table_structures'] == [op]
+    bad = [{**op, 'kind': []}, {**op, 'index': True}, {**op, 'index': 75}, {**op, 'before': None},
+           {**op, 'kind': 'delete-row'}, {**op, 'elementId': ''}, {**op, 'extra': 1}]
+    for item in bad:
+        with pytest.raises(ValueError):
+            _pptx_arguments({'kind': 'editSlides', 'tableStructures': [item]})
+    with pytest.raises(ValueError):
+        _pptx_arguments({'kind': 'editSlides', 'tableStructures': [op, op]})
+    with pytest.raises(ValueError):
+        _pptx_arguments({'kind': 'editSlides', 'tableStructures': [{**op, 'slideIndex': index} for index in range(101)]})
+
+
+def test_real_pptx_table_structure_roundtrips_through_native_operation():
+    from smart_reporting.report_editor.native_office import inspect_office, patch_office
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    frame = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(2))
+    frame.table.cell(0, 0).text = 'source first'
+    frame.table.cell(1, 0).text = 'source second'
+    source = BytesIO()
+    presentation.save(source)
+    content = source.getvalue()
+    target = inspect_office('pptx', content)['slides'][0]['elements'][0]
+    assert target['tableStructureEditable'] is True
+    edited = patch_office('pptx', content, [{'kind': 'editSlides', 'tableStructures': [{
+        'slideIndex': 0, 'elementId': target['id'], 'kind': 'insert-row', 'index': 0, 'before': False,
+    }]}])
+    saved = Presentation(BytesIO(edited)).slides[0].shapes[0]
+    assert saved.shape_id == frame.shape_id
+    assert [saved.table.cell(row, 0).text for row in range(3)] == ['source first', '', 'source second']
+    assert saved.height == sum(row.height for row in saved.table.rows)
+    assert len(Presentation(BytesIO(content)).slides[0].shapes[0].table.rows) == 2

@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -65,8 +65,10 @@ type Input = {
   sections?: { slideIndex: number; name: string }[]
   /** 固定源 HeaderFooterDialog（applyHeaderFooter，应用于全部）：页脚文字、页码、日期（固定文字或自动更新）。 */
   headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
-  /** 固定源表格单元格编辑（editTableCellText）：保留单元格首段与首个文字段的格式。 */
+  /** 固定源表格上下文菜单（editTableStructure）：每来源页一次，按原始行列索引插入/删除。 */
+  tableStructures?: { slideIndex: number; elementId: string; kind: 'insert-row' | 'delete-row' | 'insert-col' | 'delete-col'; index: number; before?: boolean }[]
   tableStyles?: { slideIndex: number; elementId: string; shadingColor?: string; borderPreset?: 'all' | 'none' }[]
+  /** 固定源表格单元格编辑（editTableCellText）：保留单元格首段与首个文字段的格式。 */
   tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]
   /** 固定源 Insert ▸ Chart（insertChart）：13 种图表类型与数据；位置为 2/3 宽、3:2、居中（graphicFrameInsertFrame）。 */
   charts?: { slideIndex: number; kind: string; categories: string[]; series: { name: string; values: number[] }[] }[]
@@ -184,6 +186,21 @@ function transitionApplyAllState(slide: (typeof opened.deck.slides)[number]) {
   } catch { return unsafe }
 }
 
+/** The fixed surgery reads canonical double-quoted EMU attributes. Refuse a
+ * source whose merge/extension identities or geometry cannot be preserved. */
+const structureSafe = (element: { type: string; anchor: { originalXml: string } }): boolean => {
+  if (element.type !== 'table') return false
+  const table = element as TableElement, xml = table.anchor.originalXml
+  if (/\b(?:gridSpan|rowSpan|hMerge|vMerge)\s*=|<(?:\w+:)?extLst\b/.test(xml)) return false
+  const positive = (n: number) => Number.isSafeInteger(n) && n > 0
+  const rows = [...xml.matchAll(/<a:tr\b([^>]*)>/g)], columns = [...xml.matchAll(/<a:gridCol\b([^>]*)\/>/g)]
+  if (!table.rows.length || table.rows.length > 75 || !table.colWidths.length || table.colWidths.length > 75 || table.rowHeights.length !== table.rows.length || rows.length !== table.rows.length || columns.length !== table.colWidths.length || table.rows.some(row => row.length !== table.colWidths.length)) return false
+  if (rows.some((row,i) => Number(/\bh="(\d+)"/.exec(row[1]!)?.[1] ?? 0) !== table.rowHeights[i] || !positive(table.rowHeights[i]!)) || columns.some((col,i) => Number(/\bw="(\d+)"/.exec(col[1]!)?.[1] ?? 0) !== table.colWidths[i] || !positive(table.colWidths[i]!))) return false
+  const frame = /<p:xfrm\b[^>]*>[\s\S]*?<a:ext\s([^>]*?)\/>/.exec(xml)?.[1]
+  const width = Number(/\bcx="(\d+)"/.exec(frame ?? '')?.[1] ?? 0), height = Number(/\bcy="(\d+)"/.exec(frame ?? '')?.[1] ?? 0)
+  return positive(width) && positive(height) && elementSpid(table) !== null && width === table.transform.offset.cx && height === table.transform.offset.cy && width === table.colWidths.reduce((sum,n) => sum+n,0) && height === table.rowHeights.reduce((sum,n) => sum+n,0)
+}
+
 if (request.action === 'inspect') {
   process.stdout.write(JSON.stringify({
     size: opened.deck.size,
@@ -217,6 +234,7 @@ if (request.action === 'inspect') {
         type: element.type,
         name: element.name ?? '',
         text: textOf(element),
+        ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element) } : {}),
         // 表格单元格文字（合并单元格为 null），供编辑器单元格网格使用
         ...(element.type === 'table' ? { tableCells: (element as unknown as { rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] }).rows.map(row => row.map(cell => cell.merged ? null : (cell.text?.paragraphs ?? []).map(paragraph => paragraph.runs.map(run => run.text).join('')).join('\n'))) } : {}),
         ...(element.type === 'text' || element.type === 'shape' ? (() => {
@@ -361,7 +379,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -374,6 +392,17 @@ if (request.action === 'inspect') {
     deleted.add(key)
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
+  const tableStructures=request.tableStructures ?? [], structuralSlides=new Set<number>()
+  if (!Array.isArray(tableStructures) || tableStructures.length>100) throw new Error('table_structures_invalid')
+  for (const item of tableStructures) {
+    if (!item || Object.keys(item).some(key=>!['slideIndex','elementId','kind','index','before'].includes(key)) || !validSlideIndex(item.slideIndex,slideCount) || typeof item.elementId!=='string' || !['insert-row','delete-row','insert-col','delete-col'].includes(item.kind) || !Number.isInteger(item.index) || item.index<0 || (item.kind.startsWith('insert-') ? typeof item.before!=='boolean' : Object.hasOwn(item,'before')) || structuralSlides.has(item.slideIndex)) throw new Error('table_structure_invalid')
+    const table=originalSlides[item.slideIndex]!.elements.find(el=>el.id===item.elementId)
+    if (!table || table.type!=='table' || !structureSafe(table) || table.rows.length<1 || table.rows.length>75 || table.colWidths.length<1 || table.colWidths.length>75 || table.rows.some(row=>row.length!==table.colWidths.length)) throw new Error('table_structure_target_invalid')
+    const count=item.kind.endsWith('row') ? table.rows.length : table.colWidths.length
+    if (item.index>=count || (item.kind.startsWith('delete-') && count<=1) || (item.kind.startsWith('insert-') && count>=75) || touchesDeleted(item.slideIndex,item.elementId)) throw new Error('table_structure_index_invalid')
+    if (request.slideSize || (request.resetLayouts ?? []).includes(item.slideIndex) || (request.slideLayouts ?? []).some(v=>v.slideIndex===item.slideIndex) || [...(request.tableCells ?? []),...(request.tableStyles ?? [])].some(v=>v.slideIndex===item.slideIndex && v.elementId===item.elementId)) throw new Error('table_structure_conflict')
+    structuralSlides.add(item.slideIndex)
+  }
   const tableStyles = request.tableStyles ?? [], styledTables = new Set<string>()
   const shadingColors = ['none','#FFFFFF','#F2F2F2','#DAEEF3','#EBF3FB','#D6E4F0','#FFF2CC','#FFE6CC','#FCE4D6','#E2EFDA','#E6E6FF']
   if (!Array.isArray(tableStyles) || tableStyles.length > 500) throw new Error('table_styles_invalid')
@@ -732,6 +761,24 @@ if (request.action === 'inspect') {
     if ((opened.deck.size.cx !== cx || opened.deck.size.cy !== cy) && !setSlideSize(opened, cx, cy)) {
       throw new Error('slide_size_apply_failed')
     }
+  }
+  // All source-ID edits are complete. A structure edit materializes the page
+  // and changes element IDs, so allow one per source slide and carry its fresh handle.
+  for (const item of tableStructures) {
+    const index=opened.deck.slides.indexOf(originalSlides[item.slideIndex]!)
+    if (index<0) throw new Error('table_structure_slide_missing')
+    const source = originalSlides[item.slideIndex]!.elements.find(el => el.id === item.elementId)
+    if (!source || source.type !== 'table' || !structureSafe(source)) throw new Error('table_structure_identity_changed')
+    const expectedRows = [...source.rowHeights], expectedColumns = [...source.colWidths]
+    const rowOperation = item.kind.endsWith('row'), expected = rowOperation ? expectedRows : expectedColumns
+    if (item.kind.startsWith('insert-')) expected.splice(item.index + (item.before ? 0 : 1),0,expected[item.index]!)
+    else expected.splice(item.index,1)
+    const spid = elementSpid(source)
+    const changed=editTableStructure(opened,index,item.elementId,{kind:item.kind,index:item.index,...(item.before!==undefined?{before:item.before}:{})})
+    if (!changed) throw new Error('table_structure_failed')
+    const result = changed.slide.elements.find(el => el.id === changed.elementId)
+    if (!result || result.type !== 'table' || elementSpid(result) !== spid || JSON.stringify(result.rowHeights) !== JSON.stringify(expectedRows) || JSON.stringify(result.colWidths) !== JSON.stringify(expectedColumns) || result.rows.length !== expectedRows.length || result.rows.some(row => row.length !== expectedColumns.length) || result.transform.offset.cx !== expectedColumns.reduce((sum,n)=>sum+n,0) || result.transform.offset.cy !== expectedRows.reduce((sum,n)=>sum+n,0)) throw new Error('table_structure_output_identity_invalid')
+    originalSlides[item.slideIndex]=changed.slide
   }
   // 固定源 tableInsertSpec：宽 2/3 居中、顶部 10.5%、行高 29.2pt；在全部按对象身份的修改与尺寸缩放之后插入。
   for (const table of tables) {

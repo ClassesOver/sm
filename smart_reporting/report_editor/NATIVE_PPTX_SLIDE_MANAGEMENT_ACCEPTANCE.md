@@ -124,3 +124,8 @@
 ## 审查后续：整表底纹与边框
 
 Table Design 接通固定调色板底纹/无填充、黑色 1pt 全部边框/无边框，复用 editTableStyle。历史、恢复、真实预览、下载重开和独立 OOXML 验证见 `NATIVE_PR210_PRESERVATION_ACCEPTANCE.md`。样式库和单格选区仍未接通。
+
+
+## 简单表格行列结构（2026-11-10）
+
+固定源 context menu 的六种行列操作已通过 Web Table Design 弹窗适配，复用固定 `editTableStructure`。每来源页单次结构操作，简单矩形、正整数规范尺寸且网格/外框一致；合并、扩展及特殊尺寸来源不开放。待保存时保持来源快照，保存重开后显示新网格。详见 `NATIVE_PPTX_TABLE_STRUCTURE_ACCEPTANCE.md`，不代表完整表格样式库或复杂结构对齐。

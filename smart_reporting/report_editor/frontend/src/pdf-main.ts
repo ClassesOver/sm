@@ -1,3 +1,4 @@
+import { toggleSavedDrawing } from './pdf-saved-drawings'
 import { stagePdfReply, stagePendingPdfReply, stagePdfLocalReply } from './pdf-replies'
 import { attachmentEditState, attachmentFileOperation, isAttachmentEdit } from './pdf-attachment-edits'
 /** PDF.js canvas/text-layer hosting follows GenOffice PdfPage.tsx at 4b55db9.
@@ -204,7 +205,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const confirmText = documentElement('span')
   confirmLabel.append(confirmPreview, confirmText); reviewPanel.append(reviewTitle, reviewList, confirmLabel)
   confirmPreview.addEventListener('change', () => { try { review.confirm(draft.operations, confirmPreview.checked) } catch (error) { confirmPreview.checked = false; showError(error) } })
-  root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, layout)
+  const drawingsPanel = documentElement('section', 'pdf-saved-drawings'); drawingsPanel.hidden = true
+  drawingsPanel.setAttribute('aria-label', '已保存绘图')
+  root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, drawingsPanel, layout)
   const editableButtons: HTMLButtonElement[] = []
   const pageInputs: HTMLInputElement[] = []
   function button(label: string, action: () => void | Promise<void>, editable = true, icon?: PdfRibbonIconName) {
@@ -519,6 +522,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(note, 'annotate.drawTools.note')
   commandGroup = ribbon.group('annotate', 'Draw Tools')
   const annotateDrawGroup = commandGroup
+  button('已保存绘图', () => { drawingsPanel.hidden = !drawingsPanel.hidden; renderSavedDrawings() }, false)
   // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；颜色取标注调色板。
   for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['measure', '测量', 'measure'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
     const tool = button(label, () => {
@@ -1291,7 +1295,37 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     updateControls(); renderTextPanel(true)
   }
   function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')) }
+  function renderSavedDrawings() {
+    if (drawingsPanel.hidden) return
+    drawingsPanel.replaceChildren()
+    const page = model.pages.find(item => item.pageId === activeId)
+    const heading = documentElement('p'); heading.textContent = `已保存绘图 · 来源第 ${page ? page.index + 1 : '—'} 页`
+    const help = documentElement('p'); help.textContent = '按原始批注槽位选择。删除仅逻辑移除绘图，不是安全擦除；敏感内容请使用涂黑。暂存后可撤销、重做或恢复草稿；生成实际预览后核对。'
+    drawingsPanel.append(heading, help)
+    const source = document, snapshot = JSON.stringify(draft.operations)
+    const canEdit = () => !disposed && source === document && snapshot === JSON.stringify(draft.operations) && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed && model.capabilities?.removeDrawing === true
+    for (const offset of [-1, 1]) {
+      const adjacent = state()[state().findIndex(item => item.pageId === activeId) + offset]
+      const nav = documentElement('button'); nav.type = 'button'; nav.textContent = offset < 0 ? '上一页绘图' : '下一页绘图'; nav.disabled = !adjacent || !!previewDocument
+      nav.addEventListener('click', () => { if (!disposed && source === document && adjacent && !previewDocument) jumpToPageForIdentity(adjacent.pageId) })
+      drawingsPanel.append(nav)
+    }
+    if (!page?.drawings?.length) { const empty = documentElement('p'); empty.textContent = page?.drawingsReadSafe === false ? '绘图列表读取不完整，暂不能删除' : '当前来源页没有支持的已保存绘图'; drawingsPanel.append(empty) }
+    for (const drawing of page?.drawings ?? []) {
+      const row = documentElement('div'); row.dataset.pdfSavedDrawing = drawing.annotationId
+      const label = documentElement('span'); label.textContent = `${drawing.subtype} · 原始批注 #${drawing.annotationIndex + 1} · ${drawing.annotationId.slice(0, 10)}`
+      const action = documentElement('button'); action.type = 'button'
+      const pending = draft.operations.some(op => op.kind === 'removeDrawing' && op.annotationId === drawing.annotationId)
+      action.textContent = pending ? '撤销此删除' : '暂存删除'; action.disabled = !canEdit() || !drawing.removable || !page?.drawingsReadSafe
+      action.title = drawing.removalReason || '精确删除此原始绘图；请生成实际预览核对'
+      action.addEventListener('click', () => { if (!canEdit() || !page) return; try { const next = toggleSavedDrawing(draft.operations, page, drawing.annotationId); pdfPageState(model.pages, next); draft.setOperations(next); void refresh().catch(showError) } catch (error) { showError(error) } })
+      row.append(label, action)
+      if (drawing.removalReason) { const reason = documentElement('span'); reason.textContent = drawing.removalReason; row.append(reason) }
+      drawingsPanel.append(row)
+    }
+  }
   function updateControls() {
+    renderSavedDrawings()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-saved-reply-editable]')) control.disabled = !canChangeSavedReply()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply() || control.dataset.pdfReplyEditable !== 'true'
     addAttachment.disabled = attachmentFile.disabled = !canEditAttachments()
@@ -1459,9 +1493,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function overlays(holder: HTMLElement, page: PdfPageIdentity, pdfViewport: ReturnType<PDFPageProxy['getViewport']>) {
     const layer = documentElement('div', 'pdf-draft-overlays')
-    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'removeMarkup', 'highlight', 'addTextAnnotation', 'redact'].includes(op.kind))) {
-      const type = operation.kind === 'redact' ? 'redaction' : operation.kind === 'removeMarkup' ? 'removal' : operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
-      const rects = operation.kind === 'removeMarkup' ? (model.pages.find(item => item.pageId === page.pageId)?.markups?.find(mark => mark.annotationId === operation.annotationId)?.quads ?? []).map(quadToRect) : operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
+    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'removeMarkup', 'removeDrawing', 'highlight', 'addTextAnnotation', 'redact'].includes(op.kind))) {
+      const type = operation.kind === 'redact' ? 'redaction' : ['removeMarkup', 'removeDrawing'].includes(operation.kind) ? 'removal' : operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
+      const rects = operation.kind === 'removeDrawing' ? (model.pages.find(item => item.pageId === page.pageId)?.drawings?.filter(item => item.annotationId === operation.annotationId).map(item => item.rect) ?? []) : operation.kind === 'removeMarkup' ? (model.pages.find(item => item.pageId === page.pageId)?.markups?.find(mark => mark.annotationId === operation.annotationId)?.quads ?? []).map(quadToRect) : operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
       for (const rect of rects) {
         const converted = [...pdfViewport.convertToViewportPoint(rect[0], rect[1]), ...pdfViewport.convertToViewportPoint(rect[2], rect[3])]
         const overlay = documentElement('span', type === 'highlight' ? 'pdf-highlight' : type === 'note' ? 'pdf-note' : `pdf-pending-markup pdf-${type}`)
@@ -1799,7 +1833,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接', setStamps: '水印与页眉页脚', redact: '涂黑', mergePages: '合并页面', splitPages: '拆分页面' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', removeDrawing: '删除已保存绘图', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接', setStamps: '水印与页眉页脚', redact: '涂黑', mergePages: '合并页面', splitPages: '拆分页面' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1817,7 +1851,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing', 'setStamps', 'redact', 'mergePages', 'splitPages'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'removeDrawing', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing', 'setStamps', 'redact', 'mergePages', 'splitPages'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
@@ -1886,7 +1920,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     searchRendering = true
     commentsGeneration++; clearAttachments()
     if (sidebar === 'comments') { commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = true; renderComments() }
-    const structureKey = JSON.stringify(draft.operations.filter(op => !['addMarkup', 'removeMarkup'].includes(op.kind)))
+    const structureKey = JSON.stringify(draft.operations.filter(op => !['addMarkup', 'removeMarkup', 'removeDrawing'].includes(op.kind)))
     if (markupStructureKey !== structureKey) { markupStructureKey = structureKey; markupSelection = [] }
     const operationsKey = JSON.stringify(draft.operations)
     if (lastOperationsKey !== operationsKey) { lastOperationsKey = operationsKey; textSelectionPage = '' }
@@ -2091,7 +2125,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       model.attachmentsReason = sourceModel.model.attachmentsReason
       if (model.attachmentsEditable !== true) attachmentNotice.textContent = `${model.attachmentsReason || '当前来源附件仅可查看和下载'}。删除附件目录不能擦除敏感数据。`
       model.capabilities = sourceModel.model.capabilities
-      for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true; page.notes = source?.notes ?? []; page.notesReadSafe = source?.notesReadSafe === true }
+      for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true; page.notes = source?.notes ?? []; page.notesReadSafe = source?.notesReadSafe === true; page.drawings = source?.drawings ?? []; page.drawingsReadSafe = source?.drawingsReadSafe === true }
       model.formFields = sourceModel.model.formFields ?? []
       renderFormControls(model.formFields)
       if (textEnabled) {
@@ -2105,6 +2139,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     } catch (error) { textLoadWarning = `原位改字暂不可用，仍可查看、标注与下载 PDF：${error instanceof Error ? error.message : '文字对象读取失败'}` }
   }
   if (draft.operations.some(operation => ['editNote', 'removeNote'].includes(operation.kind)) && model.capabilities?.notes !== true) throw new Error('当前引擎未确认已有便签修改能力；原草稿已保留')
+  if (draft.operations.some(operation => operation.kind === 'removeDrawing') && model.capabilities?.removeDrawing !== true) throw new Error('当前引擎未确认绘图删除能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'removeMarkup') && model.capabilities?.removeMarkup !== true) throw new Error('当前引擎未确认已保存标注移除能力；原草稿已保留')
   if (model.capabilities?.savedReplyEdits !== true && draft.operations.some(op => ['editNote','removeNote'].includes(op.kind) && model.pages.some(page => page.notes?.some(note => note.annotationId === op.annotationId && note.parentAnnotationId !== undefined)))) throw new Error('当前引擎未确认已保存回复修改能力；原草稿已保留')
   if (draft.operations.some(op => op.kind === 'replyPendingNote') && model.capabilities?.pendingNoteReplies !== true) throw new Error('当前来源或引擎未确认草稿回复写回能力；原草稿已保留')

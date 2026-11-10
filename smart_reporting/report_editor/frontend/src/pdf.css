@@ -99,3 +99,8 @@
 .pdf-layout-body > button { min-height: var(--office-control-height); padding: 0 12px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font: inherit; cursor: pointer; }
 .pdf-layout-body > button:hover { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
 .pdf-layout-body > button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
+
+.pdf-saved-drawings { padding: 10px 16px; border-bottom: 1px solid #ddd; max-height: 260px; overflow: auto; }
+.pdf-saved-drawings > div { display: flex; align-items: center; gap: 12px; margin: 6px 0; flex-wrap: wrap; }
+.pdf-saved-drawings p { margin: 4px 0 8px; }
+.pdf-saved-drawings button { margin-right: 8px; }

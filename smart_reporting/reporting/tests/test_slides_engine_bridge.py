@@ -1186,3 +1186,182 @@ def test_table_design_shading_and_borders_preserve_text_grid_and_merged_cells(tm
     for index, bad in enumerate([{**patch, 'shadingColor': '#123456'}, {**patch, 'elementId': 'foreign'}, {**patch, 'borderPreset': 'diagonal'}, {**patch, 'xml': '<a:tc/>'}]):
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({'action': 'edit', 'input': str(source), 'output': str(tmp_path / f'bad-style-{index}.pptx'), 'edits': [], 'tableStyles': [bad]}, tmp_path)
+
+
+def _table_structure_fixture(path, rows=3, cols=3):
+    from pptx.dml.color import RGBColor
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(.2), Inches(.2), Inches(3), Inches(.4)).text = 'before table'
+    frame = slide.shapes.add_table(rows, cols, Inches(1), Inches(1), Inches(5), Inches(2))
+    frame.name = 'Structure Target'
+    table = frame.table
+    for ri, row in enumerate(table.rows):
+        row.height = Inches(.4 + ri * .1)
+    for ci, col in enumerate(table.columns):
+        col.width = Inches(1 + ci * .1)
+    for ri in range(rows):
+        for ci in range(cols):
+            cell = table.cell(ri, ci)
+            cell.text = f'R{ri}C{ci}'
+            cell.margin_left = Inches(.04 + ci * .01)
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = RGBColor.from_string('FFF2CC' if ri % 2 else 'D6E4F0')
+            cell.text_frame.paragraphs[0].runs[0].font.size = Pt(14 + ri)
+            cell.text_frame.paragraphs[0].runs[0].font.bold = True
+    slide.shapes.add_textbox(Inches(.2), Inches(5), Inches(4), Inches(.4)).text = 'after table'
+    other = slide.shapes.add_table(2, 2, Inches(6), Inches(1), Inches(2), Inches(1)).table
+    other.cell(0, 0).text = 'other table'
+    presentation.slides.add_slide(presentation.slide_layouts[6])
+    presentation.save(path)
+
+
+@pytest.mark.parametrize(('kind', 'before'), [
+    ('insert-row', True), ('insert-row', False), ('delete-row', None),
+    ('insert-col', True), ('insert-col', False), ('delete-col', None),
+])
+def test_table_structure_six_actions_preserve_survivor_xml_and_frame_geometry(tmp_path, kind, before):
+    from lxml import etree
+    source, output = tmp_path / 'source.pptx', tmp_path / 'structure.pptx'
+    _table_structure_fixture(source)
+    inspected = _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)
+    target = next(el for el in inspected['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    assert target['tableStructureEditable'] is True
+    patch = {'slideIndex': 0, 'elementId': target['id'], 'kind': kind, 'index': 1}
+    if before is not None:
+        patch['before'] = before
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStructures': [patch]}, tmp_path)
+    original = Presentation(source).slides[0].shapes[1]
+    saved = Presentation(output).slides[0].shapes[1]
+    old_rows, old_cols = list(range(3)), list(range(3))
+    positions = old_rows if kind.endswith('row') else old_cols
+    if kind.startswith('insert-'):
+        positions.insert(1 if before else 2, None)
+    else:
+        positions.pop(1)
+    assert (len(saved.table.rows), len(saved.table.columns)) == (len(old_rows), len(old_cols))
+    assert saved.shape_id == original.shape_id
+    assert (saved.left, saved.top) == (original.left, original.top)
+    expected_heights = [original.table.rows[i if i is not None else 1].height for i in old_rows]
+    expected_widths = [original.table.columns[i if i is not None else 1].width for i in old_cols]
+    assert [row.height for row in saved.table.rows] == expected_heights
+    assert [col.width for col in saved.table.columns] == expected_widths
+    assert saved.height == sum(expected_heights) and saved.width == sum(expected_widths)
+    ns = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+    with ZipFile(source) as old_zip, ZipFile(output) as new_zip:
+        assert {name for name in old_zip.namelist() if not name.endswith('/')} == {name for name in new_zip.namelist() if not name.endswith('/')}
+        for name in old_zip.namelist():
+            if name != 'ppt/slides/slide1.xml':
+                assert old_zip.read(name) == new_zip.read(name), name
+        old_table = etree.fromstring(old_zip.read('ppt/slides/slide1.xml')).xpath('//a:tbl', namespaces=ns)[0]
+        new_table = etree.fromstring(new_zip.read('ppt/slides/slide1.xml')).xpath('//a:tbl', namespaces=ns)[0]
+    for ri, source_row in enumerate(old_rows):
+        for ci, source_col in enumerate(old_cols):
+            actual = saved.table.cell(ri, ci)
+            raw = new_table.findall('a:tr', ns)[ri].findall('a:tc', ns)[ci]
+            expected_raw = old_table.findall('a:tr', ns)[source_row if source_row is not None else 1].findall('a:tc', ns)[source_col if source_col is not None else 1]
+            if source_row is None or source_col is None:
+                assert actual.text == ''
+                assert etree.tostring(raw.find('a:tcPr', ns), method='c14n') == etree.tostring(expected_raw.find('a:tcPr', ns), method='c14n')
+            else:
+                assert actual.text == f'R{source_row}C{source_col}'
+                assert etree.tostring(raw, method='c14n') == etree.tostring(expected_raw, method='c14n')
+
+
+def test_table_structure_composes_with_copy_deletion_other_table_edits_and_insert(tmp_path):
+    source, output = tmp_path / 'source.pptx', tmp_path / 'composed.pptx'
+    _table_structure_fixture(source)
+    model = _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)
+    elements = model['slides'][0]['elements']
+    target = next(el for el in elements if el['name'] == 'Structure Target')
+    other = [el for el in elements if el['type'] == 'table'][1]
+    first = next(el for el in elements if el['text'] == 'before table')
+    last = next(el for el in elements if el['text'] == 'after table')
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output),
+             'edits': [{'slideIndex': 0, 'elementId': last['id'], 'text': 'changed after table'}],
+             'deletions': [{'slideIndex': 0, 'elementId': first['id']}],
+             'tableCells': [{'slideIndex': 0, 'elementId': other['id'], 'row': 0, 'col': 0, 'text': 'other changed'}],
+             'newSlides': [{'duplicateOf': 0}], 'order': [2, 0, 1],
+             'tableStructures': [{'slideIndex': 0, 'elementId': target['id'], 'kind': 'insert-row', 'index': 1, 'before': False}],
+             'tables': [{'slideIndex': 0, 'rows': 2, 'cols': 2}]}, tmp_path)
+    result = Presentation(output)
+    copied, changed = result.slides[0], result.slides[1]
+    assert copied.shapes[0].text == 'before table'
+    assert len(copied.shapes[1].table.rows) == 3
+    assert copied.shapes[3].table.cell(0, 0).text == 'other table'
+    assert changed.shapes[0].shape_id == copied.shapes[1].shape_id
+    assert len(changed.shapes[0].table.rows) == 4
+    assert changed.shapes[1].text == 'changed after table'
+    assert changed.shapes[2].table.cell(0, 0).text == 'other changed'
+    assert len(changed.shapes[3].table.rows) == 2
+    fresh = _invoke({'action': 'inspect', 'input': str(output)}, tmp_path)
+    assert fresh['slides'][1]['elements'][0]['tableStructureEditable'] is True
+
+
+def test_table_structure_rejects_unsafe_sources_and_ambiguous_batches_without_output(tmp_path):
+    from pptx.oxml.xmlchemy import OxmlElement
+    from pptx.oxml.ns import qn
+    source = tmp_path / 'source.pptx'
+    _table_structure_fixture(source)
+    model = _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)
+    target = next(el for el in model['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    op = {'slideIndex': 0, 'elementId': target['id'], 'kind': 'insert-row', 'index': 1, 'before': True}
+    conflicts = [
+        {'tableStructures': [op, {**op, 'kind': 'insert-col'}]},
+        {'tableStructures': [op], 'tableCells': [{'slideIndex': 0, 'elementId': target['id'], 'row': 0, 'col': 0, 'text': 'ambiguous'}]},
+        {'tableStructures': [op], 'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'shadingColor': 'none'}]},
+        {'tableStructures': [op], 'slideSize': {'cx': 9144000, 'cy': 6858000}},
+        {'tableStructures': [op], 'resetLayouts': [0]},
+        {'tableStructures': [op], 'slideLayouts': [{'slideIndex': 0, 'layoutPath': model['layouts'][0]['path']}]},
+        {'tableStructures': [op], 'deletedSlides': [0], 'order': [1]},
+        {'tableStructures': [{**op, 'elementId': model['slides'][0]['elements'][0]['id']}]},
+        {'tableStructures': [{**op, 'index': True}]},
+        {'tableStructures': [{**op, 'before': None}]},
+        {'tableStructures': [{**op, 'kind': 'delete-row'}]},
+        {'tableStructures': [{**op, 'extra': 1}]},
+    ]
+    for index, kwargs in enumerate(conflicts):
+        output = tmp_path / f'rejected-{index}.pptx'
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], **kwargs}, tmp_path)
+        assert not output.exists()
+    for kind in ['merge', 'extension', 'geometry', 'zero-height', 'single-quotes']:
+        original = Presentation(source)
+        frame = original.slides[0].shapes[1]
+        if kind == 'merge':
+            frame.table.cell(0, 0).merge(frame.table.cell(0, 1))
+        elif kind == 'extension':
+            frame.table._tbl.append(OxmlElement('a:extLst'))
+        elif kind == 'geometry':
+            frame._element.xfrm.ext.set('cy', str(frame.height + 1))
+        elif kind == 'zero-height':
+            frame.table._tbl.findall(qn('a:tr'))[0].set('h', '0')
+        path = tmp_path / f'{kind}.pptx'
+        original.save(path)
+        if kind == 'single-quotes':
+            with ZipFile(path) as archive:
+                files = {name: archive.read(name) for name in archive.namelist()}
+            files['ppt/slides/slide1.xml'] = re.sub(rb'(<a:tr\s[^>]*\bh=)"(\d+)"', rb"\1'\2'", files['ppt/slides/slide1.xml'])
+            with ZipFile(path, 'w') as archive:
+                for name, content in files.items():
+                    archive.writestr(name, content)
+        inspected = _invoke({'action': 'inspect', 'input': str(path)}, tmp_path)
+        unsafe = next(el for el in inspected['slides'][0]['elements'] if el['name'] == 'Structure Target')
+        assert unsafe['tableStructureEditable'] is False, kind
+        output = tmp_path / f'bad-{kind}.pptx'
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({'action': 'edit', 'input': str(path), 'output': str(output), 'edits': [], 'tableStructures': [{**op, 'elementId': unsafe['id']}]}, tmp_path)
+        assert not output.exists()
+
+
+@pytest.mark.parametrize(('rows', 'cols', 'kind'), [(1, 3, 'delete-row'), (3, 1, 'delete-col'), (75, 2, 'insert-row'), (2, 75, 'insert-col')])
+def test_table_structure_enforces_one_to_75_rows_and_columns(tmp_path, rows, cols, kind):
+    source, output = tmp_path / 'source.pptx', tmp_path / 'bad.pptx'
+    _table_structure_fixture(source, rows=rows, cols=cols)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    patch = {'slideIndex': 0, 'elementId': target['id'], 'kind': kind, 'index': 0}
+    if kind.startswith('insert-'):
+        patch['before'] = False
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStructures': [patch]}, tmp_path)
+    assert not output.exists()

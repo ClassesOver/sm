@@ -33,7 +33,7 @@ export function markupRemovalIdentity(sourceSha256: string, pageIndex: number, i
     : ['IRT', 'Parent', 'Popup', 'StructParent'].some(key => annotation.has(PDFName.of(key))) || links.linked.has(raw.toString()) ? '此标注有关联回复、弹窗或结构信息，暂不支持移除' : null
   return { annotationId: markupSourceId(sourceSha256, pageIndex, index), expectedAnnotationSha256: markupDictionaryHash(annotation), removable: reason === null, removalReason: reason }
 }
-export interface MarkupRemoval { pageIndex: number; annotationId: string; expectedAnnotationSha256: string; subtype?: 'Text'; unlinkObject?: boolean }
+export interface MarkupRemoval { pageIndex: number; annotationId: string; expectedAnnotationSha256: string; subtype?: 'Text' | 'Square' | 'Circle' | 'Line' | 'Ink' | 'Polygon' | 'Caret'; unlinkObject?: boolean; unlinkDrawing?: boolean }
 export interface NoteContentEdit extends MarkupRemoval { contents: string; modifiedAt: string }
 export async function removeSourceMarkups(content: Uint8Array, sourceSha256: string, removals: MarkupRemoval[], edits: NoteContentEdit[] = []) {
   if (!removals.length && !edits.length) return content
@@ -61,10 +61,15 @@ export async function removeSourceMarkups(content: Uint8Array, sourceSha256: str
       const index = indices.get(removal.annotationId)
       if (index === undefined || removed.has(index)) throw new Error('pdf_markup_identity_invalid')
       const annotation = annotations.lookup(index, PDFDict)
-      if (!(removal.subtype === 'Text' ? String(annotation.get(PDFName.of('Subtype'))) === '/Text' : types.has(String(annotation.get(PDFName.of('Subtype'))))) || markupDictionaryHash(annotation) !== removal.expectedAnnotationSha256) throw new Error('pdf_markup_identity_invalid')
+      if (!(removal.subtype ? String(annotation.get(PDFName.of('Subtype'))) === '/' + removal.subtype : types.has(String(annotation.get(PDFName.of('Subtype'))))) || markupDictionaryHash(annotation) !== removal.expectedAnnotationSha256) throw new Error('pdf_markup_identity_invalid')
       if (removal.unlinkObject) {
         const raw=annotations.get(index)
         if (!(raw instanceof PDFRef) || String(annotation.get(PDFName.of('RT')))!=='/R' || !(annotation.get(PDFName.of('IRT')) instanceof PDFRef)) throw Error('pdf_reply_unlink_identity_invalid')
+        document.context.delete(raw)
+      }
+      if (removal.unlinkDrawing) {
+        const raw=annotations.get(index)
+        if (!(raw instanceof PDFRef) || !['Square','Circle','Line','Ink','Polygon','Caret'].includes(removal.subtype??'')) throw Error('pdf_drawing_identity_invalid')
         document.context.delete(raw)
       }
       removed.add(index)

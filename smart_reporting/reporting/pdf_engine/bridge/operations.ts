@@ -1,3 +1,4 @@
+import { inspectSavedDrawings } from './saved-drawings'
 import { assertRedactionAnnotationSafety, flattenLayoutAnnotations } from './layout-preservation'
 import { appendLocalNoteReplies, type LocalNoteRoot, type LocalNoteReply } from './local-note-replies'
 import { inspectReplyTargets, inspectNoteThreads, appendNoteReplies, canAppendPendingReplies, type NoteReply } from './note-replies'
@@ -50,6 +51,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('replaceText'), ...page, objectId: z.string().min(1).max(256), expectedTextSha256: z.string().regex(/^[a-f0-9]{64}$/), newText: z.string().max(4000) }).strict(),
   z.object({ kind: z.literal('editNote'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/), contents: z.string().trim().min(1).max(10000), modifiedAt: z.string().datetime({ precision: 0 }) }).strict(),
   z.object({ kind: z.literal('removeNote'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  z.object({ kind: z.literal('removeDrawing'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
@@ -92,10 +94,11 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     return { ...model, fieldId: sha256(Buffer.from(`${sourceSha256}:${name}:${kind}`)), expectedFieldSha256 }
   })
   const removalLinks = markupRemovalLinks(document, formFields.some(field => field.kind === 'signature') || sourceHasXfa || document.catalog.has(PDFName.of('Perms')))
+  const drawingPages = inspectSavedDrawings(document,sourceSha256,removalLinks.protectedSource)
   const threads = inspectNoteThreads(document, sourceSha256, removalLinks.protectedSource)
   const replyTargets = threads.roots
   const pages = document.getPages().map((page, index) => ({
-    pageId: `sha256:${sourceSha256}:page:${index}`, index,
+    pageId: `sha256:${sourceSha256}:page:${index}`, index, ...drawingPages[index],
     ...(textPages ? { textObjects: textPages[index] } : {}),
     ...(() => {
       try {
@@ -137,7 +140,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 async function deterministicLayoutDates(source: Uint8Array, output: Uint8Array) {
@@ -182,6 +185,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const hasText = ops.some(op => op.kind === 'replaceText')
   const model = await inspectPdf(content, hasText)
   if (expectedSha256 !== model.sourceSha256) throw new Error('PDF 来源摘要不匹配')
+  if (ops.some(op=>op.kind==='removeDrawing') && ops.some(op=>['replaceText','setPageSize','cropPage'].includes(op.kind))) throw new Error('删除已保存绘图与原位改字、页面尺寸或裁切请分别保存重开')
   const savedReplyMutations = ops.some(op => (op.kind === 'editNote' || op.kind === 'removeNote') && model.pages.some(page => page.notes.some(note => note.annotationId === op.annotationId && note.parentAnnotationId !== undefined)))
   if (savedReplyMutations && ops.some(op => ['replaceText','setPageSize','cropPage'].includes(op.kind))) throw new Error('已保存回复修改与原位改字、页面尺寸或裁切请分别保存重开')
   const localReplies = ops.filter(op => op.kind === 'replyPendingNote')
@@ -299,6 +303,13 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       const plan = { pageIndex: target.index, annotationId: op.annotationId, expectedAnnotationSha256: op.expectedAnnotationSha256, subtype: 'Text' as const, ...(note.parentAnnotationId?{unlinkObject:true}:{}) }
       if (op.kind === 'editNote') noteEdits.push({ ...plan, contents: op.contents, modifiedAt: op.modifiedAt })
       else removals.push(plan)
+      continue
+    }
+    if (op.kind === 'removeDrawing') {
+      const drawing=target.drawings.find(item=>item.annotationId===op.annotationId)
+      if (!target.drawingsReadSafe || !drawing || !drawing.removable || drawing.expectedAnnotationSha256!==op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_drawing_identity_invalid_or_readonly')
+      removedIds.add(op.annotationId)
+      removals.push({pageIndex:target.index,annotationId:op.annotationId,expectedAnnotationSha256:op.expectedAnnotationSha256,subtype:drawing.subtype,unlinkDrawing:true})
       continue
     }
     if (op.kind === 'removeMarkup') {
@@ -429,15 +440,15 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = await removeSourceMarkups(content, model.sourceSha256, removals, noteEdits)
   const annotationBaseBytes = bytes
-  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['redact', 'editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
+  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['redact', 'editNote', 'removeNote', 'removeMarkup', 'removeDrawing', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
     const result = await applySaveRequest(bytes, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
       request.textEdits = []
-      bytes = ops.some(op => !['replaceText', 'editNote', 'removeNote', 'removeMarkup', 'addAttachment', 'removeAttachment'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
+      bytes = ops.some(op => !['replaceText', 'editNote', 'removeNote', 'removeMarkup', 'removeDrawing', 'addAttachment', 'removeAttachment'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
     } else bytes = result.bytes
   }
-  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), finalOrder)
+  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), finalOrder, request.drawings)
   if (crops.size) {
     // Same CropBox primitive as pinned cropPagesBytes; absolute source-space
     // bounds keep ordered crop/rotation commands stable through final reorder.
@@ -479,7 +490,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['redact', 'addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['redact', 'addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'removeDrawing', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 
