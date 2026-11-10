@@ -144,11 +144,17 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or item['slideIndex'] in structure_slides):
             raise ValueError('native_office_operations_invalid')
         structure_slides.add(item['slideIndex'])
-    table_styles = _records(operation, 'tableStyles', {'slideIndex', 'elementId'}, {'shadingColor', 'borderPreset'})
+    table_flags = {'firstRow', 'lastRow', 'firstCol', 'lastCol', 'bandRow', 'bandCol', 'rtl'}
+    table_presets = {'none', 'lightGrid', 'zebraBlue', 'zebraGray', 'headerDarkBlue', 'headerOrange', 'noBorder', 'fullBorder'}
+    table_styles = _records(operation, 'tableStyles', {'slideIndex', 'elementId'}, {'styleName', 'shadingColor', 'borderPreset'} | table_flags)
+    if len(table_styles) > 500:
+        raise ValueError('native_office_operations_invalid')
     style_keys = set()
     for item in table_styles:
         key = (item['slideIndex'], item['elementId']) if isinstance(item['elementId'], str) else None
-        if (key is None or not item['elementId'] or key in style_keys or not ({'shadingColor', 'borderPreset'} & item.keys())
+        if (key is None or not item['elementId'] or key in style_keys or not ({'styleName', 'shadingColor', 'borderPreset'} | table_flags) & item.keys()
+            or ('styleName' in item and (not isinstance(item['styleName'], str) or item['styleName'] not in table_presets))
+            or any(key in item and not isinstance(item[key], bool) for key in table_flags)
             or ('shadingColor' in item and (not isinstance(item['shadingColor'], str) or item['shadingColor'] not in {'none', '#FFFFFF', '#F2F2F2', '#DAEEF3', '#EBF3FB', '#D6E4F0', '#FFF2CC', '#FFE6CC', '#FCE4D6', '#E2EFDA', '#E6E6FF'}))
             or ('borderPreset' in item and (not isinstance(item['borderPreset'], str) or item['borderPreset'] not in {'all', 'none'}))):
             raise ValueError('native_office_operations_invalid')

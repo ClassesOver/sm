@@ -104,3 +104,11 @@
 .pdf-saved-drawings > div { display: flex; align-items: center; gap: 12px; margin: 6px 0; flex-wrap: wrap; }
 .pdf-saved-drawings p { margin: 4px 0 8px; }
 .pdf-saved-drawings button { margin-right: 8px; }
+
+.pdf-pending-drawings-panel { padding: .6rem 1rem; border-bottom: 1px solid var(--border, #d1d5db); max-height: 16rem; overflow: auto; }
+.pdf-pending-drawings-panel[hidden] { display: none; }
+.pdf-pending-drawings-panel [data-pdf-pending-drawing] { display: flex; gap: .6rem; align-items: center; margin: .25rem 0; }
+.pdf-pending-drawings-panel [aria-pressed="true"] { outline: 2px solid var(--accent, #2563eb); }
+.pdf-pending-drawing-dialog { max-width: 30rem; border: 1px solid var(--border, #d1d5db); border-radius: .5rem; padding: 1rem; }
+.pdf-pending-drawing-dialog label { display: block; margin: .5rem 0; }
+.pdf-pending-drawing-dialog input { margin-left: .5rem; width: 8rem; }

@@ -129,3 +129,8 @@ Table Design 接通固定调色板底纹/无填充、黑色 1pt 全部边框/无
 ## 简单表格行列结构（2026-11-10）
 
 固定源 context menu 的六种行列操作已通过 Web Table Design 弹窗适配，复用固定 `editTableStructure`。每来源页单次结构操作，简单矩形、正整数规范尺寸且网格/外框一致；合并、扩展及特殊尺寸来源不开放。待保存时保持来源快照，保存重开后显示新网格。详见 `NATIVE_PPTX_TABLE_STRUCTURE_ACCEPTANCE.md`，不代表完整表格样式库或复杂结构对齐。
+
+
+## 固定表格样式预设与选项（2026-11-10）
+
+八个固定源预设和firstRow/bandRow/rtl三种源Ribbon选项，通过Web选择器/开关与原helper接通。严格样式表定义与关系能力检查、历史恢复、真实渲染及导出回读边界详见 `NATIVE_PPTX_TABLE_PRESETS_ACCEPTANCE.md`；单格样式与任意自定义/内置样式库不由此代表。

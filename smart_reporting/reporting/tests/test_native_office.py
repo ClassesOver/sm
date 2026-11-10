@@ -382,3 +382,16 @@ def test_real_pptx_table_structure_roundtrips_through_native_operation():
     assert [saved.table.cell(row, 0).text for row in range(3)] == ['source first', '', 'source second']
     assert saved.height == sum(row.height for row in saved.table.rows)
     assert len(Presentation(BytesIO(content)).slides[0].shapes[0].table.rows) == 2
+
+
+def test_table_preset_schema_forwards_fixed_names_and_boolean_options_only():
+    from smart_reporting.report_editor.native_office import _pptx_arguments
+    for name in ['none', 'lightGrid', 'zebraBlue', 'zebraGray', 'headerDarkBlue', 'headerOrange', 'noBorder', 'fullBorder']:
+        patch = {'slideIndex': 0, 'elementId': 'tbl_1', 'styleName': name, 'rtl': True, 'bandRow': False, 'shadingColor': '#FFF2CC'}
+        assert _pptx_arguments({'kind': 'editSlides', 'tableStyles': [patch]})['table_styles'] == [patch]
+    base = {'slideIndex': 0, 'elementId': 'tbl_1'}
+    for bad in [{}, {'styleName': 'unknown'}, {'styleName': []}, {'styleName': None}, {'rtl': 1}, {'firstRow': 'true'}, {'bandRow': None}, {'clearDirectFormatting': True}, {'tblPrXml': '<a:tblPr/>'}]:
+        with pytest.raises(ValueError):
+            _pptx_arguments({'kind': 'editSlides', 'tableStyles': [{**base, **bad}]})
+    with pytest.raises(ValueError):
+        _pptx_arguments({'kind': 'editSlides', 'tableStyles': [{**base, 'rtl': True}] * 501})

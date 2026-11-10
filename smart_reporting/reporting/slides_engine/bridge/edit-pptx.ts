@@ -1,9 +1,9 @@
 import { patchTransitionPreservingMetadata, transitionEditAvailability } from './pptx-transition.ts'
-import { XMLParser } from 'fast-xml-parser'
+import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -67,7 +67,7 @@ type Input = {
   headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
   /** 固定源表格上下文菜单（editTableStructure）：每来源页一次，按原始行列索引插入/删除。 */
   tableStructures?: { slideIndex: number; elementId: string; kind: 'insert-row' | 'delete-row' | 'insert-col' | 'delete-col'; index: number; before?: boolean }[]
-  tableStyles?: { slideIndex: number; elementId: string; shadingColor?: string; borderPreset?: 'all' | 'none' }[]
+  tableStyles?: { slideIndex: number; elementId: string; styleName?: string; firstRow?: boolean; lastRow?: boolean; firstCol?: boolean; lastCol?: boolean; bandRow?: boolean; bandCol?: boolean; rtl?: boolean; shadingColor?: string; borderPreset?: 'all' | 'none' }[]
   /** 固定源表格单元格编辑（editTableCellText）：保留单元格首段与首个文字段的格式。 */
   tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]
   /** 固定源 Insert ▸ Chart（insertChart）：13 种图表类型与数据；位置为 2/3 宽、3:2、居中（graphicFrameInsertFrame）。 */
@@ -201,6 +201,60 @@ const structureSafe = (element: { type: string; anchor: { originalXml: string } 
   return positive(width) && positive(height) && elementSpid(table) !== null && width === table.transform.offset.cx && height === table.transform.offset.cy && width === table.colWidths.reduce((sum,n) => sum+n,0) && height === table.rowHeights.reduce((sum,n) => sum+n,0)
 }
 
+const TABLE_FLAG_KEYS = ['firstRow','lastRow','firstCol','lastCol','bandRow','bandCol','rtl'] as const
+const tableStyleParser = new XMLParser({ ignoreAttributes: false, processEntities: false })
+const tableStylesType = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/tableStyles'
+const tableStylesContentType = 'application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml'
+const list = <T>(value: T | T[] | undefined): T[] => value === undefined ? [] : Array.isArray(value) ? value : [value]
+/** The fixed ensure helper uses string insertion / includes(styleId). Prove that
+ * it will preserve an existing part and will not accept a colliding definition. */
+function tableStylePartReason(): string | null {
+  try {
+    const typesXml = opened.archive.readText('[Content_Types].xml'), relsXml = opened.archive.readText('ppt/_rels/presentation.xml.rels')
+    if (!typesXml || !relsXml || XMLValidator.validate(typesXml) !== true || XMLValidator.validate(relsXml) !== true || !typesXml.includes('</Types>') || !relsXml.includes('</Relationships>')) return '表格样式关系或内容类型无法确认'
+    const types = tableStyleParser.parse(typesXml).Types, rels = tableStyleParser.parse(relsXml).Relationships
+    if (!types || !rels || types['@_xmlns'] !== 'http://schemas.openxmlformats.org/package/2006/content-types' || rels['@_xmlns'] !== 'http://schemas.openxmlformats.org/package/2006/relationships') return '表格样式关系或内容类型无法确认'
+    const relationships = list(rels.Relationship) as Record<string,unknown>[]
+    const relationIds = relationships.map(entry => entry['@_Id'])
+    if (relationIds.some(id => typeof id !== 'string' || !/^rId[1-9][0-9]*$/.test(id)) || new Set(relationIds).size !== relationIds.length || [...relsXml.matchAll(/<Relationship\b[^>]*\bId="rId[1-9][0-9]*"[^>]*\/>/g)].length !== relationships.length) return '表格样式来源关系标识无法确认'
+    const entries = list(rels.Relationship).filter((entry: any) => entry['@_Type'] === tableStylesType)
+    const overrides = list(types.Override).filter((entry: any) => entry['@_PartName'] === '/ppt/tableStyles.xml')
+    if (entries.length > 1 || overrides.length > 1 || entries.some((entry: any) => entry['@_Target'] !== 'tableStyles.xml' || entry['@_TargetMode'] !== undefined) || overrides.some((entry: any) => entry['@_ContentType'] !== tableStylesContentType)) return '表格样式关系或内容类型无法确认'
+    const xml = opened.archive.readText('ppt/tableStyles.xml')
+    if (xml === undefined || xml === null) return entries.length || overrides.length ? '表格样式部件缺失或关系悬空' : null
+    if (entries.length !== 1 || overrides.length !== 1 || XMLValidator.validate(xml) !== true || !/<a:tblStyleLst\b/.test(xml) || !(/<a:tblStyleLst[^>]*\/>/.test(xml) || xml.includes('</a:tblStyleLst>'))) return '此表格样式表的结构暂不支持安全修改'
+    const root = tableStyleParser.parse(xml)['a:tblStyleLst']
+    if (!root || root['@_xmlns:a'] !== 'http://schemas.openxmlformats.org/drawingml/2006/main' || Object.keys(root).some(key => !key.startsWith('@_') && key !== 'a:tblStyle' && key !== '#text')) return '此表格样式表的结构暂不支持安全修改'
+    const definitions = [...xml.matchAll(/<a:tblStyle\b[^>]*\bstyleId="([^"<>]+)"[^>]*>[\s\S]*?<\/a:tblStyle>/g)]
+    const ids = definitions.map(match => match[1]!)
+    const parsedDefinitions = list(root['a:tblStyle']) as Record<string,unknown>[]
+    if (parsedDefinitions.some((entry,index) => entry['@_styleId'] !== ids[index]) || definitions.length !== parsedDefinitions.length || new Set(ids).size !== ids.length) return '此表格样式表含无法确认或重复的定义'
+    for (const preset of Object.values(TABLE_STYLE_PRESETS)) {
+      if (!preset.styleId) continue
+      const found = definitions.find(match => match[1] === preset.styleId)
+      if ((found && found[0] !== preset.styleDefXml) || (!found && xml.includes(preset.styleId))) return '此文档的固定表格样式标识与来源定义冲突'
+    }
+    return null
+  } catch { return '此表格样式表无法完整读取' }
+}
+const sourceStylePartReason = tableStylePartReason()
+function tableStyleState(table: TableElement) {
+  const xml = table.anchor.originalXml
+  const matches = [...xml.matchAll(/<a:tblPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:tblPr>)/g)]
+  const fragment = matches[0]?.[0] ?? '', opening = /^<a:tblPr\b([^>]*?)\/?>/.exec(fragment)
+  const attributes = opening?.[1] ?? ''
+  const pairs = [...attributes.matchAll(/\s+([A-Za-z_:][\w:.-]*)="([^"<>]*)"/g)]
+  const flags = Object.fromEntries(TABLE_FLAG_KEYS.map(key => [key,pairs.some(pair => pair[1] === key && ['1','true'].includes(pair[2]!))])) as Record<(typeof TABLE_FLAG_KEYS)[number],boolean>
+  const styleId = /<a:tableStyleId>([^<]*)<\/a:tableStyleId>/.exec(fragment)?.[1]
+  const name = Object.entries(TABLE_STYLE_PRESETS).find(([,preset]) => preset.styleId !== undefined && preset.styleId === styleId)?.[0] ?? null
+  const children = fragment.replace(/^<a:tblPr\b[^>]*>/,'').replace(/<\/a:tblPr>$/,'').trim()
+  let reason = sourceStylePartReason
+  const complexCellExtension = [...xml.matchAll(/<a:tcPr\b[^>]*>([\s\S]*?)<\/a:tcPr>/g)].some(cell => [...cell[1]!.matchAll(/<a:extLst\b[^>]*>([\s\S]*?)<\/a:extLst>/g)].some(extension => extension[1]!.trim() !== ''))
+  if (complexCellExtension) reason = '此表格单元格含扩展内容，暂不能安全应用预设或选项'
+  if (matches.length > 1 || (!fragment && !xml.includes('<a:tbl>')) || (fragment && (!opening || XMLValidator.validate(fragment) !== true || attributes.replace(/\s+[A-Za-z_:][\w:.-]*="[^"<>]*"/g,'').trim() || new Set(pairs.map(pair=>pair[1])).size !== pairs.length || pairs.some(pair => !(TABLE_FLAG_KEYS as readonly string[]).includes(pair[1]!) || !['0','1','true','false'].includes(pair[2]!)) || (!fragment.endsWith('/>') && children !== '' && !/^<a:tableStyleId>[^<]*<\/a:tableStyleId>$/.test(children))))) reason = '此表格含扩展、复杂或非规范属性，暂不能应用预设或选项'
+  return { tableStyleFlags: flags, tableStyleName: reason === null ? name : null, tablePresetEditable: reason === null, tablePresetReason: reason }
+}
+
 if (request.action === 'inspect') {
   process.stdout.write(JSON.stringify({
     size: opened.deck.size,
@@ -234,7 +288,7 @@ if (request.action === 'inspect') {
         type: element.type,
         name: element.name ?? '',
         text: textOf(element),
-        ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element) } : {}),
+        ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element) } : {}),
         // 表格单元格文字（合并单元格为 null），供编辑器单元格网格使用
         ...(element.type === 'table' ? { tableCells: (element as unknown as { rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] }).rows.map(row => row.map(cell => cell.merged ? null : (cell.text?.paragraphs ?? []).map(paragraph => paragraph.runs.map(run => run.text).join('')).join('\n'))) } : {}),
         ...(element.type === 'text' || element.type === 'shape' ? (() => {
@@ -407,7 +461,9 @@ if (request.action === 'inspect') {
   const shadingColors = ['none','#FFFFFF','#F2F2F2','#DAEEF3','#EBF3FB','#D6E4F0','#FFF2CC','#FFE6CC','#FCE4D6','#E2EFDA','#E6E6FF']
   if (!Array.isArray(tableStyles) || tableStyles.length > 500) throw new Error('table_styles_invalid')
   for (const item of tableStyles) {
-    if (!item || Object.keys(item).some(key => !['slideIndex','elementId','shadingColor','borderPreset'].includes(key)) || !validSlideIndex(item.slideIndex,slideCount) || typeof item.elementId !== 'string' || (item.shadingColor === undefined && item.borderPreset === undefined) || (item.shadingColor !== undefined && !shadingColors.includes(item.shadingColor)) || (item.borderPreset !== undefined && !['all','none'].includes(item.borderPreset)) || styledTables.has(`${item.slideIndex}:${item.elementId}`) || touchesDeleted(item.slideIndex,item.elementId) || !originalSlides[item.slideIndex]!.elements.some(el => el.id === item.elementId && el.type === 'table')) throw new Error('table_style_invalid')
+    if (!item || Object.keys(item).some(key => !['slideIndex','elementId','styleName',...TABLE_FLAG_KEYS,'shadingColor','borderPreset'].includes(key)) || !validSlideIndex(item.slideIndex,slideCount) || typeof item.elementId !== 'string' || (item.styleName === undefined && TABLE_FLAG_KEYS.every(key => item[key] === undefined) && item.shadingColor === undefined && item.borderPreset === undefined) || (item.styleName !== undefined && (typeof item.styleName !== 'string' || !Object.hasOwn(TABLE_STYLE_PRESETS,item.styleName))) || TABLE_FLAG_KEYS.some(key => item[key] !== undefined && typeof item[key] !== 'boolean') || (item.shadingColor !== undefined && !shadingColors.includes(item.shadingColor)) || (item.borderPreset !== undefined && !['all','none'].includes(item.borderPreset)) || styledTables.has(`${item.slideIndex}:${item.elementId}`) || touchesDeleted(item.slideIndex,item.elementId) || !originalSlides[item.slideIndex]!.elements.some(el => el.id === item.elementId && el.type === 'table')) throw new Error('table_style_invalid')
+    const target = originalSlides[item.slideIndex]!.elements.find(el => el.id === item.elementId)!
+    if ((item.styleName !== undefined || TABLE_FLAG_KEYS.some(key => item[key] !== undefined)) && !tableStyleState(target as TableElement).tablePresetEditable) throw new Error('table_style_source_unsupported')
     styledTables.add(`${item.slideIndex}:${item.elementId}`)
   }
   if (!Array.isArray(request.tableCells ?? []) || (request.tableCells ?? []).length > 500) throw new Error('table_cells_invalid')
@@ -422,6 +478,14 @@ if (request.action === 'inspect') {
   if (!Array.isArray(request.shapeKinds ?? []) || (request.shapeKinds ?? []).length > 500) throw new Error('shape_kinds_invalid')
   const reshaped = new Set<string>()
   for (const item of tableStyles) {
+    const slide = originalSlides[item.slideIndex]!
+    if (item.styleName !== undefined) {
+      const preset = TABLE_STYLE_PRESETS[item.styleName]!
+      if (preset.styleId) ensureTableStylePart(opened,preset.styleId,preset.styleDefXml!)
+      if (!editTableStyle(slide,item.elementId,{ tblPrXml:preset.tblPrXml, clearDirectFormatting:true, ...(preset.border ? {borderPreset:'all',borderColor:preset.border.color,borderWidthEmu:preset.border.widthEmu} : {}) })) throw new Error('table_style_target_invalid')
+    }
+    const flags = Object.fromEntries(TABLE_FLAG_KEYS.filter(key => item[key] !== undefined).map(key => [key,item[key]]))
+    if (Object.keys(flags).length && !editTableStyle(slide,item.elementId,flags)) throw new Error('table_style_target_invalid')
     const patch = { ...(item.shadingColor !== undefined ? {shadingColor:item.shadingColor} : {}), ...(item.borderPreset !== undefined ? {borderPreset:item.borderPreset, ...(item.borderPreset === 'all' ? {borderColor:'#000000',borderWidthEmu:12700} : {})} : {}) }
     if (!editTableStyle(originalSlides[item.slideIndex]!,item.elementId,patch)) throw new Error('table_style_target_invalid')
   }

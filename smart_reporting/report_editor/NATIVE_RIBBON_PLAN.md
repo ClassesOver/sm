@@ -412,7 +412,7 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] 关闭重复 #209，迁入测量有限值/弹窗身份与表格段落格式保护；保留 #210 作为主线。
 - [x] 关联批注涂黑引用保护；N 合 1 静态外观保留；含表单拆分页/XFA 明确拒绝；按最终文字校验与恢复按段动画。
 - [x] 固定 Table Design 调色板、整表底纹/无填充、所有/无边框，复用 editTableStyle；历史、真实预览、下载与独立 OOXML 回读。
-- [ ] 表单树拆分重映射、复杂关联批注涂黑、表格样式库/单格与复杂结构、其余 PDF/PPTX 功能及生产/桌面/完整镜像验收仍开放。整体任务未宣称完成，功能开关保持关闭。
+- [ ] 表单树拆分重映射、复杂关联批注涂黑、任意表格样式库/单格与复杂结构、其余 PDF/PPTX 功能及生产/桌面/完整镜像验收仍开放。整体任务未宣称完成，功能开关保持关闭。
 - 证据范围与原始素材：`NATIVE_PR210_PRESERVATION_ACCEPTANCE.md`。
 
 
@@ -424,3 +424,15 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] 修复绘图与便签混合批次日期规范化，按 writer 实际追加顺序核验，保持旧便签身份。
 - [ ] 合并单元格与特殊尺寸/扩展表格、连续同页结构编辑、绘图移动/样式及复杂来源、完整 PDF/PPTX/桌面/生产验收仍开放。功能开关保持关闭。
 - 详细范围与证据见 `NATIVE_PPTX_TABLE_STRUCTURE_ACCEPTANCE.md` 和 `NATIVE_PDF_SAVED_DRAWINGS_ACCEPTANCE.md`。
+
+
+### PR #210 表格预设与待保存绘图续接（2026-11-10）
+
+- [x] 八种固定表格预设及来源firstRow/bandRow/rtl选项，复用TABLE_STYLE_PRESETS、editTableStyle与ensureTableStylePart；明确预设清直接填充/边框、保留字体/几何/合并与rtl，批次最终覆盖顺序。
+- [x] 固定样式ID冲突、非规范/复杂样式定义、关系及内容类型事先拒绝；单纯底纹/边框保留原能力。
+- [x] PDF待保存绘图按snapshot/来源页/精确记录选择、平移和删除，复用addDrawing输出；历史/刷新及过期弹窗身份保护。源码核对纠正saved移动/线宽选择的旧缺口表述。
+- [ ] 源图像缩放与直接画布操作、单格样式、任意样式库、复杂表格/关联PDF来源及完整桌面/生产/应用镜像验收仍开放；功能开关保持关闭。
+- 范围、原始素材与独立验收见 `NATIVE_PPTX_TABLE_PRESETS_ACCEPTANCE.md`、`NATIVE_PDF_PENDING_DRAWINGS_ACCEPTANCE.md`。
+
+- [x] 本轮83项相关前端与30项后端检查、两条生产静态浏览器完整闭环、独立python-pptx/pypdf及断网Node22通过；8预设经独立LibreOffice/PDF栅格验证颜色和网格。
+- [ ] 外部消费者RTL：OOXML与native画布已镜像，但当前LibreOffice未镜像列，保留产物与失败证据，不标记跨软件视觉验收通过。

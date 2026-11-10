@@ -1365,3 +1365,229 @@ def test_table_structure_enforces_one_to_75_rows_and_columns(tmp_path, rows, col
     with pytest.raises(subprocess.CalledProcessError):
         _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStructures': [patch]}, tmp_path)
     assert not output.exists()
+
+
+_TABLE_NS = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main', 'p': 'http://schemas.openxmlformats.org/presentationml/2006/main'}
+_TABLE_PRESET_IDS = {
+    'zebraBlue': '{A10FF1CE-0000-4000-9000-000000000001}',
+    'zebraGray': '{A10FF1CE-0000-4000-9000-000000000002}',
+    'headerDarkBlue': '{A10FF1CE-0000-4000-9000-000000000003}',
+    'headerOrange': '{A10FF1CE-0000-4000-9000-000000000004}',
+    'noBorder': '{A10FF1CE-0000-4000-9000-000000000005}',
+}
+
+
+def _rewrite_preset_zip(source, destination, changes):
+    with ZipFile(source) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    for name, change in changes.items():
+        if change is None:
+            entries.pop(name, None)
+        else:
+            entries[name] = change(entries.get(name, b''))
+    with ZipFile(destination, 'w') as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+
+
+def _table_preset_fixture(path):
+    from pptx.oxml.xmlchemy import OxmlElement
+    _table_structure_fixture(path)
+    document = Presentation(path)
+    table = document.slides[0].shapes[1].table
+    table.cell(0, 0).merge(table.cell(0, 1))
+    table.cell(1, 1).text_frame.paragraphs[0].runs[0].hyperlink.address = 'https://example.com/table'
+    table.cell(1, 1)._tc.get_or_add_tcPr().append(OxmlElement('a:extLst'))
+    document.save(path)
+
+
+@pytest.mark.parametrize('preset', ['none', 'lightGrid', 'zebraBlue', 'zebraGray', 'headerDarkBlue', 'headerOrange', 'noBorder', 'fullBorder'])
+def test_table_presets_clear_only_direct_cell_fills_borders_and_keep_source_xml(tmp_path, preset):
+    from lxml import etree
+    source, output = tmp_path / 'source.pptx', tmp_path / f'{preset}.pptx'
+    _table_preset_fixture(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    assert target['tablePresetEditable'] is True and target['tablePresetReason'] is None
+    assert target['tableStyleFlags']['firstRow'] is True
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [],
+             'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'styleName': preset}]}, tmp_path)
+    with ZipFile(source) as before, ZipFile(output) as after:
+        original = etree.fromstring(before.read('ppt/slides/slide1.xml'))
+        saved = etree.fromstring(after.read('ppt/slides/slide1.xml'))
+        old_table = original.xpath('//a:tbl', namespaces=_TABLE_NS)[0]
+        new_table = saved.xpath('//a:tbl', namespaces=_TABLE_NS)[0]
+        c14n = lambda node: etree.tostring(node, method='c14n')
+        assert [c14n(n) for n in old_table.xpath('.//a:txBody', namespaces=_TABLE_NS)] == [c14n(n) for n in new_table.xpath('.//a:txBody', namespaces=_TABLE_NS)]
+        assert c14n(old_table.find('a:tblGrid', _TABLE_NS)) == c14n(new_table.find('a:tblGrid', _TABLE_NS))
+        assert [n.attrib for n in old_table.findall('a:tr', _TABLE_NS)] == [n.attrib for n in new_table.findall('a:tr', _TABLE_NS)]
+        assert [n.attrib for n in old_table.xpath('.//a:tc', namespaces=_TABLE_NS)] == [n.attrib for n in new_table.xpath('.//a:tc', namespaces=_TABLE_NS)]
+        assert [n.attrib for n in old_table.xpath('.//a:tcPr', namespaces=_TABLE_NS)] == [n.attrib for n in new_table.xpath('.//a:tcPr', namespaces=_TABLE_NS)]
+        assert len(new_table.xpath('.//a:tcPr/a:extLst', namespaces=_TABLE_NS)) == 1
+        assert not new_table.xpath('.//a:tcPr/a:solidFill', namespaces=_TABLE_NS)
+        assert before.read('ppt/slides/_rels/slide1.xml.rels') == after.read('ppt/slides/_rels/slide1.xml.rels')
+        assert before.read('ppt/slides/slide2.xml') == after.read('ppt/slides/slide2.xml')
+        old_frame = old_table.getparent().getparent().getparent()
+        new_frame = new_table.getparent().getparent().getparent()
+        assert c14n(old_frame.find('p:xfrm', _TABLE_NS)) == c14n(new_frame.find('p:xfrm', _TABLE_NS))
+        assert c14n(original.xpath('//a:tbl', namespaces=_TABLE_NS)[1]) == c14n(saved.xpath('//a:tbl', namespaces=_TABLE_NS)[1])
+        expected_id = _TABLE_PRESET_IDS.get(preset, '{2D5ABB26-0587-4C30-8999-92F81FD0307C}')
+        assert new_table.find('a:tblPr/a:tableStyleId', _TABLE_NS).text == expected_id
+        borders = new_table.xpath('.//a:tcPr/a:lnL', namespaces=_TABLE_NS)
+        assert len(borders) == (9 if preset in {'lightGrid', 'fullBorder'} else 0)
+        if borders:
+            assert {b.find('a:solidFill/a:srgbClr', _TABLE_NS).get('val') for b in borders} == ({'BFBFBF'} if preset == 'lightGrid' else {'000000'})
+        if preset in _TABLE_PRESET_IDS:
+            styles = etree.fromstring(after.read('ppt/tableStyles.xml'))
+            assert len(styles.xpath('./a:tblStyle[@styleId=$id]', namespaces=_TABLE_NS, id=expected_id)) == 1
+    reopened = Presentation(output).slides[0].shapes[1].table
+    assert reopened.cell(0, 0).is_merge_origin and reopened.cell(0, 1).is_spanned
+    assert reopened.cell(1, 1).text == 'R1C1'
+
+
+def test_table_presets_create_part_keep_other_definitions_and_reapply_idempotently(tmp_path):
+    from lxml import etree
+    source, missing = tmp_path / 'source.pptx', tmp_path / 'missing.pptx'
+    _table_preset_fixture(source)
+    _rewrite_preset_zip(source, missing, {
+        'ppt/tableStyles.xml': None,
+        '[Content_Types].xml': lambda b: re.sub(rb'<Override[^>]*PartName="/ppt/tableStyles.xml"[^>]*/>', b'', b),
+        'ppt/_rels/presentation.xml.rels': lambda b: re.sub(rb'<Relationship[^>]*Type="[^"]*/tableStyles"[^>]*/>', b'', b),
+    })
+    model = _invoke({'action': 'inspect', 'input': str(missing)}, tmp_path)
+    tables = [el for el in model['slides'][0]['elements'] if el['type'] == 'table']
+    assert all(el['tablePresetEditable'] for el in tables)
+    first = tmp_path / 'first.pptx'
+    _invoke({'action': 'edit', 'input': str(missing), 'output': str(first), 'edits': [], 'tableStyles': [
+        {'slideIndex': 0, 'elementId': tables[0]['id'], 'styleName': 'zebraBlue'},
+        {'slideIndex': 0, 'elementId': tables[1]['id'], 'styleName': 'headerOrange'},
+    ]}, tmp_path)
+    with ZipFile(first) as archive:
+        styles = archive.read('ppt/tableStyles.xml')
+        assert len(etree.fromstring(styles).findall('a:tblStyle', _TABLE_NS)) == 2
+        rels = etree.fromstring(archive.read('ppt/_rels/presentation.xml.rels'))
+        assert len(rels.xpath('/*/*[substring(@Type,string-length(@Type)-11)="/tableStyles"]')) == 1
+        assert b'PartName="/ppt/tableStyles.xml"' in archive.read('[Content_Types].xml')
+    current = next(el for el in _invoke({'action': 'inspect', 'input': str(first)}, tmp_path)['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    assert current['tableStyleName'] == 'zebraBlue' and current['tableStyleFlags']['bandRow'] is True
+    second = tmp_path / 'second.pptx'
+    _invoke({'action': 'edit', 'input': str(first), 'output': str(second), 'edits': [], 'tableStyles': [{'slideIndex': 0, 'elementId': current['id'], 'styleName': 'zebraBlue'}]}, tmp_path)
+    with ZipFile(first) as before, ZipFile(second) as after:
+        assert before.read('ppt/tableStyles.xml') == after.read('ppt/tableStyles.xml')
+        assert before.read('ppt/_rels/presentation.xml.rels') == after.read('ppt/_rels/presentation.xml.rels')
+        assert before.read('ppt/slides/slide1.xml') == after.read('ppt/slides/slide1.xml')
+
+
+def test_table_presets_apply_overrides_after_preset_and_keep_rtl_and_other_edits(tmp_path):
+    from lxml import etree
+    source, output = tmp_path / 'source.pptx', tmp_path / 'overrides.pptx'
+    _table_preset_fixture(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [],
+             'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'styleName': 'zebraBlue', 'rtl': True, 'firstRow': False, 'bandRow': False, 'shadingColor': '#FFF2CC', 'borderPreset': 'none'}],
+             'tableCells': [{'slideIndex': 0, 'elementId': target['id'], 'row': 1, 'col': 1, 'text': 'changed'}]}, tmp_path)
+    with ZipFile(output) as archive:
+        table = etree.fromstring(archive.read('ppt/slides/slide1.xml')).xpath('//a:tbl', namespaces=_TABLE_NS)[0]
+        props = table.find('a:tblPr', _TABLE_NS)
+        assert props.get('rtl') == '1' and props.get('firstRow') is None and props.get('bandRow') is None
+        assert len(table.xpath('.//a:tcPr/a:solidFill/a:srgbClr[@val="FFF2CC"]', namespaces=_TABLE_NS)) == 9
+        assert len(table.xpath('.//a:tcPr/a:lnL/a:noFill', namespaces=_TABLE_NS)) == 9
+    assert Presentation(output).slides[0].shapes[1].table.cell(1, 1).text == 'changed'
+    refreshed = next(el for el in _invoke({'action': 'inspect', 'input': str(output)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    assert refreshed['tableStyleFlags']['rtl'] is True and refreshed['tableStyleFlags']['bandRow'] is False
+    retained = tmp_path / 'rtl-retained.pptx'
+    _invoke({'action': 'edit', 'input': str(output), 'output': str(retained), 'edits': [], 'tableStyles': [{'slideIndex': 0, 'elementId': refreshed['id'], 'styleName': 'headerOrange'}]}, tmp_path)
+    new = next(el for el in _invoke({'action': 'inspect', 'input': str(retained)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    assert new['tableStyleFlags']['rtl'] is True and new['tableStyleFlags']['firstRow'] is True
+
+
+@pytest.mark.parametrize('mode', ['collision', 'comment', 'prefix', 'missing-relation', 'wrong-target', 'wrong-content-type', 'wrong-namespace', 'duplicate-relationship', 'duplicate-definition', 'tblPr-extension', 'cell-extension-fill', 'single-quote'])
+def test_table_presets_refuse_ambiguous_style_parts_or_properties_without_output(tmp_path, mode):
+    source, unsafe, output = tmp_path / 'source.pptx', tmp_path / f'{mode}.pptx', tmp_path / 'must-not-exist.pptx'
+    _table_preset_fixture(source)
+    style_id = _TABLE_PRESET_IDS['zebraBlue']
+    if mode in {'collision', 'comment', 'prefix', 'duplicate-definition'}:
+        definition = f'<a:tblStyle styleId="{style_id}" styleName="foreign"><a:wholeTbl/></a:tblStyle>'
+        if mode == 'comment':
+            definition = f'<!-- {style_id} -->'
+        if mode == 'duplicate-definition':
+            definition *= 2
+        text = f'<a:tblStyleLst xmlns:a="{_TABLE_NS["a"]}" def="none">{definition}</a:tblStyleLst>'
+        if mode == 'prefix':
+            text = text.replace('a:', 'b:').replace('xmlns:a', 'xmlns:b')
+        changes = {'ppt/tableStyles.xml': lambda _: text.encode()}
+    elif mode == 'missing-relation':
+        changes = {'ppt/_rels/presentation.xml.rels': lambda b: re.sub(rb'<Relationship[^>]*Type="[^"]*/tableStyles"[^>]*/>', b'', b)}
+    elif mode == 'wrong-target':
+        changes = {'ppt/_rels/presentation.xml.rels': lambda b: b.replace(b'Target="tableStyles.xml"', b'Target="foreign.xml"')}
+    elif mode == 'wrong-content-type':
+        changes = {'[Content_Types].xml': lambda b: b.replace(b'presentationml.tableStyles+xml', b'presentationml.tableStyles-missing+xml')}
+    elif mode == 'wrong-namespace':
+        changes = {'ppt/_rels/presentation.xml.rels': lambda b: b.replace(b'package/2006/relationships', b'package/2006/foreign')}
+    elif mode == 'duplicate-relationship':
+        changes = {'ppt/_rels/presentation.xml.rels': lambda b: b.replace(b'</Relationships>', re.search(rb'<Relationship\b[^>]*/>', b).group(0) + b'</Relationships>')}
+    elif mode == 'cell-extension-fill':
+        changes = {'ppt/slides/slide1.xml': lambda b: b.replace(b'<a:extLst/>', b'<a:extLst><a:ext uri="foreign"><a:solidFill><a:srgbClr val="00FF00"/></a:solidFill></a:ext></a:extLst>', 1)}
+    elif mode == 'tblPr-extension':
+        changes = {'ppt/slides/slide1.xml': lambda b: b.replace(b'</a:tblPr>', b'<a:extLst/></a:tblPr>', 1)}
+    else:
+        changes = {'ppt/slides/slide1.xml': lambda b: b.replace(b'firstRow="1"', b"firstRow='1'", 1)}
+    _rewrite_preset_zip(source, unsafe, changes)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(unsafe)}, tmp_path)['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    assert target['tablePresetEditable'] is False and target['tablePresetReason']
+    assert target['tableStyleName'] is None
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(unsafe), 'output': str(output), 'edits': [], 'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'styleName': 'zebraBlue'}]}, tmp_path)
+    assert not output.exists()
+
+
+def test_table_presets_reject_foreign_names_flags_and_structure_conflicts(tmp_path):
+    source = tmp_path / 'source.pptx'
+    _table_preset_fixture(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    base = {'slideIndex': 0, 'elementId': target['id']}
+    for index, bad in enumerate([{}, {'styleName': 'unknown'}, {'styleName': '__proto__'}, {'styleName': []}, {'styleName': None}, {'bandRow': 0}, {'rtl': 'true'}, {'clearDirectFormatting': True}, {'tblPrXml': '<a:tblPr/>'}]):
+        output = tmp_path / f'invalid-{index}.pptx'
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStyles': [{**base, **bad}]}, tmp_path)
+        assert not output.exists()
+    output = tmp_path / 'conflict.pptx'
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStyles': [{**base, 'styleName': 'zebraBlue'}], 'tableStructures': [{**base, 'kind': 'insert-row', 'index': 1, 'before': False}]}, tmp_path)
+    assert not output.exists()
+
+
+def test_table_style_flags_keep_direct_formatting_style_part_and_false_values(tmp_path):
+    from lxml import etree
+    source, output = tmp_path / 'source.pptx', tmp_path / 'flags.pptx'
+    _table_preset_fixture(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [],
+             'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'firstRow': False, 'bandRow': False, 'rtl': True}]}, tmp_path)
+    with ZipFile(source) as before, ZipFile(output) as after:
+        original, changed = [etree.fromstring(archive.read('ppt/slides/slide1.xml')).xpath('//a:tbl', namespaces=_TABLE_NS)[0] for archive in [before, after]]
+        assert before.read('ppt/tableStyles.xml') == after.read('ppt/tableStyles.xml')
+        for table in [original, changed]:
+            table.remove(table.find('a:tblPr', _TABLE_NS))
+        assert etree.tostring(original, method='c14n') == etree.tostring(changed, method='c14n')
+    current = next(el for el in _invoke({'action': 'inspect', 'input': str(output)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    assert current['tableStyleFlags']['firstRow'] is False and current['tableStyleFlags']['bandRow'] is False and current['tableStyleFlags']['rtl'] is True
+
+
+def test_table_presets_preserve_unrelated_custom_definition_and_other_table_reference(tmp_path):
+    from lxml import etree
+    source, custom, output = tmp_path / 'source.pptx', tmp_path / 'custom.pptx', tmp_path / 'preserved.pptx'
+    _table_preset_fixture(source)
+    foreign_id = '{11111111-2222-4333-8444-555555555555}'
+    definition = f'<a:tblStyle styleId="{foreign_id}" styleName="source-owned"><a:wholeTbl><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="BB22AA"/></a:solidFill></a:fill></a:tcStyle></a:wholeTbl></a:tblStyle>'.encode()
+    _rewrite_preset_zip(source, custom, {
+        'ppt/tableStyles.xml': lambda b: b.replace(b'/>', b'>' + definition + b'</a:tblStyleLst>', 1),
+        'ppt/slides/slide1.xml': lambda b: re.sub(rb'<a:tableStyleId>[^<]*</a:tableStyleId>', b'<a:tableStyleId>' + foreign_id.encode() + b'</a:tableStyleId>', b),
+    })
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(custom)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    assert target['tablePresetEditable'] is True and target['tableStyleName'] is None
+    _invoke({'action': 'edit', 'input': str(custom), 'output': str(output), 'edits': [], 'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'styleName': 'zebraBlue'}]}, tmp_path)
+    with ZipFile(custom) as before, ZipFile(output) as after:
+        assert definition in after.read('ppt/tableStyles.xml')
+        old, new = [etree.fromstring(archive.read('ppt/slides/slide1.xml')).xpath('//a:tbl', namespaces=_TABLE_NS)[1] for archive in [before, after]]
+        assert etree.tostring(old, method='c14n') == etree.tostring(new, method='c14n')
+        assert new.find('a:tblPr/a:tableStyleId', _TABLE_NS).text == foreign_id

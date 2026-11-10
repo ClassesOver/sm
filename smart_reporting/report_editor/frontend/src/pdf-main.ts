@@ -1,3 +1,4 @@
+import { pendingDrawingTarget, movePendingDrawing, removePendingDrawing, type PendingDrawingReference } from './pdf-pending-drawings'
 import { toggleSavedDrawing } from './pdf-saved-drawings'
 import { stagePdfReply, stagePendingPdfReply, stagePdfLocalReply } from './pdf-replies'
 import { attachmentEditState, attachmentFileOperation, isAttachmentEdit } from './pdf-attachment-edits'
@@ -207,7 +208,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   confirmPreview.addEventListener('change', () => { try { review.confirm(draft.operations, confirmPreview.checked) } catch (error) { confirmPreview.checked = false; showError(error) } })
   const drawingsPanel = documentElement('section', 'pdf-saved-drawings'); drawingsPanel.hidden = true
   drawingsPanel.setAttribute('aria-label', '已保存绘图')
-  root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, drawingsPanel, layout)
+  const pendingDrawingsPanel = documentElement('section', 'pdf-pending-drawings-panel'); pendingDrawingsPanel.hidden = true
+  pendingDrawingsPanel.setAttribute('aria-label', '待保存绘图')
+  let selectedPendingDrawing: PendingDrawingReference | undefined, pendingDrawingsGeneration = 0
+  let pendingDrawingDialog: HTMLDialogElement | undefined
+  root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, drawingsPanel, pendingDrawingsPanel, layout)
   const editableButtons: HTMLButtonElement[] = []
   const pageInputs: HTMLInputElement[] = []
   function button(label: string, action: () => void | Promise<void>, editable = true, icon?: PdfRibbonIconName) {
@@ -522,6 +527,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(note, 'annotate.drawTools.note')
   commandGroup = ribbon.group('annotate', 'Draw Tools')
   const annotateDrawGroup = commandGroup
+  button('待保存绘图', () => { pendingDrawingsPanel.hidden = !pendingDrawingsPanel.hidden; if (pendingDrawingsPanel.hidden) pendingDrawingDialog?.close(); renderPendingDrawings() }, false)
   button('已保存绘图', () => { drawingsPanel.hidden = !drawingsPanel.hidden; renderSavedDrawings() }, false)
   // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；颜色取标注调色板。
   for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['measure', '测量', 'measure'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
@@ -1295,6 +1301,89 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     updateControls(); renderTextPanel(true)
   }
   function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')) }
+  function canChangePendingDrawings() {
+    return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
+  }
+  async function editPendingDrawingPosition(reference: PendingDrawingReference) {
+    const source = document, sourcePage = activeId
+    const current = () => canChangePendingDrawings() && source === document && sourcePage === activeId && !pendingDrawingsPanel.hidden && reference.snapshot === JSON.stringify(draft.operations) && selectedPendingDrawing === reference
+    if (!current()) return
+    pendingDrawingTarget(model.pages, draft.operations, reference)
+    const dialog = documentElement('dialog', 'pdf-pending-drawing-dialog'), form = documentElement('form')
+    dialog.setAttribute('aria-label', '移动待保存绘图'); form.method = 'dialog'
+    const help = documentElement('p'); help.textContent = '按原始 PDF 坐标平移：X 向右，Y 向上；旋转后仍以原始坐标方向为准。保持形状、颜色和线宽，超出页面时不应用。'
+    const fields = ['X 位移（PDF 单位）', 'Y 位移（PDF 单位）'].map(text => {
+      const label = documentElement('label'); label.textContent = text
+      const input = documentElement('input'); input.type = 'number'; input.step = 'any'; input.value = '0'; input.required = true; input.setAttribute('aria-label', text); label.append(input); form.append(label); return input
+    })
+    const error = documentElement('p'); error.setAttribute('role', 'alert')
+    const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = '应用位移'
+    const cancel = documentElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.addEventListener('click', () => dialog.close())
+    form.prepend(help); form.append(error, apply, cancel); dialog.append(form); pendingDrawingDialog?.close(); root.append(dialog); pendingDrawingDialog = dialog
+    let cancelOnAbort: (() => void) | undefined
+    try {
+      await new Promise<void>(resolve => {
+        cancelOnAbort = () => { if (dialog.open) dialog.close(); resolve() }
+        abort.signal.addEventListener('abort', cancelOnAbort, { once: true })
+        dialog.addEventListener('close', () => resolve(), { once: true })
+        form.addEventListener('submit', event => {
+          event.preventDefault()
+          if (!dialog.open) return
+          try {
+            if (pendingDrawingDialog !== dialog || !current()) throw Error('草稿、页面或选择已变化，请重新选择绘图')
+            if (fields.some(input => !input.value.trim())) throw Error('请输入 X 和 Y 位移')
+            const next = movePendingDrawing(model.pages, draft.operations, reference, Number(fields[0]!.value), Number(fields[1]!.value))
+            draft.setOperations(next); selectedPendingDrawing = undefined; dialog.close(); void refresh().catch(showError)
+          } catch (cause) { error.textContent = cause instanceof Error ? cause.message : '无法移动此绘图' }
+        })
+        dialog.showModal(); fields[0]!.focus()
+      })
+    } finally {
+      if (cancelOnAbort) abort.signal.removeEventListener('abort', cancelOnAbort)
+      if (pendingDrawingDialog === dialog) pendingDrawingDialog = undefined
+      dialog.remove()
+    }
+  }
+  function renderPendingDrawings() {
+    const epoch = ++pendingDrawingsGeneration
+    if (pendingDrawingsPanel.hidden) return
+    pendingDrawingsPanel.replaceChildren()
+    const source = document, sourcePage = activeId, operations = draft.operations, snapshot = JSON.stringify(operations)
+    if (selectedPendingDrawing && (selectedPendingDrawing.snapshot !== snapshot || selectedPendingDrawing.pageId !== sourcePage)) selectedPendingDrawing = undefined
+    const current = () => epoch === pendingDrawingsGeneration && source === document && sourcePage === activeId && snapshot === JSON.stringify(draft.operations) && !pendingDrawingsPanel.hidden && canChangePendingDrawings()
+    const page = model.pages.find(item => item.pageId === sourcePage)
+    const heading = documentElement('p'); heading.textContent = `待保存绘图 · 来源第 ${page ? page.index + 1 : '—'} 页`
+    const help = documentElement('p'); help.textContent = '选择一个草稿记录后可平移或删除；保存后成为已保存绘图。链接可删除，暂不支持移动。'
+    pendingDrawingsPanel.append(heading, help)
+    let count = 0
+    for (const [index, operation] of operations.entries()) {
+      if (operation.kind !== 'addDrawing' || operation.pageId !== sourcePage) continue
+      count++
+      const reference = { index, snapshot, pageId: sourcePage }
+      const row = documentElement('div'); row.dataset.pdfPendingDrawing = String(index)
+      const label = documentElement('span'); label.textContent = `${operation.shape} · 草稿操作 #${index + 1}`
+      const select = documentElement('button'); select.type = 'button'; select.textContent = '选择此绘图'; select.disabled = !current()
+      select.setAttribute('aria-pressed', String(selectedPendingDrawing?.index === index))
+      select.addEventListener('click', () => {
+        if (!current()) return
+        try { pendingDrawingTarget(model.pages, draft.operations, reference); selectedPendingDrawing = reference; renderPendingDrawings() } catch (cause) { showError(cause) }
+      })
+      row.append(label, select); pendingDrawingsPanel.append(row)
+    }
+    if (!count) { const empty = documentElement('p'); empty.textContent = '当前来源页没有待保存绘图'; pendingDrawingsPanel.append(empty) }
+    if (selectedPendingDrawing) {
+      const reference = selectedPendingDrawing, target = pendingDrawingTarget(model.pages, operations, reference)
+      const chosen = documentElement('p'); chosen.textContent = `已选择草稿操作 #${reference.index + 1}（${target.operation.shape}）`
+      const move = documentElement('button'); move.type = 'button'; move.textContent = '移动所选绘图'; move.disabled = !current() || !target.movable
+      move.addEventListener('click', () => { if (current()) void editPendingDrawingPosition(reference).catch(showError) })
+      const remove = documentElement('button'); remove.type = 'button'; remove.textContent = '删除所选绘图'; remove.disabled = !current()
+      remove.addEventListener('click', () => {
+        if (!current() || selectedPendingDrawing !== reference) return
+        try { draft.setOperations(removePendingDrawing(model.pages, draft.operations, reference)); selectedPendingDrawing = undefined; void refresh().catch(showError) } catch (cause) { showError(cause) }
+      })
+      pendingDrawingsPanel.append(chosen, move, remove)
+    }
+  }
   function renderSavedDrawings() {
     if (drawingsPanel.hidden) return
     drawingsPanel.replaceChildren()
@@ -1325,6 +1414,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   function updateControls() {
+    if (!canChangePendingDrawings()) pendingDrawingDialog?.close()
+    renderPendingDrawings()
     renderSavedDrawings()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-saved-reply-editable]')) control.disabled = !canChangeSavedReply()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply() || control.dataset.pdfReplyEditable !== 'true'
@@ -2152,6 +2243,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    pendingDrawingDialog?.close(); saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }
