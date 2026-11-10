@@ -43,3 +43,48 @@ test('layout operations must be saved alone and with valid options', async () =>
   }
   await assert.rejects(patchPdfWithReceipt(bytes, [{ kind: 'splitPages', perPage: 2 }], 'f'.repeat(64)), /来源摘要/)
 })
+
+test('N-up preserves measurement and filled widget appearances as static content; split refuses forms', async () => {
+  const {inspectNativeText}=await import('./text-operations')
+  const {createHash}=await import('node:crypto')
+  const doc=await PDFDocument.create(),page=doc.addPage([400,500]);page.drawText('body',{x:40,y:350})
+  const field=doc.getForm().createTextField('customer');field.addToPage(page,{x:40,y:200,width:120,height:20});field.setText('Alice')
+  let bytes=await doc.save(), model=await inspectPdf(bytes)
+  bytes=(await patchPdfWithReceipt(bytes,[{kind:'addDrawing',pageId:model.pages[0]!.pageId,shape:'measure',from:[40,100],to:[240,100],label:'2.00 m',color:[1,0,0],width:2}],model.sourceSha256)).bytes
+  model=await inspectPdf(bytes)
+  const op={kind:'mergePages',perSheet:2,direction:'horizontal',separator:false}
+  const result=await patchPdfWithReceipt(bytes,[op],model.sourceSha256)
+  const content=(await inspectNativeText(result.bytes,createHash('sha256').update(result.bytes).digest('hex'))).flat().map(text=>text.text).join(' ')
+  assert.ok(content.includes('Alice') && content.includes('2.00 m'),content)
+  await new Promise(resolve=>setTimeout(resolve,1100))
+  assert.equal((await patchPdfWithReceipt(bytes,[op],model.sourceSha256)).sha256,result.sha256)
+  await assert.rejects(patchPdfWithReceipt(bytes,[{kind:'splitPages',perPage:2}],model.sourceSha256),/表单字段/)
+})
+
+test('dynamic XFA sources are refused instead of silently losing their form content',async()=>{
+  const {PDFName,PDFString}=await import('pdf-lib')
+  const doc=await PDFDocument.create();doc.addPage([300,400])
+  doc.catalog.set(PDFName.of('AcroForm'),doc.context.obj({Fields:[],XFA:PDFString.of('<xdp/>')}))
+  const bytes=await doc.save(),model=await inspectPdf(bytes)
+  for(const op of [{kind:'mergePages',perSheet:2,direction:'horizontal',separator:false},{kind:'splitPages',perPage:2}]) await assert.rejects(patchPdfWithReceipt(bytes,[op],model.sourceSha256),/动态表单/)
+})
+
+test('N-up uses the visible CropBox, nonzero origin, rotation and physical UserUnit',async()=>{
+  const {PDFName,PDFNumber,degrees}=await import('pdf-lib')
+  for(const [angle,unit,expected] of [[0,1,[250,200]],[90,2,[400,500]]] as const){
+    const doc=await PDFDocument.create(),page=doc.addPage([400,500]);page.drawText('visible',{x:100,y:300})
+    page.setCropBox(50,100,200,250);page.setRotation(degrees(angle));page.node.set(PDFName.of('UserUnit'),PDFNumber.of(unit))
+    const bytes=await doc.save(),model=await inspectPdf(bytes)
+    const output=await patchPdfWithReceipt(bytes,[{kind:'mergePages',perSheet:2,direction:'horizontal',separator:false}],model.sourceSha256)
+    const saved=(await inspectPdf(output.bytes)).pages[0]!
+    assert.deepEqual([saved.mediaBox.width,saved.mediaBox.height],expected)
+  }
+})
+
+test('unconfirmed form appearances are refused rather than flattening stale field values',async()=>{
+  const {PDFName,PDFBool}=await import('pdf-lib')
+  const doc=await PDFDocument.create(),page=doc.addPage([300,400]);doc.getForm().createTextField('name').addToPage(page,{x:20,y:30,width:100,height:20})
+  doc.getForm().acroForm.dict.set(PDFName.of('NeedAppearances'),PDFBool.True)
+  const bytes=await doc.save(),model=await inspectPdf(bytes)
+  await assert.rejects(patchPdfWithReceipt(bytes,[{kind:'mergePages',perSheet:2,direction:'horizontal',separator:false}],model.sourceSha256),/表单外观/)
+})

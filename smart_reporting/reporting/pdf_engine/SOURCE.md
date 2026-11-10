@@ -305,3 +305,5 @@ The pinned writers stamp the new document with the current time; the adapter cop
 the source CreationDate/ModDate (or drops them) so an output — and its preview digest —
 is reproducible from the source bytes and operation alone.
 `bridge/page-layout.test.ts`. LOCAL-SHA256 has 48 entries.
+
+Native preservation follow-up: `bridge/layout-preservation.ts` uses the fixed PDFium 2.15.1 FPDFPage_Flatten normal-display API, serialized through the existing chainPdfium/withDocument/saveDoc helpers, before N-up embedding. It reuses the local note adapter reference census to refuse recoverable annotation graphs before redaction. The vendored redaction/save implementation and WASM are unchanged. Split with form fields and both layouts with XFA are refused rather than emitted with missing fields/content.

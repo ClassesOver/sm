@@ -1,3 +1,4 @@
+import { formatLength, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
 import { validatePdfReplies } from './pdf-replies'
 import { validateAttachmentEdits, type PdfAttachmentModel } from './pdf-attachment-edits'
 import { validatePendingPdfNote, validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
@@ -439,4 +440,14 @@ export class PdfPreviewReview {
   confirmedDigest(operations: NativeOperation[]): string | undefined {
     return this.isPrepared(operations) && this.checked ? this.digest : undefined
   }
+}
+
+/** Calibration is session-only; each saved Line carries its own immutable label. */
+export function pdfMeasurementOperation(pageId: string, points: number[][], box: PdfBox, color: [number, number, number], scale: MeasureScale): NativeOperation {
+  if (!Number.isFinite(scale.unitsPerPt) || scale.unitsPerPt <= 0 || !/^[\x20-\x7e]{1,12}$/.test(scale.unit) || !scale.unit.trim()) throw new Error('标定比例无效；单位请使用 m、cm、mm、ft、in 等 ASCII 字符')
+  const line = pdfDrawingOperation(pageId, 'arrow', points, box, color)
+  const from = line.from as number[], to = line.to as number[]
+  const length = Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!) / scale.unitsPerPt
+  if (!Number.isFinite(length) || length >= 1e21) throw new Error('测量结果超出范围')
+  return pdfDrawingOperation(pageId, 'measure', [from, to], box, color, { label: formatLength(Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!), scale) })
 }

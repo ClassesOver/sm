@@ -1096,3 +1096,93 @@ def test_slides_bridge_rejects_invalid_animation_sequences_without_output(tmp_pa
         _invoke({'action': 'edit', 'input': str(animated), 'output': str(output), 'deletions': [{'slideIndex': 0, 'elementId': body}],
                  'animationSequences': [{'slideIndex': 0, 'items': [{'source': 0, 'spid': spid, 'effect': 'fade'}]}]}, tmp_path)
     assert not output.exists()
+
+
+def test_animation_sequences_validate_effective_text_paragraphs(tmp_path):
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(2)).text = 'one\ntwo\nthree'
+    source = tmp_path / 'paragraphs.pptx'
+    presentation.save(source)
+    element = _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'][0]
+    item = {'elementId': element['id'], 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0, 'paragraph': 2}
+    request = {'action': 'edit', 'input': str(source), 'output': str(tmp_path / 'bad.pptx'),
+               'edits': [{'slideIndex': 0, 'elementId': element['id'], 'text': 'single'}],
+               'animationSequences': [{'slideIndex': 0, 'items': [item]}]}
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke(request, tmp_path)
+    assert not (tmp_path / 'bad.pptx').exists()
+    request['output'] = str(tmp_path / 'expanded.pptx')
+    request['edits'][0]['text'] = 'one\ntwo\nthree\nfour'
+    item['paragraph'] = 3
+    _invoke(request, tmp_path)
+    from lxml import etree
+    with ZipFile(request['output']) as archive:
+        doc = etree.fromstring(archive.read('ppt/slides/slide1.xml'))
+    ns = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main', 'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+    assert doc.xpath('count(//p:sp/p:txBody/a:p)', namespaces=ns) == 4
+    assert set(doc.xpath('//p:pgRg/@st', namespaces=ns)) == {'3'}
+
+
+def test_table_cell_replacement_preserves_corresponding_paragraph_formats(tmp_path):
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    table = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(5), Inches(2)).table
+    cell = table.cell(0, 0)
+    cell.text = 'first\nsecond'
+    for index, paragraph in enumerate(cell.text_frame.paragraphs):
+        paragraph.runs[0].font.size = Pt(12 + index * 8)
+        paragraph.runs[0].font.bold = bool(index)
+    table.cell(1, 1).text = 'unchanged'
+    source, output = tmp_path / 'table.pptx', tmp_path / 'table-edit.pptx'
+    presentation.save(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [],
+             'tableCells': [{'slideIndex': 0, 'elementId': target['id'], 'row': 0, 'col': 0, 'text': 'new first\nnew second'}]}, tmp_path)
+    saved = Presentation(output).slides[0].shapes[0].table
+    assert [paragraph.runs[0].font.size for paragraph in saved.cell(0, 0).text_frame.paragraphs] == [Pt(12), Pt(20)]
+    assert saved.cell(1, 1).text == 'unchanged'
+
+
+def test_table_design_shading_and_borders_preserve_text_grid_and_merged_cells(tmp_path):
+    from lxml import etree
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    table = slide.shapes.add_table(2, 3, Inches(1), Inches(1), Inches(6), Inches(2)).table
+    for ri in range(2):
+        for ci in range(3):
+            table.cell(ri, ci).text = f'{ri}:{ci}'
+    table.cell(0, 0).merge(table.cell(0, 1))
+    source, output = tmp_path / 'style-source.pptx', tmp_path / 'style-output.pptx'
+    presentation.save(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    patch = {'slideIndex': 0, 'elementId': target['id'], 'shadingColor': '#FFF2CC', 'borderPreset': 'all'}
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStyles': [patch],
+             'tableCells': [{'slideIndex': 0, 'elementId': target['id'], 'row': 1, 'col': 2, 'text': 'new text'}],
+             'newSlides': [{'duplicateOf': 0}], 'order': [0, 1], 'tables': [{'slideIndex': 0, 'rows': 2, 'cols': 2}]}, tmp_path)
+    saved = Presentation(output)
+    changed, duplicate = saved.slides[0].shapes[0].table, saved.slides[1].shapes[0].table
+    assert changed.cell(0, 0).is_merge_origin and changed.cell(0, 1).is_spanned
+    assert changed.cell(1, 2).text == 'new text' and duplicate.cell(1, 2).text == '1:2'
+    assert str(changed.cell(1, 1).fill.fore_color.rgb) == 'FFF2CC'
+    assert len(saved.slides[0].shapes) == 2
+    ns = {'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+    with ZipFile(output) as archive:
+        doc = etree.fromstring(archive.read('ppt/slides/slide1.xml'))
+    first = doc.xpath('//a:tbl', namespaces=ns)[0]
+    assert len(first.xpath('.//a:tcPr/a:lnL[@w="12700"]', namespaces=ns)) == 6
+    # Clear only the selected table's direct fill and borders in a fresh revision.
+    cleared = tmp_path / 'style-cleared.pptx'
+    refreshed = next(el for el in _invoke({'action': 'inspect', 'input': str(output)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    _invoke({'action': 'edit', 'input': str(output), 'output': str(cleared), 'edits': [], 'tableStyles': [{'slideIndex': 0, 'elementId': refreshed['id'], 'shadingColor': 'none', 'borderPreset': 'none'}]}, tmp_path)
+    with ZipFile(cleared) as archive:
+        clear_doc = etree.fromstring(archive.read('ppt/slides/slide1.xml'))
+    first_clear = clear_doc.xpath('//a:tbl', namespaces=ns)[0]
+    assert len(first_clear.xpath('.//a:tcPr/a:noFill', namespaces=ns)) == 6
+    assert len(first_clear.xpath('.//a:tcPr/a:lnL/a:noFill', namespaces=ns)) == 6
+    assert Presentation(cleared).slides[0].shapes[0].table.cell(1, 2).text == 'new text'
+    # Original copied slide retains its saved source formatting.
+    assert duplicate.cell(1, 1).fill.type is None
+    for index, bad in enumerate([{**patch, 'shadingColor': '#123456'}, {**patch, 'elementId': 'foreign'}, {**patch, 'borderPreset': 'diagonal'}, {**patch, 'xml': '<a:tc/>'}]):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({'action': 'edit', 'input': str(source), 'output': str(tmp_path / f'bad-style-{index}.pptx'), 'edits': [], 'tableStyles': [bad]}, tmp_path)

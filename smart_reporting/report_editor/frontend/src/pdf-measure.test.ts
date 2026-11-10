@@ -28,3 +28,8 @@ describe('PDF measure tool (pinned measure.ts + engine measure drawing)', () => 
     expect(() => validatePdfDrawing({ ...pdfDrawingOperation('p1', 'arrow', [[20, 100], [220, 100]], box, red), label: '1 m' }, box)).toThrow('绘图参数无效')
   })
 })
+
+it('refuses unrepresentable measurement scales before committing a label', async()=>{
+  const {pdfMeasurementOperation}=await import('./pdf-operations')
+  for(const scale of [{unitsPerPt:0,unit:'m'},{unitsPerPt:Infinity,unit:'m'},{unitsPerPt:1e-320,unit:'m'}]) expect(()=>pdfMeasurementOperation('p1',[[20,100],[220,100]],box,red,scale)).toThrow()
+})

@@ -15,8 +15,8 @@ import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
 import { DEFAULT_HEADER_FOOTER, DEFAULT_WATERMARK } from './vendor/genoffice-pdf/renderer/stamps'
-import { formatLength, parseCalibration, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
-import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, PDF_PAGE_LAYOUT_ALONE_REASON, pdfLineLength, pdfMergePagesOperation, pdfRedactionOperation, pdfSplitPagesOperation, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { parseCalibration, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, PDF_PAGE_LAYOUT_ALONE_REASON, pdfLineLength, pdfMergePagesOperation, pdfRedactionOperation, pdfSplitPagesOperation, blankPdfBytes, pdfMeasurementOperation, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -735,21 +735,22 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const layoutActions = documentElement('div', 'pdf-link-actions')
   layoutDialog.append(layoutTitle, layoutHint, layoutBody, layoutError, layoutActions); root.append(layoutDialog)
   const layoutCancel = documentElement('button'); layoutCancel.type = 'button'; layoutCancel.textContent = '取消'; layoutCancel.addEventListener('click', () => layoutDialog.close())
-  function pageLayoutUnavailable() {
+  function pageLayoutUnavailable(kind?: string) {
     if (!document || locked || previewing || printing || !!previewDocument || draft.closed || !response.editingEnabled) return '请先打开 PDF 并退出预览'
     if (draft.operations.length) return PDF_PAGE_LAYOUT_ALONE_REASON
+    if (kind === 'splitPages' && model.formFields?.length) return '含表单字段的 PDF 暂不支持拆分页面；请先保留原件并展平表单'
     if (model.formFields?.some(field => field.kind === 'signature')) return '含有签名字段的 PDF 不能合并或拆分页面（输出不保留签名）'
     return null
   }
   async function applyPageLayout(operation: NativeOperation) {
-    const reason = pageLayoutUnavailable()
+    const reason = pageLayoutUnavailable(operation.kind)
     if (reason) throw new Error(reason)
     if (hasUnstagedText()) throw new Error('请先完成当前文字编辑')
     pdfPageState(model.pages, [operation]); draft.setOperations([operation])
     layoutDialog.close(); await refresh(); await previewDraft()
   }
   function openLayoutDialog(kind: 'mergePages' | 'splitPages') {
-    const reason = pageLayoutUnavailable()
+    const reason = pageLayoutUnavailable(kind)
     if (reason) { status.textContent = reason; return }
     layoutError.textContent = ''; layoutBody.replaceChildren(); layoutActions.replaceChildren(layoutCancel)
     const total = state().length
@@ -757,7 +758,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     layoutTitle.textContent = kind === 'mergePages' ? '合并页面' : '拆分页面'
     const fail = (error: unknown) => { layoutError.textContent = error instanceof Error ? error.message : String(error) }
     if (kind === 'mergePages') {
-      layoutHint.textContent = `把每 N 个连续页面缩放排到一张纸上（共 ${total} 页）。纸张取第 1 页尺寸，2 合 1 时横向；输出不保留表单、书签与附件。保存为新修订，来源修订不变。`
+      layoutHint.textContent = `把每 N 个连续页面缩放排到一张纸上（共 ${total} 页）。纸张取第 1 页尺寸，2 合 1 时横向；批注、绘图与表单外观转为静态内容；交互、书签与附件不保留。保存为新修订，来源修订不变。`
       const countLabel = documentElement('label'); countLabel.textContent = '每张页数（2–16）'
       const count = documentElement('input'); count.inputMode = 'numeric'; count.value = '2'; count.setAttribute('aria-label', '每张页数'); countLabel.append(count)
       const directionLabel = documentElement('label'); directionLabel.textContent = '排列顺序'
@@ -777,7 +778,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       })
       layoutActions.append(apply)
     } else {
-      layoutHint.textContent = `把每一页按显示方向均分为 2、4 或 9 页（共 ${total} 页），内容无损保留。保存为新修订，来源修订不变。`
+      layoutHint.textContent = `把每一页按显示方向均分为 2、4 或 9 页（共 ${total} 页），按可见范围分割，仍保留底层页面内容；含表单字段的来源暂不支持。保存为新修订，来源修订不变。`
       for (const perPage of [2, 4, 9]) {
         const choice = documentElement('button'); choice.type = 'button'; choice.textContent = `拆成 ${perPage} 页`; choice.dataset.pdfSplitPages = String(perPage)
         choice.addEventListener('click', () => { void applyPageLayout(pdfSplitPagesOperation(perPage)).catch(error => { fail(error); showError(error) }) })
@@ -954,18 +955,19 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const measureActions = documentElement('div', 'pdf-link-actions'); measureActions.append(measureCancel, measureApply)
   measureDialog.append(measureTitle, measureHint, measureValueLabel, measureUnitLabel, measureError, measureActions); root.append(measureDialog)
   let measureScale: MeasureScale | undefined, measureRecalibrate = false
-  let measurePending: { page: PdfPageIdentity; operation: NativeOperation } | undefined
+  let measurePending: { page: PdfPageIdentity; operation: NativeOperation; snapshot: string; doc: PDFDocumentProxy | undefined } | undefined
   function commitMeasure(page: PdfPageIdentity, line: NativeOperation, scale: MeasureScale, after?: () => void) {
     const from = line.from as number[], to = line.to as number[]
-    const operation = pdfDrawingOperation(page.pageId, 'measure', [from, to], page.cropBox, drawColor, { label: formatLength(pdfLineLength(from, to), scale) })
+    const operation = pdfMeasurementOperation(page.pageId, [from, to], page.cropBox, line.color as [number,number,number], scale)
     pdfPageState(model.pages, [...draft.operations, operation])
     void append(operation).then(after).catch(showError)
   }
   // 取消：丢弃待定的参考线（与固定源一致），已有比例保持不变。
+  measureDialog.addEventListener('close', () => { measurePending = undefined; measureRecalibrate = false })
   measureCancel.addEventListener('click', () => { measurePending = undefined; measureRecalibrate = false; measureDialog.close() })
   measureApply.addEventListener('click', () => {
     try {
-      if (!measurePending) return
+      if (!measurePending || !measureDialog.open || disposed || locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || measurePending.doc !== document || measurePending.snapshot !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请取消后重新绘制参考线')
       const { page, operation } = measurePending
       const scale = parseCalibration(measureValue.value.trim(), measureUnit.value, pdfLineLength(operation.from as number[], operation.to as number[]))
       if (!scale) throw new Error('请输入大于 0 的长度和不超过 12 个字符的单位')
@@ -1332,7 +1334,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     pageButtons.get('genoffice.pdf.page.delete')!.disabled ||= !activeId || (!!document && state().length <= 1)
     pageButtons.get('genoffice.pdf.page.reverse')!.disabled ||= !document || state().length <= 1
     for (const id of ['genoffice.pdf.page.mergePages', 'genoffice.pdf.page.splitPages']) {
-      const control = pageButtons.get(id)!, reason = document ? pageLayoutUnavailable() : '请先打开 PDF'
+      const control = pageButtons.get(id)!, reason = document ? pageLayoutUnavailable(id.endsWith('splitPages') ? 'splitPages' : 'mergePages') : '请先打开 PDF'
       control.disabled ||= !!reason
       control.title = reason ?? (id.endsWith('mergePages') ? '合并页面：每 N 页排到一张纸上，单独保存为新修订' : '拆分页面：每页均分为 2/4/9 页，单独保存为新修订')
     }
@@ -1668,7 +1670,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           if (drawShape === 'measure') {
             const line = pdfDrawingOperation(page.pageId, 'measure', points, page.cropBox, drawColor, { label: '0' })
             if (measureScale && !measureRecalibrate) { commitMeasure(page, line, measureScale); return }
-            measurePending = { page, operation: line }; measureValue.value = ''; measureError.textContent = ''
+            measurePending = { page, operation: line, snapshot: JSON.stringify(draft.operations), doc: document }; measureValue.value = ''; measureError.textContent = ''
             measureHint.textContent = `参考线长 ${pdfLineLength(line.from as number[], line.to as number[]).toFixed(1)} pt；输入它代表的实际长度。`
             measureDialog.showModal(); measureValue.focus()
             return

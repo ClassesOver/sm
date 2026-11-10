@@ -333,3 +333,12 @@ def test_real_pptx_new_slide_with_layout_and_path_validation(monkeypatch):
     for path in ['ppt/slideLayouts/../../x.xml','ppt/slides/slide1.xml','C:/x.xml',3]:
         with pytest.raises(ValueError):native_office.patch_office('pptx',content,[{'kind':'editSlides','order':[0,1,2],'newSlides':[{'withLayout':path}]}])
     engine.assert_not_called()
+
+
+def test_table_design_schema_forwards_only_pinned_palette_and_border_presets():
+    from smart_reporting.report_editor.native_office import _pptx_arguments
+    patch = {'slideIndex': 0, 'elementId': 'tbl_1', 'shadingColor': '#FFF2CC', 'borderPreset': 'all'}
+    assert _pptx_arguments({'kind': 'editSlides', 'tableStyles': [patch]})['table_styles'] == [patch]
+    for item in [{**patch, 'shadingColor': []}, {**patch, 'shadingColor': '#123456'}, {**patch, 'borderPreset': 'diagonal'}, {**patch, 'xml': '<xml>'}]:
+        with pytest.raises(ValueError):
+            _pptx_arguments({'kind': 'editSlides', 'tableStyles': [item]})

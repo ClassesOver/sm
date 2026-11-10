@@ -18,7 +18,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'charts', 'smartArts', 'theme', 'slideSize', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'charts', 'smartArts', 'theme', 'slideSize', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -133,8 +133,17 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
                or any(ord(char) < 32 and char not in '\t\n' or ord(char) == 127 for char in header_footer[key])) for key in ('footer', 'date'))
         or any(not isinstance(header_footer[key], bool) for key in ('slideNum', 'dateAuto'))):
         raise ValueError('native_office_operations_invalid')
+    table_styles = _records(operation, 'tableStyles', {'slideIndex', 'elementId'}, {'shadingColor', 'borderPreset'})
+    style_keys = set()
+    for item in table_styles:
+        key = (item['slideIndex'], item['elementId']) if isinstance(item['elementId'], str) else None
+        if (key is None or not item['elementId'] or key in style_keys or not ({'shadingColor', 'borderPreset'} & item.keys())
+            or ('shadingColor' in item and (not isinstance(item['shadingColor'], str) or item['shadingColor'] not in {'none', '#FFFFFF', '#F2F2F2', '#DAEEF3', '#EBF3FB', '#D6E4F0', '#FFF2CC', '#FFE6CC', '#FCE4D6', '#E2EFDA', '#E6E6FF'}))
+            or ('borderPreset' in item and (not isinstance(item['borderPreset'], str) or item['borderPreset'] not in {'all', 'none'}))):
+            raise ValueError('native_office_operations_invalid')
+        style_keys.add(key)
     table_cells = _records(operation, 'tableCells', {'slideIndex', 'elementId', 'row', 'col', 'text'})
-    if len(table_cells) > 2000 or any(not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['text'], str) or len(item['text']) > 10000
+    if len(table_cells) > 500 or any(not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['text'], str) or len(item['text']) > 10000 or re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', item['text'])
            or any(not isinstance(item[key], int) or isinstance(item[key], bool) or item[key] < 0 for key in ('row', 'col')) for item in table_cells):
         raise ValueError('native_office_operations_invalid')
     charts = _records(operation, 'charts', {'slideIndex', 'kind', 'categories', 'series'})
@@ -237,7 +246,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
+    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
         'slide_layouts': layouts, 'backgrounds': backgrounds, 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting}
 

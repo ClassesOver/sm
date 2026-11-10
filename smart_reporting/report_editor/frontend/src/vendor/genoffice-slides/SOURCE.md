@@ -79,3 +79,5 @@ none / add / motion path / by-paragraph / move / delete / timing), `components/A
 (`8d55896be2ea47340cce8da9aec43531fa232aa4b2f47520a774098d4c69cefd`: step numbering and row content) and the five
 `MOTION_PATHS` strings in `components/Ribbon.tsx` (`6a261cf18bbdbf2b39fa51add3d30383a10ded4a072303e0012cb7e5cde00aba`),
 copied verbatim. The bridge keeps the same five path strings as its allow-list.
+
+Table Design follow-up: `components/table-shading-colors.ts` is byte-identical to pinned renderer source (Git blob `3b568af4ba4bfdc717345e873a7322ceaa2b801e`). Ribbon onEditTableStyle shading and all/none borders are adapted for whole-table selection; pinned editTableStyle remains unchanged. No table-style gallery or cell-range styling parity is claimed.

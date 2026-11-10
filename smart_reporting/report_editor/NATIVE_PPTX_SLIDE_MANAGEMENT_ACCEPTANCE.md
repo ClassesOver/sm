@@ -41,7 +41,7 @@
 ## 编辑已有表格单元格（固定引擎 editTableCellText）
 
 - 选中表格（对象列表现在包含表格）时，检查面板显示单元格网格，可逐格改字；合并单元格只读。每个改动单元格为一条待保存项，删除表格所在对象时一并撤回。
-- inspect 新增 `tableCells`（合并单元格为 null）；草稿 `tableCells: [{slideIndex, elementId, row, col, text}]`。桥接沿用单元格首段与首个文字段的格式（字号、粗体等）生成新段落，与其他按对象身份的修改一起、在页面重建之前执行；拒绝越界、合并单元格、重复与不存在的表格。
+- inspect 新增 `tableCells`（合并单元格为 null）；草稿 `tableCells: [{slideIndex, elementId, row, col, text}]`。桥接通过既有 applyEditParagraphs 保留对应段落及主导文字格式（字号、粗体等），不再将首段格式复制到所有段落，与其他按对象身份的修改一起、在页面重建之前执行；拒绝越界、合并单元格、重复与不存在的表格。
 - 证据：`test_slides_bridge_edits_existing_table_cells_keeping_formatting`（20pt 粗体保留、多行单元格）、`new-slide` 冒烟在夹具 2×2 表格中把“100”改为“120”并回读。
 
 ## 艺术字（固定源 insertWordArt / 共享 WORDART_PRESETS）
@@ -119,3 +119,8 @@
 - `frontend/smoke/pptx-native-save-smoke.mjs`（`PPTX_SMOKE_MODE=new-slide`，夹具两页；Chromium + 真实 Python→PPTX 引擎，授权/修订路由为 fixture）：新建 → 再新建并移除 → 删除被沿用版式的来源页被拒绝 → 删除另一来源页 → 上移到首页 → 复制来源页（副本只读、显示原内容）→ 按 Title Slide 版式新建 → 刷新恢复 → 保存修订 2 → 下载身份一致 → python-pptx 独立回读四页（末页版式为 Title Slide；首页空白且版式与原页相同、原文字保留、副本与原页一致、被删页不存在）→ 重开修订 2 新页成为普通页。原 `textbox` 模式回归通过。
 
 生产镜像、真实授权与发布链路未在此验收。
+
+
+## 审查后续：整表底纹与边框
+
+Table Design 接通固定调色板底纹/无填充、黑色 1pt 全部边框/无边框，复用 editTableStyle。历史、恢复、真实预览、下载重开和独立 OOXML 验证见 `NATIVE_PR210_PRESERVATION_ACCEPTANCE.md`。样式库和单格选区仍未接通。

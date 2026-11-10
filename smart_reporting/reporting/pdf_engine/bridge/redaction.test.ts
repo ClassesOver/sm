@@ -74,3 +74,28 @@ test('redaction rejects out-of-page, degenerate, blank-page, deleted-page and pa
     { kind: 'redact', pageId: p1!.pageId, rect: [10, 10, 50, 50] },
   ], model.sourceSha256), /涂黑范围无效/)
 })
+
+test('redaction refuses root annotations reachable by outside replies, but keeps exclusive notes supported', async () => {
+  const { PDFArray, PDFName, PDFString } = await import('pdf-lib')
+  const doc=await PDFDocument.create(), page=doc.addPage([400,500])
+  const root=doc.context.register(doc.context.obj({Type:'Annot',Subtype:'Text',Rect:[40,100,60,120],Contents:PDFString.of('CONFIDENTIAL_ROOT')}))
+  const reply=doc.context.register(doc.context.obj({Type:'Annot',Subtype:'Text',Rect:[250,250,270,270],Contents:PDFString.of('outside'),IRT:root,RT:'R'}))
+  page.node.set(PDFName.of('Annots'),doc.context.obj([root,reply]))
+  const bytes=await doc.save(), model=await inspectPdf(bytes)
+  await assert.rejects(patchPdfWithReceipt(bytes,[{kind:'redact',pageId:model.pages[0]!.pageId,rect:[30,90,80,130]}],model.sourceSha256),/关联批注/)
+  page.node.set(PDFName.of('Annots'),doc.context.obj([root]));doc.context.delete(reply)
+  const single=await doc.save(), sm=await inspectPdf(single)
+  const clean=await patchPdfWithReceipt(single,[{kind:'redact',pageId:sm.pages[0]!.pageId,rect:[30,90,80,130]}],sm.sourceSha256)
+  assert.ok(!Buffer.from(clean.bytes).includes('CONFIDENTIAL_ROOT'))
+  assert.equal((await PDFDocument.load(clean.bytes)).getPage(0).node.lookupMaybe(PDFName.of('Annots'),PDFArray)?.size() ?? 0,0)
+})
+
+test('redaction refuses a hit annotation whose appearance stream is shared outside the area', async()=>{
+  const {PDFName}=await import('pdf-lib')
+  const doc=await PDFDocument.create(),page=doc.addPage([400,500])
+  const ap=doc.context.register(doc.context.stream('0 0 20 20 re f',{Type:'XObject',Subtype:'Form',BBox:[0,0,20,20]}))
+  const annotations=[[40,100,60,120],[250,250,270,270]].map(Rect=>doc.context.register(doc.context.obj({Type:'Annot',Subtype:'Square',Rect,AP:{N:ap}})))
+  page.node.set(PDFName.of('Annots'),doc.context.obj(annotations))
+  const bytes=await doc.save(),model=await inspectPdf(bytes)
+  await assert.rejects(patchPdfWithReceipt(bytes,[{kind:'redact',pageId:model.pages[0]!.pageId,rect:[30,90,80,130]}],model.sourceSha256),/关联批注/)
+})

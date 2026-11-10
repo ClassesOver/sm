@@ -1,3 +1,4 @@
+import { assertRedactionAnnotationSafety, flattenLayoutAnnotations } from './layout-preservation'
 import { appendLocalNoteReplies, type LocalNoteRoot, type LocalNoteReply } from './local-note-replies'
 import { inspectReplyTargets, inspectNoteThreads, appendNoteReplies, canAppendPendingReplies, type NoteReply } from './note-replies'
 import { inspectAttachments, patchAttachments, validAttachmentName, ATTACHMENT_FILE_MAX } from './attachments'
@@ -161,10 +162,13 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     if (ops.length !== 1) throw new Error('合并页面/拆分页面须单独保存，请先保存或撤销其他修改')
     const source = await inspectPdf(content)
     if (expectedSha256 !== source.sourceSha256 || (layout.sourceSha256 !== undefined && layout.sourceSha256 !== source.sourceSha256)) throw new Error('PDF 来源摘要不匹配')
+    const sourceDocument = await PDFDocument.load(content, { updateMetadata: false })
+    if (sourceDocument.catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict)?.has(PDFName.of('XFA'))) throw new Error('动态表单 PDF 暂不支持合并或拆分页面')
     if (source.formFields.some(field => field.kind === 'signature')) throw new Error('含有签名字段的 PDF 不能合并或拆分页面（输出不保留签名）')
+    if (layout.kind === 'splitPages' && source.formFields.length) throw new Error('含表单字段的 PDF 暂不支持拆分页面；请先保留原件并展平表单')
     if (layout.kind === 'splitPages' && source.pageCount * layout.perPage > 10000) throw new Error('拆分后页数超过 10000')
     let bytes = layout.kind === 'mergePages'
-      ? await mergePagesBytes(content, { perSheet: layout.perSheet, direction: layout.direction, separator: layout.separator })
+      ? await mergePagesBytes(await flattenLayoutAnnotations(content), { perSheet: layout.perSheet, direction: layout.direction, separator: layout.separator })
       : await splitPagesBytes(content, layout.perPage)
     // 固定源新建文档时写入当前时间（CreationDate/ModDate），使同一草稿每次输出不同、预览确认摘要无法复现。
     // 改为沿用来源文档信息中的日期（来源无日期则移除），输出只取决于来源字节与操作。
@@ -248,6 +252,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     }
   }
   for (const op of ops) {
+    if (op.kind === 'mergePages' || op.kind === 'splitPages') throw new Error('页面排版须单独处理')
     if (op.kind === 'setFormValue') continue
     if (op.sourceSha256 !== undefined && op.sourceSha256 !== model.sourceSha256) throw new Error('PDF 操作来源摘要不匹配')
     if (op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment' || op.kind === 'insertBlankPage' || op.kind === 'setStamps') continue
@@ -458,6 +463,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     const mapped = redactions.map(item => ({ pageIndex: finalOrder.indexOf(item.pageIndex), rect: item.rect }))
     if (mapped.some(item => item.pageIndex < 0)) throw new Error('PDF 涂黑页面身份无效')
     const output = await PDFDocument.load(bytes, { updateMetadata: false })
+    assertRedactionAnnotationSafety(output, mapped)
     for (const index of new Set(mapped.map(item => item.pageIndex))) { output.getPage(index).node.delete(PDFName.of('Thumb')); output.getPage(index).node.delete(PDFName.of('PieceInfo')) }
     bytes = await redactPdf(await output.save({ useObjectStreams: false, updateFieldAppearances: false }), mapped)
   }

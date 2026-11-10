@@ -550,6 +550,7 @@ class ReportSlidesEditorService:
         sections: list[dict[str, Any]] | None = None,
         header_footer: dict[str, Any] | None = None,
         table_cells: list[dict[str, Any]] | None = None,
+        table_styles: list[dict[str, Any]] | None = None,
         charts: list[dict[str, Any]] | None = None,
         smart_arts: list[dict[str, Any]] | None = None,
         animation_sequences: list[dict[str, Any]] | None = None,
@@ -591,6 +592,8 @@ class ReportSlidesEditorService:
                     request["sections"] = sections
                 if header_footer is not None:
                     request["headerFooter"] = header_footer
+                if table_styles:
+                    request["tableStyles"] = table_styles
                 if table_cells:
                     request["tableCells"] = table_cells
                 if charts:

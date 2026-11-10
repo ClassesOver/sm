@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -66,6 +66,7 @@ type Input = {
   /** 固定源 HeaderFooterDialog（applyHeaderFooter，应用于全部）：页脚文字、页码、日期（固定文字或自动更新）。 */
   headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
   /** 固定源表格单元格编辑（editTableCellText）：保留单元格首段与首个文字段的格式。 */
+  tableStyles?: { slideIndex: number; elementId: string; shadingColor?: string; borderPreset?: 'all' | 'none' }[]
   tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]
   /** 固定源 Insert ▸ Chart（insertChart）：13 种图表类型与数据；位置为 2/3 宽、3:2、居中（graphicFrameInsertFrame）。 */
   charts?: { slideIndex: number; kind: string; categories: string[]; series: { name: string; values: number[] }[] }[]
@@ -360,7 +361,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -373,17 +374,28 @@ if (request.action === 'inspect') {
     deleted.add(key)
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
-  if (!Array.isArray(request.tableCells ?? []) || (request.tableCells ?? []).length > 2000) throw new Error('table_cells_invalid')
+  const tableStyles = request.tableStyles ?? [], styledTables = new Set<string>()
+  const shadingColors = ['none','#FFFFFF','#F2F2F2','#DAEEF3','#EBF3FB','#D6E4F0','#FFF2CC','#FFE6CC','#FCE4D6','#E2EFDA','#E6E6FF']
+  if (!Array.isArray(tableStyles) || tableStyles.length > 500) throw new Error('table_styles_invalid')
+  for (const item of tableStyles) {
+    if (!item || Object.keys(item).some(key => !['slideIndex','elementId','shadingColor','borderPreset'].includes(key)) || !validSlideIndex(item.slideIndex,slideCount) || typeof item.elementId !== 'string' || (item.shadingColor === undefined && item.borderPreset === undefined) || (item.shadingColor !== undefined && !shadingColors.includes(item.shadingColor)) || (item.borderPreset !== undefined && !['all','none'].includes(item.borderPreset)) || styledTables.has(`${item.slideIndex}:${item.elementId}`) || touchesDeleted(item.slideIndex,item.elementId) || !originalSlides[item.slideIndex]!.elements.some(el => el.id === item.elementId && el.type === 'table')) throw new Error('table_style_invalid')
+    styledTables.add(`${item.slideIndex}:${item.elementId}`)
+  }
+  if (!Array.isArray(request.tableCells ?? []) || (request.tableCells ?? []).length > 500) throw new Error('table_cells_invalid')
   const editedCells = new Set<string>()
   for (const cell of request.tableCells ?? []) {
     if (!cell || typeof cell !== 'object' || Object.keys(cell).sort().join() !== 'col,elementId,row,slideIndex,text' || !validSlideIndex(cell.slideIndex, slideCount) || typeof cell.elementId !== 'string'
-      || !Number.isInteger(cell.row) || !Number.isInteger(cell.col) || cell.row < 0 || cell.col < 0 || typeof cell.text !== 'string' || cell.text.length > 10000 || touchesDeleted(cell.slideIndex, cell.elementId)) throw new Error('table_cell_invalid')
+      || !Number.isInteger(cell.row) || !Number.isInteger(cell.col) || cell.row < 0 || cell.col < 0 || typeof cell.text !== 'string' || cell.text.length > 10000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(cell.text) || touchesDeleted(cell.slideIndex, cell.elementId)) throw new Error('table_cell_invalid')
     const key = `${cell.slideIndex}:${cell.elementId}:${cell.row}:${cell.col}`
     if (editedCells.has(key)) throw new Error('table_cell_duplicated')
     editedCells.add(key)
   }
   if (!Array.isArray(request.shapeKinds ?? []) || (request.shapeKinds ?? []).length > 500) throw new Error('shape_kinds_invalid')
   const reshaped = new Set<string>()
+  for (const item of tableStyles) {
+    const patch = { ...(item.shadingColor !== undefined ? {shadingColor:item.shadingColor} : {}), ...(item.borderPreset !== undefined ? {borderPreset:item.borderPreset, ...(item.borderPreset === 'all' ? {borderColor:'#000000',borderWidthEmu:12700} : {})} : {}) }
+    if (!editTableStyle(originalSlides[item.slideIndex]!,item.elementId,patch)) throw new Error('table_style_target_invalid')
+  }
   for (const item of request.shapeKinds ?? []) {
     if (!item || typeof item !== 'object' || Object.keys(item).some(key => !['slideIndex', 'elementId', 'kind'].includes(key)) || !validSlideIndex(item.slideIndex, slideCount) || typeof item.elementId !== 'string'
       || typeof item.kind !== 'string' || !shapePresets.presets.includes(item.kind) || shapePresets.lines.includes(item.kind)
@@ -424,6 +436,8 @@ if (request.action === 'inspect') {
         if (source.presetXml && (item.trigger !== undefined || item.durationMs !== undefined || item.delayMs !== undefined)) throw new Error('animation_sequence_preset_readonly')
         const owner = slide.elements.find(element => elementSpid(element) === source.spid)
         if (owner && touchesDeleted(sequence.slideIndex, owner.id)) throw new Error('delete_target_has_pending_edits')
+        const changedText = (request.edits ?? []).findLast(edit => edit.slideIndex === sequence.slideIndex && edit.elementId === owner?.id && edit.text !== undefined)?.text
+        if (changedText !== undefined && source.paragraph !== undefined && source.paragraph >= changedText.split(/\r?\n/).length) throw new Error('animation_paragraph_invalid')
         usedSources.add(item.source)
         continue
       }
@@ -433,7 +447,7 @@ if (request.action === 'inspect') {
         || ((item.effect === 'motionPath') !== (item.motionPath !== undefined)) || (item.motionPath !== undefined && !MOTION_PATH_PRESETS.includes(item.motionPath))) throw new Error('animation_sequence_item_invalid')
       const element = slide.elements.find(candidate => candidate.id === item.elementId)
       if (!element || elementSpid(element) === null || (element.type !== 'text' && element.type !== 'shape') || touchesDeleted(sequence.slideIndex, item.elementId)) throw new Error('animation_target_invalid')
-      if (item.paragraph !== undefined && (!Number.isInteger(item.paragraph) || item.paragraph < 0 || item.paragraph >= ((element as { text?: { paragraphs: unknown[] } }).text?.paragraphs.length ?? 0) || item.effect === 'motionPath')) throw new Error('animation_paragraph_invalid')
+      if (item.paragraph !== undefined && (!Number.isInteger(item.paragraph) || item.paragraph < 0 || item.paragraph >= ((request.edits ?? []).findLast(edit => edit.slideIndex === sequence.slideIndex && edit.elementId === item.elementId && edit.text !== undefined)?.text?.split(/\r?\n/).length ?? (element as { text?: { paragraphs: unknown[] } }).text?.paragraphs.length ?? 0) || item.effect === 'motionPath')) throw new Error('animation_paragraph_invalid')
     }
   }
   if ((request.edits ?? []).some((edit) => touchesDeleted(edit.slideIndex, edit.elementId)) ||
@@ -582,8 +596,7 @@ if (request.action === 'inspect') {
     const table = slide.elements.find(candidate => candidate.id === cell.elementId) as unknown as { type: string; rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] } | undefined
     const source = table?.type === 'table' ? table.rows[cell.row]?.[cell.col] : undefined
     if (!source || source.merged) throw new Error('table_cell_target_invalid')
-    const firstParagraph = source.text?.paragraphs[0], firstRun = firstParagraph?.runs[0]
-    const paragraphs = cell.text.split(/\r?\n/).map(line => ({ ...(firstParagraph ?? {}), runs: [{ ...(firstRun ?? {}), text: line }] }))
+    const paragraphs = applyEditParagraphs(source.text?.paragraphs ?? [], cell.text.split(/\r?\n/).map(text => ({ runs: [{ text }] })))
     if (!editTableCellText(slide, cell.elementId, cell.row, cell.col, paragraphs as never)) throw new Error('table_cell_target_invalid')
   }
   for (const item of request.shapeKinds ?? []) {

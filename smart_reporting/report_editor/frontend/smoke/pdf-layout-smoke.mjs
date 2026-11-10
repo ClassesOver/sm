@@ -12,6 +12,7 @@ const engine = `${repo}/smart_reporting/reporting/pdf_engine`
 const port = Number(process.env.PDF_LAYOUT_SMOKE_PORT ?? 4201)
 const baseUrl = `http://127.0.0.1:${port}`
 const mediaType = 'application/pdf'
+const appearances = process.env.PDF_LAYOUT_ANNOTATIONS === '1'
 const runBridge = (mode, bytes, operations = []) => {
   if (mode !== 'create') {
     const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', `
@@ -36,7 +37,12 @@ if (input.mode === 'create') {
   const pdf = await PDFDocument.create()
   const font = await pdf.embedFont(StandardFonts.Helvetica)
   for (let index = 1; index <= 5; index++) pdf.addPage([612, 792]).drawText("Layout page " + index, { x: 72, y: 700, size: 28, font })
-  output = { bytes: Buffer.from(await pdf.save()).toString('base64') }
+  if (process.env.PDF_LAYOUT_ANNOTATIONS === '1') {
+    const field=pdf.getForm().createTextField('customer');field.addToPage(pdf.getPages()[0],{x:72,y:600,width:180,height:24});field.setText('ALICE-FORM')
+    const bytes=await pdf.save(),model=await inspectPdf(bytes)
+    const result=await patchPdfWithReceipt(bytes,[{kind:'addDrawing',pageId:model.pages[0].pageId,shape:'measure',from:[72,500],to:[272,500],color:[1,0,0],width:2,label:'2.00 m'}],model.sourceSha256)
+    output={bytes:Buffer.from(result.bytes).toString('base64')}
+  } else output = { bytes: Buffer.from(await pdf.save()).toString('base64') }
 } else if (input.mode === 'inspect') output = await inspectPdf(bytes)
 else if (input.mode === 'patch') { const result = await patchPdfWithReceipt(bytes, input.operations, input.sha256); output = { bytes: Buffer.from(result.bytes).toString('base64'), sha256: result.sha256 } }
 else throw new Error('unknown mode')
@@ -116,6 +122,7 @@ try {
   await page.locator('[data-pdf-ribbon-tab="home"]').click()
   await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click(); assert.deepEqual(await readDraft(), [])
   await page.locator('[data-pdf-ribbon-tab="page"]').click()
+  if (!appearances) {
   // 拆分页面：选择后显示实际预览（5 页 → 10 页），返回原文件后撤销
   await splitButton.click()
   await page.locator('.pdf-layout-dialog').waitFor({ state: 'visible' })
@@ -130,6 +137,7 @@ try {
   await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click()
   assert.deepEqual(await readDraft(), [])
   await page.locator('[data-pdf-ribbon-tab="page"]').click()
+  } else { assert.equal(await splitButton.isDisabled(),true); assert.match(await splitButton.getAttribute('title'),/表单/) }
   await mergeButton.click()
   await page.locator('.pdf-layout-dialog').waitFor({ state: 'visible' })
   await page.getByLabel('每张页数').fill('17')
@@ -151,14 +159,15 @@ try {
   const downloadUrl = await page.locator('.native-delivery a').filter({ hasText: '下载 PDF' }).getAttribute('href')
   const downloadedBytes = Buffer.from(await page.evaluate(async url => [...new Uint8Array(await (await fetch(url)).arrayBuffer())], downloadUrl))
   assert.deepEqual(downloadedBytes, savedBytes)
-  if (process.env.PDF_LAYOUT_OUTPUT) await writeFile(process.env.PDF_LAYOUT_OUTPUT, downloadedBytes)
+  if (process.env.PDF_LAYOUT_OUTPUT) { await writeFile(process.env.PDF_LAYOUT_OUTPUT, downloadedBytes); await writeFile(process.env.PDF_LAYOUT_OUTPUT+'.source.pdf',sourceBytes) }
   // 独立 pypdf 回读：4 合 1 → 2 张纸，第 1 张含第 1–4 页文字、第 2 张含第 5 页；来源文件不变。
   const pagesOut = readback(downloadedBytes)
   assert.equal(pagesOut.length, 2)
   for (const index of [1, 2, 3, 4]) assert.match(pagesOut[0][4], new RegExp(`Layout page ${index}`))
   assert.match(pagesOut[1][4], /Layout page 5/)
   assert.doesNotMatch(pagesOut[1][4], /Layout page 1/)
-  assert.ok(previewCalls.some(operations => operations[0]?.kind === 'splitPages'))
+  if (!appearances) assert.ok(previewCalls.some(operations => operations[0]?.kind === 'splitPages'))
+  else { assert.match(pagesOut[0][4],/ALICE-FORM/); assert.match(pagesOut[0][4],/2\.00 m/) }
   assert.equal(readback(sourceBytes).length, 5)
   assert.equal(createHash('sha256').update(sourceBytes).digest('hex'), sourceSha)
   await page.goto(`${baseUrl}/reports/v1/native/fixture-pdf/2`); await page.locator('.pdf-ribbon').waitFor({ timeout: 60000 })

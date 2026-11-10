@@ -405,3 +405,12 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Release only the proven unshared deleted leaf dictionary; a real unlink-only counterexample preserves stale inbound IRT and makes future census readonly. Read back the full surviving annotation sequence/dictionaries; verify root remains replyable and last-reply deletion restores ordinary-root capability.
 - [x] Sidebar edit/delete, undo/redo/reload, actual preview/download/reopen, stale pane/modal and readonly/capability isolation work alongside prior saved/local replies. Five new engine cases plus18 affected, three new frontend plus33 affected, seven real service and14 selected ordinary-note/markup file cases pass; Chromium/pypdf/Node22/build evidence in `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
 - [ ] Root-body/whole-thread subtree mutation, nested/popup/rich/complex threads, authenticated authors and full context/popovers remain open, as do other PDF/full-image/production/desktop gaps. This supersedes only the saved flat-leaf mutation gap. Flags off; no merge/deployment.
+
+
+### PR #210 主线审查修复与 Table Design 续接（2026-11-10）
+
+- [x] 关闭重复 #209，迁入测量有限值/弹窗身份与表格段落格式保护；保留 #210 作为主线。
+- [x] 关联批注涂黑引用保护；N 合 1 静态外观保留；含表单拆分页/XFA 明确拒绝；按最终文字校验与恢复按段动画。
+- [x] 固定 Table Design 调色板、整表底纹/无填充、所有/无边框，复用 editTableStyle；历史、真实预览、下载与独立 OOXML 回读。
+- [ ] 表单树拆分重映射、复杂关联批注涂黑、表格样式库/单格与结构、其余 PDF/PPTX 功能及生产/桌面/完整镜像验收仍开放。整体任务未宣称完成，功能开关保持关闭。
+- 证据范围与原始素材：`NATIVE_PR210_PRESERVATION_ACCEPTANCE.md`。
