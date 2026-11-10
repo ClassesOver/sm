@@ -883,3 +883,27 @@ def test_slides_bridge_applies_header_footer_to_all_slides(tmp_path: Path):
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "headerFooter": bad}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_inserts_wordart_presets(tmp_path: Path):
+    """固定源 insertWordArt：54pt 居中、不换行随文字调整；填充/斜体/文字描边按预设写入；非法描边拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "wordart.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    geometry = {"x": 244, "y": 312, "width": 473, "height": 97}
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)), "textBoxes": [
+        {"slideIndex": 0, "text": "艺术字甲", "fontSize": 54, "color": "#70AD47", "bold": True, "italic": True, "wordArt": True, "geometry": geometry},
+        {"slideIndex": 0, "text": "艺术字乙", "fontSize": 54, "color": "#FFFFFF", "bold": True, "outline": {"color": "#ED7D31", "widthEmu": 19050}, "wordArt": True, "geometry": geometry},
+    ]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    first = next(sp for sp in re.findall(r"<p:sp>.*?</p:sp>", xml, re.S) if "艺术字甲" in sp)
+    second = next(sp for sp in re.findall(r"<p:sp>.*?</p:sp>", xml, re.S) if "艺术字乙" in sp)
+    assert 'wrap="none"' in first and "<a:spAutoFit/>" in first and 'algn="ctr"' in first
+    assert re.search(r'<a:rPr[^>]*sz="5400"[^>]*b="1"[^>]*i="1"|<a:rPr[^>]*i="1"[^>]*sz="5400"|<a:rPr[^>]*sz="5400"[^>]*i="1"', first)
+    assert '<a:ln w="19050"><a:solidFill><a:srgbClr val="ED7D31"/>' in second.replace(" ", " ")
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "textBoxes": [
+            {"slideIndex": 0, "text": "x", "outline": {"color": "orange", "widthEmu": 19050}, "geometry": geometry}]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()

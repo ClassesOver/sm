@@ -25,6 +25,10 @@ type TextBox = {
   rotation?: number
   /** 固定源 insertField：slidenum（幻灯片编号）或 datetime1（日期） */
   field?: 'slidenum' | 'datetime1'
+  /** 固定源 insertWordArt：斜体、文字描边（EMU）与艺术字文本框（居中、不换行、随文字调整） */
+  italic?: boolean
+  outline?: { color: string; widthEmu: number }
+  wordArt?: boolean
 }
 type Input = {
   action: 'inspect' | 'edit'
@@ -362,6 +366,8 @@ if (request.action === 'inspect') {
     if (box.bold !== undefined && typeof box.bold !== 'boolean') throw new Error('textbox_font_invalid')
     if (box.rotation !== undefined && (!Number.isFinite(box.rotation) || Math.abs(box.rotation) > 360)) throw new Error('textbox_rotation_invalid')
     if (box.field !== undefined && !['slidenum', 'datetime1'].includes(box.field)) throw new Error('textbox_field_invalid')
+    if ((box.italic !== undefined && typeof box.italic !== 'boolean') || (box.wordArt !== undefined && typeof box.wordArt !== 'boolean')
+      || (box.outline !== undefined && (!box.outline || typeof box.outline !== 'object' || Object.keys(box.outline).sort().join() !== 'color,widthEmu' || typeof box.outline.color !== 'string' || !colorPattern.test(box.outline.color) || !Number.isInteger(box.outline.widthEmu) || box.outline.widthEmu < 1 || box.outline.widthEmu > 254000))) throw new Error('textbox_wordart_invalid')
   }
   for (const edit of request.edits ?? []) {
     if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
@@ -565,7 +571,9 @@ if (request.action === 'inspect') {
       kind: 'textbox',
       offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
       // 固定源 insertField：页码/日期为 <a:fld> 动态字段（文字为缓存值），居中。
-      paragraphs: box.text.split(/\r?\n/).map((text) => ({ ...(box.field ? { align: 'center' as const } : {}), runs: [{
+      paragraphs: box.text.split(/\r?\n/).map((text) => ({ ...(box.field || box.wordArt ? { align: 'center' as const } : {}), runs: [{
+        ...(box.italic ? { italic: true } : {}),
+        ...(box.outline ? { outline: { color: box.outline.color.toUpperCase(), widthEmu: box.outline.widthEmu } } : {}),
         ...(box.field ? { field: box.field } : {}),
         text,
         fontSize: box.fontSize ?? 18,
@@ -573,7 +581,7 @@ if (request.action === 'inspect') {
         color: (box.color ?? '#000000').toUpperCase(),
         ...(box.bold ? { bold: true } : {}),
       }] })),
-      bodyPr: { autoFit: 'shrink' },
+      bodyPr: box.wordArt ? { wrap: 'none', autoFit: 'resize' } : { autoFit: 'shrink' },
     })
     if (box.rotation) {
       element.transform.rot = Math.round(box.rotation * 60000)

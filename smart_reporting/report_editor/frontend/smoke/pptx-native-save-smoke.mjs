@@ -243,6 +243,9 @@ try {
     // 页码字段（固定源 insertField:slidenum）
     await page.locator('[data-command="slideNumber"][data-source-action="onInsertField:slidenum"]').click()
     await page.locator('.structure-pending li').filter({ hasText: '页码字段' }).waitFor()
+    // 艺术字（固定源 insertWordArt）：白色填充 + 橙色描边
+    await page.locator('select[data-command="insertWordArt"]').selectOption('white-orange')
+    await page.locator('.structure-pending li').filter({ hasText: '艺术字' }).waitFor()
     // 形状格式（固定源 Shape Format 填充/轮廓）：作用于来源页文本框。
     const styledTarget = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     await page.locator('#object-select').selectOption(styledTarget.id)
@@ -447,7 +450,9 @@ try {
     assert.deepEqual(operation.headerFooter, { footer: '智能报告 · 内部', slideNum: true, date: null, dateAuto: true })
     assert.deepEqual(operation.shapeKinds, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'shape').id, kind: 'hexagon' }])
     assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
-    assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2']])
+    assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2'], [0, undefined, '请在此放置您的文字']])
+    assert.deepEqual(operation.textBoxes[1].outline, { color: '#ED7D31', widthEmu: 19050 })
+    assert.equal(operation.textBoxes[1].wordArt, true)
     assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
@@ -468,6 +473,7 @@ try {
   })
   assert.equal(download.status, 200)
   const downloaded = Buffer.from(download.bytes)
+  if (process.env.PPTX_SMOKE_OUTPUT) (await import('node:fs')).writeFileSync(process.env.PPTX_SMOKE_OUTPUT, downloaded)
   assert.equal(createHash('sha256').update(downloaded).digest('hex'), saveReceipt.artifacts.pptx.sha256)
   assert.equal(downloaded.length, saveReceipt.artifacts.pptx.size)
   const reopened = JSON.parse(runPython({ mode: 'inspect', bytes: downloaded.toString('base64'), revision: saveReceipt.revision }))
@@ -481,10 +487,10 @@ try {
     assert.equal(slides[3][0], 'Title Slide')
     assert.deepEqual(slides[0][1], [])
     assert.equal(slides[0][0], slides[1][0])
-    assert.deepEqual(slides[1][1], ['Native browser formatting fixture', '2'])
+    assert.deepEqual(slides[1][1], ['Native browser formatting fixture', '2', '请在此放置您的文字'])
     // 副本复制的是已保存内容（不含同批新增形状）；原页多出两个形状
     assert.deepEqual(slides[2].slice(0, 2), [slides[1][0], ['Native browser formatting fixture']])
-    assert.equal(slides[1][2], slides[2][2] + 4)
+    assert.equal(slides[1][2], slides[2][2] + 5)
     const table = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[len(s.table.rows),len(s.table.columns)] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
     assert.deepEqual(JSON.parse(table.stdout), [[4, 3]])
     const shapeXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "prst=\\"roundRect\\"" in z.read(n).decode() and "C43E1C" in z.read(n).decode()))'], { input: downloaded, encoding: 'utf8' })

@@ -234,7 +234,10 @@ it('connects the source text-box action and disables unsupported Insert Text and
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   const textGroup = host.querySelector<HTMLElement>('.slides-native-ribbon-group[aria-label="Text"]')!
   const textBox = textGroup.querySelector<HTMLButtonElement>('[data-command="addText"]')!
-  const unsupportedTextActions = ['onInsertWordArt']
+  const unsupportedTextActions: string[] = []
+  const wordArt = textGroup.querySelector<HTMLSelectElement>('select[data-command="insertWordArt"]')!
+  expect(wordArt.disabled).toBe(false)
+  expect([...wordArt.options].slice(1).map(option => option.textContent)).toEqual(['填充：蓝色', '填充：金色', '填充：深红', '填充：紫色', '填充：绿色；斜体', '填充：白色；描边：橙色', '填充：白色；描边：深红', '填充：金色；描边：棕色', '填充：天蓝；描边：藏青', '填充：藏青；描边：白色', '填充：黑色；描边：金色', '填充：银色；描边：深灰'])
   expect(textGroup.querySelector<HTMLButtonElement>('[data-source-action="onOpenHeaderFooter"]')!.disabled).toBe(false)
   // 日期与页码字段已接通（固定源 insertField）
   for (const action of ['onInsertField:datetime', 'onInsertField:slidenum']) expect(textGroup.querySelector<HTMLButtonElement>(`[data-source-action="${action}"]`)!.disabled).toBe(false)

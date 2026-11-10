@@ -25,6 +25,12 @@
 - 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
 - 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
 
+## 艺术字（固定源 insertWordArt / 共享 WORDART_PRESETS）
+
+- Insert ▸ Text ▸ WordArt 为 12 个固定源预设的选择器（复用已 vendored 的 `packages/ui/src/wordart-presets.ts`，中文名称取固定源语言包）。与固定源 `wordart-insert.ts` 一致：354.6×72.7pt 居中、54pt、居中段落、`wrap="none"` + 随文字调整；占位文字“请在此放置您的文字”，可在待保存清单中改写。
+- 复用新增文本框通道，增加 `italic`、`outline{color,widthEmu}`、`wordArt` 字段，桥接与 Python 校验。
+- 证据：`test_slides_bridge_inserts_wordart_presets`、Ribbon 单测（12 个预设名称）、`new-slide` 冒烟插入白色/橙色描边艺术字；LibreOffice 栅格化保存结果人工确认可见。
+
 ## 页眉和页脚（固定源 HeaderFooterDialog → applyHeaderFooter）
 
 - Insert ▸ Text ▸ Header and Footer 打开与固定源相同的对话框：日期和时间（自动更新或固定文字）、幻灯片编号、页脚文字；初值读取当前页（inspect 新增每页 `headerFooter`），按钮“全部应用”。

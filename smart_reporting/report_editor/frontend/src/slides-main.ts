@@ -1,4 +1,5 @@
 import { applyTransitionToAll, restoredTransitions, SLIDE_TRANSITIONS, type SlideTransition } from './slides-transitions'
+import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
 import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS, SHAPE_PRESETS } from './vendor/genoffice-slides/components/shape-gallery-data'
 import { PARAGRAPH_LIST_COMMANDS, BULLET_GLYPHS, paragraphCommandPatch, projectParagraphs, uniformParagraphValue, type ParagraphFormatting, type ParagraphSourceFormatting, type ParagraphList } from './slides-paragraph'
 import { createElement, ArrowDown, ArrowUp, Copy, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
@@ -32,7 +33,7 @@ type GeneratedImage = { candidateId: string; mediaType: string; previewDataUrl: 
 type ImageEdit = { candidateId: string; slideIndex: number; geometry: { x: number; y: number; width: number; height: number } }
 type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
 type AnimationTrigger = 'onClick' | 'withPrev' | 'afterPrev'
-type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; field?: 'slidenum' | 'datetime1'; watermark: boolean }
+type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; field?: 'slidenum' | 'datetime1'; italic?: boolean; outline?: { color: string; widthEmu: number }; wordArt?: boolean; watermark: boolean }
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
@@ -818,6 +819,17 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         canvasStatus.textContent = '形状填充与轮廓将在保存并打开新修订后显示在画布中。'
         renderStructurePending(); markDirty(); break
       }
+      case 'insertWordArt': {
+        // 固定源 insertWordArt + wordart-insert.ts：354.6×72.7pt 居中、54pt、不换行随文字调整。
+        const preset = WORDART_PRESETS.find(item => item.id === String(value ?? ''))
+        if (!preset) break
+        if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
+        const w = Math.round(354.6 * 96 / 72), h = Math.round(72.7 * 96 / 72)
+        textBoxEdits.push({ slideIndex: selectedSlide, text: '请在此放置您的文字', fontSize: 54, fontFamily: 'Microsoft YaHei', color: preset.fill.toUpperCase(), bold: !!preset.bold, ...(preset.italic ? { italic: true } : {}), ...(preset.outline ? { outline: { color: preset.outline.color.toUpperCase(), widthEmu: preset.outline.widthEmu } } : {}), wordArt: true, watermark: false,
+          geometry: { x: Math.round((deck.size.cx / 9525 - w) / 2), y: Math.round((deck.size.cy / 9525 - h) / 2), width: w, height: h } })
+        canvasStatus.textContent = '新增艺术字将在保存并打开新修订后显示在画布中。'
+        renderStructurePending(); markDirty(); break
+      }
       case 'dateTime':
       case 'slideNumber': {
         // 固定源 insertField：居中文本框内的动态字段（PowerPoint 打开时刷新），缓存值为当前页码/日期。
@@ -1108,7 +1120,7 @@ function renderStructurePending() {
     text.maxLength = 20000
     text.setAttribute('aria-label', box.watermark ? '水印文字' : '新增文本内容')
     text.addEventListener('input', () => { box.text = text.value; markDirty() })
-    row(`第 ${order.indexOf(box.slideIndex) + 1} 页 · ${box.field === 'slidenum' ? '页码字段' : box.field === 'datetime1' ? '日期字段' : box.watermark ? '水印' : '文本'} `, () => {
+    row(`第 ${order.indexOf(box.slideIndex) + 1} 页 · ${box.field === 'slidenum' ? '页码字段' : box.field === 'datetime1' ? '日期字段' : box.wordArt ? '艺术字' : box.watermark ? '水印' : '文本'} `, () => {
       textBoxEdits.splice(textBoxEdits.indexOf(box), 1)
     }, text)
   }
