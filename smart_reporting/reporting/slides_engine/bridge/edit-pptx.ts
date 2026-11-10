@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, addTable, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, addSection, addTable, getSections, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -42,6 +42,8 @@ type Input = {
   shapeStyles?: { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }[]
   /** 固定源 Shape Format ▸ Change Shape（changeShape → setShapePresetGeometry）：仅形状（非线条、非文本框），保留位置、填充、轮廓与文字。 */
   shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]
+  /** 固定源 onAddSection（addSection）：在指定页（与 order 相同的编号）之前新增节；在重排与删页之后按最终位置执行。 */
+  sections?: { slideIndex: number; name: string }[]
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -154,6 +156,8 @@ if (request.action === 'inspect') {
     size: opened.deck.size,
     masterParts: listMasterParts(opened.archive),
     layouts,
+    // 现有分节（p14:sectionLst）：节名与所含页（来源页序号）
+    sections: getSections(opened).map(section => ({ name: section.name, slideIndices: section.slideIndices })),
     slides: opened.deck.slides.map((slide, slideIndex) => ({
       slideIndex,
       background: slide.background?.type === 'solid' ? slide.background.color : null,
@@ -499,6 +503,14 @@ if (request.action === 'inspect') {
       const current = opened.deck.slides.findIndex((slide) => slide.path === desired[target])
       if (current !== target) moveSlide(opened, current, target)
     }
+  }
+  const sections = request.sections ?? []
+  if (!Array.isArray(sections) || sections.length > 100) throw new Error('sections_invalid')
+  for (const section of sections) {
+    if (!section || typeof section !== 'object' || Object.keys(section).some(key => !['slideIndex', 'name'].includes(key)) || !Number.isInteger(section.slideIndex) || section.slideIndex < 0 || section.slideIndex >= originalPaths.length || removedSlides.has(section.slideIndex)
+      || typeof section.name !== 'string' || !section.name.trim() || [...section.name].length > 100 || /[\u0000-\u001f\u007f]/.test(section.name)) throw new Error('section_invalid')
+    const current = opened.deck.slides.findIndex(slide => slide.path === originalPaths[section.slideIndex])
+    if (current < 0 || !addSection(opened, current, section.name.trim())) throw new Error('section_add_failed')
   }
   if (request.theme) {
     const spec = themes[request.theme]

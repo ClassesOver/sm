@@ -529,3 +529,16 @@ it('enables the Shape Format fill and outline controls with their source actions
   expect(change.value).toBe('')
   ribbon.dispose()
 })
+
+it('enables the pinned Add Section command', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const command = host.querySelector<HTMLButtonElement>('[data-command="addSection"]')!
+  expect(command.dataset.sourceAction).toBe('onAddSection')
+  expect(command.disabled).toBe(false)
+  command.click()
+  expect(onAction).toHaveBeenCalledWith('addSection')
+  ribbon.dispose()
+})

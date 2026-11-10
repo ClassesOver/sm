@@ -832,3 +832,26 @@ def test_slides_bridge_changes_shape_preset_keeping_text_and_style(tmp_path: Pat
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "shapeKinds": [bad]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_adds_sections_at_final_positions(tmp_path: Path):
+    """固定源 onAddSection：按重排后的最终位置在目标页前分节；无分节时前面的页归入默认节；非法名称拒绝。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "sections.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    assert count >= 3
+    order = [count - 1, *range(count - 1)]  # 末页移到最前
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": order,
+             "sections": [{"slideIndex": 0, "name": "第二部分"}]}, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)
+    assert reopened["sections"] == [
+        {"name": "Default Section", "slideIndices": [0]},
+        {"name": "第二部分", "slideIndices": list(range(1, count))},
+    ]
+    with ZipFile(output) as archive:
+        assert '<p14:section name="第二部分"' in archive.read("ppt/presentation.xml").decode()
+    for bad in ({"slideIndex": 0, "name": " "}, {"slideIndex": 0, "name": "a\nb"}, {"slideIndex": 99, "name": "x"}, {"slideIndex": 0, "name": "x", "extra": 1}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "sections": [bad]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()

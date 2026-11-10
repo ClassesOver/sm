@@ -25,6 +25,12 @@
 - 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
 - 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
 
+## 新增节（固定源 onAddSection → addSection）
+
+- Home ▸ Slides ▸ Add Section 打开节名称对话框（默认“无标题节”），在当前页之前新增节；幻灯片列表显示已有节标题与待写入节标题（标注“保存后写入”）。
+- 草稿 `sections: [{slideIndex, name}]`（编号同 `order`，可为新建页）；桥接在重排与删页之后按部件路径找到最终位置，调用固定引擎 `addSection`（无分节时前面的页归入 Default Section）；inspect 返回现有分节供列表显示。名称拒绝空白、控制字符与超过 100 字。
+- 证据：`test_slides_bridge_adds_sections_at_final_positions`、Ribbon 单测、`new-slide` 冒烟新增“第二部分”并核对 `presentation.xml` 中的 `p14:sectionLst`。
+
 ## 更改形状（固定源 Shape Format ▸ Change Shape / changeShape）
 
 - 仅对形状可用（与固定源一致：不含线条与文本框）；选择器为固定源形状库去掉线条组的预设。保留位置、尺寸、填充、轮廓与文字，仅替换 `prstGeom`（固定引擎 `setShapePresetGeometry`，先固化已做修改）。

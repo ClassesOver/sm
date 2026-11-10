@@ -256,6 +256,12 @@ try {
     await page.locator('[data-ribbon-tab="shapeFormat"]').click()
     await page.locator('select[data-command="changeShape"]').selectOption('hexagon')
     await page.locator('.structure-pending li').filter({ hasText: '更改为六边形' }).waitFor()
+    // 新增节（固定源 onAddSection）：在来源页前分节，列表显示待写入节标题。
+    await page.locator('[data-ribbon-tab="home"]').click()
+    await page.locator('[data-command="addSection"][data-source-action="onAddSection"]').click()
+    await page.locator('.slides-table-dialog input[name=name]').fill('第二部分')
+    await page.locator('.slides-table-dialog button[value=ok]').click()
+    await page.locator('.slide-section[data-pending=true]').filter({ hasText: '第二部分（保存后写入）' }).waitFor()
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
@@ -429,6 +435,7 @@ try {
     assert.deepEqual(operation.resetLayouts, [0])
     assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
     assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
+    assert.deepEqual(operation.sections, [{ slideIndex: 0, name: '第二部分' }])
     assert.deepEqual(operation.shapeKinds, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'shape').id, kind: 'hexagon' }])
     assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
     assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2']])
@@ -480,6 +487,8 @@ try {
     const kindXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum(s.count("prst=\\"hexagon\\"") for s in x), sum(s.count("prst=\\"roundRect\\"") for s in x))'], { input: downloaded, encoding: 'utf8' })
     // 原页六边形 1 个；圆角矩形 2 个 = 副本保留原形状 + 新插入的圆角矩形
     assert.equal(kindXml.stdout.trim(), '1 2')
+    const sectionXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(re.findall(r"<p14:section name=\\"([^\\"]*)\\"", z.read("ppt/presentation.xml").decode()))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(sectionXml.stdout.trim(), "['Default Section', '第二部分']")
   }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))

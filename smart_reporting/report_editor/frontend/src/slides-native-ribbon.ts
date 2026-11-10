@@ -70,7 +70,7 @@ const tabs: Tab[] = [
       { id: 'addSlideWithLayout', label: 'New Slide with Layout', kind: 'select', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout' },
       { id: 'layout', label: 'Change Layout', kind: 'select', sourceIcon: IconSlideLayout, sourceActionId: 'onSetLayout' },
       { id: 'resetLayout', label: 'Reset Layout', sourceIcon: IconSlideLayout, sourceActionId: 'onResetLayout' },
-      { id: 'addSection', label: 'Add Section', sourceIcon: IconSection, sourceActionId: 'onAddSection', unavailable: noWrite('分节数据操作') },
+      { id: 'addSection', label: 'Add Section', sourceIcon: IconSection, sourceActionId: 'onAddSection' },
       { id: 'movePrevious', label: 'Move Earlier', icon: ArrowUp }, { id: 'moveNext', label: 'Move Later', icon: ArrowDown },
     ] },
     { label: 'Font', controls: [

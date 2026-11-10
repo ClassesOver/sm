@@ -543,6 +543,7 @@ class ReportSlidesEditorService:
         tables: list[dict[str, Any]] | None = None,
         shape_styles: list[dict[str, Any]] | None = None,
         shape_kinds: list[dict[str, Any]] | None = None,
+        sections: list[dict[str, Any]] | None = None,
         theme: str | None = None,
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
@@ -577,6 +578,8 @@ class ReportSlidesEditorService:
                     request["shapeStyles"] = shape_styles
                 if shape_kinds:
                     request["shapeKinds"] = shape_kinds
+                if sections:
+                    request["sections"] = sections
                 if theme is not None:
                     request["theme"] = theme
                 if slide_size is not None:
