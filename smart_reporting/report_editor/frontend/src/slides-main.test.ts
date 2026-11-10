@@ -32,7 +32,7 @@ describe('shared PPTX editor', () => {
     vi.stubGlobal('fetch', fetcher)
     const root = document.querySelector<HTMLElement>('#app')!
     const shell = createEditorShell(root, 'full', 'pptx')
-    createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx })
+    createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: !!headerFooter })
     await vi.waitFor(() => expect(root.querySelectorAll('.slide-open')).toHaveLength(2))
     return { root, shell, fetcher }
   }
@@ -44,7 +44,7 @@ describe('shared PPTX editor', () => {
     expect(dialog.querySelector<HTMLInputElement>('[name="dateAuto"]')!.checked).toBe(false)
     dialog.querySelector<HTMLInputElement>('[name="footer"]')!.value = 'new footer'
     dialog.querySelector<HTMLButtonElement>('[value="ok"]')!.click()
-    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] } })))
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, revisionRegistered: true, validation: { issues: [] } })))
     shell.save.click()
     await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
     const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
