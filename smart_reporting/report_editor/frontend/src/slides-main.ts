@@ -15,7 +15,8 @@ import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_S
 type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
-type DeckSlide = { slideIndex: number; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
+type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
+type DeckSlide = { slideIndex: number; headerFooter?: { footer: string | null; slideNum: boolean; date: string | null }; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
 type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; sections?: { name: string; slideIndices: number[] }[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
 type Edit = {
   slideIndex: number
@@ -39,7 +40,7 @@ type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; st
 type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }
 type NewSlide = { layoutFrom: number } | { duplicateOf: number } | { withLayout: string }
 type SlideChanges = {
-  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
+  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; headerFooter?: HeaderFooterSetting; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
@@ -155,6 +156,25 @@ const shapeStyleEdits = new Map<string, ShapeStyleEdit>()
 const shapeKindEdits = new Map<string, { slideIndex: number; elementId: string; kind: string }>()
 /** 固定源 onAddSection：在目标页（与 order 相同编号）之前新增节，保存时按最终位置写入。 */
 const sectionEdits: { slideIndex: number; name: string }[] = []
+/** 固定源 HeaderFooterDialog：全部应用（含新建页），保存时最后写入。 */
+let headerFooterEdit: HeaderFooterSetting | undefined
+function openHeaderFooterDialog() {
+  const initial = headerFooterEdit ?? { ...(slideAt(selectedSlide).headerFooter ?? { footer: null, slideNum: false, date: null }), dateAuto: true }
+  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-hf-dialog'; dialog.setAttribute('aria-label', '页眉和页脚')
+  dialog.innerHTML = '<h3>页眉和页脚</h3><label class="check"><input name="dateOn" type="checkbox"> 日期和时间</label><label class="check indent"><input name="dateAuto" type="checkbox"> 自动更新</label><label class="indent">日期文字 <input name="date" type="text" maxlength="500"></label><label class="check"><input name="slideNum" type="checkbox"> 幻灯片编号</label><label class="check"><input name="footerOn" type="checkbox"> 页脚</label><label class="indent">页脚文字 <input name="footer" type="text" maxlength="500" placeholder="页脚文字"></label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">全部应用</button></div>'
+  host.append(dialog)
+  const field = (name: string) => dialog.querySelector<HTMLInputElement>(`input[name=${name}]`)!
+  field('dateOn').checked = !!initial.date; field('dateAuto').checked = initial.dateAuto; field('date').value = initial.date ?? new Date().toLocaleDateString('zh-CN')
+  field('slideNum').checked = initial.slideNum; field('footerOn').checked = !!initial.footer; field('footer').value = initial.footer ?? ''
+  dialog.addEventListener('close', () => dialog.remove())
+  dialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => dialog.close())
+  dialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', () => {
+    headerFooterEdit = { footer: field('footerOn').checked && field('footer').value.trim() ? field('footer').value.trim() : null, slideNum: field('slideNum').checked, date: field('dateOn').checked && field('date').value.trim() ? field('date').value.trim() : null, dateAuto: field('dateAuto').checked }
+    dialog.close(); canvasStatus.textContent = '页眉页脚将在保存并打开新修订后显示在画布中。'
+    renderStructurePending(); markDirty()
+  })
+  dialog.showModal()
+}
 function openSectionDialog() {
   const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog'; dialog.setAttribute('aria-label', '新增节')
   dialog.innerHTML = '<h3>新增节</h3><label>节名称 <input name="name" type="text" maxlength="100" value="无标题节"></label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div>'
@@ -403,7 +423,7 @@ function markDirty() {
 
 function slideChanges(): SlideChanges {
   return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
-    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
@@ -414,7 +434,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft() {
   if (!nativeDraft) return
   const operations = nativeDraft.operations
-  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -434,6 +454,8 @@ function restoreNativeDraft() {
     || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId && ['text', 'shape'].includes(element.type))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
     || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || (item.stroke !== undefined && item.stroke !== null && (!hex(item.stroke.color) || !(item.stroke.widthPt > 0 && item.stroke.widthPt <= 100))))) throw new Error('草稿中的形状样式无效；原草稿已保留')
+  const restoredHf = changes.headerFooter
+  if (restoredHf !== undefined && (!restoredHf || Object.keys(restoredHf).sort().join() !== 'date,dateAuto,footer,slideNum' || typeof restoredHf.slideNum !== 'boolean' || typeof restoredHf.dateAuto !== 'boolean' || [restoredHf.footer, restoredHf.date].some(value => value !== null && (typeof value !== 'string' || value.length > 500)))) throw new Error('草稿中的页眉页脚无效；原草稿已保留')
   const restoredSections = changes.sections ?? []
   if (!Array.isArray(restoredSections) || restoredSections.length > 100 || restoredSections.some(item => !item || Object.keys(item).sort().join() !== 'name,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length + restoredNew.length || restoredDeleted.includes(item.slideIndex) || typeof item.name !== 'string' || !item.name.trim() || item.name.length > 100)) throw new Error('草稿中的新增节无效；原草稿已保留')
   const restoredKinds = changes.shapeKinds ?? []
@@ -477,6 +499,7 @@ function restoreNativeDraft() {
   newSlides.splice(0, newSlides.length, ...restoredNew.map((item): NewSlide => 'duplicateOf' in item ? { duplicateOf: item.duplicateOf } : 'withLayout' in item ? { withLayout: item.withLayout } : { layoutFrom: item.layoutFrom }))
   deletedSlides.clear(); for (const index of restoredDeleted) deletedSlides.add(index)
   resetLayouts.clear(); for (const index of restoredReset) resetLayouts.add(index)
+  headerFooterEdit = restoredHf ? { ...restoredHf } : undefined
   sectionEdits.splice(0, sectionEdits.length, ...restoredSections.map(item => ({ slideIndex: item.slideIndex, name: item.name })))
   shapeKindEdits.clear(); for (const item of restoredKinds) shapeKindEdits.set(editKey(item.slideIndex, item.elementId), { ...item })
   shapeStyleEdits.clear(); for (const item of restoredStyles) shapeStyleEdits.set(editKey(item.slideIndex, item.elementId), structuredClone(item))
@@ -761,6 +784,8 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     }
     switch (command) {
       case 'addSlide': addNewSlide(); break
+      case 'headerFooter':
+        openHeaderFooterDialog(); break
       case 'addSection':
         openSectionDialog(); break
       case 'changeShape': {
@@ -1059,6 +1084,7 @@ function renderStructurePending() {
     item.append(remove)
     structurePending.append(item)
   }
+  if (headerFooterEdit) row(`全部页面 · 页眉页脚：${[headerFooterEdit.date ? `日期 ${headerFooterEdit.dateAuto ? '（自动更新）' : headerFooterEdit.date}` : '', headerFooterEdit.slideNum ? '幻灯片编号' : '', headerFooterEdit.footer ? `页脚「${headerFooterEdit.footer}」` : ''].filter(Boolean).join('、') || '全部关闭'}`, () => { headerFooterEdit = undefined })
   for (const [index, section] of sectionEdits.entries()) row(`第 ${order.indexOf(section.slideIndex) + 1} 页前 · 新增节「${section.name}」`, () => { sectionEdits.splice(index, 1); renderSlides() })
   for (const [key, item] of shapeKindEdits) {
     const name = deck.slides[item.slideIndex]?.elements.find(element => element.id === item.elementId)?.name || item.elementId

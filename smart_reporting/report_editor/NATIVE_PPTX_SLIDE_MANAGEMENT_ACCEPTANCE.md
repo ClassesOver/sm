@@ -25,6 +25,12 @@
 - 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
 - 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
 
+## 页眉和页脚（固定源 HeaderFooterDialog → applyHeaderFooter）
+
+- Insert ▸ Text ▸ Header and Footer 打开与固定源相同的对话框：日期和时间（自动更新或固定文字）、幻灯片编号、页脚文字；初值读取当前页（inspect 新增每页 `headerFooter`），按钮“全部应用”。
+- 草稿 `headerFooter: {footer, slideNum, date, dateAuto}`；固定引擎 `applyHeaderFooter` 会重建页面，因此在全部修改与表格之后最后执行，作用于最终全部页面（含新建页）。
+- 证据：`test_slides_bridge_applies_header_footer_to_all_slides`（含新建页与同批改字）、Ribbon 单测、`new-slide` 冒烟设置页脚与编号后核对 4 页均含 ftr/sldNum 占位符。
+
 ## 新增节（固定源 onAddSection → addSection）
 
 - Home ▸ Slides ▸ Add Section 打开节名称对话框（默认“无标题节”），在当前页之前新增节；幻灯片列表显示已有节标题与待写入节标题（标注“保存后写入”）。

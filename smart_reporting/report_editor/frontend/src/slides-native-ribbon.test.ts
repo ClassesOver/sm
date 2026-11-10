@@ -234,7 +234,8 @@ it('connects the source text-box action and disables unsupported Insert Text and
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   const textGroup = host.querySelector<HTMLElement>('.slides-native-ribbon-group[aria-label="Text"]')!
   const textBox = textGroup.querySelector<HTMLButtonElement>('[data-command="addText"]')!
-  const unsupportedTextActions = ['onInsertWordArt', 'onOpenHeaderFooter']
+  const unsupportedTextActions = ['onInsertWordArt']
+  expect(textGroup.querySelector<HTMLButtonElement>('[data-source-action="onOpenHeaderFooter"]')!.disabled).toBe(false)
   // 日期与页码字段已接通（固定源 insertField）
   for (const action of ['onInsertField:datetime', 'onInsertField:slidenum']) expect(textGroup.querySelector<HTMLButtonElement>(`[data-source-action="${action}"]`)!.disabled).toBe(false)
 

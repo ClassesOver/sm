@@ -855,3 +855,31 @@ def test_slides_bridge_adds_sections_at_final_positions(tmp_path: Path):
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "sections": [bad]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_applies_header_footer_to_all_slides(tmp_path: Path):
+    """固定源 HeaderFooterDialog：页脚、页码与日期占位符应用到全部页（含新建页），inspect 回读；同批改字不受影响。"""
+    from pptx.util import Inches
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "hf.pptx"
+    presentation = Presentation()
+    for text in ("第一页", "第二页"):
+        presentation.slides.add_slide(presentation.slide_layouts[1]).shapes.title.text = text
+    presentation.save(source)
+    inspected = _invoke({"action": "inspect", "input": str(source)}, tmp_path)
+    assert inspected["slides"][0]["headerFooter"] == {"footer": None, "slideNum": False, "date": None}
+    title = next(item for item in inspected["slides"][0]["elements"] if item["text"] == "第一页")
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "order": [0, 1, 2],
+             "edits": [{"slideIndex": 0, "elementId": title["id"], "text": "改后标题"}],
+             "newSlides": [{"layoutFrom": 1}],
+             "headerFooter": {"footer": "智能报告 · 内部", "slideNum": True, "date": "2026-11-10", "dateAuto": False}}, tmp_path)
+    reopened = _invoke({"action": "inspect", "input": str(output)}, tmp_path)["slides"]
+    assert len(reopened) == 3
+    for slide in reopened:
+        assert slide["headerFooter"]["footer"] == "智能报告 · 内部" and slide["headerFooter"]["slideNum"] is True
+        assert slide["headerFooter"]["date"] == "2026-11-10"
+    assert any(item["text"] == "改后标题" for item in reopened[0]["elements"])
+    for bad in ({"footer": "x", "slideNum": True, "date": None}, {"footer": "a\u0001", "slideNum": True, "date": None, "dateAuto": True}, {"footer": None, "slideNum": "yes", "date": None, "dateAuto": True}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "headerFooter": bad}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()

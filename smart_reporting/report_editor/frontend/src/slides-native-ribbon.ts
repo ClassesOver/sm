@@ -130,7 +130,7 @@ const tabs: Tab[] = [
     { label: 'Text', controls: [
       { id: 'addText', label: 'Text Box', sourceIcon: IconTextBox, sourceActionId: 'onInsert' },
       { id: 'insertWordArt', label: 'WordArt', sourceIcon: IconWordArt, sourceActionId: 'onInsertWordArt', unavailable: noWrite('WordArt 样式数据未进入 textBoxes 请求') },
-      { id: 'headerFooter', label: 'Header and Footer', sourceIcon: IconFooter, sourceActionId: 'onOpenHeaderFooter', unavailable: noWrite('页眉页脚字段/应用范围未进入 editSlides 请求') },
+      { id: 'headerFooter', label: 'Header and Footer', sourceIcon: IconFooter, sourceActionId: 'onOpenHeaderFooter' },
       { id: 'dateTime', label: 'Date and Time', sourceIcon: IconDateTime, sourceActionId: 'onInsertField:datetime' },
       { id: 'slideNumber', label: 'Slide Number', sourceIcon: IconPageNumber, sourceActionId: 'onInsertField:slidenum' },
       { id: 'insertLink', label: 'Link', unavailable: noWrite('超链接') },

@@ -169,3 +169,6 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .slides-table-actions button[value=ok] { border-color: var(--office-accent); background: var(--office-accent); color: var(--office-chrome); }
 .slide-section { margin: 8px 4px 2px; padding: 2px 4px; border-bottom: 1px solid var(--office-border-soft); color: var(--office-muted); font-size: var(--font-size-xs); font-weight: 600; list-style: none; }
 .slide-section[data-pending=true] { color: var(--office-accent); }
+.slides-hf-dialog label.check { display: flex; align-items: center; gap: 8px; }
+.slides-hf-dialog label.check input { min-height: 0; }
+.slides-hf-dialog label.indent { margin-left: 24px; }

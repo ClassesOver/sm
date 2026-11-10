@@ -18,7 +18,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -124,6 +124,13 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
                or not isinstance(item['name'], str) or not item['name'].strip() or len(item['name']) > 100
                or any(ord(char) < 32 or ord(char) == 127 for char in item['name']) for item in sections)):
         raise ValueError('native_office_operations_invalid')
+    header_footer = operation.get('headerFooter')
+    if header_footer is not None and (
+        not isinstance(header_footer, dict) or set(header_footer) != {'footer', 'slideNum', 'date', 'dateAuto'}
+        or any(header_footer[key] is not None and (not isinstance(header_footer[key], str) or len(header_footer[key]) > 500
+               or any(ord(char) < 32 and char not in '\t\n' or ord(char) == 127 for char in header_footer[key])) for key in ('footer', 'date'))
+        or any(not isinstance(header_footer[key], bool) for key in ('slideNum', 'dateAuto'))):
+        raise ValueError('native_office_operations_invalid')
     reset_layouts = operation.get('resetLayouts', [])
     if (not isinstance(reset_layouts, list) or len(reset_layouts) > 500 or any(not _slide_index(index) for index in reset_layouts)
         or len(set(reset_layouts)) != len(reset_layouts)):
@@ -203,7 +210,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
+    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
         'slide_layouts': layouts, 'backgrounds': backgrounds, 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting}
 

@@ -262,6 +262,14 @@ try {
     await page.locator('.slides-table-dialog input[name=name]').fill('第二部分')
     await page.locator('.slides-table-dialog button[value=ok]').click()
     await page.locator('.slide-section[data-pending=true]').filter({ hasText: '第二部分（保存后写入）' }).waitFor()
+    // 页眉和页脚（固定源 HeaderFooterDialog，全部应用）
+    await page.locator('[data-ribbon-tab="insert"]').click()
+    await page.locator('[data-command="headerFooter"][data-source-action="onOpenHeaderFooter"]').click()
+    await page.locator('.slides-hf-dialog input[name=slideNum]').check()
+    await page.locator('.slides-hf-dialog input[name=footerOn]').check()
+    await page.locator('.slides-hf-dialog input[name=footer]').fill('智能报告 · 内部')
+    await page.locator('.slides-hf-dialog button[value=ok]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '页脚「智能报告 · 内部」' }).waitFor()
     if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
     await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
@@ -436,6 +444,7 @@ try {
     assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
     assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
     assert.deepEqual(operation.sections, [{ slideIndex: 0, name: '第二部分' }])
+    assert.deepEqual(operation.headerFooter, { footer: '智能报告 · 内部', slideNum: true, date: null, dateAuto: true })
     assert.deepEqual(operation.shapeKinds, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'shape').id, kind: 'hexagon' }])
     assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
     assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2']])
@@ -465,7 +474,7 @@ try {
   assert.equal(reopened.revision, 2)
   assert.equal(reopened.sha256, saveReceipt.artifacts.pptx.sha256)
   if (smokeMode === 'new-slide') {
-    const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame and sh.text],len(s.shapes)] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
+    const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nhf=lambda sh: sh.is_placeholder and sh.placeholder_format.type is not None and int(sh.placeholder_format.type) in (13,15,16)\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame and sh.text and not hf(sh)],len([sh for sh in s.shapes if not hf(sh)])] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
     if (independent.status !== 0) throw new Error(independent.stderr)
     const slides = JSON.parse(independent.stdout)
     assert.equal(slides.length, 4)
@@ -481,7 +490,8 @@ try {
     const shapeXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "prst=\\"roundRect\\"" in z.read(n).decode() and "C43E1C" in z.read(n).decode()))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(shapeXml.stdout.trim(), '1')
     const fieldXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(z.read(n).decode().count("type=\\"slidenum\\"") for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")))'], { input: downloaded, encoding: 'utf8' })
-    assert.equal(fieldXml.stdout.trim(), '1')
+    // 1 个插入的页码字段 + 4 页页眉页脚中的幻灯片编号占位符
+    assert.equal(fieldXml.stdout.trim(), '5')
     const styleXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") for sp in re.findall(r"<p:sp>.*?</p:sp>", z.read(n).decode(), re.S) if "Native browser formatting fixture" in sp and "2E7D32" in sp and "<a:ln w=\\"38100\\"" in sp))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(styleXml.stdout.trim(), '1')
     const kindXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum(s.count("prst=\\"hexagon\\"") for s in x), sum(s.count("prst=\\"roundRect\\"") for s in x))'], { input: downloaded, encoding: 'utf8' })
@@ -489,6 +499,8 @@ try {
     assert.equal(kindXml.stdout.trim(), '1 2')
     const sectionXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(re.findall(r"<p14:section name=\\"([^\\"]*)\\"", z.read("ppt/presentation.xml").decode()))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(sectionXml.stdout.trim(), "['Default Section', '第二部分']")
+    const hfXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in sorted(z.namelist()) if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum("type=\\"ftr\\"" in s and "智能报告 · 内部" in s and "type=\\"sldNum\\"" in s for s in x), len(x))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(hfXml.stdout.trim(), '4 4')
   }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))

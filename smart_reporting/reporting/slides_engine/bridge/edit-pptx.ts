@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, addSection, addTable, getSections, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, addSection, addTable, applyHeaderFooter, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -44,6 +44,8 @@ type Input = {
   shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]
   /** 固定源 onAddSection（addSection）：在指定页（与 order 相同的编号）之前新增节；在重排与删页之后按最终位置执行。 */
   sections?: { slideIndex: number; name: string }[]
+  /** 固定源 HeaderFooterDialog（applyHeaderFooter，应用于全部）：页脚文字、页码、日期（固定文字或自动更新）。 */
+  headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -159,6 +161,7 @@ if (request.action === 'inspect') {
     // 现有分节（p14:sectionLst）：节名与所含页（来源页序号）
     sections: getSections(opened).map(section => ({ name: section.name, slideIndices: section.slideIndices })),
     slides: opened.deck.slides.map((slide, slideIndex) => ({
+      headerFooter: readHeaderFooter(slide),
       slideIndex,
       background: slide.background?.type === 'solid' ? slide.background.color : null,
       ...opened.archive.resolveSlideChain(slide.path),
@@ -595,6 +598,13 @@ if (request.action === 'inspect') {
     const slideIndex = opened.deck.slides.indexOf(originalSlides[table.slideIndex]!)
     if (slideIndex < 0) throw new Error('table_slide_missing')
     if (!addTable(opened, slideIndex, { rows: table.rows, cols: table.cols, offset: { x: Math.round((cx - width) / 2), y: Math.round(cy * 0.105), cx: width, cy: table.rows * rowHeightEmu }, rowHeightsEmu: Array(table.rows).fill(rowHeightEmu) })) throw new Error('table_insert_failed')
+  }
+  // 页眉页脚会重建页面：放在全部修改与表格之后，应用到最终全部页面（含新建页）。
+  if (request.headerFooter !== undefined) {
+    const hf = request.headerFooter
+    const text = (value: unknown) => value === null || (typeof value === 'string' && [...value].length <= 500 && !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value))
+    if (!hf || typeof hf !== 'object' || Object.keys(hf).sort().join() !== 'date,dateAuto,footer,slideNum' || !text(hf.footer) || !text(hf.date) || typeof hf.slideNum !== 'boolean' || typeof hf.dateAuto !== 'boolean') throw new Error('header_footer_invalid')
+    applyHeaderFooter(opened, { footer: hf.footer?.trim() || null, slideNum: hf.slideNum, date: hf.date?.trim() || null, dateAuto: hf.dateAuto })
   }
   if (!request.output) throw new Error('output_path_required')
   const bytes = await savePptx(opened)
