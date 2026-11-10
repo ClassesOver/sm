@@ -291,4 +291,17 @@ native save writes a new revision and leaves the source revision unchanged, whic
 is the pinned "redact a Save As copy" requirement. Redaction is rejected on blank
 draft pages and together with a page-size change. `bridge/redaction.test.ts`
 reads the output text back with PDFium. Vendor SOURCE hashes unchanged;
-LOCAL-SHA256 has 48 entries.
+LOCAL-SHA256 has 47 entries.
+
+
+## Native merge pages / split pages adapter (2026-11-10)
+
+Bridge `mergePages` (`perSheet` 2–16, `direction`, `separator`) and `splitPages`
+(`perPage` 2/4/9) call the unchanged pinned `mergePagesBytes` / `splitPagesBytes`.
+Like the pinned commands, they write a new file — here a new revision; the source
+revision is unchanged. Each must be the only operation in its save, is refused for
+sources with signature fields, and is checked by reading back the expected page count.
+The pinned writers stamp the new document with the current time; the adapter copies
+the source CreationDate/ModDate (or drops them) so an output — and its preview digest —
+is reproducible from the source bytes and operation alone.
+`bridge/page-layout.test.ts`. LOCAL-SHA256 has 48 entries.

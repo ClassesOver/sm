@@ -38,6 +38,12 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
   let blanks = 0
   let stamped = false
   let redactions = 0
+  const layout = operations.find(op => op.kind === 'mergePages' || op.kind === 'splitPages')
+  if (layout) {
+    if (operations.length !== 1) throw new Error(PDF_PAGE_LAYOUT_ALONE_REASON)
+    validatePdfPageLayout(layout)
+    return pages.map(page => ({ ...page }))
+  }
   if (operations.some(op => op.kind === 'redact') && operations.some(op => op.kind === 'setPageSize')) throw new Error(PDF_REDACTION_PAGE_SIZE_REASON)
   for (const operation of operations) {
     if (stamped && ['reorderPages', 'deletePage', 'insertBlankPage', 'setPageSize', 'cropPage'].includes(operation.kind)) throw new Error(PDF_STAMPS_STRUCTURE_REASON)
@@ -214,6 +220,23 @@ export function pdfRedactionOperation(pageId: string, rect: PdfRect, box: PdfBox
   const operation: NativeOperation = { kind: 'redact', pageId, rect: rect.map((value, index) => (index < 2 ? Math.ceil : Math.floor)(value * 100) / 100) }
   validatePdfRedaction(operation, box)
   return operation
+}
+
+/** 固定源 mergePages（N 合 1，2–16，横向/纵向顺序，可选分隔线）与 splitPages（每页拆成 2/4/9 格）：整份文档重排版，须单独保存为新修订。 */
+export const PDF_PAGE_LAYOUT_ALONE_REASON = '合并页面/拆分页面须单独保存，请先保存或撤销其他修改'
+export function validatePdfPageLayout(operation: NativeOperation) {
+  if (operation.kind === 'mergePages') {
+    if (Object.keys(operation).some(key => !['kind', 'perSheet', 'direction', 'separator', 'sourceSha256'].includes(key)) || !Number.isInteger(operation.perSheet) || Number(operation.perSheet) < 2 || Number(operation.perSheet) > 16 || !['horizontal', 'vertical'].includes(String(operation.direction)) || typeof operation.separator !== 'boolean') throw new Error('每张页数须为 2–16 的整数')
+  } else if (operation.kind === 'splitPages') {
+    if (Object.keys(operation).some(key => !['kind', 'perPage', 'sourceSha256'].includes(key)) || ![2, 4, 9].includes(Number(operation.perPage))) throw new Error('拆分份数须为 2、4 或 9')
+  } else throw new Error('不支持的页面版式操作')
+  return operation
+}
+export function pdfMergePagesOperation(perSheet: number, direction: 'horizontal' | 'vertical', separator: boolean): NativeOperation {
+  return validatePdfPageLayout({ kind: 'mergePages', perSheet, direction, separator })
+}
+export function pdfSplitPagesOperation(perPage: number): NativeOperation {
+  return validatePdfPageLayout({ kind: 'splitPages', perPage })
 }
 
 /** Native crop stores unrotated PDF coordinates, never a displayed page index. */

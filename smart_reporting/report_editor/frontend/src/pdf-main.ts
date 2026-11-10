@@ -16,7 +16,7 @@ import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
 import { DEFAULT_HEADER_FOOTER, DEFAULT_WATERMARK } from './vendor/genoffice-pdf/renderer/stamps'
 import { formatLength, parseCalibration, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
-import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, pdfLineLength, pdfRedactionOperation, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, PDF_PAGE_LAYOUT_ALONE_REASON, pdfLineLength, pdfMergePagesOperation, pdfRedactionOperation, pdfSplitPagesOperation, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -727,6 +727,65 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       sizeDialog.close(); await refresh(); await previewDraft()
     } finally { sizeApplying = false; updateControls() }
   }
+  // 固定源 MergePagesDialog / SplitPagesDialog：整份文档重排版，单独保存为新修订（来源修订不变），先查看实际预览。
+  const layoutDialog = documentElement('dialog', 'pdf-layout-dialog')
+  const layoutTitle = documentElement('h3'), layoutHint = documentElement('p', 'pdf-measure-hint')
+  const layoutBody = documentElement('div', 'pdf-layout-body')
+  const layoutError = documentElement('p', 'pdf-crop-error'); layoutError.setAttribute('role', 'alert')
+  const layoutActions = documentElement('div', 'pdf-link-actions')
+  layoutDialog.append(layoutTitle, layoutHint, layoutBody, layoutError, layoutActions); root.append(layoutDialog)
+  const layoutCancel = documentElement('button'); layoutCancel.type = 'button'; layoutCancel.textContent = '取消'; layoutCancel.addEventListener('click', () => layoutDialog.close())
+  function pageLayoutUnavailable() {
+    if (!document || locked || previewing || printing || !!previewDocument || draft.closed || !response.editingEnabled) return '请先打开 PDF 并退出预览'
+    if (draft.operations.length) return PDF_PAGE_LAYOUT_ALONE_REASON
+    if (model.formFields?.some(field => field.kind === 'signature')) return '含有签名字段的 PDF 不能合并或拆分页面（输出不保留签名）'
+    return null
+  }
+  async function applyPageLayout(operation: NativeOperation) {
+    const reason = pageLayoutUnavailable()
+    if (reason) throw new Error(reason)
+    if (hasUnstagedText()) throw new Error('请先完成当前文字编辑')
+    pdfPageState(model.pages, [operation]); draft.setOperations([operation])
+    layoutDialog.close(); await refresh(); await previewDraft()
+  }
+  function openLayoutDialog(kind: 'mergePages' | 'splitPages') {
+    const reason = pageLayoutUnavailable()
+    if (reason) { status.textContent = reason; return }
+    layoutError.textContent = ''; layoutBody.replaceChildren(); layoutActions.replaceChildren(layoutCancel)
+    const total = state().length
+    layoutDialog.setAttribute('aria-label', kind === 'mergePages' ? '合并页面' : '拆分页面')
+    layoutTitle.textContent = kind === 'mergePages' ? '合并页面' : '拆分页面'
+    const fail = (error: unknown) => { layoutError.textContent = error instanceof Error ? error.message : String(error) }
+    if (kind === 'mergePages') {
+      layoutHint.textContent = `把每 N 个连续页面缩放排到一张纸上（共 ${total} 页）。纸张取第 1 页尺寸，2 合 1 时横向；输出不保留表单、书签与附件。保存为新修订，来源修订不变。`
+      const countLabel = documentElement('label'); countLabel.textContent = '每张页数（2–16）'
+      const count = documentElement('input'); count.inputMode = 'numeric'; count.value = '2'; count.setAttribute('aria-label', '每张页数'); countLabel.append(count)
+      const directionLabel = documentElement('label'); directionLabel.textContent = '排列顺序'
+      const direction = documentElement('select'); direction.setAttribute('aria-label', '排列顺序')
+      for (const [value, label] of [['vertical', '纵向（先上下，再左右）'], ['horizontal', '横向（先左右，再上下）']] as const) { const option = documentElement('option'); option.value = value; option.textContent = label; direction.append(option) }
+      directionLabel.append(direction)
+      const separatorLabel = documentElement('label', 'pdf-layout-check'); const separator = documentElement('input'); separator.type = 'checkbox'; separator.setAttribute('aria-label', '绘制分隔线')
+      separatorLabel.append(separator, '绘制分隔线')
+      layoutBody.append(countLabel, directionLabel, separatorLabel)
+      const apply = documentElement('button'); apply.type = 'button'; apply.textContent = '确定'
+      apply.addEventListener('click', () => {
+        try {
+          const perSheet = Number(count.value.trim())
+          if (!/^\d+$/.test(count.value.trim()) || perSheet < 2 || perSheet > 16) throw new Error('每张页数须为 2–16 的整数')
+          void applyPageLayout(pdfMergePagesOperation(perSheet, direction.value as 'horizontal' | 'vertical', separator.checked)).catch(error => { fail(error); showError(error) })
+        } catch (error) { fail(error) }
+      })
+      layoutActions.append(apply)
+    } else {
+      layoutHint.textContent = `把每一页按显示方向均分为 2、4 或 9 页（共 ${total} 页），内容无损保留。保存为新修订，来源修订不变。`
+      for (const perPage of [2, 4, 9]) {
+        const choice = documentElement('button'); choice.type = 'button'; choice.textContent = `拆成 ${perPage} 页`; choice.dataset.pdfSplitPages = String(perPage)
+        choice.addEventListener('click', () => { void applyPageLayout(pdfSplitPagesOperation(perPage)).catch(error => { fail(error); showError(error) }) })
+        layoutBody.append(choice)
+      }
+    }
+    layoutDialog.showModal()
+  }
   function displayViewport(original: PDFPageProxy, page: PdfPageIdentity, scale: number) {
     return previewDocument ? original.getViewport({ scale, rotation: page.rotation }) : pdfPageViewport(original, page, scale)
   }
@@ -752,6 +811,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       activeId = state().find(page => !before.has(page.pageId))?.pageId ?? activeId
       await refresh()
     },
+    'genoffice.pdf.page.mergePages': () => openLayoutDialog('mergePages'),
+    'genoffice.pdf.page.splitPages': () => openLayoutDialog('splitPages'),
     'genoffice.pdf.page.reverse': async () => {
       draft.setOperations(reversePdfPages(model.pages, draft.operations)); await refresh()
     },
@@ -1206,7 +1267,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     activeId = target.node.pageId; for (const node of pageNodes.values()) node.classList.toggle('is-active', node === card)
     pendingCommentJump = null; updateControls(); renderTextPanel(true)
   }
-  function state() { return pdfPageState(model.pages, draft.operations) }
+  // 合并/拆分页面改变整份文档的页数与页面身份：实际预览期间按服务端复读的输出模型显示。
+  let layoutPreviewPages: PdfPageIdentity[] | undefined
+  function state() { return previewDocument && layoutPreviewPages ? layoutPreviewPages : pdfPageState(model.pages, draft.operations) }
   function jumpToPageForIdentity(pageId: string) {
     const page = state().find(candidate => candidate.pageId === pageId)
     if (!page) return
@@ -1268,6 +1331,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     rotateAll.setAttribute('aria-description', rotateAll.title)
     pageButtons.get('genoffice.pdf.page.delete')!.disabled ||= !activeId || (!!document && state().length <= 1)
     pageButtons.get('genoffice.pdf.page.reverse')!.disabled ||= !document || state().length <= 1
+    for (const id of ['genoffice.pdf.page.mergePages', 'genoffice.pdf.page.splitPages']) {
+      const control = pageButtons.get(id)!, reason = document ? pageLayoutUnavailable() : '请先打开 PDF'
+      control.disabled ||= !!reason
+      control.title = reason ?? (id.endsWith('mergePages') ? '合并页面：每 N 页排到一张纸上，单独保存为新修订' : '拆分页面：每页均分为 2/4/9 页，单独保存为新修订')
+    }
     const insertBlank = pageButtons.get('genoffice.pdf.page.insertBlank')!
     insertBlank.disabled ||= !document || draft.operations.length + 2 > 500
     insertBlank.title = draft.operations.length + 2 > 500 ? '插入空白页将超过 500 条修改；请先保存当前修改' : '在当前页之后插入与当前页同尺寸的空白页'
@@ -1722,14 +1790,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const layer of textLayers) layer.cancel()
     commentsGeneration++; pendingCommentJump = null; selectedComment = ''; clearAttachments()
     generation++; indexGeneration++; observer?.disconnect(); visible.clear(); tasks.clear(); textLayers.clear()
-    document = sourceDocument; previewDocument = undefined; pagesCached.clear()
+    document = sourceDocument; previewDocument = undefined; layoutPreviewPages = undefined; pagesCached.clear()
     if (sourceReadingBeforePreview) { pendingReadingRestore = sourceReadingBeforePreview; readingRestoresSelection = true }
     commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = sidebar === 'comments'; renderComments()
     const loading = previewLoading; previewLoading = undefined; await loading?.destroy()
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接', setStamps: '水印与页眉页脚' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接', setStamps: '水印与页眉页脚', redact: '涂黑', mergePages: '合并页面', splitPages: '拆分页面' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1747,11 +1815,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing', 'setStamps'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing', 'setStamps', 'redact', 'mergePages', 'splitPages'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
       await leavePreview()
+      layoutPreviewPages = operations.some(op => op.kind === 'mergePages' || op.kind === 'splitPages') ? result.model.pages : undefined
       previewLoading = getDocument({ data: new Uint8Array(bytes), cMapUrl: `${ASSET_BASE}cmaps/`, cMapPacked: true, standardFontDataUrl: `${ASSET_BASE}standard_fonts/`, wasmUrl: `${ASSET_BASE}wasm/`, enableXfa: false })
       previewDocument = await previewLoading.promise
       if (previewDocument.numPages !== state().length) throw new Error('实际 PDF 预览页数不匹配，请重新预览')
@@ -1881,7 +1950,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const dimensions = displayViewport(original, page, scale)
       const card = documentElement('section', 'pdf-page'); card.dataset.pageId = page.pageId; card.style.width = `${dimensions.width}px`; card.style.boxSizing = 'content-box'
       card.setAttribute('aria-label', `第 ${position + 1} 页`)
-      const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = page.blank ? `第 ${position + 1} 页（新插入的空白页，保存后写入）` : `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
+      const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = page.blank ? `第 ${position + 1} 页（新插入的空白页，保存后写入）` : layoutPreviewPages && previewDocument ? `第 ${position + 1} 页（重排版预览）` : `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
       const content = documentElement('div', 'pdf-page-content'); content.style.width = `${dimensions.width}px`; content.style.height = `${dimensions.height}px`
       heading.addEventListener('click', () => { activeId = page.pageId; updateControls(); renderTextPanel(); for (const node of pageNodes.values()) node.classList.toggle('is-active', node === card) })
       card.addEventListener('pointerdown', () => { activeId = page.pageId; updateControls(); renderTextPanel() })
