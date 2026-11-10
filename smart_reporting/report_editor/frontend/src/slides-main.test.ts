@@ -51,6 +51,22 @@ describe('shared PPTX editor', () => {
     expect(payload.headerFooter).toMatchObject({ date: '2026-10-01', dateAuto: false, footer: 'new footer' })
   })
 
+  it('defaults a legacy fixed date to non-automatic mode', async () => {
+    const { root } = await openEditor({ footer: null, slideNum: false, date: '2026-10-01' })
+    root.querySelector<HTMLButtonElement>('[data-command="headerFooter"]')!.click()
+    const dialog = document.querySelector<HTMLDialogElement>('.slides-hf-dialog')!
+    expect(dialog.querySelector<HTMLInputElement>('[name="dateAuto"]')!.checked).toBe(false)
+    dialog.querySelector<HTMLButtonElement>('[value="cancel"]')!.click()
+  })
+
+  it('keeps an explicitly automatic date automatic', async () => {
+    const { root } = await openEditor({ footer: null, slideNum: false, date: '2026-10-01', dateAuto: true })
+    root.querySelector<HTMLButtonElement>('[data-command="headerFooter"]')!.click()
+    const dialog = document.querySelector<HTMLDialogElement>('.slides-hf-dialog')!
+    expect(dialog.querySelector<HTMLInputElement>('[name="dateAuto"]')!.checked).toBe(true)
+    dialog.querySelector<HTMLButtonElement>('[value="cancel"]')!.click()
+  })
+
   it('retains pending geometry when switching objects before saving', async () => {
     const { root, shell, fetcher } = await openEditor()
     const x = root.querySelector<HTMLInputElement>('[name="x"]')!
