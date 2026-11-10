@@ -380,6 +380,13 @@ function removeNewSlide(slideIndex: number) {
   newSlides.splice(slideIndex - deck.slides.length, 1)
   order.splice(position, 1)
   for (let index = 0; index < order.length; index++) if (order[index]! > slideIndex) order[index]! -= 1
+  // Sections reference slide identities, not positions in the visible order.
+  // Removing a pending slide must also drop its section and shift later IDs.
+  for (let index = sectionEdits.length - 1; index >= 0; index--) {
+    const section = sectionEdits[index]!
+    if (section.slideIndex === slideIndex) sectionEdits.splice(index, 1)
+    else if (section.slideIndex > slideIndex) section.slideIndex -= 1
+  }
   selectedSlide = order[Math.max(0, position - 1)]!
   renderSlides(); renderInspector(); markDirty()
 }
