@@ -80,7 +80,6 @@ describe('shared PPTX editor', () => {
     draft.setOperations([{ kind: 'editSlides', order: [0, 2, 3, 1],
       newSlides: [{ layoutFrom: 0 }, { layoutFrom: 0 }],
       sections: [{ slideIndex: 3, name: 'Retained section' }] }])
-    root.replaceChildren()
     createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx,
       native: true, draft, request: async () => (await (await fetcher()).json()) })
     await vi.waitFor(() => expect(root.querySelectorAll('[data-new-slide="true"]')).toHaveLength(2))
