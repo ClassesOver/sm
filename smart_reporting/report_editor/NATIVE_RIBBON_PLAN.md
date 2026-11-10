@@ -405,3 +405,66 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - [x] Release only the proven unshared deleted leaf dictionary; a real unlink-only counterexample preserves stale inbound IRT and makes future census readonly. Read back the full surviving annotation sequence/dictionaries; verify root remains replyable and last-reply deletion restores ordinary-root capability.
 - [x] Sidebar edit/delete, undo/redo/reload, actual preview/download/reopen, stale pane/modal and readonly/capability isolation work alongside prior saved/local replies. Five new engine cases plus18 affected, three new frontend plus33 affected, seven real service and14 selected ordinary-note/markup file cases pass; Chromium/pypdf/Node22/build evidence in `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
 - [ ] Root-body/whole-thread subtree mutation, nested/popup/rich/complex threads, authenticated authors and full context/popovers remain open, as do other PDF/full-image/production/desktop gaps. This supersedes only the saved flat-leaf mutation gap. Flags off; no merge/deployment.
+
+
+### PR #210 主线审查修复与 Table Design 续接（2026-11-10）
+
+- [x] 关闭重复 #209，迁入测量有限值/弹窗身份与表格段落格式保护；保留 #210 作为主线。
+- [x] 关联批注涂黑引用保护；N 合 1 静态外观保留；含表单拆分页/XFA 明确拒绝；按最终文字校验与恢复按段动画。
+- [x] 固定 Table Design 调色板、整表底纹/无填充、所有/无边框，复用 editTableStyle；历史、真实预览、下载与独立 OOXML 回读。
+- [ ] 表单树拆分重映射、复杂关联批注涂黑、任意表格样式库/单格与复杂结构、其余 PDF/PPTX 功能及生产/桌面/完整镜像验收仍开放。整体任务未宣称完成，功能开关保持关闭。
+- 证据范围与原始素材：`NATIVE_PR210_PRESERVATION_ACCEPTANCE.md`。
+
+
+### PR #210 表格结构与既有绘图续接（2026-11-10）
+
+- [x] 固定 GenOffice 原仓库已克隆至本地，锁定 `f8c17004fb730df11f0f743164ffd8b4281bb38c`，从 context-menu/table-actions 和原始 engine 验证表格行列命令。
+- [x] 简单矩形表格插入/删除行列六种操作；来源页单次结构修改、严格尺寸/引用验证、历史与刷新恢复。结构结果保存重开后显示；新增格只继承 tcPr，不声称继承字体。
+- [x] 安全已保存绘图按来源/页/槽位/字典哈希逻辑删除；不按几何匹配。关联、共享、锁定与保护来源只读。
+- [x] 修复绘图与便签混合批次日期规范化，按 writer 实际追加顺序核验，保持旧便签身份。
+- [ ] 合并单元格与特殊尺寸/扩展表格、连续同页结构编辑、绘图移动/样式及复杂来源、完整 PDF/PPTX/桌面/生产验收仍开放。功能开关保持关闭。
+- 详细范围与证据见 `NATIVE_PPTX_TABLE_STRUCTURE_ACCEPTANCE.md` 和 `NATIVE_PDF_SAVED_DRAWINGS_ACCEPTANCE.md`。
+
+
+### PR #210 表格预设与待保存绘图续接（2026-11-10）
+
+- [x] 八种固定表格预设及来源firstRow/bandRow/rtl选项，复用TABLE_STYLE_PRESETS、editTableStyle与ensureTableStylePart；明确预设清直接填充/边框、保留字体/几何/合并与rtl，批次最终覆盖顺序。
+- [x] 固定样式ID冲突、非规范/复杂样式定义、关系及内容类型事先拒绝；单纯底纹/边框保留原能力。
+- [x] PDF待保存绘图按snapshot/来源页/精确记录选择、平移和删除，复用addDrawing输出；历史/刷新及过期弹窗身份保护。源码核对纠正saved移动/线宽选择的旧缺口表述。
+- [ ] 源图像缩放与直接画布操作、单格样式、任意样式库、复杂表格/关联PDF来源及完整桌面/生产/应用镜像验收仍开放；功能开关保持关闭。
+- 范围、原始素材与独立验收见 `NATIVE_PPTX_TABLE_PRESETS_ACCEPTANCE.md`、`NATIVE_PDF_PENDING_DRAWINGS_ACCEPTANCE.md`。
+
+- [x] 本轮83项相关前端与30项后端检查、两条生产静态浏览器完整闭环、独立python-pptx/pypdf及断网Node22通过；8预设经独立LibreOffice/PDF栅格验证颜色和网格。
+- [ ] 外部消费者RTL：OOXML与native画布已镜像，但当前LibreOffice未镜像列，保留产物与失败证据，不标记跨软件视觉验收通过。
+
+
+### PR #210 单格底纹与待保存图像等比缩放（2026-11-10）
+
+- [x] tableActiveCell语义的明确Web底纹目标，固定palette/noFill单格覆盖、回整表、整体/preset清旧单格覆盖，flags/边框保留；total500及表样式record500预算。
+- [x] 原始physical tc/模型logical映射与namespace证明，安全矩形子集、危险来源独立只读，目标/非目标XML身份回读，history/刷新与旧DOM保护。
+- [x] 待保存image以百分比与四种固定角等比缩放，保留图像数据/其他记录、source snapshot/index与单modal守卫，复用addDrawing。
+- [ ] 合并/嵌套/扩展表格单格格式、单格边框/字体、直接角控制柄/画布宿主操作、外部RTL消费者差异及完整生产/桌面/应用镜像验收仍开放；功能开关关闭。
+- 详细来源与边界：`NATIVE_PPTX_CELL_SHADING_ACCEPTANCE.md`、`NATIVE_PDF_PENDING_IMAGE_RESIZE_ACCEPTANCE.md`。
+
+- [x] 本轮103项相关前端、21项后端定向检查，三条生产静态浏览器闭环，独立python-pptx/pypdf/AP像素数据回读，断网Node22和LibreOffice单格颜色像素交叉验证通过；Standard/Slides/budget/Ruff/diff通过。整体任务未宣称完成。
+
+
+### PR #210 待保存image画布选择/拖动/四角缩放（2026-11-10）
+
+- [x] 从原DrawLayer实际pointer/handle行为与addImageStamp AP对照实现：选择模式下精确image记录命中、3CSSpx拖阈、相反显示角固定、保比例与最短显示长边16px、释放一次history；单击小图handle不会触发最小尺寸放大。
+- [x] 源页面viewport正反变换处理quarter-turn/CropBox/UserUnit/CSS比例；局部live绘制，不每帧克隆/序列化整个图像草稿。原image显示矩阵改直立display bbox以对齐源counterrotated AP。
+- [x] snapshot/source/record-index/pointerId身份，取消/丢capture/Escape/blur/scroll/wheel/换页/zoom/reflow/草稿变化/preview/save/dispose拒绝过期提交；其他模式与只读透传。
+- [ ] 非image几何的直接canvas交互、source上下文/全部快捷键、已保存图像编辑与完整桌面/生产/应用镜像验收仍开放，功能开关关闭；既有RTL外部兼容差异不变。
+- 原始材料与验证边界：`NATIVE_PDF_IMAGE_CANVAS_ACCEPTANCE.md`。
+
+- [x] 32项相关检查、真实Chromium五阶段四象限像素对比/完整交互与pypdf独立回读通过；Standard/Slides/budget/类型/语法/diff通过。证据 `NATIVE_PDF_IMAGE_CANVAS_ACCEPTANCE.md`；整体任务未宣称完成。
+
+
+### PR #210 待保存几何绘图画布选择/拖动（2026-11-10）
+
+- [x] 七类geometry的透明粗stroke命中、精确record选择/平移、3CSSpx阈与release一次history；复用image controller全部取消/身份守卫，不新增几何resize或源没有的线宽UI。
+- [x] 全部ink paths可见，箭头头/主体与measure标签随同record移动；image/shape混合按完整创建顺序统一渲染，修复旧分层导致的z-order命中错误。
+- [ ] 源水平measure label与Web旋转label/AP角度、caret源glyph与实际AP视觉差异继续列为未验收；完整上下文/快捷键、已保存变换及生产/桌面/完整镜像仍开放；功能开关关闭。
+- 具体来源与验收：`NATIVE_PDF_SHAPE_CANVAS_ACCEPTANCE.md`。
+
+- [x] 本轮47项定向检查、shape与image两条真实浏览器闭环及独立pypdf实际文件回读通过；Standard/Slides/budget/类型/语法/diff通过。详细边界和失败记录见 `NATIVE_PDF_SHAPE_CANVAS_ACCEPTANCE.md`。

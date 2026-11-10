@@ -1,3 +1,5 @@
+import { validateSavedDrawing, type SavedPdfDrawing } from './pdf-saved-drawings'
+import { formatLength, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
 import { validatePdfReplies } from './pdf-replies'
 import { validateAttachmentEdits, type PdfAttachmentModel } from './pdf-attachment-edits'
 import { validatePendingPdfNote, validatePdfNoteOperation, type SavedPdfNote } from './pdf-notes'
@@ -20,15 +22,16 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
   return result
 }
 export interface PdfBox { x: number; y: number; width: number; height: number }
-export interface PdfPageIdentity { pageId: string; index: number; blank?: boolean; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean }
+export interface PdfPageIdentity { pageId: string; index: number; blank?: boolean; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean; drawings?: SavedPdfDrawing[]; drawingsReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel extends PdfAttachmentModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel extends PdfAttachmentModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; removeDrawing?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
 /** 所有操作引用不可变来源索引；排序后的页面位置永远不能当作来源身份。 */
 export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperation[]): PdfPageIdentity[] {
   validatePdfSizeOperations(operations)
+  if (operations.some(op => op.kind === 'removeDrawing') && operations.some(op => ['replaceText', 'setPageSize', 'cropPage'].includes(op.kind))) throw new Error('删除已保存绘图与原位改字、页面尺寸或裁切请分别保存重开')
   validateAttachmentEdits(operations)
   validatePdfReplies(pages, operations)
   const byId = new Map(pages.map(page => [page.pageId, { ...page }]))
@@ -37,6 +40,14 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
   let order = pages.map(page => page.pageId)
   let blanks = 0
   let stamped = false
+  let redactions = 0
+  const layout = operations.find(op => op.kind === 'mergePages' || op.kind === 'splitPages')
+  if (layout) {
+    if (operations.length !== 1) throw new Error(PDF_PAGE_LAYOUT_ALONE_REASON)
+    validatePdfPageLayout(layout)
+    return pages.map(page => ({ ...page }))
+  }
+  if (operations.some(op => op.kind === 'redact') && operations.some(op => op.kind === 'setPageSize')) throw new Error(PDF_REDACTION_PAGE_SIZE_REASON)
   for (const operation of operations) {
     if (stamped && ['reorderPages', 'deletePage', 'insertBlankPage', 'setPageSize', 'cropPage'].includes(operation.kind)) throw new Error(PDF_STAMPS_STRUCTURE_REASON)
     if (operation.kind === 'setStamps') { if (stamped) throw new Error('水印/页眉页脚只能设置一次'); stamped = true; continue }
@@ -73,6 +84,12 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (removed.has(note.annotationId)) throw new Error('同一便签不能重复编辑或删除')
       removed.add(note.annotationId)
       page.notes = operation.kind === 'removeNote' ? page.notes?.filter(item => item.annotationId !== note.annotationId) : page.notes?.map(item => item.annotationId === note.annotationId ? { ...item, contents: String(operation.contents) } : item)
+    } else if (operation.kind === 'removeDrawing') {
+      if (deleted.has(page.pageId)) throw new Error('绘图不能引用已删除页面')
+      const drawing = validateSavedDrawing(operation, pages.find(item => item.pageId === page.pageId)!)
+      if (removed.has(drawing.annotationId)) throw new Error('同一绘图不能重复删除')
+      removed.add(drawing.annotationId)
+      page.drawings = page.drawings?.filter(item => item.annotationId !== drawing.annotationId)
     } else if (operation.kind === 'removeMarkup') {
       if (deleted.has(page.pageId)) throw new Error('文字标注不能引用已删除页面')
       const source = pages.find(item => item.pageId === page.pageId)!
@@ -80,6 +97,10 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (Object.keys(operation).some(key => !['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256'].includes(key)) || typeof operation.annotationId !== 'string' || !/^[a-f0-9]{64}$/.test(operation.annotationId) || !source.markupReadSafe || !mark?.removable || mark.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || removed.has(operation.annotationId)) throw new Error('标注身份已过期或暂不支持移除；原草稿已保留')
       removed.add(operation.annotationId)
       page.markups = page.markups?.filter(item => item.annotationId !== operation.annotationId)
+    } else if (operation.kind === 'redact') {
+      if (deleted.has(page.pageId)) throw new Error('涂黑不能引用已删除页面')
+      validatePdfRedaction(operation, page.cropBox)
+      if (++redactions > PDF_REDACTION_MAX) throw new Error(`涂黑区域不能超过 ${PDF_REDACTION_MAX} 个`)
     } else if (operation.kind === 'addDrawing') {
       if (deleted.has(page.pageId)) throw new Error('绘图不能引用已删除页面')
       validatePdfDrawing(operation, page.cropBox)
@@ -137,13 +158,17 @@ export function validatePdfStamps(operation: NativeOperation, pages: PdfPageIden
 }
 
 /** 固定源 DrawLayer 的矩形/椭圆/箭头/手绘；坐标为未旋转 PDF user space，须位于当前可见范围内。 */
-export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'ink' | 'polygon' | 'caret' | 'link' | 'image'
+export type PdfDrawingShape = 'rect' | 'ellipse' | 'arrow' | 'measure' | 'ink' | 'polygon' | 'caret' | 'link' | 'image'
 /** 插入图像：浏览器转成的 PNG（base64，无 data: 前缀），≤ 6MB 编码长度。 */
 export const PDF_IMAGE_MAX_BASE64 = 6_000_000
 /** 固定源 LinkDialog：外部 URL 或文档内页码二选一。出于安全只接受 http/https/mailto（固定源允许任意 scheme）。 */
 export const PDF_LINK_URL = /^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i
 export type PdfLinkTarget = { url: string } | { destPage: number }
 export const PDF_DRAWING_WIDTH = 2
+/** 引擎以 Helvetica 写测量标签：只接受可打印 ASCII，≤ 64 字符；单位因此须为英文（固定源默认 m）。 */
+export const PDF_MEASURE_LABEL = /^[\x20-\x7e]{1,64}$/
+/** 测量线长度（PDF pt）。 */
+export function pdfLineLength(from: number[], to: number[]) { return Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!) }
 /** 固定源 DrawLayer.tsx DRAW_COLORS（默认红色）。 */
 export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, number, number] }[] = [
   { name: 'red', label: '红色', rgb: [0.86, 0.22, 0.18] },
@@ -153,10 +178,10 @@ export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, numbe
   { name: 'black', label: '黑色', rgb: [0.15, 0.15, 0.15] },
 ]
 export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
-  const { shape, rect, from, to, paths, vertices, point, color, width, url, destPage, image } = operation as Record<string, unknown>
+  const { shape, rect, from, to, paths, vertices, point, color, width, url, destPage, image, label } = operation as Record<string, unknown>
   const finite = (value: unknown, length?: number) => Array.isArray(value) && (length === undefined || value.length === length) && value.every(item => typeof item === 'number' && Number.isFinite(item))
   const inside = (x: number, y: number) => x >= box.x && x <= box.x + box.width && y >= box.y && y <= box.y + box.height
-  const allowed = new Set(['kind', 'pageId', 'shape', 'color', 'width', 'sourceSha256', ...(shape === 'arrow' ? ['from', 'to'] : shape === 'ink' ? ['paths'] : shape === 'polygon' ? ['vertices'] : shape === 'caret' ? ['point'] : shape === 'link' ? ['rect', 'url', 'destPage'] : shape === 'image' ? ['rect', 'image'] : ['rect'])])
+  const allowed = new Set(['kind', 'pageId', 'shape', 'color', 'width', 'sourceSha256', ...(shape === 'arrow' ? ['from', 'to'] : shape === 'measure' ? ['from', 'to', 'label'] : shape === 'ink' ? ['paths'] : shape === 'polygon' ? ['vertices'] : shape === 'caret' ? ['point'] : shape === 'link' ? ['rect', 'url', 'destPage'] : shape === 'image' ? ['rect', 'image'] : ['rect'])])
   if (Object.keys(operation).some(key => !allowed.has(key)) || !finite(color, 3) || (color as number[]).some(value => value < 0 || value > 1) || typeof width !== 'number' || width < 0.25 || width > 24) throw new Error('绘图参数无效')
   if (shape === 'link' && ((url === undefined) === (destPage === undefined) || (url !== undefined && (typeof url !== 'string' || url.length > 2048 || !PDF_LINK_URL.test(url))) || (destPage !== undefined && (!Number.isInteger(destPage) || (destPage as number) < 1)))) throw new Error('链接目标须为 http/https/mailto 地址或有效页码')
   if (shape === 'image' && (typeof image !== 'string' || !image.startsWith('iVBORw0KGgo') || image.length > PDF_IMAGE_MAX_BASE64)) throw new Error('图像须为不超过限额的 PNG')
@@ -164,8 +189,9 @@ export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
     if (!finite(rect, 4)) throw new Error('绘图范围无效')
     const [x1, y1, x2, y2] = rect as number[]
     if (x2! - x1! < 1 || y2! - y1! < 1 || !inside(x1!, y1!) || !inside(x2!, y2!)) throw new Error('绘图范围必须在当前页面内')
-  } else if (shape === 'arrow') {
-    if (!finite(from, 2) || !finite(to, 2) || !inside(...(from as [number, number])) || !inside(...(to as [number, number])) || Math.hypot((to as number[])[0]! - (from as number[])[0]!, (to as number[])[1]! - (from as number[])[1]!) < 2) throw new Error('箭头太短或超出页面')
+  } else if (shape === 'arrow' || shape === 'measure') {
+    if (shape === 'measure' && (typeof label !== 'string' || !PDF_MEASURE_LABEL.test(label) || !label.trim())) throw new Error('测量标签须为 1–64 个英文字符（PDF 标签字体为 Helvetica）')
+    if (!finite(from, 2) || !finite(to, 2) || !inside(...(from as [number, number])) || !inside(...(to as [number, number])) || Math.hypot((to as number[])[0]! - (from as number[])[0]!, (to as number[])[1]! - (from as number[])[1]!) < 2) throw new Error(shape === 'measure' ? '测量线太短或超出页面' : '箭头太短或超出页面')
   } else if (shape === 'ink') {
     if (!Array.isArray(paths) || !paths.length || paths.length > 20 || paths.some(path => !finite(path) || path.length < 4 || path.length > 4000 || path.length % 2 || path.some((value: number, index: number) => index % 2 === 0 && !inside(value, path[index + 1])))) throw new Error('手绘路径无效')
   } else if (shape === 'polygon') {
@@ -175,19 +201,51 @@ export function validatePdfDrawing(operation: NativeOperation, box: PdfBox) {
   } else throw new Error('不支持的绘图形状')
 }
 /** 把一次拖拽转换为绘图操作；端点先夹到可见范围内。 */
-export function pdfDrawingOperation(pageId: string, shape: PdfDrawingShape, points: number[][], box: PdfBox, color: [number, number, number], target?: PdfLinkTarget | { image: string }): NativeOperation {
+export function pdfDrawingOperation(pageId: string, shape: PdfDrawingShape, points: number[][], box: PdfBox, color: [number, number, number], target?: PdfLinkTarget | { image: string } | { label: string }): NativeOperation {
   const clamp = (point: number[]) => [Math.min(box.x + box.width, Math.max(box.x, point[0]!)), Math.min(box.y + box.height, Math.max(box.y, point[1]!))].map(value => Math.round(value * 100) / 100)
   const clamped = points.map(clamp)
-  const base = { kind: 'addDrawing', pageId, shape, color: [...color], width: PDF_DRAWING_WIDTH, ...(shape === 'link' || shape === 'image' ? target ?? {} : {}) }
+  const base = { kind: 'addDrawing', pageId, shape, color: [...color], width: PDF_DRAWING_WIDTH, ...(shape === 'link' || shape === 'image' || shape === 'measure' ? target ?? {} : {}) }
   const first = clamped[0]!, last = clamped.at(-1)!
   const distinct = clamped.filter((value, index) => index === 0 || Math.hypot(value[0]! - clamped[index - 1]![0]!, value[1]! - clamped[index - 1]![1]!) >= 2)
   const operation: NativeOperation = shape === 'ink' ? { ...base, paths: [clamped.flat()] }
     : shape === 'polygon' ? { ...base, vertices: distinct }
     : shape === 'caret' ? { ...base, point: first }
-    : shape === 'arrow' ? { ...base, from: first, to: last }
+    : shape === 'arrow' || shape === 'measure' ? { ...base, from: first, to: last }
     : { ...base, rect: [Math.min(first[0]!, last[0]!), Math.min(first[1]!, last[1]!), Math.max(first[0]!, last[0]!), Math.max(first[1]!, last[1]!)] }
   validatePdfDrawing(operation, box)
   return operation
+}
+
+/** 固定源原生安全涂黑（redaction.ts）：标记区域，保存新修订时由 PDFium 永久移除区域内文字/图像/路径并黑块覆盖；来源修订保持不变。 */
+export const PDF_REDACTION_MAX = 500
+export const PDF_REDACTION_PAGE_SIZE_REASON = '涂黑不能与页面尺寸同批修改；请先保存重开'
+export function validatePdfRedaction(operation: NativeOperation, box: PdfBox) {
+  if (Object.keys(operation).some(key => !['kind', 'pageId', 'rect', 'sourceSha256'].includes(key))) throw new Error('涂黑参数无效')
+  const rect = validatedPdfCrop(operation.rect, box)
+  if (rect[2] - rect[0] < 1 || rect[3] - rect[1] < 1) throw new Error('涂黑区域太小')
+  return rect
+}
+export function pdfRedactionOperation(pageId: string, rect: PdfRect, box: PdfBox): NativeOperation {
+  const operation: NativeOperation = { kind: 'redact', pageId, rect: rect.map((value, index) => (index < 2 ? Math.ceil : Math.floor)(value * 100) / 100) }
+  validatePdfRedaction(operation, box)
+  return operation
+}
+
+/** 固定源 mergePages（N 合 1，2–16，横向/纵向顺序，可选分隔线）与 splitPages（每页拆成 2/4/9 格）：整份文档重排版，须单独保存为新修订。 */
+export const PDF_PAGE_LAYOUT_ALONE_REASON = '合并页面/拆分页面须单独保存，请先保存或撤销其他修改'
+export function validatePdfPageLayout(operation: NativeOperation) {
+  if (operation.kind === 'mergePages') {
+    if (Object.keys(operation).some(key => !['kind', 'perSheet', 'direction', 'separator', 'sourceSha256'].includes(key)) || !Number.isInteger(operation.perSheet) || Number(operation.perSheet) < 2 || Number(operation.perSheet) > 16 || !['horizontal', 'vertical'].includes(String(operation.direction)) || typeof operation.separator !== 'boolean') throw new Error('每张页数须为 2–16 的整数')
+  } else if (operation.kind === 'splitPages') {
+    if (Object.keys(operation).some(key => !['kind', 'perPage', 'sourceSha256'].includes(key)) || ![2, 4, 9].includes(Number(operation.perPage))) throw new Error('拆分份数须为 2、4 或 9')
+  } else throw new Error('不支持的页面版式操作')
+  return operation
+}
+export function pdfMergePagesOperation(perSheet: number, direction: 'horizontal' | 'vertical', separator: boolean): NativeOperation {
+  return validatePdfPageLayout({ kind: 'mergePages', perSheet, direction, separator })
+}
+export function pdfSplitPagesOperation(perPage: number): NativeOperation {
+  return validatePdfPageLayout({ kind: 'splitPages', perPage })
 }
 
 /** Native crop stores unrotated PDF coordinates, never a displayed page index. */
@@ -390,4 +448,14 @@ export class PdfPreviewReview {
   confirmedDigest(operations: NativeOperation[]): string | undefined {
     return this.isPrepared(operations) && this.checked ? this.digest : undefined
   }
+}
+
+/** Calibration is session-only; each saved Line carries its own immutable label. */
+export function pdfMeasurementOperation(pageId: string, points: number[][], box: PdfBox, color: [number, number, number], scale: MeasureScale): NativeOperation {
+  if (!Number.isFinite(scale.unitsPerPt) || scale.unitsPerPt <= 0 || !/^[\x20-\x7e]{1,12}$/.test(scale.unit) || !scale.unit.trim()) throw new Error('标定比例无效；单位请使用 m、cm、mm、ft、in 等 ASCII 字符')
+  const line = pdfDrawingOperation(pageId, 'arrow', points, box, color)
+  const from = line.from as number[], to = line.to as number[]
+  const length = Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!) / scale.unitsPerPt
+  if (!Number.isFinite(length) || length >= 1e21) throw new Error('测量结果超出范围')
+  return pdfDrawingOperation(pageId, 'measure', [from, to], box, color, { label: formatLength(Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!), scale) })
 }

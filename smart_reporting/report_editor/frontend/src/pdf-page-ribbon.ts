@@ -49,8 +49,8 @@ export const PDF_PAGE_RIBBON_GROUPS: PdfPageRibbonGroup[] = [
       { id: 'genoffice.pdf.page.reverse', label: '反转页面', enabled: true },
       unavailable('page.splitPdf', '拆分 PDF', '拆分输出尚未接入授权下载与新修订登记'),
       unavailable('page.mergePdf', '合并 PDF', '合并输出尚未接入来源身份验证和新修订登记'),
-      unavailable('page.mergePages', '合并页面', 'PDF bridge 尚未提供页面合并操作'),
-      unavailable('page.splitPages', '拆分页面', 'PDF bridge 尚未提供页面拆分操作'),
+      { id: 'genoffice.pdf.page.mergePages', label: '合并页面', enabled: true },
+      { id: 'genoffice.pdf.page.splitPages', label: '拆分页面', enabled: true },
     ],
   },
 ]

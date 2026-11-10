@@ -61,3 +61,23 @@ state uses the source matching helper without an aspect-ratio fallback.
 Only the data is taken; the React previews depend on the renderer's preset geometry. Insert ▸ Shapes
 uses it with the pinned insert defaults (`default-shape.ts` factory fill `#C43E1C`; line presets get a
 1pt black stroke per `insert-actions.ts`). Hashes are in `components/SOURCE-SHA256.json`.
+
+2026-11-10: `components/chart-gallery-data.ts` adapts the pinned `apps/slides/src/renderer/insert-presets.ts`
+`CHART_GALLERY` and `chartSampleData` (13 kinds, unchanged order and sample values) with Simplified Chinese
+strings substituted for the i18n keys. Insert ▸ Chart uses it with the pinned frame
+(`insert-defaults.ts` `graphicFrameInsertFrame`: 2/3 slide width, 3:2, centred) and `barH` → `bar` +
+`barDir: 'bar'` as in the pinned main process. Hashes are in `components/SOURCE-SHA256.json`.
+
+2026-11-10: `components/smartart-gallery-data.ts` adapts the same pinned `insert-presets.ts` `SMARTART_GALLERY`
+(7 layouts, unchanged order and default items) with Simplified Chinese strings; inserted with the same
+`graphicFrameInsertFrame` placement through the pinned engine's `addSmartArt` (1–8 nodes).
+
+2026-11-10: `src/slides-animation-sequence.ts` (outside this directory; behaviour port, no upstream file copied)
+follows the pinned `apps/slides/src/renderer/animation-actions.ts`
+(SHA-256 `d8b6af35e80646ef698a43425db90e48079802823a4fe76cff6eb8303c2274fb`: whole-page overwrite, `animDefaultDur`,
+none / add / motion path / by-paragraph / move / delete / timing), `components/AnimationPane.tsx`
+(`8d55896be2ea47340cce8da9aec43531fa232aa4b2f47520a774098d4c69cefd`: step numbering and row content) and the five
+`MOTION_PATHS` strings in `components/Ribbon.tsx` (`6a261cf18bbdbf2b39fa51add3d30383a10ded4a072303e0012cb7e5cde00aba`),
+copied verbatim. The bridge keeps the same five path strings as its allow-list.
+
+Table Design follow-up: `components/table-shading-colors.ts` is byte-identical to pinned renderer source (Git blob `3b568af4ba4bfdc717345e873a7322ceaa2b801e`). Ribbon onEditTableStyle shading and all/none borders are adapted for whole-table selection; pinned editTableStyle remains unchanged. No table-style gallery or cell-range styling parity is claimed.

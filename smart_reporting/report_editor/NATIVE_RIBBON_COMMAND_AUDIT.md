@@ -384,3 +384,8 @@ to avoid stale inbound IRT. Source/preview/readonly/capability guards cover pane
 and page-card actions; ordinary note editing remains independent. The new source
 annot-delete.ts is a pinned primary reference, not a claimed executed PDFium path.
 See `NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`; no new Ribbon count is claimed.
+
+
+## PR #210 Table Design 与保真修复
+
+直接核对固定 Ribbon.tsx 的 onEditTableStyle（底纹与 all/none 边框），逐字节复用 table-shading-colors.ts。原生只接通整表底纹/无填充及黑色 1pt 全部/无边框，preset gallery 与 cell-range 保持未开放。引用图涂黑、N 合 1 可见外观、表单拆分限制与最终段落动画的真实文件反例/回归见 `NATIVE_PR210_PRESERVATION_ACCEPTANCE.md`。

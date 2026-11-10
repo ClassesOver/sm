@@ -18,7 +18,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'theme', 'slideSize', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -48,6 +48,8 @@ _HEX_COLOR = re.compile(r'^#[0-9a-fA-F]{6}$')
 _SHAPE_DATA = json.loads((Path(__file__).parents[1] / 'reporting' / 'slides_engine' / 'bridge' / 'shape-presets.json').read_text(encoding='utf-8'))
 _SHAPE_PRESETS = frozenset(_SHAPE_DATA['presets'])
 _LINE_PRESETS = frozenset(_SHAPE_DATA['lines'])
+# 固定源 CHART_GALLERY 的 13 种图表
+_CHART_KINDS = frozenset({'bar', 'bar3D', 'barStacked', 'barPercentStacked', 'barH', 'line', 'area', 'pie', 'pie3D', 'doughnut', 'scatter', 'radar', 'comboBarLine'})
 
 
 def _content(format: str, content: bytes) -> None:
@@ -117,6 +119,87 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
     shape_kinds = _records(operation, 'shapeKinds', {'slideIndex', 'elementId', 'kind'})
     if any(not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['kind'], str)
            or item['kind'] not in _SHAPE_PRESETS or item['kind'] in _LINE_PRESETS for item in shape_kinds):
+        raise ValueError('native_office_operations_invalid')
+    sections = operation.get('sections', [])
+    if (not isinstance(sections, list) or len(sections) > 100
+        or any(not isinstance(item, dict) or set(item) != {'slideIndex', 'name'} or not _slide_index(item['slideIndex'])
+               or not isinstance(item['name'], str) or not item['name'].strip() or len(item['name']) > 100
+               or any(ord(char) < 32 or ord(char) == 127 for char in item['name']) for item in sections)):
+        raise ValueError('native_office_operations_invalid')
+    header_footer = operation.get('headerFooter')
+    if header_footer is not None and (
+        not isinstance(header_footer, dict) or set(header_footer) != {'footer', 'slideNum', 'date', 'dateAuto'}
+        or any(header_footer[key] is not None and (not isinstance(header_footer[key], str) or len(header_footer[key]) > 500
+               or any(ord(char) < 32 and char not in '\t\n' or ord(char) == 127 for char in header_footer[key])) for key in ('footer', 'date'))
+        or any(not isinstance(header_footer[key], bool) for key in ('slideNum', 'dateAuto'))):
+        raise ValueError('native_office_operations_invalid')
+    table_structures = _records(operation, 'tableStructures', {'slideIndex', 'elementId', 'kind', 'index'}, {'before'})
+    if len(table_structures) > 100:
+        raise ValueError('native_office_operations_invalid')
+    structure_slides = set()
+    for item in table_structures:
+        if (not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['kind'], str)
+            or item['kind'] not in {'insert-row', 'delete-row', 'insert-col', 'delete-col'} or not isinstance(item['index'], int) or isinstance(item['index'], bool) or not 0 <= item['index'] < 75
+            or (not isinstance(item.get('before'), bool) if item['kind'].startswith('insert-') else 'before' in item)
+            or item['slideIndex'] in structure_slides):
+            raise ValueError('native_office_operations_invalid')
+        structure_slides.add(item['slideIndex'])
+    table_flags = {'firstRow', 'lastRow', 'firstCol', 'lastCol', 'bandRow', 'bandCol', 'rtl'}
+    table_presets = {'none', 'lightGrid', 'zebraBlue', 'zebraGray', 'headerDarkBlue', 'headerOrange', 'noBorder', 'fullBorder'}
+    table_styles = _records(operation, 'tableStyles', {'slideIndex', 'elementId'}, {'styleName', 'shadingColor', 'borderPreset', 'cellShadings'} | table_flags)
+    if len(table_styles) > 500:
+        raise ValueError('native_office_operations_invalid')
+    style_keys = set()
+    cell_shading_count = 0
+    table_colors = {'none', '#FFFFFF', '#F2F2F2', '#DAEEF3', '#EBF3FB', '#D6E4F0', '#FFF2CC', '#FFE6CC', '#FCE4D6', '#E2EFDA', '#E6E6FF'}
+    for item in table_styles:
+        key = (item['slideIndex'], item['elementId']) if isinstance(item['elementId'], str) else None
+        if (key is None or not item['elementId'] or key in style_keys or not ({'styleName', 'shadingColor', 'borderPreset', 'cellShadings'} | table_flags) & item.keys()
+            or ('styleName' in item and (not isinstance(item['styleName'], str) or item['styleName'] not in table_presets))
+            or any(key in item and not isinstance(item[key], bool) for key in table_flags)
+            or ('shadingColor' in item and (not isinstance(item['shadingColor'], str) or item['shadingColor'] not in {'none', '#FFFFFF', '#F2F2F2', '#DAEEF3', '#EBF3FB', '#D6E4F0', '#FFF2CC', '#FFE6CC', '#FCE4D6', '#E2EFDA', '#E6E6FF'}))
+            or ('borderPreset' in item and (not isinstance(item['borderPreset'], str) or item['borderPreset'] not in {'all', 'none'}))):
+            raise ValueError('native_office_operations_invalid')
+        if 'cellShadings' in item:
+            cells = item['cellShadings']
+            if not isinstance(cells, list) or not cells:
+                raise ValueError('native_office_operations_invalid')
+            cell_shading_count += len(cells)
+            if cell_shading_count > 500:
+                raise ValueError('native_office_operations_invalid')
+            cell_keys = set()
+            for cell in cells:
+                if (not isinstance(cell, dict) or set(cell) != {'row', 'col', 'shadingColor'}
+                    or any(not isinstance(cell[axis], int) or isinstance(cell[axis], bool) or not 0 <= cell[axis] < 75 for axis in ('row', 'col'))
+                    or not isinstance(cell['shadingColor'], str) or cell['shadingColor'] not in table_colors
+                    or (cell['row'], cell['col']) in cell_keys):
+                    raise ValueError('native_office_operations_invalid')
+                cell_keys.add((cell['row'], cell['col']))
+        style_keys.add(key)
+    table_cells = _records(operation, 'tableCells', {'slideIndex', 'elementId', 'row', 'col', 'text'})
+    if len(table_cells) > 500 or any(not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['text'], str) or len(item['text']) > 10000 or re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', item['text'])
+           or any(not isinstance(item[key], int) or isinstance(item[key], bool) or item[key] < 0 for key in ('row', 'col')) for item in table_cells):
+        raise ValueError('native_office_operations_invalid')
+    charts = _records(operation, 'charts', {'slideIndex', 'kind', 'categories', 'series'})
+    def _label(value: Any) -> bool:
+        return isinstance(value, str) and len(value) <= 100 and not any(ord(char) < 32 or ord(char) == 127 for char in value)
+    if len(charts) > 50 or any(
+        item['kind'] not in _CHART_KINDS or not isinstance(item['categories'], list) or not 1 <= len(item['categories']) <= 100
+        or not all(_label(value) for value in item['categories']) or not isinstance(item['series'], list) or not 1 <= len(item['series']) <= 20
+        or any(not isinstance(series, dict) or set(series) != {'name', 'values'} or not _label(series['name']) or not isinstance(series['values'], list)
+               or len(series['values']) != len(item['categories']) or not all(_number(value, -1e15, 1e15) for value in series['values']) for series in item['series'])
+        for item in charts):
+        raise ValueError('native_office_operations_invalid')
+    # 整页动画列表覆盖写（动画窗格/无/动作路径/按段）：结构在此粗校验，条目语义与来源身份由桥接按真实动画表校验。
+    animation_sequences = _records(operation, 'animationSequences', {'slideIndex', 'items'})
+    if any(not isinstance(item['items'], list) or len(item['items']) > 500 or any(not isinstance(entry, dict) for entry in item['items'])
+           for item in animation_sequences) or len({item['slideIndex'] for item in animation_sequences}) != len(animation_sequences):
+        raise ValueError('native_office_operations_invalid')
+    smart_arts = _records(operation, 'smartArts', {'slideIndex', 'layout', 'items'})
+    if len(smart_arts) > 50 or any(
+        item['layout'] not in {'list', 'process', 'cycle', 'hierarchy', 'pyramid', 'matrix', 'venn'} or not isinstance(item['items'], list)
+        or not 1 <= len(item['items']) <= 8 or not all(isinstance(text, str) and len(text) <= 200 and not any(ord(char) < 32 or ord(char) == 127 for char in text) for text in item['items'])
+        for item in smart_arts):
         raise ValueError('native_office_operations_invalid')
     reset_layouts = operation.get('resetLayouts', [])
     if (not isinstance(reset_layouts, list) or len(reset_layouts) > 500 or any(not _slide_index(index) for index in reset_layouts)
@@ -197,7 +280,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
+    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'transitions': transitions, 'animations': animations,
         'slide_layouts': layouts, 'backgrounds': backgrounds, 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting}
 

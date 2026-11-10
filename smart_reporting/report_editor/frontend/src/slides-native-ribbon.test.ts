@@ -204,10 +204,14 @@ it('preserves Insert table, image, shape and chart source actions while disablin
     const group = host.querySelector<HTMLElement>(`[aria-label="${groupName}"]`)!
     const controls = [...group.querySelectorAll<HTMLButtonElement>('[data-source-action]')]
     expect(controls.map(control => control.dataset.sourceAction)).toEqual(actions)
-    const unsupported = controls.filter(control => !['onPickShape', 'onInsertTable'].includes(control.dataset.sourceAction!))
+    const unsupported = controls.filter(control => !['onPickShape', 'onInsertTable', 'onInsertChart', 'onInsertSmartArt'].includes(control.dataset.sourceAction!))
     expect(unsupported.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
     expect(unsupported.every(control => control.querySelector('svg'))).toBe(true)
   }
+  // Chart 已接通（固定源 13 种图表）
+  const chartPicker = host.querySelector<HTMLSelectElement>('select[data-command="insertChart"]')!
+  expect(chartPicker.disabled).toBe(false)
+  expect([...chartPicker.options].slice(1).map(option => option.value)).toEqual(['bar', 'barStacked', 'barPercentStacked', 'barH', 'bar3D', 'line', 'area', 'pie', 'pie3D', 'doughnut', 'scatter', 'radar', 'comboBarLine'])
   // Table 已接通（行列对话框）
   expect(host.querySelector<HTMLButtonElement>('[data-source-action="onInsertTable"]')!.disabled).toBe(false)
   // Shapes 已接通：固定源形状库 7 组 109 个预设
@@ -221,9 +225,10 @@ it('preserves Insert table, image, shape and chart source actions while disablin
   expect(picture.disabled).toBe(true)
   expect(picture.dataset.unavailable).toBe('true')
   expect(picture.querySelector('svg')).not.toBeNull()
-  const smartArt = host.querySelector<HTMLButtonElement>('[data-source-action="onInsertSmartArt"]')!
-  expect(smartArt.disabled).toBe(true)
-  expect(smartArt.dataset.unavailable).toBe('true')
+  // SmartArt 已接通：固定源 7 种布局
+  const smartArt = host.querySelector<HTMLSelectElement>('select[data-command="insertSmartArt"]')!
+  expect(smartArt.disabled).toBe(false)
+  expect([...smartArt.options].slice(1).map(option => option.textContent)).toEqual(['垂直列表', '基本流程', '基本循环', '组织结构', '基本棱锥图', '基本矩阵', '基本维恩图'])
   ribbon.dispose()
 })
 
@@ -234,7 +239,11 @@ it('connects the source text-box action and disables unsupported Insert Text and
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   const textGroup = host.querySelector<HTMLElement>('.slides-native-ribbon-group[aria-label="Text"]')!
   const textBox = textGroup.querySelector<HTMLButtonElement>('[data-command="addText"]')!
-  const unsupportedTextActions = ['onInsertWordArt', 'onOpenHeaderFooter']
+  const unsupportedTextActions: string[] = []
+  const wordArt = textGroup.querySelector<HTMLSelectElement>('select[data-command="insertWordArt"]')!
+  expect(wordArt.disabled).toBe(false)
+  expect([...wordArt.options].slice(1).map(option => option.textContent)).toEqual(['填充：蓝色', '填充：金色', '填充：深红', '填充：紫色', '填充：绿色；斜体', '填充：白色；描边：橙色', '填充：白色；描边：深红', '填充：金色；描边：棕色', '填充：天蓝；描边：藏青', '填充：藏青；描边：白色', '填充：黑色；描边：金色', '填充：银色；描边：深灰'])
+  expect(textGroup.querySelector<HTMLButtonElement>('[data-source-action="onOpenHeaderFooter"]')!.disabled).toBe(false)
   // 日期与页码字段已接通（固定源 insertField）
   for (const action of ['onInsertField:datetime', 'onInsertField:slidenum']) expect(textGroup.querySelector<HTMLButtonElement>(`[data-source-action="${action}"]`)!.disabled).toBe(false)
 
@@ -369,9 +378,17 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(animationGroup.querySelector<HTMLElement>('[data-source-action="onAddAnimation"]')?.dataset.command).toBe('addAnimation')
   expect(animationPanel.querySelector<HTMLElement>('[data-source-action="onAnimTiming"]')?.dataset.command).toBe('animationTrigger')
   expect(animationPanel.querySelector('[data-command="animationPreview"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationPanel.querySelector('[data-command="motionPathRight"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('data-unavailable')).toBe('true')
+  // 整页动画序列接通后：无、动画窗格、按段与五条动作路径均可用，并派发各自命令
+  for (const command of ['animationNone', 'toggleAnimationPane', 'animationByParagraph', 'motionPathRight', 'motionPathDown', 'motionPathDiagonal', 'motionPathCircle', 'motionPathZigzag']) {
+    const control = animationPanel.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!
+    expect(control.dataset.unavailable, command).toBeUndefined()
+    control.click()
+    expect(onAction, command).toHaveBeenCalledWith(command)
+  }
+  expect(animationPanel.querySelector<HTMLElement>('[data-command="motionPathZigzag"]')?.dataset.sourceAction).toBe('onApplyMotionPath')
+  ribbon.setValue('toggleAnimationPane', 'true'); ribbon.setValue('animationByParagraph', 'true')
+  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
+  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
 
   transition.value = 'wipe'
   transition.dispatchEvent(new Event('change', { bubbles: true }))
@@ -527,5 +544,18 @@ it('enables the Shape Format fill and outline controls with their source actions
   change.value = 'hexagon'; change.dispatchEvent(new Event('change'))
   expect(onAction).toHaveBeenCalledWith('changeShape', 'hexagon')
   expect(change.value).toBe('')
+  ribbon.dispose()
+})
+
+it('enables the pinned Add Section command', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const command = host.querySelector<HTMLButtonElement>('[data-command="addSection"]')!
+  expect(command.dataset.sourceAction).toBe('onAddSection')
+  expect(command.disabled).toBe(false)
+  command.click()
+  expect(onAction).toHaveBeenCalledWith('addSection')
   ribbon.dispose()
 })

@@ -1,3 +1,5 @@
+import { inspectSavedDrawings } from './saved-drawings'
+import { assertRedactionAnnotationSafety, flattenLayoutAnnotations } from './layout-preservation'
 import { appendLocalNoteReplies, type LocalNoteRoot, type LocalNoteReply } from './local-note-replies'
 import { inspectReplyTargets, inspectNoteThreads, appendNoteReplies, canAppendPendingReplies, type NoteReply } from './note-replies'
 import { inspectAttachments, patchAttachments, validAttachmentName, ATTACHMENT_FILE_MAX } from './attachments'
@@ -6,7 +8,8 @@ import { markupRemovalLinks, markupRemovalIdentity, removeSourceMarkups, type Ma
 import { createHash } from 'node:crypto'
 import { PDFArray, PDFDict, PDFString, PDFHexString, PDFRef, PDFName, PDFNumber, PDFCheckBox, PDFDocument, PDFDropdown, PDFOptionList, PDFRadioGroup, PDFSignature, PDFTextField } from 'pdf-lib'
 import { z } from 'zod'
-import { applySaveRequest, setPageSizeBytes } from '../src/main/save-pdf'
+import { applySaveRequest, mergePagesBytes, setPageSizeBytes, splitPagesBytes } from '../src/main/save-pdf'
+import { MAX_REDACTION_REGIONS, redactPdf } from '../src/main/redaction'
 import { inspectNativeText, prepareTextEdits, textResourcesIdentity } from './text-operations'
 import type { SkippedOperation } from './text-operations'
 import type { SavePdfRequest } from '../src/shared/ipc'
@@ -48,11 +51,15 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('replaceText'), ...page, objectId: z.string().min(1).max(256), expectedTextSha256: z.string().regex(/^[a-f0-9]{64}$/), newText: z.string().max(4000) }).strict(),
   z.object({ kind: z.literal('editNote'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/), contents: z.string().trim().min(1).max(10000), modifiedAt: z.string().datetime({ precision: 0 }) }).strict(),
   z.object({ kind: z.literal('removeNote'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  z.object({ kind: z.literal('removeDrawing'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
+  z.object({ kind: z.literal('redact'), ...page, rect }).strict(),
+  z.object({ kind: z.literal('mergePages'), ...identity, perSheet: z.number().int().min(2).max(16), direction: z.enum(['horizontal', 'vertical']), separator: z.boolean() }).strict(),
+  z.object({ kind: z.literal('splitPages'), ...identity, perPage: z.union([z.literal(2), z.literal(4), z.literal(9)]) }).strict(),
   // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
-  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link', 'image']), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
+  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'measure', 'ink', 'polygon', 'caret', 'link', 'image']), label: z.string().min(1).max(64).regex(/^[\x20-\x7e]+$/).optional(), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
@@ -87,10 +94,11 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     return { ...model, fieldId: sha256(Buffer.from(`${sourceSha256}:${name}:${kind}`)), expectedFieldSha256 }
   })
   const removalLinks = markupRemovalLinks(document, formFields.some(field => field.kind === 'signature') || sourceHasXfa || document.catalog.has(PDFName.of('Perms')))
+  const drawingPages = inspectSavedDrawings(document,sourceSha256,removalLinks.protectedSource)
   const threads = inspectNoteThreads(document, sourceSha256, removalLinks.protectedSource)
   const replyTargets = threads.roots
   const pages = document.getPages().map((page, index) => ({
-    pageId: `sha256:${sourceSha256}:page:${index}`, index,
+    pageId: `sha256:${sourceSha256}:page:${index}`, index, ...drawingPages[index],
     ...(textPages ? { textObjects: textPages[index] } : {}),
     ...(() => {
       try {
@@ -132,14 +140,52 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
     mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
-  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, pageCount: pages.length, pages, formFields, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+}
+
+async function deterministicLayoutDates(source: Uint8Array, output: Uint8Array) {
+  const original = await PDFDocument.load(source, { updateMetadata: false, ignoreEncryption: true })
+  const document = await PDFDocument.load(output, { updateMetadata: false })
+  const info = document.context.lookup(document.context.trailerInfo.Info, PDFDict)
+  if (info) {
+    for (const [key, value] of [['CreationDate', original.getCreationDate()], ['ModDate', original.getModificationDate()]] as const) {
+      if (value) info.set(PDFName.of(key), PDFString.fromDate(value))
+      else info.delete(PDFName.of(key))
+    }
+  }
+  return document.save({ useObjectStreams: false, updateFieldAppearances: false })
 }
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
   const ops = operationsSchema.parse(rawOperations)
+  const layout = ops.find(op => op.kind === 'mergePages' || op.kind === 'splitPages')
+  if (layout) {
+    // 固定源 mergePages（N 合 1）/ splitPages（每页拆成 2/4/9 格）：整份文档重排版输出为新文件；
+    // 原生编辑写为新修订、来源修订不变。必须单独保存，不与其他修改同批。
+    if (ops.length !== 1) throw new Error('合并页面/拆分页面须单独保存，请先保存或撤销其他修改')
+    const source = await inspectPdf(content)
+    if (expectedSha256 !== source.sourceSha256 || (layout.sourceSha256 !== undefined && layout.sourceSha256 !== source.sourceSha256)) throw new Error('PDF 来源摘要不匹配')
+    const sourceDocument = await PDFDocument.load(content, { updateMetadata: false })
+    if (sourceDocument.catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict)?.has(PDFName.of('XFA'))) throw new Error('动态表单 PDF 暂不支持合并或拆分页面')
+    if (source.formFields.some(field => field.kind === 'signature')) throw new Error('含有签名字段的 PDF 不能合并或拆分页面（输出不保留签名）')
+    if (layout.kind === 'splitPages' && source.formFields.length) throw new Error('含表单字段的 PDF 暂不支持拆分页面；请先保留原件并展平表单')
+    if (layout.kind === 'splitPages' && source.pageCount * layout.perPage > 10000) throw new Error('拆分后页数超过 10000')
+    let bytes = layout.kind === 'mergePages'
+      ? await mergePagesBytes(await flattenLayoutAnnotations(content), { perSheet: layout.perSheet, direction: layout.direction, separator: layout.separator })
+      : await splitPagesBytes(content, layout.perPage)
+    // 固定源新建文档时写入当前时间（CreationDate/ModDate），使同一草稿每次输出不同、预览确认摘要无法复现。
+    // 改为沿用来源文档信息中的日期（来源无日期则移除），输出只取决于来源字节与操作。
+    bytes = await deterministicLayoutDates(content, bytes)
+    const pages = (await inspectPdf(bytes)).pageCount
+    const expected = layout.kind === 'mergePages' ? Math.ceil(source.pageCount / layout.perSheet) : source.pageCount * layout.perPage
+    if (pages !== expected) throw new Error('合并/拆分页面输出页数复读不一致')
+    const outputSha256 = sha256(bytes)
+    return { bytes, sourceSha256: source.sourceSha256, sha256: outputSha256, size: bytes.length, skippedOperations: [] as SkippedOperation[], appliedOperationIndices: [0], previewDigest: sha256(Buffer.from(JSON.stringify({ sourceSha256: source.sourceSha256, operations: ops, appliedOperationIndices: [0], layoutOutputSha256: outputSha256 }))) }
+  }
   const hasText = ops.some(op => op.kind === 'replaceText')
   const model = await inspectPdf(content, hasText)
   if (expectedSha256 !== model.sourceSha256) throw new Error('PDF 来源摘要不匹配')
+  if (ops.some(op=>op.kind==='removeDrawing') && ops.some(op=>['replaceText','setPageSize','cropPage'].includes(op.kind))) throw new Error('删除已保存绘图与原位改字、页面尺寸或裁切请分别保存重开')
   const savedReplyMutations = ops.some(op => (op.kind === 'editNote' || op.kind === 'removeNote') && model.pages.some(page => page.notes.some(note => note.annotationId === op.annotationId && note.parentAnnotationId !== undefined)))
   if (savedReplyMutations && ops.some(op => ['replaceText','setPageSize','cropPage'].includes(op.kind))) throw new Error('已保存回复修改与原位改字、页面尺寸或裁切请分别保存重开')
   const localReplies = ops.filter(op => op.kind === 'replyPendingNote')
@@ -171,6 +217,10 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   }
   if (blankIndex.size > 200) throw new Error('PDF 空白页数量超过 200')
   const crops = new Map<string, [number, number, number, number]>()
+  // 固定源原生安全涂黑（redaction.ts，PDFium ApplyRedaction 移除区域内文字/图像/路径并黑块覆盖）；
+  // 原生编辑每次保存都写新修订、来源修订不变，对应固定源“先另存副本再涂黑”。
+  const redactions: { pageIndex: number; rect: [number, number, number, number] }[] = []
+  if (sizeOps.length && ops.some(op => op.kind === 'redact')) throw new Error('PDF 涂黑不能与页面尺寸同批修改；请先保存重开')
   const removals: MarkupRemoval[] = []
   const noteEdits: NoteContentEdit[] = []
   const addedNoteDates: AddedNoteDate[] = []
@@ -206,6 +256,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     }
   }
   for (const op of ops) {
+    if (op.kind === 'mergePages' || op.kind === 'splitPages') throw new Error('页面排版须单独处理')
     if (op.kind === 'setFormValue') continue
     if (op.sourceSha256 !== undefined && op.sourceSha256 !== model.sourceSha256) throw new Error('PDF 操作来源摘要不匹配')
     if (op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment' || op.kind === 'insertBlankPage' || op.kind === 'setStamps') continue
@@ -254,6 +305,13 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       else removals.push(plan)
       continue
     }
+    if (op.kind === 'removeDrawing') {
+      const drawing=target.drawings.find(item=>item.annotationId===op.annotationId)
+      if (!target.drawingsReadSafe || !drawing || !drawing.removable || drawing.expectedAnnotationSha256!==op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_drawing_identity_invalid_or_readonly')
+      removedIds.add(op.annotationId)
+      removals.push({pageIndex:target.index,annotationId:op.annotationId,expectedAnnotationSha256:op.expectedAnnotationSha256,subtype:drawing.subtype,unlinkDrawing:true})
+      continue
+    }
     if (op.kind === 'removeMarkup') {
       const markup = target.markups.find(mark => mark.annotationId === op.annotationId)
       if (!target.markupReadSafe || !markup || !markup.removable || markup.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_markup_identity_invalid_or_readonly')
@@ -267,6 +325,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       const inside = (x: number, y: number) => x >= left && x <= right && y >= bottom && y <= top
       const base = { pageIndex: target.index, color: op.color, width: op.width }
       if (op.image !== undefined && op.shape !== 'image') throw new Error('PDF 绘图参数无效')
+      if (op.label !== undefined && op.shape !== 'measure') throw new Error('PDF 绘图参数无效')
       if (op.shape === 'rect' || op.shape === 'ellipse') {
         if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.image !== undefined) throw new Error('PDF 绘图参数无效')
         const [x1, y1, x2, y2] = op.rect
@@ -275,6 +334,10 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       } else if (op.shape === 'arrow') {
         if (!op.from || !op.to || op.rect || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 箭头范围无效')
         request.drawings.push({ ...base, kind: 'arrow', from: op.from, to: op.to })
+      } else if (op.shape === 'measure') {
+        // 固定源 measure.ts：标定后的测量线，标签为会话内换算的长度文字（Helvetica，仅可打印 ASCII）。
+        if (!op.from || !op.to || op.label === undefined || op.label.trim() === '' || op.rect || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 测量线无效')
+        request.drawings.push({ ...base, kind: 'measure', from: op.from, to: op.to, label: op.label })
       } else if (op.shape === 'polygon') {
         if (!op.vertices || op.rect || op.from || op.to || op.paths || op.point || op.url !== undefined || op.destPage !== undefined || op.vertices.some(vertex => !inside(...vertex))) throw new Error('PDF 多边形顶点无效')
         request.drawings.push({ ...base, kind: 'polygon', vertices: op.vertices })
@@ -304,6 +367,15 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
         if (!op.paths || op.rect || op.from || op.to || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.paths.some(path => path.length % 2 !== 0 || path.some((value, index) => index % 2 === 0 ? !inside(value, path[index + 1]!) : false))) throw new Error('PDF 手绘路径无效')
         request.drawings.push({ ...base, kind: 'ink', paths: op.paths })
       }
+      continue
+    }
+    if (op.kind === 'redact') {
+      const current = crops.get(op.pageId), b = target.cropBox
+      const [left, bottom, right, top] = current ?? [b.x, b.y, b.x + b.width, b.y + b.height]
+      const [x1, y1, x2, y2] = op.rect
+      if (x2 - x1 < 1 || y2 - y1 < 1 || x1 < left || y1 < bottom || x2 > right || y2 > top) throw new Error('PDF 涂黑范围无效')
+      if (redactions.length >= MAX_REDACTION_REGIONS) throw new Error(`PDF 涂黑区域超过 ${MAX_REDACTION_REGIONS} 个`)
+      redactions.push({ pageIndex: target.index, rect: op.rect })
       continue
     }
     if (op.kind === 'addMarkup') {
@@ -368,15 +440,15 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = await removeSourceMarkups(content, model.sourceSha256, removals, noteEdits)
   const annotationBaseBytes = bytes
-  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
+  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['redact', 'editNote', 'removeNote', 'removeMarkup', 'removeDrawing', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
     const result = await applySaveRequest(bytes, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
       request.textEdits = []
-      bytes = ops.some(op => !['replaceText', 'editNote', 'removeNote', 'removeMarkup', 'addAttachment', 'removeAttachment'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
+      bytes = ops.some(op => !['replaceText', 'editNote', 'removeNote', 'removeMarkup', 'removeDrawing', 'addAttachment', 'removeAttachment'].includes(op.kind)) ? (await applySaveRequest(bytes, request)).bytes : bytes
     } else bytes = result.bytes
   }
-  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), finalOrder)
+  bytes = await normalizeAddedNoteDates(annotationBaseBytes, bytes, addedNoteDates, request.markups.map(mark => mark.pageIndex), finalOrder, request.drawings)
   if (crops.size) {
     // Same CropBox primitive as pinned cropPagesBytes; absolute source-space
     // bounds keep ordered crop/rotation commands stable through final reorder.
@@ -396,6 +468,16 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   bytes = await patchAttachments(bytes, model, attachmentOps)
   bytes = await appendNoteReplies(bytes, replies, finalOrder)
   bytes = await appendLocalNoteReplies(bytes, localRoots, pendingReplies, finalOrder)
+  if (redactions.length) {
+    // 涂黑是最终序列化：PDFium 另存只写清理后可达对象，之后不再有 pdf-lib 写入可复活旧内容流。
+    // 页缩略图与 PieceInfo 可能保留涂黑前的渲染，先删除；页索引换算到最终页序。
+    const mapped = redactions.map(item => ({ pageIndex: finalOrder.indexOf(item.pageIndex), rect: item.rect }))
+    if (mapped.some(item => item.pageIndex < 0)) throw new Error('PDF 涂黑页面身份无效')
+    const output = await PDFDocument.load(bytes, { updateMetadata: false })
+    assertRedactionAnnotationSafety(output, mapped)
+    for (const index of new Set(mapped.map(item => item.pageIndex))) { output.getPage(index).node.delete(PDFName.of('Thumb')); output.getPage(index).node.delete(PDFName.of('PieceInfo')) }
+    bytes = await redactPdf(await output.save({ useObjectStreams: false, updateFieldAppearances: false }), mapped)
+  }
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,
   // runtime WASM identity, requested operations and all application decisions.
@@ -408,7 +490,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['redact', 'addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'removeDrawing', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

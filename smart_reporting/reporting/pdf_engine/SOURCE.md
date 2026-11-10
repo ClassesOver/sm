@@ -277,3 +277,33 @@ The original annot-delete.ts blob660951ad1e2556276245f64054af23fd4929e081
 was fetched at the fixed ref as a semantic/fallback reference; its PDFium matching
 path is not shipped or executed for these operations. No vendor/dependency/WASM
 change. See `report_editor/NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
+
+
+## Native secure redaction adapter (2026-11-10)
+
+The bridge `redact` operation (`{pageId, rect}` in PDF user space, inside the
+crop-aware visible box, ≤ MAX_REDACTION_REGIONS) calls the unchanged pinned
+`src/main/redaction.ts` `redactPdf` as the final serializer of the native patch,
+after every pdf-lib pass (crop, attachments, note replies), with page indices
+mapped to the final page order and page `/Thumb` + `/PieceInfo` removed first —
+the same steps `applySaveRequest` performs before its own redaction pass. Every
+native save writes a new revision and leaves the source revision unchanged, which
+is the pinned "redact a Save As copy" requirement. Redaction is rejected on blank
+draft pages and together with a page-size change. `bridge/redaction.test.ts`
+reads the output text back with PDFium. Vendor SOURCE hashes unchanged;
+LOCAL-SHA256 has 47 entries.
+
+
+## Native merge pages / split pages adapter (2026-11-10)
+
+Bridge `mergePages` (`perSheet` 2–16, `direction`, `separator`) and `splitPages`
+(`perPage` 2/4/9) call the unchanged pinned `mergePagesBytes` / `splitPagesBytes`.
+Like the pinned commands, they write a new file — here a new revision; the source
+revision is unchanged. Each must be the only operation in its save, is refused for
+sources with signature fields, and is checked by reading back the expected page count.
+The pinned writers stamp the new document with the current time; the adapter copies
+the source CreationDate/ModDate (or drops them) so an output — and its preview digest —
+is reproducible from the source bytes and operation alone.
+`bridge/page-layout.test.ts`. LOCAL-SHA256 has 48 entries.
+
+Native preservation follow-up: `bridge/layout-preservation.ts` uses the fixed PDFium 2.15.1 FPDFPage_Flatten normal-display API, serialized through the existing chainPdfium/withDocument/saveDoc helpers, before N-up embedding. It reuses the local note adapter reference census to refuse recoverable annotation graphs before redaction. The vendored redaction/save implementation and WASM are unchanged. Split with form fields and both layouts with XFA are refused rather than emitted with missing fields/content.

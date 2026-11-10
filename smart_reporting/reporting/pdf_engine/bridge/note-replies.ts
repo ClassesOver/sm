@@ -4,7 +4,7 @@ import { applySaveRequest } from '../src/main/save-pdf'
 import { markupDictionaryHash, markupSourceId } from './markup-delete'
 import { normalizeAddedNoteDates } from './note-timestamps'
 export interface ReplyTarget { annotationId: string; expectedAnnotationSha256: string; sourceRef: string; pageIndex: number; rect: [number,number,number,number]; contents: string; color: [number,number,number] }
-function replyReferences(doc: PDFDocument, protectedSource: boolean): Map<string,number> | null {
+export function replyReferences(doc: PDFDocument, protectedSource: boolean): Map<string,number> | null {
   if (protectedSource) return null
   try {
     const objects = doc.context.enumerateIndirectObjects(); if (objects.length > 20000) return null

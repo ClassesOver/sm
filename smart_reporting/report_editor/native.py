@@ -263,7 +263,8 @@ class NativeEditorService:
             patch = partial(patch_office, context.format)
         try:
             receipt = None
-            if text_edits or (context.format == "pdf" and any(op.get("kind") in {"setPageSize", "addMarkup", "removeMarkup", "editNote", "removeNote", "addTextAnnotation", "addAttachment", "removeAttachment", "replyNote", "replyPendingNote"} for op in operations)):
+            # PDF 预览一律走回执路径：每种修改（含绘图、图章、空白页、涂黑、合并/拆分页面）都返回绑定实际输出的确认摘要。
+            if text_edits or (context.format == "pdf" and operations):
                 receipt = await run_office_engine(patch_pdf_with_receipt, content, operations)
                 edited = receipt["content"]
             else:

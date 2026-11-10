@@ -70,7 +70,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
         raise ReportingError("report_slides_edit_invalid", "页面背景内容无效。")
     if len({item["slideIndex"] for item in backgrounds}) != len(backgrounds):
         raise ReportingError("report_slides_edit_invalid", "同一页面只能设置一次背景。")
-    optional = {"fontSize", "fontFamily", "color", "bold", "rotation", "field"}
+    optional = {"fontSize", "fontFamily", "color", "bold", "rotation", "field", "italic", "outline", "wordArt"}
     if (
         not isinstance(text_boxes, list) or len(text_boxes) > _MAX_STRUCTURE_EDITS
         or any(
@@ -94,6 +94,10 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
             or ("bold" in item and not isinstance(item["bold"], bool))
             or ("rotation" in item and not _number(item["rotation"], -360, 360))
             or ("field" in item and item["field"] not in {"slidenum", "datetime1"})
+            or any(key in item and not isinstance(item[key], bool) for key in ("italic", "wordArt"))
+            or ("outline" in item and (not isinstance(item["outline"], dict) or set(item["outline"]) != {"color", "widthEmu"}
+                or not isinstance(item["outline"]["color"], str) or not _HEX_COLOR.match(item["outline"]["color"])
+                or not isinstance(item["outline"]["widthEmu"], int) or isinstance(item["outline"]["widthEmu"], bool) or not 1 <= item["outline"]["widthEmu"] <= 254000))
             for item in text_boxes
         )
     ):
@@ -543,6 +547,14 @@ class ReportSlidesEditorService:
         tables: list[dict[str, Any]] | None = None,
         shape_styles: list[dict[str, Any]] | None = None,
         shape_kinds: list[dict[str, Any]] | None = None,
+        sections: list[dict[str, Any]] | None = None,
+        header_footer: dict[str, Any] | None = None,
+        table_cells: list[dict[str, Any]] | None = None,
+        table_styles: list[dict[str, Any]] | None = None,
+        table_structures: list[dict[str, Any]] | None = None,
+        charts: list[dict[str, Any]] | None = None,
+        smart_arts: list[dict[str, Any]] | None = None,
+        animation_sequences: list[dict[str, Any]] | None = None,
         theme: str | None = None,
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
@@ -577,6 +589,22 @@ class ReportSlidesEditorService:
                     request["shapeStyles"] = shape_styles
                 if shape_kinds:
                     request["shapeKinds"] = shape_kinds
+                if sections:
+                    request["sections"] = sections
+                if header_footer is not None:
+                    request["headerFooter"] = header_footer
+                if table_structures:
+                    request["tableStructures"] = table_structures
+                if table_styles:
+                    request["tableStyles"] = table_styles
+                if table_cells:
+                    request["tableCells"] = table_cells
+                if charts:
+                    request["charts"] = charts
+                if smart_arts:
+                    request["smartArts"] = smart_arts
+                if animation_sequences:
+                    request["animationSequences"] = animation_sequences
                 if theme is not None:
                     request["theme"] = theme
                 if slide_size is not None:

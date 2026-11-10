@@ -1,3 +1,6 @@
+import { mountDrawingCanvas, type DrawingCanvasController } from './pdf-drawing-canvas'
+import { pendingDrawingTarget, movePendingDrawing, resizePendingImage, removePendingDrawing, type PendingDrawingReference, type PendingImageAnchor } from './pdf-pending-drawings'
+import { toggleSavedDrawing } from './pdf-saved-drawings'
 import { stagePdfReply, stagePendingPdfReply, stagePdfLocalReply } from './pdf-replies'
 import { attachmentEditState, attachmentFileOperation, isAttachmentEdit } from './pdf-attachment-edits'
 /** PDF.js canvas/text-layer hosting follows GenOffice PdfPage.tsx at 4b55db9.
@@ -15,7 +18,8 @@ import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
 import { DEFAULT_HEADER_FOOTER, DEFAULT_WATERMARK } from './vendor/genoffice-pdf/renderer/stamps'
-import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { parseCalibration, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, PDF_PAGE_LAYOUT_ALONE_REASON, pdfLineLength, pdfMergePagesOperation, pdfRedactionOperation, pdfSplitPagesOperation, blankPdfBytes, pdfMeasurementOperation, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -59,7 +63,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   root.replaceChildren()
   const abort = new AbortController()
   let disposed = false, locked = true, generation = 0, document: PDFDocumentProxy | undefined
-  let mode: 'select' | 'highlight' | 'note' | 'text' | 'draw' = 'select'
+  let mode: 'select' | 'highlight' | 'note' | 'text' | 'draw' | 'redact' = 'select'
   let drawShape: PdfDrawingShape = 'rect'
   let drawColor: [number, number, number] = [...PDF_DRAW_COLORS[0]!.rgb]
   const drawButtons = new Map<PdfDrawingShape, HTMLButtonElement>()
@@ -203,7 +207,24 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const confirmText = documentElement('span')
   confirmLabel.append(confirmPreview, confirmText); reviewPanel.append(reviewTitle, reviewList, confirmLabel)
   confirmPreview.addEventListener('change', () => { try { review.confirm(draft.operations, confirmPreview.checked) } catch (error) { confirmPreview.checked = false; showError(error) } })
-  root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, layout)
+  const drawingsPanel = documentElement('section', 'pdf-saved-drawings'); drawingsPanel.hidden = true
+  drawingsPanel.setAttribute('aria-label', '已保存绘图')
+  const pendingDrawingsPanel = documentElement('section', 'pdf-pending-drawings-panel'); pendingDrawingsPanel.hidden = true
+  pendingDrawingsPanel.setAttribute('aria-label', '待保存绘图')
+  let selectedPendingDrawing: PendingDrawingReference | undefined, pendingDrawingsGeneration = 0
+  const drawingCanvases = new Set<DrawingCanvasController>()
+  let drawingActiveId = activeId
+  function clearDrawingCanvases() { for (const controller of drawingCanvases) controller.dispose(); drawingCanvases.clear() }
+  function syncDrawingCanvases() {
+    if (drawingActiveId !== activeId) {
+      for (const controller of drawingCanvases) controller.cancel()
+      drawingActiveId = activeId
+      if (selectedPendingDrawing?.pageId !== activeId) selectedPendingDrawing = undefined
+    }
+    for (const controller of drawingCanvases) if (!controller.sync()) drawingCanvases.delete(controller)
+  }
+  let pendingDrawingDialog: HTMLDialogElement | undefined
+  root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, drawingsPanel, pendingDrawingsPanel, layout)
   const editableButtons: HTMLButtonElement[] = []
   const pageInputs: HTMLInputElement[] = []
   function button(label: string, action: () => void | Promise<void>, editable = true, icon?: PdfRibbonIconName) {
@@ -518,11 +539,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(note, 'annotate.drawTools.note')
   commandGroup = ribbon.group('annotate', 'Draw Tools')
   const annotateDrawGroup = commandGroup
-  // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；已接通四种，颜色取标注调色板。
-  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
-    const tool = button(label, () => { drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
+  button('待保存绘图', () => { pendingDrawingsPanel.hidden = !pendingDrawingsPanel.hidden; if (pendingDrawingsPanel.hidden) pendingDrawingDialog?.close(); renderPendingDrawings() }, false)
+  button('已保存绘图', () => { drawingsPanel.hidden = !drawingsPanel.hidden; renderSavedDrawings() }, false)
+  // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；颜色取标注调色板。
+  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['measure', '测量', 'measure'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
+    const tool = button(label, () => {
+      // 固定源：再次点击已激活的测量工具 = 重新标定，下一条线作为参考线。
+      if (shape === 'measure' && mode === 'draw' && drawShape === 'measure') { measureRecalibrate = true; status.textContent = '重新标定：请画一条已知实际长度的参考线'; return }
+      if (shape === 'measure' && !measureScale) status.textContent = '测量：先画一条已知实际长度的参考线完成标定'
+      drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
     sourceCommand(tool, `annotate.drawTools.${id}`); tool.dataset.pdfDrawShape = shape
-    tool.title = shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
+    tool.title = shape === 'measure' ? '测量：拖出测量线，首次（或再次点击本按钮）会以该线标定比例；比例仅在本次会话有效，保存后写入带长度标签的 PDF 线批注' : shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
     drawButtons.set(shape, tool)
   }
   const drawColorSelect = documentElement('select', 'pdf-draw-color')
@@ -531,12 +558,29 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   drawColorSelect.addEventListener('change', () => { drawColor = [...(PDF_DRAW_COLORS.find(item => item.name === drawColorSelect.value) ?? PDF_DRAW_COLORS[0]!).rgb] })
   commandGroup.append(drawColorSelect)
   commandGroup.append(note)
-  unavailableSourceGroup('annotate', 'Draw Tools', [
-    { id: 'annotate.drawTools.measure', label: '测量', reason: '原生视图尚未实现可校准比例与来源坐标绑定的测量工具' },
-    { id: 'annotate.drawTools.redact', label: '涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
-    { id: 'annotate.drawTools.clearRedaction', label: '清除涂黑', reason: '当前编辑器不生成涂黑标记，不能提供清除动作' },
-    { id: 'annotate.drawTools.applyRedaction', label: '应用涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
-  ], annotateDrawGroup)
+  // 固定源 Redact / Clear redaction / Apply redaction：拖出区域标记涂黑；保存新修订时由 PDFium 永久移除区域内文字、图像与路径并黑块覆盖。
+  // 固定源先另存副本再涂黑；原生编辑每次保存都是新修订，来源修订保持不变。
+  const redactTool = button('涂黑', () => setMode(mode === 'redact' ? 'select' : 'redact'), true)
+  sourceCommand(redactTool, 'annotate.drawTools.redact'); redactTool.dataset.pdfRedactTool = ''
+  redactTool.title = '涂黑：在页面上拖出要永久移除的区域；保存时写入新修订，区域内文字、图像与路径被删除并以黑块覆盖'
+  const redactionCount = () => draft.operations.filter(op => op.kind === 'redact').length
+  const clearRedaction = button('清除涂黑', () => {
+    const count = redactionCount()
+    if (!count) { status.textContent = '当前没有待应用的涂黑标记'; return }
+    const operations = draft.operations.filter(op => op.kind !== 'redact')
+    pdfPageState(model.pages, operations); draft.setOperations(operations)
+    void refresh().then(() => { status.textContent = `已清除 ${count} 处待应用的涂黑标记` }).catch(showError)
+  }, true)
+  sourceCommand(clearRedaction, 'annotate.drawTools.clearRedaction')
+  const applyRedaction = button('应用涂黑', () => {
+    const count = redactionCount()
+    if (!count) { status.textContent = '请先用“涂黑”工具标记要移除的区域'; return }
+    if (shell.save.disabled) { status.textContent = `${count} 处涂黑待保存；当前不能保存：${shell.save.title || '请稍后重试'}`; return }
+    setMode('select'); status.textContent = `正在保存新修订并永久应用 ${count} 处涂黑…`; shell.save.click()
+  }, true)
+  sourceCommand(applyRedaction, 'annotate.drawTools.applyRedaction')
+  applyRedaction.title = '应用涂黑：保存新修订并永久移除标记区域内的内容（来源修订不变）'
+  annotateDrawGroup.append(redactTool, clearRedaction, applyRedaction)
   // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
   commandGroup = ribbon.group('annotate', 'Signature & Protection')
   const signatureGroup = commandGroup
@@ -705,6 +749,66 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       sizeDialog.close(); await refresh(); await previewDraft()
     } finally { sizeApplying = false; updateControls() }
   }
+  // 固定源 MergePagesDialog / SplitPagesDialog：整份文档重排版，单独保存为新修订（来源修订不变），先查看实际预览。
+  const layoutDialog = documentElement('dialog', 'pdf-layout-dialog')
+  const layoutTitle = documentElement('h3'), layoutHint = documentElement('p', 'pdf-measure-hint')
+  const layoutBody = documentElement('div', 'pdf-layout-body')
+  const layoutError = documentElement('p', 'pdf-crop-error'); layoutError.setAttribute('role', 'alert')
+  const layoutActions = documentElement('div', 'pdf-link-actions')
+  layoutDialog.append(layoutTitle, layoutHint, layoutBody, layoutError, layoutActions); root.append(layoutDialog)
+  const layoutCancel = documentElement('button'); layoutCancel.type = 'button'; layoutCancel.textContent = '取消'; layoutCancel.addEventListener('click', () => layoutDialog.close())
+  function pageLayoutUnavailable(kind?: string) {
+    if (!document || locked || previewing || printing || !!previewDocument || draft.closed || !response.editingEnabled) return '请先打开 PDF 并退出预览'
+    if (draft.operations.length) return PDF_PAGE_LAYOUT_ALONE_REASON
+    if (kind === 'splitPages' && model.formFields?.length) return '含表单字段的 PDF 暂不支持拆分页面；请先保留原件并展平表单'
+    if (model.formFields?.some(field => field.kind === 'signature')) return '含有签名字段的 PDF 不能合并或拆分页面（输出不保留签名）'
+    return null
+  }
+  async function applyPageLayout(operation: NativeOperation) {
+    const reason = pageLayoutUnavailable(operation.kind)
+    if (reason) throw new Error(reason)
+    if (hasUnstagedText()) throw new Error('请先完成当前文字编辑')
+    pdfPageState(model.pages, [operation]); draft.setOperations([operation])
+    layoutDialog.close(); await refresh(); await previewDraft()
+  }
+  function openLayoutDialog(kind: 'mergePages' | 'splitPages') {
+    const reason = pageLayoutUnavailable(kind)
+    if (reason) { status.textContent = reason; return }
+    layoutError.textContent = ''; layoutBody.replaceChildren(); layoutActions.replaceChildren(layoutCancel)
+    const total = state().length
+    layoutDialog.setAttribute('aria-label', kind === 'mergePages' ? '合并页面' : '拆分页面')
+    layoutTitle.textContent = kind === 'mergePages' ? '合并页面' : '拆分页面'
+    const fail = (error: unknown) => { layoutError.textContent = error instanceof Error ? error.message : String(error) }
+    if (kind === 'mergePages') {
+      layoutHint.textContent = `把每 N 个连续页面缩放排到一张纸上（共 ${total} 页）。纸张取第 1 页尺寸，2 合 1 时横向；批注、绘图与表单外观转为静态内容；交互、书签与附件不保留。保存为新修订，来源修订不变。`
+      const countLabel = documentElement('label'); countLabel.textContent = '每张页数（2–16）'
+      const count = documentElement('input'); count.inputMode = 'numeric'; count.value = '2'; count.setAttribute('aria-label', '每张页数'); countLabel.append(count)
+      const directionLabel = documentElement('label'); directionLabel.textContent = '排列顺序'
+      const direction = documentElement('select'); direction.setAttribute('aria-label', '排列顺序')
+      for (const [value, label] of [['vertical', '纵向（先上下，再左右）'], ['horizontal', '横向（先左右，再上下）']] as const) { const option = documentElement('option'); option.value = value; option.textContent = label; direction.append(option) }
+      directionLabel.append(direction)
+      const separatorLabel = documentElement('label', 'pdf-layout-check'); const separator = documentElement('input'); separator.type = 'checkbox'; separator.setAttribute('aria-label', '绘制分隔线')
+      separatorLabel.append(separator, '绘制分隔线')
+      layoutBody.append(countLabel, directionLabel, separatorLabel)
+      const apply = documentElement('button'); apply.type = 'button'; apply.textContent = '确定'
+      apply.addEventListener('click', () => {
+        try {
+          const perSheet = Number(count.value.trim())
+          if (!/^\d+$/.test(count.value.trim()) || perSheet < 2 || perSheet > 16) throw new Error('每张页数须为 2–16 的整数')
+          void applyPageLayout(pdfMergePagesOperation(perSheet, direction.value as 'horizontal' | 'vertical', separator.checked)).catch(error => { fail(error); showError(error) })
+        } catch (error) { fail(error) }
+      })
+      layoutActions.append(apply)
+    } else {
+      layoutHint.textContent = `把每一页按显示方向均分为 2、4 或 9 页（共 ${total} 页），按可见范围分割，仍保留底层页面内容；含表单字段的来源暂不支持。保存为新修订，来源修订不变。`
+      for (const perPage of [2, 4, 9]) {
+        const choice = documentElement('button'); choice.type = 'button'; choice.textContent = `拆成 ${perPage} 页`; choice.dataset.pdfSplitPages = String(perPage)
+        choice.addEventListener('click', () => { void applyPageLayout(pdfSplitPagesOperation(perPage)).catch(error => { fail(error); showError(error) }) })
+        layoutBody.append(choice)
+      }
+    }
+    layoutDialog.showModal()
+  }
   function displayViewport(original: PDFPageProxy, page: PdfPageIdentity, scale: number) {
     return previewDocument ? original.getViewport({ scale, rotation: page.rotation }) : pdfPageViewport(original, page, scale)
   }
@@ -730,6 +834,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       activeId = state().find(page => !before.has(page.pageId))?.pageId ?? activeId
       await refresh()
     },
+    'genoffice.pdf.page.mergePages': () => openLayoutDialog('mergePages'),
+    'genoffice.pdf.page.splitPages': () => openLayoutDialog('splitPages'),
     'genoffice.pdf.page.reverse': async () => {
       draft.setOperations(reversePdfPages(model.pages, draft.operations)); await refresh()
     },
@@ -856,6 +962,42 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const linkActions = documentElement('div', 'pdf-link-actions'); linkActions.append(linkCancel, linkApply)
   linkDialog.append(linkTitle, linkUrlLabel, linkPageLabel, linkError, linkActions); root.append(linkDialog)
   let linkPending: { page: PdfPageIdentity; points: number[][] } | undefined
+  // 固定源 MeasureScaleDialog：参考线的实际长度 + 单位（默认 m）；比例只在本次会话有效。
+  const measureDialog = documentElement('dialog', 'pdf-measure-dialog')
+  measureDialog.setAttribute('aria-label', '标定测量比例')
+  const measureTitle = documentElement('h3'); measureTitle.textContent = '标定测量比例'
+  const measureHint = documentElement('p', 'pdf-measure-hint')
+  const measureValueLabel = documentElement('label'); measureValueLabel.textContent = '参考线实际长度'
+  const measureValue = documentElement('input'); measureValue.inputMode = 'decimal'; measureValue.setAttribute('aria-label', '参考线实际长度'); measureValueLabel.append(measureValue)
+  const measureUnitLabel = documentElement('label'); measureUnitLabel.textContent = '单位（英文，如 m、cm、mm、in、ft）'
+  const measureUnit = documentElement('input'); measureUnit.maxLength = 12; measureUnit.value = 'm'; measureUnit.setAttribute('aria-label', '测量单位'); measureUnitLabel.append(measureUnit)
+  const measureError = documentElement('p', 'pdf-crop-error'); measureError.setAttribute('role', 'alert')
+  const measureApply = documentElement('button'); measureApply.type = 'button'; measureApply.textContent = '确定'
+  const measureCancel = documentElement('button'); measureCancel.type = 'button'; measureCancel.textContent = '取消'
+  const measureActions = documentElement('div', 'pdf-link-actions'); measureActions.append(measureCancel, measureApply)
+  measureDialog.append(measureTitle, measureHint, measureValueLabel, measureUnitLabel, measureError, measureActions); root.append(measureDialog)
+  let measureScale: MeasureScale | undefined, measureRecalibrate = false
+  let measurePending: { page: PdfPageIdentity; operation: NativeOperation; snapshot: string; doc: PDFDocumentProxy | undefined } | undefined
+  function commitMeasure(page: PdfPageIdentity, line: NativeOperation, scale: MeasureScale, after?: () => void) {
+    const from = line.from as number[], to = line.to as number[]
+    const operation = pdfMeasurementOperation(page.pageId, [from, to], page.cropBox, line.color as [number,number,number], scale)
+    pdfPageState(model.pages, [...draft.operations, operation])
+    void append(operation).then(after).catch(showError)
+  }
+  // 取消：丢弃待定的参考线（与固定源一致），已有比例保持不变。
+  measureDialog.addEventListener('close', () => { measurePending = undefined; measureRecalibrate = false })
+  measureCancel.addEventListener('click', () => { measurePending = undefined; measureRecalibrate = false; measureDialog.close() })
+  measureApply.addEventListener('click', () => {
+    try {
+      if (!measurePending || !measureDialog.open || disposed || locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || measurePending.doc !== document || measurePending.snapshot !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请取消后重新绘制参考线')
+      const { page, operation } = measurePending
+      const scale = parseCalibration(measureValue.value.trim(), measureUnit.value, pdfLineLength(operation.from as number[], operation.to as number[]))
+      if (!scale) throw new Error('请输入大于 0 的长度和不超过 12 个字符的单位')
+      if (!/^[\x20-\x7e]+$/.test(scale.unit)) throw new Error('PDF 标签字体为 Helvetica，单位请使用英文字符（如 m、cm、ft）')
+      commitMeasure(page, operation, scale, () => { status.textContent = `测量比例已标定：1 ${scale.unit} = ${scale.unitsPerPt.toFixed(2)} pt（仅本次会话有效）` })
+      measureScale = scale; measureRecalibrate = false; measurePending = undefined; measureDialog.close()
+    } catch (error) { measureError.textContent = error instanceof Error ? error.message : String(error) }
+  })
   // 二选一：输入一项会清空另一项（与固定源一致）。
   linkUrl.addEventListener('input', () => { if (linkUrl.value.trim()) linkPage.value = '' })
   linkPage.addEventListener('input', () => { linkPage.value = linkPage.value.replace(/[^0-9]/g, ''); if (linkPage.value) linkUrl.value = '' })
@@ -1149,7 +1291,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     activeId = target.node.pageId; for (const node of pageNodes.values()) node.classList.toggle('is-active', node === card)
     pendingCommentJump = null; updateControls(); renderTextPanel(true)
   }
-  function state() { return pdfPageState(model.pages, draft.operations) }
+  // 合并/拆分页面改变整份文档的页数与页面身份：实际预览期间按服务端复读的输出模型显示。
+  let layoutPreviewPages: PdfPageIdentity[] | undefined
+  function state() { return previewDocument && layoutPreviewPages ? layoutPreviewPages : pdfPageState(model.pages, draft.operations) }
   function jumpToPageForIdentity(pageId: string) {
     const page = state().find(candidate => candidate.pageId === pageId)
     if (!page) return
@@ -1168,8 +1312,171 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)) }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncDrawingCanvases() }
+  function canChangePendingDrawings() {
+    return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
+  }
+  async function editPendingDrawingPosition(reference: PendingDrawingReference) {
+    const source = document, sourcePage = activeId
+    const current = () => canChangePendingDrawings() && source === document && sourcePage === activeId && !pendingDrawingsPanel.hidden && reference.snapshot === JSON.stringify(draft.operations) && selectedPendingDrawing === reference
+    if (!current()) return
+    pendingDrawingTarget(model.pages, draft.operations, reference)
+    const dialog = documentElement('dialog', 'pdf-pending-drawing-dialog'), form = documentElement('form')
+    dialog.setAttribute('aria-label', '移动待保存绘图'); form.method = 'dialog'
+    const help = documentElement('p'); help.textContent = '按原始 PDF 坐标平移：X 向右，Y 向上；旋转后仍以原始坐标方向为准。保持形状、颜色和线宽，超出页面时不应用。'
+    const fields = ['X 位移（PDF 单位）', 'Y 位移（PDF 单位）'].map(text => {
+      const label = documentElement('label'); label.textContent = text
+      const input = documentElement('input'); input.type = 'number'; input.step = 'any'; input.value = '0'; input.required = true; input.setAttribute('aria-label', text); label.append(input); form.append(label); return input
+    })
+    const error = documentElement('p'); error.setAttribute('role', 'alert')
+    const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = '应用位移'
+    const cancel = documentElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.addEventListener('click', () => dialog.close())
+    form.prepend(help); form.append(error, apply, cancel); dialog.append(form); pendingDrawingDialog?.close(); root.append(dialog); pendingDrawingDialog = dialog
+    let cancelOnAbort: (() => void) | undefined
+    try {
+      await new Promise<void>(resolve => {
+        cancelOnAbort = () => { if (dialog.open) dialog.close(); resolve() }
+        abort.signal.addEventListener('abort', cancelOnAbort, { once: true })
+        dialog.addEventListener('close', () => resolve(), { once: true })
+        form.addEventListener('submit', event => {
+          event.preventDefault()
+          if (!dialog.open) return
+          try {
+            if (pendingDrawingDialog !== dialog || !current()) throw Error('草稿、页面或选择已变化，请重新选择绘图')
+            if (fields.some(input => !input.value.trim())) throw Error('请输入 X 和 Y 位移')
+            const next = movePendingDrawing(model.pages, draft.operations, reference, Number(fields[0]!.value), Number(fields[1]!.value))
+            draft.setOperations(next); selectedPendingDrawing = undefined; dialog.close(); void refresh().catch(showError)
+          } catch (cause) { error.textContent = cause instanceof Error ? cause.message : '无法移动此绘图' }
+        })
+        dialog.showModal(); fields[0]!.focus()
+      })
+    } finally {
+      if (cancelOnAbort) abort.signal.removeEventListener('abort', cancelOnAbort)
+      if (pendingDrawingDialog === dialog) pendingDrawingDialog = undefined
+      dialog.remove()
+    }
+  }
+  async function editPendingImageSize(reference: PendingDrawingReference) {
+    const source = document, sourcePage = activeId
+    const current = () => canChangePendingDrawings() && source === document && sourcePage === activeId && !pendingDrawingsPanel.hidden && reference.snapshot === JSON.stringify(draft.operations) && selectedPendingDrawing === reference
+    if (!current()) return
+    if (!pendingDrawingTarget(model.pages, draft.operations, reference).resizable) return
+    const dialog = documentElement('dialog', 'pdf-pending-drawing-dialog'), form = documentElement('form')
+    dialog.setAttribute('aria-label', '缩放待保存图像'); form.method = 'dialog'
+    const help = documentElement('p'); help.textContent = '保持当前图像纵横比，围绕固定角缩放。固定角使用原始 PDF 坐标：左/右与上/下不随页面旋转改变；超出页面时不应用。'
+    const label = documentElement('label'); label.textContent = '缩放百分比'
+    const percent = documentElement('input'); percent.type = 'number'; percent.step = 'any'; percent.value = '100'; percent.required = true; percent.setAttribute('aria-label', '缩放百分比'); label.append(percent)
+    const anchorLabel = documentElement('label'); anchorLabel.textContent = '固定角（原始 PDF 坐标）'
+    const anchor = documentElement('select'); anchor.setAttribute('aria-label', '固定角（原始 PDF 坐标）')
+    for (const [value, text] of [['bottom-left', '左下'], ['bottom-right', '右下'], ['top-left', '左上'], ['top-right', '右上']]) {
+      const option = documentElement('option'); option.value = value!; option.textContent = text!; anchor.append(option)
+    }
+    anchorLabel.append(anchor)
+    const error = documentElement('p'); error.setAttribute('role', 'alert')
+    const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = '应用缩放'
+    const cancel = documentElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.addEventListener('click', () => dialog.close())
+    form.append(help, label, anchorLabel, error, apply, cancel); dialog.append(form); pendingDrawingDialog?.close(); root.append(dialog); pendingDrawingDialog = dialog
+    let cancelOnAbort: (() => void) | undefined
+    try {
+      await new Promise<void>(resolve => {
+        cancelOnAbort = () => { if (dialog.open) dialog.close(); resolve() }
+        abort.signal.addEventListener('abort', cancelOnAbort, { once: true })
+        dialog.addEventListener('close', () => resolve(), { once: true })
+        form.addEventListener('submit', event => {
+          event.preventDefault()
+          if (!dialog.open) return
+          try {
+            if (pendingDrawingDialog !== dialog || !current()) throw Error('草稿、页面或选择已变化，请重新选择图像')
+            if (!percent.value.trim()) throw Error('请输入缩放百分比')
+            const next = resizePendingImage(model.pages, draft.operations, reference, Number(percent.value) / 100, anchor.value as PendingImageAnchor)
+            draft.setOperations(next); selectedPendingDrawing = undefined; dialog.close(); void refresh().catch(showError)
+          } catch (cause) { error.textContent = cause instanceof Error ? cause.message : '无法缩放此图像' }
+        })
+        dialog.showModal(); percent.focus()
+      })
+    } finally {
+      if (cancelOnAbort) abort.signal.removeEventListener('abort', cancelOnAbort)
+      if (pendingDrawingDialog === dialog) pendingDrawingDialog = undefined
+      dialog.remove()
+    }
+  }
+  function renderPendingDrawings() {
+    const epoch = ++pendingDrawingsGeneration
+    if (pendingDrawingsPanel.hidden) return
+    pendingDrawingsPanel.replaceChildren()
+    const source = document, sourcePage = activeId, operations = draft.operations, snapshot = JSON.stringify(operations)
+    if (selectedPendingDrawing && (selectedPendingDrawing.snapshot !== snapshot || selectedPendingDrawing.pageId !== sourcePage)) selectedPendingDrawing = undefined
+    const current = () => epoch === pendingDrawingsGeneration && source === document && sourcePage === activeId && snapshot === JSON.stringify(draft.operations) && !pendingDrawingsPanel.hidden && canChangePendingDrawings()
+    const page = model.pages.find(item => item.pageId === sourcePage)
+    const heading = documentElement('p'); heading.textContent = `待保存绘图 · 来源第 ${page ? page.index + 1 : '—'} 页`
+    const help = documentElement('p'); help.textContent = '选择一个草稿记录后可平移或删除；图像还可保持纵横比缩放。保存后成为已保存绘图。链接可删除，暂不支持移动。'
+    pendingDrawingsPanel.append(heading, help)
+    let count = 0
+    for (const [index, operation] of operations.entries()) {
+      if (operation.kind !== 'addDrawing' || operation.pageId !== sourcePage) continue
+      count++
+      const reference = { index, snapshot, pageId: sourcePage }
+      const row = documentElement('div'); row.dataset.pdfPendingDrawing = String(index)
+      const label = documentElement('span'); label.textContent = `${operation.shape} · 草稿操作 #${index + 1}`
+      const select = documentElement('button'); select.type = 'button'; select.textContent = '选择此绘图'; select.disabled = !current()
+      select.setAttribute('aria-pressed', String(selectedPendingDrawing?.index === index))
+      select.addEventListener('click', () => {
+        if (!current()) return
+        try { pendingDrawingTarget(model.pages, draft.operations, reference); selectedPendingDrawing = reference; renderPendingDrawings() } catch (cause) { showError(cause) }
+      })
+      row.append(label, select); pendingDrawingsPanel.append(row)
+    }
+    if (!count) { const empty = documentElement('p'); empty.textContent = '当前来源页没有待保存绘图'; pendingDrawingsPanel.append(empty) }
+    if (selectedPendingDrawing) {
+      const reference = selectedPendingDrawing, target = pendingDrawingTarget(model.pages, operations, reference)
+      const chosen = documentElement('p'); chosen.textContent = `已选择草稿操作 #${reference.index + 1}（${target.operation.shape}）`
+      const move = documentElement('button'); move.type = 'button'; move.textContent = '移动所选绘图'; move.disabled = !current() || !target.movable
+      move.addEventListener('click', () => { if (current()) void editPendingDrawingPosition(reference).catch(showError) })
+      const remove = documentElement('button'); remove.type = 'button'; remove.textContent = '删除所选绘图'; remove.disabled = !current()
+      remove.addEventListener('click', () => {
+        if (!current() || selectedPendingDrawing !== reference) return
+        try { draft.setOperations(removePendingDrawing(model.pages, draft.operations, reference)); selectedPendingDrawing = undefined; void refresh().catch(showError) } catch (cause) { showError(cause) }
+      })
+      const resize = documentElement('button'); resize.type = 'button'; resize.textContent = '缩放所选图像'; resize.disabled = !current() || !target.resizable
+      resize.addEventListener('click', () => { if (current()) void editPendingImageSize(reference).catch(showError) })
+      pendingDrawingsPanel.append(chosen, move, resize, remove)
+    }
+    syncDrawingCanvases()
+  }
+  function renderSavedDrawings() {
+    if (drawingsPanel.hidden) return
+    drawingsPanel.replaceChildren()
+    const page = model.pages.find(item => item.pageId === activeId)
+    const heading = documentElement('p'); heading.textContent = `已保存绘图 · 来源第 ${page ? page.index + 1 : '—'} 页`
+    const help = documentElement('p'); help.textContent = '按原始批注槽位选择。删除仅逻辑移除绘图，不是安全擦除；敏感内容请使用涂黑。暂存后可撤销、重做或恢复草稿；生成实际预览后核对。'
+    drawingsPanel.append(heading, help)
+    const source = document, snapshot = JSON.stringify(draft.operations)
+    const canEdit = () => !disposed && source === document && snapshot === JSON.stringify(draft.operations) && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed && model.capabilities?.removeDrawing === true
+    for (const offset of [-1, 1]) {
+      const adjacent = state()[state().findIndex(item => item.pageId === activeId) + offset]
+      const nav = documentElement('button'); nav.type = 'button'; nav.textContent = offset < 0 ? '上一页绘图' : '下一页绘图'; nav.disabled = !adjacent || !!previewDocument
+      nav.addEventListener('click', () => { if (!disposed && source === document && adjacent && !previewDocument) jumpToPageForIdentity(adjacent.pageId) })
+      drawingsPanel.append(nav)
+    }
+    if (!page?.drawings?.length) { const empty = documentElement('p'); empty.textContent = page?.drawingsReadSafe === false ? '绘图列表读取不完整，暂不能删除' : '当前来源页没有支持的已保存绘图'; drawingsPanel.append(empty) }
+    for (const drawing of page?.drawings ?? []) {
+      const row = documentElement('div'); row.dataset.pdfSavedDrawing = drawing.annotationId
+      const label = documentElement('span'); label.textContent = `${drawing.subtype} · 原始批注 #${drawing.annotationIndex + 1} · ${drawing.annotationId.slice(0, 10)}`
+      const action = documentElement('button'); action.type = 'button'
+      const pending = draft.operations.some(op => op.kind === 'removeDrawing' && op.annotationId === drawing.annotationId)
+      action.textContent = pending ? '撤销此删除' : '暂存删除'; action.disabled = !canEdit() || !drawing.removable || !page?.drawingsReadSafe
+      action.title = drawing.removalReason || '精确删除此原始绘图；请生成实际预览核对'
+      action.addEventListener('click', () => { if (!canEdit() || !page) return; try { const next = toggleSavedDrawing(draft.operations, page, drawing.annotationId); pdfPageState(model.pages, next); draft.setOperations(next); void refresh().catch(showError) } catch (error) { showError(error) } })
+      row.append(label, action)
+      if (drawing.removalReason) { const reason = documentElement('span'); reason.textContent = drawing.removalReason; row.append(reason) }
+      drawingsPanel.append(row)
+    }
+  }
   function updateControls() {
+    syncDrawingCanvases()
+    if (!canChangePendingDrawings()) pendingDrawingDialog?.close()
+    renderPendingDrawings()
+    renderSavedDrawings()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-saved-reply-editable]')) control.disabled = !canChangeSavedReply()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply() || control.dataset.pdfReplyEditable !== 'true'
     addAttachment.disabled = attachmentFile.disabled = !canEditAttachments()
@@ -1211,6 +1518,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     rotateAll.setAttribute('aria-description', rotateAll.title)
     pageButtons.get('genoffice.pdf.page.delete')!.disabled ||= !activeId || (!!document && state().length <= 1)
     pageButtons.get('genoffice.pdf.page.reverse')!.disabled ||= !document || state().length <= 1
+    for (const id of ['genoffice.pdf.page.mergePages', 'genoffice.pdf.page.splitPages']) {
+      const control = pageButtons.get(id)!, reason = document ? pageLayoutUnavailable(id.endsWith('splitPages') ? 'splitPages' : 'mergePages') : '请先打开 PDF'
+      control.disabled ||= !!reason
+      control.title = reason ?? (id.endsWith('mergePages') ? '合并页面：每 N 页排到一张纸上，单独保存为新修订' : '拆分页面：每页均分为 2/4/9 页，单独保存为新修订')
+    }
     const insertBlank = pageButtons.get('genoffice.pdf.page.insertBlank')!
     insertBlank.disabled ||= !document || draft.operations.length + 2 > 500
     insertBlank.title = draft.operations.length + 2 > 500 ? '插入空白页将超过 500 条修改；请先保存当前修改' : '在当前页之后插入与当前页同尺寸的空白页'
@@ -1332,9 +1644,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function overlays(holder: HTMLElement, page: PdfPageIdentity, pdfViewport: ReturnType<PDFPageProxy['getViewport']>) {
     const layer = documentElement('div', 'pdf-draft-overlays')
-    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'removeMarkup', 'highlight', 'addTextAnnotation'].includes(op.kind))) {
-      const type = operation.kind === 'removeMarkup' ? 'removal' : operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
-      const rects = operation.kind === 'removeMarkup' ? (model.pages.find(item => item.pageId === page.pageId)?.markups?.find(mark => mark.annotationId === operation.annotationId)?.quads ?? []).map(quadToRect) : operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
+    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'removeMarkup', 'removeDrawing', 'highlight', 'addTextAnnotation', 'redact'].includes(op.kind))) {
+      const type = operation.kind === 'redact' ? 'redaction' : ['removeMarkup', 'removeDrawing'].includes(operation.kind) ? 'removal' : operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
+      const rects = operation.kind === 'removeDrawing' ? (model.pages.find(item => item.pageId === page.pageId)?.drawings?.filter(item => item.annotationId === operation.annotationId).map(item => item.rect) ?? []) : operation.kind === 'removeMarkup' ? (model.pages.find(item => item.pageId === page.pageId)?.markups?.find(mark => mark.annotationId === operation.annotationId)?.quads ?? []).map(quadToRect) : operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
       for (const rect of rects) {
         const converted = [...pdfViewport.convertToViewportPoint(rect[0], rect[1]), ...pdfViewport.convertToViewportPoint(rect[2], rect[3])]
         const overlay = documentElement('span', type === 'highlight' ? 'pdf-highlight' : type === 'note' ? 'pdf-note' : `pdf-pending-markup pdf-${type}`)
@@ -1343,6 +1655,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         overlay.style.color = `rgb(${rgb})`
         if (type === 'highlight') overlay.style.backgroundColor = `rgba(${rgb},.4)`
         if (type === 'squiggly') overlay.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='8' height='4'><path d='M0 2 Q2 0 4 2 T8 2' fill='none' stroke='rgb(${rgb})'/></svg>`)}")`
+        if (type === 'redaction') { overlay.dataset.pdfRedaction = ''; overlay.title = '待应用涂黑：保存后永久移除该区域内容' }
         if (type === 'removal') { overlay.style.outline = '2px dashed #c33'; overlay.title = '待移除标注；校验当前修改可查看实际结果' }
         if (type === 'note') { overlay.textContent = '▤'; overlay.title = String(operation.text) }
         layer.append(overlay)
@@ -1367,67 +1680,18 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       svg.append(group); layer.append(svg)
     }
-    const placedImages = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape === 'image')
-    if (placedImages.length) {
-      const svgNs = 'http://www.w3.org/2000/svg'
-      const svg = window.document.createElementNS(svgNs, 'svg')
-      svg.setAttribute('class', 'pdf-pending-drawings'); svg.setAttribute('width', String(pdfViewport.width)); svg.setAttribute('height', String(pdfViewport.height))
-      const group = window.document.createElementNS(svgNs, 'g'); group.setAttribute('transform', `matrix(${pdfViewport.transform.join(' ')})`)
-      for (const operation of placedImages) {
-        const [x1, y1, x2, y2] = operation.rect as [number, number, number, number]
-        const image = window.document.createElementNS(svgNs, 'image')
-        image.setAttribute('href', `data:image/png;base64,${operation.image}`)
-        image.setAttribute('x', String(x1)); image.setAttribute('y', String(-y2)); image.setAttribute('width', String(x2 - x1)); image.setAttribute('height', String(y2 - y1))
-        image.setAttribute('transform', 'scale(1 -1)'); image.setAttribute('preserveAspectRatio', 'none'); image.dataset.pdfDrawing = 'image'
-        group.append(image)
-      }
-      svg.append(group); layer.append(svg)
+    if (draft.operations.some(op => op.pageId === page.pageId && op.kind === 'addDrawing')) {
+      const source = document, sourceGeneration = generation, snapshot = JSON.stringify(draft.operations)
+      const controller = mountDrawingCanvas({ host: layer, pages: model.pages, pageId: page.pageId, operations: draft.operations, viewport: pdfViewport, scale,
+        current: () => source === document && sourceGeneration === generation && mode === 'select' && canChangePendingDrawings() && !pendingDrawingDialog?.open,
+        unchanged: () => snapshot === JSON.stringify(draft.operations),
+        selected: () => selectedPendingDrawing,
+        select(reference) { activeId = page.pageId; selectedPendingDrawing = reference; updateControls() },
+        commit(operations) { draft.setOperations(operations); selectedPendingDrawing = undefined; void refresh().catch(showError) }, error: showError,
+      })
+      drawingCanvases.add(controller)
     }
-    const drawings = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape !== 'image')
-    if (drawings.length) {
-      const svgNs = 'http://www.w3.org/2000/svg'
-      const svg = window.document.createElementNS(svgNs, 'svg')
-      svg.setAttribute('class', 'pdf-pending-drawings'); svg.setAttribute('width', String(pdfViewport.width)); svg.setAttribute('height', String(pdfViewport.height))
-      for (const operation of drawings) {
-        const rgb = `rgb(${(operation.color as number[]).map(value => Math.round(value * 255)).join(',')})`
-        const point = (value: number[]) => pdfViewport.convertToViewportPoint(value[0]!, value[1]!)
-        let shape: SVGElement
-        if (operation.shape === 'rect' || operation.shape === 'ellipse' || operation.shape === 'link') {
-          const r = operation.rect as number[], a = point([r[0]!, r[1]!]), b = point([r[2]!, r[3]!])
-          const [x, y, w, h] = [Math.min(a[0]!, b[0]!), Math.min(a[1]!, b[1]!), Math.abs(b[0]! - a[0]!), Math.abs(b[1]! - a[1]!)]
-          shape = window.document.createElementNS(svgNs, operation.shape === 'ellipse' ? 'ellipse' : 'rect')
-          if (operation.shape === 'link') { shape.setAttribute('stroke-dasharray', '5 3'); const title = window.document.createElementNS(svgNs, 'title'); title.textContent = operation.url !== undefined ? String(operation.url) : `跳转到原第 ${operation.destPage} 页`; shape.append(title) }
-          if (operation.shape !== 'ellipse') { shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y)); shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h)) }
-          else { shape.setAttribute('cx', String(x + w / 2)); shape.setAttribute('cy', String(y + h / 2)); shape.setAttribute('rx', String(w / 2)); shape.setAttribute('ry', String(h / 2)) }
-        } else if (operation.shape === 'polygon') {
-          shape = window.document.createElementNS(svgNs, 'polygon')
-          shape.setAttribute('points', (operation.vertices as number[][]).map(vertex => point(vertex).join(',')).join(' '))
-        } else if (operation.shape === 'caret') {
-          const [x, y] = point(operation.point as number[]) as [number, number], size = 6 * scale
-          shape = window.document.createElementNS(svgNs, 'polyline')
-          shape.setAttribute('points', `${x - size},${y + size} ${x},${y - size} ${x + size},${y + size}`)
-        } else {
-          const values = operation.shape === 'arrow' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
-          const points: number[][] = []
-          for (let index = 0; index < values.length; index += 2) points.push(point([values[index]!, values[index + 1]!]))
-          shape = window.document.createElementNS(svgNs, 'polyline')
-          shape.setAttribute('points', points.map(item => item.join(',')).join(' '))
-          if (operation.shape === 'arrow' && points.length === 2) {
-            const [[x1, y1], [x2, y2]] = points as [[number, number], [number, number]]
-            const angle = Math.atan2(y2 - y1, x2 - x1), size = 10 * scale
-            const head = window.document.createElementNS(svgNs, 'polyline')
-            head.setAttribute('points', [[x2 - size * Math.cos(angle - Math.PI / 7), y2 - size * Math.sin(angle - Math.PI / 7)], [x2, y2], [x2 - size * Math.cos(angle + Math.PI / 7), y2 - size * Math.sin(angle + Math.PI / 7)]].map(item => item.join(',')).join(' '))
-            head.setAttribute('stroke', rgb); head.setAttribute('fill', 'none'); head.setAttribute('stroke-width', String(Number(operation.width) * scale))
-            svg.append(head)
-          }
-        }
-        shape.setAttribute('stroke', rgb); shape.setAttribute('fill', 'none'); shape.setAttribute('stroke-width', String(Number(operation.width) * scale))
-        shape.dataset.pdfDrawing = String(operation.shape)
-        svg.append(shape)
-      }
-      layer.append(svg)
-    }
-    holder.append(layer)
+    holder.append(layer); syncDrawingCanvases()
   }
   async function renderPage(page: PdfPageIdentity, holder: HTMLElement, renderGeneration: number) {
     const original = await sourcePage(page.index)
@@ -1528,7 +1792,20 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
             linkDialog.showModal(); linkUrl.focus()
             return
           }
+          if (drawShape === 'measure') {
+            const line = pdfDrawingOperation(page.pageId, 'measure', points, page.cropBox, drawColor, { label: '0' })
+            if (measureScale && !measureRecalibrate) { commitMeasure(page, line, measureScale); return }
+            measurePending = { page, operation: line, snapshot: JSON.stringify(draft.operations), doc: document }; measureValue.value = ''; measureError.textContent = ''
+            measureHint.textContent = `参考线长 ${pdfLineLength(line.from as number[], line.to as number[]).toFixed(1)} pt；输入它代表的实际长度。`
+            measureDialog.showModal(); measureValue.focus()
+            return
+          }
           const operation = pdfDrawingOperation(page.pageId, drawShape, points, page.cropBox, drawColor)
+          pdfPageState(model.pages, [...draft.operations, operation])
+          void append(operation).catch(showError)
+        } else if (mode === 'redact') {
+          if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再涂黑')
+          const operation = pdfRedactionOperation(page.pageId, pdfRectFromClient(pdfViewport, holder.getBoundingClientRect(), begin, [event.clientX, event.clientY], page.cropBox), page.cropBox)
           pdfPageState(model.pages, [...draft.operations, operation])
           void append(operation).catch(showError)
         } else if (mode === 'highlight') {
@@ -1635,19 +1912,20 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   async function leavePreview() {
+    clearDrawingCanvases()
     readingReady = false
     for (const task of tasks) task.cancel()
     for (const layer of textLayers) layer.cancel()
     commentsGeneration++; pendingCommentJump = null; selectedComment = ''; clearAttachments()
     generation++; indexGeneration++; observer?.disconnect(); visible.clear(); tasks.clear(); textLayers.clear()
-    document = sourceDocument; previewDocument = undefined; pagesCached.clear()
+    document = sourceDocument; previewDocument = undefined; layoutPreviewPages = undefined; pagesCached.clear()
     if (sourceReadingBeforePreview) { pendingReadingRestore = sourceReadingBeforePreview; readingRestoresSelection = true }
     commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = sidebar === 'comments'; renderComments()
     const loading = previewLoading; previewLoading = undefined; await loading?.destroy()
     backToSource.hidden = true; root.dataset.pdfPreview = 'false'
   }
   function operationLabel(operation: NativeOperation, index: number) {
-    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接', setStamps: '水印与页眉页脚' }
+    const labels: Record<string, string> = { replaceText: '原位改字', highlight: '高亮', addTextAnnotation: '文字批注', rotatePage: '旋转', deletePage: '删页', addMarkup: '文字标注', removeMarkup: '移除已保存标注', removeDrawing: '删除已保存绘图', editNote: '编辑便签', removeNote: '删除便签', reorderPages: '页面重排', cropPage: '裁切页面', setPageSize: '页面尺寸', addAttachment: '新增附件', removeAttachment: '移除附件', replyNote: '便签回复', replyPendingNote: '待保存便签回复', insertBlankPage: '插入空白页', addDrawing: '绘图/链接', setStamps: '水印与页眉页脚', redact: '涂黑', mergePages: '合并页面', splitPages: '拆分页面' }
     return `第 ${index + 1} 项 · ${labels[operation.kind] ?? operation.kind}${operation.kind === 'replaceText' ? `：${String(operation.newText).slice(0,120) || '删除文字'}` : ''}`
   }
   function skipReason(reason: string) {
@@ -1665,11 +1943,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     try {
       const result = await api.preview<PdfModel>({ expectedSha256: context.sourceFile.sha256, operations }, abort.signal)
       if (result.sourceSha256 !== context.sourceFile.sha256 || key !== JSON.stringify(draft.operations)) throw new Error('草稿或文件来源已变化，请重新预览')
-      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing', 'setStamps'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
+      if (!operations.some(op => ['addMarkup', 'removeMarkup', 'removeDrawing', 'editNote', 'removeNote', 'addTextAnnotation', 'replaceText', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote', 'insertBlankPage', 'addDrawing', 'setStamps', 'redact', 'mergePages', 'splitPages'].includes(op.kind))) { status.textContent = `当前 ${operations.length} 项修改已校验；保存后仍需核验业务内容。`; return }
       if (!result.previewDigest) throw new Error('服务端未返回 PDF 预览确认摘要')
       const bytes = await api.previewFile({ expectedSha256: context.sourceFile.sha256, operations, expectedPreviewDigest: result.previewDigest }, abort.signal)
       if (key !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新预览')
       await leavePreview()
+      layoutPreviewPages = operations.some(op => op.kind === 'mergePages' || op.kind === 'splitPages') ? result.model.pages : undefined
       previewLoading = getDocument({ data: new Uint8Array(bytes), cMapUrl: `${ASSET_BASE}cmaps/`, cMapPacked: true, standardFontDataUrl: `${ASSET_BASE}standard_fonts/`, wasmUrl: `${ASSET_BASE}wasm/`, enableXfa: false })
       previewDocument = await previewLoading.promise
       if (previewDocument.numPages !== state().length) throw new Error('实际 PDF 预览页数不匹配，请重新预览')
@@ -1729,11 +2008,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function refresh() {
     if (disposed || !document) return
+    clearDrawingCanvases()
     if (readingReady && !previewDocument && !previewing && !pendingReadingRestore) { pendingReadingRestore = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode); if (pendingReadingRestore) lastStableReading = pendingReadingRestore; readingRestoresSelection = false }
     searchRendering = true
     commentsGeneration++; clearAttachments()
     if (sidebar === 'comments') { commentRoots = []; commentsRead = commentsFailed = 0; commentsLoading = true; renderComments() }
-    const structureKey = JSON.stringify(draft.operations.filter(op => !['addMarkup', 'removeMarkup'].includes(op.kind)))
+    const structureKey = JSON.stringify(draft.operations.filter(op => !['addMarkup', 'removeMarkup', 'removeDrawing'].includes(op.kind)))
     if (markupStructureKey !== structureKey) { markupStructureKey = structureKey; markupSelection = [] }
     const operationsKey = JSON.stringify(draft.operations)
     if (lastOperationsKey !== operationsKey) { lastOperationsKey = operationsKey; textSelectionPage = '' }
@@ -1799,7 +2079,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const dimensions = displayViewport(original, page, scale)
       const card = documentElement('section', 'pdf-page'); card.dataset.pageId = page.pageId; card.style.width = `${dimensions.width}px`; card.style.boxSizing = 'content-box'
       card.setAttribute('aria-label', `第 ${position + 1} 页`)
-      const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = page.blank ? `第 ${position + 1} 页（新插入的空白页，保存后写入）` : `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
+      const heading = documentElement('button', 'pdf-page-label'); heading.type = 'button'; heading.textContent = page.blank ? `第 ${position + 1} 页（新插入的空白页，保存后写入）` : layoutPreviewPages && previewDocument ? `第 ${position + 1} 页（重排版预览）` : `第 ${position + 1} 页（原第 ${page.index + 1} 页）`
       const content = documentElement('div', 'pdf-page-content'); content.style.width = `${dimensions.width}px`; content.style.height = `${dimensions.height}px`
       heading.addEventListener('click', () => { activeId = page.pageId; updateControls(); renderTextPanel(); for (const node of pageNodes.values()) node.classList.toggle('is-active', node === card) })
       card.addEventListener('pointerdown', () => { activeId = page.pageId; updateControls(); renderTextPanel() })
@@ -1938,7 +2218,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       model.attachmentsReason = sourceModel.model.attachmentsReason
       if (model.attachmentsEditable !== true) attachmentNotice.textContent = `${model.attachmentsReason || '当前来源附件仅可查看和下载'}。删除附件目录不能擦除敏感数据。`
       model.capabilities = sourceModel.model.capabilities
-      for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true; page.notes = source?.notes ?? []; page.notesReadSafe = source?.notesReadSafe === true }
+      for (const page of model.pages) { const source = sourceModel.model.pages.find(item => item.pageId === page.pageId); page.markups = source?.markups ?? []; page.markupReadSafe = source?.markupReadSafe === true; page.notes = source?.notes ?? []; page.notesReadSafe = source?.notesReadSafe === true; page.drawings = source?.drawings ?? []; page.drawingsReadSafe = source?.drawingsReadSafe === true }
       model.formFields = sourceModel.model.formFields ?? []
       renderFormControls(model.formFields)
       if (textEnabled) {
@@ -1952,6 +2232,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     } catch (error) { textLoadWarning = `原位改字暂不可用，仍可查看、标注与下载 PDF：${error instanceof Error ? error.message : '文字对象读取失败'}` }
   }
   if (draft.operations.some(operation => ['editNote', 'removeNote'].includes(operation.kind)) && model.capabilities?.notes !== true) throw new Error('当前引擎未确认已有便签修改能力；原草稿已保留')
+  if (draft.operations.some(operation => operation.kind === 'removeDrawing') && model.capabilities?.removeDrawing !== true) throw new Error('当前引擎未确认绘图删除能力；原草稿已保留')
   if (draft.operations.some(operation => operation.kind === 'removeMarkup') && model.capabilities?.removeMarkup !== true) throw new Error('当前引擎未确认已保存标注移除能力；原草稿已保留')
   if (model.capabilities?.savedReplyEdits !== true && draft.operations.some(op => ['editNote','removeNote'].includes(op.kind) && model.pages.some(page => page.notes?.some(note => note.annotationId === op.annotationId && note.parentAnnotationId !== undefined)))) throw new Error('当前引擎未确认已保存回复修改能力；原草稿已保留')
   if (draft.operations.some(op => op.kind === 'replyPendingNote') && model.capabilities?.pendingNoteReplies !== true) throw new Error('当前来源或引擎未确认草稿回复写回能力；原草稿已保留')
@@ -1964,6 +2245,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    clearDrawingCanvases(); pendingDrawingDialog?.close(); saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }
