@@ -14,13 +14,18 @@ export function imageClientPoint(point: ImagePoint, bounds: ImageBox, viewport: 
   if (![...point,bounds.x,bounds.y,bounds.width,bounds.height,viewport.width,viewport.height].every(Number.isFinite) || bounds.width <= 0 || bounds.height <= 0 || viewport.width <= 0 || viewport.height <= 0) throw Error('图像视口已变化，请重新选择')
   return [(point[0]-bounds.x)*viewport.width/bounds.width,(point[1]-bounds.y)*viewport.height/bounds.height]
 }
-export function imageGesturePlan(rect: number[], viewport: ImageViewport, bounds: ImageBox, start: ImagePoint, end: ImagePoint, corner?: number) {
+export function drawingDragDelta(viewport: ImageViewport,bounds: ImageBox,start: ImagePoint,end: ImagePoint) {
   const from=imageClientPoint(start,bounds,viewport),to=imageClientPoint(end,bounds,viewport)
+  if(Math.hypot(end[0]-start[0],end[1]-start[1])<3)return undefined
+  const a=viewport.convertToPdfPoint(...from),b=viewport.convertToPdfPoint(...to)
+  return {dx:b[0]!-a[0]!,dy:b[1]!-a[1]!}
+}
+export function imageGesturePlan(rect: number[], viewport: ImageViewport, bounds: ImageBox, start: ImagePoint, end: ImagePoint, corner?: number) {
   if(corner===undefined) {
-    if(Math.hypot(end[0]-start[0],end[1]-start[1])<3)return undefined
-    const a=viewport.convertToPdfPoint(...from),b=viewport.convertToPdfPoint(...to),dx=b[0]!-a[0]!,dy=b[1]!-a[1]!
-    return {kind:'move' as const,dx,dy,rect:[rect[0]!+dx,rect[1]!+dy,rect[2]!+dx,rect[3]!+dy]}
+    const delta=drawingDragDelta(viewport,bounds,start,end)
+    return !delta?undefined:{kind:'move' as const,...delta,rect:[rect[0]!+delta.dx,rect[1]!+delta.dy,rect[2]!+delta.dx,rect[3]!+delta.dy]}
   }
+  const to=imageClientPoint(end,bounds,viewport);imageClientPoint(start,bounds,viewport)
   if(!Number.isInteger(corner)||corner<0||corner>3)throw Error('图像控制柄身份无效')
   if(start[0]===end[0]&&start[1]===end[1])return undefined
   const box=imageViewBox(rect,viewport),fx=corner%2===0?box.x+box.width:box.x,fy=corner<2?box.y+box.height:box.y

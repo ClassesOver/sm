@@ -12,22 +12,28 @@ export function pendingDrawingTarget(pages: PdfPageIdentity[], operations: Nativ
   validatePdfDrawing(operation, page.cropBox)
   return { operation, page, movable: movable.has(String(operation.shape)), resizable: operation.shape === 'image' }
 }
+export function translateDrawingGeometry(operation: NativeOperation, dx: number, dy: number): NativeOperation {
+  if (operation.kind !== 'addDrawing' || !movable.has(String(operation.shape)) || !Number.isFinite(dx) || !Number.isFinite(dy)) throw Error('此绘图暂不支持移动或位移无效')
+  const result = { ...operation }
+  const point = (value: number[]) => [value[0]! + dx, value[1]! + dy]
+  switch (result.shape) {
+    case 'rect': case 'ellipse': case 'image': {
+      const rect = result.rect as number[]
+      result.rect = [...point(rect), ...point(rect.slice(2))]; break
+    }
+    case 'arrow': case 'measure': result.from = point(result.from as number[]); result.to = point(result.to as number[]); break
+    case 'ink': result.paths = (result.paths as number[][]).map(path => path.map((value, index) => value + (index % 2 === 0 ? dx : dy))); break
+    case 'polygon': result.vertices = (result.vertices as number[][]).map(point); break
+    case 'caret': result.point = point(result.point as number[]); break
+  }
+  return result
+}
 export function movePendingDrawing(pages: PdfPageIdentity[], operations: NativeOperation[], reference: PendingDrawingReference, dx: number, dy: number): NativeOperation[] {
   const target = pendingDrawingTarget(pages, operations, reference)
   if (!target.movable) throw Error('此类型暂不支持移动')
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw Error('位移必须是有限数值')
   const next = structuredClone(operations); next[reference.index] = { ...next[reference.index]! }; const changed = next[reference.index]!
-  const point = (value: number[]) => [value[0]! + dx, value[1]! + dy]
-  switch (changed.shape) {
-    case 'rect': case 'ellipse': case 'image': {
-      const rect = changed.rect as number[]
-      changed.rect = [...point(rect), ...point(rect.slice(2))]; break
-    }
-    case 'arrow': case 'measure': changed.from = point(changed.from as number[]); changed.to = point(changed.to as number[]); break
-    case 'ink': changed.paths = (changed.paths as number[][]).map(path => path.map((value, index) => value + (index % 2 === 0 ? dx : dy))); break
-    case 'polygon': changed.vertices = (changed.vertices as number[][]).map(point); break
-    case 'caret': changed.point = point(changed.point as number[]); break
-  }
+  Object.assign(changed, translateDrawingGeometry(changed, dx, dy))
   // Reject an out-of-page translation instead of clamping and distorting its shape.
   validatePdfDrawing(changed, target.page.cropBox)
   pdfPageState(pages, next)

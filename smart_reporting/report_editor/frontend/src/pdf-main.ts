@@ -1,4 +1,4 @@
-import { mountImageCanvas, type ImageCanvasController } from './pdf-image-canvas'
+import { mountDrawingCanvas, type DrawingCanvasController } from './pdf-drawing-canvas'
 import { pendingDrawingTarget, movePendingDrawing, resizePendingImage, removePendingDrawing, type PendingDrawingReference, type PendingImageAnchor } from './pdf-pending-drawings'
 import { toggleSavedDrawing } from './pdf-saved-drawings'
 import { stagePdfReply, stagePendingPdfReply, stagePdfLocalReply } from './pdf-replies'
@@ -212,16 +212,16 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const pendingDrawingsPanel = documentElement('section', 'pdf-pending-drawings-panel'); pendingDrawingsPanel.hidden = true
   pendingDrawingsPanel.setAttribute('aria-label', '待保存绘图')
   let selectedPendingDrawing: PendingDrawingReference | undefined, pendingDrawingsGeneration = 0
-  const imageCanvases = new Set<ImageCanvasController>()
-  let imageActiveId = activeId
-  function clearImageCanvases() { for (const controller of imageCanvases) controller.dispose(); imageCanvases.clear() }
-  function syncImageCanvases() {
-    if (imageActiveId !== activeId) {
-      for (const controller of imageCanvases) controller.cancel()
-      imageActiveId = activeId
+  const drawingCanvases = new Set<DrawingCanvasController>()
+  let drawingActiveId = activeId
+  function clearDrawingCanvases() { for (const controller of drawingCanvases) controller.dispose(); drawingCanvases.clear() }
+  function syncDrawingCanvases() {
+    if (drawingActiveId !== activeId) {
+      for (const controller of drawingCanvases) controller.cancel()
+      drawingActiveId = activeId
       if (selectedPendingDrawing?.pageId !== activeId) selectedPendingDrawing = undefined
     }
-    for (const controller of imageCanvases) if (!controller.sync()) imageCanvases.delete(controller)
+    for (const controller of drawingCanvases) if (!controller.sync()) drawingCanvases.delete(controller)
   }
   let pendingDrawingDialog: HTMLDialogElement | undefined
   root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, drawingsPanel, pendingDrawingsPanel, layout)
@@ -1312,7 +1312,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncImageCanvases() }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncDrawingCanvases() }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }
@@ -1441,7 +1441,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       resize.addEventListener('click', () => { if (current()) void editPendingImageSize(reference).catch(showError) })
       pendingDrawingsPanel.append(chosen, move, resize, remove)
     }
-    syncImageCanvases()
+    syncDrawingCanvases()
   }
   function renderSavedDrawings() {
     if (drawingsPanel.hidden) return
@@ -1473,7 +1473,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   function updateControls() {
-    syncImageCanvases()
+    syncDrawingCanvases()
     if (!canChangePendingDrawings()) pendingDrawingDialog?.close()
     renderPendingDrawings()
     renderSavedDrawings()
@@ -1680,73 +1680,18 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       svg.append(group); layer.append(svg)
     }
-    if (draft.operations.some(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape === 'image')) {
+    if (draft.operations.some(op => op.pageId === page.pageId && op.kind === 'addDrawing')) {
       const source = document, sourceGeneration = generation, snapshot = JSON.stringify(draft.operations)
-      const controller = mountImageCanvas({ host: layer, pages: model.pages, pageId: page.pageId, operations: draft.operations, viewport: pdfViewport,
+      const controller = mountDrawingCanvas({ host: layer, pages: model.pages, pageId: page.pageId, operations: draft.operations, viewport: pdfViewport, scale,
         current: () => source === document && sourceGeneration === generation && mode === 'select' && canChangePendingDrawings() && !pendingDrawingDialog?.open,
         unchanged: () => snapshot === JSON.stringify(draft.operations),
         selected: () => selectedPendingDrawing,
         select(reference) { activeId = page.pageId; selectedPendingDrawing = reference; updateControls() },
         commit(operations) { draft.setOperations(operations); selectedPendingDrawing = undefined; void refresh().catch(showError) }, error: showError,
       })
-      imageCanvases.add(controller)
+      drawingCanvases.add(controller)
     }
-    const drawings = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape !== 'image')
-    if (drawings.length) {
-      const svgNs = 'http://www.w3.org/2000/svg'
-      const svg = window.document.createElementNS(svgNs, 'svg')
-      svg.setAttribute('class', 'pdf-pending-drawings'); svg.setAttribute('width', String(pdfViewport.width)); svg.setAttribute('height', String(pdfViewport.height))
-      for (const operation of drawings) {
-        const rgb = `rgb(${(operation.color as number[]).map(value => Math.round(value * 255)).join(',')})`
-        const point = (value: number[]) => pdfViewport.convertToViewportPoint(value[0]!, value[1]!)
-        let shape: SVGElement
-        if (operation.shape === 'rect' || operation.shape === 'ellipse' || operation.shape === 'link') {
-          const r = operation.rect as number[], a = point([r[0]!, r[1]!]), b = point([r[2]!, r[3]!])
-          const [x, y, w, h] = [Math.min(a[0]!, b[0]!), Math.min(a[1]!, b[1]!), Math.abs(b[0]! - a[0]!), Math.abs(b[1]! - a[1]!)]
-          shape = window.document.createElementNS(svgNs, operation.shape === 'ellipse' ? 'ellipse' : 'rect')
-          if (operation.shape === 'link') { shape.setAttribute('stroke-dasharray', '5 3'); const title = window.document.createElementNS(svgNs, 'title'); title.textContent = operation.url !== undefined ? String(operation.url) : `跳转到原第 ${operation.destPage} 页`; shape.append(title) }
-          if (operation.shape !== 'ellipse') { shape.setAttribute('x', String(x)); shape.setAttribute('y', String(y)); shape.setAttribute('width', String(w)); shape.setAttribute('height', String(h)) }
-          else { shape.setAttribute('cx', String(x + w / 2)); shape.setAttribute('cy', String(y + h / 2)); shape.setAttribute('rx', String(w / 2)); shape.setAttribute('ry', String(h / 2)) }
-        } else if (operation.shape === 'polygon') {
-          shape = window.document.createElementNS(svgNs, 'polygon')
-          shape.setAttribute('points', (operation.vertices as number[][]).map(vertex => point(vertex).join(',')).join(' '))
-        } else if (operation.shape === 'caret') {
-          const [x, y] = point(operation.point as number[]) as [number, number], size = 6 * scale
-          shape = window.document.createElementNS(svgNs, 'polyline')
-          shape.setAttribute('points', `${x - size},${y + size} ${x},${y - size} ${x + size},${y + size}`)
-        } else {
-          const values = operation.shape === 'arrow' || operation.shape === 'measure' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
-          const points: number[][] = []
-          for (let index = 0; index < values.length; index += 2) points.push(point([values[index]!, values[index + 1]!]))
-          shape = window.document.createElementNS(svgNs, 'polyline')
-          shape.setAttribute('points', points.map(item => item.join(',')).join(' '))
-          if (operation.shape === 'arrow' && points.length === 2) {
-            const [[x1, y1], [x2, y2]] = points as [[number, number], [number, number]]
-            const angle = Math.atan2(y2 - y1, x2 - x1), size = 10 * scale
-            const head = window.document.createElementNS(svgNs, 'polyline')
-            head.setAttribute('points', [[x2 - size * Math.cos(angle - Math.PI / 7), y2 - size * Math.sin(angle - Math.PI / 7)], [x2, y2], [x2 - size * Math.cos(angle + Math.PI / 7), y2 - size * Math.sin(angle + Math.PI / 7)]].map(item => item.join(',')).join(' '))
-            head.setAttribute('stroke', rgb); head.setAttribute('fill', 'none'); head.setAttribute('stroke-width', String(Number(operation.width) * scale))
-            svg.append(head)
-          }
-          if (operation.shape === 'measure' && points.length === 2) {
-            const [[x1, y1], [x2, y2]] = points as [[number, number], [number, number]]
-            let angle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI
-            if (Math.abs(angle) > 90) angle += 180
-            const text = window.document.createElementNS(svgNs, 'text')
-            text.setAttribute('x', String((x1 + x2) / 2)); text.setAttribute('y', String((y1 + y2) / 2 - 6 * scale))
-            text.setAttribute('text-anchor', 'middle'); text.setAttribute('font-size', String(9 * scale)); text.setAttribute('fill', rgb)
-            text.setAttribute('transform', `rotate(${angle} ${(x1 + x2) / 2} ${(y1 + y2) / 2})`)
-            text.dataset.pdfMeasureLabel = ''; text.textContent = String(operation.label)
-            svg.append(text)
-          }
-        }
-        shape.setAttribute('stroke', rgb); shape.setAttribute('fill', 'none'); shape.setAttribute('stroke-width', String(Number(operation.width) * scale))
-        shape.dataset.pdfDrawing = String(operation.shape)
-        svg.append(shape)
-      }
-      layer.append(svg)
-    }
-    holder.append(layer); syncImageCanvases()
+    holder.append(layer); syncDrawingCanvases()
   }
   async function renderPage(page: PdfPageIdentity, holder: HTMLElement, renderGeneration: number) {
     const original = await sourcePage(page.index)
@@ -1967,7 +1912,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   async function leavePreview() {
-    clearImageCanvases()
+    clearDrawingCanvases()
     readingReady = false
     for (const task of tasks) task.cancel()
     for (const layer of textLayers) layer.cancel()
@@ -2063,7 +2008,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function refresh() {
     if (disposed || !document) return
-    clearImageCanvases()
+    clearDrawingCanvases()
     if (readingReady && !previewDocument && !previewing && !pendingReadingRestore) { pendingReadingRestore = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode); if (pendingReadingRestore) lastStableReading = pendingReadingRestore; readingRestoresSelection = false }
     searchRendering = true
     commentsGeneration++; clearAttachments()
@@ -2300,6 +2245,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    clearImageCanvases(); pendingDrawingDialog?.close(); saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    clearDrawingCanvases(); pendingDrawingDialog?.close(); saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }

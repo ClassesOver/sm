@@ -458,3 +458,13 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - 原始材料与验证边界：`NATIVE_PDF_IMAGE_CANVAS_ACCEPTANCE.md`。
 
 - [x] 32项相关检查、真实Chromium五阶段四象限像素对比/完整交互与pypdf独立回读通过；Standard/Slides/budget/类型/语法/diff通过。证据 `NATIVE_PDF_IMAGE_CANVAS_ACCEPTANCE.md`；整体任务未宣称完成。
+
+
+### PR #210 待保存几何绘图画布选择/拖动（2026-11-10）
+
+- [x] 七类geometry的透明粗stroke命中、精确record选择/平移、3CSSpx阈与release一次history；复用image controller全部取消/身份守卫，不新增几何resize或源没有的线宽UI。
+- [x] 全部ink paths可见，箭头头/主体与measure标签随同record移动；image/shape混合按完整创建顺序统一渲染，修复旧分层导致的z-order命中错误。
+- [ ] 源水平measure label与Web旋转label/AP角度、caret源glyph与实际AP视觉差异继续列为未验收；完整上下文/快捷键、已保存变换及生产/桌面/完整镜像仍开放；功能开关关闭。
+- 具体来源与验收：`NATIVE_PDF_SHAPE_CANVAS_ACCEPTANCE.md`。
+
+- [x] 本轮47项定向检查、shape与image两条真实浏览器闭环及独立pypdf实际文件回读通过；Standard/Slides/budget/类型/语法/diff通过。详细边界和失败记录见 `NATIVE_PDF_SHAPE_CANVAS_ACCEPTANCE.md`。

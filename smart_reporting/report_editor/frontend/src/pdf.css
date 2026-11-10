@@ -118,3 +118,6 @@
 .pdf-image-canvas.is-interactive image { pointer-events: all; cursor: move; touch-action: none; }
 .pdf-image-outline { fill: none; stroke: #2563eb; stroke-width: 1.5; pointer-events: none; }
 .pdf-image-canvas.is-interactive .pdf-image-handle { fill: white; stroke: #2563eb; stroke-width: 1.5; pointer-events: all; touch-action: none; }
+
+.pdf-drawing-canvas.is-interactive g[data-pdf-shape-index]:not([data-pdf-shape-kind="image"]):not([data-pdf-shape-kind="link"]) { pointer-events: stroke; cursor: move; touch-action: none; }
+.pdf-drawing-canvas g.is-selected:not([data-pdf-shape-kind="image"]) { filter: drop-shadow(0 0 3px #2563eb); }
