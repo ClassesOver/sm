@@ -114,3 +114,7 @@
 .pdf-pending-drawing-dialog input { margin-left: .5rem; width: 8rem; }
 
 .pdf-pending-drawing-dialog select { margin-left: .5rem; max-width: 15rem; }
+
+.pdf-image-canvas.is-interactive image { pointer-events: all; cursor: move; touch-action: none; }
+.pdf-image-outline { fill: none; stroke: #2563eb; stroke-width: 1.5; pointer-events: none; }
+.pdf-image-canvas.is-interactive .pdf-image-handle { fill: white; stroke: #2563eb; stroke-width: 1.5; pointer-events: all; touch-action: none; }

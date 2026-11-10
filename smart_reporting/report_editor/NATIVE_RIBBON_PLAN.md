@@ -447,3 +447,14 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 - 详细来源与边界：`NATIVE_PPTX_CELL_SHADING_ACCEPTANCE.md`、`NATIVE_PDF_PENDING_IMAGE_RESIZE_ACCEPTANCE.md`。
 
 - [x] 本轮103项相关前端、21项后端定向检查，三条生产静态浏览器闭环，独立python-pptx/pypdf/AP像素数据回读，断网Node22和LibreOffice单格颜色像素交叉验证通过；Standard/Slides/budget/Ruff/diff通过。整体任务未宣称完成。
+
+
+### PR #210 待保存image画布选择/拖动/四角缩放（2026-11-10）
+
+- [x] 从原DrawLayer实际pointer/handle行为与addImageStamp AP对照实现：选择模式下精确image记录命中、3CSSpx拖阈、相反显示角固定、保比例与最短显示长边16px、释放一次history；单击小图handle不会触发最小尺寸放大。
+- [x] 源页面viewport正反变换处理quarter-turn/CropBox/UserUnit/CSS比例；局部live绘制，不每帧克隆/序列化整个图像草稿。原image显示矩阵改直立display bbox以对齐源counterrotated AP。
+- [x] snapshot/source/record-index/pointerId身份，取消/丢capture/Escape/blur/scroll/wheel/换页/zoom/reflow/草稿变化/preview/save/dispose拒绝过期提交；其他模式与只读透传。
+- [ ] 非image几何的直接canvas交互、source上下文/全部快捷键、已保存图像编辑与完整桌面/生产/应用镜像验收仍开放，功能开关关闭；既有RTL外部兼容差异不变。
+- 原始材料与验证边界：`NATIVE_PDF_IMAGE_CANVAS_ACCEPTANCE.md`。
+
+- [x] 32项相关检查、真实Chromium五阶段四象限像素对比/完整交互与pypdf独立回读通过；Standard/Slides/budget/类型/语法/diff通过。证据 `NATIVE_PDF_IMAGE_CANVAS_ACCEPTANCE.md`；整体任务未宣称完成。

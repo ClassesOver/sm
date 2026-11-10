@@ -16,7 +16,7 @@ export function movePendingDrawing(pages: PdfPageIdentity[], operations: NativeO
   const target = pendingDrawingTarget(pages, operations, reference)
   if (!target.movable) throw Error('此类型暂不支持移动')
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw Error('位移必须是有限数值')
-  const next = structuredClone(operations), changed = next[reference.index]!
+  const next = structuredClone(operations); next[reference.index] = { ...next[reference.index]! }; const changed = next[reference.index]!
   const point = (value: number[]) => [value[0]! + dx, value[1]! + dy]
   switch (changed.shape) {
     case 'rect': case 'ellipse': case 'image': {
@@ -52,7 +52,7 @@ export function resizePendingImage(pages: PdfPageIdentity[], operations: NativeO
   const width = (x2 - x1) * scale, height = (y2 - y1) * scale
   const x = anchor.endsWith('left') ? x1 : x2 - width
   const y = anchor.startsWith('bottom') ? y1 : y2 - height
-  const next = structuredClone(operations), changed = next[reference.index]!
+  const next = structuredClone(operations); next[reference.index] = { ...next[reference.index]! }; const changed = next[reference.index]!
   changed.rect = [x, y, anchor.endsWith('left') ? x1 + width : x2, anchor.startsWith('bottom') ? y1 + height : y2]
   validatePdfDrawing(changed, target.page.cropBox)
   pdfPageState(pages, next)

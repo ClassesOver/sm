@@ -1,3 +1,4 @@
+import { mountImageCanvas, type ImageCanvasController } from './pdf-image-canvas'
 import { pendingDrawingTarget, movePendingDrawing, resizePendingImage, removePendingDrawing, type PendingDrawingReference, type PendingImageAnchor } from './pdf-pending-drawings'
 import { toggleSavedDrawing } from './pdf-saved-drawings'
 import { stagePdfReply, stagePendingPdfReply, stagePdfLocalReply } from './pdf-replies'
@@ -211,6 +212,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const pendingDrawingsPanel = documentElement('section', 'pdf-pending-drawings-panel'); pendingDrawingsPanel.hidden = true
   pendingDrawingsPanel.setAttribute('aria-label', '待保存绘图')
   let selectedPendingDrawing: PendingDrawingReference | undefined, pendingDrawingsGeneration = 0
+  const imageCanvases = new Set<ImageCanvasController>()
+  let imageActiveId = activeId
+  function clearImageCanvases() { for (const controller of imageCanvases) controller.dispose(); imageCanvases.clear() }
+  function syncImageCanvases() {
+    if (imageActiveId !== activeId) {
+      for (const controller of imageCanvases) controller.cancel()
+      imageActiveId = activeId
+      if (selectedPendingDrawing?.pageId !== activeId) selectedPendingDrawing = undefined
+    }
+    for (const controller of imageCanvases) if (!controller.sync()) imageCanvases.delete(controller)
+  }
   let pendingDrawingDialog: HTMLDialogElement | undefined
   root.append(noteInput, textPanel, status, propertiesPanel, reviewPanel, drawingsPanel, pendingDrawingsPanel, layout)
   const editableButtons: HTMLButtonElement[] = []
@@ -1300,7 +1312,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')) }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncImageCanvases() }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }
@@ -1429,6 +1441,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       resize.addEventListener('click', () => { if (current()) void editPendingImageSize(reference).catch(showError) })
       pendingDrawingsPanel.append(chosen, move, resize, remove)
     }
+    syncImageCanvases()
   }
   function renderSavedDrawings() {
     if (drawingsPanel.hidden) return
@@ -1460,6 +1473,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   function updateControls() {
+    syncImageCanvases()
     if (!canChangePendingDrawings()) pendingDrawingDialog?.close()
     renderPendingDrawings()
     renderSavedDrawings()
@@ -1666,21 +1680,16 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       svg.append(group); layer.append(svg)
     }
-    const placedImages = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape === 'image')
-    if (placedImages.length) {
-      const svgNs = 'http://www.w3.org/2000/svg'
-      const svg = window.document.createElementNS(svgNs, 'svg')
-      svg.setAttribute('class', 'pdf-pending-drawings'); svg.setAttribute('width', String(pdfViewport.width)); svg.setAttribute('height', String(pdfViewport.height))
-      const group = window.document.createElementNS(svgNs, 'g'); group.setAttribute('transform', `matrix(${pdfViewport.transform.join(' ')})`)
-      for (const operation of placedImages) {
-        const [x1, y1, x2, y2] = operation.rect as [number, number, number, number]
-        const image = window.document.createElementNS(svgNs, 'image')
-        image.setAttribute('href', `data:image/png;base64,${operation.image}`)
-        image.setAttribute('x', String(x1)); image.setAttribute('y', String(-y2)); image.setAttribute('width', String(x2 - x1)); image.setAttribute('height', String(y2 - y1))
-        image.setAttribute('transform', 'scale(1 -1)'); image.setAttribute('preserveAspectRatio', 'none'); image.dataset.pdfDrawing = 'image'
-        group.append(image)
-      }
-      svg.append(group); layer.append(svg)
+    if (draft.operations.some(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape === 'image')) {
+      const source = document, sourceGeneration = generation, snapshot = JSON.stringify(draft.operations)
+      const controller = mountImageCanvas({ host: layer, pages: model.pages, pageId: page.pageId, operations: draft.operations, viewport: pdfViewport,
+        current: () => source === document && sourceGeneration === generation && mode === 'select' && canChangePendingDrawings() && !pendingDrawingDialog?.open,
+        unchanged: () => snapshot === JSON.stringify(draft.operations),
+        selected: () => selectedPendingDrawing,
+        select(reference) { activeId = page.pageId; selectedPendingDrawing = reference; updateControls() },
+        commit(operations) { draft.setOperations(operations); selectedPendingDrawing = undefined; void refresh().catch(showError) }, error: showError,
+      })
+      imageCanvases.add(controller)
     }
     const drawings = draft.operations.filter(op => op.pageId === page.pageId && op.kind === 'addDrawing' && op.shape !== 'image')
     if (drawings.length) {
@@ -1737,7 +1746,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       layer.append(svg)
     }
-    holder.append(layer)
+    holder.append(layer); syncImageCanvases()
   }
   async function renderPage(page: PdfPageIdentity, holder: HTMLElement, renderGeneration: number) {
     const original = await sourcePage(page.index)
@@ -1958,6 +1967,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   async function leavePreview() {
+    clearImageCanvases()
     readingReady = false
     for (const task of tasks) task.cancel()
     for (const layer of textLayers) layer.cancel()
@@ -2053,6 +2063,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function refresh() {
     if (disposed || !document) return
+    clearImageCanvases()
     if (readingReady && !previewDocument && !previewing && !pendingReadingRestore) { pendingReadingRestore = capturePdfReading(viewport, model.pages.map(page => page.pageId), scale, fitMode); if (pendingReadingRestore) lastStableReading = pendingReadingRestore; readingRestoresSelection = false }
     searchRendering = true
     commentsGeneration++; clearAttachments()
@@ -2289,6 +2300,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   locked = false
   await refresh()
   return { refresh, prepareSave, setSaving(saving) { locked = saving; updateControls() }, dispose() {
-    pendingDrawingDialog?.close(); saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
+    clearImageCanvases(); pendingDrawingDialog?.close(); saveReading(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()
   } }
 }
