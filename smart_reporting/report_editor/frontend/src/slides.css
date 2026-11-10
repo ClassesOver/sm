@@ -177,3 +177,17 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .table-cell-grid textarea { width: 100%; min-height: 40px; padding: 4px 6px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; font-size: var(--font-size-sm); resize: vertical; }
 .table-cell-grid textarea:disabled { background: var(--office-tabbar); }
 .structure-pending .smartart-items { flex: 1 1 100%; min-height: 0; padding: 4px 6px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; font-size: var(--font-size-sm); resize: vertical; }
+
+/* 动画窗格（固定源 AnimationPane）：外壳与对象面板同一套 --office-* token。 */
+.slides-animation-pane { border-bottom: 1px solid var(--office-border); padding-bottom: 10px; }
+.animation-pane-list { display: grid; gap: 4px; margin: 0 14px; padding: 0; list-style: none; }
+.animation-pane-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 6px; align-items: center; padding: 4px 6px; border: 1px solid var(--office-border); border-radius: var(--office-radius); background: #fff; }
+.animation-pane-row.is-selected { background: var(--office-pressed-bg); border-color: var(--office-pressed-border); }
+.animation-pane-select { grid-column: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--office-ink); font: inherit; font-size: var(--office-font-size); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.animation-pane-detail { grid-column: 1; color: var(--office-muted); font-size: var(--office-label-size); }
+.animation-pane-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 2px; }
+.animation-pane-actions button { width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: var(--office-radius); background: transparent; color: var(--office-ink-2); cursor: pointer; }
+.animation-pane-actions button:hover:not(:disabled) { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
+.animation-pane-actions button:disabled { opacity: var(--office-disabled-opacity); cursor: not-allowed; }
+.animation-pane-select:focus-visible, .animation-pane-actions button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
+.animation-pane-empty { margin: 8px 14px 0; color: var(--office-muted); font-size: var(--office-label-size); }

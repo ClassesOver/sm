@@ -169,19 +169,19 @@ const tabs: Tab[] = [
   { id: 'animations', label: 'Animations', groups: [
     { label: 'Preview', controls: [{ id: 'animationPreview', label: 'Preview', sourceActionId: 'onAnimPreview', unavailable: noWrite('动画预览') }] },
     { label: 'Animation', controls: [
-      { id: 'animationNone', label: 'None', sourceActionId: 'onApplyAnimation', unavailable: noWrite('移除现有动画') },
+      { id: 'animationNone', label: 'None', sourceActionId: 'onApplyAnimation' },
       { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onApplyAnimation', options: ['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut'] },
       { id: 'animationDirection', label: 'Direction', kind: 'select', options: ['top', 'bottom', 'left', 'right'] },
       { id: 'addAnimation', label: 'Add Animation', sourceActionId: 'onAddAnimation' },
-      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane', unavailable: noWrite('动画窗格状态') },
-      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph', unavailable: noWrite('按段动画状态') },
+      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane' },
+      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph' },
     ] },
     { label: 'Motion Paths', controls: [
-      { id: 'motionPathRight', label: 'Line Right', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathDown', label: 'Line Down', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathDiagonal', label: 'Diagonal', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathCircle', label: 'Circle', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathZigzag', label: 'Zigzag', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
+      { id: 'motionPathRight', label: 'Line Right', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathDown', label: 'Line Down', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathDiagonal', label: 'Diagonal', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathCircle', label: 'Circle', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathZigzag', label: 'Zigzag', sourceActionId: 'onApplyMotionPath' },
     ] },
     { label: 'Timing', controls: [
       { id: 'animationTrigger', label: 'Trigger', kind: 'select', sourceActionId: 'onAnimTiming', options: ['onClick', 'withPrev', 'afterPrev'] },
@@ -493,6 +493,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(alignment === value))
         }
       }
+      if (['toggleAnimationPane', 'animationByParagraph'].includes(command)) for (const element of controls.get(command) ?? []) element.setAttribute('aria-pressed', value)
       if (command === 'animationEffect') {
         currentAnimationEffect = value
         const direction = (controls.get('animationDirection') ?? [])[0] as HTMLSelectElement | undefined

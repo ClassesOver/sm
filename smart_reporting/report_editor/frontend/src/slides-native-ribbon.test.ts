@@ -378,9 +378,17 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(animationGroup.querySelector<HTMLElement>('[data-source-action="onAddAnimation"]')?.dataset.command).toBe('addAnimation')
   expect(animationPanel.querySelector<HTMLElement>('[data-source-action="onAnimTiming"]')?.dataset.command).toBe('animationTrigger')
   expect(animationPanel.querySelector('[data-command="animationPreview"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationPanel.querySelector('[data-command="motionPathRight"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('data-unavailable')).toBe('true')
+  // 整页动画序列接通后：无、动画窗格、按段与五条动作路径均可用，并派发各自命令
+  for (const command of ['animationNone', 'toggleAnimationPane', 'animationByParagraph', 'motionPathRight', 'motionPathDown', 'motionPathDiagonal', 'motionPathCircle', 'motionPathZigzag']) {
+    const control = animationPanel.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!
+    expect(control.dataset.unavailable, command).toBeUndefined()
+    control.click()
+    expect(onAction, command).toHaveBeenCalledWith(command)
+  }
+  expect(animationPanel.querySelector<HTMLElement>('[data-command="motionPathZigzag"]')?.dataset.sourceAction).toBe('onApplyMotionPath')
+  ribbon.setValue('toggleAnimationPane', 'true'); ribbon.setValue('animationByParagraph', 'true')
+  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
+  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
 
   transition.value = 'wipe'
   transition.dispatchEvent(new Event('change', { bubbles: true }))

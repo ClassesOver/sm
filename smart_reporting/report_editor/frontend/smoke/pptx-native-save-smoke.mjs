@@ -56,7 +56,14 @@ if payload['mode'] == 'create':
         props = shape.text_frame.paragraphs[0]._p.get_or_add_pPr()
         props.set('marL', '285750'); props.set('indent', '-285750')
     stream = BytesIO(); presentation.save(stream)
-    print(base64.b64encode(stream.getvalue()).decode())
+    created = stream.getvalue()
+    if payload.get('animatedSample'):
+        # 来源文件自带两条动画：正文淡入、另一对象缩放（经同一真实写入链路生成）
+        targets = [item for item in inspect_office('pptx', created)['slides'][0]['elements'] if item['text'].strip()]
+        created = patch_office('pptx', created, [{'kind': 'editSlides', 'animations': [
+            {'slideIndex': 0, 'elementId': targets[0]['id'], 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0},
+            {'slideIndex': 0, 'elementId': targets[1]['id'], 'effect': 'zoom', 'trigger': 'onClick', 'durationMs': 600, 'delayMs': 0, 'append': True}]}])
+    print(base64.b64encode(created).decode())
 elif payload['mode'] == 'inspect':
     content = base64.b64decode(payload['bytes'])
     model = inspect_office('pptx', content)
@@ -98,7 +105,7 @@ elif payload['mode'] == 'patch':
   return result.stdout.trim()
 }
 
-const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists'].includes(smokeMode), listsSample: smokeMode === 'paragraph-lists', extraSlide: smokeMode === 'new-slide' }), 'base64')
+const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists', 'animation-pane'].includes(smokeMode), animatedSample: smokeMode === 'animation-pane', listsSample: smokeMode === 'paragraph-lists', extraSlide: smokeMode === 'new-slide' }), 'base64')
 const sourceIdentity = createHash('sha256').update(sourceBytes).digest('hex')
 const sourceSha = sourceIdentity
 let activeBytes = sourceBytes
@@ -315,6 +322,52 @@ try {
     await page.locator('[data-command="animationDuration"]').fill('1250')
     await page.locator('[data-command="animationDelay"]').fill('300')
     await page.locator('[data-command="addAnimation"][data-source-action="onAddAnimation"]').click()
+  } else if (smokeMode === 'animation-pane') {
+    // 固定源动画窗格 / 无 / 按段 / 动作路径：全部写入同一份整页动画序列。
+    const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
+    const command = id => page.locator(`[data-command="${id}"]`)
+    const rows = () => page.locator('.animation-pane-row .animation-pane-select').allTextContents()
+    await page.locator('[data-ribbon-tab="animations"]').click()
+    assert.equal(await page.locator('.slides-animation-pane').isHidden(), true)
+    await command('toggleAnimationPane').click()
+    assert.equal(await command('toggleAnimationPane').getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('.slides-animation-pane .inspector-heading').textContent(), '动画 · 第 1 页')
+    assert.equal((await rows()).length, 2)
+    assert.match((await rows())[0], /^1 淡入/); assert.match((await rows())[1], /^2 缩放/)
+    // 无：移除正文对象的全部动画
+    await page.locator('#object-select').selectOption(body.id)
+    await command('animationNone').click()
+    assert.equal((await rows()).length, 1)
+    // 按段：正文两段各生成一条飞入（自左侧）
+    await command('animationByParagraph').click()
+    assert.equal(await command('animationByParagraph').getAttribute('aria-pressed'), 'true')
+    await command('animationEffect').selectOption('flyIn')
+    await command('animationDirection').selectOption('left')
+    await command('addAnimation').click()
+    assert.equal((await rows()).length, 3)
+    assert.match((await rows())[1], /飞入.*第 1 段$/); assert.match((await rows())[2], /飞入.*第 2 段$/)
+    // 动作路径：锯齿
+    await page.locator('#object-select').selectOption(other.id)
+    await command('motionPathZigzag').click()
+    assert.equal((await rows()).length, 4)
+    assert.match((await rows())[3], /动作路径/)
+    // 窗格：动作路径上移一位；选中缩放改计时；删除最后一条
+    await page.locator('[data-animation-row="3"] button[title="上移"]').click()
+    assert.match((await rows())[2], /动作路径/); assert.match((await rows())[3], /第 2 段/)
+    await page.locator('[data-animation-row="0"] .animation-pane-select').click()
+    assert.equal(await page.locator('[data-animation-row="0"]').getAttribute('class'), 'animation-pane-row is-selected')
+    await command('animationTrigger').selectOption('withPrev')
+    await command('animationDuration').fill('1200'); await command('animationDuration').blur()
+    assert.match(await page.locator('[data-animation-row="0"] .animation-pane-detail').textContent(), /与上一动画同时 · 1\.20 秒/)
+    await page.locator('[data-animation-row="0"] .animation-pane-select').click()
+    await page.locator('[data-animation-row="3"] button[title="删除"]').click()
+    assert.equal((await rows()).length, 3)
+    await page.locator('[data-source-action="onUndo"]').click()
+    assert.equal((await rows()).length, 4)
+    await page.locator('[data-source-action="onRedo"]').click()
+    assert.equal((await rows()).length, 3)
+    if (process.env.PPTX_SMOKE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_SMOKE_SCREENSHOT })
   } else if (smokeMode === 'paragraph-lists') {
     const target = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     await page.locator('#object-select').selectOption(target.id)
@@ -450,6 +503,16 @@ try {
       slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.editable && item.text.trim()).id,
       effect: 'flyIn', trigger: 'afterPrev', durationMs: 1250, delayMs: 300, direction: 'right', append: true,
     }])
+  } else if (smokeMode === 'animation-pane') {
+    const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
+    const zoom = inspected.slides[0].animations[1]
+    assert.deepEqual(operation.animations, [])
+    assert.deepEqual(operation.animationSequences, [{ slideIndex: 0, items: [
+      { source: 1, spid: zoom.spid, effect: 'zoom', trigger: 'withPrev', durationMs: 1200 },
+      { elementId: body.id, effect: 'flyIn', trigger: 'onClick', durationMs: 500, delayMs: 0, direction: 'left', paragraph: 0 },
+      { elementId: other.id, effect: 'motionPath', trigger: 'onClick', durationMs: 2000, delayMs: 0, motionPath: 'M 0 0 L 0.12 -0.12 L 0.24 0.12 L 0.36 0' },
+    ] }])
   } else if (smokeMode === 'paragraph-lists') {
     assert.deepEqual(operation.paragraphFormatting.filter(record => record.indentDelta != null).map(record => record.indentDelta), [1, -1])
     assert.ok(operation.paragraphFormatting.some(record => record.bulletChar === '😀'))
@@ -551,6 +614,15 @@ try {
       elementId: operation.animations[0].elementId, effect: 'flyIn', trigger: 'afterPrev',
       durationMs: 1250, delayMs: 300, direction: 'right',
     }])
+  } else if (smokeMode === 'animation-pane') {
+    // 重开回读：缩放保留并改为“同时/1200ms”，正文第 1 段自左飞入，另一对象沿锯齿路径；原淡入已移除。
+    const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
+    assert.deepEqual(reopened.slides[0].animations.map(({ spid, ...animation }) => animation), [
+      { elementId: other.id, effect: 'zoom', trigger: 'withPrev', durationMs: 1200, delayMs: 0 },
+      { elementId: body.id, effect: 'flyIn', trigger: 'onClick', durationMs: 500, delayMs: 0, direction: 'left', paragraph: 0 },
+      { elementId: other.id, effect: 'motionPath', trigger: 'onClick', durationMs: 2000, delayMs: 0, motionPath: 'M 0 0 L 0.12 -0.12 L 0.24 0.12 L 0.36 0' },
+    ])
   } else if (smokeMode === 'paragraph-lists') {
     const original = JSON.parse(runPython({ mode: 'inspect', bytes: sourceBytes.toString('base64') }))
     assert.deepEqual(reopened.pythonPptxParagraphs[1], original.pythonPptxParagraphs[1])

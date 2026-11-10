@@ -13,10 +13,11 @@ import { createSlidesChartTools } from './slides-chart-tools'
 import { createSlidesNativeRibbon, stepNativeFontSize, type NativeSlidesContext, type NativeSlidesRibbon } from './slides-native-ribbon'
 import type { NativeDraft } from './native-draft'
 import { openSlidesSizeDialog } from './slides-size-dialog'
+import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, isSourceItem, itemElementId, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, MOTION_PATHS, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
 type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; tableCells?: (string | null)[][]; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
-type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
+type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
 type DeckSlide = { slideIndex: number; headerFooter?: { footer: string | null; slideNum: boolean; date: string | null }; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
@@ -47,7 +48,7 @@ type NewSlide = { layoutFrom: number } | { duplicateOf: number } | { withLayout:
 type SlideChanges = {
   edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; headerFooter?: HeaderFooterSetting; tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]; charts?: ChartEdit[]; smartArts?: SmartArtEdit[]; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
-  transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
+  transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]; animationSequences?: { slideIndex: number; items: SequenceItem[] }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
   textBoxes?: Omit<TextBoxEdit, 'watermark'>[]; deletions?: { slideIndex: number; elementId: string }[]
 }
@@ -226,8 +227,73 @@ tableDialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListen
 })
 tableDialog.showModal()
 }
+function paragraphCount(element: DeckElement) { return element.paragraphFormatting?.length ?? element.paragraphAlignments?.length ?? (element.text ? element.text.split('\n').length : 0) }
+function sourceAnimations(): SourceAnimation[] { return isNewSlide(selectedSlide) ? [] : deck.slides[selectedSlide]?.animations ?? [] }
+/** 新增页保存重开前没有可寻址对象，不能编辑动画。 */
+function animationUnavailable() { return locked() || isNewSlide(selectedSlide) }
+/** 当前页的动画列表：已有整页序列则用它，否则由来源动画与尚未保存的逐条修改推导（不写入草稿）。 */
+function currentSequence(): SequenceItem[] {
+  return animationSequences.get(selectedSlide) ?? initialSequence(sourceAnimations(), animationEdits.filter(item => item.slideIndex === selectedSlide).map(({ slideIndex: _slideIndex, ...rest }) => rest))
+}
+function updateSequence(change: (items: SequenceItem[]) => SequenceItem[]) {
+  if (animationUnavailable()) return
+  try {
+    const before = currentSequence(), next = change(before)
+    if (next === before) return
+    // 首次整页编辑时把本页逐条修改折叠进序列，避免同页两种写法并存（桥接会拒绝）。
+    for (let index = animationEdits.length - 1; index >= 0; index--) if (animationEdits[index]!.slideIndex === selectedSlide) animationEdits.splice(index, 1)
+    if (sequenceUnchanged(next, sourceAnimations())) animationSequences.delete(selectedSlide)
+    else animationSequences.set(selectedSlide, next)
+    if (selectedAnimationRow >= next.length) selectedAnimationRow = -1
+    markDirty()
+  } catch (error) { statusMessage.textContent = error instanceof Error ? error.message : String(error) }
+}
+const animationPane = document.createElement('section')
+animationPane.className = 'slides-animation-pane'; animationPane.setAttribute('aria-label', '动画窗格'); animationPane.hidden = true
+root.querySelector('.slides-inspector')!.prepend(animationPane)
+/** 固定源 AnimationPane：当前页动画顺序列表，选择/上移/下移/删除；计时由 Ribbon 计时组修改选中行。 */
+function renderAnimationPane() {
+  animationPane.hidden = !animationPaneOpen
+  if (!animationPaneOpen) return
+  const items = currentSequence(), source = sourceAnimations(), steps = stepNumbers(items, source), slide = slideAt(selectedSlide)
+  const heading = document.createElement('div'); heading.className = 'inspector-heading'; heading.textContent = `动画 · 第 ${order.indexOf(selectedSlide) + 1} 页`
+  const list = document.createElement('ol'); list.className = 'animation-pane-list'
+  const disabled = animationUnavailable()
+  items.forEach((item, index) => {
+    const row = resolvedItem(item, source), element = slide.elements.find(candidate => candidate.id === row.elementId)
+    const entry = document.createElement('li'); entry.className = 'animation-pane-row'; entry.dataset.animationRow = String(index)
+    if (index === selectedAnimationRow) entry.classList.add('is-selected')
+    const select = document.createElement('button'); select.type = 'button'; select.className = 'animation-pane-select'; select.setAttribute('aria-pressed', String(index === selectedAnimationRow))
+    const targetName = element ? element.name || element.text.split('\n')[0]?.slice(0, 24) || element.type : '对象已不存在'
+    const seconds = (value: number) => (value / 1000).toFixed(2)
+    select.textContent = `${steps[index] || '·'} ${EFFECT_LABELS[row.effect] ?? row.effect} · ${targetName}${row.paragraph !== undefined ? ` · 第 ${row.paragraph + 1} 段` : ''}`
+    select.title = `${TRIGGER_LABELS[row.trigger]} · ${seconds(row.durationMs)} 秒${row.delayMs ? ` · 延迟 ${seconds(row.delayMs)} 秒` : ''}${row.readonlyTiming ? ' · 原样保留的预设效果，只能移动或删除' : ''}`
+    select.addEventListener('click', () => { selectedAnimationRow = selectedAnimationRow === index ? -1 : index; renderInspector() })
+    const detail = document.createElement('span'); detail.className = 'animation-pane-detail'; detail.textContent = `${TRIGGER_LABELS[row.trigger]} · ${seconds(row.durationMs)} 秒`
+    const action = (label: string, title: string, run: () => void, off: boolean) => {
+      const control = document.createElement('button'); control.type = 'button'; control.textContent = label; control.title = title; control.setAttribute('aria-label', `${title}：第 ${index + 1} 条动画`); control.disabled = disabled || off
+      control.addEventListener('click', run); return control
+    }
+    const move = (direction: -1 | 1) => () => {
+      updateSequence(current => moveSequenceItem(current, index, direction))
+      if (selectedAnimationRow === index) selectedAnimationRow = index + direction
+      else if (selectedAnimationRow === index + direction) selectedAnimationRow = index
+      renderInspector()
+    }
+    const actions = document.createElement('span'); actions.className = 'animation-pane-actions'
+    actions.append(action('↑', '上移', move(-1), index === 0), action('↓', '下移', move(1), index === items.length - 1), action('✕', '删除', () => {
+      updateSequence(current => deleteSequenceItem(current, index))
+      selectedAnimationRow = selectedAnimationRow === index ? -1 : selectedAnimationRow > index ? selectedAnimationRow - 1 : selectedAnimationRow
+      renderInspector()
+    }, false))
+    entry.append(select, detail, actions); list.append(entry)
+  })
+  const empty = document.createElement('p'); empty.className = 'animation-pane-empty'
+  empty.textContent = isNewSlide(selectedSlide) ? NEW_SLIDE_REASON : items.length ? '选中一条动画后，可用“计时”组修改触发方式、时长与延迟。' : '本页还没有动画。选择对象后在“动画”选项卡添加。'
+  animationPane.replaceChildren(heading, list, empty)
+}
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
-  return [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex)
+  return [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex)
     || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...chartEdits, ...smartArtEdits].some(item => item.slideIndex === slideIndex)
     || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
     || (!ignoreNewSlideSources && newSlides.some(item => newSlideSource(item) === slideIndex))
@@ -311,6 +377,11 @@ const deletions = new Map<string, { slideIndex: number; elementId: string; label
 const edits = new Map<string, Edit>()
 const imageEdits: ImageEdit[] = []
 const animationEdits: AnimationEdit[] = []
+/** 整页动画序列（动画窗格/无/动作路径/按段）；键为来源页序号。 */
+const animationSequences = new Map<number, SequenceItem[]>()
+let animationPaneOpen = false
+let selectedAnimationRow = -1
+let animationByParagraph = false
 const transitionEdits = new Map<number, SlideTransition>()
 const layoutEdits = new Map<number, string>()
 let slideSizeEdit: { cx: number; cy: number } | undefined
@@ -439,6 +510,7 @@ function slideChanges(): SlideChanges {
   return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
     order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(tableCellEdits.size ? { tableCells: [...tableCellEdits.values()].map(item => ({ ...item })) } : {}), ...(chartEdits.length ? { charts: chartEdits.map(item => structuredClone(item)) } : {}), ...(smartArtEdits.length ? { smartArts: smartArtEdits.map(item => structuredClone(item)) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
+    ...(animationSequences.size ? { animationSequences: [...animationSequences].map(([slideIndex, items]) => ({ slideIndex, items: items.map(item => ({ ...item })) })) } : {}),
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
     textBoxes: textBoxEdits.map(({ watermark: _watermark, ...box }) => box),
@@ -448,7 +520,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft() {
   if (!nativeDraft) return
   const operations = nativeDraft.operations
-  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -499,6 +571,15 @@ function restoreNativeDraft() {
   } catch (error) {
     throw new Error(`${error instanceof Error ? error.message : '段落操作无效'}；原草稿已保留`)
   }
+  const restoredSequences = changes.animationSequences ?? []
+  try {
+    if (!Array.isArray(restoredSequences) || new Set(restoredSequences.map(item => item?.slideIndex)).size !== restoredSequences.length) throw new Error('动画序列无效')
+    for (const item of restoredSequences) {
+      const slide = deck.slides[item.slideIndex]
+      if (!slide || Object.keys(item).sort().join() !== 'items,slideIndex' || (changes.animations ?? []).some(edit => edit.slideIndex === item.slideIndex)) throw new Error('动画序列无效')
+      validateSequence(item.items, slide.animations ?? [], slide.elements.map(element => ({ id: element.id, type: element.type, paragraphs: paragraphCount(element) })))
+    }
+  } catch (error) { throw new Error(`${error instanceof Error ? error.message : '动画序列无效'}；原草稿已保留`) }
   edits.clear(); textFormattingEdits.clear(); paragraphFormattingEdits.splice(0); transitionEdits.clear(); layoutEdits.clear(); backgroundEdits.clear(); deletions.clear()
   for (const edit of changes.edits ?? []) {
     const key = editKey(edit.slideIndex, edit.elementId)
@@ -518,6 +599,8 @@ function restoreNativeDraft() {
     deletions.set(editKey(deletion.slideIndex, deletion.elementId), { ...deletion, label: element?.name || element?.text || deletion.elementId })
   }
   animationEdits.splice(0, animationEdits.length, ...(changes.animations ?? []))
+  animationSequences.clear(); for (const item of restoredSequences) animationSequences.set(item.slideIndex, item.items.map(entry => ({ ...entry })))
+  selectedAnimationRow = -1
   textBoxEdits.splice(0, textBoxEdits.length, ...(changes.textBoxes ?? []).map(box => ({ ...box, watermark: box.rotation === -25 })))
   newSlides.splice(0, newSlides.length, ...restoredNew.map((item): NewSlide => 'duplicateOf' in item ? { duplicateOf: item.duplicateOf } : 'withLayout' in item ? { withLayout: item.withLayout } : { layoutFrom: item.layoutFrom }))
   deletedSlides.clear(); for (const index of restoredDeleted) deletedSlides.add(index)
@@ -684,7 +767,17 @@ function renderInspector() {
   animationDirection = (existingAnimation?.direction as AnimationDirection | undefined) ?? 'bottom'
   animationAdd.disabled = !element?.editable
   animationState.textContent = existingAnimation ? `已有 ${existingAnimation.effect} 动画，可继续添加。` : ''
-  root.querySelector('.inspector-heading')!.textContent = `对象 · 第 ${order.indexOf(selectedSlide) + 1} 页`
+  renderAnimationPane()
+  const selectedRow = selectedAnimationRow >= 0 ? currentSequence()[selectedAnimationRow] : undefined
+  if (selectedRow) {
+    // 窗格选中行时，计时控件显示并修改该动画（固定源 timingIdx）。
+    const row = resolvedItem(selectedRow, sourceAnimations())
+    animationTrigger.value = row.trigger; animationDuration.value = String(row.durationMs); animationDelay.value = String(row.delayMs)
+    animationDurationMs = row.durationMs; animationDelayMs = row.delayMs
+  } else selectedAnimationRow = -1
+  nativeRibbon?.setValue('toggleAnimationPane', String(animationPaneOpen))
+  nativeRibbon?.setValue('animationByParagraph', String(animationByParagraph))
+  root.querySelector('.slides-inspector > .inspector-heading')!.textContent = `对象 · 第 ${order.indexOf(selectedSlide) + 1} 页`
   nativeRibbon?.setValue('theme', selectedTheme ?? '')
   const transitionReason = transitionEditUnavailable()
   transitionSelect.disabled = locked() || transitionReason !== null
@@ -1026,17 +1119,49 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'shapeGeometry': currentGeometryInputs()[0]?.focus(); root.querySelector('.geometry-heading')?.scrollIntoView({ block: 'nearest' }); return
       case 'animationEffect': animationEffect.value = String(value); nativeRibbon?.setValue(command, String(value)); return
       case 'animationDirection': animationDirection = value as AnimationDirection; return
-      case 'animationTrigger': animationTrigger.value = String(value) as AnimationTrigger; return
+      // 固定源 onAnimTiming：计时控件绑定到窗格选中的动画；未选中时作为下一条新增动画的计时。
+      case 'animationTrigger':
+        animationTrigger.value = String(value) as AnimationTrigger
+        if (selectedAnimationRow >= 0) { updateSequence(items => patchSequenceTiming(items, sourceAnimations(), selectedAnimationRow, { trigger: animationTrigger.value as AnimationTrigger })); break }
+        return
       case 'animationDuration':
-        animationDurationMs = Math.max(1, Math.min(120000, Number(value) || 500))
+        animationDurationMs = Math.max(selectedAnimationRow >= 0 ? 0 : 1, Math.min(120000, Math.round(Number(value)) || (selectedAnimationRow >= 0 ? 0 : 500)))
         animationDuration.value = String(animationDurationMs)
+        if (selectedAnimationRow >= 0) { updateSequence(items => patchSequenceTiming(items, sourceAnimations(), selectedAnimationRow, { durationMs: animationDurationMs })); break }
         return
       case 'animationDelay':
-        animationDelayMs = Math.max(0, Math.min(120000, Number(value) || 0))
+        animationDelayMs = Math.max(0, Math.min(120000, Math.round(Number(value)) || 0))
         animationDelay.value = String(animationDelayMs)
+        if (selectedAnimationRow >= 0) { updateSequence(items => patchSequenceTiming(items, sourceAnimations(), selectedAnimationRow, { delayMs: animationDelayMs })); break }
         return
+      case 'toggleAnimationPane': animationPaneOpen = !animationPaneOpen; if (!animationPaneOpen) selectedAnimationRow = -1; break
+      case 'animationByParagraph': animationByParagraph = !animationByParagraph; break
+      case 'animationNone': {
+        // 固定源 applyAnimation('none')：移除所选对象的全部动画。
+        const target = currentElement()
+        if (!target?.editable || animationUnavailable()) break
+        const before = currentSequence().length
+        for (let index = animationEdits.length - 1; index >= 0; index--) if (animationEdits[index]!.slideIndex === selectedSlide && animationEdits[index]!.elementId === target.id) animationEdits.splice(index, 1)
+        updateSequence(items => removeElementAnimations(items, sourceAnimations(), target.id))
+        if (before === currentSequence().length) statusMessage.textContent = '所选对象没有动画'
+        break
+      }
+      case 'motionPathRight': case 'motionPathDown': case 'motionPathDiagonal': case 'motionPathCircle': case 'motionPathZigzag': {
+        const target = currentElement()
+        if (!target?.editable || animationUnavailable()) break
+        updateSequence(items => appendAnimation(items, motionPathAnimation(target.id, command)))
+        break
+      }
       case 'addAnimation':
         if (!currentElement()?.editable) break
+        if (animationSequences.has(selectedSlide) || animationByParagraph) {
+          if (animationUnavailable()) break
+          const target = currentElement()!
+          updateSequence(items => appendAnimation(items, { elementId: target.id, effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger,
+            durationMs: selectedAnimationRow >= 0 ? defaultAnimationDuration(animationEffect.value) : animationDurationMs, delayMs: selectedAnimationRow >= 0 ? 0 : animationDelayMs,
+            ...(['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(animationEffect.value) ? { direction: animationDirection } : {}) }, animationByParagraph ? paragraphCount(target) : 0))
+          break
+        }
         animationEdits.push({ slideIndex: selectedSlide, elementId: selectedElement,
           effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger,
           durationMs: animationDurationMs, delayMs: animationDelayMs, append: true,
@@ -1119,6 +1244,12 @@ layoutSelect.addEventListener('change', () => {
 })
 animationAdd.addEventListener('click', () => {
   if (!currentElement()) return
+  if (animationSequences.has(selectedSlide)) {
+    const target = currentElement()!
+    updateSequence(items => appendAnimation(items, { elementId: target.id, effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger, durationMs: Math.max(0, Math.round(Number(animationDuration.value)) || 500), delayMs: Math.max(0, Math.round(Number(animationDelay.value)) || 0) }))
+    renderInspector()
+    return
+  }
   animationEdits.push({
     slideIndex: selectedSlide,
     elementId: selectedElement,
@@ -1258,6 +1389,7 @@ objectDelete.addEventListener('click', () => {
   for (let index = animationEdits.length - 1; index >= 0; index--) {
     if (editKey(animationEdits[index]!.slideIndex, animationEdits[index]!.elementId) === key) animationEdits.splice(index, 1)
   }
+  if (animationSequences.has(selectedSlide)) { animationSequences.set(selectedSlide, removeElementAnimations(animationSequences.get(selectedSlide)!, slideAt(selectedSlide)?.animations ?? [], element.id)); selectedAnimationRow = -1 }
   deletions.set(key, { slideIndex: selectedSlide, elementId: element.id, label: element.name || element.text.split('\n')[0]?.slice(0, 30) || element.type })
   selectedElement = ''
   undoSnapshot = undefined
@@ -1467,6 +1599,7 @@ const save = async () => {
     renderCanvas()
     imageEdits.splice(0, imageEdits.length)
     animationEdits.splice(0, animationEdits.length)
+    animationSequences.clear(); selectedAnimationRow = -1
     transitionEdits.clear()
     layoutEdits.clear()
     slideSizeEdit = undefined

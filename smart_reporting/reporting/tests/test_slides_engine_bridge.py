@@ -1013,3 +1013,86 @@ def test_slides_bridge_rejects_invalid_smartart(tmp_path: Path):
         with pytest.raises(subprocess.CalledProcessError):
             _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "smartArts": [{**base, **patch}]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def _multi_paragraph_deck(path: Path) -> None:
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    body = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(2)).text_frame
+    body.text = '第一段'
+    for text in ('第二段', '第三段'):
+        body.add_paragraph().text = text
+    slide.shapes.add_textbox(Inches(1), Inches(4), Inches(5), Inches(1)).text_frame.text = '标题'
+    deck.save(path)
+
+
+def test_slides_bridge_animation_sequence_reorders_deletes_retimes_and_adds_paths_and_paragraphs(tmp_path: Path):
+    source, animated, output = tmp_path / 'source.pptx', tmp_path / 'animated.pptx', tmp_path / 'sequenced.pptx'
+    _multi_paragraph_deck(source)
+    slide = _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]
+    body, title = (element['id'] for element in slide['elements'][:2])
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(animated), 'animations': [
+        {'slideIndex': 0, 'elementId': body, 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0},
+        {'slideIndex': 0, 'elementId': title, 'effect': 'zoom', 'trigger': 'onClick', 'durationMs': 600, 'delayMs': 0, 'append': True},
+        {'slideIndex': 0, 'elementId': title, 'effect': 'pulse', 'trigger': 'afterPrev', 'durationMs': 1000, 'delayMs': 0, 'append': True},
+    ]}, tmp_path)
+    existing = _invoke({'action': 'inspect', 'input': str(animated)}, tmp_path)['slides'][0]['animations']
+    ref = lambda index, **patch: {'source': index, 'spid': existing[index]['spid'], 'effect': existing[index]['effect'], **patch}
+    _invoke({'action': 'edit', 'input': str(animated), 'output': str(output), 'animationSequences': [{'slideIndex': 0, 'items': [
+        ref(1, trigger='withPrev', durationMs=1200, delayMs=250),  # 上移并改计时
+        ref(0),                                                    # 原第 1 条下移；原第 3 条（pulse）删除
+        {'elementId': title, 'effect': 'motionPath', 'trigger': 'onClick', 'durationMs': 2000, 'delayMs': 0, 'motionPath': 'M 0 0 L 0.12 -0.12 L 0.24 0.12 L 0.36 0'},
+        *({'elementId': body, 'effect': 'flyIn', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0, 'direction': 'left', 'paragraph': index} for index in range(3)),
+    ]}]}, tmp_path)
+    animations = _invoke({'action': 'inspect', 'input': str(output)}, tmp_path)['slides'][0]['animations']
+    assert [(item['elementId'], item['effect'], item['trigger'], item['durationMs'], item['delayMs'], item.get('paragraph'), item.get('direction')) for item in animations] == [
+        (title, 'zoom', 'withPrev', 1200, 250, None, None),
+        (body, 'fade', 'onClick', 500, 0, None, None),
+        (title, 'motionPath', 'onClick', 2000, 0, None, None),
+        (body, 'flyIn', 'onClick', 500, 0, 0, 'left'),
+        (body, 'flyIn', 'onClick', 500, 0, 1, 'left'),
+        (body, 'flyIn', 'onClick', 500, 0, 2, 'left'),
+    ]
+    assert animations[2]['motionPath'].startswith('M 0 0 L 0.12')
+    with ZipFile(output) as archive:
+        xml = archive.read('ppt/slides/slide1.xml').decode()
+    assert all(f'<p:pgRg st="{index}" end="{index}"/>' in xml for index in range(3)) and 'build="p"' in xml and '<p:animMotion' in xml
+    # 空列表 = “无”：移除本页全部动画
+    cleared = tmp_path / 'cleared.pptx'
+    _invoke({'action': 'edit', 'input': str(output), 'output': str(cleared), 'animationSequences': [{'slideIndex': 0, 'items': []}]}, tmp_path)
+    assert _invoke({'action': 'inspect', 'input': str(cleared)}, tmp_path)['slides'][0]['animations'] == []
+
+
+@pytest.mark.parametrize('items', [
+    [{'source': 0, 'spid': 999, 'effect': 'fade'}],
+    [{'source': 0, 'spid': None, 'effect': 'zoom'}],
+    [{'source': 7, 'spid': 1, 'effect': 'fade'}],
+    [{'source': 0, 'spid': None, 'effect': 'fade'}, {'source': 0, 'spid': None, 'effect': 'fade'}],
+    [{'elementId': 'BODY', 'effect': 'motionPath', 'trigger': 'onClick', 'durationMs': 2000, 'delayMs': 0, 'motionPath': 'M 0 0 L 9 9'}],
+    [{'elementId': 'BODY', 'effect': 'motionPath', 'trigger': 'onClick', 'durationMs': 2000, 'delayMs': 0}],
+    [{'elementId': 'BODY', 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0, 'paragraph': 3}],
+    [{'elementId': 'BODY', 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0, 'direction': 'left'}],
+    [{'elementId': 'BODY', 'effect': 'mediaPlay', 'trigger': 'onClick', 'durationMs': 0, 'delayMs': 0}],
+    [{'elementId': 'BODY', 'effect': 'fade', 'trigger': 'onHover', 'durationMs': 500, 'delayMs': 0}],
+    [{'elementId': 'BODY', 'effect': 'fade', 'trigger': 'onClick', 'durationMs': -1, 'delayMs': 0}],
+    [{'elementId': 'missing', 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0}],
+])
+def test_slides_bridge_rejects_invalid_animation_sequences_without_output(tmp_path: Path, items):
+    source, animated, output = tmp_path / 'source.pptx', tmp_path / 'animated.pptx', tmp_path / 'never.pptx'
+    _multi_paragraph_deck(source)
+    body = _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'][0]['id']
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(animated), 'animations': [
+        {'slideIndex': 0, 'elementId': body, 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0}]}, tmp_path)
+    spid = _invoke({'action': 'inspect', 'input': str(animated)}, tmp_path)['slides'][0]['animations'][0]['spid']
+    payload = json.loads(json.dumps(items).replace('"BODY"', json.dumps(body)).replace('"spid": null', f'"spid": {spid}'))
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(animated), 'output': str(output), 'animationSequences': [{'slideIndex': 0, 'items': payload}]}, tmp_path)
+    assert not output.exists()
+    # 同页不能同时追加与覆盖；删除对象的动画不能保留
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(animated), 'output': str(output), 'animationSequences': [{'slideIndex': 0, 'items': []}],
+                 'animations': [{'slideIndex': 0, 'elementId': body, 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0, 'append': True}]}, tmp_path)
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(animated), 'output': str(output), 'deletions': [{'slideIndex': 0, 'elementId': body}],
+                 'animationSequences': [{'slideIndex': 0, 'items': [{'source': 0, 'spid': spid, 'effect': 'fade'}]}]}, tmp_path)
+    assert not output.exists()

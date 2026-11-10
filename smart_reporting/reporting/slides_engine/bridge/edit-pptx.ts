@@ -30,6 +30,21 @@ type TextBox = {
   outline?: { color: string; widthEmu: number }
   wordArt?: boolean
 }
+/** 固定源 Ribbon MOTION_PATHS（右直线、下直线、对角线、圆形、锯齿），坐标相对幻灯片宽高。 */
+const MOTION_PATH_PRESETS: readonly string[] = [
+  'M 0 0 L 0.25 0',
+  'M 0 0 L 0 0.25',
+  'M 0 0 L 0.25 0.25',
+  'M 0 0 C 0.069 0 0.125 0.056 0.125 0.125 C 0.125 0.194 0.069 0.25 0 0.25 C -0.069 0.25 -0.125 0.194 -0.125 0.125 C -0.125 0.056 -0.069 0 0 0 Z',
+  'M 0 0 L 0.12 -0.12 L 0.24 0.12 L 0.36 0',
+]
+type AnimationTiming = { trigger?: SlideAnimation['trigger']; durationMs?: number; delayMs?: number }
+type AnimationSequenceItem =
+  | ({ source: number; spid: number; effect: SlideAnimation['effect'] } & AnimationTiming)
+  | { elementId: string; effect: SlideAnimation['effect']; trigger: SlideAnimation['trigger']; durationMs: number; delayMs: number; direction?: SlideAnimation['direction']; motionPath?: string; paragraph?: number }
+const NEW_ANIMATION_EFFECTS = new Set(['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'motionPath'])
+const validTiming = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 120000
+
 type Input = {
   action: 'inspect' | 'edit'
   input: string
@@ -80,6 +95,11 @@ type Input = {
     direction?: SlideAnimation['direction']
     append?: boolean
   }[]
+  /**
+   * 固定源 setAnimations：整页动画列表覆盖写（动画窗格移动/删除/计时、无、动作路径、按段）。
+   * `source` 引用本页读取到的原有动画序号（原样保留，含无法建模的预设 XML）；其余为新增动画。
+   */
+  animationSequences?: { slideIndex: number; items: AnimationSequenceItem[] }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]
   backgrounds?: { slideIndex: number; color: string }[]
   textBoxes?: TextBox[]
@@ -178,7 +198,7 @@ if (request.action === 'inspect') {
       transition: getSlideTransition(slide),
       ...transitionApplyAllState(slide),
       ...transitionEditAvailability(slide.bodySuffix),
-      animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset }) => ({
+      animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset, motionPath, paragraph }) => ({
         spid,
         elementId: slide.elements.find((element) => elementSpid(element) === spid)?.id ?? '',
         effect,
@@ -186,6 +206,8 @@ if (request.action === 'inspect') {
         durationMs,
         delayMs,
         ...(direction ? { direction } : {}),
+        ...(motionPath ? { motionPath } : {}),
+        ...(paragraph !== undefined ? { paragraph } : {}),
         ...(presetXml ? { presetXml } : {}),
         ...(preset ? { preset } : {}),
       })),
@@ -338,7 +360,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -377,6 +399,42 @@ if (request.action === 'inspect') {
       || (style.stroke !== undefined && style.stroke !== null && (typeof style.stroke !== 'object' || Object.keys(style.stroke).some(key => !['color', 'widthPt'].includes(key)) || typeof style.stroke.color !== 'string' || !colorPattern.test(style.stroke.color) || !Number.isFinite(style.stroke.widthPt) || style.stroke.widthPt <= 0 || style.stroke.widthPt > 100))
       || touchesDeleted(style.slideIndex, style.elementId) || styled.has(`${style.slideIndex}:${style.elementId}`)) throw new Error('shape_style_invalid')
     styled.add(`${style.slideIndex}:${style.elementId}`)
+  }
+  const sequences = request.animationSequences ?? []
+  if (!Array.isArray(sequences) || sequences.length > slideCount) throw new Error('animation_sequences_invalid')
+  const sequencedSlides = new Set<number>()
+  for (const sequence of sequences) {
+    if (!sequence || typeof sequence !== 'object' || Object.keys(sequence).sort().join() !== 'items,slideIndex' || !validSlideIndex(sequence.slideIndex, slideCount)
+      || sequencedSlides.has(sequence.slideIndex) || !Array.isArray(sequence.items) || sequence.items.length > 500) throw new Error('animation_sequence_invalid')
+    sequencedSlides.add(sequence.slideIndex)
+    // 同一页不能同时使用逐条追加（animations）与整页覆盖（animationSequences）
+    if ((request.animations ?? []).some(item => item.slideIndex === sequence.slideIndex)) throw new Error('animation_sequence_conflict')
+    const slide = originalSlides[sequence.slideIndex]!
+    const existing = getSlideAnimations(slide)
+    const usedSources = new Set<number>()
+    for (const item of sequence.items) {
+      if (!item || typeof item !== 'object') throw new Error('animation_sequence_item_invalid')
+      const timing = (value: AnimationTiming) => (value.trigger === undefined || ['onClick', 'withPrev', 'afterPrev'].includes(value.trigger))
+        && (value.durationMs === undefined || validTiming(value.durationMs)) && (value.delayMs === undefined || validTiming(value.delayMs))
+      if ('source' in item) {
+        const source = existing[item.source]
+        if (Object.keys(item).some(key => !['source', 'spid', 'effect', 'trigger', 'durationMs', 'delayMs'].includes(key)) || !Number.isInteger(item.source) || !source
+          || usedSources.has(item.source) || source.spid !== item.spid || source.effect !== item.effect || !timing(item)) throw new Error('animation_sequence_source_invalid')
+        // 原样保留的预设（presetXml）计时写在原始 XML 内，修改会被静默忽略：拒绝而不是假装生效
+        if (source.presetXml && (item.trigger !== undefined || item.durationMs !== undefined || item.delayMs !== undefined)) throw new Error('animation_sequence_preset_readonly')
+        const owner = slide.elements.find(element => elementSpid(element) === source.spid)
+        if (owner && touchesDeleted(sequence.slideIndex, owner.id)) throw new Error('delete_target_has_pending_edits')
+        usedSources.add(item.source)
+        continue
+      }
+      if (Object.keys(item).some(key => !['elementId', 'effect', 'trigger', 'durationMs', 'delayMs', 'direction', 'motionPath', 'paragraph'].includes(key))
+        || typeof item.elementId !== 'string' || !NEW_ANIMATION_EFFECTS.has(item.effect) || item.trigger === undefined || !timing(item) || !validTiming(item.durationMs) || !validTiming(item.delayMs)
+        || (item.direction !== undefined && (!['top', 'bottom', 'left', 'right'].includes(item.direction) || !['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(item.effect)))
+        || ((item.effect === 'motionPath') !== (item.motionPath !== undefined)) || (item.motionPath !== undefined && !MOTION_PATH_PRESETS.includes(item.motionPath))) throw new Error('animation_sequence_item_invalid')
+      const element = slide.elements.find(candidate => candidate.id === item.elementId)
+      if (!element || elementSpid(element) === null || (element.type !== 'text' && element.type !== 'shape') || touchesDeleted(sequence.slideIndex, item.elementId)) throw new Error('animation_target_invalid')
+      if (item.paragraph !== undefined && (!Number.isInteger(item.paragraph) || item.paragraph < 0 || item.paragraph >= ((element as { text?: { paragraphs: unknown[] } }).text?.paragraphs.length ?? 0) || item.effect === 'motionPath')) throw new Error('animation_paragraph_invalid')
+    }
   }
   if ((request.edits ?? []).some((edit) => touchesDeleted(edit.slideIndex, edit.elementId)) ||
     (request.animations ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId)) ||
@@ -497,6 +555,24 @@ if (request.action === 'inspect') {
     if (index >= 0) existing[index] = updated
     else existing.push(updated)
     setSlideAnimations(slide, existing)
+  }
+  for (const sequence of request.animationSequences ?? []) {
+    const slide = opened.deck.slides[sequence.slideIndex]!
+    const existing = getSlideAnimations(slide)
+    const next: SlideAnimation[] = sequence.items.map(item => {
+      if ('source' in item) {
+        const source = existing[item.source]!
+        return { ...source, ...(item.trigger !== undefined ? { trigger: item.trigger } : {}), ...(item.durationMs !== undefined ? { durationMs: item.durationMs } : {}), ...(item.delayMs !== undefined ? { delayMs: item.delayMs } : {}) }
+      }
+      const element = slide.elements.find(candidate => candidate.id === item.elementId)!
+      return {
+        spid: elementSpid(element)!, effect: item.effect, trigger: item.trigger, durationMs: item.durationMs, delayMs: item.delayMs,
+        ...(item.direction !== undefined ? { direction: item.direction } : {}),
+        ...(item.motionPath !== undefined ? { motionPath: item.motionPath } : {}),
+        ...(item.paragraph !== undefined ? { paragraph: item.paragraph } : {}),
+      }
+    })
+    if (JSON.stringify(next) !== JSON.stringify(existing)) setSlideAnimations(slide, next)
   }
   for (const deletion of deletions) {
     if (!deleteElement(opened, originalSlides[deletion.slideIndex]!, deletion.elementId)) throw new Error('delete_target_invalid')

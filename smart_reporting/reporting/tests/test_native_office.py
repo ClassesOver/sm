@@ -215,6 +215,31 @@ def test_real_pptx_animation_append_preserves_order_and_timing_on_readback():
     ]
 
 
+def test_real_pptx_animation_sequence_overwrites_page_list_and_rejects_bad_shapes():
+    from smart_reporting.report_editor.native_office import inspect_office,patch_office
+
+    content = presentation_bytes()
+    target = next(item for item in inspect_office('pptx', content)['slides'][0]['elements'] if item['editable'] and item['text'].strip())
+    base = {'slideIndex': 0, 'elementId': target['id'], 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0}
+    animated = patch_office('pptx', content, [{'kind': 'editSlides', 'animations': [{**base, 'effect': 'fade'}, {**base, 'effect': 'pulse', 'append': True}]}])
+    existing = inspect_office('pptx', animated)['slides'][0]['animations']
+    path = 'M 0 0 L 0.25 0'
+    edited = patch_office('pptx', animated, [{'kind': 'editSlides', 'animationSequences': [{'slideIndex': 0, 'items': [
+        {'source': 1, 'spid': existing[1]['spid'], 'effect': 'pulse', 'trigger': 'afterPrev', 'delayMs': 200},
+        {'elementId': target['id'], 'effect': 'motionPath', 'trigger': 'onClick', 'durationMs': 2000, 'delayMs': 0, 'motionPath': path},
+    ]}]}])
+    assert [(item['effect'], item['trigger'], item['durationMs'], item['delayMs'], item.get('motionPath')) for item in inspect_office('pptx', edited)['slides'][0]['animations']] == [
+        ('pulse', 'afterPrev', 500, 200, None), ('motionPath', 'onClick', 2000, 0, path),
+    ]
+    for sequences in (
+        [{'slideIndex': 0}], [{'slideIndex': 0, 'items': 'x'}], [{'slideIndex': 0, 'items': ['x']}], [{'slideIndex': 0, 'items': [], 'extra': 1}],
+        [{'slideIndex': 0, 'items': []}, {'slideIndex': 0, 'items': []}],
+        [{'slideIndex': 0, 'items': [{'source': 0, 'spid': -1, 'effect': 'fade'}]}],
+    ):
+        with pytest.raises(ValueError):
+            patch_office('pptx', animated, [{'kind': 'editSlides', 'animationSequences': sequences}])
+
+
 def test_real_pptx_selected_text_formatting_roundtrips_through_inspect():
     from smart_reporting.report_editor.native_office import inspect_office,patch_office
     content = presentation_bytes()

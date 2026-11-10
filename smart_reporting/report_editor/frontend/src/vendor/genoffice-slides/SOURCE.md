@@ -71,3 +71,11 @@ strings substituted for the i18n keys. Insert ▸ Chart uses it with the pinned 
 2026-11-10: `components/smartart-gallery-data.ts` adapts the same pinned `insert-presets.ts` `SMARTART_GALLERY`
 (7 layouts, unchanged order and default items) with Simplified Chinese strings; inserted with the same
 `graphicFrameInsertFrame` placement through the pinned engine's `addSmartArt` (1–8 nodes).
+
+2026-11-10: `src/slides-animation-sequence.ts` (outside this directory; behaviour port, no upstream file copied)
+follows the pinned `apps/slides/src/renderer/animation-actions.ts`
+(SHA-256 `d8b6af35e80646ef698a43425db90e48079802823a4fe76cff6eb8303c2274fb`: whole-page overwrite, `animDefaultDur`,
+none / add / motion path / by-paragraph / move / delete / timing), `components/AnimationPane.tsx`
+(`8d55896be2ea47340cce8da9aec43531fa232aa4b2f47520a774098d4c69cefd`: step numbering and row content) and the five
+`MOTION_PATHS` strings in `components/Ribbon.tsx` (`6a261cf18bbdbf2b39fa51add3d30383a10ded4a072303e0012cb7e5cde00aba`),
+copied verbatim. The bridge keeps the same five path strings as its allow-list.
