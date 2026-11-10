@@ -25,6 +25,12 @@
 - 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
 - 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
 
+## 编辑已有表格单元格（固定引擎 editTableCellText）
+
+- 选中表格（对象列表现在包含表格）时，检查面板显示单元格网格，可逐格改字；合并单元格只读。每个改动单元格为一条待保存项，删除表格所在对象时一并撤回。
+- inspect 新增 `tableCells`（合并单元格为 null）；草稿 `tableCells: [{slideIndex, elementId, row, col, text}]`。桥接沿用单元格首段与首个文字段的格式（字号、粗体等）生成新段落，与其他按对象身份的修改一起、在页面重建之前执行；拒绝越界、合并单元格、重复与不存在的表格。
+- 证据：`test_slides_bridge_edits_existing_table_cells_keeping_formatting`（20pt 粗体保留、多行单元格）、`new-slide` 冒烟在夹具 2×2 表格中把“100”改为“120”并回读。
+
 ## 艺术字（固定源 insertWordArt / 共享 WORDART_PRESETS）
 
 - Insert ▸ Text ▸ WordArt 为 12 个固定源预设的选择器（复用已 vendored 的 `packages/ui/src/wordart-presets.ts`，中文名称取固定源语言包）。与固定源 `wordart-insert.ts` 一致：354.6×72.7pt 居中、54pt、居中段落、`wrap="none"` + 随文字调整；占位文字“请在此放置您的文字”，可在待保存清单中改写。

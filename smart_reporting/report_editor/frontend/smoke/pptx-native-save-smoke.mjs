@@ -45,6 +45,9 @@ if payload['mode'] == 'create':
     if payload.get('extraSlide'):
         from pptx.enum.shapes import MSO_SHAPE
         slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(6), Inches(4), Inches(2), Inches(1)).name = 'Fixture Shape'
+        fixture_table = slide.shapes.add_table(2, 2, Inches(1), Inches(5.5), Inches(4), Inches(0.8))
+        fixture_table.name = 'Fixture Table'
+        for (r, c), value in {(0, 0): '项目', (0, 1): '金额', (1, 0): '收入', (1, 1): '100'}.items(): fixture_table.table.cell(r, c).text = value
         extra = presentation.slides.add_slide(presentation.slide_layouts[6])
         extra.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1)).text = 'Second source slide'
     if payload.get('listsSample'):
@@ -259,6 +262,13 @@ try {
     await page.locator('[data-ribbon-tab="shapeFormat"]').click()
     await page.locator('select[data-command="changeShape"]').selectOption('hexagon')
     await page.locator('.structure-pending li').filter({ hasText: '更改为六边形' }).waitFor()
+    // 已有表格单元格改字
+    const fixtureTable = inspected.slides[0].elements.find(item => item.type === 'table')
+    await page.locator('#object-select').selectOption(fixtureTable.id)
+    const cell = page.locator('.table-cell-grid textarea[data-table-cell="1:1"]')
+    assert.equal(await cell.inputValue(), '100')
+    await cell.fill('120'); await cell.dispatchEvent('change')
+    await page.locator('.structure-pending li').filter({ hasText: '表格单元格（2行2列）「120」' }).waitFor()
     // 新增节（固定源 onAddSection）：在来源页前分节，列表显示待写入节标题。
     await page.locator('[data-ribbon-tab="home"]').click()
     await page.locator('[data-command="addSection"][data-source-action="onAddSection"]').click()
@@ -447,6 +457,7 @@ try {
     assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
     assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
     assert.deepEqual(operation.sections, [{ slideIndex: 0, name: '第二部分' }])
+    assert.deepEqual(operation.tableCells, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'table').id, row: 1, col: 1, text: '120' }])
     assert.deepEqual(operation.headerFooter, { footer: '智能报告 · 内部', slideNum: true, date: null, dateAuto: true })
     assert.deepEqual(operation.shapeKinds, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'shape').id, kind: 'hexagon' }])
     assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
@@ -492,7 +503,8 @@ try {
     assert.deepEqual(slides[2].slice(0, 2), [slides[1][0], ['Native browser formatting fixture']])
     assert.equal(slides[1][2], slides[2][2] + 5)
     const table = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[len(s.table.rows),len(s.table.columns)] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
-    assert.deepEqual(JSON.parse(table.stdout), [[4, 3]])
+    // 夹具原有 2×2 表格 + 新插入的 4×3 表格
+    assert.deepEqual(JSON.parse(table.stdout), [[2, 2], [4, 3]])
     const shapeXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "prst=\\"roundRect\\"" in z.read(n).decode() and "C43E1C" in z.read(n).decode()))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(shapeXml.stdout.trim(), '1')
     const fieldXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(z.read(n).decode().count("type=\\"slidenum\\"") for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")))'], { input: downloaded, encoding: 'utf8' })
@@ -507,6 +519,8 @@ try {
     assert.equal(sectionXml.stdout.trim(), "['Default Section', '第二部分']")
     const hfXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in sorted(z.namelist()) if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum("type=\\"ftr\\"" in s and "智能报告 · 内部" in s and "type=\\"sldNum\\"" in s for s in x), len(x))'], { input: downloaded, encoding: 'utf8' })
     assert.equal(hfXml.stdout.trim(), '4 4')
+    const cellText = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.name,[[c.text for c in r.cells] for r in s.table.rows]] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
+    assert.deepEqual(JSON.parse(cellText.stdout).find(([name]) => name === 'Fixture Table')[1], [['项目', '金额'], ['收入', '120']])
   }
   if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))

@@ -13,7 +13,7 @@ import type { NativeDraft } from './native-draft'
 import { openSlidesSizeDialog } from './slides-size-dialog'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; tableCells?: (string | null)[][]; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = { elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string }
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
@@ -41,7 +41,7 @@ type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; st
 type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }
 type NewSlide = { layoutFrom: number } | { duplicateOf: number } | { withLayout: string }
 type SlideChanges = {
-  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; headerFooter?: HeaderFooterSetting; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
+  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; headerFooter?: HeaderFooterSetting; tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
@@ -94,6 +94,9 @@ if (native) for (const panel of root.querySelectorAll<HTMLElement>('.slides-ai, 
 const list = root.querySelector<HTMLOListElement>('.slide-list')!
 const select = root.querySelector<HTMLSelectElement>('#object-select')!
 const textArea = root.querySelector<HTMLTextAreaElement>('#object-text')!
+// 表格单元格编辑：选中表格时在文字框下方显示单元格网格（合并单元格只读）。
+const tableCellEditor = document.createElement('div'); tableCellEditor.className = 'table-cell-editor'; tableCellEditor.hidden = true
+textArea.after(tableCellEditor)
 const preview = root.querySelector<HTMLIFrameElement>('.preview-frame')!
 const stateLabel = root.querySelector<HTMLElement>('.slides-save-state') ?? document.querySelector<HTMLElement>('.save-state-label')!
 const statusMessage = root.querySelector<HTMLElement>('.status-message')!
@@ -157,6 +160,8 @@ const shapeStyleEdits = new Map<string, ShapeStyleEdit>()
 const shapeKindEdits = new Map<string, { slideIndex: number; elementId: string; kind: string }>()
 /** 固定源 onAddSection：在目标页（与 order 相同编号）之前新增节，保存时按最终位置写入。 */
 const sectionEdits: { slideIndex: number; name: string }[] = []
+/** 已有表格单元格改字：键为 页:对象:行:列 */
+const tableCellEdits = new Map<string, { slideIndex: number; elementId: string; row: number; col: number; text: string }>()
 /** 固定源 HeaderFooterDialog：全部应用（含新建页），保存时最后写入。 */
 let headerFooterEdit: HeaderFooterSetting | undefined
 function openHeaderFooterDialog() {
@@ -215,7 +220,7 @@ tableDialog.showModal()
 }
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex)
-    || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits].some(item => item.slideIndex === slideIndex)
+    || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values()].some(item => item.slideIndex === slideIndex)
     || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
     || (!ignoreNewSlideSources && newSlides.some(item => newSlideSource(item) === slideIndex))
 }
@@ -424,7 +429,7 @@ function markDirty() {
 
 function slideChanges(): SlideChanges {
   return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
-    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(tableCellEdits.size ? { tableCells: [...tableCellEdits.values()].map(item => ({ ...item })) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
@@ -435,7 +440,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft() {
   if (!nativeDraft) return
   const operations = nativeDraft.operations
-  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -455,6 +460,9 @@ function restoreNativeDraft() {
     || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId && ['text', 'shape'].includes(element.type))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
     || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || (item.stroke !== undefined && item.stroke !== null && (!hex(item.stroke.color) || !(item.stroke.widthPt > 0 && item.stroke.widthPt <= 100))))) throw new Error('草稿中的形状样式无效；原草稿已保留')
+  const restoredCells = changes.tableCells ?? []
+  if (!Array.isArray(restoredCells) || restoredCells.length > 2000 || restoredCells.some(item => !item || Object.keys(item).sort().join() !== 'col,elementId,row,slideIndex,text' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
+    || typeof deck.slides[item.slideIndex]!.elements.find(element => element.id === item.elementId)?.tableCells?.[item.row]?.[item.col] !== 'string' || typeof item.text !== 'string' || item.text.length > 10000)) throw new Error('草稿中的表格单元格修改无效；原草稿已保留')
   const restoredHf = changes.headerFooter
   if (restoredHf !== undefined && (!restoredHf || Object.keys(restoredHf).sort().join() !== 'date,dateAuto,footer,slideNum' || typeof restoredHf.slideNum !== 'boolean' || typeof restoredHf.dateAuto !== 'boolean' || [restoredHf.footer, restoredHf.date].some(value => value !== null && (typeof value !== 'string' || value.length > 500)))) throw new Error('草稿中的页眉页脚无效；原草稿已保留')
   const restoredSections = changes.sections ?? []
@@ -501,6 +509,7 @@ function restoreNativeDraft() {
   deletedSlides.clear(); for (const index of restoredDeleted) deletedSlides.add(index)
   resetLayouts.clear(); for (const index of restoredReset) resetLayouts.add(index)
   headerFooterEdit = restoredHf ? { ...restoredHf } : undefined
+  tableCellEdits.clear(); for (const item of restoredCells) tableCellEdits.set(`${item.slideIndex}:${item.elementId}:${item.row}:${item.col}`, { ...item })
   sectionEdits.splice(0, sectionEdits.length, ...restoredSections.map(item => ({ slideIndex: item.slideIndex, name: item.name })))
   shapeKindEdits.clear(); for (const item of restoredKinds) shapeKindEdits.set(editKey(item.slideIndex, item.elementId), { ...item })
   shapeStyleEdits.clear(); for (const item of restoredStyles) shapeStyleEdits.set(editKey(item.slideIndex, item.elementId), structuredClone(item))
@@ -606,7 +615,8 @@ function transitionApplyAllUnavailable(): string | null {
 
 function renderInspector() {
   renderCanvas()
-  const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable) && !deletions.has(editKey(selectedSlide, item.id)))
+  // 表格虽不能整体编辑/删除，但单元格可改字，因此也列入可选对象。
+  const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells) && !deletions.has(editKey(selectedSlide, item.id)))
   select.replaceChildren(...elements.map(item => {
     const option = document.createElement('option')
     option.value = item.id
@@ -617,6 +627,7 @@ function renderInspector() {
   select.value = selectedElement
   const element = currentElement()
   textArea.disabled = savedRevision || !element || !['text', 'shape'].includes(element.type)
+  renderTableCellEditor(element)
   textArea.value = element ? edits.get(editKey(selectedSlide, element.id))?.text ?? element.text : ''
   const box = element && (edits.get(editKey(selectedSlide, element.id))?.geometry ?? element.geometry)
   const geometry = box ?? { x: 0, y: 0, width: 0, height: 0 }
@@ -1085,6 +1096,31 @@ animationAdd.addEventListener('click', () => {
   renderInspector()
   markDirty()
 })
+function renderTableCellEditor(element: DeckElement | undefined) {
+  tableCellEditor.replaceChildren()
+  const cells = element?.type === 'table' && !isNewSlide(selectedSlide) ? element.tableCells : undefined
+  tableCellEditor.hidden = !cells
+  if (!cells || !element) return
+  const grid = document.createElement('div'); grid.className = 'table-cell-grid'
+  grid.style.gridTemplateColumns = `repeat(${Math.max(1, ...cells.map(row => row.length))}, minmax(60px, 1fr))`
+  for (const [rowIndex, rowCells] of cells.entries()) for (const [colIndex, original] of rowCells.entries()) {
+    const input = document.createElement('textarea')
+    const key = `${selectedSlide}:${element.id}:${rowIndex}:${colIndex}`
+    input.setAttribute('aria-label', `表格单元格 ${rowIndex + 1} 行 ${colIndex + 1} 列`)
+    input.dataset.tableCell = `${rowIndex}:${colIndex}`
+    input.value = original === null ? '' : tableCellEdits.get(key)?.text ?? original
+    input.disabled = original === null || locked() || deletions.has(editKey(selectedSlide, element.id))
+    if (original === null) input.title = '合并单元格不可单独编辑'
+    input.addEventListener('change', () => {
+      if (input.value === original) tableCellEdits.delete(key)
+      else if (input.value.length <= 10000) tableCellEdits.set(key, { slideIndex: selectedSlide, elementId: element.id, row: rowIndex, col: colIndex, text: input.value })
+      renderStructurePending(); markDirty()
+    })
+    grid.append(input)
+  }
+  const label = document.createElement('div'); label.className = 'field-label'; label.textContent = '表格单元格'
+  tableCellEditor.append(label, grid)
+}
 function renderStructurePending() {
   structurePending.replaceChildren()
   const row = (label: string, onRemove: () => void, extra?: HTMLElement) => {
@@ -1096,6 +1132,7 @@ function renderStructurePending() {
     item.append(remove)
     structurePending.append(item)
   }
+  for (const [key, cell] of tableCellEdits) row(`第 ${order.indexOf(cell.slideIndex) + 1} 页 · 表格单元格（${cell.row + 1}行${cell.col + 1}列）「${cell.text.slice(0, 20)}」`, () => tableCellEdits.delete(key))
   if (headerFooterEdit) row(`全部页面 · 页眉页脚：${[headerFooterEdit.date ? `日期 ${headerFooterEdit.dateAuto ? '（自动更新）' : headerFooterEdit.date}` : '', headerFooterEdit.slideNum ? '幻灯片编号' : '', headerFooterEdit.footer ? `页脚「${headerFooterEdit.footer}」` : ''].filter(Boolean).join('、') || '全部关闭'}`, () => { headerFooterEdit = undefined })
   for (const [index, section] of sectionEdits.entries()) row(`第 ${order.indexOf(section.slideIndex) + 1} 页前 · 新增节「${section.name}」`, () => { sectionEdits.splice(index, 1); renderSlides() })
   for (const [key, item] of shapeKindEdits) {
@@ -1166,6 +1203,7 @@ objectDelete.addEventListener('click', () => {
   edits.delete(key)
   textFormattingEdits.delete(key)
   shapeStyleEdits.delete(key)
+  for (const cellKey of [...tableCellEdits.keys()]) if (cellKey.startsWith(`${key}:`)) tableCellEdits.delete(cellKey)
   shapeKindEdits.delete(key)
   for (let index = paragraphFormattingEdits.length - 1; index >= 0; index--) {
     const patch = paragraphFormattingEdits[index]!

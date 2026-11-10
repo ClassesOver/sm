@@ -907,3 +907,36 @@ def test_slides_bridge_inserts_wordart_presets(tmp_path: Path):
         _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "textBoxes": [
             {"slideIndex": 0, "text": "x", "outline": {"color": "orange", "widthEmu": 19050}, "geometry": geometry}]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_edits_existing_table_cells_keeping_formatting(tmp_path: Path):
+    """表格单元格编辑：inspect 回报单元格文字；改字保留原文字格式；越界/重复拒绝。"""
+    from pptx.util import Inches, Pt
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "cells.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    table = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(1)).table
+    for (r, c), text in {(0, 0): "项目", (0, 1): "金额", (1, 0): "收入", (1, 1): "100"}.items():
+        table.cell(r, c).text = text
+    run = table.cell(1, 1).text_frame.paragraphs[0].runs[0]
+    run.font.size = Pt(20); run.font.bold = True
+    presentation.save(source)
+    element = next(item for item in _invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"][0]["elements"] if item["type"] == "table")
+    assert element["tableCells"] == [["项目", "金额"], ["收入", "100"]]
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "tableCells": [
+        {"slideIndex": 0, "elementId": element["id"], "row": 1, "col": 1, "text": "120"},
+        {"slideIndex": 0, "elementId": element["id"], "row": 0, "col": 0, "text": "指标\n（万元）"},
+    ]}, tmp_path)
+    cells = Presentation(str(output)).slides[0].shapes[0].table
+    assert cells.cell(1, 1).text == "120" and cells.cell(0, 0).text == "指标\n（万元）" and cells.cell(1, 0).text == "收入"
+    edited = cells.cell(1, 1).text_frame.paragraphs[0].runs[0].font
+    assert edited.size == Pt(20) and edited.bold is True
+    for bad in ({"slideIndex": 0, "elementId": element["id"], "row": 5, "col": 0, "text": "x"},
+                {"slideIndex": 0, "elementId": "missing", "row": 0, "col": 0, "text": "x"}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "tableCells": [bad]}, tmp_path)
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "tableCells": [
+            {"slideIndex": 0, "elementId": element["id"], "row": 0, "col": 0, "text": "a"}, {"slideIndex": 0, "elementId": element["id"], "row": 0, "col": 0, "text": "b"}]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()

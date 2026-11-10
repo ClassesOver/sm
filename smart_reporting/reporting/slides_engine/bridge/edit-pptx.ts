@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, addSection, addTable, applyHeaderFooter, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addElement, addPicture, addSection, addTable, applyHeaderFooter, editTableCellText, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -50,6 +50,8 @@ type Input = {
   sections?: { slideIndex: number; name: string }[]
   /** 固定源 HeaderFooterDialog（applyHeaderFooter，应用于全部）：页脚文字、页码、日期（固定文字或自动更新）。 */
   headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
+  /** 固定源表格单元格编辑（editTableCellText）：保留单元格首段与首个文字段的格式。 */
+  tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -188,6 +190,8 @@ if (request.action === 'inspect') {
         type: element.type,
         name: element.name ?? '',
         text: textOf(element),
+        // 表格单元格文字（合并单元格为 null），供编辑器单元格网格使用
+        ...(element.type === 'table' ? { tableCells: (element as unknown as { rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] }).rows.map(row => row.map(cell => cell.merged ? null : (cell.text?.paragraphs ?? []).map(paragraph => paragraph.runs.map(run => run.text).join('')).join('\n'))) } : {}),
         ...(element.type === 'text' || element.type === 'shape' ? (() => {
           const paragraphs = element.text?.paragraphs ?? []
           const run = paragraphs[0]?.runs[0]
@@ -312,7 +316,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -325,6 +329,15 @@ if (request.action === 'inspect') {
     deleted.add(key)
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
+  if (!Array.isArray(request.tableCells ?? []) || (request.tableCells ?? []).length > 2000) throw new Error('table_cells_invalid')
+  const editedCells = new Set<string>()
+  for (const cell of request.tableCells ?? []) {
+    if (!cell || typeof cell !== 'object' || Object.keys(cell).sort().join() !== 'col,elementId,row,slideIndex,text' || !validSlideIndex(cell.slideIndex, slideCount) || typeof cell.elementId !== 'string'
+      || !Number.isInteger(cell.row) || !Number.isInteger(cell.col) || cell.row < 0 || cell.col < 0 || typeof cell.text !== 'string' || cell.text.length > 10000 || touchesDeleted(cell.slideIndex, cell.elementId)) throw new Error('table_cell_invalid')
+    const key = `${cell.slideIndex}:${cell.elementId}:${cell.row}:${cell.col}`
+    if (editedCells.has(key)) throw new Error('table_cell_duplicated')
+    editedCells.add(key)
+  }
   if (!Array.isArray(request.shapeKinds ?? []) || (request.shapeKinds ?? []).length > 500) throw new Error('shape_kinds_invalid')
   const reshaped = new Set<string>()
   for (const item of request.shapeKinds ?? []) {
@@ -465,6 +478,15 @@ if (request.action === 'inspect') {
   }
   for (const deletion of deletions) {
     if (!deleteElement(opened, originalSlides[deletion.slideIndex]!, deletion.elementId)) throw new Error('delete_target_invalid')
+  }
+  for (const cell of request.tableCells ?? []) {
+    const slide = originalSlides[cell.slideIndex]!
+    const table = slide.elements.find(candidate => candidate.id === cell.elementId) as unknown as { type: string; rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] } | undefined
+    const source = table?.type === 'table' ? table.rows[cell.row]?.[cell.col] : undefined
+    if (!source || source.merged) throw new Error('table_cell_target_invalid')
+    const firstParagraph = source.text?.paragraphs[0], firstRun = firstParagraph?.runs[0]
+    const paragraphs = cell.text.split(/\r?\n/).map(line => ({ ...(firstParagraph ?? {}), runs: [{ ...(firstRun ?? {}), text: line }] }))
+    if (!editTableCellText(slide, cell.elementId, cell.row, cell.col, paragraphs as never)) throw new Error('table_cell_target_invalid')
   }
   for (const item of request.shapeKinds ?? []) {
     const slide = originalSlides[item.slideIndex]!
