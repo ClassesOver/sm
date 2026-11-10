@@ -16,7 +16,7 @@ import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
 import { DEFAULT_HEADER_FOOTER, DEFAULT_WATERMARK } from './vendor/genoffice-pdf/renderer/stamps'
 import { formatLength, parseCalibration, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
-import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, pdfLineLength, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, pdfLineLength, pdfRedactionOperation, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -60,7 +60,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   root.replaceChildren()
   const abort = new AbortController()
   let disposed = false, locked = true, generation = 0, document: PDFDocumentProxy | undefined
-  let mode: 'select' | 'highlight' | 'note' | 'text' | 'draw' = 'select'
+  let mode: 'select' | 'highlight' | 'note' | 'text' | 'draw' | 'redact' = 'select'
   let drawShape: PdfDrawingShape = 'rect'
   let drawColor: [number, number, number] = [...PDF_DRAW_COLORS[0]!.rgb]
   const drawButtons = new Map<PdfDrawingShape, HTMLButtonElement>()
@@ -536,11 +536,29 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   drawColorSelect.addEventListener('change', () => { drawColor = [...(PDF_DRAW_COLORS.find(item => item.name === drawColorSelect.value) ?? PDF_DRAW_COLORS[0]!).rgb] })
   commandGroup.append(drawColorSelect)
   commandGroup.append(note)
-  unavailableSourceGroup('annotate', 'Draw Tools', [
-    { id: 'annotate.drawTools.redact', label: '涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
-    { id: 'annotate.drawTools.clearRedaction', label: '清除涂黑', reason: '当前编辑器不生成涂黑标记，不能提供清除动作' },
-    { id: 'annotate.drawTools.applyRedaction', label: '应用涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
-  ], annotateDrawGroup)
+  // 固定源 Redact / Clear redaction / Apply redaction：拖出区域标记涂黑；保存新修订时由 PDFium 永久移除区域内文字、图像与路径并黑块覆盖。
+  // 固定源先另存副本再涂黑；原生编辑每次保存都是新修订，来源修订保持不变。
+  const redactTool = button('涂黑', () => setMode(mode === 'redact' ? 'select' : 'redact'), true)
+  sourceCommand(redactTool, 'annotate.drawTools.redact'); redactTool.dataset.pdfRedactTool = ''
+  redactTool.title = '涂黑：在页面上拖出要永久移除的区域；保存时写入新修订，区域内文字、图像与路径被删除并以黑块覆盖'
+  const redactionCount = () => draft.operations.filter(op => op.kind === 'redact').length
+  const clearRedaction = button('清除涂黑', () => {
+    const count = redactionCount()
+    if (!count) { status.textContent = '当前没有待应用的涂黑标记'; return }
+    const operations = draft.operations.filter(op => op.kind !== 'redact')
+    pdfPageState(model.pages, operations); draft.setOperations(operations)
+    void refresh().then(() => { status.textContent = `已清除 ${count} 处待应用的涂黑标记` }).catch(showError)
+  }, true)
+  sourceCommand(clearRedaction, 'annotate.drawTools.clearRedaction')
+  const applyRedaction = button('应用涂黑', () => {
+    const count = redactionCount()
+    if (!count) { status.textContent = '请先用“涂黑”工具标记要移除的区域'; return }
+    if (shell.save.disabled) { status.textContent = `${count} 处涂黑待保存；当前不能保存：${shell.save.title || '请稍后重试'}`; return }
+    setMode('select'); status.textContent = `正在保存新修订并永久应用 ${count} 处涂黑…`; shell.save.click()
+  }, true)
+  sourceCommand(applyRedaction, 'annotate.drawTools.applyRedaction')
+  applyRedaction.title = '应用涂黑：保存新修订并永久移除标记区域内的内容（来源修订不变）'
+  annotateDrawGroup.append(redactTool, clearRedaction, applyRedaction)
   // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
   commandGroup = ribbon.group('annotate', 'Signature & Protection')
   const signatureGroup = commandGroup
@@ -1207,7 +1225,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)) }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')) }
   function updateControls() {
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-saved-reply-editable]')) control.disabled = !canChangeSavedReply()
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-reply-editable]')) control.disabled = !canReply() || control.dataset.pdfReplyEditable !== 'true'
@@ -1371,8 +1389,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function overlays(holder: HTMLElement, page: PdfPageIdentity, pdfViewport: ReturnType<PDFPageProxy['getViewport']>) {
     const layer = documentElement('div', 'pdf-draft-overlays')
-    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'removeMarkup', 'highlight', 'addTextAnnotation'].includes(op.kind))) {
-      const type = operation.kind === 'removeMarkup' ? 'removal' : operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
+    for (const operation of draft.operations.filter(op => op.pageId === page.pageId && ['addMarkup', 'removeMarkup', 'highlight', 'addTextAnnotation', 'redact'].includes(op.kind))) {
+      const type = operation.kind === 'redact' ? 'redaction' : operation.kind === 'removeMarkup' ? 'removal' : operation.kind === 'addMarkup' ? String(operation.markupType) : operation.kind === 'highlight' ? 'highlight' : 'note'
       const rects = operation.kind === 'removeMarkup' ? (model.pages.find(item => item.pageId === page.pageId)?.markups?.find(mark => mark.annotationId === operation.annotationId)?.quads ?? []).map(quadToRect) : operation.kind === 'addMarkup' ? (operation.quads as number[][]).map(quadToRect) : [operation.rect as PdfRect]
       for (const rect of rects) {
         const converted = [...pdfViewport.convertToViewportPoint(rect[0], rect[1]), ...pdfViewport.convertToViewportPoint(rect[2], rect[3])]
@@ -1382,6 +1400,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         overlay.style.color = `rgb(${rgb})`
         if (type === 'highlight') overlay.style.backgroundColor = `rgba(${rgb},.4)`
         if (type === 'squiggly') overlay.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='8' height='4'><path d='M0 2 Q2 0 4 2 T8 2' fill='none' stroke='rgb(${rgb})'/></svg>`)}")`
+        if (type === 'redaction') { overlay.dataset.pdfRedaction = ''; overlay.title = '待应用涂黑：保存后永久移除该区域内容' }
         if (type === 'removal') { overlay.style.outline = '2px dashed #c33'; overlay.title = '待移除标注；校验当前修改可查看实际结果' }
         if (type === 'note') { overlay.textContent = '▤'; overlay.title = String(operation.text) }
         layer.append(overlay)
@@ -1587,6 +1606,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
             return
           }
           const operation = pdfDrawingOperation(page.pageId, drawShape, points, page.cropBox, drawColor)
+          pdfPageState(model.pages, [...draft.operations, operation])
+          void append(operation).catch(showError)
+        } else if (mode === 'redact') {
+          if (page.blank) throw new Error('新插入的空白页请先保存并重新打开后再涂黑')
+          const operation = pdfRedactionOperation(page.pageId, pdfRectFromClient(pdfViewport, holder.getBoundingClientRect(), begin, [event.clientX, event.clientY], page.cropBox), page.cropBox)
           pdfPageState(model.pages, [...draft.operations, operation])
           void append(operation).catch(showError)
         } else if (mode === 'highlight') {

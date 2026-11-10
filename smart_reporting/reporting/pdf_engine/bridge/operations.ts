@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto'
 import { PDFArray, PDFDict, PDFString, PDFHexString, PDFRef, PDFName, PDFNumber, PDFCheckBox, PDFDocument, PDFDropdown, PDFOptionList, PDFRadioGroup, PDFSignature, PDFTextField } from 'pdf-lib'
 import { z } from 'zod'
 import { applySaveRequest, setPageSizeBytes } from '../src/main/save-pdf'
+import { MAX_REDACTION_REGIONS, redactPdf } from '../src/main/redaction'
 import { inspectNativeText, prepareTextEdits, textResourcesIdentity } from './text-operations'
 import type { SkippedOperation } from './text-operations'
 import type { SavePdfRequest } from '../src/shared/ipc'
@@ -51,6 +52,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('removeMarkup'), ...page, annotationId: z.string().regex(/^[a-f0-9]{64}$/), expectedAnnotationSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
+  z.object({ kind: z.literal('redact'), ...page, rect }).strict(),
   // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
   z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'measure', 'ink', 'polygon', 'caret', 'link', 'image']), label: z.string().min(1).max(64).regex(/^[\x20-\x7e]+$/).optional(), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
@@ -171,6 +173,10 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   }
   if (blankIndex.size > 200) throw new Error('PDF 空白页数量超过 200')
   const crops = new Map<string, [number, number, number, number]>()
+  // 固定源原生安全涂黑（redaction.ts，PDFium ApplyRedaction 移除区域内文字/图像/路径并黑块覆盖）；
+  // 原生编辑每次保存都写新修订、来源修订不变，对应固定源“先另存副本再涂黑”。
+  const redactions: { pageIndex: number; rect: [number, number, number, number] }[] = []
+  if (sizeOps.length && ops.some(op => op.kind === 'redact')) throw new Error('PDF 涂黑不能与页面尺寸同批修改；请先保存重开')
   const removals: MarkupRemoval[] = []
   const noteEdits: NoteContentEdit[] = []
   const addedNoteDates: AddedNoteDate[] = []
@@ -311,6 +317,15 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       }
       continue
     }
+    if (op.kind === 'redact') {
+      const current = crops.get(op.pageId), b = target.cropBox
+      const [left, bottom, right, top] = current ?? [b.x, b.y, b.x + b.width, b.y + b.height]
+      const [x1, y1, x2, y2] = op.rect
+      if (x2 - x1 < 1 || y2 - y1 < 1 || x1 < left || y1 < bottom || x2 > right || y2 > top) throw new Error('PDF 涂黑范围无效')
+      if (redactions.length >= MAX_REDACTION_REGIONS) throw new Error(`PDF 涂黑区域超过 ${MAX_REDACTION_REGIONS} 个`)
+      redactions.push({ pageIndex: target.index, rect: op.rect })
+      continue
+    }
     if (op.kind === 'addMarkup') {
       if (!target.markupReadSafe) throw new Error('pdf_source_markup_unreadable')
       const current = crops.get(op.pageId), b = target.cropBox
@@ -373,7 +388,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = await removeSourceMarkups(content, model.sourceSha256, removals, noteEdits)
   const annotationBaseBytes = bytes
-  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
+  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['redact', 'editNote', 'removeNote', 'removeMarkup', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
     const result = await applySaveRequest(bytes, request)
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
@@ -401,6 +416,15 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   bytes = await patchAttachments(bytes, model, attachmentOps)
   bytes = await appendNoteReplies(bytes, replies, finalOrder)
   bytes = await appendLocalNoteReplies(bytes, localRoots, pendingReplies, finalOrder)
+  if (redactions.length) {
+    // 涂黑是最终序列化：PDFium 另存只写清理后可达对象，之后不再有 pdf-lib 写入可复活旧内容流。
+    // 页缩略图与 PieceInfo 可能保留涂黑前的渲染，先删除；页索引换算到最终页序。
+    const mapped = redactions.map(item => ({ pageIndex: finalOrder.indexOf(item.pageIndex), rect: item.rect }))
+    if (mapped.some(item => item.pageIndex < 0)) throw new Error('PDF 涂黑页面身份无效')
+    const output = await PDFDocument.load(bytes, { updateMetadata: false })
+    for (const index of new Set(mapped.map(item => item.pageIndex))) { output.getPage(index).node.delete(PDFName.of('Thumb')); output.getPage(index).node.delete(PDFName.of('PieceInfo')) }
+    bytes = await redactPdf(await output.save({ useObjectStreams: false, updateFieldAppearances: false }), mapped)
+  }
   const appliedOperationIndices = ops.map((_, index) => index).filter(index => !skippedOperations.some(item => item.operationIndex === index))
   // Bind confirmation to actual output font programs, text/bounds, output identity,
   // runtime WASM identity, requested operations and all application decisions.
@@ -413,7 +437,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['redact', 'addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, previewDigest }
 }
 

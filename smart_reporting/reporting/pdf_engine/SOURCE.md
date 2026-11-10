@@ -277,3 +277,18 @@ The original annot-delete.ts blob660951ad1e2556276245f64054af23fd4929e081
 was fetched at the fixed ref as a semantic/fallback reference; its PDFium matching
 path is not shipped or executed for these operations. No vendor/dependency/WASM
 change. See `report_editor/NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
+
+
+## Native secure redaction adapter (2026-11-10)
+
+The bridge `redact` operation (`{pageId, rect}` in PDF user space, inside the
+crop-aware visible box, ≤ MAX_REDACTION_REGIONS) calls the unchanged pinned
+`src/main/redaction.ts` `redactPdf` as the final serializer of the native patch,
+after every pdf-lib pass (crop, attachments, note replies), with page indices
+mapped to the final page order and page `/Thumb` + `/PieceInfo` removed first —
+the same steps `applySaveRequest` performs before its own redaction pass. Every
+native save writes a new revision and leaves the source revision unchanged, which
+is the pinned "redact a Save As copy" requirement. Redaction is rejected on blank
+draft pages and together with a page-size change. `bridge/redaction.test.ts`
+reads the output text back with PDFium. Vendor SOURCE hashes unchanged;
+LOCAL-SHA256 has 48 entries.

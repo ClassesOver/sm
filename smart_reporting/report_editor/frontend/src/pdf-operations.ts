@@ -37,6 +37,8 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
   let order = pages.map(page => page.pageId)
   let blanks = 0
   let stamped = false
+  let redactions = 0
+  if (operations.some(op => op.kind === 'redact') && operations.some(op => op.kind === 'setPageSize')) throw new Error(PDF_REDACTION_PAGE_SIZE_REASON)
   for (const operation of operations) {
     if (stamped && ['reorderPages', 'deletePage', 'insertBlankPage', 'setPageSize', 'cropPage'].includes(operation.kind)) throw new Error(PDF_STAMPS_STRUCTURE_REASON)
     if (operation.kind === 'setStamps') { if (stamped) throw new Error('水印/页眉页脚只能设置一次'); stamped = true; continue }
@@ -80,6 +82,10 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       if (Object.keys(operation).some(key => !['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256'].includes(key)) || typeof operation.annotationId !== 'string' || !/^[a-f0-9]{64}$/.test(operation.annotationId) || !source.markupReadSafe || !mark?.removable || mark.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || removed.has(operation.annotationId)) throw new Error('标注身份已过期或暂不支持移除；原草稿已保留')
       removed.add(operation.annotationId)
       page.markups = page.markups?.filter(item => item.annotationId !== operation.annotationId)
+    } else if (operation.kind === 'redact') {
+      if (deleted.has(page.pageId)) throw new Error('涂黑不能引用已删除页面')
+      validatePdfRedaction(operation, page.cropBox)
+      if (++redactions > PDF_REDACTION_MAX) throw new Error(`涂黑区域不能超过 ${PDF_REDACTION_MAX} 个`)
     } else if (operation.kind === 'addDrawing') {
       if (deleted.has(page.pageId)) throw new Error('绘图不能引用已删除页面')
       validatePdfDrawing(operation, page.cropBox)
@@ -192,6 +198,21 @@ export function pdfDrawingOperation(pageId: string, shape: PdfDrawingShape, poin
     : shape === 'arrow' || shape === 'measure' ? { ...base, from: first, to: last }
     : { ...base, rect: [Math.min(first[0]!, last[0]!), Math.min(first[1]!, last[1]!), Math.max(first[0]!, last[0]!), Math.max(first[1]!, last[1]!)] }
   validatePdfDrawing(operation, box)
+  return operation
+}
+
+/** 固定源原生安全涂黑（redaction.ts）：标记区域，保存新修订时由 PDFium 永久移除区域内文字/图像/路径并黑块覆盖；来源修订保持不变。 */
+export const PDF_REDACTION_MAX = 500
+export const PDF_REDACTION_PAGE_SIZE_REASON = '涂黑不能与页面尺寸同批修改；请先保存重开'
+export function validatePdfRedaction(operation: NativeOperation, box: PdfBox) {
+  if (Object.keys(operation).some(key => !['kind', 'pageId', 'rect', 'sourceSha256'].includes(key))) throw new Error('涂黑参数无效')
+  const rect = validatedPdfCrop(operation.rect, box)
+  if (rect[2] - rect[0] < 1 || rect[3] - rect[1] < 1) throw new Error('涂黑区域太小')
+  return rect
+}
+export function pdfRedactionOperation(pageId: string, rect: PdfRect, box: PdfBox): NativeOperation {
+  const operation: NativeOperation = { kind: 'redact', pageId, rect: rect.map((value, index) => (index < 2 ? Math.ceil : Math.floor)(value * 100) / 100) }
+  validatePdfRedaction(operation, box)
   return operation
 }
 
