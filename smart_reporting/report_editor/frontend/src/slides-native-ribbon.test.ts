@@ -204,7 +204,7 @@ it('preserves Insert table, image, shape and chart source actions while disablin
     const group = host.querySelector<HTMLElement>(`[aria-label="${groupName}"]`)!
     const controls = [...group.querySelectorAll<HTMLButtonElement>('[data-source-action]')]
     expect(controls.map(control => control.dataset.sourceAction)).toEqual(actions)
-    const unsupported = controls.filter(control => !['onPickShape', 'onInsertTable', 'onInsertChart'].includes(control.dataset.sourceAction!))
+    const unsupported = controls.filter(control => !['onPickShape', 'onInsertTable', 'onInsertChart', 'onInsertSmartArt'].includes(control.dataset.sourceAction!))
     expect(unsupported.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
     expect(unsupported.every(control => control.querySelector('svg'))).toBe(true)
   }
@@ -225,9 +225,10 @@ it('preserves Insert table, image, shape and chart source actions while disablin
   expect(picture.disabled).toBe(true)
   expect(picture.dataset.unavailable).toBe('true')
   expect(picture.querySelector('svg')).not.toBeNull()
-  const smartArt = host.querySelector<HTMLButtonElement>('[data-source-action="onInsertSmartArt"]')!
-  expect(smartArt.disabled).toBe(true)
-  expect(smartArt.dataset.unavailable).toBe('true')
+  // SmartArt 已接通：固定源 7 种布局
+  const smartArt = host.querySelector<HTMLSelectElement>('select[data-command="insertSmartArt"]')!
+  expect(smartArt.disabled).toBe(false)
+  expect([...smartArt.options].slice(1).map(option => option.textContent)).toEqual(['垂直列表', '基本流程', '基本循环', '组织结构', '基本棱锥图', '基本矩阵', '基本维恩图'])
   ribbon.dispose()
 })
 

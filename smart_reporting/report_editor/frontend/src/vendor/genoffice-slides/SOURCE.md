@@ -67,3 +67,7 @@ uses it with the pinned insert defaults (`default-shape.ts` factory fill `#C43E1
 strings substituted for the i18n keys. Insert ▸ Chart uses it with the pinned frame
 (`insert-defaults.ts` `graphicFrameInsertFrame`: 2/3 slide width, 3:2, centred) and `barH` → `bar` +
 `barDir: 'bar'` as in the pinned main process. Hashes are in `components/SOURCE-SHA256.json`.
+
+2026-11-10: `components/smartart-gallery-data.ts` adapts the same pinned `insert-presets.ts` `SMARTART_GALLERY`
+(7 layouts, unchanged order and default items) with Simplified Chinese strings; inserted with the same
+`graphicFrameInsertFrame` placement through the pinned engine's `addSmartArt` (1–8 nodes).

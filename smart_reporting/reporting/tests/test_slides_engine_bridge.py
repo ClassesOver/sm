@@ -987,3 +987,29 @@ def test_slides_bridge_inserts_multiple_tables_and_charts_on_one_slide(tmp_path:
                         {"slideIndex": 0, "kind": "pie", "categories": ["a", "b"], "series": [{"name": "s", "values": [1, 2]}]}]}, tmp_path)
     shapes = Presentation(str(output)).slides[0].shapes
     assert sum(shape.has_table for shape in shapes) == 2 and sum(shape.has_chart for shape in shapes) == 2
+
+
+@pytest.mark.parametrize("layout", ["list", "process", "cycle", "hierarchy", "pyramid", "matrix", "venn"])
+def test_slides_bridge_inserts_smartart_layouts(tmp_path: Path, layout: str):
+    """固定源 Insert ▸ SmartArt：7 种布局写入可编辑形状组合，节点文字保留；位置同图表。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / f"{layout}.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    before = len(Presentation(source).slides[0].shapes)
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)),
+             "smartArts": [{"slideIndex": 0, "layout": layout, "items": ["计划", "执行", "检查"]}]}, tmp_path)
+    with ZipFile(output) as archive:
+        xml = archive.read("ppt/slides/slide1.xml").decode()
+    assert all(text in xml for text in ("计划", "执行", "检查"))
+    assert len(Presentation(str(output)).slides[0].shapes) == before + 1
+
+
+def test_slides_bridge_rejects_invalid_smartart(tmp_path: Path):
+    source = tmp_path / "source.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    base = {"slideIndex": 0, "layout": "list", "items": ["a"]}
+    for patch in ({"layout": "radial"}, {"items": []}, {"items": ["x"] * 9}, {"items": ["a\nb"]}, {"extra": 1}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "smartArts": [{**base, **patch}]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()

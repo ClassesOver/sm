@@ -176,3 +176,4 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .table-cell-grid { display: grid; gap: 4px; margin: 0 14px; max-height: 280px; overflow: auto; }
 .table-cell-grid textarea { width: 100%; min-height: 40px; padding: 4px 6px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; font-size: var(--font-size-sm); resize: vertical; }
 .table-cell-grid textarea:disabled { background: var(--office-tabbar); }
+.structure-pending .smartart-items { flex: 1 1 100%; min-height: 0; padding: 4px 6px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; font-size: var(--font-size-sm); resize: vertical; }

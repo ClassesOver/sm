@@ -25,6 +25,12 @@
 - 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
 - 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
 
+## 插入 SmartArt（固定源 Insert ▸ SmartArt / SMARTART_GALLERY）
+
+- Insert ▸ Illustrations ▸ SmartArt 为固定源 7 种布局（垂直列表、基本流程、基本循环、组织结构、基本棱锥图、基本矩阵、基本维恩图）的选择器，默认节点同固定源；待保存项内可改写节点文字（每行一个，1–8 个）。
+- 位置同图表（2/3 宽、3:2、居中），固定引擎 `addSmartArt` 写入可编辑形状组合；与表格/图表一样在按对象身份的修改之后插入并更新页面引用。
+- 证据：`test_slides_bridge_inserts_smartart_layouts`（7 种布局）、`test_slides_bridge_rejects_invalid_smartart`、Ribbon 单测、`new-slide` 冒烟插入基本流程并改写节点为“立项/开发/上线”；LibreOffice 栅格化确认流程箭头与文字可见。
+
 ## 插入图表（固定源 Insert ▸ Chart / CHART_GALLERY）
 
 - Insert ▸ Illustrations ▸ Chart 为固定源 13 种图表的选择器（`components/chart-gallery-data.ts`，来源与哈希见 `SOURCE.md`）；插入固定源示例数据（类别/系列与数值同固定源），待保存清单可撤销。

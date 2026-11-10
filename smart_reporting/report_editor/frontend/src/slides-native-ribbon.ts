@@ -1,4 +1,5 @@
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
 import { CHART_GALLERY } from './vendor/genoffice-slides/components/chart-gallery-data'
 import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
 /** 固定源 ribbon zh 语言包中的艺术字预设名称（ribbonWordArtPreset*） */
@@ -128,7 +129,7 @@ const tabs: Tab[] = [
     { label: 'Images', controls: [{ id: 'insertPicture', label: 'Pictures', sourceIcon: IconPicture, sourceActionId: 'onInsertImage', unavailable: desktop('图片插入目前没有浏览器文件选择与上传控件') }] },
     { label: 'Illustrations', controls: [
       { id: 'insertShape', label: 'Shapes', kind: 'select', sourceIcon: IconShapes, sourceActionId: 'onPickShape' },
-      { id: 'insertSmartArt', label: 'SmartArt', sourceIcon: IconSmartArt, sourceActionId: 'onInsertSmartArt', unavailable: noWrite('SmartArt 插入尚未接入 editSlides 请求') },
+      { id: 'insertSmartArt', label: 'SmartArt', kind: 'select', sourceIcon: IconSmartArt, sourceActionId: 'onInsertSmartArt' },
       { id: 'insertChart', label: 'Chart', kind: 'select', sourceIcon: IconChart, sourceActionId: 'onInsertChart' },
     ] },
     { label: 'Text', controls: [
@@ -333,7 +334,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           select.setAttribute('aria-label', control.label)
           select.dataset.command = control.id
           if (control.id === 'lineSpacingPct' || PARAGRAPH_LIST_COMMANDS.includes(control.id)) select.add(new Option('未设置或混合值', ''))
-          if (control.id === 'insertChart') {
+          if (control.id === 'insertSmartArt') {
+            // 固定源 SMARTART_GALLERY：7 种布局
+            select.add(new Option('插入 SmartArt…', ''))
+            for (const item of SMARTART_GALLERY) select.add(new Option(item.label, item.layout))
+          } else if (control.id === 'insertChart') {
             // 固定源 CHART_GALLERY：13 种图表，顺序与名称同固定源。
             select.add(new Option('插入图表…', ''))
             for (const item of CHART_GALLERY) select.add(new Option(item.label, item.kind))
@@ -356,7 +361,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           } else {
             for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value), value))
           }
-          select.addEventListener('change', () => { options.onAction(control.id, select.value); if (['addSlideWithLayout', 'insertShape', 'changeShape', 'insertWordArt', 'insertChart'].includes(control.id)) select.value = '' })
+          select.addEventListener('change', () => { options.onAction(control.id, select.value); if (['addSlideWithLayout', 'insertShape', 'changeShape', 'insertWordArt', 'insertChart', 'insertSmartArt'].includes(control.id)) select.value = '' })
           element = select
         } else if (control.kind === 'text' || control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
           const input = document.createElement(control.kind === 'text' ? 'textarea' : 'input')

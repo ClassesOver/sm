@@ -1,4 +1,5 @@
 import { applyTransitionToAll, restoredTransitions, SLIDE_TRANSITIONS, type SlideTransition } from './slides-transitions'
+import { SMARTART_GALLERY, SMARTART_MAX_ITEMS, type SmartArtGalleryLayout } from './vendor/genoffice-slides/components/smartart-gallery-data'
 import { CHART_GALLERY, chartSampleData, type ChartGalleryKind } from './vendor/genoffice-slides/components/chart-gallery-data'
 import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
 import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS, SHAPE_PRESETS } from './vendor/genoffice-slides/components/shape-gallery-data'
@@ -40,10 +41,11 @@ type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationE
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
 type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }
 type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }
+type SmartArtEdit = { slideIndex: number; layout: SmartArtGalleryLayout; items: string[] }
 type ChartEdit = { slideIndex: number; kind: ChartGalleryKind; categories: string[]; series: { name: string; values: number[] }[] }
 type NewSlide = { layoutFrom: number } | { duplicateOf: number } | { withLayout: string }
 type SlideChanges = {
-  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; headerFooter?: HeaderFooterSetting; tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]; charts?: ChartEdit[]; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
+  edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; headerFooter?: HeaderFooterSetting; tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]; charts?: ChartEdit[]; smartArts?: SmartArtEdit[]; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
@@ -166,6 +168,8 @@ const sectionEdits: { slideIndex: number; name: string }[] = []
 const tableCellEdits = new Map<string, { slideIndex: number; elementId: string; row: number; col: number; text: string }>()
 /** 固定源 Insert ▸ Chart：待插入图表（固定源示例数据），保存时最后写入。 */
 const chartEdits: ChartEdit[] = []
+/** 固定源 Insert ▸ SmartArt：待插入布局与节点文字（可在待保存清单改写，每行一个节点）。 */
+const smartArtEdits: SmartArtEdit[] = []
 /** 固定源 HeaderFooterDialog：全部应用（含新建页），保存时最后写入。 */
 let headerFooterEdit: HeaderFooterSetting | undefined
 function openHeaderFooterDialog() {
@@ -224,7 +228,7 @@ tableDialog.showModal()
 }
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex)
-    || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...chartEdits].some(item => item.slideIndex === slideIndex)
+    || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...chartEdits, ...smartArtEdits].some(item => item.slideIndex === slideIndex)
     || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
     || (!ignoreNewSlideSources && newSlides.some(item => newSlideSource(item) === slideIndex))
 }
@@ -433,7 +437,7 @@ function markDirty() {
 
 function slideChanges(): SlideChanges {
   return { edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
-    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(tableCellEdits.size ? { tableCells: [...tableCellEdits.values()].map(item => ({ ...item })) } : {}), ...(chartEdits.length ? { charts: chartEdits.map(item => structuredClone(item)) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(tableCellEdits.size ? { tableCells: [...tableCellEdits.values()].map(item => ({ ...item })) } : {}), ...(chartEdits.length ? { charts: chartEdits.map(item => structuredClone(item)) } : {}), ...(smartArtEdits.length ? { smartArts: smartArtEdits.map(item => structuredClone(item)) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
@@ -444,7 +448,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft() {
   if (!nativeDraft) return
   const operations = nativeDraft.operations
-  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'charts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -464,6 +468,9 @@ function restoreNativeDraft() {
     || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId && ['text', 'shape'].includes(element.type))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
     || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || (item.stroke !== undefined && item.stroke !== null && (!hex(item.stroke.color) || !(item.stroke.widthPt > 0 && item.stroke.widthPt <= 100))))) throw new Error('草稿中的形状样式无效；原草稿已保留')
+  const restoredSmartArts = changes.smartArts ?? []
+  if (!Array.isArray(restoredSmartArts) || restoredSmartArts.length > 50 || restoredSmartArts.some(item => !item || Object.keys(item).sort().join() !== 'items,layout,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
+    || !SMARTART_GALLERY.some(entry => entry.layout === item.layout) || !Array.isArray(item.items) || item.items.length < 1 || item.items.length > SMARTART_MAX_ITEMS || item.items.some(text => typeof text !== 'string' || text.length > 200))) throw new Error('草稿中的新增 SmartArt 无效；原草稿已保留')
   const restoredCharts = changes.charts ?? []
   if (!Array.isArray(restoredCharts) || restoredCharts.length > 50 || restoredCharts.some(item => !item || Object.keys(item).sort().join() !== 'categories,kind,series,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
     || !CHART_GALLERY.some(chart => chart.kind === item.kind) || !Array.isArray(item.categories) || !item.categories.length || !Array.isArray(item.series) || !item.series.length || item.series.some(series => !Array.isArray(series?.values) || series.values.length !== item.categories.length))) throw new Error('草稿中的新增图表无效；原草稿已保留')
@@ -516,6 +523,7 @@ function restoreNativeDraft() {
   deletedSlides.clear(); for (const index of restoredDeleted) deletedSlides.add(index)
   resetLayouts.clear(); for (const index of restoredReset) resetLayouts.add(index)
   headerFooterEdit = restoredHf ? { ...restoredHf } : undefined
+  smartArtEdits.splice(0, smartArtEdits.length, ...restoredSmartArts.map(item => structuredClone(item)))
   chartEdits.splice(0, chartEdits.length, ...restoredCharts.map(item => structuredClone(item)))
   tableCellEdits.clear(); for (const item of restoredCells) tableCellEdits.set(`${item.slideIndex}:${item.elementId}:${item.row}:${item.col}`, { ...item })
   sectionEdits.splice(0, sectionEdits.length, ...restoredSections.map(item => ({ slideIndex: item.slideIndex, name: item.name })))
@@ -838,6 +846,15 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         canvasStatus.textContent = '形状填充与轮廓将在保存并打开新修订后显示在画布中。'
         renderStructurePending(); markDirty(); break
       }
+      case 'insertSmartArt': {
+        const preset = SMARTART_GALLERY.find(item => item.layout === String(value ?? ''))
+        if (!preset) break
+        if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
+        if (smartArtEdits.length >= 50) { statusMessage.textContent = '一次最多插入 50 个 SmartArt；请先保存'; break }
+        smartArtEdits.push({ slideIndex: selectedSlide, layout: preset.layout, items: [...preset.defaultItems] })
+        canvasStatus.textContent = '新增 SmartArt 将在保存并打开新修订后显示在画布中；可在待保存清单中改写节点文字。'
+        renderStructurePending(); markDirty(); break
+      }
       case 'insertChart': {
         const kind = String(value ?? '') as ChartGalleryKind
         if (!CHART_GALLERY.some(item => item.kind === kind)) break
@@ -1148,6 +1165,17 @@ function renderStructurePending() {
     remove.addEventListener('click', () => { onRemove(); renderStructurePending(); renderInspector(); markDirty() })
     item.append(remove)
     structurePending.append(item)
+  }
+  for (const [index, smartArt] of smartArtEdits.entries()) {
+    const items = document.createElement('textarea')
+    items.className = 'smartart-items'; items.rows = Math.min(SMARTART_MAX_ITEMS, smartArt.items.length + 1)
+    items.setAttribute('aria-label', 'SmartArt 节点文字（每行一个）'); items.value = smartArt.items.join('\n')
+    items.addEventListener('change', () => {
+      const next = items.value.split(/\r?\n/).map(text => text.trim()).filter(Boolean).slice(0, SMARTART_MAX_ITEMS)
+      if (!next.length) { items.value = smartArt.items.join('\n'); statusMessage.textContent = 'SmartArt 至少需要 1 个节点'; return }
+      smartArt.items = next.map(text => text.slice(0, 200)); items.value = smartArt.items.join('\n'); markDirty()
+    })
+    row(`第 ${order.indexOf(smartArt.slideIndex) + 1} 页 · SmartArt ${SMARTART_GALLERY.find(item => item.layout === smartArt.layout)?.label ?? smartArt.layout}`, () => smartArtEdits.splice(index, 1), items)
   }
   for (const [index, chart] of chartEdits.entries()) row(`第 ${order.indexOf(chart.slideIndex) + 1} 页 · 图表 ${CHART_GALLERY.find(item => item.kind === chart.kind)?.label ?? chart.kind}（示例数据）`, () => chartEdits.splice(index, 1))
   for (const [key, cell] of tableCellEdits) row(`第 ${order.indexOf(cell.slideIndex) + 1} 页 · 表格单元格（${cell.row + 1}行${cell.col + 1}列）「${cell.text.slice(0, 20)}」`, () => tableCellEdits.delete(key))
