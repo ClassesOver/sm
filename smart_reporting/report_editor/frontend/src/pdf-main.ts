@@ -15,7 +15,8 @@ import { NativeDraft, type NativeOperation } from './native-draft'
 import type { EditorShell } from './shell'
 import { bytesSha256 } from './source-validation'
 import { DEFAULT_HEADER_FOOTER, DEFAULT_WATERMARK } from './vendor/genoffice-pdf/renderer/stamps'
-import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { formatLength, parseCalibration, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
+import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, pdfLineLength, blankPdfBytes, buildPdfStampsOperation, pdfDrawingOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -518,11 +519,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(note, 'annotate.drawTools.note')
   commandGroup = ribbon.group('annotate', 'Draw Tools')
   const annotateDrawGroup = commandGroup
-  // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；已接通四种，颜色取标注调色板。
-  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
-    const tool = button(label, () => { drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
+  // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；颜色取标注调色板。
+  for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['measure', '测量', 'measure'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
+    const tool = button(label, () => {
+      // 固定源：再次点击已激活的测量工具 = 重新标定，下一条线作为参考线。
+      if (shape === 'measure' && mode === 'draw' && drawShape === 'measure') { measureRecalibrate = true; status.textContent = '重新标定：请画一条已知实际长度的参考线'; return }
+      if (shape === 'measure' && !measureScale) status.textContent = '测量：先画一条已知实际长度的参考线完成标定'
+      drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
     sourceCommand(tool, `annotate.drawTools.${id}`); tool.dataset.pdfDrawShape = shape
-    tool.title = shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
+    tool.title = shape === 'measure' ? '测量：拖出测量线，首次（或再次点击本按钮）会以该线标定比例；比例仅在本次会话有效，保存后写入带长度标签的 PDF 线批注' : shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
     drawButtons.set(shape, tool)
   }
   const drawColorSelect = documentElement('select', 'pdf-draw-color')
@@ -532,7 +537,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup.append(drawColorSelect)
   commandGroup.append(note)
   unavailableSourceGroup('annotate', 'Draw Tools', [
-    { id: 'annotate.drawTools.measure', label: '测量', reason: '原生视图尚未实现可校准比例与来源坐标绑定的测量工具' },
     { id: 'annotate.drawTools.redact', label: '涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
     { id: 'annotate.drawTools.clearRedaction', label: '清除涂黑', reason: '当前编辑器不生成涂黑标记，不能提供清除动作' },
     { id: 'annotate.drawTools.applyRedaction', label: '应用涂黑', reason: '安全涂黑需移除底层内容并独立验证，当前桥接尚未实现' },
@@ -856,6 +860,41 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const linkActions = documentElement('div', 'pdf-link-actions'); linkActions.append(linkCancel, linkApply)
   linkDialog.append(linkTitle, linkUrlLabel, linkPageLabel, linkError, linkActions); root.append(linkDialog)
   let linkPending: { page: PdfPageIdentity; points: number[][] } | undefined
+  // 固定源 MeasureScaleDialog：参考线的实际长度 + 单位（默认 m）；比例只在本次会话有效。
+  const measureDialog = documentElement('dialog', 'pdf-measure-dialog')
+  measureDialog.setAttribute('aria-label', '标定测量比例')
+  const measureTitle = documentElement('h3'); measureTitle.textContent = '标定测量比例'
+  const measureHint = documentElement('p', 'pdf-measure-hint')
+  const measureValueLabel = documentElement('label'); measureValueLabel.textContent = '参考线实际长度'
+  const measureValue = documentElement('input'); measureValue.inputMode = 'decimal'; measureValue.setAttribute('aria-label', '参考线实际长度'); measureValueLabel.append(measureValue)
+  const measureUnitLabel = documentElement('label'); measureUnitLabel.textContent = '单位（英文，如 m、cm、mm、in、ft）'
+  const measureUnit = documentElement('input'); measureUnit.maxLength = 12; measureUnit.value = 'm'; measureUnit.setAttribute('aria-label', '测量单位'); measureUnitLabel.append(measureUnit)
+  const measureError = documentElement('p', 'pdf-crop-error'); measureError.setAttribute('role', 'alert')
+  const measureApply = documentElement('button'); measureApply.type = 'button'; measureApply.textContent = '确定'
+  const measureCancel = documentElement('button'); measureCancel.type = 'button'; measureCancel.textContent = '取消'
+  const measureActions = documentElement('div', 'pdf-link-actions'); measureActions.append(measureCancel, measureApply)
+  measureDialog.append(measureTitle, measureHint, measureValueLabel, measureUnitLabel, measureError, measureActions); root.append(measureDialog)
+  let measureScale: MeasureScale | undefined, measureRecalibrate = false
+  let measurePending: { page: PdfPageIdentity; operation: NativeOperation } | undefined
+  function commitMeasure(page: PdfPageIdentity, line: NativeOperation, scale: MeasureScale, after?: () => void) {
+    const from = line.from as number[], to = line.to as number[]
+    const operation = pdfDrawingOperation(page.pageId, 'measure', [from, to], page.cropBox, drawColor, { label: formatLength(pdfLineLength(from, to), scale) })
+    pdfPageState(model.pages, [...draft.operations, operation])
+    void append(operation).then(after).catch(showError)
+  }
+  // 取消：丢弃待定的参考线（与固定源一致），已有比例保持不变。
+  measureCancel.addEventListener('click', () => { measurePending = undefined; measureRecalibrate = false; measureDialog.close() })
+  measureApply.addEventListener('click', () => {
+    try {
+      if (!measurePending) return
+      const { page, operation } = measurePending
+      const scale = parseCalibration(measureValue.value.trim(), measureUnit.value, pdfLineLength(operation.from as number[], operation.to as number[]))
+      if (!scale) throw new Error('请输入大于 0 的长度和不超过 12 个字符的单位')
+      if (!/^[\x20-\x7e]+$/.test(scale.unit)) throw new Error('PDF 标签字体为 Helvetica，单位请使用英文字符（如 m、cm、ft）')
+      commitMeasure(page, operation, scale, () => { status.textContent = `测量比例已标定：1 ${scale.unit} = ${scale.unitsPerPt.toFixed(2)} pt（仅本次会话有效）` })
+      measureScale = scale; measureRecalibrate = false; measurePending = undefined; measureDialog.close()
+    } catch (error) { measureError.textContent = error instanceof Error ? error.message : String(error) }
+  })
   // 二选一：输入一项会清空另一项（与固定源一致）。
   linkUrl.addEventListener('input', () => { if (linkUrl.value.trim()) linkPage.value = '' })
   linkPage.addEventListener('input', () => { linkPage.value = linkPage.value.replace(/[^0-9]/g, ''); if (linkPage.value) linkUrl.value = '' })
@@ -1407,7 +1446,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           shape = window.document.createElementNS(svgNs, 'polyline')
           shape.setAttribute('points', `${x - size},${y + size} ${x},${y - size} ${x + size},${y + size}`)
         } else {
-          const values = operation.shape === 'arrow' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
+          const values = operation.shape === 'arrow' || operation.shape === 'measure' ? [...(operation.from as number[]), ...(operation.to as number[])] : (operation.paths as number[][])[0]!
           const points: number[][] = []
           for (let index = 0; index < values.length; index += 2) points.push(point([values[index]!, values[index + 1]!]))
           shape = window.document.createElementNS(svgNs, 'polyline')
@@ -1419,6 +1458,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
             head.setAttribute('points', [[x2 - size * Math.cos(angle - Math.PI / 7), y2 - size * Math.sin(angle - Math.PI / 7)], [x2, y2], [x2 - size * Math.cos(angle + Math.PI / 7), y2 - size * Math.sin(angle + Math.PI / 7)]].map(item => item.join(',')).join(' '))
             head.setAttribute('stroke', rgb); head.setAttribute('fill', 'none'); head.setAttribute('stroke-width', String(Number(operation.width) * scale))
             svg.append(head)
+          }
+          if (operation.shape === 'measure' && points.length === 2) {
+            const [[x1, y1], [x2, y2]] = points as [[number, number], [number, number]]
+            let angle = Math.atan2(y2 - y1, x2 - x1) * 180 / Math.PI
+            if (Math.abs(angle) > 90) angle += 180
+            const text = window.document.createElementNS(svgNs, 'text')
+            text.setAttribute('x', String((x1 + x2) / 2)); text.setAttribute('y', String((y1 + y2) / 2 - 6 * scale))
+            text.setAttribute('text-anchor', 'middle'); text.setAttribute('font-size', String(9 * scale)); text.setAttribute('fill', rgb)
+            text.setAttribute('transform', `rotate(${angle} ${(x1 + x2) / 2} ${(y1 + y2) / 2})`)
+            text.dataset.pdfMeasureLabel = ''; text.textContent = String(operation.label)
+            svg.append(text)
           }
         }
         shape.setAttribute('stroke', rgb); shape.setAttribute('fill', 'none'); shape.setAttribute('stroke-width', String(Number(operation.width) * scale))
@@ -1526,6 +1576,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
             linkPending = { page, points }; linkUrl.value = ''; linkPage.value = ''; linkError.textContent = ''
             linkPageText.textContent = `或跳转到本文档第几页（1–${state().length}）`
             linkDialog.showModal(); linkUrl.focus()
+            return
+          }
+          if (drawShape === 'measure') {
+            const line = pdfDrawingOperation(page.pageId, 'measure', points, page.cropBox, drawColor, { label: '0' })
+            if (measureScale && !measureRecalibrate) { commitMeasure(page, line, measureScale); return }
+            measurePending = { page, operation: line }; measureValue.value = ''; measureError.textContent = ''
+            measureHint.textContent = `参考线长 ${pdfLineLength(line.from as number[], line.to as number[]).toFixed(1)} pt；输入它代表的实际长度。`
+            measureDialog.showModal(); measureValue.focus()
             return
           }
           const operation = pdfDrawingOperation(page.pageId, drawShape, points, page.cropBox, drawColor)

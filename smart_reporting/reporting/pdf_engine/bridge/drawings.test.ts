@@ -124,3 +124,24 @@ test('inserted images are written as Stamp annotations; non-PNG data and stray i
     { kind: 'addDrawing', pageId, shape: 'rect', rect: [50, 60, 250, 160], image: png, color, width: 2 },
   ]) await assert.rejects(patchPdfWithReceipt(bytes, [operation], model.sourceSha256), undefined, JSON.stringify(operation).slice(0, 160))
 })
+
+test('calibrated measure lines land as Line annotations carrying the length label', async () => {
+  const document = await PDFDocument.create(); document.addPage([400, 500])
+  const bytes = await document.save()
+  const model = await inspectPdf(bytes)
+  const pageId = model.pages[0]!.pageId
+  const result = await patchPdfWithReceipt(bytes, [
+    { kind: 'addDrawing', pageId, shape: 'measure', from: [40, 100], to: [240, 100], label: '2.50 m', color, width: 1.5 },
+  ], model.sourceSha256)
+  const [annot] = await annotations(result.bytes)
+  assert.equal(annot!.get(PDFName.of('Subtype'))?.toString(), '/Line')
+  assert.equal(annot!.lookup(PDFName.of('Contents'))?.decodeText?.() ?? '', '2.50 m')
+  const line = annot!.lookup(PDFName.of('L'), PDFArray)
+  assert.deepEqual(Array.from({ length: 4 }, (_, index) => (line.lookup(index) as PDFNumber).asNumber()), [40, 100, 240, 100])
+  for (const bad of [
+    { label: '' }, { label: undefined }, { label: '2 米' }, { label: 'x'.repeat(65) }, { to: [41, 100] as [number, number] }, { to: [900, 100] as [number, number] },
+  ]) {
+    await assert.rejects(patchPdfWithReceipt(bytes, [{ kind: 'addDrawing', pageId, shape: 'measure', from: [40, 100], to: [240, 100], label: '1 m', color, width: 1, ...bad } as never], model.sourceSha256))
+  }
+  await assert.rejects(patchPdfWithReceipt(bytes, [{ kind: 'addDrawing', pageId, shape: 'arrow', from: [40, 100], to: [240, 100], label: '1 m', color, width: 1 } as never], model.sourceSha256))
+})

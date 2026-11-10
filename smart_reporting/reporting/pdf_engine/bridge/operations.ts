@@ -52,7 +52,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('addMarkup'), ...page, markupType: z.enum(['highlight', 'underline', 'squiggly', 'strikeout']), quads: z.array(z.tuple([z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite(), z.number().finite()])).min(1).max(200), color }).strict(),
   z.object({ kind: z.literal('highlight'), ...page, rect, color: color.optional() }).strict(),
   // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
-  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'ink', 'polygon', 'caret', 'link', 'image']), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
+  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'measure', 'ink', 'polygon', 'caret', 'link', 'image']), label: z.string().min(1).max(64).regex(/^[\x20-\x7e]+$/).optional(), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
@@ -267,6 +267,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       const inside = (x: number, y: number) => x >= left && x <= right && y >= bottom && y <= top
       const base = { pageIndex: target.index, color: op.color, width: op.width }
       if (op.image !== undefined && op.shape !== 'image') throw new Error('PDF 绘图参数无效')
+      if (op.label !== undefined && op.shape !== 'measure') throw new Error('PDF 绘图参数无效')
       if (op.shape === 'rect' || op.shape === 'ellipse') {
         if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.image !== undefined) throw new Error('PDF 绘图参数无效')
         const [x1, y1, x2, y2] = op.rect
@@ -275,6 +276,10 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       } else if (op.shape === 'arrow') {
         if (!op.from || !op.to || op.rect || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 箭头范围无效')
         request.drawings.push({ ...base, kind: 'arrow', from: op.from, to: op.to })
+      } else if (op.shape === 'measure') {
+        // 固定源 measure.ts：标定后的测量线，标签为会话内换算的长度文字（Helvetica，仅可打印 ASCII）。
+        if (!op.from || !op.to || op.label === undefined || op.label.trim() === '' || op.rect || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || !inside(...op.from) || !inside(...op.to) || Math.hypot(op.to[0] - op.from[0], op.to[1] - op.from[1]) < 2) throw new Error('PDF 测量线无效')
+        request.drawings.push({ ...base, kind: 'measure', from: op.from, to: op.to, label: op.label })
       } else if (op.shape === 'polygon') {
         if (!op.vertices || op.rect || op.from || op.to || op.paths || op.point || op.url !== undefined || op.destPage !== undefined || op.vertices.some(vertex => !inside(...vertex))) throw new Error('PDF 多边形顶点无效')
         request.drawings.push({ ...base, kind: 'polygon', vertices: op.vertices })

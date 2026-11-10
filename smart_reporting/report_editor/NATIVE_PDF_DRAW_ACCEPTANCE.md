@@ -4,7 +4,7 @@
 
 ## 固定源行为
 
-- `apps/pdf/src/renderer/App.tsx` `DRAW_TOOLS`：ink、measure、rect、ellipse、arrow、polygon、caret、note；已接通 **ink / rect / ellipse / arrow / polygon / caret**（measure 仍待标定比例设计），按源顺序放在 Annotate ▸ Draw Tools。
+- `apps/pdf/src/renderer/App.tsx` `DRAW_TOOLS`：ink、measure、rect、ellipse、arrow、polygon、caret、note；已接通 **ink / measure / rect / ellipse / arrow / polygon / caret**，按源顺序放在 Annotate ▸ Draw Tools。
 - `DrawLayer.tsx` `DRAW_COLORS`：红 `[0.86,0.22,0.18]`（默认）、黄、绿、蓝、黑；绘图颜色独立于高亮颜色。
 - `save-pdf.ts` `DrawingInput`：`rect`/`ellipse` 为 PDF user space 矩形，`arrow` 为 from/to，`ink` 为路径数组；`polygon` 为顶点数组（≥3）、`caret` 为插入点；引擎写成 Square/Circle/Line(带箭头)/Ink/Polygon/Caret 批注并生成外观流。未新增写入器。
 
@@ -16,6 +16,13 @@
 | 多边形交互 | 逐点点击（相邻 <2pt 去重），双击或 Enter 完成，Esc 或切换工具取消；进行中以虚线预览 |
 | 前端 | 绘图模式拖动生成；端点夹到当前可见范围；手绘采样 ≤2000 点；草稿以 SVG 叠加预览；颜色下拉沿用源五色；空白页/已删除页拒绝 |
 | 桥接 | zod 严格字段 + 形状专属参数；坐标必须在（含同批裁切后的）可见范围内；宽度 0.25–24、颜色 0–1；输出摘要纳入预览确认 |
+
+## 测量（固定源 measure.ts / MeasureScaleDialog）
+
+- `frontend/src/vendor/genoffice-pdf/renderer/measure.ts` 与固定源逐字节一致（`parseCalibration` / `formatLength`）。
+- 首条测量线作为参考线弹出“标定测量比例”（实际长度 + 单位，默认 `m`）；确定后写入该线，之后的测量线按会话比例自动生成两位小数标签；再次点击已激活的测量工具＝重新标定；取消丢弃参考线。比例只在本次会话有效（与固定源一致），文件只保存几何与标签。
+- 引擎以 Helvetica 写标签：前端与桥接只接受可打印 ASCII、≤64 字符，因此单位须为英文（输入“米”会提示改用 m）。桥接转换为引擎 `measure` 绘图（Line 批注 + `/Contents` 标签 + 外观流）。
+- 证据：`frontend/src/pdf-measure.test.ts`；`reporting/pdf_engine/bridge/drawings.test.ts`（真实输出 Line/L/Contents 与拒绝用例）；`pdf-draw-smoke.mjs` 标定校验错误 → 3.00 m 参考线 → 自动 1.50 m → 重新标定取消不新增 → 保存后 pypdf 回读两条 Line 的 `/Contents` 为 `3.00 m`、`1.50 m`，渲染图标签可见。
 
 ## 编辑链接（固定源 editLink / LinkDialog）
 
