@@ -6,11 +6,13 @@
     "apps/slides/src/renderer/i18n/ribbon/en.ts": "8292a76065fb4f3447fac68fc94a212481af95a994b32176b18cfd5fcd8c9441",
     "apps/slides/src/renderer/i18n/ribbon/zh.ts": "f963397963f4f47a88d08aad5da3dd624cb86b6a34f268d6b229a1c09eb4efd8",
     "packages/ui/src/shape-gallery.tsx": "316b6d345e3ad1da3cc3c14813ac9196a993d461cf12ec8b8c5d39e76bf41e95",
-    "packages/i18n/src/common-ribbon.ts": "0cddb281a66bc24d047aeb1e7135d5b70de6b1caf3fe779ee1ddecc9f2a6a6ad"
+    "packages/i18n/src/common-ribbon.ts": "0cddb281a66bc24d047aeb1e7135d5b70de6b1caf3fe779ee1ddecc9f2a6a6ad",
+    "apps/slides/src/renderer/insert-presets.ts": "c398d1f3ca9791c2e3a7df6cb37f1b9af128dcb9a026d3cee863f4ccef1518d6"
   },
   "local": {
     "icons.tsx": "f4e2817c13272d31a87f3ae1b1616f795361480632d72fc151beb88342f9b985",
     "ribbon-home-clipboard-locales.ts": "388d61d175a84eb36daaa06ab341488959793d8b3a7c6569469219b6c2d04c76",
-    "shape-gallery-data.ts": "7e07e476611fcd24ca821522c59f2e95eab1b1c45f857ae805b9645e0d5ab828"
+    "shape-gallery-data.ts": "7e07e476611fcd24ca821522c59f2e95eab1b1c45f857ae805b9645e0d5ab828",
+    "chart-gallery-data.ts": "079d5c9582b2b5c40d596c9d51577e2c634087954f7a034cf7cd74327fabd548"
   }
 }

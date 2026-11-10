@@ -25,6 +25,13 @@
 - 草稿 `shapeStyles: [{slideIndex, elementId, fill?, stroke?}]`；桥接用固定引擎 `setElementFill` 与 `strokePatchToModel` 写入，拒绝非法颜色、零线宽、空修改、已删除或不存在的对象。
 - 证据：`test_slides_bridge_sets_shape_fill_and_outline`、Ribbon 单测、`new-slide` 冒烟为文本框设置绿色填充与 3 磅轮廓并核对 XML。
 
+## 插入图表（固定源 Insert ▸ Chart / CHART_GALLERY）
+
+- Insert ▸ Illustrations ▸ Chart 为固定源 13 种图表的选择器（`components/chart-gallery-data.ts`，来源与哈希见 `SOURCE.md`）；插入固定源示例数据（类别/系列与数值同固定源），待保存清单可撤销。
+- 位置同固定源 `graphicFrameInsertFrame`：幻灯片宽 2/3、宽高比 3:2、居中；`barH` 映射为 `bar` + `barDir: 'bar'`（同固定源主进程）。固定引擎 `addChart` 写入图表部件与内嵌工作簿。
+- 图表与表格插入都会重建页面，因此在全部按对象身份的修改之后执行；每次插入后更新页面引用，同页多个表格/图表依次生效（`test_slides_bridge_inserts_multiple_tables_and_charts_on_one_slide`，修复了同页第二个插入失败的问题）。
+- 证据：`test_slides_bridge_inserts_gallery_charts`（柱形、条形、三维饼图、组合图、散点图）、`test_slides_bridge_rejects_invalid_chart_data`、Ribbon 单测、`new-slide` 冒烟插入簇状柱形图并用 python-pptx 回读类别；LibreOffice 栅格化确认图表可见。
+
 ## 编辑已有表格单元格（固定引擎 editTableCellText）
 
 - 选中表格（对象列表现在包含表格）时，检查面板显示单元格网格，可逐格改字；合并单元格只读。每个改动单元格为一条待保存项，删除表格所在对象时一并撤回。

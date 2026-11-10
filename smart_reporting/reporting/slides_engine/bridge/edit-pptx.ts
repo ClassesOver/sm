@@ -3,7 +3,7 @@ import { XMLParser } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addElement, addPicture, addSection, addTable, applyHeaderFooter, editTableCellText, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { addChart, addElement, addPicture, addSection, addTable, applyHeaderFooter, editTableCellText, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -52,6 +52,8 @@ type Input = {
   headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
   /** 固定源表格单元格编辑（editTableCellText）：保留单元格首段与首个文字段的格式。 */
   tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]
+  /** 固定源 Insert ▸ Chart（insertChart）：13 种图表类型与数据；位置为 2/3 宽、3:2、居中（graphicFrameInsertFrame）。 */
+  charts?: { slideIndex: number; kind: string; categories: string[]; series: { name: string; values: number[] }[] }[]
   /** 固定源 onResetLayout（resetSlideLayout）：占位符去掉显式位置，回到版式继承；最先执行，同批其他修改叠加其上。 */
   resetLayouts?: number[]
   /** 固定源缩略图删除（deleteSlide）：删除的来源页索引；同批不得再引用这些页。order 只列保留页。 */
@@ -276,6 +278,17 @@ if (request.action === 'inspect') {
     if (!reset) throw new Error('reset_layout_failed')
     originalSlides[index] = reset
   }
+  const chartKinds = ['bar', 'bar3D', 'barStacked', 'barPercentStacked', 'barH', 'line', 'area', 'pie', 'pie3D', 'doughnut', 'scatter', 'radar', 'comboBarLine']
+  const charts = request.charts ?? []
+  if (!Array.isArray(charts) || charts.length > 50) throw new Error('charts_invalid')
+  const label = (value: unknown) => typeof value === 'string' && [...value].length <= 100 && !/[\u0000-\u001f\u007f]/.test(value)
+  for (const chart of charts) {
+    if (!chart || typeof chart !== 'object' || Object.keys(chart).sort().join() !== 'categories,kind,series,slideIndex' || !validSlideIndex(chart.slideIndex, slideCount) || !chartKinds.includes(chart.kind)
+      || !Array.isArray(chart.categories) || chart.categories.length < 1 || chart.categories.length > 100 || !chart.categories.every(label)
+      || !Array.isArray(chart.series) || chart.series.length < 1 || chart.series.length > 20
+      || chart.series.some(series => !series || Object.keys(series).sort().join() !== 'name,values' || !label(series.name) || !Array.isArray(series.values) || series.values.length !== chart.categories.length || !series.values.every(value => typeof value === 'number' && Number.isFinite(value)))
+      || (chart.kind === 'comboBarLine' && chart.series.length < 2) || (chart.kind === 'scatter' && !chart.categories.every(value => Number.isFinite(Number(value))))) throw new Error('chart_invalid')
+  }
   // 表格先校验；插入放在最后（addTable 会把已做的修改写入 XML 后重建页面并改变对象身份）。
   const tables = request.tables ?? []
   if (!Array.isArray(tables) || tables.length > 100) throw new Error('tables_invalid')
@@ -316,7 +329,7 @@ if (request.action === 'inspect') {
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.charts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -627,7 +640,19 @@ if (request.action === 'inspect') {
     const { cx, cy } = opened.deck.size, rowHeightEmu = Math.round(29.2 * 12700), width = Math.round(cx * 2 / 3)
     const slideIndex = opened.deck.slides.indexOf(originalSlides[table.slideIndex]!)
     if (slideIndex < 0) throw new Error('table_slide_missing')
-    if (!addTable(opened, slideIndex, { rows: table.rows, cols: table.cols, offset: { x: Math.round((cx - width) / 2), y: Math.round(cy * 0.105), cx: width, cy: table.rows * rowHeightEmu }, rowHeightsEmu: Array(table.rows).fill(rowHeightEmu) })) throw new Error('table_insert_failed')
+    const added = addTable(opened, slideIndex, { rows: table.rows, cols: table.cols, offset: { x: Math.round((cx - width) / 2), y: Math.round(cy * 0.105), cx: width, cy: table.rows * rowHeightEmu }, rowHeightsEmu: Array(table.rows).fill(rowHeightEmu) })
+    if (!added) throw new Error('table_insert_failed')
+    // 插入会重建页面对象：更新引用，供同页后续表格/图表定位
+    originalSlides[table.slideIndex] = added.slide
+  }
+  // 图表与表格一样会重建页面，放在全部按对象身份的修改之后；位置同固定源 graphicFrameInsertFrame。
+  for (const chart of charts) {
+    const { cx, cy } = opened.deck.size, width = Math.round(cx * 2 / 3), height = Math.round(width * 2 / 3)
+    const slideIndex = opened.deck.slides.indexOf(originalSlides[chart.slideIndex]!)
+    if (slideIndex < 0) throw new Error('chart_slide_missing')
+    const added = addChart(opened, slideIndex, { kind: (chart.kind === 'barH' ? 'bar' : chart.kind) as never, ...(chart.kind === 'barH' ? { barDir: 'bar' as const } : {}), categories: chart.categories, series: chart.series, offset: { x: Math.round((cx - width) / 2), y: Math.round((cy - height) / 2), cx: width, cy: height } })
+    if (!added) throw new Error('chart_insert_failed')
+    originalSlides[chart.slideIndex] = added.slide
   }
   // 页眉页脚会重建页面：放在全部修改与表格之后，应用到最终全部页面（含新建页）。
   if (request.headerFooter !== undefined) {

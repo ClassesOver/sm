@@ -61,3 +61,9 @@ state uses the source matching helper without an aspect-ratio fallback.
 Only the data is taken; the React previews depend on the renderer's preset geometry. Insert ▸ Shapes
 uses it with the pinned insert defaults (`default-shape.ts` factory fill `#C43E1C`; line presets get a
 1pt black stroke per `insert-actions.ts`). Hashes are in `components/SOURCE-SHA256.json`.
+
+2026-11-10: `components/chart-gallery-data.ts` adapts the pinned `apps/slides/src/renderer/insert-presets.ts`
+`CHART_GALLERY` and `chartSampleData` (13 kinds, unchanged order and sample values) with Simplified Chinese
+strings substituted for the i18n keys. Insert ▸ Chart uses it with the pinned frame
+(`insert-defaults.ts` `graphicFrameInsertFrame`: 2/3 slide width, 3:2, centred) and `barH` → `bar` +
+`barDir: 'bar'` as in the pinned main process. Hashes are in `components/SOURCE-SHA256.json`.

@@ -550,6 +550,7 @@ class ReportSlidesEditorService:
         sections: list[dict[str, Any]] | None = None,
         header_footer: dict[str, Any] | None = None,
         table_cells: list[dict[str, Any]] | None = None,
+        charts: list[dict[str, Any]] | None = None,
         theme: str | None = None,
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
@@ -590,6 +591,8 @@ class ReportSlidesEditorService:
                     request["headerFooter"] = header_footer
                 if table_cells:
                     request["tableCells"] = table_cells
+                if charts:
+                    request["charts"] = charts
                 if theme is not None:
                     request["theme"] = theme
                 if slide_size is not None:

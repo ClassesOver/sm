@@ -1,4 +1,5 @@
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import { CHART_GALLERY } from './vendor/genoffice-slides/components/chart-gallery-data'
 import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
 /** 固定源 ribbon zh 语言包中的艺术字预设名称（ribbonWordArtPreset*） */
 export const WORDART_PRESET_LABELS: Record<string, string> = { blue: '填充：蓝色', gold: '填充：金色', red: '填充：深红', purple: '填充：紫色', 'green-italic': '填充：绿色；斜体', 'white-orange': '填充：白色；描边：橙色', 'white-red': '填充：白色；描边：深红', 'gold-brown': '填充：金色；描边：棕色', 'sky-navy': '填充：天蓝；描边：藏青', 'navy-white': '填充：藏青；描边：白色', 'black-gold': '填充：黑色；描边：金色', 'silver-dark': '填充：银色；描边：深灰' }
@@ -128,7 +129,7 @@ const tabs: Tab[] = [
     { label: 'Illustrations', controls: [
       { id: 'insertShape', label: 'Shapes', kind: 'select', sourceIcon: IconShapes, sourceActionId: 'onPickShape' },
       { id: 'insertSmartArt', label: 'SmartArt', sourceIcon: IconSmartArt, sourceActionId: 'onInsertSmartArt', unavailable: noWrite('SmartArt 插入尚未接入 editSlides 请求') },
-      { id: 'insertChart', label: 'Chart', sourceIcon: IconChart, sourceActionId: 'onInsertChart', unavailable: noWrite('图表插入尚未接入 editSlides 请求') },
+      { id: 'insertChart', label: 'Chart', kind: 'select', sourceIcon: IconChart, sourceActionId: 'onInsertChart' },
     ] },
     { label: 'Text', controls: [
       { id: 'addText', label: 'Text Box', sourceIcon: IconTextBox, sourceActionId: 'onInsert' },
@@ -332,7 +333,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           select.setAttribute('aria-label', control.label)
           select.dataset.command = control.id
           if (control.id === 'lineSpacingPct' || PARAGRAPH_LIST_COMMANDS.includes(control.id)) select.add(new Option('未设置或混合值', ''))
-          if (control.id === 'insertWordArt') {
+          if (control.id === 'insertChart') {
+            // 固定源 CHART_GALLERY：13 种图表，顺序与名称同固定源。
+            select.add(new Option('插入图表…', ''))
+            for (const item of CHART_GALLERY) select.add(new Option(item.label, item.kind))
+          } else if (control.id === 'insertWordArt') {
             // 固定源共享艺术字库：12 个预设，顺序与名称同固定源。
             select.add(new Option('插入艺术字…', ''))
             for (const preset of WORDART_PRESETS) select.add(new Option(WORDART_PRESET_LABELS[preset.id] ?? preset.id, preset.id))
@@ -351,7 +356,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           } else {
             for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value), value))
           }
-          select.addEventListener('change', () => { options.onAction(control.id, select.value); if (['addSlideWithLayout', 'insertShape', 'changeShape', 'insertWordArt'].includes(control.id)) select.value = '' })
+          select.addEventListener('change', () => { options.onAction(control.id, select.value); if (['addSlideWithLayout', 'insertShape', 'changeShape', 'insertWordArt', 'insertChart'].includes(control.id)) select.value = '' })
           element = select
         } else if (control.kind === 'text' || control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
           const input = document.createElement(control.kind === 'text' ? 'textarea' : 'input')

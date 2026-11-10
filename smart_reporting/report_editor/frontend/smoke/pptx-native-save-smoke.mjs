@@ -249,6 +249,9 @@ try {
     // 艺术字（固定源 insertWordArt）：白色填充 + 橙色描边
     await page.locator('select[data-command="insertWordArt"]').selectOption('white-orange')
     await page.locator('.structure-pending li').filter({ hasText: '艺术字' }).waitFor()
+    // 插入图表（固定源 CHART_GALLERY）：簇状柱形图 + 固定源示例数据
+    await page.locator('select[data-command="insertChart"]').selectOption('bar')
+    await page.locator('.structure-pending li').filter({ hasText: '图表 簇状柱形图（示例数据）' }).waitFor()
     // 形状格式（固定源 Shape Format 填充/轮廓）：作用于来源页文本框。
     const styledTarget = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     await page.locator('#object-select').selectOption(styledTarget.id)
@@ -457,6 +460,7 @@ try {
     assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
     assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
     assert.deepEqual(operation.sections, [{ slideIndex: 0, name: '第二部分' }])
+    assert.deepEqual(operation.charts, [{ slideIndex: 0, kind: 'bar', categories: ['类别 1', '类别 2', '类别 3', '类别 4'], series: [{ name: '系列 1', values: [4.3, 2.5, 3.5, 4.5] }, { name: '系列 2', values: [2.4, 4.4, 1.8, 2.8] }, { name: '系列 3', values: [2, 2, 3, 5] }] }])
     assert.deepEqual(operation.tableCells, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'table').id, row: 1, col: 1, text: '120' }])
     assert.deepEqual(operation.headerFooter, { footer: '智能报告 · 内部', slideNum: true, date: null, dateAuto: true })
     assert.deepEqual(operation.shapeKinds, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'shape').id, kind: 'hexagon' }])
@@ -501,7 +505,9 @@ try {
     assert.deepEqual(slides[1][1], ['Native browser formatting fixture', '2', '请在此放置您的文字'])
     // 副本复制的是已保存内容（不含同批新增形状）；原页多出两个形状
     assert.deepEqual(slides[2].slice(0, 2), [slides[1][0], ['Native browser formatting fixture']])
-    assert.equal(slides[1][2], slides[2][2] + 5)
+    assert.equal(slides[1][2], slides[2][2] + 6)
+    const chartCount = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(sum(s.has_chart for s in p.slides[1].shapes), [list(c.categories) for c in [s.chart.plots[0] for s in p.slides[1].shapes if s.has_chart]])'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(chartCount.stdout.trim(), "1 [['类别 1', '类别 2', '类别 3', '类别 4']]")
     const table = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[len(s.table.rows),len(s.table.columns)] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
     // 夹具原有 2×2 表格 + 新插入的 4×3 表格
     assert.deepEqual(JSON.parse(table.stdout), [[2, 2], [4, 3]])

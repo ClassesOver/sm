@@ -940,3 +940,50 @@ def test_slides_bridge_edits_existing_table_cells_keeping_formatting(tmp_path: P
         _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "tableCells": [
             {"slideIndex": 0, "elementId": element["id"], "row": 0, "col": 0, "text": "a"}, {"slideIndex": 0, "elementId": element["id"], "row": 0, "col": 0, "text": "b"}]}, tmp_path)
     assert not (tmp_path / "bad.pptx").exists()
+
+
+@pytest.mark.parametrize("kind,xml_tag", [("bar", "c:barChart"), ("barH", 'c:barDir val="bar"'), ("pie3D", "c:pie3DChart"), ("comboBarLine", "c:lineChart"), ("scatter", "c:scatterChart")])
+def test_slides_bridge_inserts_gallery_charts(tmp_path: Path, kind: str, xml_tag: str):
+    """固定源 Insert ▸ Chart：图表部件、内嵌数据与 graphicFrame 写入；位置 2/3 宽 3:2 居中；同页对象修改不受影响。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / f"{kind}.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    categories = ["0.7", "1.8", "2.6", "3.2"] if kind == "scatter" else ["第一季度", "第二季度", "第三季度", "第四季度"]
+    series = [{"name": "销售额", "values": [4.3, 2.5, 3.5, 4.5]}, {"name": "增长率", "values": [2.0, 1.2, 2.6, 3.4]}]
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)),
+             "charts": [{"slideIndex": 0, "kind": kind, "categories": categories, "series": series}]}, tmp_path)
+    with ZipFile(output) as archive:
+        charts = [name for name in archive.namelist() if re.fullmatch(r"ppt/charts/chart\d+\.xml", name)]
+        xml = "".join(archive.read(name).decode() for name in charts)
+        assert xml_tag in xml and "销售额" in xml
+        assert any(name.startswith("ppt/embeddings/") for name in archive.namelist())
+    presentation = Presentation(str(output))
+    frame = next(shape for shape in presentation.slides[0].shapes if shape.has_chart)
+    assert abs(frame.width - round(presentation.slide_width * 2 / 3)) <= 5
+    assert abs(frame.left - round((presentation.slide_width - frame.width) / 2)) <= 5
+
+
+def test_slides_bridge_rejects_invalid_chart_data(tmp_path: Path):
+    source = tmp_path / "source.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    base = {"slideIndex": 0, "kind": "bar", "categories": ["a", "b"], "series": [{"name": "s", "values": [1, 2]}]}
+    for patch in ({"kind": "treemap"}, {"categories": []}, {"series": [{"name": "s", "values": [1]}]}, {"series": [{"name": "s", "values": [1, "x"]}]},
+                  {"kind": "comboBarLine"}, {"kind": "scatter"}, {"extra": True}):
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({"action": "edit", "input": str(source), "output": str(tmp_path / "bad.pptx"), "edits": [], "charts": [{**base, **patch}]}, tmp_path)
+    assert not (tmp_path / "bad.pptx").exists()
+
+
+def test_slides_bridge_inserts_multiple_tables_and_charts_on_one_slide(tmp_path: Path):
+    """表格与图表插入都会重建页面：同页多个插入须依次生效。"""
+    source = tmp_path / "source.pptx"
+    output = tmp_path / "multi.pptx"
+    source.write_bytes(FIXTURE.read_bytes())
+    count = len(_invoke({"action": "inspect", "input": str(source)}, tmp_path)["slides"])
+    _invoke({"action": "edit", "input": str(source), "output": str(output), "edits": [], "order": list(range(count)),
+             "tables": [{"slideIndex": 0, "rows": 2, "cols": 2}, {"slideIndex": 0, "rows": 3, "cols": 3}],
+             "charts": [{"slideIndex": 0, "kind": "line", "categories": ["a", "b"], "series": [{"name": "s", "values": [1, 2]}]},
+                        {"slideIndex": 0, "kind": "pie", "categories": ["a", "b"], "series": [{"name": "s", "values": [1, 2]}]}]}, tmp_path)
+    shapes = Presentation(str(output)).slides[0].shapes
+    assert sum(shape.has_table for shape in shapes) == 2 and sum(shape.has_chart for shape in shapes) == 2
