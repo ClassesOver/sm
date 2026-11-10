@@ -13,11 +13,12 @@ describe('shared PPTX editor', () => {
     document.body.replaceChildren()
   })
 
-  async function openEditor() {
+  async function openEditor(headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto?: boolean }) {
     const deck = {
       revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 },
       slides: [0, 1].map(slideIndex => ({
         slideIndex,
+        ...(headerFooter ? { headerFooter } : {}),
         animations: [],
         elements: ['title', 'body'].map(id => ({
           id, type: 'text', name: id, text: `${id} ${slideIndex}`, editable: true, deletable: true,
@@ -35,6 +36,20 @@ describe('shared PPTX editor', () => {
     await vi.waitFor(() => expect(root.querySelectorAll('.slide-open')).toHaveLength(2))
     return { root, shell, fetcher }
   }
+
+  it('preserves a fixed date when changing the footer', async () => {
+    const { root, shell, fetcher } = await openEditor({ footer: 'old', slideNum: false, date: '2026-10-01', dateAuto: false })
+    root.querySelector<HTMLButtonElement>('[data-command="headerFooter"]')!.click()
+    const dialog = document.querySelector<HTMLDialogElement>('.slides-hf-dialog')!
+    expect(dialog.querySelector<HTMLInputElement>('[name="dateAuto"]')!.checked).toBe(false)
+    dialog.querySelector<HTMLInputElement>('[name="footer"]')!.value = 'new footer'
+    dialog.querySelector<HTMLButtonElement>('[value="ok"]')!.click()
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] } })))
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
+    const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
+    expect(payload.headerFooter).toMatchObject({ date: '2026-10-01', dateAuto: false, footer: 'new footer' })
+  })
 
   it('retains pending geometry when switching objects before saving', async () => {
     const { root, shell, fetcher } = await openEditor()
