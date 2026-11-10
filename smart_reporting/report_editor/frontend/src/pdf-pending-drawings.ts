@@ -10,7 +10,7 @@ export function pendingDrawingTarget(pages: PdfPageIdentity[], operations: Nativ
   const page = pages.find(item => item.pageId === reference.pageId)
   if (!page || page.blank || !operation || operation.kind !== 'addDrawing' || operation.pageId !== reference.pageId || !pdfPageState(pages, operations).some(item => item.pageId === page.pageId)) throw Error('待保存绘图来源无效，请重新选择')
   validatePdfDrawing(operation, page.cropBox)
-  return { operation, page, movable: movable.has(String(operation.shape)) }
+  return { operation, page, movable: movable.has(String(operation.shape)), resizable: operation.shape === 'image' }
 }
 export function movePendingDrawing(pages: PdfPageIdentity[], operations: NativeOperation[], reference: PendingDrawingReference, dx: number, dy: number): NativeOperation[] {
   const target = pendingDrawingTarget(pages, operations, reference)
@@ -38,4 +38,23 @@ export function removePendingDrawing(pages: PdfPageIdentity[], operations: Nativ
   const next = operations.filter((_, index) => index !== reference.index)
   pdfPageState(pages, next)
   return structuredClone(next)
+}
+
+/** Source DrawLayer corner resize preserves aspect ratio around the opposite corner.
+ * Web names that fixed corner in unrotated PDF coordinates, not screen coordinates.
+ */
+export type PendingImageAnchor = 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right'
+export function resizePendingImage(pages: PdfPageIdentity[], operations: NativeOperation[], reference: PendingDrawingReference, scale: number, anchor: PendingImageAnchor): NativeOperation[] {
+  const target = pendingDrawingTarget(pages, operations, reference)
+  if (!target.resizable) throw Error('只有待保存图像可缩放')
+  if (!Number.isFinite(scale) || scale <= 0 || !['bottom-left', 'bottom-right', 'top-left', 'top-right'].includes(anchor)) throw Error('缩放比例须为正的有限数值，固定角须有效')
+  const [x1, y1, x2, y2] = target.operation.rect as [number, number, number, number]
+  const width = (x2 - x1) * scale, height = (y2 - y1) * scale
+  const x = anchor.endsWith('left') ? x1 : x2 - width
+  const y = anchor.startsWith('bottom') ? y1 : y2 - height
+  const next = structuredClone(operations), changed = next[reference.index]!
+  changed.rect = [x, y, anchor.endsWith('left') ? x1 + width : x2, anchor.startsWith('bottom') ? y1 + height : y2]
+  validatePdfDrawing(changed, target.page.cropBox)
+  pdfPageState(pages, next)
+  return next
 }

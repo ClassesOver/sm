@@ -1,4 +1,4 @@
-import { pendingDrawingTarget, movePendingDrawing, removePendingDrawing, type PendingDrawingReference } from './pdf-pending-drawings'
+import { pendingDrawingTarget, movePendingDrawing, resizePendingImage, removePendingDrawing, type PendingDrawingReference, type PendingImageAnchor } from './pdf-pending-drawings'
 import { toggleSavedDrawing } from './pdf-saved-drawings'
 import { stagePdfReply, stagePendingPdfReply, stagePdfLocalReply } from './pdf-replies'
 import { attachmentEditState, attachmentFileOperation, isAttachmentEdit } from './pdf-attachment-edits'
@@ -1344,6 +1344,50 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       dialog.remove()
     }
   }
+  async function editPendingImageSize(reference: PendingDrawingReference) {
+    const source = document, sourcePage = activeId
+    const current = () => canChangePendingDrawings() && source === document && sourcePage === activeId && !pendingDrawingsPanel.hidden && reference.snapshot === JSON.stringify(draft.operations) && selectedPendingDrawing === reference
+    if (!current()) return
+    if (!pendingDrawingTarget(model.pages, draft.operations, reference).resizable) return
+    const dialog = documentElement('dialog', 'pdf-pending-drawing-dialog'), form = documentElement('form')
+    dialog.setAttribute('aria-label', '缩放待保存图像'); form.method = 'dialog'
+    const help = documentElement('p'); help.textContent = '保持当前图像纵横比，围绕固定角缩放。固定角使用原始 PDF 坐标：左/右与上/下不随页面旋转改变；超出页面时不应用。'
+    const label = documentElement('label'); label.textContent = '缩放百分比'
+    const percent = documentElement('input'); percent.type = 'number'; percent.step = 'any'; percent.value = '100'; percent.required = true; percent.setAttribute('aria-label', '缩放百分比'); label.append(percent)
+    const anchorLabel = documentElement('label'); anchorLabel.textContent = '固定角（原始 PDF 坐标）'
+    const anchor = documentElement('select'); anchor.setAttribute('aria-label', '固定角（原始 PDF 坐标）')
+    for (const [value, text] of [['bottom-left', '左下'], ['bottom-right', '右下'], ['top-left', '左上'], ['top-right', '右上']]) {
+      const option = documentElement('option'); option.value = value!; option.textContent = text!; anchor.append(option)
+    }
+    anchorLabel.append(anchor)
+    const error = documentElement('p'); error.setAttribute('role', 'alert')
+    const apply = documentElement('button'); apply.type = 'submit'; apply.textContent = '应用缩放'
+    const cancel = documentElement('button'); cancel.type = 'button'; cancel.textContent = '取消'; cancel.addEventListener('click', () => dialog.close())
+    form.append(help, label, anchorLabel, error, apply, cancel); dialog.append(form); pendingDrawingDialog?.close(); root.append(dialog); pendingDrawingDialog = dialog
+    let cancelOnAbort: (() => void) | undefined
+    try {
+      await new Promise<void>(resolve => {
+        cancelOnAbort = () => { if (dialog.open) dialog.close(); resolve() }
+        abort.signal.addEventListener('abort', cancelOnAbort, { once: true })
+        dialog.addEventListener('close', () => resolve(), { once: true })
+        form.addEventListener('submit', event => {
+          event.preventDefault()
+          if (!dialog.open) return
+          try {
+            if (pendingDrawingDialog !== dialog || !current()) throw Error('草稿、页面或选择已变化，请重新选择图像')
+            if (!percent.value.trim()) throw Error('请输入缩放百分比')
+            const next = resizePendingImage(model.pages, draft.operations, reference, Number(percent.value) / 100, anchor.value as PendingImageAnchor)
+            draft.setOperations(next); selectedPendingDrawing = undefined; dialog.close(); void refresh().catch(showError)
+          } catch (cause) { error.textContent = cause instanceof Error ? cause.message : '无法缩放此图像' }
+        })
+        dialog.showModal(); percent.focus()
+      })
+    } finally {
+      if (cancelOnAbort) abort.signal.removeEventListener('abort', cancelOnAbort)
+      if (pendingDrawingDialog === dialog) pendingDrawingDialog = undefined
+      dialog.remove()
+    }
+  }
   function renderPendingDrawings() {
     const epoch = ++pendingDrawingsGeneration
     if (pendingDrawingsPanel.hidden) return
@@ -1353,7 +1397,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const current = () => epoch === pendingDrawingsGeneration && source === document && sourcePage === activeId && snapshot === JSON.stringify(draft.operations) && !pendingDrawingsPanel.hidden && canChangePendingDrawings()
     const page = model.pages.find(item => item.pageId === sourcePage)
     const heading = documentElement('p'); heading.textContent = `待保存绘图 · 来源第 ${page ? page.index + 1 : '—'} 页`
-    const help = documentElement('p'); help.textContent = '选择一个草稿记录后可平移或删除；保存后成为已保存绘图。链接可删除，暂不支持移动。'
+    const help = documentElement('p'); help.textContent = '选择一个草稿记录后可平移或删除；图像还可保持纵横比缩放。保存后成为已保存绘图。链接可删除，暂不支持移动。'
     pendingDrawingsPanel.append(heading, help)
     let count = 0
     for (const [index, operation] of operations.entries()) {
@@ -1381,7 +1425,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         if (!current() || selectedPendingDrawing !== reference) return
         try { draft.setOperations(removePendingDrawing(model.pages, draft.operations, reference)); selectedPendingDrawing = undefined; void refresh().catch(showError) } catch (cause) { showError(cause) }
       })
-      pendingDrawingsPanel.append(chosen, move, remove)
+      const resize = documentElement('button'); resize.type = 'button'; resize.textContent = '缩放所选图像'; resize.disabled = !current() || !target.resizable
+      resize.addEventListener('click', () => { if (current()) void editPendingImageSize(reference).catch(showError) })
+      pendingDrawingsPanel.append(chosen, move, resize, remove)
     }
   }
   function renderSavedDrawings() {

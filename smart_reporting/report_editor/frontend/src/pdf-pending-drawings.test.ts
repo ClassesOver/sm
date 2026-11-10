@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { NativeDraft, type NativeOperation } from './native-draft'
 import { pdfDrawingOperation, pdfPageState, type PdfPageIdentity } from './pdf-operations'
-import { movePendingDrawing, pendingDrawingTarget, removePendingDrawing } from './pdf-pending-drawings'
+import { movePendingDrawing, pendingDrawingTarget, resizePendingImage, removePendingDrawing } from './pdf-pending-drawings'
 const box = { x: 10, y: 20, width: 400, height: 500 }
 const page: PdfPageIdentity = { pageId: 'p1', index: 0, mediaBox: box, cropBox: box, rotation: 0 }
 const second = { ...page, pageId: 'p2', index: 1 }, pages = [page, second]
@@ -73,5 +73,51 @@ describe('pending drawing exact-record edits', () => {
     restored.setOperations(removePendingDrawing(pages, restored.operations, reference(restored.operations, 0)))
     expect(restored.operations).toEqual([moved[1]]); restored.undo(); expect(restored.operations).toEqual(moved)
     expect(restored.operations.every(operation => operation.kind === 'addDrawing')).toBe(true)
+  })
+})
+
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+const image = () => pdfDrawingOperation(page.pageId, 'image', [[40, 60], [100, 140]], box, red, { image: png })
+describe('pending image aspect-preserving resize', () => {
+  it('resizes only the exact twin record and preserves PNG, style and unrelated operations', () => {
+    const operations = [image(), image(), rect()], original = structuredClone(operations)
+    const result = resizePendingImage(pages, operations, reference(operations, 1), 1.5, 'bottom-left')
+    expect(result).toEqual([original[0], { ...original[1], rect: [40, 60, 130, 180] }, original[2]])
+    expect(operations).toEqual(original)
+    expect(pendingDrawingTarget(pages, operations, reference(operations, 1)).resizable).toBe(true)
+    expect(pendingDrawingTarget(pages, operations, reference(operations, 2)).resizable).toBe(false)
+  })
+  it('keeps each PDF-space opposite corner fixed and preserves aspect ratio', () => {
+    const operations = [image()]
+    const expected = { 'bottom-left': [40, 60, 70, 100], 'bottom-right': [70, 60, 100, 100], 'top-left': [40, 100, 70, 140], 'top-right': [70, 100, 100, 140] }
+    for (const anchor of ['bottom-left', 'bottom-right', 'top-left', 'top-right'] as const) {
+      const resized = resizePendingImage(pages, operations, reference(operations), .5, anchor)[0]!
+      expect(resized.rect).toEqual(expected[anchor])
+      const [x1,y1,x2,y2] = resized.rect as number[]
+      expect((x2!-x1!)/(y2!-y1!)).toBe(.75)
+    }
+  })
+  it('refuses non-images, invalid scales/anchors, small/overflow bounds and stale identities without mutation', () => {
+    const operations = [image()], original = structuredClone(operations), ref = reference(operations)
+    for (const scale of [0, -1, NaN, Infinity, 1e300, .001, 10]) expect(() => resizePendingImage(pages, operations, ref, scale, 'bottom-left')).toThrow()
+    expect(() => resizePendingImage(pages, operations, ref, .5, 'invalid' as 'top-left')).toThrow()
+    for (const operation of [rect(), pdfDrawingOperation('p1', 'link', [[40,60],[100,140]], box, red, { destPage: 2 })]) expect(() => resizePendingImage(pages, [operation], reference([operation]), .5, 'top-left')).toThrow('只有待保存图像')
+    expect(() => resizePendingImage(pages, [...operations, rect()], ref, .5, 'top-left')).toThrow('列表已变化')
+    expect(() => resizePendingImage(pages, operations, { ...ref, pageId: 'p2' }, .5, 'top-left')).toThrow()
+    expect(operations).toEqual(original)
+    const edgeImage = { ...image(), rect: [350.33, 440.11, 410, 520] }
+    const edge = resizePendingImage(pages, [edgeImage], reference([edgeImage]), .37, 'top-right')[0]!.rect as number[]
+    expect(edge.slice(2)).toEqual([410, 520])
+  })
+  it('preserves source identity on rotated/reordered pages and ordinary history/reload', () => {
+    const values = new Map<string, string>(), storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key,value) }, removeItem: (key: string) => { values.delete(key) } }
+    const draft = new NativeDraft(identity, storage)
+    draft.setOperations([image(), { kind: 'rotatePage', pageId: 'p1', delta: 90 }, { kind: 'reorderPages', pageIds: ['p2','p1'] }])
+    const before = draft.operations
+    draft.setOperations(resizePendingImage(pages, before, reference(before), .5, 'top-right')); const resized = draft.operations
+    expect(resized[0].rect).toEqual([70,100,100,140]); expect(resized.slice(1)).toEqual(before.slice(1))
+    draft.undo(); expect(draft.operations).toEqual(before); draft.redo(); expect(draft.operations).toEqual(resized)
+    expect(new NativeDraft(identity,storage).operations).toEqual(resized)
+    expect(resized.every(operation => ['addDrawing','rotatePage','reorderPages'].includes(operation.kind))).toBe(true)
   })
 })

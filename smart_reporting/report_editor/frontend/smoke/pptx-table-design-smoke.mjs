@@ -127,6 +127,7 @@ try {
   const text=page.getByLabel('表格单元格 2 行 3 列',{exact:true})
   await text.fill('styled cell'); await text.blur()
   await page.locator('[data-ribbon-tab="tableDesign"]').click()
+  if (await page.locator('[data-command="tableShadingWholeTable"]').isEnabled()) await page.locator('[data-command="tableShadingWholeTable"]').click()
   await page.locator('[data-command="tableShading"]').selectOption('#FFF2CC')
   await page.locator('[data-command="tableAllBorders"]').click()
   const readDraft=()=>page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.includes('fixture-pptx'))?.[1]??'{"operations":[]}').operations)

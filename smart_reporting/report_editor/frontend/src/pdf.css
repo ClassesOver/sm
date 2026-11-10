@@ -112,3 +112,5 @@
 .pdf-pending-drawing-dialog { max-width: 30rem; border: 1px solid var(--border, #d1d5db); border-radius: .5rem; padding: 1rem; }
 .pdf-pending-drawing-dialog label { display: block; margin: .5rem 0; }
 .pdf-pending-drawing-dialog input { margin-left: .5rem; width: 8rem; }
+
+.pdf-pending-drawing-dialog select { margin-left: .5rem; max-width: 15rem; }

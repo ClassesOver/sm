@@ -134,6 +134,7 @@ try {
   const readDraft=()=>page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.includes('fixture-pptx'))?.[1]??'{"operations":[]}').operations)
   await style.selectOption('zebraBlue')
   await rtl.click()
+  if (await page.locator('[data-command="tableShadingWholeTable"]').isEnabled()) await page.locator('[data-command="tableShadingWholeTable"]').click()
   await page.locator('[data-command="tableShading"]').selectOption('#FFF2CC')
   await style.selectOption('headerOrange')
   assert.deepEqual((await readDraft())[0].tableStyles,[{slideIndex:0,elementId:target.id,styleName:'headerOrange',rtl:true}])

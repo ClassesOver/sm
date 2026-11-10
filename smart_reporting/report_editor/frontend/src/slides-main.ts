@@ -18,7 +18,7 @@ import { openSlidesSizeDialog } from './slides-size-dialog'
 import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, isSourceItem, itemElementId, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, MOTION_PATHS, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
@@ -47,7 +47,8 @@ type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: n
 type SmartArtEdit = { slideIndex: number; layout: SmartArtGalleryLayout; items: string[] }
 type ChartEdit = { slideIndex: number; kind: ChartGalleryKind; categories: string[]; series: { name: string; values: number[] }[] }
 type NewSlide = { layoutFrom: number } | { duplicateOf: number } | { withLayout: string }
-type TableStyleEdit = { slideIndex: number; elementId: string; shadingColor?: string; borderPreset?: 'all' | 'none'; styleName?: SlidesTablePresetName } & Partial<SlidesTableFlags>
+type CellShading = { row: number; col: number; shadingColor: string }
+type TableStyleEdit = { cellShadings?: CellShading[]; slideIndex: number; elementId: string; shadingColor?: string; borderPreset?: 'all' | 'none'; styleName?: SlidesTablePresetName } & Partial<SlidesTableFlags>
 type TableStructureEdit = { slideIndex:number; elementId:string; kind:'insert-row'|'delete-row'|'insert-col'|'delete-col'; index:number; before?:boolean }
 type SlideChanges = {
   tableStructures?: TableStructureEdit[]
@@ -174,6 +175,8 @@ const sectionEdits: { slideIndex: number; name: string }[] = []
 /** 已有表格单元格改字：键为 页:对象:行:列 */
 const tableStructureEdits = new Map<number,TableStructureEdit>()
 const tableStyleEdits = new Map<string, TableStyleEdit>()
+let tableShadingCell: { slideIndex: number; elementId: string; row: number; col: number } | undefined
+let tableCellEditorGeneration = 0
 const tableCellEdits = new Map<string, { slideIndex: number; elementId: string; row: number; col: number; text: string }>()
 /** 固定源 Insert ▸ Chart：待插入图表（固定源示例数据），保存时最后写入。 */
 const chartEdits: ChartEdit[] = []
@@ -521,7 +524,7 @@ function markDirty() {
 }
 
 function slideChanges(): SlideChanges {
-  return { ...(tableStructureEdits.size ? {tableStructures:[...tableStructureEdits.values()].map(item=>({...item}))}:{}), ...(tableStyleEdits.size ? { tableStyles: [...tableStyleEdits.values()].map(item => ({ ...item })) } : {}), edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
+  return { ...(tableStructureEdits.size ? {tableStructures:[...tableStructureEdits.values()].map(item=>({...item}))}:{}), ...(tableStyleEdits.size ? { tableStyles: [...tableStyleEdits.values()].map(item => structuredClone(item)) } : {}), edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
     order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(tableCellEdits.size ? { tableCells: [...tableCellEdits.values()].map(item => ({ ...item })) } : {}), ...(chartEdits.length ? { charts: chartEdits.map(item => structuredClone(item)) } : {}), ...(smartArtEdits.length ? { smartArts: smartArtEdits.map(item => structuredClone(item)) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     ...(animationSequences.size ? { animationSequences: [...animationSequences].map(([slideIndex, items]) => ({ slideIndex, items: items.map(item => ({ ...item })) })) } : {}),
@@ -579,11 +582,18 @@ function restoreNativeDraft() {
     return item.index>=count || (item.kind.startsWith('delete-')?count<=1:count>=75)
   })) throw new Error('草稿中的表格行列操作无效；原草稿已保留')
   const restoredTableStyles = changes.tableStyles === undefined ? [] : changes.tableStyles
+  let restoredCellShadingCount = 0
   if (!Array.isArray(restoredTableStyles) || restoredTableStyles.length > 500 || new Set(restoredTableStyles.map(item => item && editKey(item.slideIndex,item.elementId))).size !== restoredTableStyles.length || restoredTableStyles.some(item => {
-    if (!item || Object.keys(item).some(key => !['slideIndex','elementId','shadingColor','borderPreset','styleName',...SLIDES_TABLE_FLAG_FIELDS].includes(key)) || !Number.isInteger(item.slideIndex) || restoredDeleted.includes(item.slideIndex)) return true
+    if (!item || Object.keys(item).some(key => !['slideIndex','elementId','shadingColor','borderPreset','styleName','cellShadings',...SLIDES_TABLE_FLAG_FIELDS].includes(key)) || !Number.isInteger(item.slideIndex) || restoredDeleted.includes(item.slideIndex)) return true
     const target = deck.slides[item.slideIndex]?.elements.find(el => el.id === item.elementId && el.type === 'table')
     const hasPreset = item.styleName !== undefined || SLIDES_TABLE_FLAG_FIELDS.some(field => item[field] !== undefined)
-    return !target || (!hasPreset && item.shadingColor === undefined && item.borderPreset === undefined)
+    const cellShadings = item.cellShadings
+    if (cellShadings !== undefined) {
+      if (!Array.isArray(cellShadings) || !cellShadings.length || (restoredCellShadingCount += cellShadings.length) > 500 || target?.tableCellShadingEditable !== true || (changes.deletions ?? []).some(deletion => deletion.slideIndex === item.slideIndex && deletion.elementId === item.elementId)
+        || new Set(cellShadings.map(cell => cell && `${cell.row}:${cell.col}`)).size !== cellShadings.length
+        || cellShadings.some(cell => !cell || Object.keys(cell).sort().join() !== 'col,row,shadingColor' || !Number.isInteger(cell.row) || !Number.isInteger(cell.col) || cell.row < 0 || cell.col < 0 || typeof target.tableCells?.[cell.row]?.[cell.col] !== 'string' || (cell.shadingColor !== 'none' && !TABLE_SHADING_COLORS.includes(cell.shadingColor)))) return true
+    }
+    return !target || (!hasPreset && item.shadingColor === undefined && item.borderPreset === undefined && cellShadings === undefined)
       || (hasPreset && (target.tablePresetEditable !== true || (changes.deletions ?? []).some(deletion => deletion.slideIndex === item.slideIndex && deletion.elementId === item.elementId)))
       || (item.styleName !== undefined && !SLIDES_TABLE_PRESETS.some(preset => preset.name === item.styleName))
       || SLIDES_TABLE_FLAG_FIELDS.some(field => Object.hasOwn(item,field) && typeof item[field] !== 'boolean')
@@ -643,7 +653,8 @@ function restoreNativeDraft() {
   smartArtEdits.splice(0, smartArtEdits.length, ...restoredSmartArts.map(item => structuredClone(item)))
   chartEdits.splice(0, chartEdits.length, ...restoredCharts.map(item => structuredClone(item)))
   tableStructureEdits.clear(); for(const item of restoredStructures) tableStructureEdits.set(item.slideIndex,{...item})
-  tableStyleEdits.clear(); for (const item of restoredTableStyles) tableStyleEdits.set(editKey(item.slideIndex,item.elementId), { ...item })
+  tableShadingCell = undefined
+  tableStyleEdits.clear(); for (const item of restoredTableStyles) tableStyleEdits.set(editKey(item.slideIndex,item.elementId), structuredClone(item))
   tableCellEdits.clear(); for (const item of restoredCells) tableCellEdits.set(`${item.slideIndex}:${item.elementId}:${item.row}:${item.col}`, { ...item })
   sectionEdits.splice(0, sectionEdits.length, ...restoredSections.map(item => ({ slideIndex: item.slideIndex, name: item.name })))
   shapeKindEdits.clear(); for (const item of restoredKinds) shapeKindEdits.set(editKey(item.slideIndex, item.elementId), { ...item })
@@ -879,7 +890,7 @@ function renderInspector() {
   nativeRibbon?.setContext(contextualType)
   const structureButton=root.querySelector<HTMLButtonElement>('[data-command="tableStructure"]')
   if(structureButton){const reason=tableStructureReason(element);structureButton.disabled=!!reason;structureButton.title=reason??'增删来源表格行列'}
-  for(const id of ['tableShading','tableAllBorders','tableNoBorders']) {const control=root.querySelector<HTMLInputElement>(`[data-command="${id}"]`);if(control) control.disabled=locked() || tableStructureEdits.get(selectedSlide)?.elementId===element?.id}
+  for(const id of ['tableShading','tableAllBorders','tableNoBorders']) {const control=root.querySelector<HTMLInputElement>(`[data-command="${id}"]`);if(control) { const atLimit=!!element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size>=500; control.disabled=locked() || tableStructureEdits.get(selectedSlide)?.elementId===element?.id || atLimit; if(atLimit) control.title='表格样式修改已达到 500 项，请先保存'; else if(control.title==='表格样式修改已达到 500 项，请先保存') control.title='' }}
   const tablePatch = element ? tableStyleEdits.get(editKey(selectedSlide,element.id)) : undefined
   const tablePreset = SLIDES_TABLE_PRESETS.find(item => item.name === tablePatch?.styleName)
   const presetReason = tablePresetReason(element)
@@ -891,9 +902,27 @@ function renderInspector() {
   nativeRibbon?.setValue('tableFirstRow', String(tablePatch?.firstRow ?? tablePreset?.firstRow ?? element?.tableStyleFlags?.firstRow ?? false))
   nativeRibbon?.setValue('tableBandRow', String(tablePatch?.bandRow ?? tablePreset?.bandRow ?? element?.tableStyleFlags?.bandRow ?? false))
   nativeRibbon?.setValue('tableRtl', String(tablePatch?.rtl ?? element?.tableStyleFlags?.rtl ?? false))
-  nativeRibbon?.setValue('tableShading', tablePatch?.shadingColor ?? '')
+  updateTableShadingControls(element)
   nativeRibbon?.setListTargets({ bullets: paragraphs.some(p => !!p.bulletKind && p.bulletKind !== 'none'), numbers: paragraphs.some(p => p.bulletKind === 'number'), hanging: paragraphs.some(p => (!!p.bulletKind && p.bulletKind !== 'none') || (p.indentEmu ?? 0) < 0) })
   nativeRibbon?.setTextFormatEnabled(!!element?.editable && !!element.text.trim())
+}
+
+function shadingCellFor(element = currentElement()) {
+  if (tableShadingCell && (tableShadingCell.slideIndex !== selectedSlide || tableShadingCell.elementId !== element?.id || typeof element.tableCells?.[tableShadingCell.row]?.[tableShadingCell.col] !== 'string')) tableShadingCell = undefined
+  return tableShadingCell
+}
+function updateTableShadingControls(element = currentElement()) {
+  const selectedCell = shadingCellFor(element)
+  const targetLabel = tableCellEditor.querySelector<HTMLElement>('[data-table-shading-target]')
+  if (targetLabel) targetLabel.textContent = selectedCell ? `底纹目标：第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列` : '底纹目标：整表'
+  const palette = root.querySelector<HTMLSelectElement>('[data-command="tableShading"]')
+  const whole = root.querySelector<HTMLButtonElement>('[data-command="tableShadingWholeTable"]')
+  const commonReason = locked() || isNewSlide(selectedSlide) || element?.type !== 'table' || deletions.has(editKey(selectedSlide,element.id)) || tableStructureEdits.get(selectedSlide)?.elementId === element.id
+  const reason = element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size >= 500 ? '表格样式修改已达到 500 项，请先保存' : selectedCell && element?.tableCellShadingEditable !== true ? element?.tableCellShadingReason || '此来源表格暂不支持安全单格底纹' : ''
+  if (palette) { palette.disabled = !!commonReason || !!reason; palette.title = reason || (selectedCell ? `只修改第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列底纹` : '修改整表底纹，并清除此前的单格底纹覆盖') }
+  if (whole) { whole.disabled = !!commonReason || !selectedCell; whole.title = '将底纹作用目标改回整表；不修改草稿' }
+  const patch = element ? tableStyleEdits.get(editKey(selectedSlide,element.id)) : undefined
+  nativeRibbon?.setValue('tableShading', selectedCell ? patch?.cellShadings?.find(cell => cell.row === selectedCell.row && cell.col === selectedCell.col)?.shadingColor ?? '' : patch?.shadingColor ?? '')
 }
 
 function tablePresetReason(element = currentElement()): string | null {
@@ -1001,6 +1030,9 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         if (JSON.stringify(patch) === JSON.stringify(previous)) break
         tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview(); break
       }
+      case 'tableShadingWholeTable':
+        if (!locked()) { tableShadingCell = undefined; updateTableShadingControls() }
+        break
       case 'tableStructure': openTableStructure(); break
       case 'tableShading':
       case 'tableAllBorders':
@@ -1008,10 +1040,21 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         const target=currentElement()
         if (locked() || isNewSlide(selectedSlide) || target?.type !== 'table') break
         if (tableStructureEdits.get(selectedSlide)?.elementId===target.id) {statusMessage.textContent='请先保存或撤销此表的行列操作';break}
-        const key=editKey(selectedSlide,target.id), patch=tableStyleEdits.get(key) ?? {slideIndex:selectedSlide,elementId:target.id}
+        const key=editKey(selectedSlide,target.id)
+        if (!tableStyleEdits.has(key) && tableStyleEdits.size >= 500) { statusMessage.textContent='表格样式修改已达到 500 项，请先保存'; break }
+        const patch=tableStyleEdits.get(key) ?? {slideIndex:selectedSlide,elementId:target.id}
         if (command === 'tableShading') {
           if (value !== 'none' && !TABLE_SHADING_COLORS.includes(String(value))) break
-          patch.shadingColor=String(value)
+          const cell = shadingCellFor(target)
+          if (cell) {
+            if (target.tableCellShadingEditable !== true) { statusMessage.textContent = target.tableCellShadingReason || '此来源表格暂不支持安全单格底纹'; break }
+            const previous = patch.cellShadings ?? [], existing = previous.some(item => item.row === cell.row && item.col === cell.col)
+            if (!existing && [...tableStyleEdits.values()].reduce((total,item) => total + (item.cellShadings?.length ?? 0),0) >= 500) { statusMessage.textContent = '单格底纹已达到 500 项，请先保存'; break }
+            patch.cellShadings = [...previous.filter(item => item.row !== cell.row || item.col !== cell.col), { row: cell.row, col: cell.col, shadingColor: String(value) }].sort((a,b) => a.row - b.row || a.col - b.col)
+          } else {
+            patch.shadingColor=String(value)
+            delete patch.cellShadings
+          }
         } else patch.borderPreset=command === 'tableAllBorders' ? 'all' : 'none'
         tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview(); break
       }
@@ -1427,6 +1470,7 @@ function openTableStructure() {
   dialog.addEventListener('close',()=>{if(structureDialog===dialog){structureDialog=undefined;++structureDialogGeneration};dialog.remove()},{once:true});root.append(dialog);dialog.showModal()
 }
 function renderTableCellEditor(element: DeckElement | undefined) {
+  const generation = ++tableCellEditorGeneration, sourceSlide = selectedSlide, sourceSha = deck.sha256
   tableCellEditor.replaceChildren()
   const cells = element?.type === 'table' && !isNewSlide(selectedSlide) ? element.tableCells : undefined
   tableCellEditor.hidden = !cells
@@ -1442,8 +1486,14 @@ function renderTableCellEditor(element: DeckElement | undefined) {
     input.disabled = original === null || locked() || isNewSlide(selectedSlide) || tableStructureEdits.get(selectedSlide)?.elementId===element.id || deletions.has(editKey(selectedSlide, element.id))
     if (original === null) input.title = '合并单元格不可单独编辑'
     input.maxLength = 10000
+    const current = () => generation === tableCellEditorGeneration && input.isConnected && sourceSha === deck.sha256 && sourceSlide === selectedSlide && currentElement()?.id === element.id && !locked() && !input.disabled
+    input.addEventListener('focus', () => {
+      if (!current() || original === null) return
+      tableShadingCell = { slideIndex: sourceSlide, elementId: element.id, row: rowIndex, col: colIndex }
+      updateTableShadingControls(element)
+    })
     input.addEventListener('change', () => {
-      if(locked() || isNewSlide(selectedSlide) || tableStructureEdits.get(selectedSlide)?.elementId===element.id){input.value=tableCellEdits.get(key)?.text??original??'';return}
+      if(!current() || isNewSlide(selectedSlide) || tableStructureEdits.get(selectedSlide)?.elementId===element.id){input.value=tableCellEdits.get(key)?.text??original??'';return}
       if (input.value.length > 10000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(input.value) || (!tableCellEdits.has(key) && tableCellEdits.size >= 500 && input.value !== original)) {
         input.value = tableCellEdits.get(key)?.text ?? original ?? ''; statusMessage.textContent = '每次最多编辑 500 个单元格，每格最多 10000 字符，文字不能包含控制字符'; return
       }
@@ -1454,7 +1504,9 @@ function renderTableCellEditor(element: DeckElement | undefined) {
     grid.append(input)
   }
   const label = document.createElement('div'); label.className = 'field-label'; label.textContent = '表格单元格'
-  tableCellEditor.append(label, grid)
+  const targetLabel = document.createElement('p'); targetLabel.dataset.tableShadingTarget = ''; targetLabel.setAttribute('aria-label','底纹目标')
+  tableCellEditor.append(label, targetLabel, grid)
+  updateTableShadingControls(element)
 }
 function renderStructurePending() {
   structurePending.replaceChildren()
@@ -1480,7 +1532,7 @@ function renderStructurePending() {
   }
   for (const [index, chart] of chartEdits.entries()) row(`第 ${order.indexOf(chart.slideIndex) + 1} 页 · 图表 ${CHART_GALLERY.find(item => item.kind === chart.kind)?.label ?? chart.kind}（示例数据）`, () => chartEdits.splice(index, 1))
   for(const [slideIndex,item] of tableStructureEdits) row(`第 ${order.indexOf(slideIndex)+1} 页 · 表格${item.kind.startsWith('insert-')?'插入':'删除'}${item.kind.endsWith('row')?'行':'列'}（参考 ${item.index+1}）`,()=>tableStructureEdits.delete(slideIndex))
-  for (const [key, style] of tableStyleEdits) row(`第 ${order.indexOf(style.slideIndex)+1} 页 · 表格${style.styleName ? `样式 ${SLIDES_TABLE_PRESETS.find(item => item.name === style.styleName)?.label ?? style.styleName}` : '选项/底纹/边框'}`, () => { tableStyleEdits.delete(key); refreshCanvasPreview() })
+  for (const [key, style] of tableStyleEdits) row(`第 ${order.indexOf(style.slideIndex)+1} 页 · 表格${style.styleName ? `样式 ${SLIDES_TABLE_PRESETS.find(item => item.name === style.styleName)?.label ?? style.styleName}` : '选项/底纹/边框'}${style.cellShadings?.length ? ` · ${style.cellShadings.length} 格底纹` : ''}`, () => { tableStyleEdits.delete(key); refreshCanvasPreview() })
   for (const [key, cell] of tableCellEdits) row(`第 ${order.indexOf(cell.slideIndex) + 1} 页 · 表格单元格（${cell.row + 1}行${cell.col + 1}列）「${cell.text.slice(0, 20)}」`, () => tableCellEdits.delete(key))
   if (headerFooterEdit) row(`全部页面 · 页眉页脚：${[headerFooterEdit.date ? `日期 ${headerFooterEdit.dateAuto ? '（自动更新）' : headerFooterEdit.date}` : '', headerFooterEdit.slideNum ? '幻灯片编号' : '', headerFooterEdit.footer ? `页脚「${headerFooterEdit.footer}」` : ''].filter(Boolean).join('、') || '全部关闭'}`, () => { headerFooterEdit = undefined })
   for (const [index, section] of sectionEdits.entries()) row(`第 ${order.indexOf(section.slideIndex) + 1} 页前 · 新增节「${section.name}」`, () => { sectionEdits.splice(index, 1); renderSlides() })

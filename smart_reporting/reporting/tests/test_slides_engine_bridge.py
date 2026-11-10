@@ -1591,3 +1591,138 @@ def test_table_presets_preserve_unrelated_custom_definition_and_other_table_refe
         old, new = [etree.fromstring(archive.read('ppt/slides/slide1.xml')).xpath('//a:tbl', namespaces=_TABLE_NS)[1] for archive in [before, after]]
         assert etree.tostring(old, method='c14n') == etree.tostring(new, method='c14n')
         assert new.find('a:tblPr/a:tableStyleId', _TABLE_NS).text == foreign_id
+
+
+@pytest.mark.parametrize('color', ['#FFE6CC', 'none'])
+def test_table_cell_shading_changes_only_exact_source_cell_and_preserves_remaining_xml(tmp_path, color):
+    from lxml import etree
+    source, output = tmp_path / 'source.pptx', tmp_path / 'cell-shaded.pptx'
+    _table_structure_fixture(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    assert target['tableCellShadingEditable'] is True and target['tableCellShadingReason'] is None
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStyles': [
+        {'slideIndex': 0, 'elementId': target['id'], 'cellShadings': [{'row': 1, 'col': 1, 'shadingColor': color}]},
+    ]}, tmp_path)
+    with ZipFile(source) as before, ZipFile(output) as after:
+        old, new = [etree.fromstring(archive.read('ppt/slides/slide1.xml')) for archive in [before, after]]
+        old_tables, new_tables = [root.xpath('//a:tbl', namespaces=_TABLE_NS) for root in [old, new]]
+        assert etree.tostring(old_tables[1], method='c14n') == etree.tostring(new_tables[1], method='c14n')
+        original_cells, changed_cells = [table.xpath('./a:tr/a:tc', namespaces=_TABLE_NS) for table in [old_tables[0], new_tables[0]]]
+        for index, (original, changed) in enumerate(zip(original_cells, changed_cells)):
+            assert etree.tostring(original.find('a:txBody', _TABLE_NS), method='c14n') == etree.tostring(changed.find('a:txBody', _TABLE_NS), method='c14n')
+            if index != 4:
+                assert etree.tostring(original, method='c14n') == etree.tostring(changed, method='c14n')
+            else:
+                for cell in [original, changed]:
+                    cell.remove(cell.find('a:tcPr', _TABLE_NS))
+                assert etree.tostring(original, method='c14n') == etree.tostring(changed, method='c14n')
+        for table in [old_tables[0], new_tables[0]]:
+            for row in table.findall('a:tr', _TABLE_NS):
+                for cell in row.findall('a:tc', _TABLE_NS):
+                    row.remove(cell)
+        assert etree.tostring(old_tables[0], method='c14n') == etree.tostring(new_tables[0], method='c14n')
+        for name in before.namelist():
+            if name != 'ppt/slides/slide1.xml':
+                assert before.read(name) == after.read(name), name
+    cell = Presentation(output).slides[0].shapes[1].table.cell(1, 1)
+    if color == 'none':
+        assert cell._tc.tcPr.find('{%s}noFill' % _TABLE_NS['a']) is not None
+    else:
+        assert str(cell.fill.fore_color.rgb) == color[1:]
+    assert cell.margin_left == Presentation(source).slides[0].shapes[1].table.cell(1, 1).margin_left
+
+
+def test_table_cell_shading_overrides_preset_global_fill_after_text_and_preserves_borders(tmp_path):
+    from lxml import etree
+    source, output = tmp_path / 'source.pptx', tmp_path / 'combined.pptx'
+    _table_structure_fixture(source)
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table')
+    _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [],
+        'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'styleName': 'zebraBlue', 'bandRow': False, 'rtl': True, 'shadingColor': '#D6E4F0', 'borderPreset': 'all',
+            'cellShadings': [{'row': 1, 'col': 1, 'shadingColor': '#FFE6CC'}, {'row': 2, 'col': 2, 'shadingColor': 'none'}]}],
+        'tableCells': [{'slideIndex': 0, 'elementId': target['id'], 'row': 2, 'col': 0, 'text': 'same batch text'}],
+    }, tmp_path)
+    doc = Presentation(output); table = doc.slides[0].shapes[1].table
+    assert str(table.cell(1, 1).fill.fore_color.rgb) == 'FFE6CC'
+    assert str(table.cell(1, 0).fill.fore_color.rgb) == 'D6E4F0'
+    assert table.cell(2, 2)._tc.tcPr.find('{%s}noFill' % _TABLE_NS['a']) is not None
+    assert table.cell(2, 0).text == 'same batch text' and table.cell(2, 0).text_frame.paragraphs[0].runs[0].font.bold
+    assert table._tbl.tblPr.get('rtl') == '1' and table._tbl.tblPr.get('bandRow') is None
+    for row in table.rows:
+        for cell in row.cells:
+            assert len(cell._tc.tcPr.xpath('./a:lnL|./a:lnR|./a:lnT|./a:lnB')) == 4
+            assert all(line.get('w') == '12700' for line in cell._tc.tcPr.xpath('./a:lnL|./a:lnR|./a:lnT|./a:lnB'))
+    with ZipFile(source) as before, ZipFile(output) as after:
+        assert b'A10FF1CE-0000-4000-9000-000000000001' in after.read('ppt/tableStyles.xml')
+        for archive, name in [(before, 'old'), (after, 'new')]:
+            root = etree.fromstring(archive.read('ppt/slides/slide1.xml'))
+            values = root.xpath('//a:tbl[1]/a:tblGrid', namespaces=_TABLE_NS)
+            if name == 'old': original = etree.tostring(values[0], method='c14n')
+            else: assert etree.tostring(values[0], method='c14n') == original
+
+
+@pytest.mark.parametrize('mode', ['merge', 'extension', 'nested-table', 'wrong-namespace', 'namespace-decoy', 'ancestor-namespace', 'grid-mismatch', 'cell3d', 'duplicate-tcPr', 'comment'])
+def test_table_cell_shading_refuses_unconfirmed_physical_mapping_or_properties(tmp_path, mode):
+    source, unsafe, output = tmp_path / 'source.pptx', tmp_path / f'{mode}.pptx', tmp_path / 'must-not-exist.pptx'
+    _table_structure_fixture(source)
+    if mode == 'merge':
+        doc = Presentation(source); doc.slides[0].shapes[1].table.cell(0, 0).merge(doc.slides[0].shapes[1].table.cell(0, 1)); doc.save(unsafe)
+    else:
+        transforms = {
+            'extension': lambda b: b.replace(b'</a:tcPr>', b'<a:extLst/></a:tcPr>', 1),
+            'nested-table': lambda b: b.replace(b'</a:tcPr>', b'<a:tbl><a:tblPr/><a:tblGrid/></a:tbl></a:tcPr>', 1),
+            'wrong-namespace': lambda b: b.replace(b'http://schemas.openxmlformats.org/drawingml/2006/main', b'http://foreign.invalid/main'),
+            'ancestor-namespace': lambda b: b.replace(b'<p:spTree>', b'<p:spTree xmlns:a="http://foreign.invalid/main">', 1),
+            'namespace-decoy': lambda b: b.replace(b'http://schemas.openxmlformats.org/drawingml/2006/main', b'http://foreign.invalid/main', 1).replace(b'<p:sp>', b'<p:sp xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">', 1),
+            'grid-mismatch': lambda b: b.replace(b'</a:tblGrid>', b'<a:gridCol w="914400"/></a:tblGrid>', 1),
+            'cell3d': lambda b: b.replace(b'</a:tcPr>', b'<a:cell3D/></a:tcPr>', 1),
+            'duplicate-tcPr': lambda b: b.replace(b'</a:tcPr>', b'</a:tcPr><a:tcPr/>', 1),
+            'comment': lambda b: b.replace(b'<a:tbl>', b'<a:tbl><!-- ambiguous helper span -->', 1),
+        }
+        _rewrite_preset_zip(source, unsafe, {'ppt/slides/slide1.xml': transforms[mode]})
+    target = next(el for el in _invoke({'action': 'inspect', 'input': str(unsafe)}, tmp_path)['slides'][0]['elements'] if el['name'] == 'Structure Target')
+    assert target['tableCellShadingEditable'] is False and target['tableCellShadingReason']
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(unsafe), 'output': str(output), 'edits': [], 'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'cellShadings': [{'row': 0, 'col': 0, 'shadingColor': '#FFE6CC'}]}]}, tmp_path)
+    assert not output.exists()
+
+
+def test_table_cell_shading_rejects_malformed_duplicate_out_of_grid_and_budget_requests(tmp_path):
+    source = tmp_path / 'source.pptx'; _table_structure_fixture(source)
+    tables = [el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table']
+    base = {'slideIndex': 0, 'elementId': tables[0]['id']}; cell = {'row': 1, 'col': 1, 'shadingColor': '#FFE6CC'}
+    bad_cells = [None, {}, [], [None], [{**cell, 'row': True}], [{**cell, 'col': -1}], [{**cell, 'row': 3}], [{**cell, 'col': 3}], [{**cell, 'shadingColor': '#123456'}], [{**cell, 'shadingColor': []}], [{**cell, 'xml': '<a:tcPr/>'}], [cell, cell], [cell] * 501]
+    for index, bad in enumerate(bad_cells):
+        output = tmp_path / f'bad-{index}.pptx'
+        with pytest.raises(subprocess.CalledProcessError):
+            _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStyles': [{**base, 'cellShadings': bad}]}, tmp_path)
+        assert not output.exists()
+    output = tmp_path / 'structure-conflict.pptx'
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStyles': [{**base, 'cellShadings': [cell]}], 'tableStructures': [{**base, 'kind': 'insert-col', 'index': 1, 'before': True}]}, tmp_path)
+    assert not output.exists()
+
+
+def test_table_cell_shading_creates_missing_properties_and_targets_multiple_tables(tmp_path):
+    source, sparse, output = tmp_path / 'source.pptx', tmp_path / 'sparse.pptx', tmp_path / 'two-tables.pptx'
+    _table_structure_fixture(source)
+    _rewrite_preset_zip(source, sparse, {'ppt/slides/slide1.xml': lambda b: re.sub(rb'<a:tcPr\b[^>]*>[\s\S]*?</a:tcPr>', b'', b)})
+    targets = [el for el in _invoke({'action': 'inspect', 'input': str(sparse)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table']
+    assert all(table['tableCellShadingEditable'] for table in targets)
+    _invoke({'action': 'edit', 'input': str(sparse), 'output': str(output), 'edits': [], 'tableStyles': [{'slideIndex': 0, 'elementId': target['id'], 'cellShadings': [{'row': 1, 'col': 1, 'shadingColor': '#FFE6CC'}]} for target in targets]}, tmp_path)
+    doc = Presentation(output)
+    assert all(str(doc.slides[0].shapes[index].table.cell(1, 1).fill.fore_color.rgb) == 'FFE6CC' for index in [1, 3])
+
+
+def test_table_cell_shading_budget_is_shared_across_valid_source_tables(tmp_path):
+    source, output = tmp_path / 'source.pptx', tmp_path / 'over-budget.pptx'
+    _table_structure_fixture(source, rows=25, cols=20)
+    targets = [el for el in _invoke({'action': 'inspect', 'input': str(source)}, tmp_path)['slides'][0]['elements'] if el['type'] == 'table']
+    assert all(target['tableCellShadingEditable'] for target in targets)
+    fills = [{'row': row, 'col': col, 'shadingColor': '#FFE6CC'} for row in range(25) for col in range(20)]
+    with pytest.raises(subprocess.CalledProcessError):
+        _invoke({'action': 'edit', 'input': str(source), 'output': str(output), 'edits': [], 'tableStyles': [
+            {'slideIndex': 0, 'elementId': targets[0]['id'], 'cellShadings': fills},
+            {'slideIndex': 0, 'elementId': targets[1]['id'], 'cellShadings': [{'row': 0, 'col': 0, 'shadingColor': 'none'}]},
+        ]}, tmp_path)
+    assert not output.exists()

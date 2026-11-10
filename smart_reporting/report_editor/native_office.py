@@ -146,18 +146,35 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
         structure_slides.add(item['slideIndex'])
     table_flags = {'firstRow', 'lastRow', 'firstCol', 'lastCol', 'bandRow', 'bandCol', 'rtl'}
     table_presets = {'none', 'lightGrid', 'zebraBlue', 'zebraGray', 'headerDarkBlue', 'headerOrange', 'noBorder', 'fullBorder'}
-    table_styles = _records(operation, 'tableStyles', {'slideIndex', 'elementId'}, {'styleName', 'shadingColor', 'borderPreset'} | table_flags)
+    table_styles = _records(operation, 'tableStyles', {'slideIndex', 'elementId'}, {'styleName', 'shadingColor', 'borderPreset', 'cellShadings'} | table_flags)
     if len(table_styles) > 500:
         raise ValueError('native_office_operations_invalid')
     style_keys = set()
+    cell_shading_count = 0
+    table_colors = {'none', '#FFFFFF', '#F2F2F2', '#DAEEF3', '#EBF3FB', '#D6E4F0', '#FFF2CC', '#FFE6CC', '#FCE4D6', '#E2EFDA', '#E6E6FF'}
     for item in table_styles:
         key = (item['slideIndex'], item['elementId']) if isinstance(item['elementId'], str) else None
-        if (key is None or not item['elementId'] or key in style_keys or not ({'styleName', 'shadingColor', 'borderPreset'} | table_flags) & item.keys()
+        if (key is None or not item['elementId'] or key in style_keys or not ({'styleName', 'shadingColor', 'borderPreset', 'cellShadings'} | table_flags) & item.keys()
             or ('styleName' in item and (not isinstance(item['styleName'], str) or item['styleName'] not in table_presets))
             or any(key in item and not isinstance(item[key], bool) for key in table_flags)
             or ('shadingColor' in item and (not isinstance(item['shadingColor'], str) or item['shadingColor'] not in {'none', '#FFFFFF', '#F2F2F2', '#DAEEF3', '#EBF3FB', '#D6E4F0', '#FFF2CC', '#FFE6CC', '#FCE4D6', '#E2EFDA', '#E6E6FF'}))
             or ('borderPreset' in item and (not isinstance(item['borderPreset'], str) or item['borderPreset'] not in {'all', 'none'}))):
             raise ValueError('native_office_operations_invalid')
+        if 'cellShadings' in item:
+            cells = item['cellShadings']
+            if not isinstance(cells, list) or not cells:
+                raise ValueError('native_office_operations_invalid')
+            cell_shading_count += len(cells)
+            if cell_shading_count > 500:
+                raise ValueError('native_office_operations_invalid')
+            cell_keys = set()
+            for cell in cells:
+                if (not isinstance(cell, dict) or set(cell) != {'row', 'col', 'shadingColor'}
+                    or any(not isinstance(cell[axis], int) or isinstance(cell[axis], bool) or not 0 <= cell[axis] < 75 for axis in ('row', 'col'))
+                    or not isinstance(cell['shadingColor'], str) or cell['shadingColor'] not in table_colors
+                    or (cell['row'], cell['col']) in cell_keys):
+                    raise ValueError('native_office_operations_invalid')
+                cell_keys.add((cell['row'], cell['col']))
         style_keys.add(key)
     table_cells = _records(operation, 'tableCells', {'slideIndex', 'elementId', 'row', 'col', 'text'})
     if len(table_cells) > 500 or any(not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['text'], str) or len(item['text']) > 10000 or re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', item['text'])

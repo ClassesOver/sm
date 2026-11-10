@@ -134,3 +134,8 @@ Table Design 接通固定调色板底纹/无填充、黑色 1pt 全部边框/无
 ## 固定表格样式预设与选项（2026-11-10）
 
 八个固定源预设和firstRow/bandRow/rtl三种源Ribbon选项，通过Web选择器/开关与原helper接通。严格样式表定义与关系能力检查、历史恢复、真实渲染及导出回读边界详见 `NATIVE_PPTX_TABLE_PRESETS_ACCEPTANCE.md`；单格样式与任意自定义/内置样式库不由此代表。
+
+
+## 安全单格底纹（2026-11-10）
+
+固定Table Design的active-cell底纹已通过明确目标适配，复用editTableStyle.cells。仅规范未合并单层矩形来源，支持固定色/none、多个格、whole/preset优先语义、历史与真实产物核验。详见 `NATIVE_PPTX_CELL_SHADING_ACCEPTANCE.md`；复杂单格格式与单格边框仍开放。

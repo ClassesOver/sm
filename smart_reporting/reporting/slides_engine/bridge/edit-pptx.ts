@@ -67,7 +67,7 @@ type Input = {
   headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
   /** 固定源表格上下文菜单（editTableStructure）：每来源页一次，按原始行列索引插入/删除。 */
   tableStructures?: { slideIndex: number; elementId: string; kind: 'insert-row' | 'delete-row' | 'insert-col' | 'delete-col'; index: number; before?: boolean }[]
-  tableStyles?: { slideIndex: number; elementId: string; styleName?: string; firstRow?: boolean; lastRow?: boolean; firstCol?: boolean; lastCol?: boolean; bandRow?: boolean; bandCol?: boolean; rtl?: boolean; shadingColor?: string; borderPreset?: 'all' | 'none' }[]
+  tableStyles?: { slideIndex: number; elementId: string; styleName?: string; firstRow?: boolean; lastRow?: boolean; firstCol?: boolean; lastCol?: boolean; bandRow?: boolean; bandCol?: boolean; rtl?: boolean; shadingColor?: string; borderPreset?: 'all' | 'none'; cellShadings?: { row: number; col: number; shadingColor: string }[] }[]
   /** 固定源表格单元格编辑（editTableCellText）：保留单元格首段与首个文字段的格式。 */
   tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]
   /** 固定源 Insert ▸ Chart（insertChart）：13 种图表类型与数据；位置为 2/3 宽、3:2、居中（graphicFrameInsertFrame）。 */
@@ -255,6 +255,42 @@ function tableStyleState(table: TableElement) {
   return { tableStyleFlags: flags, tableStyleName: reason === null ? name : null, tablePresetEditable: reason === null, tablePresetReason: reason }
 }
 
+/** The fixed cell helper addresses physical a:tc positions. Only expose a
+ * source where those slots map one-to-one to the unmerged model grid. */
+function cellShadingSource(table: TableElement, slidePath: string): string[][] | null {
+  const xml = table.anchor.originalXml, slideXml = opened.archive.readText(slidePath) ?? ''
+  const ns = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+  const slideRoot = tableStyleParser.parse(slideXml)['p:sld']
+  if (slideRoot?.['@_xmlns:a'] !== ns || [...slideXml.matchAll(/xmlns:a=["']([^"']*)["']/g)].some(match => match[1] !== ns)
+    || XMLValidator.validate(xml) !== true || /<!DOCTYPE|<!ENTITY|<!--|<\?|\b(?:gridSpan|rowSpan|hMerge|vMerge)\s*=|<(?:\w+:)?extLst\b/.test(xml)) return null
+  const tables = [...xml.matchAll(/<a:tbl(?:\s[^>]*)?>[\s\S]*?<\/a:tbl>/g)]
+  if (tables.length !== 1 || (xml.match(/<a:tbl[\s>]/g) ?? []).length !== 1) return null
+  const body = tables[0]![0], rows = [...body.matchAll(/<a:tr(?:\s[^>]*)?>[\s\S]*?<\/a:tr>/g)]
+  if (!table.rows.length || table.rows.length > 75 || !table.colWidths.length || table.colWidths.length > 75 || rows.length !== table.rows.length || table.rows.some(row => row.length !== table.colWidths.length || row.some(cell => cell.merged || cell.gridSpan && cell.gridSpan !== 1 || cell.rowSpan && cell.rowSpan !== 1))) return null
+  const result: string[][] = []
+  const allowedProperties = new Set(['a:lnL','a:lnR','a:lnT','a:lnB','a:lnTlToBr','a:lnBlToTr','a:solidFill','a:gradFill','a:pattFill','a:blipFill','a:noFill','a:grpFill'])
+  for (const row of rows) {
+    const rowBody = row[0].replace(/^<a:tr[^>]*>/,'').replace(/<\/a:tr>$/,'')
+    const cells = [...rowBody.matchAll(/<a:tc(?:\s[^>]*)?>[\s\S]*?<\/a:tc>/g)].map(match => match[0])
+    if (cells.length !== table.colWidths.length || rowBody.replace(/<a:tc(?:\s[^>]*)?>[\s\S]*?<\/a:tc>/g,'').trim()) return null
+    for (const cell of cells) {
+      if ((cell.match(/<a:txBody[\s>]/g) ?? []).length !== 1 || (cell.match(/<a:tcPr[\s/>]/g) ?? []).length > 1) return null
+      const properties = /<a:tcPr[^>]*\/>|<a:tcPr[^>]*>[\s\S]*?<\/a:tcPr>/.exec(cell)?.[0]
+      if (properties) {
+        const parsed = tableStyleParser.parse(properties)['a:tcPr']
+        if (parsed && (typeof parsed !== 'object' || Object.entries(parsed).some(([key,value]) => !key.startsWith('@_') && (!allowedProperties.has(key) || Array.isArray(value))))) return null
+      }
+    }
+    result.push(cells)
+  }
+  return result
+}
+function cellShadingState(table: TableElement, slidePath: string) {
+  const editable = cellShadingSource(table,slidePath) !== null
+  return { tableCellShadingEditable: editable, tableCellShadingReason: editable ? null : '此表格含合并、扩展或无法确认的单元格映射，暂不能修改单格底纹' }
+}
+const withoutCellProperties = (xml: string) => xml.replace(/<a:tcPr[^>]*\/>|<a:tcPr[^>]*>[\s\S]*?<\/a:tcPr>/g,'')
+
 if (request.action === 'inspect') {
   process.stdout.write(JSON.stringify({
     size: opened.deck.size,
@@ -288,7 +324,7 @@ if (request.action === 'inspect') {
         type: element.type,
         name: element.name ?? '',
         text: textOf(element),
-        ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element) } : {}),
+        ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element), ...cellShadingState(element,slide.path) } : {}),
         // 表格单元格文字（合并单元格为 null），供编辑器单元格网格使用
         ...(element.type === 'table' ? { tableCells: (element as unknown as { rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] }).rows.map(row => row.map(cell => cell.merged ? null : (cell.text?.paragraphs ?? []).map(paragraph => paragraph.runs.map(run => run.text).join('')).join('\n'))) } : {}),
         ...(element.type === 'text' || element.type === 'shape' ? (() => {
@@ -460,10 +496,20 @@ if (request.action === 'inspect') {
   const tableStyles = request.tableStyles ?? [], styledTables = new Set<string>()
   const shadingColors = ['none','#FFFFFF','#F2F2F2','#DAEEF3','#EBF3FB','#D6E4F0','#FFF2CC','#FFE6CC','#FCE4D6','#E2EFDA','#E6E6FF']
   if (!Array.isArray(tableStyles) || tableStyles.length > 500) throw new Error('table_styles_invalid')
+  let cellShadingCount = 0
   for (const item of tableStyles) {
-    if (!item || Object.keys(item).some(key => !['slideIndex','elementId','styleName',...TABLE_FLAG_KEYS,'shadingColor','borderPreset'].includes(key)) || !validSlideIndex(item.slideIndex,slideCount) || typeof item.elementId !== 'string' || (item.styleName === undefined && TABLE_FLAG_KEYS.every(key => item[key] === undefined) && item.shadingColor === undefined && item.borderPreset === undefined) || (item.styleName !== undefined && (typeof item.styleName !== 'string' || !Object.hasOwn(TABLE_STYLE_PRESETS,item.styleName))) || TABLE_FLAG_KEYS.some(key => item[key] !== undefined && typeof item[key] !== 'boolean') || (item.shadingColor !== undefined && !shadingColors.includes(item.shadingColor)) || (item.borderPreset !== undefined && !['all','none'].includes(item.borderPreset)) || styledTables.has(`${item.slideIndex}:${item.elementId}`) || touchesDeleted(item.slideIndex,item.elementId) || !originalSlides[item.slideIndex]!.elements.some(el => el.id === item.elementId && el.type === 'table')) throw new Error('table_style_invalid')
+    if (!item || Object.keys(item).some(key => !['slideIndex','elementId','styleName',...TABLE_FLAG_KEYS,'shadingColor','borderPreset','cellShadings'].includes(key)) || !validSlideIndex(item.slideIndex,slideCount) || typeof item.elementId !== 'string' || (item.styleName === undefined && TABLE_FLAG_KEYS.every(key => item[key] === undefined) && item.shadingColor === undefined && item.borderPreset === undefined && item.cellShadings === undefined) || (item.styleName !== undefined && (typeof item.styleName !== 'string' || !Object.hasOwn(TABLE_STYLE_PRESETS,item.styleName))) || TABLE_FLAG_KEYS.some(key => item[key] !== undefined && typeof item[key] !== 'boolean') || (item.shadingColor !== undefined && !shadingColors.includes(item.shadingColor)) || (item.borderPreset !== undefined && !['all','none'].includes(item.borderPreset)) || styledTables.has(`${item.slideIndex}:${item.elementId}`) || touchesDeleted(item.slideIndex,item.elementId) || !originalSlides[item.slideIndex]!.elements.some(el => el.id === item.elementId && el.type === 'table')) throw new Error('table_style_invalid')
     const target = originalSlides[item.slideIndex]!.elements.find(el => el.id === item.elementId)!
     if ((item.styleName !== undefined || TABLE_FLAG_KEYS.some(key => item[key] !== undefined)) && !tableStyleState(target as TableElement).tablePresetEditable) throw new Error('table_style_source_unsupported')
+    if (item.cellShadings !== undefined) {
+      const cells = item.cellShadings, source = target as TableElement
+      if (!Array.isArray(cells) || cells.length === 0 || (cellShadingCount += cells.length) > 500 || !cellShadingSource(source,originalSlides[item.slideIndex]!.path)) throw new Error('table_cell_shading_source_or_budget_invalid')
+      const keys = new Set<string>()
+      for (const cell of cells) {
+        if (!cell || typeof cell !== 'object' || Object.keys(cell).sort().join() !== 'col,row,shadingColor' || !Number.isInteger(cell.row) || !Number.isInteger(cell.col) || cell.row < 0 || cell.col < 0 || cell.row >= source.rows.length || cell.col >= source.colWidths.length || !shadingColors.includes(cell.shadingColor) || keys.has(`${cell.row}:${cell.col}`)) throw new Error('table_cell_shading_invalid')
+        keys.add(`${cell.row}:${cell.col}`)
+      }
+    }
     styledTables.add(`${item.slideIndex}:${item.elementId}`)
   }
   if (!Array.isArray(request.tableCells ?? []) || (request.tableCells ?? []).length > 500) throw new Error('table_cells_invalid')
@@ -488,6 +534,24 @@ if (request.action === 'inspect') {
     if (Object.keys(flags).length && !editTableStyle(slide,item.elementId,flags)) throw new Error('table_style_target_invalid')
     const patch = { ...(item.shadingColor !== undefined ? {shadingColor:item.shadingColor} : {}), ...(item.borderPreset !== undefined ? {borderPreset:item.borderPreset, ...(item.borderPreset === 'all' ? {borderColor:'#000000',borderWidthEmu:12700} : {})} : {}) }
     if (!editTableStyle(originalSlides[item.slideIndex]!,item.elementId,patch)) throw new Error('table_style_target_invalid')
+    if (item.cellShadings !== undefined) {
+      const table = slide.elements.find(element => element.id === item.elementId) as TableElement
+      const before = cellShadingSource(table,slide.path)
+      if (!before) throw new Error('table_cell_shading_source_changed')
+      for (const cell of item.cellShadings) if (!editTableStyle(slide,item.elementId,{shadingColor:cell.shadingColor,cells:[{row:cell.row,col:cell.col}]})) throw new Error('table_cell_shading_failed')
+      const after = cellShadingSource(table,slide.path), targets = new Map(item.cellShadings.map(cell => [`${cell.row}:${cell.col}`,cell.shadingColor]))
+      if (!after) throw new Error('table_cell_shading_output_invalid')
+      for (const [row,cells] of before.entries()) for (const [col,original] of cells.entries()) {
+        const changed = after[row]![col]!, color = targets.get(`${row}:${col}`)
+        if (color === undefined ? original !== changed : withoutCellProperties(original) !== withoutCellProperties(changed)) throw new Error('table_cell_shading_identity_changed')
+        if (color !== undefined) {
+          const properties = /<a:tcPr[^>]*>[\s\S]*?<\/a:tcPr>/.exec(changed)?.[0]
+          const actual = properties ? tableStyleParser.parse(properties)['a:tcPr'] : null
+          if (!actual || (color === 'none' ? !Object.hasOwn(actual,'a:noFill') : actual['a:solidFill']?.['a:srgbClr']?.['@_val'] !== color.slice(1))) throw new Error('table_cell_shading_not_applied')
+        }
+      }
+    }
+
   }
   for (const item of request.shapeKinds ?? []) {
     if (!item || typeof item !== 'object' || Object.keys(item).some(key => !['slideIndex', 'elementId', 'kind'].includes(key)) || !validSlideIndex(item.slideIndex, slideCount) || typeof item.elementId !== 'string'

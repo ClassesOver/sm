@@ -395,3 +395,18 @@ def test_table_preset_schema_forwards_fixed_names_and_boolean_options_only():
             _pptx_arguments({'kind': 'editSlides', 'tableStyles': [{**base, **bad}]})
     with pytest.raises(ValueError):
         _pptx_arguments({'kind': 'editSlides', 'tableStyles': [{**base, 'rtl': True}] * 501})
+
+
+def test_table_cell_shading_schema_forwards_final_overrides_and_rejects_ambiguous_targets():
+    from smart_reporting.report_editor.native_office import _pptx_arguments
+    base = {'slideIndex': 0, 'elementId': 'tbl_1'}
+    cell = {'row': 1, 'col': 2, 'shadingColor': '#FFE6CC'}
+    patch = {**base, 'styleName': 'zebraBlue', 'bandRow': False, 'shadingColor': '#D6E4F0', 'cellShadings': [cell, {'row': 0, 'col': 0, 'shadingColor': 'none'}]}
+    assert _pptx_arguments({'kind': 'editSlides', 'tableStyles': [patch]})['table_styles'] == [patch]
+    for bad in [None, {}, [], [None], [{**cell, 'row': True}], [{**cell, 'col': -1}], [{**cell, 'row': 75}], [{**cell, 'shadingColor': []}], [{**cell, 'shadingColor': '#123456'}], [{**cell, 'cells': []}], [cell, cell], [cell] * 501]:
+        with pytest.raises(ValueError):
+            _pptx_arguments({'kind': 'editSlides', 'tableStyles': [{**base, 'cellShadings': bad}]})
+    valid = [{'row': row, 'col': col, 'shadingColor': '#FFE6CC'} for row in range(25) for col in range(20)]
+    assert len(_pptx_arguments({'kind': 'editSlides', 'tableStyles': [{**base, 'cellShadings': valid}]})['table_styles'][0]['cellShadings']) == 500
+    with pytest.raises(ValueError):
+        _pptx_arguments({'kind': 'editSlides', 'tableStyles': [{**base, 'cellShadings': valid}, {**base, 'elementId': 'tbl_2', 'cellShadings': [cell]}]})

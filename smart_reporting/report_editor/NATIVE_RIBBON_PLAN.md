@@ -436,3 +436,14 @@ Global Tasks 2–6 remain incomplete. Feature flags remain off; this batch updat
 
 - [x] 本轮83项相关前端与30项后端检查、两条生产静态浏览器完整闭环、独立python-pptx/pypdf及断网Node22通过；8预设经独立LibreOffice/PDF栅格验证颜色和网格。
 - [ ] 外部消费者RTL：OOXML与native画布已镜像，但当前LibreOffice未镜像列，保留产物与失败证据，不标记跨软件视觉验收通过。
+
+
+### PR #210 单格底纹与待保存图像等比缩放（2026-11-10）
+
+- [x] tableActiveCell语义的明确Web底纹目标，固定palette/noFill单格覆盖、回整表、整体/preset清旧单格覆盖，flags/边框保留；total500及表样式record500预算。
+- [x] 原始physical tc/模型logical映射与namespace证明，安全矩形子集、危险来源独立只读，目标/非目标XML身份回读，history/刷新与旧DOM保护。
+- [x] 待保存image以百分比与四种固定角等比缩放，保留图像数据/其他记录、source snapshot/index与单modal守卫，复用addDrawing。
+- [ ] 合并/嵌套/扩展表格单格格式、单格边框/字体、直接角控制柄/画布宿主操作、外部RTL消费者差异及完整生产/桌面/应用镜像验收仍开放；功能开关关闭。
+- 详细来源与边界：`NATIVE_PPTX_CELL_SHADING_ACCEPTANCE.md`、`NATIVE_PDF_PENDING_IMAGE_RESIZE_ACCEPTANCE.md`。
+
+- [x] 本轮103项相关前端、21项后端定向检查，三条生产静态浏览器闭环，独立python-pptx/pypdf/AP像素数据回读，断网Node22和LibreOffice单格颜色像素交叉验证通过；Standard/Slides/budget/Ruff/diff通过。整体任务未宣称完成。
