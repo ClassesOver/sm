@@ -464,7 +464,7 @@ class ConfigurationImporter:
                     source_drafts.c.scope_id == scope_id,
                     source_drafts.c.source_id == source_id,
                 )
-                .values(**values)
+                .values(**values, requires_table_discovery=0)
             )
             await connection.execute(
                 update(sources)
@@ -491,7 +491,7 @@ class ConfigurationImporter:
                     updated_at=now,
                 )
             )
-            await connection.execute(insert(source_drafts).values(**values))
+            await connection.execute(insert(source_drafts).values(**values, requires_table_discovery=0))
         await connection.execute(
             insert(source_versions).values(
                 **{key: value for key, value in values.items() if key != "version"},

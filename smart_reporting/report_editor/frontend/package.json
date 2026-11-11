@@ -5,17 +5,22 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "build:slides": "tsc --noEmit && vite build --config vite.slides.config.ts",
+    "build:management": "tsc --noEmit -p tsconfig.management.json && vite build --config vite.management.config.ts",
+    "test:management": "vitest run --config vite.management.config.ts",
     "check:budget": "node scripts/check-build-budget.mjs",
     "test:budget": "node scripts/check-build-budget.contract.mjs",
     "dev": "vite --host 0.0.0.0",
     "smoke": "node smoke/report-editor-smoke.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e:management": "playwright test --config playwright.management.config.ts",
+    "check:management-budget": "node scripts/check-management-budget.mjs"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
     "@sheets-web/xlsx-engine": "file:../../reporting/workbook_engine/packages/xlsx-engine",
+    "@tanstack/react-query": "5.107.1",
     "@tiptap/core": "3.31.0",
     "@tiptap/extension-bubble-menu": "3.31.0",
     "@tiptap/extension-floating-menu": "3.31.0",
@@ -35,6 +40,7 @@
     "@univerjs/preset-sheets-table": "0.25.1",
     "@univerjs/sheets": "0.25.1",
     "@univerjs/sheets-numfmt": "0.25.1",
+    "antd": "6.7.0",
     "diff": "^8.0.4",
     "diff2html": "^3.4.56",
     "konva": "^10.0.2",
@@ -45,17 +51,20 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-konva": "^19.0.10",
-    "zod": "^4.3.6",
-    "saxes": "^6.0.0"
+    "react-router-dom": "7.18.5",
+    "saxes": "^6.0.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.55.0",
     "@types/node": "^26.5.1",
     "@types/pathfinding": "^0.1.0",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
     "cjk-regex": "3.4.0",
     "jsdom": "^27.4.0",
-    "playwright": "^1.55.0",
+    "playwright": "1.55.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
     "vitest": "^3.2.7"

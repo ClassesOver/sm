@@ -14,13 +14,13 @@ def anyio_backend():
     return 'asyncio'
 
 
-async def test_source_release_versions_credentials_and_cas(auth_context):
+async def test_source_release_versions_credentials_and_cas(auth_context, monkeypatch):
     from cryptography.fernet import Fernet
 
     from smart_reporting.management.data_sources.models import SourceDraftInput
     from smart_reporting.management.data_sources.secrets import CredentialVault
     from smart_reporting.management.data_sources.service import SourceService
-    from smart_reporting.management.models import ManagementScope
+    from smart_reporting.management.models import ManagementError, ManagementScope
     from smart_reporting.management.repository import source_credentials, source_versions
     from smart_reporting.management.scopes import ScopeService
 
@@ -40,7 +40,7 @@ async def test_source_release_versions_credentials_and_cas(auth_context):
     draft = await service.create_draft(admin.raw_token, scope, 'operations', payload)
     assert draft['version'] == 1
     assert 'first-secret' not in str(draft)
-    from smart_reporting.tests.management_fixtures import publish_dependencies
+    from smart_reporting.tests.management_fixtures import confirm_table_access, publish_dependencies
     await publish_dependencies(scope_service, admin.raw_token, scope)
     with pytest.raises(Exception, match='management_version_conflict'):
         await service.publish(admin.raw_token, scope, 'operations', 2)
@@ -56,7 +56,13 @@ async def test_source_release_versions_credentials_and_cas(auth_context):
     with pytest.raises(Exception, match='management_version_conflict'):
         await service.save_draft(admin.raw_token, scope, 'operations', updated_payload, 2)
     second_draft = await service.save_draft(admin.raw_token, scope, 'operations', updated_payload, 1)
-    second = await service.publish(admin.raw_token, scope, 'operations', second_draft['version'])
+    with pytest.raises(ManagementError) as unconfirmed:
+        await service.publish(admin.raw_token, scope, 'operations', second_draft['version'])
+    assert unconfirmed.value.code == 'management_table_access_confirmation_required'
+    confirmed = await confirm_table_access(
+        scope_service, vault, admin.raw_token, scope, 'operations', second_draft['version'], monkeypatch
+    )
+    second = await service.publish(admin.raw_token, scope, 'operations', confirmed['draftVersion'])
     assert second['revision'] == 2
     assert first['contentHash'] != second['contentHash']
     assert await service.resolve_credentials(scope, 'operations', 1) == 'starrocks://reporter:first-secret@localhost:9030/warehouse'

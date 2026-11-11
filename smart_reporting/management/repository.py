@@ -378,11 +378,26 @@ sources = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
+table_discoveries = Table(
+    "table_discoveries", metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("source_id", String(64), primary_key=True),
+    Column("discovery_id", String(36), primary_key=True),
+    Column("database", String(128), nullable=False),
+    Column("credential_ref", String(36), nullable=False),
+    Column("credential_revision", Integer, nullable=False),
+    Column("discovered_at", DateTime(timezone=True), nullable=False),
+    Column("tables", JSON, nullable=False),
+    Column("business_metadata", JSON),
+    Column("warnings", JSON, nullable=False),
+)
+
 source_drafts = Table(
     "source_drafts", metadata,
     Column("scope_id", String(36), primary_key=True),
     Column("source_id", String(64), primary_key=True),
     Column("version", Integer, nullable=False),
+    Column("requires_table_discovery", Integer, nullable=False, server_default="0"),
     Column("name", String(200), nullable=False),
     Column("source_type", String(32), nullable=False),
     Column("database", String(128), nullable=False),

@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { cp, mkdir } from 'node:fs/promises'
 import { slidesReact } from './vite.slides-react'
 
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { precomputedCjkModule } from './scripts/precomputed-cjk'
 
 export default defineConfig({
@@ -177,5 +177,6 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['src/test-env-polyfills.ts'],
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
 })

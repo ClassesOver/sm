@@ -1,0 +1,10 @@
+{
+  "src/vendor/genoffice-rtl/rtl-grid-mirror.ts": "0e8379603475372ac0f32e00c8d389992d39c8c9bb8d8d135da743e5bb6e1147",
+  "src/vendor/genoffice-rtl/rtl-grid-mirror.test.ts": "13ff7f43235b78213943773e6e2c4648373f515c80f5af7816cea0609b38acbb",
+  "src/vendor/genoffice-rtl/SOURCE.md": "e6b7ae777566032cdf3ef8a8c6b34f5c3f0df01d0b818fd119a6b801444e0a36",
+  "src/workbook-rtl.ts": "2030c8cdf57aa171828da53fdfc3b2696be87b21d268369dfb5653ebf620fc31",
+  "src/workbook-rtl.test.ts": "b2b767ed867cc6c3438c2cbe32a0d540d9c0bedeb805915dc1a4c6467953acde",
+  "src/workbook-right-to-left.test.ts": "f984b195b9c0c1dacc9aa3d776223f475694f5f66830c42a31693a86e3da6d50",
+  "smoke/workbook-rtl-view-gui-smoke.mjs": "4b91b5c42a3a9d18f072ae22d2887858f4d852822b99af267c0333e8483fd044",
+  "../NATIVE_XLSX_RTL_INVESTIGATION.md": "d7889525c8831e0cb611f4ef2cc38b18ce59d4ae2a18379d7dbc92d51dd2d175"
+}

@@ -28,16 +28,23 @@ _ALLOWED_KEYS = {'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'el
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
+    'applyChartAdditions': {'additions'}, 'applyChartDeletions': {'deletions'}, 'applyChartEdits': {'edits'},
     'applySheetEdits': {'plan'}, 'applyRowColumnOps': {'sheetName', 'ops'},
     'applyCellShift': {'sheetName', 'range', 'shift'},
     'applyDvRules': {'rules'}, 'applyCfRules': {'rules'}, 'applySheetNotes': {'sheetName', 'notes'},
     'patchSheetNotes': {'sheetName', 'sourceIdentity', 'changes'},
-    'applySheetFilter': {'sheetName', 'filter'},
+    'applySheetFilter': {'sheetName', 'filter', 'hiddenRows', 'visibilityRange'},
+    'appendSheetSparklines': {'sheetName', 'groups'},
+    'replaceSheetDataValidations': {'sheetName', 'rules'},
+    'replaceSheetConditionalFormats': {'sheetName', 'rules'},
     'addPivot': {'addition'}, 'applyColumnWidths': {'sheetName', 'entries'},
+    'applySheetOutline': {'sheetName', 'rows', 'columns', 'summaryBelow', 'summaryRight'},
     'applyRowHeights': {'sheetName', 'entries'}, 'applyPageSetups': {'setups'},
-    'applyTableAdditions': {'additions'}, 'refreshPivotCaches': set(),
-    'applyPivotLayoutExpansions': {'updates'}, 'expandPivotOutputs': {'expansions'},
+    'applyTableAdditions': {'additions'}, 'applyTableEdits': {'edits'}, 'refreshPivotCaches': set(),
+    'applyPivotLayoutExpansions': {'updates', 'controlRequest'}, 'expandPivotOutputs': {'expansions'},
+    'upsertPivotControl': {'request'}, 'removePivotControl': {'request'},
     'applyDefinedNames': {'plan'}, 'protectSheet': {'sheetName', 'protect'},
+    'setSheetEditableRanges': {'sheetName', 'ranges'},
     'protectWorkbookStructure': {'lockStructure'}, 'setThemePart': {'themePath', 'state'},
     'sortRange': {'sheetName', 'spec'},
 }
@@ -579,7 +586,19 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]]) 
         if format == 'xlsx':
             for operation in operations:
                 kind = operation.get('kind')
-                if not isinstance(kind, str) or kind not in _XLSX_FIELDS or set(operation) != {'kind', *_XLSX_FIELDS[kind]}:
+                if not isinstance(kind, str) or kind not in _XLSX_FIELDS:
+                    raise ValueError('native_office_operations_invalid')
+                allowed = {'kind', *_XLSX_FIELDS[kind]}
+                if kind == 'applySheetOutline':
+                    if not {'kind', 'sheetName'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif kind == 'applyPivotLayoutExpansions':
+                    if not {'kind', 'updates'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif kind == 'applySheetFilter':
+                    if not {'kind', 'sheetName', 'filter'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif set(operation) != allowed:
                     raise ValueError('native_office_operations_invalid')
             result = patch_workbook(content, operations)
         else:

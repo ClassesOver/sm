@@ -40,11 +40,11 @@
   --office-radius: var(--radius-sm);
   --office-font-size: var(--font-size-md);
   --office-label-size: var(--font-size-xs);
-  --office-tabbar-height: 40px;
-  --office-tab-height: 36px;
-  --office-body-height: 110px;
-  --office-control-height: 32px;
-  --office-big-control-height: 58px;
+  --office-tabbar-height: 36px;
+  --office-tab-height: 32px;
+  --office-body-height: 112px;
+  --office-control-height: 28px;
+  --office-big-control-height: 60px;
 }
 
 /* ---- Ribbon 外壳：PDF 与 PowerPoint 采用与 Word/Excel 相同的标签栏、分组和控件 ---- */
@@ -66,7 +66,7 @@
   min-height: var(--office-tabbar-height);
   box-sizing: border-box;
   overflow-x: auto;
-  padding: 4px 12px 0;
+  padding: 3px 12px 0;
   border-bottom: 1px solid var(--office-border);
   background: var(--office-tabbar);
   scrollbar-width: thin;
@@ -95,7 +95,7 @@
   min-height: var(--office-body-height);
   box-sizing: border-box;
   overflow-x: auto;
-  padding: 10px 12px 6px;
+  padding: 6px 12px;
   scrollbar-width: thin;
   scrollbar-color: var(--office-border-strong) transparent;
 }
@@ -112,6 +112,27 @@
   padding: 0 12px 22px;
   border-right: 1px solid var(--office-separator);
 }
+/* 桌面功能区按列排三行，避免所有命令挤在一行。 */
+:is(.pdf-ribbon, .slides-native-ribbon) [role=tabpanel] > :is(.pdf-ribbon-group, .slides-native-ribbon-group) {
+  display: grid;
+  grid-template-rows: repeat(3, var(--office-control-height));
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  align-items: center;
+}
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) > :is(textarea, .pdf-ribbon-palette, .pdf-ribbon-big) { grid-row: span 2; }
+.slides-native-ribbon { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.slides-native-ribbon-tabs { grid-column: 1; grid-row: 1; }
+.slides-native-ribbon > .slides-native-ribbon-group {
+  grid-column: 2;
+  grid-row: 1;
+  align-content: center;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--office-border);
+  background: var(--office-tabbar);
+}
+.slides-native-ribbon > [role=tabpanel] { grid-column: 1 / -1; }
 :is(.pdf-ribbon-group, .slides-native-ribbon-group):first-child { padding-left: 0; }
 :is(.pdf-ribbon-group, .slides-native-ribbon-group):last-child { border-right: 0; }
 :is(.pdf-ribbon-group, .slides-native-ribbon-group) h3 {
@@ -197,7 +218,8 @@
 .pdf-view-status,
 .docx-native .docx-view-status,
 .slides-statusbar {
-  min-height: 28px;
+  flex: none;
+  min-height: 24px;
   box-sizing: border-box;
   border-top: 1px solid var(--office-border-soft);
   background: var(--office-tabbar);
@@ -207,6 +229,48 @@
 .pdf-view-status button { min-width: 24px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); color: var(--office-ink-2); }
 .pdf-editor-message,
 .docx-native .docx-notice { background: var(--office-tabbar); color: var(--office-muted); font-size: var(--office-font-size); }
+
+/* 紧凑控件保持自身宽度，短数值不占用整列的字体输入宽度。 */
+.slides-native-ribbon-group input[data-command=fontSize] { width: 64px; font-variant-numeric: tabular-nums; }
+.slides-native-ribbon-group input[data-command=fontFamily] { width: 136px; }
+:is(.pdf-ribbon-group, .slides-native-ribbon-group) button > svg { flex: none; }
+.workbook-ribbon-color:has(:focus-visible) { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
+.workbook-ribbon .workbook-ribbon-color :focus-visible { outline: none; }
+
+/* 标签下划线与 Word 一致：两端内收，聚焦环留在滚动容器内。 */
+.workbook-ribbon-tabs button,
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab] { position: relative; }
+.workbook-ribbon .workbook-ribbon-tabs button[aria-selected=true],
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab][aria-selected=true] { border-bottom-color: transparent; }
+.workbook-ribbon .workbook-ribbon-tabs button[aria-selected=true]::after,
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab][aria-selected=true]::after {
+  position: absolute;
+  right: 12px;
+  bottom: -2px;
+  left: 12px;
+  height: 2px;
+  background: var(--office-accent);
+  content: "";
+}
+.docx-native .docx-ribbon .ribbon-tab:focus-visible,
+.workbook-ribbon .workbook-ribbon-tabs button:focus-visible,
+:is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role=tab]:focus-visible { outline-offset: -3px; }
+
+/* 侧栏、状态栏的微交互使用同一套智能报告颜色。 */
+.pdf-thumbnail { border-radius: var(--office-radius); color: var(--office-muted); font: inherit; font-size: var(--office-label-size); }
+.pdf-thumbnail:hover { background: var(--office-hover-bg); color: var(--office-accent); }
+.pdf-thumbnail:focus-visible,
+.pdf-outline-link:focus-visible,
+.pdf-view-status button:focus-visible,
+.slides-sidebar button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
+.pdf-view-status button { min-height: 22px; font: inherit; cursor: pointer; }
+.pdf-view-status button:hover:not(:disabled) { background: var(--office-hover-bg); }
+.pdf-view-status input[type=range] { accent-color: var(--office-accent); cursor: pointer; }
+.pdf-view-status, .docx-native .docx-view-status, .slides-statusbar, .slide-number { font-variant-numeric: tabular-nums; }
+:is(.pdf-thumbnails, .pdf-outline, .pdf-document-pages, .slides-sidebar, .slides-inspector, .slides-stage, .docx-native .editor-scroll) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--office-border-strong) transparent;
+}
 
 /* ---- PowerPoint 外壳：去掉独立青绿色主题，主操作和选中态回到 md 报告主色 ---- */
 .save-button,
@@ -244,7 +308,7 @@
 .geometry-grid input:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
 .status-dot { background: var(--color-success); }
 
-/* ---- 外壳：顶部栏里的文件链接（下载原件 / XLSX / PPTX）与 md 工具栏按钮同形；PPTX 与其他格式同样嵌入 md 纸面卡片 ---- */
+/* ---- 顶部文件操作沿用智能报告主题；桌面式外壳布局见下方 ---- */
 :is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions a:not([hidden]) {
   display: inline-flex;
   height: 34px;
@@ -264,8 +328,147 @@
 }
 :is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions a:not([hidden]):hover { border-color: var(--office-hover-border); background: var(--office-hover-bg); }
 :is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions a:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
-@media (min-width: 901px) {
-  .editor-format-pptx .report-workspace { width: calc(100% - 40px); margin: 22px auto 20px; }
+
+
+/* 仅屏幕端的 Office 外壳铺满窗口；纸张、打印及 Markdown 版式由各自视图负责。 */
+@media screen {
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100dvh;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) > .app-bar {
+    position: relative;
+    flex: none;
+    grid-template-columns: minmax(140px, 190px) minmax(0, auto) minmax(0, 1fr);
+    min-height: 44px;
+    padding: 5px 12px;
+    gap: 12px;
+    box-shadow: none;
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions {
+    position: static;
+    min-width: 0;
+    width: auto;
+    padding: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions :is(button, a:not([hidden])) {
+    height: 32px;
+    font-size: var(--office-font-size);
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) > .report-meta {
+    flex: none;
+    width: 100%;
+    min-height: 24px;
+    margin: 0;
+    padding: 2px 12px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .reading-progress { display: none; }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) > .report-workspace {
+    display: flex;
+    flex: 1;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    gap: 0;
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .editor-surface {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: hidden;
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .editor-surface::before { display: none; }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) #report-editor {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    width: 100%;
+    max-width: none;
+    height: auto;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+  }
+  .report-app > .native-delivery { flex: none; max-height: 25dvh; overflow: auto; }
+  .editor-surface > .native-ai { flex: none; max-height: 30dvh; overflow: auto; }
+}
+@media screen and (max-width: 768px) {
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) > .app-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 8px;
+    padding: 4px 8px;
+  }
+  .report-app:is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions {
+    grid-column: 1 / -1;
+    overflow-x: auto;
+  }
+  :is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) { --office-control-height: 36px; }
+}
+
+/* 常用编辑命令先出现，低频入口仍保留在同一标签的末尾。 */
+.docx-native .docx-source-home > .ribbon-group { border-right: 1px solid var(--office-separator); padding-inline: 10px; }
+.docx-native .docx-source-home > .ribbon-group:first-child { padding-left: 0; }
+.docx-native .docx-source-home > .ribbon-group:has([data-action=convert-pdf]) { border-right: 0; }
+.pdf-ribbon [data-pdf-ribbon-panel=home] > .pdf-ribbon-group { border-right: 1px solid var(--office-separator); padding-inline: 10px; }
+.pdf-ribbon [data-pdf-ribbon-panel=home] > .office-ai-group { padding-left: 0; }
+.pdf-ribbon [data-pdf-ribbon-panel=home] > [data-ribbon-group="Convert & Export"] { border-right: 0; }
+
+/* Excel 字体首行放字体和字号；第二行放文字修饰；末行放颜色和边框。 */
+.workbook-ribbon-group:has(> [data-ribbon-control=font-family]) { grid-template-columns: repeat(7, 30px); grid-auto-flow: row; }
+.workbook-ribbon-group > [data-ribbon-control=font-family] { grid-area: 1 / 1 / 2 / 6; width: 100%; }
+.workbook-ribbon-group > [data-ribbon-control=font-size] { grid-area: 1 / 6 / 2 / 8; width: 100%; }
+.workbook-ribbon-group:has(> [data-ribbon-control=font-family]) > button { padding-inline: 4px; min-width: 0; }
+.workbook-ribbon-group:has(> [data-ribbon-control=font-family]) > button:not([data-ribbon-command="border:all"]) { grid-row: 2; }
+.workbook-ribbon-group:has(> [data-ribbon-control=font-family]) > button > span:not(.workbook-ribbon-icon) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.workbook-ribbon-group > .workbook-ribbon-color { grid-row: 3; grid-column: span 2; min-width: 30px; }
+.workbook-ribbon-group > [data-ribbon-command="border:all"] { grid-row: 3; grid-column: 5; }
+
+/* 段落参数统一标签宽度，让相邻列输入框对齐。 */
+.slides-native-ribbon .slides-ribbon-field { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; white-space: nowrap; }
+.slides-native-ribbon .slides-ribbon-field > :is(input, select) { width: 112px; min-width: 0; }
+/* PowerPoint 字体首行选择字体和字号，正文在画布及对象面板编辑。 */
+.slides-native-ribbon [data-ribbon-group=Font] { grid-template-columns: repeat(6, 32px); grid-auto-flow: row; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontFamily] { grid-area: 1 / 1 / 2 / 5; width: 100%; min-width: 0; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSize] { grid-area: 1 / 5 / 2 / 7; width: 100%; min-width: 0; }
+.slides-native-ribbon [data-ribbon-group=Font] > :is([data-command=bold], [data-command=italic], [data-command=underline], [data-command=strike]) { grid-row: 2; min-width: 0; padding-inline: 5px; }
+.slides-native-ribbon [data-ribbon-group=Font] .slides-ribbon-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontColor] { grid-area: 2 / 5 / 3 / 7; width: 100%; min-width: 0; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSizeUp] { grid-area: 3 / 1 / 4 / 4; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSizeDown] { grid-area: 3 / 4 / 4 / 7; }
+@media (max-width: 768px) {
+  .slides-native-ribbon [data-ribbon-group=Font] { grid-template-columns: repeat(6, 36px); }
+}
+@media (max-width: 768px) {
+  .workbook-ribbon-group:has(> [data-ribbon-control=font-family]) { grid-template-columns: repeat(7, 36px); }
+}
+/* 对齐按钮采用桌面式图标矩阵；完整名称由 aria-label 与悬停提示保留。 */
+.workbook-ribbon-group:has(> [data-ribbon-command=wrap]) { grid-template-columns: repeat(7, 32px); grid-auto-flow: row; }
+.workbook-ribbon-group:has(> [data-ribbon-command=wrap]) > button { min-width: 0; padding-inline: 4px; }
+.workbook-ribbon-group:has(> [data-ribbon-command=wrap]) > button > span:not(.workbook-ribbon-icon) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 768px) {
+  .workbook-ribbon-group:has(> [data-ribbon-command=wrap]) { grid-template-columns: repeat(7, 36px); }
 }
 
 /* AI 助手：沿用 GenOffice 面板图标与大按钮布局，保留智能报告主题。 */
@@ -321,195 +524,5 @@
   opacity: var(--office-disabled-opacity);
   cursor: default;
 }
+.docx-source-home .office-ai-group > .ribbon-group-items { align-items: flex-start; }
 .pdf-ribbon .office-ai-group > button:not(.office-ai-entry) { grid-column: 2; }
-
-/* PPTX 专项覆盖；其他格式保持既有样式。 */
-.editor-format-pptx {
-  --office-tabbar-height: 36px;
-  --office-tab-height: 32px;
-  --office-body-height: 112px;
-  --office-control-height: 28px;
-  --office-big-control-height: 60px
-}
-
-.slides-native-ribbon-tabs {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  min-height: var(--office-tabbar-height);
-  box-sizing: border-box;
-  overflow-x: auto;
-  padding: 3px 12px 0;
-  border-bottom: 1px solid var(--office-border);
-  background: var(--office-tabbar);
-  scrollbar-width: thin;
-}
-.slides-native-ribbon [role=tabpanel] {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  min-width: 0;
-  min-height: var(--office-body-height);
-  box-sizing: border-box;
-  overflow-x: auto;
-  padding: 6px 12px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--office-border-strong) transparent;
-}
-.slides-native-ribbon [role=tabpanel] > .slides-native-ribbon-group {
-  display: grid;
-  grid-template-rows: repeat(3, var(--office-control-height));
-  grid-auto-flow: column;
-  grid-auto-columns: max-content;
-  align-items: center;
-}
-.slides-native-ribbon-group > :is(textarea, .pdf-ribbon-palette, .pdf-ribbon-big) { grid-row: span 2; }
-.slides-native-ribbon { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-.slides-native-ribbon-tabs { grid-column: 1; grid-row: 1; }
-.slides-native-ribbon > .slides-native-ribbon-group {
-  grid-column: 2;
-  grid-row: 1;
-  align-content: center;
-  padding: 0 8px;
-  border: 0;
-  border-bottom: 1px solid var(--office-border);
-  background: var(--office-tabbar);
-}
-.slides-native-ribbon > [role=tabpanel] { grid-column: 1 / -1; }
-.slides-statusbar {
-  flex: none;
-  min-height: 24px;
-  box-sizing: border-box;
-  border-top: 1px solid var(--office-border-soft);
-  background: var(--office-tabbar);
-  color: var(--office-muted);
-  font-size: var(--office-label-size);
-}
-.slides-native-ribbon-group input[data-command=fontSize] { width: 64px; font-variant-numeric: tabular-nums; }
-.slides-native-ribbon-group input[data-command=fontFamily] { width: 136px; }
-.slides-native-ribbon-group button > svg { flex: none; }
-.slides-native-ribbon-tabs [role=tab] { position: relative; }
-.slides-native-ribbon-tabs [role=tab][aria-selected=true] { border-bottom-color: transparent; }
-.slides-native-ribbon-tabs [role=tab][aria-selected=true]::after {
-  position: absolute;
-  right: 12px;
-  bottom: -2px;
-  left: 12px;
-  height: 2px;
-  background: var(--office-accent);
-  content: "";
-}
-.slides-native-ribbon-tabs [role=tab]:focus-visible { outline-offset: -3px; }
-.slides-sidebar button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
-.slides-statusbar,
-.slide-number { font-variant-numeric: tabular-nums; }
-:is(.slides-sidebar, .slides-inspector, .slides-stage) {
-  scrollbar-width: thin;
-  scrollbar-color: var(--office-border-strong) transparent;
-}
-@media screen {
-  .report-app.editor-format-pptx {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    height: 100dvh;
-    min-height: 0;
-    padding: 0;
-    overflow: hidden;
-  }
-  .report-app.editor-format-pptx > .app-bar {
-    position: relative;
-    flex: none;
-    grid-template-columns: minmax(140px, 190px) minmax(0, auto) minmax(0, 1fr);
-    min-height: 44px;
-    padding: 5px 12px;
-    gap: 12px;
-    box-shadow: none;
-  }
-  .report-app.editor-format-pptx .report-actions {
-    position: static;
-    min-width: 0;
-    width: auto;
-    padding: 0;
-    box-shadow: none;
-    background: transparent;
-  }
-  .report-app.editor-format-pptx .report-actions :is(button, a:not([hidden])) {
-    height: 32px;
-    font-size: var(--office-font-size);
-  }
-  .report-app.editor-format-pptx > .report-meta {
-    flex: none;
-    width: 100%;
-    min-height: 24px;
-    margin: 0;
-    padding: 2px 12px;
-    overflow: hidden;
-    white-space: nowrap;
-  }
-  .report-app.editor-format-pptx .reading-progress { display: none; }
-  .report-app.editor-format-pptx > .report-workspace {
-    display: flex;
-    flex: 1;
-    width: 100%;
-    max-width: none;
-    min-width: 0;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
-    gap: 0;
-  }
-  .report-app.editor-format-pptx .editor-surface {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    min-width: 0;
-    min-height: 0;
-    height: auto;
-    max-width: none;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-    overflow: hidden;
-  }
-  .report-app.editor-format-pptx .editor-surface::before { display: none; }
-  .report-app.editor-format-pptx #report-editor {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    width: 100%;
-    max-width: none;
-    height: auto;
-    min-width: 0;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
-  }
-}
-@media screen and (max-width: 768px) {
-  .report-app.editor-format-pptx > .app-bar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 4px 8px;
-    padding: 4px 8px;
-  }
-  .report-app.editor-format-pptx .report-actions {
-    grid-column: 1 / -1;
-    overflow-x: auto;
-  }
-  .editor-format-pptx { --office-control-height: 36px; }
-}
-.slides-native-ribbon .slides-ribbon-field { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; white-space: nowrap; }
-.slides-native-ribbon .slides-ribbon-field > :is(input, select) { width: 112px; min-width: 0; }
-.slides-native-ribbon [data-ribbon-group=Font] { grid-template-columns: repeat(6, 32px); grid-auto-flow: row; }
-.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontFamily] { grid-area: 1 / 1 / 2 / 5; width: 100%; min-width: 0; }
-.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSize] { grid-area: 1 / 5 / 2 / 7; width: 100%; min-width: 0; }
-.slides-native-ribbon [data-ribbon-group=Font] > :is([data-command=bold], [data-command=italic], [data-command=underline], [data-command=strike]) { grid-row: 2; min-width: 0; padding-inline: 5px; }
-.slides-native-ribbon [data-ribbon-group=Font] .slides-ribbon-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontColor] { grid-area: 2 / 5 / 3 / 7; width: 100%; min-width: 0; }
-.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSizeUp] { grid-area: 3 / 1 / 4 / 4; }
-.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSizeDown] { grid-area: 3 / 4 / 4 / 7; }
-@media (max-width: 768px) {
-  .slides-native-ribbon [data-ribbon-group=Font] { grid-template-columns: repeat(6, 36px); }
-}

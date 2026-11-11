@@ -61,6 +61,44 @@ AgentOS 的 agent、team 和 workflow 新建 run 请求总大小上限为 32 MiB
 请求最多包含 8 个文件，单文件上限为 24 MiB。run continuation 请求上限为 2 MiB。
 超过边界的请求会在模型调用或文件读取前被拒绝。
 
+## 数据源管理后台
+
+管理入口为 `/management/login`。首次运行须构建独立管理页面并迁移管理数据表：
+
+```bash
+cd smart_reporting/report_editor/frontend
+npm ci
+npm run build:management
+cd ../../..
+.venv/bin/python -m alembic -c alembic-management.ini upgrade head
+.venv/bin/python -m smart_reporting.management.cli bootstrap-admin
+```
+
+`bootstrap-admin` 交互设置密码，不提供默认密码，已有账号不会被覆盖。忘记密码时使用
+`reset-admin-password`；该操作撤销全部旧会话。
+
+本机开发可设置 `AGENT_MANAGEMENT_PUBLIC_ORIGIN=http://127.0.0.1:7777` 和
+`AGENT_MANAGEMENT_LOCAL_HTTP=true`，随后按本地运行命令启动服务。生产环境使用实际 HTTPS
+Origin，并保持 `AGENT_MANAGEMENT_LOCAL_HTTP=false`。前端默认从编辑器静态目录下的
+`management/` 读取，也可通过 `AGENT_MANAGEMENT_STATIC_DIR` 指定独立 bundle 目录。Docker
+构建会包含管理页面，无需宿主机再次构建。
+
+登录后显式选择组织，可登记组织、分页查看数据源、创建/修改草稿、发布已满足依赖的版本、
+修改密码和退出。数据源凭据加密存储且不回显；保存连接前须配置
+`AGENT_MANAGEMENT_CREDENTIAL_KEYS=key-id:Fernet-key`。可用以下命令生成 Fernet key，生成值
+应保存在部署密钥配置中并备份，不能随服务重启更换：
+
+```bash
+.venv/bin/python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+```
+
+页面显示的是草稿和发布状态，不是连接测试结论。发布仍要求已发布的业务口径及目录版本，
+当前页面不提供业务口径编写与目录同步界面；可沿用现有管理 API 或 CLI 导入既有配置。
+
+管理工作台现采用统一组件与独立路由，支持服务端搜索/过滤、详情深链、保留连接、三方冲突恢复及发布预检。
+异常写入不会自动重试；发布事实与连接状态分开展示。
+构建、隔离验收、部署及成对回退步骤见 [管理工作台交付说明](smart_reporting/management/README.md)。
+
 ## 报告准确性与工具协议
 
 - 数值引用绑定具体事实、期间、分组和公式；金额、人次换算与十进制舍入由服务端统一处理。

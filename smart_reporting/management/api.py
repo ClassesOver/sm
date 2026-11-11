@@ -4,7 +4,7 @@ import hashlib
 import hmac
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -32,9 +32,12 @@ class ManagementRoute(APIRoute):
         async def handler(request: Request):
             try:
                 response = await original(request)
-            except RequestValidationError:
+            except RequestValidationError as error:
+                allowed = {"name", "database", "sourceId", "dsn", "username", "password", "newPassword", "currentPassword", "companyId", "scopeDatabase", "expectedVersion", "reportingProfileVersionId", "metadataVersionId"}
+                fields = [{"field": str(item["loc"][-1]), "code": item["type"], "message": "请检查此字段的格式或长度。"}
+                          for item in error.errors() if item.get("loc") and str(item["loc"][-1]) in allowed]
                 response = JSONResponse(
-                    {"code": "management_input_invalid", "message": "输入格式无效，请检查表单。"},
+                    {"code": "management_input_invalid", "message": "输入格式无效，请检查表单。", "fieldErrors": fields},
                     status_code=422,
                 )
             except ManagementError as error:
@@ -219,12 +222,35 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     async def login_page():
         return page()
 
+    @router.get("/management/assets/{asset_path:path}", include_in_schema=False)
+    async def management_asset(asset_path: str):
+        if settings.static_dir is None:
+            raise HTTPException(status_code=404)
+        root = (settings.static_dir / "assets").resolve()
+        path = (root / asset_path).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(path)
+
+    @router.get("/management", include_in_schema=False)
     @router.get("/management/", include_in_schema=False)
+    async def management_index():
+        return RedirectResponse("/management/sources", status_code=303)
+
+    @router.get("/management/sources", include_in_schema=False)
+    @router.get("/management/sources/new", include_in_schema=False)
+    @router.get("/management/sources/{source_id}", include_in_schema=False)
+    @router.get("/management/sources/{source_id}/view", include_in_schema=False)
+    @router.get("/management/sources/{source_id}/edit", include_in_schema=False)
+    @router.get("/management/organizations", include_in_schema=False)
+    @router.get("/management/account/password", include_in_schema=False)
     async def management_page(request: Request):
         try:
             await require_admin(request)
         except AdminSessionInvalid:
-            return RedirectResponse("/management/login", status_code=303)
+            from urllib.parse import quote
+            target = request.url.path + ("?" + request.url.query if request.url.query else "")
+            return RedirectResponse("/management/login?returnTo=" + quote(target, safe=""), status_code=303)
         return page()
 
     return router

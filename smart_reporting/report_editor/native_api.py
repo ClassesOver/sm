@@ -19,6 +19,8 @@ from fastapi.responses import (
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
 
 from ..reporting.contract import SHA256_PATTERN
+from ..reporting.delivery.docx_native import inspect_docx
+from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.models import ReportingError
 from .api import EDITOR_SESSION_COOKIE
 from .native import NativeEditorService, bind_native_workspace
@@ -283,9 +285,11 @@ def create_native_editor_router(
             "aiEnabled": ai_enabled and (
                 context.format == "docx" and editor.docx_enabled
                 or context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled
-                or context.format == "pptx" and editor.office_enabled
+                or context.format in {"pptx", "xlsx"} and editor.office_enabled
             ),
             "pdfReadAIEnabled": ai_enabled and context.format == "pdf",
+            "wordReadAIEnabled": ai_enabled and context.format == "docx",
+            "officeReadAIEnabled": ai_enabled and context.format in {"xlsx", "pptx"},
             "pdfFormAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled,
             "pdfReviewAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled,
             "editingEnabled": editor.is_enabled(context.format),
@@ -304,6 +308,18 @@ def create_native_editor_router(
             media_type=context.source_file.media_type,
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
+
+    @router.get("/reports/v1/native/{document_id}/{revision}/api/read-model")
+    async def native_read_model(document_id: str, revision: int, request: Request):
+        _, context = await session_context(request, document_id, revision)
+        try:
+            if context.format != "docx":
+                raise ReportingError("native_format_invalid", "只读内容模型仅支持 Word。")
+            content = await editor.read_file(context)
+            model = await run_office_engine(inspect_docx, content)
+            return {"sourceSha256": context.source_file.sha256, "model": model}
+        except ReportingError as error:
+            raise _error(error) from None
 
     @router.post("/reports/v1/native/{document_id}/{revision}/api/preview")
     async def native_preview(

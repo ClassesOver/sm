@@ -1,12 +1,13 @@
-import { createNativeApi, type NativeAISelection } from './native-api'
+import { createNativeApi, type NativeAISelection, type NativeAIReviewSelection, type NativeAINoteSelection } from './native-api'
 import { NativeDraft } from './native-draft'
 import { bindNativeSession } from './native-session'
 import { createEditorShell } from './shell'
 import { toolbarMode } from './viewport'
 import { bindNativeAI } from './native-ai'
+import { bindNativeWordAssistant } from './native-word-assistant'
 import {
-  createIcons, Database, FileDown, FileText, Focus, History, Keyboard, MoreHorizontal,
-  PanelLeft, Save, Search, Share2, Settings2, X,
+  createElement, createIcons, Database, FileDown, FileText, Focus, History, Keyboard, MessageCircle, MoreHorizontal,
+  PanelLeft, Save, Search, Share2, Settings2, Sparkles, X,
 } from 'lucide'
 import './native.css'
 
@@ -56,8 +57,12 @@ export async function startNativeEditor() {
     return
   }
   let ai: ReturnType<typeof bindNativeAI> | undefined
+  let wordReader: ReturnType<typeof bindNativeWordAssistant> | undefined
   let session: ReturnType<typeof bindNativeSession> | undefined
-  const options = { api, context: response, draft, onDraftChange: () => session?.update(), onSelectionChange: (selection: NativeAISelection[]) => ai?.setSelection(selection) }
+  let wordDock: {dispose(): void} | undefined
+  const options = { api, context: response, draft, onAssistant: response.wordReadAIEnabled || response.aiEnabled && response.editingEnabled ? () => { if (wordReader) wordReader.open('ask'); else ai?.open() } : undefined, onNoteAI: (selection:NativeAINoteSelection,instruction?:string,beforeText?:string)=>ai?.openNotes(selection,instruction,beforeText), onReviewAI: (selection: NativeAIReviewSelection, instruction?: string) => ai?.openReview(selection,instruction), onDraftChange: () => session?.update(), onSelectionChange: (selection: NativeAISelection[]) => {
+    ai?.setSelection(selection)
+  } }
   let view
   try {
     view = context.format === 'pdf'
@@ -78,10 +83,36 @@ export async function startNativeEditor() {
   if (response.aiEnabled && response.editingEnabled && (context.format === 'docx' || response.pdfTextEnabled)) {
     ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update() })
   }
+  if (context.format === 'docx' && response.wordReadAIEnabled) {
+    wordReader = bindNativeWordAssistant(shell.editor.parentElement ?? root, {
+      api, draft, selection: () => 'getReadSelection' in view ? view.getReadSelection() : [], flushPendingEdits: () => { if ('flushPendingEdits' in view) view.flushPendingEdits?.() },
+    })
+  }
+  if (context.format === 'docx' && (wordReader || ai)) {
+    const { mountOfficeTaskDock } = await import('./office-task-dock')
+    const entries = []
+    if (wordReader) {
+      const panel = root.querySelector<HTMLElement>('.native-word-assistant')!
+      entries.push({id:'read', label:'阅读问答', panel, open:()=>wordReader?.open('ask'), close:()=>panel.querySelector<HTMLButtonElement>('[data-word-ai=close]')?.click()})
+    }
+    if (ai) {
+      const panel = root.querySelector<HTMLElement>('.native-ai:not(.native-word-assistant)')!
+      entries.push({id:'edit', label:'编辑建议', panel, open:()=>ai?.open(), close:()=>ai?.close()})
+    }
+    const main = shell.editor.querySelector<HTMLElement>('.docx-navigation-layout') ?? shell.editor
+    const dock = mountOfficeTaskDock(main, entries, {label:'Word AI 助手'})
+    wordDock = dock
+    for (const entry of entries) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'office-ai-entry'; button.dataset.action = `word-${entry.id}-ai`
+      button.append(createElement(entry.id === 'read' ? MessageCircle : Sparkles, {'aria-hidden':'true',width:18,height:18}), document.createTextNode(entry.label))
+      button.onclick = () => dock.open(entry.id)
+      root.querySelector('.toolbar-group-edit-view')?.append(button)
+    }
+  }
   if (!response.editingEnabled) {
     shell.save.disabled = true
     shell.exportWord.disabled = true
     shell.exportPdf.disabled = true
   }
-  window.addEventListener('pagehide', () => { ai?.dispose(); session?.dispose() }, { once: true })
+  window.addEventListener('pagehide', () => { wordDock?.dispose(); ai?.dispose(); wordReader?.dispose(); session?.dispose() }, { once: true })
 }

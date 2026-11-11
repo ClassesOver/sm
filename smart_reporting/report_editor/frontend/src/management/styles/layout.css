@@ -1,0 +1,642 @@
+/* 与 Report Editor 的浅色工作空间、品牌色及字体保持一致，样式仅作用于管理端。 */
+#management-root {
+  --management-primary: #0b4f8a;
+  --management-ink: #1b2a41;
+  --management-muted: #5b6b7a;
+  --management-border: #d8e3ed;
+  --management-soft: #edf5fc;
+  min-height: 100vh;
+  color: var(--management-ink);
+  background: #f1f5f8;
+  font-family:
+    'Noto Sans CJK SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+#management-root * {
+  box-sizing: border-box;
+}
+#management-root :focus-visible {
+  outline: 3px solid #007ea7;
+  outline-offset: 3px;
+}
+#management-root .management-layout {
+  min-height: 100vh;
+  background: #f1f5f8;
+}
+#management-root .management-workspace {
+  min-width: 0;
+  background: linear-gradient(180deg, #f8fafc 0, #f1f5f8 220px, #eef2f5 100%);
+}
+#management-root .management-sider {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  background: #f8fafc;
+  border-right: 1px solid var(--management-border);
+}
+#management-root .management-logo {
+  height: 66px;
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--management-border);
+  background: #fff;
+  overflow: hidden;
+}
+#management-root .management-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+#management-root .management-product-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 8px;
+  background: var(--management-primary);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 3px 8px rgb(11 79 138 / 16%);
+}
+#management-root .management-identity-text {
+  display: grid;
+  gap: 1px;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+#management-root .management-identity-text strong {
+  font-size: 14px;
+  color: var(--management-ink);
+}
+#management-root .management-identity-text > span {
+  color: var(--management-muted);
+  font-size: 12px;
+}
+#management-root .management-nav-label {
+  margin: 26px 24px 8px;
+  color: var(--management-muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+#management-root .management-sider .ant-menu {
+  border: 0;
+  padding: 0 12px;
+}
+#management-root .management-sider .ant-menu-item {
+  margin: 4px 0;
+  width: 100%;
+}
+#management-root .management-sider .ant-menu-item-selected {
+  font-weight: 600;
+}
+#management-root .management-sider .ant-menu-item-selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 11px;
+  bottom: 11px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--management-primary);
+}
+#management-root .management-nav-footer {
+  position: absolute;
+  bottom: 16px;
+  inset-inline: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 4px;
+  border-top: 1px solid var(--management-border);
+  padding-top: 12px;
+}
+#management-root .management-nav-caption {
+  padding-left: 8px;
+  font-size: 12px;
+  color: var(--management-muted);
+  white-space: nowrap;
+}
+#management-root .management-collapse {
+  color: var(--management-muted);
+  flex-shrink: 0;
+}
+#management-root .ant-layout-sider-collapsed .management-logo {
+  padding: 0 16px;
+}
+#management-root .ant-layout-sider-collapsed .management-identity-text,
+#management-root .ant-layout-sider-collapsed .management-nav-label,
+#management-root .ant-layout-sider-collapsed .management-nav-caption {
+  display: none;
+}
+#management-root .ant-layout-sider-collapsed .ant-menu {
+  padding: 16px 8px;
+}
+#management-root .ant-layout-sider-collapsed .ant-menu-item {
+  padding-inline: 16px;
+}
+#management-root .ant-layout-sider-collapsed .management-nav-footer {
+  justify-content: center;
+}
+#management-root .management-header {
+  height: 66px;
+  padding: 0 24px;
+  background: rgb(255 255 255 / 96%);
+  border-bottom: 1px solid var(--management-border);
+  box-shadow: 0 2px 12px rgb(27 42 65 / 5%);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  justify-content: space-between;
+}
+#management-root .management-header-breadcrumb {
+  flex-shrink: 0;
+}
+#management-root .management-scope {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+#management-root .management-scope label {
+  color: var(--management-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+#management-root .management-scope .ant-select {
+  width: 220px;
+  max-width: 100%;
+}
+#management-root .management-account {
+  border-left: 1px solid var(--management-border);
+  border-radius: 0;
+  padding-left: 18px;
+  flex-shrink: 0;
+}
+.management-scope-option {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.5;
+  padding: 2px 0;
+}
+.management-scope-option strong {
+  font-weight: 500;
+}
+.management-scope-option small {
+  color: #5b6b7a;
+}
+#management-root .management-mobile-menu {
+  display: none;
+}
+#management-root .management-content {
+  padding: 28px 28px 16px;
+  min-width: 0;
+}
+#management-root .management-content h1 {
+  font-size: 24px;
+  margin: 0 0 6px;
+  line-height: 1.4;
+  letter-spacing: -0.02em;
+}
+#management-root .management-page-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 24px;
+}
+#management-root .management-page-header > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#management-root .management-page-header p {
+  margin: 0;
+  color: var(--management-muted);
+}
+#management-root .management-footer {
+  padding: 12px 28px 20px;
+  color: var(--management-muted);
+  font-size: 12px;
+}
+#management-root .ant-card {
+  background: #fff;
+  border-color: var(--management-border);
+  box-shadow: 0 1px 4px rgb(11 79 138 / 4%);
+  overflow-wrap: anywhere;
+}
+#management-root .ant-card .ant-card-head {
+  min-height: 52px;
+  padding: 0 20px;
+  border-bottom-color: #e4edf4;
+}
+#management-root .ant-card .ant-card-head-title {
+  font-size: 15px;
+}
+#management-root .ant-card .ant-card-body {
+  padding: 20px;
+}
+#management-root .ant-card p {
+  color: var(--management-muted);
+  line-height: 1.75;
+}
+#management-root .ant-alert + .ant-alert {
+  margin-top: 8px;
+}
+#management-root .ant-table-wrapper {
+  overflow-x: auto;
+}
+#management-root .ant-table-thead > tr > th {
+  font-size: 12px;
+  font-weight: 600;
+}
+#management-root .ant-table-tbody > tr > td {
+  border-bottom-color: #e4edf4;
+}
+#management-root .ant-table-tbody > tr:last-child > td {
+  border-bottom: 0;
+}
+#management-root .management-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+#management-root .management-toolbar .ant-input-search {
+  width: 320px;
+  max-width: 100%;
+}
+#management-root .management-toolbar .ant-select {
+  min-width: 170px;
+}
+#management-root .management-toolbar-refresh {
+  margin-left: auto;
+}
+#management-root .management-source-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+#management-root .management-source-identity > div {
+  min-width: 0;
+}
+#management-root .management-source-identity a {
+  font-weight: 600;
+}
+#management-root .management-source-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border: 1px solid #d8e3ed;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: var(--management-primary);
+  font-size: 16px;
+}
+#management-root .management-secondary {
+  font-size: 12px;
+  color: var(--management-muted);
+  margin-top: 3px;
+}
+#management-root .management-code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+#management-root .management-table-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  padding-right: 12px;
+}
+#management-root .management-row-actions a {
+  white-space: nowrap;
+}
+#management-root .management-row-actions a:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+#management-root .management-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  margin: 0;
+  line-height: 20px;
+  border-radius: 6px;
+  border: 1px solid #d8e3ed;
+  background: #f8fafc;
+  color: #5b6b7a;
+  white-space: nowrap;
+}
+#management-root .management-status[data-state='published'] {
+  color: #26734d;
+  border-color: #c7e5d7;
+  background: #e4f3eb;
+}
+#management-root .management-status[data-state='changed'] {
+  color: #8b5c21;
+  border-color: #ead9b9;
+  background: #fff9ef;
+}
+#management-root .management-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+#management-root .management-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding-top: 14px;
+  margin-top: 0;
+  border-top: 1px solid #e4edf4;
+  color: var(--management-muted);
+  font-size: 12px;
+}
+#management-root .management-detail-tabs > .ant-tabs-nav {
+  margin-bottom: 20px;
+}
+#management-root .management-detail-tabs > .ant-tabs-nav .ant-tabs-tab {
+  padding: 10px 4px 14px;
+}
+#management-root .management-overview-card .ant-descriptions {
+  margin-top: 20px;
+}
+#management-root details {
+  margin-top: 24px;
+  border-top: 1px solid #e4edf4;
+  padding-top: 16px;
+  font-size: 12px;
+  color: var(--management-muted);
+  overflow-wrap: anywhere;
+}
+#management-root details summary {
+  cursor: pointer;
+  width: fit-content;
+  color: #30435a;
+}
+#management-root .management-selection-bar {
+  display: flex;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: #edf5fc;
+  border: 1px solid #d8e3ed;
+  border-radius: 6px;
+}
+#management-root .management-selection-bar [role='status'] {
+  color: var(--management-primary);
+  font-variant-numeric: tabular-nums;
+}
+#management-root .management-access-card .ant-table .ant-btn-link {
+  height: auto;
+  white-space: normal;
+  text-align: left;
+  padding-inline: 0;
+}
+#management-root .management-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+#management-root .management-editor-grid .ant-form-item {
+  margin-bottom: 16px;
+}
+#management-root .management-editor-grid .ant-form-item:last-child {
+  margin-bottom: 0;
+}
+#management-root .management-editor-grid .ant-radio-group {
+  margin-bottom: 16px;
+}
+#management-root .management-editor-grid p {
+  font-size: 12px;
+}
+#management-root .management-editor-dependencies {
+  grid-column: 1 / -1;
+}
+#management-root .management-editor-dependencies .ant-card-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 24px;
+}
+#management-root .management-editor-dependencies p {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+#management-root .management-save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  margin-top: 20px;
+  border: 1px solid var(--management-border);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 -8px 20px rgb(27 42 65 / 6%);
+}
+#management-root .management-save-bar > span {
+  color: var(--management-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+#management-root .management-save-bar > .ant-btn {
+  flex-shrink: 0;
+}
+.management-conflict-field {
+  border-top: 1px solid #d8e3ed;
+  padding: 16px 0;
+}
+.management-conflict-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-top: 8px;
+  width: 100%;
+}
+.management-conflict-options .ant-radio-wrapper {
+  align-items: start;
+  background: #f8fafc;
+  border: 1px solid #d8e3ed;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0;
+  min-width: 0;
+}
+.management-conflict-options .ant-radio-wrapper-checked {
+  border-color: #0b4f8a;
+  background: #edf5fc;
+}
+.management-conflict-options span span,
+.management-conflict-options strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.management-conflict-options strong {
+  margin-top: 6px;
+  font-weight: 500;
+}
+.management-range-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  overflow-wrap: anywhere;
+}
+#management-root .management-login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background:
+    radial-gradient(ellipse at 20% 10%, #e4f1ff 0, transparent 50%),
+    radial-gradient(ellipse at 85% 90%, #e4f6f2 0, transparent 45%), #f1f5f8;
+}
+#management-root .management-login-card {
+  width: 440px;
+  max-width: 100%;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgb(27 42 65 / 10%);
+}
+#management-root .management-login-card .ant-card-body {
+  padding: 32px;
+}
+#management-root .management-login h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+}
+#management-root .management-brand {
+  margin-bottom: 32px;
+}
+#management-root .management-login .ant-form {
+  margin-top: 24px;
+}
+#management-root .ant-input-password-icon {
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+@media (max-width: 1023px) {
+  #management-root .management-editor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #management-root .management-header-breadcrumb {
+    display: none;
+  }
+  #management-root .management-content {
+    padding: 24px 20px 16px;
+  }
+}
+@media (max-width: 767px) {
+  #management-root .management-sider {
+    display: none;
+  }
+  #management-root .management-mobile-menu {
+    display: block;
+  }
+  #management-root .management-header {
+    padding: 0 12px;
+    gap: 8px;
+  }
+  #management-root .management-scope label {
+    display: none;
+  }
+  #management-root .management-scope .ant-select {
+    width: 100%;
+  }
+  #management-root .management-account {
+    padding: 0 8px;
+  }
+  #management-root .management-content {
+    padding: 20px 16px 12px;
+  }
+  #management-root .management-content h1 {
+    font-size: 22px;
+  }
+  #management-root .management-page-header {
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  #management-root .management-page-header > .ant-space {
+    width: 100%;
+  }
+  #management-root .ant-card .ant-card-body {
+    padding: 16px;
+  }
+  #management-root .ant-card .ant-card-head {
+    padding: 12px 16px;
+  }
+  #management-root .management-access-card .ant-card-head-wrapper {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  #management-root .management-access-card .ant-card-extra {
+    margin-inline-start: 0;
+  }
+  #management-root .management-toolbar .ant-input-search {
+    width: 100%;
+  }
+  #management-root .management-toolbar .ant-select {
+    min-width: 140px;
+    flex: 1;
+  }
+  #management-root .management-editor-dependencies .ant-card-body {
+    display: block;
+  }
+  #management-root .management-editor-dependencies .ant-form-item {
+    margin-bottom: 16px;
+  }
+  #management-root .management-save-bar {
+    padding: 12px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  #management-root .management-save-bar > .ant-btn,
+  #management-root .management-save-bar .ant-space {
+    margin-left: auto;
+  }
+  #management-root .ant-btn,
+  #management-root .ant-input,
+  #management-root .ant-select,
+  #management-root .ant-input-affix-wrapper,
+  #management-root .ant-select-selector {
+    min-height: 44px;
+  }
+  #management-root .ant-input-password-icon {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  #management-root .management-login {
+    padding: 20px;
+  }
+  #management-root .management-login-card .ant-card-body {
+    padding: 24px;
+  }
+  .management-conflict-options,
+  .management-range-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #management-root *,
+  #management-root *::before,
+  #management-root *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

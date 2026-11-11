@@ -110,7 +110,10 @@ async def test_editor_cookie_does_not_authorize_management_and_pages_redirect(cl
     assert response.status_code == 401
     response = await client.get("/management/")
     assert response.status_code == 303
-    assert response.headers["location"] == "/management/login"
+    assert response.headers["location"] == "/management/sources"
+    response = await client.get("/management/sources")
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/management/login?returnTo=")
 
 
 async def test_logout_is_server_side_and_idempotent(client):

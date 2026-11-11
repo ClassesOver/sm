@@ -12,7 +12,7 @@ class SourceDraftInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     source_type: str = Field(default='starrocks', alias='type', pattern='^starrocks$')
     database: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z_][A-Za-z0-9_$]*$')
-    dsn: SecretStr = Field(min_length=1, max_length=4096, repr=False)
+    dsn: SecretStr | None = Field(default=None, min_length=1, max_length=4096, repr=False)
     profile_version_id: str | None = Field(default=None, alias='reportingProfileVersionId', max_length=64)
     metadata_version_id: str | None = Field(default=None, alias='metadataVersionId', max_length=64)
 

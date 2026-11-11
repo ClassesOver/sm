@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,6 +37,41 @@ class NativePDFReadCancelPayload(BaseModel):
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
 
 
+class NativeWordReadSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    blockId: str = Field(min_length=1)
+    cellId: str | None = Field(default=None, min_length=1)
+
+
+class NativeWordReadPayload(_DraftPayload):
+    client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
+    action: Literal["ask", "summarize", "keyPoints"] = "ask"
+    instruction: str = Field(default="", max_length=2000)
+    selection: list[NativeWordReadSelection] = Field(default_factory=list, max_length=100)
+
+
+class NativeWorkbookReadSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    sheetName: str = Field(min_length=1, max_length=256)
+    startRow: int = Field(ge=0, lt=1048576)
+    endRow: int = Field(ge=0, lt=1048576)
+    startColumn: int = Field(ge=0, lt=16384)
+    endColumn: int = Field(ge=0, lt=16384)
+
+
+class NativeSlidesReadSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    slideIndex: int = Field(ge=0)
+    elementId: str = Field(min_length=1, max_length=256)
+
+
+class NativeOfficeReadPayload(_DraftPayload):
+    client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
+    action: Literal["ask", "summarize", "keyPoints"] = "ask"
+    instruction: str = Field(default="", max_length=2000)
+    selection: NativeWorkbookReadSelection | Annotated[list[NativeSlidesReadSelection], Field(min_length=1, max_length=100)] | None = None
+
+
 class NativeAIAcceptPayload(_DraftPayload):
     snapshot_sha256: str = Field(alias="snapshotSha256", pattern=SHA256_PATTERN)
 
@@ -61,6 +96,8 @@ def create_native_ai_router(
     editor: Any,
     ai: NativeAIService,
     pdf_read: Any = None,
+    word_read: Any = None,
+    office_read: Any = None,
     allowed_origin: str | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -81,6 +118,88 @@ def create_native_ai_router(
         if pdf_read is None:
             raise ReportingError("native_ai_disabled", "PDF AI 阅读尚未开放。")
         return pdf_read
+
+    def word_reader():
+        if word_read is None:
+            raise ReportingError("native_ai_disabled", "Word AI 阅读尚未开放。")
+        return word_read
+
+    def office_reader():
+        if office_read is None:
+            raise ReportingError("native_ai_disabled", "Office AI 阅读尚未开放。")
+        return office_read
+
+    @router.post(base + "/office-read/start")
+    async def office_read_start(document_id: str, revision: int, request: Request,
+                                payload: NativeOfficeReadPayload):
+        try:
+            session = await session_for(request, document_id, revision, write=True)
+            return await office_reader().start(session, **payload.model_dump())
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.post(base + "/office-read/cancel")
+    async def office_read_cancel(document_id: str, revision: int, request: Request,
+                                 payload: NativePDFReadCancelPayload):
+        try:
+            session = await session_for(request, document_id, revision, write=True)
+            return await office_reader().cancel_request(session, payload.client_request_id)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.get(base + "/office-read/{task_id}")
+    async def office_read_status(document_id: str, revision: int, task_id: str, request: Request,
+                                 wait_ms: int = Query(default=20000, alias="waitMs", ge=0, le=20000)):
+        try:
+            session = await session_for(request, document_id, revision)
+            return await office_reader().status(session, task_id, wait_ms=wait_ms)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.get(base + "/office-read/{task_id}/events")
+    async def office_read_events(document_id: str, revision: int, task_id: str, request: Request,
+                                 after: int = Query(default=0, ge=0)):
+        try:
+            session = await session_for(request, document_id, revision)
+            return await office_reader().event_stream(session, task_id, after)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.post(base + "/word-read/start")
+    async def word_read_start(document_id: str, revision: int, request: Request,
+                              payload: NativeWordReadPayload):
+        try:
+            session = await session_for(request, document_id, revision, write=True)
+            return await word_reader().start(session, **payload.model_dump(exclude_none=True))
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.post(base + "/word-read/cancel")
+    async def word_read_cancel(document_id: str, revision: int, request: Request,
+                               payload: NativePDFReadCancelPayload):
+        try:
+            session = await session_for(request, document_id, revision, write=True)
+            return await word_reader().cancel_request(session, payload.client_request_id)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.get(base + "/word-read/{task_id}")
+    async def word_read_status(document_id: str, revision: int, task_id: str, request: Request,
+                               wait_ms: int = Query(default=20000, alias="waitMs", ge=0, le=20000)):
+        try:
+            session = await session_for(request, document_id, revision)
+            return await word_reader().status(session, task_id, wait_ms=wait_ms)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.get(base + "/word-read/{task_id}/events")
+    async def word_read_events(document_id: str, revision: int, task_id: str, request: Request,
+                               after: int = Query(default=0, ge=0)):
+        try:
+            session = await session_for(request, document_id, revision)
+            return await word_reader().event_stream(session, task_id, after)
+        except ReportingError as error:
+            raise _ai_error(error) from None
 
     @router.post(base + "/read/start")
     async def read_start(document_id: str, revision: int, request: Request,
@@ -145,6 +264,15 @@ def create_native_ai_router(
         try:
             session = await session_for(request, document_id, revision)
             return await ai.wait_edit_status(session, edit_id, wait_ms=wait_ms)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.get(base + "/{edit_id}/events")
+    async def events(document_id: str, revision: int, edit_id: str, request: Request,
+                     after: int = Query(default=0, ge=0)):
+        try:
+            session = await session_for(request, document_id, revision)
+            return await ai.event_stream(session, edit_id, after)
         except ReportingError as error:
             raise _ai_error(error) from None
 

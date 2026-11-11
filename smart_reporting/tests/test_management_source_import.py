@@ -18,6 +18,7 @@ async def test_import_keeps_execution_parameters_across_edits_and_pinned_version
     import json
 
     from cryptography.fernet import Fernet
+    from pydantic import SecretStr
 
     from smart_reporting.management.data_sources.models import SourceDraftInput
     from smart_reporting.management.data_sources.secrets import CredentialVault
@@ -90,7 +91,6 @@ async def test_import_keeps_execution_parameters_across_edits_and_pinned_version
         {
             "name": "改名",
             "database": "warehouse",
-            "dsn": environ["REPORTING_DSN"],
             "reportingProfileVersionId": "base:1",
             "metadataVersionId": "operations:1",
         }
@@ -102,6 +102,26 @@ async def test_import_keeps_execution_parameters_across_edits_and_pinned_version
         **limits,
         "maxRows": 200,
     }
+
+    # 从管理页换连接后，真实文件导入重新读取目录，应清除待确认标记。
+    replaced = await service.save_draft(
+        token,
+        scope,
+        "operations",
+        payload.model_copy(
+            update={"dsn": SecretStr("starrocks://reporter:replacement@localhost:9030/warehouse")}
+        ),
+        draft["version"],
+    )
+    assert replaced["metadata_version_id"] is None
+    assert (await importer.import_configuration(token, scope, tmp_path, False, environ))["changed"]
+    from smart_reporting.management.repository import source_drafts
+
+    async with auth.repository.engine.connect() as connection:
+        current = (await connection.execute(select(source_drafts))).mappings().one()
+    assert current["requires_table_discovery"] == 0
+    check = await service.release_check(token, scope, "operations", current["version"])
+    assert not check["issues"]
 
 
 async def test_config_import_dry_run_and_idempotent_commit(

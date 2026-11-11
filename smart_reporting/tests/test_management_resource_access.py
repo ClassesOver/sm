@@ -103,7 +103,7 @@ async def test_source_api_creates_and_saves_using_public_aliases(release_context
         )
         assert saved.status_code == 200, saved.text
         assert saved.json()["version"] == 2
-        assert saved.json()["metadata_version_id"] == "another:1"
+        assert saved.json()["metadata_version_id"] is None  # 新连接须重新发现并确认范围
         assert "r:s@" not in saved.text
         forbidden = await client.put(
             "/management/api/v1/sources/another/draft",

@@ -100,3 +100,24 @@ it('PDF阅读取消在页面卸载时仍使用keepalive并保留同源CSRF', asy
   expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf')
   expect(JSON.parse(init.body)).toEqual({clientRequestId:'request'})
 })
+
+it('Office阅读使用独立路由、真实草稿选区、可取消轮询及SSE进度',async()=>{
+  const fetcher=vi.fn().mockImplementation(async()=>new Response(JSON.stringify({taskId:'t',status:'completed'})))
+  vi.stubGlobal('fetch',fetcher)
+  const api=createNativeApi('office',1,'token'),signal=new AbortController().signal
+  const payload={clientRequestId:'request',expectedSha256:'a'.repeat(64),operations:[{kind:'editSlides',edits:[]}],selection:[{slideIndex:0,elementId:'shape'}],action:'summarize' as const,instruction:''}
+  await api.officeAIStart(payload,signal)
+  await api.officeAIStatus('task/id',signal)
+  await api.officeAICancel('request')
+  const base='/reports/v1/native/office/1/api/ai/office-read'
+  expect(fetcher.mock.calls.map(([url])=>url)).toEqual([base+'/start',base+'/task%2Fid?waitMs=20000',base+'/cancel'])
+  expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual(payload)
+  expect(fetcher.mock.calls[1][1].signal).toBe(signal)
+  expect(fetcher.mock.calls[2][1].keepalive).toBe(true)
+  expect(new Headers(fetcher.mock.calls[2][1].headers).get('X-CSRF-Token')).toBe('token')
+  fetcher.mockResolvedValueOnce(new Response('id: 1\nevent: progress\ndata: {"kind":"terminal","sequence":1,"status":"completed"}\n\n',{headers:{'Content-Type':'text/event-stream'}}))
+  const onEvent=vi.fn()
+  await api.officeAIEvents('task/id',onEvent,signal)
+  expect(fetcher.mock.calls[3][0]).toBe(base+'/task%2Fid/events?after=0')
+  expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({kind:'terminal'}))
+})

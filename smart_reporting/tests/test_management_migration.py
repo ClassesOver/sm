@@ -95,6 +95,12 @@ async def test_management_migration_is_repeatable_and_preserves_account():
                     published_at=datetime.now(UTC),
                 )
             )
+        async with engine.begin() as connection:
+            await connection.execute(text("""INSERT INTO reporting_management.source_drafts
+                (scope_id, source_id, version, name, source_type, database, credential_ref,
+                 credential_revision, content_hash)
+                VALUES ('old-scope', 'old-source', 1, '旧源', 'starrocks', 'migration',
+                        'old-credential', 1, :digest)"""), {"digest": "b" * 64})
         await upgrade("0006_runtime_snapshots")
         references = {"runId": "old-run", "sources": [{"sourceId": "old-source", "revision": 1}]}
         async with engine.begin() as connection:
@@ -120,8 +126,14 @@ async def test_management_migration_is_repeatable_and_preserves_account():
                 await connection.scalar(
                     text("SELECT version_num FROM reporting_management.alembic_version")
                 )
-                == "0007_source_execution"
+                == "0008_table_discoveries"
             )
+            from smart_reporting.management.repository import source_drafts, table_discoveries
+
+            old_draft = (await connection.execute(select(source_drafts))).mappings().one()
+            assert old_draft["requires_table_discovery"] == 0
+            assert old_draft["content_hash"] == "b" * 64
+            assert (await connection.execute(select(table_discoveries))).mappings().all() == []
             assert await connection.scalar(select(catalog_versions.c.source_id)) == "old-source"
             old_source = (await connection.execute(select(source_versions))).mappings().one()
             assert old_source["execution_parameters"] is None

@@ -37,9 +37,11 @@ class _WorkbookAIJob:
 
 # AI 只能提出这些引擎原生操作；原生图表、保护、主题等操作不进入候选。
 WorkbookAIOperationKind = Literal[
-    "applyCellEdits", "applySheetEdits", "applyRowColumnOps", "applyDvRules", "applyCfRules",
-    "applySheetNotes", "addPivot", "applyColumnWidths", "applyRowHeights", "applyPageSetups",
-    "applyTableAdditions",
+    "applyCellEdits", "applySheetMerges", "applySheetEdits", "applyRowColumnOps", "applyCellShift",
+    "applyDvRules", "applyCfRules", "applySheetNotes", "applySheetFilter", "addPivot",
+    "applyColumnWidths", "applyRowHeights", "applyPageSetups", "applySheetOutline",
+    "applyTableAdditions", "applyTableEdits", "refreshPivotCaches", "applyPivotLayoutExpansions",
+    "expandPivotOutputs", "applyDefinedNames", "sortRange",
 ]
 
 
@@ -85,6 +87,25 @@ class AgnoWorkbookProposalPlanner:
         if isinstance(content, Mapping):
             return WorkbookAIProposal.model_validate(dict(content))
         raise ValueError("workbook_ai_proposal_not_structured")
+
+    async def plan_workbook(self, prompt: str, *, model: dict[str, Any], scope: str,
+                            selection: dict[str, Any], preview: Any,
+                            session_id: str, user_id: str) -> WorkbookAIProposal:
+        """使用原生 Agno 工具循环读取工作簿，并通过提案工具运行真实引擎预览。"""
+        from .workbook_ai_tools import WorkbookAIToolkit
+
+        toolkit = WorkbookAIToolkit(model=model, scope=scope, selection=selection, preview=preview)
+        agent = self.agent.deep_copy(update={
+            "output_schema": None, "parse_response": False, "structured_outputs": False,
+            "use_json_mode": False, "tools": [toolkit], "tool_choice": "auto",
+            "retries": 0, "exponential_backoff": False, "markdown": False,
+        })
+        from ..reporting.agent_events import run_agent_with_events
+
+        await run_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
+        if toolkit.proposal is None:
+            raise ValueError("workbook_ai_proposal_not_submitted")
+        return toolkit.proposal
 
 
 class ReportWorkbookAIService:

@@ -22,11 +22,12 @@ class WorkbookBuildResult:
 
 
 _OPERATION_KINDS = frozenset({
-    'applyStaticImages', 'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyCellShift', 'applyDvRules',
-    'applyCfRules', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'addPivot',
-    'applyColumnWidths', 'applyRowHeights', 'applyPageSetups', 'applyTableAdditions', 'sortRange',
-    'refreshPivotCaches', 'applyPivotLayoutExpansions', 'expandPivotOutputs',
-    'applyDefinedNames', 'protectSheet', 'protectWorkbookStructure', 'setThemePart',
+    'applyStaticImages', 'applyChartAdditions', 'applyChartDeletions', 'applyChartEdits', 'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyCellShift', 'applyDvRules',
+    'applyCfRules', 'replaceSheetConditionalFormats', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'replaceSheetDataValidations', 'addPivot',
+    'applyColumnWidths', 'applyRowHeights', 'applySheetOutline', 'applyPageSetups', 'applyTableAdditions', 'applyTableEdits', 'sortRange',
+    'refreshPivotCaches', 'applyPivotLayoutExpansions', 'expandPivotOutputs', 'upsertPivotControl', 'removePivotControl',
+    'applyDefinedNames', 'protectSheet', 'protectWorkbookStructure', 'setSheetEditableRanges', 'setThemePart',
+    'appendSheetSparklines',
 })
 
 

@@ -1,6 +1,6 @@
 import type {PDFFormAIClient,PDFFormAIJob} from './native-pdf-form-ai'
-import { nativeAIProgressListener } from './native-ai-progress'
 import type { NativeDraftIdentity, NativeOperation, NativeSaveRequest } from './native-draft'
+import { nativeAIProgressListener, type NativeAIProgressListener } from './native-ai-progress'
 
 export interface NativeFileIdentity { path: string; size: number; sha256: string; mediaType: string }
 export interface NativeContext {
@@ -18,15 +18,16 @@ export interface NativeContextResponse {
   capabilities: Record<string, unknown>
   editingEnabled: boolean
   aiEnabled?: boolean
-  wordReadAIEnabled?: boolean
   pdfTextEnabled?: boolean
+  officeReadAIEnabled?: boolean
+  wordReadAIEnabled?: boolean
   pdfReadAIEnabled?: boolean
   pdfReviewAIEnabled?: boolean
   pdfFormAIEnabled?: boolean
 }
 export type NativeAIReviewSelection = {sourceId: string; targetId: string} | {blockId: string; revisionId: string}
 export type NativeAINoteSelection = {selectionKind:'note';noteKind:'footnote'|'endnote';noteId:string} | {selectionKind:'noteAnchor';blockId:string}
-export type NativeAISelection = {blockId: string; cellId?: string} | {pageId: string; objectId: string}
+export type NativeAISelection = {blockId: string; cellId?: string} | {pageId: string; objectId: string} | NativeAIReviewSelection | NativeAINoteSelection
 type NativeSkippedOperation = {operationIndex: number; kind: string; pageId: string; reason: string}
 export interface NativeAIJob {
   editId: string
@@ -40,6 +41,47 @@ export interface NativeAIJob {
     issues?: {code: string; message: string}[]
   }
   error?: { code: string; message: string }
+}
+export type NativeOfficeReadAction = 'ask' | 'summarize' | 'keyPoints'
+export type NativeOfficeReadSelection = null | {sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number} | {slideIndex: number; elementId: string}[]
+export interface NativeOfficeReadContext {operations: NativeOperation[]; selection: NativeOfficeReadSelection}
+export interface NativeOfficeReadTask {
+  taskId: string
+  clientRequestId: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  result?: {
+    answer: string
+    coverage: {scope: 'document' | 'selection'; totalBlocks: number; fullyReadBlockIds: string[]; scopeReadComplete: boolean}
+    citations: {label: string; [key: string]: unknown}[]
+    issues: {code: string; message: string}[]
+    readingVersion: 'source' | 'draft'
+    sourceSha256: string
+    effectiveSha256: string
+    toolEvents?: {tool: string}[]
+    limitations?: string[]
+  }
+  error?: {code: string; message: string}
+}
+export type NativeWordReadAction = 'ask' | 'summarize' | 'keyPoints'
+export interface NativeWordReadTask {
+  taskId: string
+  clientRequestId: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  result?: {
+    answer: string
+    coverage: {scope: 'document' | 'selection'; totalBlocks: number; fullyReadBlockIds: string[]; scopeReadComplete: boolean}
+    citations: {blockId: string; cellId?: string; blockNumber: number}[]
+    issues: {code: string; message: string}[]
+    readingVersion: 'source' | 'draft'
+    toolEvents?: {tool: string}[]
+    limitations?: string[]
+    reviewCoverage?: {
+      comments: {totalItems: number; fullyReadIds: string[]; readComplete: boolean}
+      revisions: {totalItems: number; fullyReadIds: string[]; readComplete: boolean}
+    }
+    reviewCitations?: {kind: 'comment' | 'revision'; id: string; label: string; blockId?: string}[]
+  }
+  error?: {code: string; message: string}
 }
 export type NativePDFReadAction = 'ask' | 'summarize' | 'keyPoints' | 'reviewSummary'
 export interface NativePDFReadTask {
@@ -82,6 +124,7 @@ export interface NativePDFReviewJob {
   }
   error?: {code: string; message: string}
 }
+export interface NativePreviewRequest { expectedSha256: string; operations: NativeOperation[]; expectedPreviewDigest?: string }
 export interface NativePDFReviewIssue {
   operationIndex: number
   kind: string
@@ -89,7 +132,6 @@ export interface NativePDFReviewIssue {
   code: string
   message: string
 }
-export interface NativePreviewRequest { expectedSha256: string; operations: NativeOperation[]; expectedPreviewDigest?: string }
 export interface NativePreviewResponse<Model = Record<string, unknown>> {
   sourceSha256: string
   draftSha256: string
@@ -118,6 +160,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
   if (!documentId || documentId.length > 256 || /[\x00-\x1f/\\]/.test(documentId) || documentId === '.' || documentId === '..'
     || !Number.isSafeInteger(revision) || revision < 1) throw new Error('原生文档路径无效')
   const base = `/reports/v1/native/${encodeURIComponent(documentId)}/${revision}/api`
+  const aiEvents: NativeAIProgressListener = nativeAIProgressListener(`${base}/ai`)
   async function request(path: string, payload?: object, signal?: AbortSignal) {
     const headers = new Headers()
     if (payload !== undefined) {
@@ -127,7 +170,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     }
     const response = await fetch(`${base}/${path}`, { method: payload === undefined ? 'GET' : 'POST',
       credentials: 'same-origin', cache: 'no-store', headers, signal,
-      ...((path === 'ai/forms/cancel' || path === 'ai/read/cancel' || path === 'ai/review/cancel') ? { keepalive: true } : {}),
+      ...((path === 'ai/forms/cancel' || path === 'ai/office-read/cancel' || path === 'ai/word-read/cancel' || path === 'ai/read/cancel' || path === 'ai/review/cancel') ? { keepalive: true } : {}),
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) })
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
@@ -156,6 +199,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
       const response=await request('export-images',payload,signal)
       return {content:await response.arrayBuffer(),sha256:response.headers.get('X-Native-Export-Sha256')??'',size:Number(response.headers.get('X-Native-Export-Size')),sourceSha256:response.headers.get('X-Native-Source-Sha256')??'',filename:'pdf-pages-'+payload.format+'.zip'}
     },
+    export: async (payload: NativeSaveRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('export', payload, signal)).json(),
     pdfFormAIStart: async (payload: Parameters<PDFFormAIClient['pdfFormAIStart']>[0], signal?: AbortSignal): Promise<PDFFormAIJob> => (await request('ai/forms/start',payload,signal)).json(),
     pdfFormAIStatus: async (id:string,signal?:AbortSignal): Promise<PDFFormAIJob> => (await request('ai/forms/'+encodeURIComponent(id)+'?waitMs=20000',undefined,signal)).json(),
     pdfFormAIEvents: nativeAIProgressListener(`${base}/ai/forms`),
@@ -166,17 +210,22 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     pdfReviewEvents: nativeAIProgressListener(`${base}/ai/review`),
     pdfReviewAccept: async (id: string, payload: NativePreviewRequest & {snapshotSha256: string}, signal?: AbortSignal): Promise<{operations: NativeOperation[]; previewDigest: string; appliedOperationIndices: number[]; skippedOperations: NativeSkippedOperation[]}> => (await request('ai/review/' + encodeURIComponent(id) + '/accept', payload, signal)).json(),
     pdfReviewCancel: async (clientRequestId: string): Promise<NativePDFReviewJob> => (await request('ai/review/cancel', {clientRequestId})).json(),
+    officeAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeOfficeReadAction; instruction: string; selection: NativeOfficeReadSelection}, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/start', payload, signal)).json(),
+    officeAIStatus: async (id: string, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
+    officeAIEvents: nativeAIProgressListener(`${base}/ai/office-read`),
+    officeAICancel: async (clientRequestId: string): Promise<NativeOfficeReadTask> => (await request('ai/office-read/cancel', {clientRequestId})).json(),
+    wordAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeWordReadAction; instruction: string; selection: {blockId: string; cellId?: string}[]}, signal?: AbortSignal): Promise<NativeWordReadTask> => (await request('ai/word-read/start', payload, signal)).json(),
+    wordAIStatus: async (id: string, signal?: AbortSignal): Promise<NativeWordReadTask> => (await request('ai/word-read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
+    wordAIEvents: nativeAIProgressListener(`${base}/ai/word-read`),
+    wordAICancel: async (clientRequestId: string): Promise<NativeWordReadTask> => (await request('ai/word-read/cancel', {clientRequestId})).json(),
     pdfAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativePDFReadAction; instruction: string; selection: {pageId: string; objectId: string}[]}, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/start', payload, signal)).json(),
     pdfAIStatus: async (id: string, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     pdfAIEvents: nativeAIProgressListener(`${base}/ai/read`),
     pdfAICancel: async (clientRequestId: string): Promise<NativePDFReadTask> => (await request('ai/read/cancel', {clientRequestId})).json(),
-    export: async (payload: NativeSaveRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('export', payload, signal)).json(),
     aiStart: async (payload: NativePreviewRequest & { instruction: string; selection: NativeAISelection[] }, signal?: AbortSignal): Promise<NativeAIJob> => (await request('ai/start', payload, signal)).json(),
     aiStatus: async (id: string, signal?: AbortSignal): Promise<NativeAIJob> => (await request(`ai/${encodeURIComponent(id)}?waitMs=20000`, undefined, signal)).json(),
+    aiEvents,
     aiAccept: async (id: string, payload: NativePreviewRequest & { snapshotSha256: string }, signal?: AbortSignal): Promise<{operations: NativeOperation[]}> => (await request(`ai/${encodeURIComponent(id)}/accept`, payload, signal)).json(),
     aiCancel: async (id: string): Promise<NativeAIJob> => (await request(`ai/${encodeURIComponent(id)}/cancel`, {})).json(),
   }
 }
-
-export type NativeOfficeReadSelection = null | {sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number} | {slideIndex: number; elementId: string}[]
-export interface NativeOfficeReadContext {operations: NativeOperation[]; selection: NativeOfficeReadSelection}

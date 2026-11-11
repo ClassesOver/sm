@@ -411,3 +411,17 @@ getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便�
 基线诊断无新增。上游同一瞬时在不同时区输出不同字节的反例保留，
 详见 `report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`。线程/回复、
 完整侧栏/桌面/镜像/生产仍未完成，开关关闭。
+
+
+2026-11-09 Word 清除格式前置协议：本地 edit-docx bridge 的 formatParagraph/formatRange 接受 fontFamily/fontSize/color:null，移除直接属性及主题/复杂文字对应 XML；原样式引用保留以恢复继承。区间外 run 及其他属性保留。前端差分与 replay 同步支持，完整清除格式按钮尚未接通。80个相关前端测试、9个DOCX桥接测试、bridge bundle及定向源码tsc通过；未重复完整测试。审查独立主题字体/rtl/lang/bdr探针通过。
+
+2026-11-09 Word 清除所有格式续批：新增原子 clearParagraphFormatting（来源身份+UTF-16有序范围），选区去除 marks、默认样式恢复、标题转普通段、保留列表编号和多数覆盖规则；rawPPr 仅清源定义的直接段落属性，非目标属性保留。来源样式继承编号具体化。packages/docx-engine/src/generate.ts 的字体生成条件加入 eastAsiaFont，修复清除其他字体槽后仅剩东亚槽被漏写的问题。10项Python回读、6项新增前端、真实Chromium保存下载重开验收通过；完整边界见 report_editor/NATIVE_WORD_CLEAR_FORMATTING_ACCEPTANCE.md。表格/子编辑器/内联对象/同段混合修改仍缺，不代表全量对齐。
+
+
+2026-11-10 Word 来源注释标记后的原生输入：`parse.ts` 的既有 noteRef 分支复用
+`buildRun(..., keepEmpty=true)` 补齐完整 Run 格式模型；原 rawRPr、noteRef 身份
+和标记输出 XML 保留。桥接把同源 marker 样式继承为普通 text 时仅去掉 noteRef，
+普通生成器因而保留 superscript/rStyle 等受管属性。无第二次 ZIP/文档解析，
+不新增客户端 raw XML 协议。SOURCE.md 记录更新后的 parse.ts SHA-256。
+验收证据见 `report_editor/NATIVE_WORD_NOTE_REFERENCE_INPUT_ACCEPTANCE.md`；
+此项只修复可信来源继承，不表示复杂注释/任意内联编辑全面对齐。

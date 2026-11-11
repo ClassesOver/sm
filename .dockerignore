@@ -28,3 +28,5 @@ smart_reporting/reporting/workbook_engine/dist/
 smart_reporting/reporting/pdf_engine/dist/
 **/.mimosa/
 **/.run-logs/
+
+smart_reporting/reporting/doc_engine/dist/

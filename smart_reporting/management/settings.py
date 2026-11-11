@@ -44,8 +44,12 @@ class ManagementSettings:
     @classmethod
     def from_environment(cls):
         directory = os.getenv("AGENT_MANAGEMENT_STATIC_DIR")
+        editor_directory = Path(
+            os.getenv("AGENT_REPORT_EDITOR_STATIC_DIR")
+            or Path(__file__).resolve().parents[1] / "report_editor/static"
+        )
         return cls(
             public_origin=os.getenv("AGENT_MANAGEMENT_PUBLIC_ORIGIN") or None,
-            static_dir=Path(directory) if directory else None,
+            static_dir=Path(directory) if directory else editor_directory / "management",
             allow_local_http=os.getenv("AGENT_MANAGEMENT_LOCAL_HTTP", "").lower() == "true",
         )

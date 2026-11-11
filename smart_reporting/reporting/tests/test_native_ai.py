@@ -319,6 +319,9 @@ async def test_ai_routes_require_native_cookie_csrf_and_keep_candidate_in_draft(
         edit_id = started.json()["editId"]
         status = await client.get(root + "/" + edit_id)
         assert status.json()["status"] == "succeeded"
+        progress = await client.get(root + "/" + edit_id + "/events")
+        assert progress.headers["content-type"].startswith("text/event-stream")
+        assert '"kind":"terminal"' in progress.text
         changed = {
             "expectedSha256": context.source_file.sha256,
             "operations": [replacement(block, "changed")],

@@ -140,3 +140,54 @@ def test_defined_names_coexist_with_print_area_and_survive_cell_patch(tmp_path):
     book = load_workbook(BytesIO(patched), data_only=False)
     assert book['明细'].cell(row=3, column=2).value == 9
     assert book.defined_names['明细区'].attr_text == '明细!$A$1:$B$2'
+
+
+def test_scoped_names_keep_same_named_globals_and_follow_sheet_order(tmp_path):
+    from smart_reporting.reporting.delivery.xlsx import patch_workbook
+
+    original = _build(tmp_path)
+    source = patch_workbook(original, [{'kind': 'applyDefinedNames', 'plan': {'sets': [
+        {'name': 'ScopedRate', 'refersTo': '10'},
+        {'name': 'ScopedRate', 'refersTo': '20', 'scopeSheetName': '汇总'},
+        {'name': 'ScopedRate', 'refersTo': '30', 'scopeSheetName': '明细'},
+    ]}}])
+    book = load_workbook(BytesIO(source))
+    assert book.defined_names['ScopedRate'].attr_text == '10'
+    assert book['汇总'].defined_names['ScopedRate'].attr_text == '20'
+    assert book['明细'].defined_names['ScopedRate'].attr_text == '30'
+    changed = patch_workbook(source, [
+        {'kind': 'applySheetEdits', 'plan': {'renames': [{'sheetName': '汇总', 'newName': '重命名'}], 'additions': [], 'removals': [], 'order': ['明细', '重命名']}},
+        {'kind': 'applyDefinedNames', 'plan': {'removes': [{'name': 'ScopedRate', 'scopeSheetName': '明细'}], 'sets': [{'name': 'ScopedRate', 'refersTo': '21', 'scopeSheetName': '重命名'}]}},
+    ])
+    result = load_workbook(BytesIO(changed))
+    assert result.sheetnames == ['明细', '重命名']
+    assert result.defined_names['ScopedRate'].attr_text == '10'
+    assert 'ScopedRate' not in result['明细'].defined_names
+    assert result['重命名'].defined_names['ScopedRate'].attr_text == '21'
+
+
+def test_local_unqualified_names_shift_only_on_their_own_escaped_sheet():
+    from openpyxl import Workbook
+    from openpyxl.workbook.defined_name import DefinedName
+    from smart_reporting.reporting.delivery.xlsx import patch_workbook
+
+    book = Workbook()
+    own = book.active
+    own.title = '财务&"预算"'
+    other = book.create_sheet('其他')
+    own['A1'] = 11
+    other['A1'] = 22
+    own.defined_names.add(DefinedName('Local', attr_text='$A$1'))
+    other.defined_names.add(DefinedName('Local', attr_text='$A$1'))
+    book.defined_names.add(DefinedName('Global', attr_text='$A$1'))
+    source = BytesIO()
+    book.save(source)
+    changed = patch_workbook(source.getvalue(), [{
+        'kind': 'applyRowColumnOps', 'sheetName': own.title,
+        'ops': [{'kind': 'insert-rows', 'index': 0, 'count': 1}],
+    }])
+    result = load_workbook(BytesIO(changed))
+    assert result[own.title].defined_names['Local'].attr_text == '$A$2'
+    assert result['其他'].defined_names['Local'].attr_text == '$A$1'
+    assert result.defined_names['Global'].attr_text == '$A$1'
+    assert result[own.title]['A2'].value == 11

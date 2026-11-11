@@ -64,6 +64,7 @@ COPY smart_reporting/reporting/slides_engine/LICENSE \
     smart_reporting/reporting/slides_engine/SOURCE.md ./
 COPY smart_reporting/reporting/slides_engine/packages ./packages
 COPY smart_reporting/reporting/slides_engine/bridge ./bridge
+# pptx-ops 的公式转换复用 DOCX math，保留同级源码关系。
 COPY smart_reporting/reporting/doc_engine/packages /build/smart_reporting/reporting/doc_engine/packages
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
@@ -102,7 +103,7 @@ RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     npm ci --registry="${NPM_REGISTRY}"
 COPY smart_reporting/report_editor/frontend ./
-RUN npm run build && npm run build:slides
+RUN npm run build && npm run build:slides && npm run build:management
 
 # COPY smart_reporting 会再次带入引擎源码；在独立构建层裁剪，避免镜像层仍保存副本。
 FROM base AS app-source

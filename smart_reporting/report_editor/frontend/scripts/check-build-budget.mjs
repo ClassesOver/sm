@@ -13,12 +13,19 @@ const limits = {
 // boundaries. Formula evaluation, canvas rendering and grid commands have
 // separate bounded budgets; document entry and ordinary chunks keep theirs.
 const workbookLimits = {
+  // 253 KiB (2026-11-11): File print-preview and Data workbook-merge commands
+  // add small host adapters here; their renderers and planners remain lazy.
+  'workbook-main': 253 * KIB,
   // 272 KiB (2026-11-07): the official sheets-filter preset's UI icons joined
   // the shared icon chunk when native filtering was wired into the ribbon.
-  'workbook-icons': 274 * KIB,
+  // 2026-11-09: official data-validation panel adds shared icons (274.2 KiB measured).
+  'workbook-icons': 275 * KIB,
   // 396 KiB (2026-11-09): Insert/Delete Cells adds the engine's banded
   // applyCellShift, which the browser replays to build the save baseline.
-  'workbook-engine': 396 * KIB,
+  // 2026-11-09: DV reader/writer and reference migration; 414.4 KiB measured.
+  // 表格关系/列身份读取增加约 4.2 KiB；最终实测 418.9 KiB。
+  // 表格 OOXML 编辑与严格关系校验增加约 8.4 KiB；最终实测 427.3 KiB。
+  'workbook-engine': 428 * KIB,
   'workbook-core': 400 * KIB,
   'workbook-sheets': 430 * KIB,
   'workbook-docs-ui': 470 * KIB,

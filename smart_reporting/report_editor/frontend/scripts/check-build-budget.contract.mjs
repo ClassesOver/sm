@@ -26,7 +26,13 @@ assert.deepEqual(checkBuildBudget([
   { file: 'assets/workbook-dictionary-hu-hash1234.js', size: 770 * 1024 },
 ]), [])
 assert.equal(checkBuildBudget([
-  { file: 'assets/lazy-workbook-icons-hash1234.js', size: 275 * 1024 },
+  { file: 'assets/lazy-workbook-icons-hash1234.js', size: 276 * 1024 },
+]).length, 1)
+assert.deepEqual(checkBuildBudget([
+  { file: 'assets/lazy-workbook-main-hash1234.js', size: 252 * 1024 },
+]), [])
+assert.equal(checkBuildBudget([
+  { file: 'assets/lazy-workbook-main-hash1234.js', size: 254 * 1024 },
 ]).length, 1)
 assert.equal(checkBuildBudget([
   { file: 'assets/workbook-sheets-ui-hash1234.js', size: 911 * 1024 },
