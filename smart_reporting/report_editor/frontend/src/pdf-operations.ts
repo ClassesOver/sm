@@ -1,4 +1,11 @@
+import {validatePdfFormTextProperties} from './pdf-form-text-properties'
+import {validatePdfRadioExtension} from './pdf-form-radio-extension'
+import {validatePdfStyledReplacement} from './pdf-replace-text-style'
+import { validatePdfStaticText } from './pdf-static-text'
+import {validatePdfFormCreation} from './pdf-form-create'
+import {validatePdfExistingImage,type PdfExistingImage} from './pdf-existing-image'
 import { validateSavedDrawing, type SavedPdfDrawing } from './pdf-saved-drawings'
+import { validatePdfFormWidgetRemoval, type PdfDesignWidget } from './pdf-form-design'
 import { formatLength, type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
 import { validatePdfReplies } from './pdf-replies'
 import { validateAttachmentEdits, type PdfAttachmentModel } from './pdf-attachment-edits'
@@ -24,12 +31,22 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
 export interface PdfBox { x: number; y: number; width: number; height: number }
 export interface PdfPageIdentity { pageId: string; index: number; blank?: boolean; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean; drawings?: SavedPdfDrawing[]; drawingsReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel extends PdfAttachmentModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; capabilities?: { cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; removeDrawing?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel extends PdfAttachmentModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; existingImages?:PdfExistingImage[]; formDesignWidgets?:PdfDesignWidget[]; capabilities?: { editFormTextProperties?:boolean; editFormTextPropertiesReason?:string|null; appendRadioWidget?:boolean; appendRadioWidgetReason?:string|null; createFormField?:boolean; createFormFieldReason?:string|null; editFormFieldRequired?:boolean; editFormWidget?:boolean; editFormWidgetReason?:string|null; arrangeFormWidgets?:boolean; arrangeFormWidgetsReason?:string|null; editExistingImage?:boolean; editExistingImageReason?:string|null; protectPdf?: boolean; insertText?: boolean; insertTextReason?: string | null; removeFormWidget?:boolean; cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; removeDrawing?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
 /** 所有操作引用不可变来源索引；排序后的页面位置永远不能当作来源身份。 */
 export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperation[]): PdfPageIdentity[] {
+  validatePdfFormCreation(operations)
+  validatePdfRadioExtension(operations)
+  validatePdfFormTextProperties(operations)
+  validatePdfStyledReplacement(pages,operations)
+  validatePdfExistingImage(pages,operations)
+  if(operations.some(op=>['createFormField','editFormFieldRequired','editFormWidget','arrangeFormWidgets','appendRadioWidget','editFormTextProperties','transformExistingImage'].includes(op.kind)))return pages.map(page=>({...page}))
+  validatePdfStaticText(pages, operations)
+  if (operations.some(operation => operation.kind === 'insertText')) return pages.map(page => ({ ...page }))
+  validatePdfFormWidgetRemoval(operations)
+  if(operations.some(operation=>operation.kind==='removeFormWidget'))return pages.map(page=>({...page}))
   validatePdfSizeOperations(operations)
   if (operations.some(op => op.kind === 'removeDrawing') && operations.some(op => ['replaceText', 'setPageSize', 'cropPage'].includes(op.kind))) throw new Error('删除已保存绘图与原位改字、页面尺寸或裁切请分别保存重开')
   validateAttachmentEdits(operations)

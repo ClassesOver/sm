@@ -71,6 +71,10 @@
 .native-pdf-editor[data-pdf-mode=draw] .pdf-page-content, .native-pdf-editor[data-pdf-mode=redact] .pdf-page-content { cursor: crosshair; touch-action: none; }
 .native-pdf-editor[data-pdf-mode=draw] .textLayer, .native-pdf-editor[data-pdf-mode=redact] .textLayer { pointer-events: none; user-select: none; }
 .pdf-pending-drawings { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+.pdf-form-canvas { position: absolute; inset: 0; pointer-events: none; }
+.pdf-form-canvas-widget { fill: rgb(37 99 235 / 6%); stroke: #60a5fa; stroke-width: 1; vector-effect: non-scaling-stroke; pointer-events: all; cursor: pointer; }
+.pdf-form-canvas-widget.is-selected { fill: rgb(37 99 235 / 12%); stroke: #2563eb; stroke-width: 2; }
+.pdf-form-canvas-widget.is-disabled { visibility: hidden; pointer-events: none; }
 .pdf-link-dialog, .pdf-stamp-dialog, .pdf-sign-dialog, .pdf-measure-dialog, .pdf-layout-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--office-border); border-radius: var(--radius-md); padding: 20px; box-shadow: var(--shadow-popover); }
 .pdf-link-dialog::backdrop, .pdf-stamp-dialog::backdrop, .pdf-sign-dialog::backdrop, .pdf-measure-dialog::backdrop, .pdf-layout-dialog::backdrop { background: var(--color-scrim); }
 .pdf-link-dialog label, .pdf-stamp-dialog label, .pdf-sign-dialog label, .pdf-measure-dialog label, .pdf-layout-dialog label { display: grid; gap: 6px; margin: 10px 0; color: var(--office-ink-2); font-size: var(--font-size-md); }
@@ -95,6 +99,11 @@
 .pdf-measure-hint { margin: 4px 0 0; color: var(--office-muted); font-size: var(--office-label-size); }
 .pdf-layout-dialog .pdf-layout-check { display: flex; align-items: center; gap: 8px; }
 .pdf-layout-dialog .pdf-layout-check input { min-height: 0; }
+.pdf-static-text-dialog textarea { width: 100%; min-height: 64px; padding: 8px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; resize: vertical; }
+.pdf-static-text-dialog > p { color: var(--office-muted); line-height: 1.6; }
+.pdf-static-text-dialog [role=alert] { color: var(--office-danger, #b91c1c); }
+.pdf-static-text-dialog button { min-height: 34px; padding: 4px 12px; margin-right: 8px; font: inherit; }
+.native-pdf-editor[data-pdf-mode=staticText] .pdf-page-content { cursor: text; }
 .pdf-layout-body { display: flex; flex-wrap: wrap; gap: 8px; flex-direction: column; }
 .pdf-layout-body > button { min-height: var(--office-control-height); padding: 0 12px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font: inherit; cursor: pointer; }
 .pdf-layout-body > button:hover { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
@@ -121,3 +130,24 @@
 
 .pdf-drawing-canvas.is-interactive g[data-pdf-shape-index]:not([data-pdf-shape-kind="image"]):not([data-pdf-shape-kind="link"]) { pointer-events: stroke; cursor: move; touch-action: none; }
 .pdf-drawing-canvas g.is-selected:not([data-pdf-shape-kind="image"]) { filter: drop-shadow(0 0 3px #2563eb); }
+
+/* 阅读与批注处理助手沿用原生 AI 面板和 Office 控件样式。 */
+:is(.native-pdf-assistant, .native-pdf-review) { flex: none; max-height: 45vh; overflow: auto; font-size: 13px; }
+:is(.native-pdf-assistant, .native-pdf-review) h3 { margin: 0 0 8px; font-size: 15px; }
+:is(.native-pdf-assistant, .native-pdf-review) textarea { padding: 8px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); font: inherit; resize: vertical; }
+:is(.native-pdf-assistant, .native-pdf-review) button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; margin-bottom: 6px; padding: 4px 10px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); color: var(--office-ink); font: inherit; cursor: pointer; }
+:is(.native-pdf-assistant, .native-pdf-review) button:hover:not(:disabled) { background: var(--office-hover-bg); }
+:is(.native-pdf-assistant, .native-pdf-review) button:disabled { opacity: .55; cursor: default; }
+:is(.native-pdf-assistant, .native-pdf-review) button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
+:is(.native-pdf-assistant, .native-pdf-review) .native-ai-answer { overflow-wrap: anywhere; line-height: 1.6; }
+
+.native-pdf-review .native-ai-evidence { overflow-wrap: anywhere; }
+
+/* 实际预览执行清单会占用高度；新面板在剩余空间内滚动，不溢出固定高度编辑器。 */
+.native-pdf-review { flex: 0 1 auto; min-height: 0; }
+
+@media screen {
+  .editor-format-pdf .pdf-layout { flex:1; min-height:0; height:auto; }
+  .editor-format-pdf .pdf-editor-message { flex:none; min-height:24px; max-height:64px; overflow:auto; padding:4px 12px; font-size:var(--office-label-size); }
+  .editor-format-pdf .pdf-view-status { flex:none; min-width:0; padding:2px 12px; overflow-x:auto; white-space:nowrap; }
+}

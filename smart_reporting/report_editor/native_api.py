@@ -16,7 +16,7 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
 
 from ..reporting.contract import SHA256_PATTERN
 from ..reporting.models import ReportingError
@@ -50,6 +50,56 @@ class NativePreviewPayload(BaseModel):
     expected_preview_digest: str | None = Field(default=None, alias="expectedPreviewDigest", pattern=SHA256_PATTERN)
 
 
+class NativeExtractPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
+    pages: list[StrictInt] = Field(min_length=1, max_length=10000)
+
+
+class NativeExternalPagesPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid',populate_by_name=True)
+    request_id: str = Field(alias='requestId',min_length=1,max_length=256)
+    expected_sha256: str = Field(alias='expectedSha256',pattern=SHA256_PATTERN)
+    action: Literal['insert','replace']
+    external_sha256: str = Field(alias='externalSha256',pattern=SHA256_PATTERN)
+    bytes_base64: str = Field(alias='bytesBase64',min_length=8,max_length=8*1024*1024)
+    after_page: StrictInt | None = Field(default=None,alias='afterPage',ge=0,le=10000)
+    pages: list[StrictInt] | None = Field(default=None,min_length=1,max_length=10000)
+
+
+class NativePdfPermissions(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    printing: StrictBool
+    modifying: StrictBool
+    annotating: StrictBool
+    copying: StrictBool
+
+
+class NativePdfImagesPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid',populate_by_name=True)
+    expected_sha256: str = Field(alias='expectedSha256',pattern=SHA256_PATTERN)
+    pages: list[StrictInt] = Field(min_length=1,max_length=50)
+    format: Literal['png','jpeg']
+    dpi: StrictInt = Field(default=144,ge=72,le=216)
+
+
+class NativePdfConvertPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid',populate_by_name=True)
+    request_id: str = Field(alias='requestId',min_length=1,max_length=256)
+    expected_sha256: str = Field(alias='expectedSha256',pattern=SHA256_PATTERN)
+    format: Literal['pptx','docx','xlsx']
+
+
+class NativePdfProtectionPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    request_id: str = Field(alias='requestId',min_length=1,max_length=256)
+    expected_sha256: str = Field(alias='expectedSha256',pattern=SHA256_PATTERN)
+    user_password: SecretStr = Field(alias='userPassword',min_length=1,max_length=127)
+    owner_password: SecretStr = Field(alias='ownerPassword',min_length=1,max_length=127)
+    permissions: NativePdfPermissions
+
+
 def _error(error: ReportingError) -> HTTPException:
     code = error.code
     status = 403
@@ -65,7 +115,7 @@ def _error(error: ReportingError) -> HTTPException:
         status = 503
     elif code in ("native_source_changed", "native_revision_conflict", "report_download_file_changed", "native_pdf_text_preview_changed"):
         status = 409
-    elif code in ("native_format_invalid", "native_operations_invalid", "native_pdf_text_confirmation_required"):
+    elif code in ("native_format_invalid", "native_operations_invalid", "native_pdf_text_confirmation_required", "native_pdf_image_export_invalid"):
         status = 422
     return HTTPException(status_code=status, detail={"code": code, "message": error.message})
 
@@ -234,6 +284,9 @@ def create_native_editor_router(
                 context.format == "docx" and editor.docx_enabled
                 or context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled
             ),
+            "pdfReadAIEnabled": ai_enabled and context.format == "pdf",
+            "pdfFormAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled,
+            "pdfReviewAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled,
             "editingEnabled": editor.is_enabled(context.format),
             "pdfTextEnabled": editor.pdf_text_enabled and editor.pdf_enabled and context.format == "pdf",
         }
@@ -307,6 +360,68 @@ def create_native_editor_router(
                 note=payload.note,
                 **({"confirmed_preview_digest": payload.confirmed_preview_digest} if payload.confirmed_preview_digest is not None else {}),
             )
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/extract-pages")
+    async def native_extract_pages(document_id: str, revision: int, request: Request, payload: NativeExtractPayload):
+        _, context = await session_context(request, document_id, revision, write=True)
+        try:
+            if payload.expected_sha256 != context.source_file.sha256:
+                raise ReportingError("native_source_changed", "PDF 来源已变化，请重新打开。")
+            return await editor.extract_pages(context, pages=payload.pages, request_id=payload.request_id)
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/external-pages')
+    async def native_external_pages(document_id: str,revision: int,request: Request,payload: NativeExternalPagesPayload):
+        from .native_pdf_external_pages import external_pages
+
+        _,context=await session_context(request,document_id,revision,write=True)
+        try:
+            return await external_pages(editor,context,action=payload.action,request_id=payload.request_id,
+                expected_sha256=payload.expected_sha256,external_sha256=payload.external_sha256,
+                bytes_base64=payload.bytes_base64,after_page=payload.after_page,pages=payload.pages)
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/protect-pdf')
+    async def native_protect_pdf(document_id: str,revision: int,request: Request,payload: NativePdfProtectionPayload):
+        from .native_pdf_protection import protect_pdf
+
+        _,context=await session_context(request,document_id,revision,write=True)
+        try:
+            return await protect_pdf(editor,context,request_id=payload.request_id,
+                expected_sha256=payload.expected_sha256,user_password=payload.user_password.get_secret_value(),
+                owner_password=payload.owner_password.get_secret_value(),permissions=payload.permissions.model_dump())
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/export-images')
+    async def native_export_pdf_images(document_id: str,revision: int,request: Request,payload: NativePdfImagesPayload):
+        from .native_pdf_image_export import export_pdf_images
+
+        _,context=await session_context(request,document_id,revision,write=True)
+        try:
+            receipt=await export_pdf_images(editor,context,expected_sha256=payload.expected_sha256,
+                pages=payload.pages,image_format=payload.format,dpi=payload.dpi)
+        except ReportingError as error:
+            raise _error(error) from None
+        return Response(receipt['content'],media_type=receipt['mediaType'],headers={
+            'Cache-Control':'no-store','X-Content-Type-Options':'nosniff',
+            'Content-Disposition':f'attachment; filename="{receipt["filename"]}"',
+            'X-Native-Export-Sha256':receipt['sha256'],'X-Native-Export-Size':str(receipt['size']),
+            'X-Native-Source-Sha256':receipt['sourceSha256'],
+        })
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/convert-office')
+    async def native_convert_pdf_office(document_id: str,revision: int,request: Request,payload: NativePdfConvertPayload):
+        from .native_pdf_convert import convert_office
+
+        _,context=await session_context(request,document_id,revision,write=True)
+        try:
+            return await convert_office(editor,context,expected_sha256=payload.expected_sha256,
+                request_id=payload.request_id,output_format=payload.format)
         except ReportingError as error:
             raise _error(error) from None
 

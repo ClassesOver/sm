@@ -267,3 +267,58 @@
 @media (min-width: 901px) {
   .editor-format-pptx .report-workspace { width: calc(100% - 40px); margin: 22px auto 20px; }
 }
+
+/* AI 助手：沿用 GenOffice 面板图标与大按钮布局，保留智能报告主题。 */
+:is(.docx-ribbon, .workbook-ribbon, .slides-native-ribbon, .pdf-ribbon) .office-ai-group {
+  flex-shrink: 0;
+  min-width: 72px;
+}
+:is(.docx-ribbon, .workbook-ribbon, .slides-native-ribbon, .pdf-ribbon) button.office-ai-entry {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  align-self: start;
+  grid-row: 1 / 4;
+  grid-column: 1;
+  box-sizing: border-box;
+  width: 72px;
+  min-width: 72px;
+  height: calc(3 * var(--office-control-height) + 8px);
+  padding: 8px 6px;
+  gap: 6px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: var(--office-radius);
+  background: transparent;
+  color: var(--office-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  cursor: pointer;
+}
+:is(.docx-ribbon, .workbook-ribbon, .slides-native-ribbon, .pdf-ribbon) button.office-ai-entry > svg {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+:is(.docx-ribbon, .workbook-ribbon, .slides-native-ribbon, .pdf-ribbon) button.office-ai-entry:hover:not(:disabled) {
+  background: var(--office-hover-bg);
+  border-color: var(--office-hover-border);
+}
+:is(.docx-ribbon, .workbook-ribbon, .slides-native-ribbon, .pdf-ribbon) button.office-ai-entry:active:not(:disabled) {
+  background: var(--office-pressed-bg);
+  border-color: var(--office-pressed-border);
+}
+:is(.docx-ribbon, .workbook-ribbon, .slides-native-ribbon, .pdf-ribbon) button.office-ai-entry:focus-visible {
+  outline: 2px solid var(--office-focus-ring);
+  outline-offset: -2px;
+}
+:is(.docx-ribbon, .workbook-ribbon, .slides-native-ribbon, .pdf-ribbon) button.office-ai-entry:disabled {
+  color: var(--office-muted);
+  opacity: var(--office-disabled-opacity);
+  cursor: default;
+}
+.pdf-ribbon .office-ai-group > button:not(.office-ai-entry) { grid-column: 2; }

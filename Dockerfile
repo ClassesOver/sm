@@ -18,6 +18,21 @@ FROM ${NODE_IMAGE} AS report-pdf-engine
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /build/smart_reporting/reporting/pdf_engine
 COPY smart_reporting/reporting/pdf_engine ./
+# PDF→Office 复用固定源共享包及既有扫描图片写入器；不安装桌面应用依赖。
+COPY smart_reporting/reporting/slides_engine/LICENSE \
+    smart_reporting/reporting/slides_engine/NOTICE \
+    smart_reporting/reporting/slides_engine/SOURCE.md \
+    smart_reporting/reporting/slides_engine/tsconfig.base.json /build/smart_reporting/reporting/slides_engine/
+COPY smart_reporting/reporting/slides_engine/packages/pptx-engine /build/smart_reporting/reporting/slides_engine/packages/pptx-engine
+COPY smart_reporting/reporting/slides_engine/packages/zip-gate /build/smart_reporting/reporting/slides_engine/packages/zip-gate
+COPY smart_reporting/reporting/slides_engine/packages/agent-core /build/smart_reporting/reporting/slides_engine/packages/agent-core
+COPY smart_reporting/reporting/doc_engine/LICENSE \
+    smart_reporting/reporting/doc_engine/NOTICE \
+    smart_reporting/reporting/doc_engine/SOURCE.md \
+    smart_reporting/reporting/doc_engine/tsconfig.base.json /build/smart_reporting/reporting/doc_engine/
+COPY smart_reporting/reporting/doc_engine/packages/docx-engine /build/smart_reporting/reporting/doc_engine/packages/docx-engine
+COPY smart_reporting/reporting/workbook_engine/LICENSE smart_reporting/reporting/workbook_engine/NOTICE smart_reporting/reporting/workbook_engine/SOURCE.md /build/smart_reporting/reporting/workbook_engine/
+COPY smart_reporting/reporting/workbook_engine/packages/xlsx-engine /build/smart_reporting/reporting/workbook_engine/packages/xlsx-engine
 COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \

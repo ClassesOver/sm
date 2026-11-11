@@ -3,20 +3,28 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bundle:bridges": "esbuild bridge/cli.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs --banner:js=\"import { createRequire as createBridgeRequire } from 'node:module'; const require = createBridgeRequire(import.meta.url);\"",
-    "test": "node --import tsx --test bridge/operations.test.ts bridge/blank-pages.test.ts bridge/drawings.test.ts bridge/stamps.test.ts bridge/redaction.test.ts bridge/page-layout.test.ts",
+    "bundle:bridges": "NODE_PATH=./node_modules esbuild bridge/cli.ts --bundle --platform=node --format=esm --outdir=dist --metafile=dist/metafile.json --out-extension:.js=.mjs --banner:js=\"import { createRequire as createBridgeRequire } from 'node:module'; const require = createBridgeRequire(import.meta.url);\"",
+    "test": "node --import tsx --test bridge/operations.test.ts bridge/blank-pages.test.ts bridge/drawings.test.ts bridge/stamps.test.ts bridge/redaction.test.ts bridge/page-layout.test.ts bridge/extract-pages.test.ts bridge/form-design.test.ts bridge/form-design-operations.test.ts bridge/static-text.test.ts bridge/alignment-batch.test.ts bridge/existing-image.test.ts bridge/form-design-create.test.ts bridge/form-design-create-reportlab.test.ts bridge/external-pages.test.ts bridge/protection.test.ts bridge/convert-office.test.ts bridge/convert-office-complex.test.ts bridge/table-cell-flow.test.ts bridge/output-font-aliases.test.ts bridge/replace-text-style.test.ts bridge/form-design-extended.test.ts bridge/form-design-safety.test.ts bridge/selection-radio-integration.test.ts bridge/replace-text-selection.test.ts bridge/form-radio-extension.test.ts bridge/form-hierarchy.test.ts bridge/xlsx-normal-images.test.ts bridge/xlsx-page-images.test.ts bridge/form-text-properties.test.ts bridge/form-text-properties-integration.test.ts bridge/pptx-text-geometry.test.ts bridge/text-markup-mixed.test.ts bridge/form-text-fonts.test.ts bridge/pptx-text-position.test.ts bridge/form-text-font-fill.test.ts bridge/text-drawing-mixed.test.ts bridge/form-text-overflow.test.ts bridge/pptx-text-origin.test.ts bridge/text-vector-mixed.test.ts bridge/form-widget-name.test.ts bridge/xlsx-text-decoration.test.ts bridge/text-png-mixed.test.ts bridge/form-choice-options.test.ts bridge/xlsx-rich-text.test.ts bridge/text-link-mixed.test.ts bridge/form-radio-name.test.ts bridge/xlsx-decimal-font.test.ts bridge/text-measure-caret-mixed.test.ts bridge/form-radio-removal.test.ts bridge/form-radio-removal-operations.test.ts bridge/xlsx-currency-precision.test.ts bridge/measure-label-bounds.test.ts bridge/form-radio-required.test.ts bridge/xlsx-table-slot-width.test.ts bridge/form-multipage-arrange.test.ts bridge/pptx-text-links.test.ts bridge/docx-exact-shading.test.ts",
     "package:runtime": "node bridge/package-runtime.mjs ."
   },
   "dependencies": {
     "@embedpdf/pdfium": "2.15.1",
+    "@genoffice/electron-utils": "file:./vendor/electron-utils",
+    "@genoffice/font-metrics": "file:./vendor/font-metrics",
+    "@genoffice/agent-core": "file:../slides_engine/packages/agent-core",
+    "@genoffice/zip-gate": "file:../slides_engine/packages/zip-gate",
+    "bidi-js": "1.1.0",
+    "fast-xml-parser": "5.11.2",
     "harfbuzzjs": "0.10.3",
+    "jszip": "3.10.2",
     "pdf-lib": "1.17.1",
     "zod": "4.6.5",
-    "@genoffice/font-metrics": "file:./vendor/font-metrics",
-    "@genoffice/electron-utils": "file:./vendor/electron-utils"
+    "@genoffice/pptx-engine": "file:../slides_engine/packages/pptx-engine",
+    "utif2": "4.1.0",
+    "@pdf-lib/standard-fonts": "1.0.0"
   },
   "devDependencies": {
-    "tsx": "4.20.6",
-    "esbuild": "0.25.12"
+    "esbuild": "0.25.12",
+    "tsx": "4.20.6"
   }
 }

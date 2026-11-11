@@ -1,5 +1,5 @@
 /** Exact-source adapter around pinned note reply drawing; never accept root fallback. */
-import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString } from 'pdf-lib'
+import { decodePDFRawStream, PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRawStream, PDFRef, PDFString } from 'pdf-lib'
 import { applySaveRequest } from '../src/main/save-pdf'
 import { markupDictionaryHash, markupSourceId } from './markup-delete'
 import { normalizeAddedNoteDates } from './note-timestamps'
@@ -74,7 +74,55 @@ export function inspectNoteThreads(doc: PDFDocument, sourceSha: string, protecte
   return {roots:targets,replies}
 }
 export function inspectReplyTargets(doc:PDFDocument,sourceSha:string,protectedSource:boolean) { return inspectNoteThreads(doc,sourceSha,protectedSource).roots }
-export interface NoteReply { target: ReplyTarget; contents: string; createdMs: number }
+export interface NoteReply { target: ReplyTarget; contents: string; createdMs: number; author?: 'AI Assistant' }
+// PDFium 原位改字会排序字典键并将数值写成 float32；仅在完整字典等价且精确引用不变时重绑。
+function textRewriteIdentity(value: unknown, doc: PDFDocument, state = {remaining:20000, bytes:2000000, refs:new Set<string>()}, depth = 0): unknown {
+  if (--state.remaining < 0 || depth > 32) throw Error('pdf_reply_text_parent_graph_unsupported')
+  if (value instanceof PDFRef) {
+    const ref = value.toString()
+    if (state.refs.has(ref)) return ['reference',ref]
+    state.refs.add(ref)
+    const item = doc.context.lookup(value)
+    if (!item) throw Error('pdf_reply_text_parent_graph_unsupported')
+    return ['reference',ref,textRewriteIdentity(item,doc,state,depth+1)]
+  }
+  if (value instanceof PDFString || value instanceof PDFHexString) {
+    const bytes = value.asBytes()
+    state.bytes -= bytes.length
+    if (state.bytes < 0) throw Error('pdf_reply_text_parent_graph_unsupported')
+    return ['string',Array.from(bytes)]
+  }
+  if (value instanceof PDFNumber) {
+    const rounded = Math.fround(value.asNumber())
+    return ['number', Number.isFinite(rounded) ? rounded : value.asNumber()]
+  }
+  if (value instanceof PDFArray) return ['array', value.asArray().map(item => textRewriteIdentity(item,doc,state,depth+1))]
+  const entries = (dict:PDFDict, stream=false): unknown => dict.entries()
+    .filter(([key]) => !stream || !['/Length','/Filter','/DecodeParms'].includes(key.toString()))
+    .sort(([a],[b]) => a.toString().localeCompare(b.toString()))
+    .map(([key,item]) => [key.toString(), depth===0 && key.toString()==='/P' ? ['page-reference',String(item)] : textRewriteIdentity(item,doc,state,depth+1)])
+  if (value instanceof PDFRawStream) {
+    const decoded = decodePDFRawStream(value).getBytes(state.bytes+1)
+    state.bytes -= decoded.length
+    if (state.bytes < 0) throw Error('pdf_reply_text_parent_graph_unsupported')
+    return ['stream',entries(value.dict,true),Array.from(decoded)]
+  }
+  if (value instanceof PDFDict) return ['dict',entries(value)]
+  return [value?.constructor?.name, String(value)]
+}
+export async function rebindTextEditedReplies(source: Uint8Array, output: Uint8Array, replies: NoteReply[], outputOrder: number[]) {
+  if (!replies.length) return replies
+  const before = await PDFDocument.load(source, {updateMetadata:false}), after = await PDFDocument.load(output, {updateMetadata:false})
+  const safe = inspectReplyTargets(after, '', false)
+  return replies.map(reply => {
+    const target = reply.target, original = before.context.lookup(PDFRef.of(Number(target.sourceRef.split(' ')[0]), Number(target.sourceRef.split(' ')[1])), PDFDict)
+    const current = [...safe.values()].filter(item => item.sourceRef === target.sourceRef && item.pageIndex === outputOrder.indexOf(target.pageIndex))
+    if (markupDictionaryHash(original) !== target.expectedAnnotationSha256 || current.length !== 1) throw Error('pdf_reply_text_parent_identity_changed')
+    const rewritten = after.context.lookup(PDFRef.of(Number(target.sourceRef.split(' ')[0]), Number(target.sourceRef.split(' ')[1])), PDFDict)
+    if (JSON.stringify(textRewriteIdentity(original,before)) !== JSON.stringify(textRewriteIdentity(rewritten,after))) throw Error('pdf_reply_text_parent_dictionary_changed')
+    return {...reply, target:{...target, expectedAnnotationSha256:markupDictionaryHash(rewritten)}}
+  })
+}
 export async function appendNoteReplies(bytes: Uint8Array, replies: NoteReply[], outputOrder: number[]) {
   if (!replies.length) return bytes
   const before=await PDFDocument.load(bytes,{updateMetadata:false})
@@ -83,7 +131,7 @@ export async function appendNoteReplies(bytes: Uint8Array, replies: NoteReply[],
     const matches=annots?.asArray().filter(raw=>raw instanceof PDFRef && raw.toString()===target.sourceRef) ?? []
     if (matches.length!==1 || markupDictionaryHash(before.context.lookup(matches[0],PDFDict))!==target.expectedAnnotationSha256) throw Error('pdf_reply_parent_identity_changed')
   }
-  const drawings=replies.map(({target,contents,createdMs})=>({kind:'note' as const,pageIndex:outputOrder.indexOf(target.pageIndex),at:[target.rect[0],target.rect[3]] as [number,number],color:target.color,contents,createdMs,replyToSaved:{objNum:Number(target.sourceRef.split(' ')[0]),rect:target.rect,contents:target.contents}}))
+  const drawings=replies.map(({target,contents,createdMs,author})=>({...(author ? {author} : {}),kind:'note' as const,pageIndex:outputOrder.indexOf(target.pageIndex),at:[target.rect[0],target.rect[3]] as [number,number],color:target.color,contents,createdMs,replyToSaved:{objNum:Number(target.sourceRef.split(' ')[0]),rect:target.rect,contents:target.contents}}))
   const result=await applySaveRequest(bytes,{path:'',markups:[],drawings,formValues:[],stamps:[],rotations:[],deletedPages:[]})
   const notes=replies.map(({target,contents,createdMs},index)=>({pageIndex:drawings[index].pageIndex,contents,createdMs,rect:[target.rect[0],target.rect[3]-18,target.rect[0]+20,target.rect[3]].map(value=>Math.round(value*100)/100),replyToRef:target.sourceRef}))
   const output=await normalizeAddedNoteDates(bytes,result.bytes,notes,[],before.getPages().map((_,i)=>i)),after=await PDFDocument.load(output,{updateMetadata:false})
