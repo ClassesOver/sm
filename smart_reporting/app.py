@@ -60,6 +60,8 @@ from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
 from .report_editor.native import NativeEditorService
 from .report_editor.native_ai import create_native_ai_service
 from .report_editor.native_ai_api import create_native_ai_router
+from .report_editor.slides_native_ai import create_native_slides_ai_service
+from .report_editor.slides_native_ai_api import create_native_slides_ai_router
 from .report_editor.native_api import create_native_editor_router
 from .report_editor.native_import import NativeImportService
 from .report_editor.native_import_api import create_native_import_router
@@ -326,6 +328,9 @@ native_editor = NativeEditorService(
 native_ai = create_native_ai_service(
     reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
 )
+native_slides_ai = create_native_slides_ai_service(
+    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+)
 native_import = NativeImportService(native_workspace, native_document_repository, report_editor_grants)
 report_slides_editor = ReportSlidesEditorService(
     state_repository=report_runtime.state_repository,
@@ -473,6 +478,10 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
         report_editor_grants, editor=native_editor, ai=native_ai,
         allowed_origin=settings.report_public_base_url,
     ))
+    application.include_router(create_native_slides_ai_router(
+        report_editor_grants, editor=native_editor, ai=native_slides_ai,
+        allowed_origin=settings.report_public_base_url,
+    ))
     application.include_router(create_native_import_router(native_import, enabled=settings.native_upload_enabled))
     application.include_router(
         create_report_slides_editor_router(
@@ -513,6 +522,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("shutdown", report_editor.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
+    application.router.add_event_handler("shutdown", native_slides_ai.aclose)
     if report_editor_chart_ai is not None:
         application.router.add_event_handler("shutdown", report_editor_chart_ai.aclose)
     if report_editor_table_ai is not None:

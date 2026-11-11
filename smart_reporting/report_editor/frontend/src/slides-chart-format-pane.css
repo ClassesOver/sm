@@ -1,0 +1,28 @@
+@import './vendor/genoffice-slides/ui/color-picker.css';
+
+/* 固定源FormatPane数据点分组/ColorWell度量，限定宿主作用域并绑定现有主题。 */
+.slides-chart-format-pane,.slides-chart-point-palette {
+  --surface:var(--office-chrome);--border:var(--office-border);--border-strong:var(--office-border-strong);
+  --text:var(--office-ink);--text-dim:var(--office-muted);--accent:var(--office-pressed-border);
+  --accent-soft:var(--office-pressed-bg);--hover:var(--office-hover-bg);--slides-swatch-ring:var(--office-border-strong);
+  --shadow-modal-strong:0 6px 24px #0002;
+}
+.slides-chart-format-pane { box-sizing:border-box;margin-top:12px;padding:10px 14px;border-top:1px solid var(--border); }
+.slides-chart-format-pane[hidden] { display:none; }
+.slides-chart-format-pane .chart-format-heading { font-size:14px;font-weight:600; }
+.slides-chart-format-pane .fp-section { font-size:11.5px;font-weight:600;color:var(--text-dim);margin:14px 0 6px;padding-bottom:3px;border-bottom:1px solid var(--border); }
+.slides-chart-format-pane .fp-row { display:flex;align-items:center;gap:8px; }
+.slides-chart-format-pane .fp-row + .fp-row { margin-top:10px; }
+.slides-chart-format-pane .fp-chart-series { font-size:12px;font-weight:600;margin-top:4px; }
+.slides-chart-format-pane .fp-chart-point { margin-top:4px; }
+.slides-chart-format-pane .fp-chart-point-label { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;flex:1; }
+:is(.slides-chart-format-pane,.slides-shape-format-pane) .fp-color-well-wrap { position:relative;display:inline-flex;align-items:center; }
+:is(.slides-chart-format-pane,.slides-shape-format-pane) .fp-color-well { box-sizing:border-box;display:flex;align-items:center;gap:4px;width:74px;height:26px;padding:0 5px 0 3px;background:var(--surface);border:1px solid var(--border-strong);border-radius:3px;cursor:pointer; }
+:is(.slides-chart-format-pane,.slides-shape-format-pane) .fp-color-well-swatch { display:block;flex:1;min-width:0;height:18px;border:1px solid var(--slides-swatch-ring);border-radius:2px; }
+:is(.slides-chart-format-pane,.slides-shape-format-pane) .fp-color-well-caret { flex-shrink:0;display:flex;color:var(--text-dim); }
+:is(.slides-chart-format-pane,.slides-shape-format-pane) .fp-color-well:disabled { opacity:.45;cursor:default; }
+.slides-chart-format-pane .chart-point-reset { min-width:0;height:26px;padding:2px 5px;font-size:11px;border:1px solid var(--border-strong);border-radius:3px;background:var(--surface);color:var(--text);cursor:pointer; }
+.slides-chart-format-pane .chart-point-reset:disabled { opacity:.45;cursor:default; }
+.slides-chart-format-pane .chart-format-error { font-size:12px;color:var(--office-muted); }
+.slides-chart-format-pane .chart-format-error:empty { display:none; }
+.slides-chart-point-palette { position:fixed;inset:auto;margin:0;padding:0;border:none;background:transparent;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto; }

@@ -1,0 +1,85 @@
+/* Chart color scheme cards */
+.slides-native-chart-colors .rb-chart-scheme-card {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 68px;
+  padding: 5px 3px;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text);
+  transition: border-color 0.12s;
+}
+.slides-native-chart-colors .rb-chart-scheme-card:hover:not(:disabled) {
+  border-color: var(--slides-select-border);
+  background: var(--slides-select-hover-bg);
+}
+.slides-native-chart-colors .rb-chart-scheme-card:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.slides-native-chart-colors .rb-chart-scheme-swatches {
+  display: flex;
+  gap: 2px;
+}
+.slides-native-chart-colors .rb-chart-scheme-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid var(--slides-swatch-ring);
+}
+.slides-native-chart-colors .rb-chart-scheme-label {
+  font-size: 10px;
+}
+
+/* Chart style gallery */
+.slides-native-chart-gallery .rb-chart-style-row {
+  display: flex;
+  gap: 4px;
+  max-width: 440px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.slides-native-chart-gallery .rb-chart-style-card {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 3px 4px;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  cursor: pointer;
+  color: var(--text);
+  flex: 0 0 auto;
+  transition: border-color 0.12s;
+}
+.slides-native-chart-gallery .rb-chart-style-card:hover:not(:disabled) {
+  border-color: var(--slides-select-border);
+  background: var(--slides-select-hover-bg);
+}
+.slides-native-chart-gallery .rb-chart-style-card.active {
+  border-color: var(--slides-select-border);
+  background: var(--slides-select-active-bg);
+}
+.slides-native-chart-gallery .rb-chart-style-card:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 宿主网格与主题绑定；预览本体、卡片度量和四色预览取自固定源。 */
+.slides-native-chart-gallery,.slides-native-chart-colors {
+  --border:var(--office-border-strong);--surface:var(--office-chrome);--text:var(--office-ink);
+  --slides-select-border:var(--office-pressed-border);--slides-select-hover-bg:var(--office-hover-bg);
+  --slides-select-active-bg:var(--office-pressed-bg);--slides-swatch-ring:var(--office-border-strong);
+}
+.slides-native-chart-gallery { grid-row:span 3;display:flex;align-items:center;gap:6px; }
+.slides-native-chart-gallery .rb-chart-style-row { width:min(440px,calc(100vw - 140px)); }
+.slides-native-chart-gallery .rb-chart-style-card { min-height:0; }
+.slides-native-chart-colors { position:fixed;inset:auto;margin:0;display:flex;flex-wrap:wrap;gap:4px;padding:10px;width:316px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;box-sizing:border-box;border:1px solid var(--office-border-strong);border-radius:6px;background:var(--office-chrome);box-shadow:0 6px 24px #0002;z-index:100; }
+.slides-native-chart-colors[hidden] { display:none; }
+.slides-native-chart-colors button:focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }

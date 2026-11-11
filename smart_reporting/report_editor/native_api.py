@@ -233,6 +233,7 @@ def create_native_editor_router(
             "aiEnabled": ai_enabled and (
                 context.format == "docx" and editor.docx_enabled
                 or context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled
+                or context.format == "pptx" and editor.office_enabled
             ),
             "editingEnabled": editor.is_enabled(context.format),
             "pdfTextEnabled": editor.pdf_text_enabled and editor.pdf_enabled and context.format == "pdf",
