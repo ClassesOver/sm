@@ -277,7 +277,7 @@ class WorkbookAIToolkit(Toolkit):
                 if not isinstance(formula, str) or not formula.startswith('='):
                     raise ValueError('workbook_ai_formula_invalid')
                 cell['formula'] = formula[1:]
-            return {'kind': 'applyCellEdits', 'arguments': {'edits': [{'sheetName': name, 'row': row, 'column': column, 'writeValue': True, 'cell': cell}]}}
+            return {'kind': 'applyCellEdits', 'edits': [{'sheetName': name, 'row': row, 'column': column, 'writeValue': True, 'cell': cell}]}
         if op == 'sort_range':
             if operation.get('order') not in {'asc', 'desc'} or type(operation.get('hasHeader', False)) is not bool:
                 raise ValueError('workbook_ai_sort_invalid')
