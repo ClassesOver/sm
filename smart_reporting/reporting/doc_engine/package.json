@@ -1,0 +1,21 @@
+{
+  "name": "@smart-reporting/doc-engine",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "bundle:bridges": "esbuild bridge/edit-docx.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs --log-level=warning --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\""
+  },
+  "dependencies": {
+    "@genoffice/pptx-engine": "file:../slides_engine/packages/pptx-engine",
+    "@genoffice/agent-core": "file:../slides_engine/packages/agent-core",
+    "@genoffice/zip-gate": "file:../slides_engine/packages/zip-gate"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

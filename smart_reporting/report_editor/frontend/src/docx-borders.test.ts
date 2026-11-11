@@ -89,7 +89,7 @@ it('refuses border edits mixed with text or foreign ops and validates replay fie
   expect(() => replayDocxOperations(original, [{ ...valid, borders: [{ side: 'bottom', val: 'double' }] }], anchors)).toThrow('草稿段落边框字段或来源身份无效')
   expect(() => replayDocxOperations(original, [{ ...valid, borders: [{ side: 'bottom', val: 'single', szPt: 0.3 }] }], anchors)).toThrow('草稿段落边框字段或来源身份无效')
   expect(() => replayDocxOperations(original, [{ ...valid, borders: [{ side: 'bottom', val: 'single' }], extra: 1 }], anchors)).toThrow('草稿段落边框字段或来源身份无效')
-  expect(() => replayDocxOperations(original, [valid, { kind: 'setParagraphAlignment', blockId: 'body-0', expectedObjectSha256: 'sha-0', alignment: 'center' }], anchors)).toThrow('草稿段落边框字段或来源身份无效')
+  expect(() => replayDocxOperations(original, [valid, { kind: 'formatParagraph', blockId: 'body-0', expectedObjectSha256: 'sha-0', style: { bold: true } }], anchors)).toThrow('草稿段落边框字段或来源身份无效')
   expect(() => replayDocxOperations(original, [valid, { ...valid }], anchors)).toThrow('草稿段落边框字段或来源身份无效')
   expect(() => replayDocxOperations(original, [{ ...valid, expectedObjectSha256: 'foreign' }], anchors)).toThrow('草稿段落边框字段或来源身份无效')
 })

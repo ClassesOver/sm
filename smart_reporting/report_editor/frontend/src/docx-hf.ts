@@ -11,7 +11,10 @@ export type DocxHfPartKey = `${DocxHfPart}.${DocxHfVariant}`
 export interface DocxHfPartAnchor { rId: string | null; expectedPartSha256: string; text: string; hasPageNumber: boolean; editable: boolean }
 export interface DocxHeadersFootersModel {
   titlePg: boolean
+  titlePgReadOnlyReason?: string | null
   evenAndOddHeaders: boolean
+  evenAndOddHeadersReadOnlyReason?: string | null
+  pageNumberReadOnlyReason?: string | null
   pageNumberFmt: string | null
   pageNumberStart: number | null
   parts: Partial<Record<DocxHfPartKey, DocxHfPartAnchor>>
@@ -19,7 +22,7 @@ export interface DocxHeadersFootersModel {
 export interface DocxHfSectionAnchor { sectionId: string; expectedSectionSha256: string }
 export interface DocxHfFlags { titlePg?: boolean; evenAndOddHeaders?: boolean; pageNumberFmt?: string | null; pageNumberStart?: number | null }
 
-const HF_OP_KEYS = ['kind', 'sectionId', 'expectedSectionSha256', 'part', 'variant', 'expectedPartSha256', 'text', 'pageNumber', 'align', 'titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart']
+const HF_OP_KEYS = ['kind', 'sectionId', 'expectedSectionSha256', 'part', 'variant', 'afterLink', 'expectedPartSha256', 'text', 'pageNumber', 'align', 'titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart']
 const HF_VARIANTS: DocxHfVariant[] = ['default', 'first', 'even']
 const HF_ALIGNMENTS = ['left', 'center', 'right']
 
@@ -42,13 +45,14 @@ export function docxHfUniformAlign(paras: HeaderFooter['paras'] | undefined): Hf
 }
 
 /** 部件编辑 → 严格操作；无实际变化（文本、标记、统一对齐均未变且无设置位）返回 null，不写草稿。
+ *  force 固化新own复制快照，值与原来源相同也保留，避免后续前节编辑影响复制。
  *  sourceParas 为来源部件段落：统一对齐与来源不同（如页码位置选左/右）时随操作写回 align。 */
-export function docxHeaderFooterOperation(anchor: DocxHfSectionAnchor, partAnchor: DocxHfPartAnchor, part: DocxHfPart, variant: DocxHfVariant, value: HeaderFooter, flags?: DocxHfFlags, sourceParas?: HeaderFooter['paras']): NativeOperation | null {
+export function docxHeaderFooterOperation(anchor: DocxHfSectionAnchor, partAnchor: DocxHfPartAnchor, part: DocxHfPart, variant: DocxHfVariant, value: HeaderFooter, flags?: DocxHfFlags, sourceParas?: HeaderFooter['paras'], force = false): NativeOperation | null {
   const text = value.paras ? docxHfTextOf(value) : value.text
   const flagEntries = Object.entries(flags ?? {}).filter(([, flag]) => flag !== undefined)
   const valueAlign = docxHfUniformAlign(value.paras)
   const align = valueAlign !== undefined && valueAlign !== docxHfUniformAlign(sourceParas) ? valueAlign : undefined
-  if (text === partAnchor.text && !value.pageNumber === !partAnchor.hasPageNumber && !align && !flagEntries.length) return null
+  if (!force && text === partAnchor.text && !value.pageNumber === !partAnchor.hasPageNumber && !align && !flagEntries.length) return null
   return { kind: 'setHeaderFooter', sectionId: anchor.sectionId, expectedSectionSha256: anchor.expectedSectionSha256,
     part, variant, expectedPartSha256: partAnchor.expectedPartSha256, text, pageNumber: value.pageNumber ?? false,
     ...(align ? { align } : {}), ...Object.fromEntries(flagEntries) }
@@ -56,7 +60,7 @@ export function docxHeaderFooterOperation(anchor: DocxHfSectionAnchor, partAncho
 
 /** 新部件编辑并入草稿：替换同 (part, variant) 的旧操作，其余操作保持原顺序。 */
 export function mergeDocxHeaderFooterOperation(operations: NativeOperation[], operation: NativeOperation): NativeOperation[] {
-  return [...operations.filter(op => !(op.kind === 'setHeaderFooter' && op.part === operation.part && op.variant === operation.variant)), operation]
+  return [...operations.filter(op => !(op.kind === 'setHeaderFooter' && op.sectionId === operation.sectionId && op.part === operation.part && op.variant === operation.variant)), operation]
 }
 
 /** 恢复/重放前的草稿校验：节与部件身份必须匹配当前来源，同一 (part, variant) 以后写为准。 */
@@ -71,13 +75,17 @@ export function restoredDocxHeaderFooterOperations(operations: NativeOperation[]
     if (!HF_VARIANTS.includes(variant as DocxHfVariant)) throw new Error('草稿页眉页脚部件变体无效')
     if (typeof operation.text !== 'string' || operation.text.length > 20000 || typeof operation.pageNumber !== 'boolean'
       || typeof operation.expectedPartSha256 !== 'string') throw new Error('草稿页眉页脚文本无效')
+    if (operation.afterLink !== undefined && operation.afterLink !== true) throw new Error('草稿解除链接后编辑标记无效')
     if (operation.align !== undefined && !HF_ALIGNMENTS.includes(operation.align as string)) throw new Error('草稿页眉页脚对齐无效')
     for (const key of ['titlePg', 'evenAndOddHeaders'] as const) {
       if (operation[key] !== undefined && typeof operation[key] !== 'boolean') throw new Error('草稿页眉页脚设置无效')
     }
+    if (operation.titlePg !== undefined && model?.titlePgReadOnlyReason) throw new Error('草稿首页不同来源标记不可解释')
+    if (operation.evenAndOddHeaders !== undefined && model?.evenAndOddHeadersReadOnlyReason) throw new Error('草稿奇偶页不同来源标记不可解释')
+    if ((operation.pageNumberFmt !== undefined || operation.pageNumberStart !== undefined) && model?.pageNumberReadOnlyReason) throw new Error('草稿页码格式来源标记不可解释')
     for (const key of ['pageNumberFmt', 'pageNumberStart'] as const) {
       const value = operation[key]
-      if (value !== undefined && value !== null && typeof value !== (key === 'pageNumberFmt' ? 'string' : 'number')) throw new Error('草稿页码格式无效')
+      if (value !== undefined && value !== null && (typeof value !== (key === 'pageNumberFmt' ? 'string' : 'number') || key === 'pageNumberStart' && (!Number.isSafeInteger(value) || (value as number) < 0))) throw new Error('草稿页码格式无效')
     }
     const partAnchor = model?.parts[`${part}.${variant}` as DocxHfPartKey]
     if (!partAnchor || operation.expectedPartSha256 !== partAnchor.expectedPartSha256) throw new Error('草稿页眉页脚部件身份与当前来源不一致')

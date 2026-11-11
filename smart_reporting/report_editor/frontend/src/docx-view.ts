@@ -8,6 +8,7 @@ export type DocxZoomFit = 'width' | 'page'
 export interface DocxViewCommands {
   run(label: string): void
   reason(label: string): string | null
+  active?(label: string): boolean
 }
 
 export function docxFitZoom(mode: DocxZoomFit, viewport: { width: number; height: number }, page: { width: number; height: number }): number | undefined {
@@ -25,6 +26,11 @@ export function createDocxViewCommands(options: {
   page: HTMLElement
   pageSize(): { width: number; height: number }
   onPaginationPreview(): void
+  onZoomChange?(): void
+  navigation?: {toggle(): void; readonly visible: boolean}
+  gridlines?: {toggle(): void; readonly visible: boolean}
+  ruler?: {toggle(): void; readonly visible: boolean}
+  outline?: {run(label: string): void; reason(label: string): string | null; readonly mode: string}
 }) {
   let zoom = 100
   let fit: DocxZoomFit | undefined
@@ -36,10 +42,12 @@ export function createDocxViewCommands(options: {
   status.setAttribute('aria-label', 'Word 显示比例')
   options.root.append(status)
   const update = () => {
+    const changed = options.root.dataset.docxZoom !== String(zoom)
     options.page.style.setProperty('zoom', String(zoom / 100))
     options.root.dataset.docxZoom = String(zoom)
     status.value = `${zoom}%`
     status.textContent = `${zoom}%`
+    if (changed) options.onZoomChange?.()
   }
   const set = (value: number) => {
     if (!Number.isFinite(value) || value < DOCX_ZOOM_MIN || value > DOCX_ZOOM_MAX || !Number.isInteger(value)) throw new Error('显示比例须为 10–500 的整数百分比')
@@ -79,9 +87,20 @@ export function createDocxViewCommands(options: {
   })
   const handled = new Set(['缩小', '放大', '页宽', '整页', '缩放', '100%', '分页预览'])
   const commands: DocxViewCommands = {
-    reason(label) { return !disposed && handled.has(label) ? null : '此视图命令尚未与原生 Word 画布对齐' },
+    reason(label) {
+      if (!disposed && label === '标尺' && options.ruler) return null
+      if (!disposed && label === '网格线' && options.gridlines) return null
+      if (!disposed && label === '导航窗格' && options.navigation) return null
+      if (!disposed && ['大纲', '页面视图'].includes(label) && options.outline) return options.outline.reason(label)
+      return !disposed && handled.has(label) ? null : '此视图命令尚未与原生 Word 画布对齐'
+    },
+    active(label) { return !disposed && (label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '大纲' ? options.outline?.mode === 'outline' : label === '页面视图' ? options.outline?.mode === 'page' : false) },
     run(label) {
       if (commands.reason(label) !== null) return
+      if (label === '标尺') { options.ruler!.toggle(); return }
+      if (label === '网格线') { options.gridlines!.toggle(); return }
+      if (label === '导航窗格') { options.navigation!.toggle(); return }
+      if (label === '大纲' || label === '页面视图') { options.outline!.run(label); return }
       if (label === '缩小') set(Math.max(DOCX_ZOOM_MIN, zoom - 10))
       else if (label === '放大') set(Math.min(DOCX_ZOOM_MAX, zoom + 10))
       else if (label === '100%') set(100)

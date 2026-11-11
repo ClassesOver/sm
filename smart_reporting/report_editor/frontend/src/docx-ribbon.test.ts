@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { flushSync } from 'react-dom'
-import { Editor, Mark, Node } from '@tiptap/core'
+import { Editor, Extension, Mark, Node } from '@tiptap/core'
 import { createDocxRibbon } from './docx-ribbon'
 import { docxOperations, type DocxAnchor } from './docx-operations'
 
@@ -14,12 +14,35 @@ const Text = Node.create({ name: 'text', group: 'inline', renderHTML: ({ node })
 const simpleMark = (name: string) => Mark.create({ name, parseHTML: () => [{ tag: `span[data-${name}]` }], renderHTML: () => ['span', { [`data-${name}`]: '' }, 0] })
 const TextStyle = Mark.create({
   name: 'docTextStyle',
-  addAttributes: () => ({ font: { default: null }, sizeHalfPoints: { default: null }, color: { default: null } }),
+  addAttributes: () => ({ font: { default: null }, fontAscii: { default: null }, eastAsiaFont: { default: null }, sizeHalfPoints: { default: null }, color: { default: null } }),
   parseHTML: () => [{ tag: 'span[data-style]' }],
   renderHTML: ({ HTMLAttributes }) => ['span', { ...HTMLAttributes, 'data-style': '' }, 0],
 })
 
 afterEach(() => { document.body.replaceChildren() })
+
+it('routes navigation and outline view controls while readonly and reflects their pressed state', () => {
+  const host = document.createElement('div'); document.body.append(host)
+  const editor = new Editor({element:host,extensions:[Doc,Paragraph,Text],editable:false,content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'原文'}]}]}})
+  let navigation = false, mode = 'page'
+  const commands = {reason: () => null, active: (label:string) => label === '导航窗格' ? navigation : label === '大纲' ? mode === 'outline' : mode === 'page', run: (label:string) => {if(label === '导航窗格')navigation = !navigation;else mode = label === '大纲' ? 'outline' : 'page'}}
+  const ribbon = createDocxRibbon(editor,false,undefined,undefined,undefined,[],undefined,commands)
+  document.body.append(ribbon)
+  try {
+    const before = editor.getJSON(), selection = editor.state.selection.from
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-label="视图"]')!.click()
+    const navigationButton = ribbon.querySelector<HTMLButtonElement>('[data-action="navigation-toggle"]')!
+    expect(navigationButton.disabled).toBe(false)
+    const down = new MouseEvent('mousedown',{cancelable:true}); navigationButton.dispatchEvent(down)
+    expect(down.defaultPrevented).toBe(true)
+    navigationButton.click(); expect(navigationButton.getAttribute('aria-pressed')).toBe('true')
+    const outlineButton = ribbon.querySelector<HTMLButtonElement>('[data-action="view-outline"]')!
+    outlineButton.click(); expect(outlineButton.getAttribute('aria-pressed')).toBe('true')
+    ribbon.querySelector<HTMLButtonElement>('[data-action="view-page"]')!.click()
+    expect(outlineButton.getAttribute('aria-pressed')).toBe('false')
+    expect(editor.getJSON()).toEqual(before); expect(editor.state.selection.from).toBe(selection)
+  } finally {editor.destroy()}
+})
 
 it('offers source-bound Home formatting and leaves unsupported Ribbon commands disabled', () => {
   const host = document.createElement('div')
@@ -47,7 +70,7 @@ it('offers source-bound Home formatting and leaves unsupported Ribbon commands d
     expect(ribbon.querySelector<HTMLButtonElement>(`[data-tab-label="${tab}"]`)?.hidden).toBe(true)
   }
   expect(Array.from(ribbon.querySelector('[role=tabpanel]')!.querySelectorAll('.ribbon-group-label')).map(group => group.textContent)).toEqual([
-    'Genspark AI', '转换', '剪贴板', '字体', '段落', '样式', '编辑',
+    'AI 助手', '剪贴板', '字体', '段落', '样式', '编辑', '转换',
   ])
   ribbon.querySelector<HTMLButtonElement>('[data-tab-label="插入"]')!.click()
   expect(Array.from(ribbon.querySelectorAll('.docx-ribbon-group-label, .ribbon-group-label')).map(group => group.textContent)).toEqual(['页面', '表格', '插图', '文本', '链接', '批注', '页眉和页脚', '符号'])
@@ -102,6 +125,11 @@ it('offers source-bound Home formatting and leaves unsupported Ribbon commands d
     ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.click()
   }
   const font = ribbon.querySelector<HTMLInputElement>('[data-action="font-family"]')!
+  const choices = Array.from(document.getElementById(font.getAttribute('list')!)!.querySelectorAll('option'))
+  expect(choices.map(option => option.value)).toEqual(['Noto Serif CJK SC', 'Noto Sans CJK SC', 'LXGW WenKai', 'Ma Shan Zheng', 'ZCOOL XiaoWei', 'SimSun', 'SimHei', 'Microsoft YaHei', 'KaiTi', 'FangSong'])
+  expect(choices[0]!.label).toContain('内置')
+  expect(choices[4]!.label).toContain('内置')
+  expect(choices[5]!.label).toContain('系统字体')
   font.value = 'Microsoft YaHei'
   font.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
   const size = ribbon.querySelector<HTMLInputElement>('[data-action="font-size"]')!
@@ -273,13 +301,17 @@ it('reveals contextual ribbons only for the matching selected Word object', () =
   editor.destroy()
 })
 
-it('keeps source Table Design and Layout commands individually identified and disabled', () => {
+it('keeps source Table Design and Layout commands unavailable when source capabilities are absent', () => {
+  const Row = Node.create({ name: 'docTableRow', content: 'docTableCell+', renderHTML: () => ['tr', 0] })
+  const Cell = Node.create({ name: 'docTableCell', content: 'docParagraph+', addAttributes: () => ({ colspan: { default: 1 }, rowspan: { default: 1 }, colwidth: { default: null } }), renderHTML: () => ['td', 0] })
+  const SourceTable = Table.extend({ content: 'docTableRow+' })
+  const Roles = Extension.create({ name: 'tableRoles', extendNodeSchema: extension => ({ tableRole: ({ docTable: 'table', docTableRow: 'row', docTableCell: 'cell' } as Record<string, string>)[extension.name] }) })
   const host = document.createElement('div')
   document.body.append(host)
   const editor = new Editor({
     element: host,
-    extensions: [Doc, Paragraph, Table, Text],
-    content: { type: 'doc', content: [{ type: 'docTable', content: [{ type: 'docParagraph', content: [{ type: 'text', text: '单元格' }] }] }] },
+    extensions: [Doc, Paragraph, SourceTable, Row, Cell, Roles, Text],
+    content: { type: 'doc', content: [{ type: 'docTable', content: [{ type: 'docTableRow', content: [{ type: 'docTableCell', content: [{ type: 'docParagraph', content: [{ type: 'text', text: '单元格' }] }] }] }] }] },
   })
   const ribbon = createDocxRibbon(editor, true)
   document.body.append(ribbon)
@@ -289,8 +321,9 @@ it('keeps source Table Design and Layout commands individually identified and di
     for (const action of actions) {
       const command = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)
       expect(command?.disabled, action).toBe(true)
-      expect(command?.title, action).toContain(reason)
-      expect(command?.getAttribute('aria-label'), action).toContain(reason)
+      const expectedReason = action.startsWith('table-border-') ? '当前来源表格暂不能修改单元格边框' : action === 'table-cell-shading' ? '此单元格包含合并、嵌套、修订或不明确的来源' : reason
+      expect(command?.title, action).toContain(expectedReason)
+      if (action !== 'table-cell-shading') expect(command?.getAttribute('aria-label'), action).toContain(expectedReason)
     }
   }
   ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableDesign"]')!.click()
@@ -566,4 +599,24 @@ it('wires the Word Home clipboard group: paste split menu, cut/copy and the form
   flushSync(() => undefined)
   expect(painterButton.classList.contains('active')).toBe(false)
   editor.destroy()
+})
+
+it.each([['网格线', 'gridlines-toggle', 'onShowGrid'], ['标尺', 'ruler-toggle', 'onShowRuler']])('routes readonly %s with source identity and updates its pressed state', (label, action, source) => {
+  const host = document.createElement('div'); document.body.append(host)
+  const editor = new Editor({element:host,extensions:[Doc,Paragraph,Text],editable:false,content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'原文'}]}]}})
+  let visible = false
+  const commands = {reason:(value:string)=>value===label?null:'未接入',active:()=>visible,run:vi.fn(()=>{visible=!visible})}
+  const ribbon = createDocxRibbon(editor,false,undefined,undefined,undefined,[],undefined,commands)
+  document.body.append(ribbon)
+  try {
+    const before = editor.getJSON(), selection = editor.state.selection.from
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-label="视图"]')!.click()
+    const button = ribbon.querySelector<HTMLButtonElement>('[data-action="'+action+'"]')!
+    expect(button).not.toBeNull(); expect(button.disabled).toBe(false)
+    expect(button.dataset.sourceAction).toBe(source); expect(button.getAttribute('aria-pressed')).toBe('false')
+    const down = new MouseEvent('mousedown',{cancelable:true}); button.dispatchEvent(down); expect(down.defaultPrevented).toBe(true)
+    button.click(); expect(commands.run).toHaveBeenCalledWith(label); expect(button.getAttribute('aria-pressed')).toBe('true')
+    button.click(); expect(button.getAttribute('aria-pressed')).toBe('false')
+    expect(editor.getJSON()).toEqual(before); expect(editor.state.selection.from).toBe(selection)
+  } finally {editor.destroy()}
 })
