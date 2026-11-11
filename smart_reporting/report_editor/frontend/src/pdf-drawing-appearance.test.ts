@@ -19,7 +19,7 @@ for(const view of views){
   const group=document.createElementNS(ns,'g'),vp=viewport(view.rotation,view.zoom),op:NativeOperation={...base,shape:'measure',from:measure.from,to:measure.to,label:measure.label},original=structuredClone(op)
   paintDrawing(group,op,vp,view.zoom);expect(op).toEqual(original)
   const label=group.querySelector('[data-pdf-measure-label]')!
-  expect(label.getAttribute('text-anchor')).toBe('start');expect(label.getAttribute('font-size')).toBe('9');expect(label.getAttribute('font-family')).toBe('Helvetica, Arial, sans-serif');expect((label as SVGTextElement).style.fontKerning).toBe('none');expect((label as SVGTextElement).style.fontVariantLigatures).toBe('none');expect(label.getAttribute('dominant-baseline')).toBe('alphabetic');expect(label.getAttribute('x')).toBe('0');expect(label.getAttribute('y')).toBe('0');expect(label.textContent).toBe(measure.label)
+  expect(label.getAttribute('text-anchor')).toBe('start');expect(label.getAttribute('font-size')).toBe('9');expect(label.getAttribute('font-family')).toBe('PDF Standard Helvetica, Liberation Sans, Helvetica, Arial, sans-serif');expect((label as SVGTextElement).style.fontKerning).toBe('none');expect((label as SVGTextElement).style.fontVariantLigatures).toBe('none');expect(label.getAttribute('dominant-baseline')).toBe('alphabetic');expect(label.getAttribute('x')).toBe('0');expect(label.getAttribute('y')).toBe('0');expect(label.textContent).toBe(measure.label)
   const match=/^matrix\(([^)]+)\)$/.exec(label.getAttribute('transform')??'');expect(match).not.toBeNull();const [a,b,c,d,e,f]=match![1]!.split(/[ ,]+/).map(Number),[ta,tb,tc,td,te,tf]=measure.tm
   // Glyph-space y points down in SVG and up in PDF. Check multiple glyph
   // coordinates against the actual native Tm followed by the viewport.
@@ -38,4 +38,5 @@ it('sets browser kerning and ligature controls as CSS properties rather than ign
  const group=document.createElementNS(ns,'g');paintDrawing(group,{...base,shape:'measure',from:[80,200],to:[240,200],label:'AV To ffi'},viewport(0,1),1)
  const label=group.querySelector<SVGTextElement>('[data-pdf-measure-label]')!
  expect(label.style.fontKerning).toBe('none');expect(label.style.fontVariantLigatures).toBe('none')
+ expect(label.style.textRendering.toLowerCase()).toBe('geometricprecision')
 })

@@ -1,6 +1,7 @@
 /** Fixed GenOffice f8c17004 drawing gestures; local SVG previews follow saved AP geometry. */
 import type { NativeOperation } from './native-draft'
 import { imageViewBox, type ImageViewport } from './pdf-image-gesture'
+import './pdf-drawing-font.css'
 const NS='http://www.w3.org/2000/svg'
 const num=(value:number)=>Math.round(value*100)/100
 export const CANVAS_DRAWING_KINDS=new Set(['image','rect','ellipse','arrow','measure','ink','polygon','caret','link'])
@@ -53,8 +54,8 @@ export function paintDrawing(group: SVGGElement, operation: NativeOperation, vie
         // Native Tm → PDF.js viewport → SVG glyph space (whose y points down).
         const origin=point([e,f]),u=point([e+a,f+b]),down=point([e-c,f-d])
         const matrix=[u[0]!-origin[0]!,u[1]!-origin[1]!,down[0]!-origin[0]!,down[1]!-origin[1]!,...origin]
-        const label=append('text',{x:0,y:0,fill:rgb,stroke:'none','font-size':9,'font-family':'Helvetica, Arial, sans-serif','dominant-baseline':'alphabetic','text-anchor':'start',transform:`matrix(${matrix.join(' ')})`})
-        label.style.fontKerning='none';label.style.fontVariantLigatures='none'
+        const label=append('text',{x:0,y:0,fill:rgb,stroke:'none','font-size':9,'font-family':'PDF Standard Helvetica, Liberation Sans, Helvetica, Arial, sans-serif','dominant-baseline':'alphabetic','text-anchor':'start',transform:`matrix(${matrix.join(' ')})`})
+        label.style.fontKerning='none';label.style.fontVariantLigatures='none';label.style.textRendering='geometricPrecision'
         label.dataset.pdfMeasureLabel='';label.textContent=String(operation.label)
       }
     }

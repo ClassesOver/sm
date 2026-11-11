@@ -31,7 +31,7 @@ it('refuses shared fields, forged source/full identity, incompatible drafts and 
  for(const key of ['sourceSha256','fieldName','widgetId','widgetIdentity','expectedWidgetSha256','pageId']as const)expect(()=>stagePdfFormWidgetNudge(model(),[],{...selection,[key]:key==='widgetId'?'999R':'f'.repeat(64)},'ArrowRight')).toThrow()
  const shared=model();shared.formDesignWidgets!.push({...widget,widgetId:'8R',widgetIdentity:'d'.repeat(64)});expect(()=>stagePdfFormWidgetNudge(shared,[],selection,'ArrowRight')).toThrow(/单控件|独立/)
  const missing=model();missing.pages=[];expect(()=>stagePdfFormWidgetNudge(missing,[],selection,'ArrowRight')).toThrow(/页面/)
- for(const op of [{kind:'insertText'},{kind:'editFormWidget',sourceSha256:sha,...selection,required:true},{kind:'editFormWidget',sourceSha256:sha,...selection,rect:widget.rect,unexpected:true}])expect(()=>stagePdfFormWidgetNudge(model(),[op],selection,'ArrowRight')).toThrow()
+ for(const op of [{kind:'insertText'},{kind:'editFormWidget',...selection,required:true},{kind:'editFormWidget',...selection,rect:widget.rect,unexpected:true}])expect(()=>stagePdfFormWidgetNudge(model(),[op],selection,'ArrowRight')).toThrow()
  const f=fixture();f.draft.setOperations([{kind:'insertText'}]);expect(f.pick()).not.toBeNull();expect(f.selected).toBeUndefined();expect(key(f.editor,'ArrowRight').defaultPrevented).toBe(false)
 })
 it('lets editable panel dialog ribbon and prevented events keep arrow keys and ignores modifier shortcuts',()=>{

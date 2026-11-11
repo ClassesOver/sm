@@ -44,3 +44,22 @@ SVG text固定9字体单位，起点0/0，start锚点、alphabetic基线、Helve
 不同系统的Helvetica回退字体与PDF.js Standard14替代字体，字形像素及advance不保证完全相同。该适配明确保证原点、基线方向、字号尺度和caret顶点/填充遵循原生AP，而不强制SVG与PDF渲染逐像素相等。页面CropBox仍可能裁切页边长标签。源UI与实际AP本来就不同；本批选择按实际AP显示本地草稿。无OCR。
 
 最终 root 已目视实际1倍草稿与下载PDF渲染，标签中点起写和caret填充三角的几何对应；未将草稿中尚未应用的原文字预览与保存后样式改字内容要求像素全等。统一范围和证据见 NATIVE_PDF_AP_ARRANGE_LINKS_ACCEPTANCE.md。
+
+## 2026-11-11 字体与四旋转组件专项补证
+
+本节补足上文仅0°实际浏览器、字体由系统回退的边界；此前完整保存/下载/修订链路证据保留。本批产品改动仅在PDF绘图模块：导入专属 `pdf-drawing-font.css`，以 `PDF Standard Helvetica` 字体别名加载已部署的 PDF.js `standard_fonts/LiberationSans-Regular.ttf`，后接显式 `Liberation Sans, Helvetica, Arial, sans-serif` 回退；不复制字体、不改writer、AP字体资源或全局PDF.js配置。字体使用 `font-display:swap`，measure仍为9字体单位、关闭kerning/ligatures，补充 `text-rendering:geometricPrecision`，避免Chromium在0.5倍下对SVG advance按设备像素取整。首轮真实浏览器观察到同一文字SVG advance为66、连续字体度量64.5249，补充后为64.53125。
+
+锁定 `pdfjs-dist@6.2.108` worker的Standard14表映射Helvetica到该TTF，但产品 `getDocument` 使用默认 `useSystemFonts`，不能据静态映射声称实际AP必定使用资产字体。新专项使用与产品相同的legacy PDF.js入口及默认加载参数；本环境实际 `FontFaceObject.systemFontInfo.css` 为 `"Helvetica",g_d0_sf2,sans-serif`，系统替代face为loaded，度量与显式资产别名一致。仅证明该环境实际路径匹配，不推广到所有客户端或所有PDF字体。
+
+真实探针为 `frontend/smoke/pdf-drawing-font-smoke.mjs`，证据 `/tmp/pdf-drawing-font-browser/summary.json` 的 `ok=true`，Chromium `140.0.7339.16`。它通过Python原生 `patch_pdf` 写出真实measure/caret AP，再由pypdf独立提取实际Tm、Tf、Tj、Helvetica资源及caret路径；esbuild仅把实际 `paintDrawing` 和产品同款PDF.js入口编译到 `/tmp` 作为组件夹具，不使用另一套SVG绘制实现，也不改共享生产static。
+
+- 0/90/180/270° × zoom0.5/2共8个真实浏览器场景，均含水平、实际两位小数Tm斜线、反向、竖直四标签及caret。原生AP→viewport→SVG矩阵、caret三顶点/闭合/填充全部通过；SVGMatrix的float32比较容差为0.00005。
+- 字体资产在浏览器实际加载，SHA256 `f8ace1f892b2bd9dc1792ba7f097fa7588f84fed48321480e04de5390828221f`；已发布static与锁定npm包TTF字节相等。32标签的SVG advance与实际PDF.js系统替代CSS advance最大差 `0.01220703125` 字体单位。
+- 完整实际AP与草稿并排截图为 `compare-{rotation}-{zoom}.png`，各自整页图为 `draft-*` / `saved-*`。为隔离与竖直文字重叠的测量线，另从实际AP只保留原始rg/BT/Tf/Tm/Tj/ET、字体资源、BBox及注释几何生成 `saved-labels.pdf`；不扩大BBox、不改矩阵或字形。`pdf-drawing-font-verify.py` 独立Pillow检查32组label-only栅格墨迹边界，ROI由pypdf Tm和实际PDF字体advance形成的宽松字体框与SVG框取union再扩边；两图墨迹均不得碰裁剪边界。通过阈值为每边差不超过2个CSS像素，实测最大1像素，证据 `visual-independent.json`。该诊断不要求抗锯齿像素、墨迹像素数量或所有字形轮廓完全相等。
+- 字体请求故障注入实际阻断TTF，`font-load-failure-fallback.png` / `fallback.json` 显示别名字体status=error，但回退文字可见且bbox宽 `60.0283203125`。当前环境原Helvetica/Arial/generic sans度量为0、显式Liberation Sans可用，因此保留其作为第一系统回退；不声称其他客户端原回退都存在此问题。
+- 本次合成来源SHA256 `41ca0ee1d6ec3a96190266e38063a2c20b7a9cea652eb73f395d461f62244077`；当前writer实际输出SHA256 `0908e3116366a1198e4afbbcff4a1a932644af7179d4ecda95b0370358c51e28`。正常8场景page/console/server错误为空，故障注入预期的字体请求失败另列。
+- 最终窄回归 `pdf-drawing-appearance.test.ts` 41项、`pdf-drawing-canvas.test.ts` 15项、`pdf-pending-drawings.test.ts` 9项，共65/65通过；两份新增mjs语法检查与 `git diff --check` 通过。root统一构建实际Vite产物包含最终字体链、geometricPrecision及可部署的既有TTF URL，全部JS预算检查通过；未另外重复构建共享static。
+
+本地首次运行发现忽略目录 `pdf_engine/dist/cli.mjs` 仍是11月10日旧包：水平AP BBox为 `[37,317,243,329]`，竖直为 `[67,37,73,143]`，实际裁切字形，故视觉检查失败。当前source已有 `measureLabelBounds` 修复；安装lockfile依赖并重建本地bundle后才取得上述成功，不把重建缓存冒充新增writer修复。失败旧输出及独立BBox记录保留于 `/tmp/pdf-drawing-font-old-bundle.pdf` / `.json`。
+
+本节是实际writer + PDF.js + 实际绘图组件专项，不新增完整产品保存/下载端到端证明；CropBox/UserUnit继续只有上文单元范围，未升级为本节实际浏览器覆盖。页面边缘裁切、外部客户端系统字体差异及其他字体仍保留限制。全局PDF.js默认字体选择策略未修改。

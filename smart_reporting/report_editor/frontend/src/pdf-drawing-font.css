@@ -1,0 +1,9 @@
+/* PDF.js maps Standard14 Helvetica to this exact, already deployed font asset.
+   Keep the system fallback available while loading or if the asset fails. */
+@font-face {
+  font-family: 'PDF Standard Helvetica';
+  src: url('/reports/v1/editor/assets/pdfjs/standard_fonts/LiberationSans-Regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}

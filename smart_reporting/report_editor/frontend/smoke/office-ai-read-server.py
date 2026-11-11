@@ -49,7 +49,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
             slide = deck.slides.add_slide(deck.slide_layouts[6])
             for index, text in enumerate(('本季度收入42。', '费用12，现金流稳定。')):
                 slide.shapes.add_textbox(Inches(1), Inches(index + 1), Inches(4), Inches(1)).text = text
-            slide.notes_slide.notes_text_frame.text = '备注专属秘密，不得声称已读取。'
+            slide.notes_slide.notes_text_frame.text = '备注：下季度目标59。'
             deck.save(stream)
         content = stream.getvalue()
         (directory / ('source.' + kind)).write_bytes(content)
@@ -84,9 +84,9 @@ async def create_app(directory: Path, port: int) -> FastAPI:
         else:
             calls = [tool('context', 'get_presentation_context', {}), tool('slide', 'read_slide', {'slide_index': 0})]
             citations = ['0']
-            answer = '演示文稿已提取文字：本季度收入42，费用12，现金流稳定。未读取备注或图片内容。'
+            answer = '演示文稿已提取文字：本季度收入42，费用12，现金流稳定。演讲者备注：下季度目标59。未读取图片视觉内容。'
             planner_type = AgnoNativeSlidesReadPlanner
-        model = ScriptedModel(id='scripted-office-read-smoke', expected_tool_text='42',
+        model = ScriptedModel(id='scripted-office-read-smoke', expected_tool_text='42' if is_workbook else '下季度目标59',
             responses=[*calls, ModelResponse(content=json.dumps({'answer': answer, 'citations': citations}, ensure_ascii=False))])
         return await planner_type(model)(**kwargs)
 

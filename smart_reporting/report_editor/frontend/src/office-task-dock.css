@@ -1,6 +1,6 @@
 .office-task-workspace{display:flex;flex:1;min-width:0;min-height:0;position:relative;overflow:hidden;width:100%}
 .office-task-workspace>.office-task-main{flex:1;min-width:0;min-height:0;width:auto}
-.office-task-dock{position:relative;box-sizing:border-box;flex:0 0 var(--office-task-width,360px);width:var(--office-task-width,360px);min-width:0;min-height:0;overflow:auto;border-left:1px solid var(--office-border,#dbe3ef);background:var(--office-chrome,#fff);color:var(--office-ink,#172033);font:12px/1.5 sans-serif}
+.office-task-dock{position:relative;box-sizing:border-box;flex:0 0 var(--office-task-width,360px);width:var(--office-task-width,360px);min-width:0;min-height:0;overflow:auto;border-left:1px solid var(--office-border,#dbe3ef);background:var(--office-chrome,#fff);color:var(--office-ink,#172033);font:inherit;font-size:12px;line-height:1.5}
 .office-task-dock[hidden]{display:none!important}
 .office-task-dock>header{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;min-height:32px;border-bottom:1px solid var(--office-border)}
 .office-task-dock>nav{display:flex;gap:4px;padding:8px}

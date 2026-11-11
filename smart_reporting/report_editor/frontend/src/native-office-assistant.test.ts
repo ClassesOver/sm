@@ -63,3 +63,19 @@ it('同步待提交编辑后选区失效时拒绝请求，不得以空选区读�
  flush.mockImplementationOnce(()=>setSelection(null));root.querySelector<HTMLButtonElement>('[data-office-ai=summarize]')!.click()
  await vi.waitFor(()=>expect(root.textContent).toContain('选区无法可靠对应来源'));expect(api.officeAIStart).not.toHaveBeenCalled();expect(root.textContent).toContain('选区无法可靠对应来源');binding.dispose()
 })
+
+it('PPT整稿明确包含备注，选区不隐含备注并显示备注引用',async()=>{
+ const root=document.body.appendChild(document.createElement('div'))
+ const draft=new NativeDraft({documentId:'slides',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},localStorage)
+ const response={...result,citations:[{label:'第1页：演讲者备注',speakerNotes:true}],limitations:['整稿包含引擎成功提取的演讲者备注正文。']}
+ const api={officeAIStart:vi.fn().mockResolvedValue({taskId:'notes',status:'completed',result:response}),officeAICancel:vi.fn()}
+ const binding=bindNativeOfficeAssistant(root,{api:api as never,draft,format:'pptx',context:async()=>({operations:[],selection:null})})
+ binding.open('summarize')
+ expect(root.textContent).toContain('整稿包含演讲者备注')
+ expect(root.textContent).toContain('当前对象选区不包含备注')
+ expect(root.textContent).toContain('图表缓存可能不是最新值')
+ await vi.waitFor(()=>expect(root.textContent).toContain('引用：第1页：演讲者备注'))
+ expect(api.officeAIStart.mock.calls[0][0].selection).toBeNull()
+ expect(draft.operations).toEqual([])
+ binding.dispose()
+})

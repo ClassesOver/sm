@@ -28,7 +28,7 @@ def adapter():
 
 def document():
     return {'slides': [
-        {'slideIndex': 0, 'notes': '保密备注', 'elements': [
+        {'slideIndex': 0, 'notesText': '保密备注', 'elements': [
             {'id': 'a', 'name': '收入', 'text': '本期收入42', 'editable': False},
             {'id': 'b', 'name': '秘密邻居', 'text': '未授权的秘密'},
             {'id': 'picture', 'type': 'picture', 'descr': '保密图片'},
@@ -114,7 +114,7 @@ def test_actual_pptx_engine_text_evidence_and_limitations():
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1)).text = '实际PPTX正文'
     slide.shapes.add_table(1, 1, Inches(1), Inches(3), Inches(3), Inches(1)).table.cell(0, 0).text = '实际表格'
-    slide.notes_slide.notes_text_frame.text = '不应声称读取的备注'
+    slide.notes_slide.notes_text_frame.text = '实际演讲者备注'
     buffer = BytesIO()
     presentation.save(buffer)
     model = inspect_office('pptx', buffer.getvalue())
@@ -122,7 +122,11 @@ def test_actual_pptx_engine_text_evidence_and_limitations():
     page = reader.read_slide(0)
     assert '实际PPTX正文' in page['content']
     assert json.loads(page['content'])[1]['tableCells'] == [['实际表格']]
-    assert '不应声称读取的备注' not in page['content']
+    assert '实际演讲者备注' in page['content']
+    assert reader.result('正文及备注', ['0'])['citations'][0]['speakerNotes'] is True
+    text = next(item for item in model['slides'][0]['elements'] if item.get('text') == '实际PPTX正文')
+    selected = adapter().NativeSlidesReadTools(model, [{'slideIndex': 0, 'elementId': text['id']}])
+    assert '实际演讲者备注' not in selected.read_slide(0)['content']
     assert reader.get_presentation_context()['limitations']
     assert reader.result('实际正文', ['0'])['citations'][0]['slideNumber'] == 1
 
@@ -288,3 +292,126 @@ async def test_chart_read_service_uses_actual_draft_and_keeps_selection_isolated
         assert '未授权秘密' not in json.dumps(result, ensure_ascii=False)
     finally:
         await service.aclose()
+
+
+
+def test_notes_only_slide_is_readable_and_cited_without_fake_element_identity():
+    source = {'slides': [{'slideIndex': 0, 'elements': [], 'notesText': '仅备注中的结论59',
+                          'notesEditable': False}]}
+    reader = adapter().NativeSlidesReadTools(source)
+    assert reader.get_presentation_context()['slides'] == [
+        {'slideIndex': 0, 'blockId': '0', 'elementIds': [], 'hasSpeakerNotes': True}]
+    assert reader.coverage()['totalBlocks'] == 1 and not reader.coverage()['scopeReadComplete']
+    assert json.loads(reader.read_slide(0)['content']) == [
+        {'type': 'speakerNotes', 'text': '仅备注中的结论59'}]
+    result = reader.result('备注结论59', ['0'], action='summary')
+    assert result['issues'] == []
+    assert result['citations'] == [{'slideIndex': 0, 'slideNumber': 1, 'elements': [],
+                                    'speakerNotes': True, 'label': '第1页：演讲者备注'}]
+    selected_source = {'slides': [{'slideIndex': 0, 'elements': [{'id': 'shape', 'text': '正文'}],
+                                   'notesText': '同页秘密备注'}]}
+    selected = adapter().NativeSlidesReadTools(selected_source, [{'slideIndex': 0, 'elementId': 'shape'}])
+    assert selected.get_presentation_context()['slides'][0]['hasSpeakerNotes'] is False
+    selected.read_slide(0)
+    assert '秘密备注' not in json.dumps(selected.result('正文', ['0']), ensure_ascii=False)
+    assert 'speakerNotes' not in selected.result('正文', ['0'])['citations'][0]
+
+
+def test_notes_are_frozen_and_coverage_requires_reading_entire_notes():
+    source = {'slides': [{'slideIndex': 0, 'elements': [], 'notesText': '长' * 60000}]}
+    reader = adapter().NativeSlidesReadTools(source)
+    source['slides'][0]['notesText'] = 'later'
+    reader.get_presentation_context()
+    reader.read_slide(0, offset=48000)
+    assert not reader.coverage()['scopeReadComplete']
+    assert reader.result('未读完', ['0'])['citations'] == []
+    first = reader.read_slide(0)
+    assert first['nextOffset'] == 24000
+    middle = reader.read_slide(0, offset=24000)
+    assert middle['readComplete'] is True
+    assert 'later' not in reader._serialized(0)
+    assert json.loads(reader._serialized(0))[0]['text'] == '长' * 60000
+
+
+@pytest.mark.anyio
+async def test_actual_notes_draft_service_and_agno_read_only_evidence():
+    from smart_reporting.report_editor.native_models import (
+        NATIVE_MEDIA,
+        NativeEditorContext,
+        NativeScope,
+    )
+    from smart_reporting.report_editor.native_office import patch_office
+    from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
+    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+    from smart_reporting.reporting.tests.pptx_ai_fixture import ScriptedModel as NotesModel
+    from smart_reporting.reporting.tests.test_native_office_read_tasks import request_for
+
+    deck = Presentation()
+    deck.slides.add_slide(deck.slide_layouts[6])
+    stream = BytesIO()
+    deck.save(stream)
+    content = patch_office('pptx', stream.getvalue(), [{'kind': 'editSlides',
+        'notesEdits': [{'slideIndex': 0, 'text': '原备注42'}]}])
+    assert Presentation(BytesIO(content)).slides[0].notes_slide.notes_text_frame.text == '原备注42'
+    model = NotesModel(id='scripted-notes-reader', expected_tool_text='人工备注59', responses=[
+        ModelResponse(tool_calls=[{'id': 'read-notes', 'type': 'function', 'function': {
+            'name': 'read_slide', 'arguments': '{"slide_index":0}'}}]),
+        ModelResponse(content=json.dumps({'answer': '演讲者备注给出59', 'citations': ['0']})),
+    ])
+    context = NativeEditorContext(documentId='notes-read', revision=1, format='pptx', origin='upload',
+        scope=NativeScope(database='db', companyId='co', userId='u', threadId='notes-read'),
+        sourceFile=ArtifactFile(path='native/notes.pptx', size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(), mediaType=NATIVE_MEDIA['pptx']))
+    editor = SimpleNamespace(context_for_session=AsyncMock(return_value=context),
+        read_file=AsyncMock(return_value=content), require_enabled=lambda _format: None)
+    service = NativeOfficeReadService(editor,
+        planners={'pptx': adapter().AgnoNativeSlidesReadPlanner(model)}, enabled=True)
+    try:
+        started = await service.start(None, **request_for(context,
+            operations=[{'kind': 'editSlides', 'notesEdits': [{'slideIndex': 0, 'text': '人工备注59'}]}]))
+        job = await service.status(None, started['taskId'])
+        assert job['status'] == 'completed', job
+        result = job['result']
+        assert result['coverage']['scopeReadComplete'] and result['issues'] == []
+        assert result['readingVersion'] == 'draft'
+        assert result['sourceSha256'] == hashlib.sha256(content).hexdigest()
+        assert result['effectiveSha256'] != result['sourceSha256']
+        assert result['citations'] == [{'slideIndex': 0, 'slideNumber': 1, 'elements': [],
+                                        'speakerNotes': True, 'label': '第1页：演讲者备注'}]
+        assert 'operations' not in result and 'proposal' not in result
+        assert Presentation(BytesIO(content)).slides[0].notes_slide.notes_text_frame.text == '原备注42'
+    finally:
+        await service.aclose()
+
+
+
+def test_reading_canvas_text_without_trailing_notes_cannot_claim_complete_page():
+    source = {'slides': [{'slideIndex': 0, 'elements': [{'id': 'canvas', 'text': '文' * 25000}],
+                          'notesText': '备注末尾证据59'}]}
+    reader = adapter().NativeSlidesReadTools(source)
+    first = reader.read_slide(0)
+    assert '备注末尾证据59' not in first['content']
+    incomplete = reader.result('正文部分', ['0'], action='summary')
+    assert incomplete['citations'] == [] and not incomplete['coverage']['scopeReadComplete']
+    assert 'native_slides_ai_incomplete_coverage' in {issue['code'] for issue in incomplete['issues']}
+    tail = reader.read_slide(0, offset=first['nextOffset'])
+    assert '备注末尾证据59' in tail['content'] and tail['readComplete']
+    assert reader.result('包含备注的整稿', ['0'])['citations'][0]['speakerNotes'] is True
+
+
+
+def test_actual_formatted_notes_can_be_read_without_granting_edit_permission():
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    notes = slide.notes_slide.notes_text_frame
+    notes.text = '格式化备注可读59'
+    notes.paragraphs[0].runs[0].font.bold = True
+    stream = BytesIO()
+    deck.save(stream)
+    model = inspect_office('pptx', stream.getvalue())
+    assert model['slides'][0]['notesEditable'] is False
+    reader = adapter().NativeSlidesReadTools(model)
+    content = json.loads(reader.read_slide(0)['content'])
+    assert content == [{'type': 'speakerNotes', 'text': '格式化备注可读59'}]
+    assert reader.result('备注59', ['0'])['issues'] == []
+    assert not hasattr(reader, 'propose_operations')
