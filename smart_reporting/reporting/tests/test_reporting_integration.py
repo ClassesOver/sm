@@ -77,7 +77,16 @@ def test_publication_content_accepts_pdf_and_word_identity() -> None:
         "codingReceipts": [],
     }
 
-    assert _ReportWorkflowRuntimeBase._publication_content(payload) == payload
+    result = _ReportWorkflowRuntimeBase._publication_content(payload)
+    assert {key: result[key] for key in payload} == payload
+    assert result['deliveryFormat'] == 'document'
+    assert result['editorAvailable'] is True
+    assert result['analysisContextFile'] is None
+    context_file = {'path': 'revision-2/dataset-contexts.json', 'size': 100, 'sha256': 'c' * 64}
+    bound = _ReportWorkflowRuntimeBase._publication_content({**payload,
+        'analysisContextFile': context_file, 'editorAvailable': False})
+    assert bound['analysisContextFile'] == context_file
+    assert bound['editorAvailable'] is False
 
 
 def test_publication_artifact_identity_checks_pdf_size_and_hash() -> None:

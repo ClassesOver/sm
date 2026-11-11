@@ -86,10 +86,10 @@ async def test_initial_publication_freezes_chart_presentation_before_editing(tmp
     runtime = SimpleNamespace(
         workspace_service=workspace,
         _scope=lambda _run: context.scope,
-        _profile=lambda _run: SimpleNamespace(effective_profile_hash="a" * 64),
         _build_drilldown_metrics=metrics,
     )
     arguments = dict(
+        report_basis_id="basis-test",
         handles=(_handle("dataset-url-abc0001"),), lineage=(_lineage("dataset-url-abc0001"),),
         markdown_artifact=ArtifactFile(path=markdown.path, mediaType=markdown.media_type, size=markdown.size, sha256=markdown.sha256),
         revision=1, run_context=SimpleNamespace(run_id="report-1"),
@@ -198,14 +198,13 @@ async def test_trace_index_drops_rejected_computation_records_instead_of_failing
     runtime = SimpleNamespace(
         workspace_service=workspace,
         _scope=lambda _run: context.scope,
-        _profile=lambda _run: SimpleNamespace(effective_profile_hash="a" * 64),
         _build_drilldown_metrics=metrics,
     )
     # 记录引用的脚本与补证文件未登记：RevisionTraceIndexV1 拒收该计算记录。
     identity = await RuntimePublicationMixin._write_trace_index(
         runtime,
         "reports/publish-proof/artifact-manifest.json",
-        handles=(_handle("dataset-url-abc0001"),),
+        report_basis_id="basis-test", handles=(_handle("dataset-url-abc0001"),),
         lineage=(_lineage("dataset-url-abc0001"),),
         markdown_artifact=ArtifactFile(
             path=markdown.path, mediaType=markdown.media_type, size=markdown.size, sha256=markdown.sha256

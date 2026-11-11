@@ -12,7 +12,6 @@ from loguru import logger
 from ...code_agent.context import ExecutionReceipt, ReportingCodingTaskContext
 from ...code_agent.failure_policy import fresh_attempt_futile
 from ...delivery.draft_v1 import ReportChartRegistration
-from ...hospital_operation.finding_projection import build_finding_graph
 from ...hospital_operation.findings import FindingGraph
 from ...hospital_operation.narrative_outline import (
     NarrativeOutline,
@@ -40,6 +39,10 @@ from ...model_policy import (
 from ...phase import (
     _nonnegative_int,
 )
+from ...semantics.analysis_facts import (
+    build_registered_analysis_bundle,
+    build_registered_finding_graph,
+)
 from ...structured_output import ReportingStructuredOutputExecutor, StructuredOutputCallBudget
 from ...tools import build_reporting_tools
 from ...trace.computation_service import build_standard_supplemental_computation_record
@@ -52,6 +55,7 @@ from ..benchmark_variants import (
     LegacyVisualizationPlanDraft,
 )
 from ..checkpoint import (
+    AnalysisArtifact,
     ChartVisualInspectionReceipt,
     CheckpointRetryUsage,
     attach_retry_usage,
@@ -82,7 +86,6 @@ from .base import (
     REPORT_DATASET_LINEAGE_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
     REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY,
-    REPORT_EFFECTIVE_PROFILE_STATE_KEY,
     REPORT_OUTLINE_HASH_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
     REPORT_PROFILE_COVERAGE_STATE_KEY,
@@ -126,9 +129,7 @@ from .base import (
     _reporting_observed_data_facts,
     _sha256_hex,
     _source_warnings_from_state,
-    anyio,
     authoritative_citations,
-    build_deterministic_analysis_bundle,
     build_report_artifact_validation_context,
     build_report_phase_acceptance_contract,
     cast,
@@ -138,12 +139,10 @@ from .base import (
     json,
     loguru_logger,
     normalize_workspace_path,
-    partial,
     payload_sha256,
     re,
     reporting_phase_task_key,
     time,
-    validate_metric_code_bindings,
 )
 from .chart_data_descriptors import (
     breakdown_descriptors as _breakdown_descriptors,  # noqa: F401 - historical import compatibility
@@ -1868,7 +1867,6 @@ class RuntimeAnalysisMixin:
         state = self._state(run_context)
         if state.get("_narrative_evidence_only"):
             return
-        profile = self._profile(run_context)
         period = self._envelope(run_context).period
         generated_date = state.get(REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY)
         if generated_date is None:
@@ -1895,9 +1893,9 @@ class RuntimeAnalysisMixin:
                     f"{'' if period.end.year == period.start.year else f'{period.end.year}年'}"
                     f"{period.end.month}月{period.end.day}日"
                 ),
-                "organizationName": profile.document_branding.organization_name,
-                "generatedByLabel": profile.document_branding.generated_by_label,
-                "watermarkText": profile.document_branding.watermark_text,
+                "organizationName": self.delivery_settings.branding.organization_name,
+                "generatedByLabel": self.delivery_settings.branding.generated_by_label,
+                "watermarkText": self.delivery_settings.branding.watermark_text,
                 "generatedDate": generated_date,
                 "sectionNumbers": [section.section_number for section in outline.sections],
                 "sections": [
@@ -1922,14 +1920,16 @@ class RuntimeAnalysisMixin:
         visualization_deadline = time.monotonic() + getattr(
             self, "visualization_total_deadline_seconds", VISUALIZATION_TOTAL_DEADLINE_SECONDS
         )
+        report_run_id = str(run_context.run_id or scope["externalRunId"])
+        existing_state = await self.state_repository.get(report_run_id)
         durable = await self.state_repository.get_or_create(
             report_run_id=str(run_context.run_id or scope["externalRunId"]),
             external_run_id=scope["externalRunId"],
             thread_id=scope["callerThreadId"],
             owner_user_id=scope["userId"],
-            revision=int(state.get(REPORT_OUTLINE_STATE_KEY, {}).get("revision", 1))
-            if isinstance(state.get(REPORT_OUTLINE_STATE_KEY), Mapping)
-            else 1,
+            revision=existing_state.revision if existing_state is not None else (
+                int(state.get(REPORT_OUTLINE_STATE_KEY, {}).get("revision", 1))
+                if isinstance(state.get(REPORT_OUTLINE_STATE_KEY), Mapping) else 1),
         )
         if durable.phase is DurableReportingPhase.FINALIZE:
             stored_checkpoint = durable.payload.get("workflowCheckpoint")
@@ -1972,9 +1972,14 @@ class RuntimeAnalysisMixin:
                 raise ReportingError(error.code, error.message) from error
         result = self._workflow_result(state)
         outline = _frozen_outline(state)
-        await self._bind_report_document_context(
-            run_context, outline=outline, job_id=str(result["jobId"])
-        )
+        if durable.payload.get('approvedOutline') is None:
+            await self._apply_durable_command(run_context, ReportingCommand(name='freeze_report_outline',
+                commandId=f'approved-outline:{payload_sha256(outline.model_dump(mode="json", by_alias=True))}',
+                payload={'outline': outline.model_dump(mode='json', by_alias=True)}))
+        if not state.get("_narrative_evidence_only"):
+            await self._bind_report_document_context(
+                run_context, outline=outline, job_id=str(result["jobId"])
+            )
         revision = int(result.get("revision", 0)) + 1
         # TaskExecutionScope 暂时保留 sandbox_id 字段名；宿主机模式写入稳定 workspace key。
         sandbox_id = scope["threadId"]
@@ -2009,12 +2014,12 @@ class RuntimeAnalysisMixin:
             }
             for section in outline.sections
         ]
+        metric_context = await self._metric_planning_context(run_context)
         validation_context = build_report_artifact_validation_context(
-            forbidden_visible_terms=_report_machine_terms(
+            forbidden_visible_terms=(*_report_machine_terms(
                 state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
                 state[REPORT_DATASET_LINEAGE_STATE_KEY],
-                state[REPORT_EFFECTIVE_PROFILE_STATE_KEY],
-            ),
+            ), *(metric.id for metric in metric_context.metrics)),
             observed_data_facts=_reporting_observed_data_facts(
                 self._data_shapes(run_context), requirements, lineage
             ),
@@ -2703,13 +2708,22 @@ class RuntimeAnalysisMixin:
         },)
 
     async def generate_narrative_outline(
-        self, _step_input: StepInput, run_context: RunContext
+        self, _step_input: StepInput, run_context: RunContext, *, execution=None
     ) -> StepOutput:
         """在 FindingGraph 冻结后生成最终章节提纲并保存其身份。"""
 
         scope = self._scope(run_context)
         run_id = str(run_context.run_id or scope["externalRunId"])
-        durable = await self.state_repository.get(run_id)
+        execution_options = {} if execution is None else {'execution': execution}
+        if execution is None:
+            durable = await self.state_repository.get(run_id)
+        else:
+            from ..revision_execution import load_revision_outline, require_revision_execution
+
+            durable = await require_revision_execution(self, run_context, execution)
+            run_id = execution.execution_run_id
+        adoption_run = execution is None and durable is not None and 'reportPolicyAdoptionExecution' in durable.payload
+        durable_outline = execution is not None or adoption_run
         stored = durable.payload.get("workflowCheckpoint") if durable is not None else None
         if not isinstance(stored, Mapping):
             raise ReportingError("report_finding_graph_unavailable", "动态章节缺少 checkpoint。")
@@ -2719,8 +2733,19 @@ class RuntimeAnalysisMixin:
         graph = await self._read_identity_model(scope["threadId"], checkpoint.finding_graph_file, FindingGraph)
         if graph.snapshot_hash != checkpoint.finding_graph_hash:
             raise ReportingError("report_checkpoint_conflict", "发现图谱快照与 checkpoint 不一致。")
-        state = self._state(run_context)
-        legacy_outline = _frozen_outline(state)
+        if execution is None:
+            state = self._state(run_context)
+            legacy_outline = _frozen_outline(state)
+        else:
+            legacy_outline = await load_revision_outline(self, run_context, execution)
+            # 子执行只构造局部投影，不改写原报告会话。
+            state = {REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY: durable.payload['detailedAnalysisPlan']}
+            if checkpoint.analysis_manifest_file is None:
+                raise ReportingError('report_analysis_evidence_incomplete', '章节规划必须先冻结新修订分析证据。')
+            artifact = await self._read_identity_model(scope['threadId'], checkpoint.analysis_manifest_file, AnalysisArtifact)
+            if (artifact.evidence_manifest != checkpoint.evidence_manifest
+                    or artifact.report_brief != checkpoint.report_brief):
+                raise ReportingError('report_revision_execution_mismatch', '章节规划与冻结分析证据不一致。')
         if checkpoint.narrative_outline_file is not None:
             if checkpoint.narrative_outline_hash != checkpoint.narrative_outline_file.sha256:
                 raise ReportingError("report_checkpoint_conflict", "冻结章节提纲文件身份不一致。")
@@ -2747,6 +2772,7 @@ class RuntimeAnalysisMixin:
                         name="complete_narrative_planning",
                         commandId=f"narrative-planning-complete:{checkpoint.revision}",
                     ),
+                    **execution_options,
                 )
             return StepOutput(content={"status": "completed", "sectionCount": len(narrative.sections)})
         await self._apply_durable_command(
@@ -2755,6 +2781,7 @@ class RuntimeAnalysisMixin:
                 name="start_narrative_planning",
                 commandId=f"narrative-planning-start:{checkpoint.revision}",
             ),
+            **execution_options,
         )
         detailed_plan = DetailedAnalysisPlan.model_validate(
             state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY]
@@ -2762,32 +2789,53 @@ class RuntimeAnalysisMixin:
         analyses = [{"analysisId": item.analysis_id,
                      "analysisName": item.analysis_name or item.analysis_id}
                     for item in detailed_plan.analyses]
-        narrative, planning_issues = await self._plan_narrative_outline(
-            graph=graph, title=legacy_outline.title,
-            report_goal=self._envelope(run_context).report_goal,
-            analyses=analyses, run_context=run_context,
-            max_sections=getattr(self._envelope(run_context), "section_count", None),
-        )
-        if any(section.narrative_role == "appendix" for section in narrative.sections):
-            # 此时尚未绑定最终目录/启动章节。复用冻结分析产物构造与渲染阶段
-            # 相同的 WorkItem（附录不生成图表），将切分后的提纲一次性持久化。
-            citation_bindings = authoritative_citations(tuple(
-                DatasetLineage.model_validate(item)
-                for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
-            ))
-            artifact = await self._build_reporting_artifact(
-                run_context,
-                analysis_ids=tuple(item.analysis_id for item in detailed_plan.analyses),
-                detailed_plan=detailed_plan,
-                fact_files=checkpoint.deterministic_fact_files,
-                citation_bindings=citation_bindings,
-                section_codes=(),
+        narrative_path = f"报表/智能分析/{run_id}/narrative/revision-{checkpoint.revision}/outline.json"
+        registered_outline = None
+        if durable_outline:
+            matches = tuple(FileIdentity.model_validate(item) for item in durable.payload.get('artifacts', ())
+                if item.get('path') == narrative_path)
+            if len(matches) > 1:
+                raise ReportingError('report_revision_execution_mismatch', '新章节提纲登记不唯一。')
+            registered_outline = matches[0] if matches else None
+        if registered_outline is not None:
+            narrative = await self._read_identity_model(scope['threadId'], registered_outline, NarrativeOutline)
+            if narrative.snapshot_hash != graph.snapshot_hash:
+                raise ReportingError('report_revision_execution_mismatch', '已登记章节提纲与新发现图谱不同。')
+            planning_issues = tuple(durable.payload.get('warnings', ()))
+        else:
+            narrative, planning_issues = await self._plan_narrative_outline(
+                graph=graph, title=legacy_outline.title,
+                report_goal=(self._envelope(run_context).report_goal if execution is None else artifact.report_brief.objective),
+                analyses=analyses, run_context=run_context,
+                max_sections=(getattr(self._envelope(run_context), "section_count", None) if execution is None else None),
             )
-            narrative = self._fit_narrative_outline_context(
-                narrative, graph=graph, detailed_plan=detailed_plan,
-                analysis_artifact=artifact,
-                citation_bindings=citation_bindings,
-            )
+            if any(section.narrative_role == "appendix" for section in narrative.sections):
+                # 此时尚未绑定最终目录/启动章节。复用冻结分析产物构造与渲染阶段
+                # 相同的 WorkItem（附录不生成图表），将切分后的提纲一次性持久化。
+                if execution is None:
+                    citation_bindings = authoritative_citations(tuple(
+                        DatasetLineage.model_validate(item)
+                        for item in state[REPORT_DATASET_LINEAGE_STATE_KEY]
+                    ))
+                else:
+                    handles = await self._registered_metric_dataset_handles(run_context, report_revision=execution.report_revision)
+                    citation_bindings = tuple(Citation(citationId=f'citation_{index:03d}', datasetId=item.dataset_id,
+                        requirementId=item.requirement_id, snapshotHash=item.sha256)
+                        for index, item in enumerate(sorted(handles, key=lambda item: (item.requirement_id, item.dataset_id)), 1))
+                artifact = await self._build_reporting_artifact(
+                    run_context,
+                    analysis_ids=tuple(item.analysis_id for item in detailed_plan.analyses),
+                    detailed_plan=detailed_plan,
+                    fact_files=checkpoint.deterministic_fact_files,
+                    citation_bindings=citation_bindings,
+                    section_codes=(),
+                    **({} if execution is None else {'execution': execution, 'outline': legacy_outline}),
+                )
+                narrative = self._fit_narrative_outline_context(
+                    narrative, graph=graph, detailed_plan=detailed_plan,
+                    analysis_artifact=artifact,
+                    citation_bindings=citation_bindings,
+                )
         compatible = build_compatible_report_outline(
             graph, report_type=legacy_outline.report_type, title=narrative.title,
             narrative_outline=narrative,
@@ -2801,9 +2849,13 @@ class RuntimeAnalysisMixin:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
+        if durable_outline and planning_issues and registered_outline is None:
+            await self._apply_durable_command(run_context, ReportingCommand(name='record_warnings',
+                commandId=f'revision-narrative-warnings:{checkpoint.revision}',
+                payload={'warnings': list(planning_issues)}), **execution_options)
         narrative_file = await self._write_immutable_artifact(
             scope["threadId"],
-            f"报表/智能分析/{run_id}/narrative/revision-{checkpoint.revision}/outline.json",
+            narrative_path,
             narrative_content,
         )
         checkpoint = self._update_reporting_checkpoint(
@@ -2815,13 +2867,18 @@ class RuntimeAnalysisMixin:
             narrative_outline_hash=hashlib.sha256(narrative_content).hexdigest(),
             files=self._merge_checkpoint_files(checkpoint.files, narrative_file),
         )
-        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        if durable_outline:
+            await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+                commandId=f'revision-narrative-outline:{narrative_file.sha256}',
+                payload={'artifact': narrative_file.model_dump(mode='json', by_alias=True)}), **execution_options)
+        await self._persist_reporting_checkpoint(run_context, checkpoint, **execution_options)
         await self._apply_durable_command(
             run_context,
             ReportingCommand(
                 name="complete_narrative_planning",
                 commandId=f"narrative-planning-complete:{checkpoint.revision}",
             ),
+            **execution_options,
         )
         return StepOutput(content={"status": "completed", "sectionCount": len(narrative.sections)})
 
@@ -2966,25 +3023,40 @@ class RuntimeAnalysisMixin:
         self,
         run_context: RunContext,
         checkpoint: ReportingCheckpoint,
+        *, execution=None,
     ) -> ReportingCheckpoint:
         # 并发分析项和章节都会携带各自启动时的 checkpoint 副本。读取最新 durable、
         # 合并和写回必须串行完成，否则后到的旧副本会覆盖先完成任务并触发重复执行。
         async with self._checkpoint_persist_lock:
-            return await self._persist_reporting_checkpoint_unlocked(run_context, checkpoint)
+            return await self._persist_reporting_checkpoint_unlocked(run_context, checkpoint, execution=execution)
 
     async def _persist_reporting_checkpoint_unlocked(
         self,
         run_context: RunContext,
         checkpoint: ReportingCheckpoint,
+        *, execution=None,
     ) -> ReportingCheckpoint:
-        durable = await self.state_repository.get(
-            str(run_context.run_id or self._scope(run_context)["externalRunId"])
-        )
+        if execution is not None:
+            from ..revision_execution import require_revision_execution
+
+            durable = await require_revision_execution(self, run_context, execution, revision=checkpoint.revision)
+        else:
+            durable = await self.state_repository.get(
+                str(run_context.run_id or self._scope(run_context)["externalRunId"])
+            )
         stored = durable.payload.get("workflowCheckpoint") if durable is not None else None
         if isinstance(stored, dict):
             checkpoint = self._merge_reporting_checkpoints(
                 ReportingCheckpoint.model_validate(stored), checkpoint
             )
+        if execution is not None:
+            registered = durable.payload.get('artifacts', ())
+            referenced = (*checkpoint.deterministic_fact_files.values(), checkpoint.finding_graph_file,
+                checkpoint.analysis_manifest_file, checkpoint.narrative_outline_file, checkpoint.slide_outline_file,
+                *checkpoint.workbook_summary_files)
+            if any(file is not None and file.model_dump(mode='json', by_alias=True) not in registered
+                    for file in referenced):
+                raise ReportingError('report_revision_execution_mismatch', '新修订检查点不得采用未登记或旧修订产物。')
         serialized = json.dumps(
             checkpoint.model_dump(mode="json", by_alias=True),
             ensure_ascii=False,
@@ -2999,17 +3071,18 @@ class RuntimeAnalysisMixin:
         identity = await self._write_immutable_artifact(
             self._scope(run_context)["threadId"], path, serialized
         )
-        await self._apply_durable_command(
-            run_context,
-            ReportingCommand(
-                name="set_workflow_checkpoint",
-                commandId=(f"workflow-checkpoint-v2:{checkpoint.revision}:{digest}"),
-                payload={
-                    "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
-                    "mirrorFile": identity.model_dump(mode="json", by_alias=True),
-                },
-            ),
+        command = ReportingCommand(
+            name="set_workflow_checkpoint",
+            commandId=(f"workflow-checkpoint-v2:{checkpoint.revision}:{digest}"),
+            payload={
+                "checkpoint": checkpoint.model_dump(mode="json", by_alias=True),
+                "mirrorFile": identity.model_dump(mode="json", by_alias=True),
+            },
         )
+        if execution is None:
+            await self._apply_durable_command(run_context, command)
+        else:
+            await self._apply_durable_command(run_context, command, execution=execution)
         return checkpoint
 
     @staticmethod
@@ -3100,6 +3173,10 @@ class RuntimeAnalysisMixin:
                 and current.slide_outline_file != incoming.slide_outline_file):
             raise ReportingError("report_checkpoint_conflict", "冻结幻灯片提纲身份不一致。")
         slide_outline_file = current.slide_outline_file or incoming.slide_outline_file
+        if (current.workbook_summary_files and incoming.workbook_summary_files
+                and current.workbook_summary_files != incoming.workbook_summary_files):
+            raise ReportingError('report_checkpoint_conflict', '冻结工作簿摘要身份不一致。')
+        workbook_summary_files = current.workbook_summary_files or incoming.workbook_summary_files
         merged_files = RuntimeAnalysisMixin._merge_checkpoint_files(current.files, *incoming.files)
         merged_files_by_path = {item.path: item for item in merged_files}
         if any(
@@ -3110,6 +3187,7 @@ class RuntimeAnalysisMixin:
                 *((finding_graph_file,) if finding_graph_file is not None else ()),
                 *((narrative_outline_file,) if narrative_outline_file is not None else ()),
                 *((slide_outline_file,) if slide_outline_file is not None else ()),
+                *workbook_summary_files,
             )
         ):
             raise ReportingError(
@@ -3203,6 +3281,7 @@ class RuntimeAnalysisMixin:
             narrative_outline_file=narrative_outline_file,
             narrative_outline_hash=narrative_outline_hash,
             slide_outline_file=slide_outline_file,
+            workbook_summary_files=workbook_summary_files,
             visualization_section_errors=section_errors,
             files=merged_files,
             trace=tuple((*anonymous_trace, *trace_by_task.values())),
@@ -4273,9 +4352,45 @@ class RuntimeAnalysisMixin:
         retry_reason: str | None,
         feedback: str | None,
         rework_request: AnalysisReworkRequest | None,
+        execution=None,
     ) -> ReportingCheckpoint:
         scope = self._scope(run_context)
         report_run_id = str(run_context.run_id or scope["externalRunId"])
+        registered_adoption = None
+        if execution is None:
+            registered_adoption = await self.state_repository.get(report_run_id)
+        adoption_run = registered_adoption is not None and 'reportPolicyAdoptionExecution' in registered_adoption.payload
+        if execution is not None:
+            from ...trace.contracts_v1 import canonical_sha256
+            from ..revision_execution import (
+                prepare_revision_dataset_contexts,
+                require_revision_execution,
+            )
+
+            durable = await require_revision_execution(self, run_context, execution, revision=revision)
+            stored = ReportingCheckpoint.model_validate(durable.payload.get('workflowCheckpoint'))
+            handles = await self._registered_metric_dataset_handles(run_context, report_revision=execution.report_revision)
+            view = await self._metric_planning_context(run_context, report_revision=execution.report_revision)
+            expected_lineage = tuple(DatasetLineage(datasetId=item.dataset_id, sourceId=item.source_id,
+                requirementId=item.requirement_id, sqlHash=item.sql_hash, rowCount=item.row_count,
+                size=item.size, sha256=item.sha256, periodRoles=item.period_roles, queryWindowId=item.query_window_id)
+                for item in handles)
+            if (stored != checkpoint or dict(fact_files) != stored.deterministic_fact_files
+                    or tuple(dataset_handles) != handles
+                    or tuple(lineage) != expected_lineage or citation_bindings != authoritative_citations(expected_lineage)
+                    or canonical_sha256(view.model_dump(mode='json', by_alias=True)) != execution.planning_hash
+                    or any(file.model_dump(mode='json', by_alias=True) not in durable.payload.get('artifacts', ())
+                        for file in (validation_context_file, analysis_context_file))
+                    or durable.payload.get('detailedAnalysisPlan') != detailed_plan.model_dump(mode='json', by_alias=True)):
+                raise ReportingError('report_revision_execution_mismatch', '分析任务必须采用当前新执行的完整输入。')
+            report_run_id = execution.execution_run_id
+            dataset_contexts = await prepare_revision_dataset_contexts(self, run_context, execution)
+            report_goal = view.request.goal
+            delivery_format = durable.payload['deliveryFormat']
+        else:
+            dataset_contexts = None
+            report_goal = self._envelope(run_context).report_goal
+            delivery_format = self._envelope(run_context).delivery_format
         analysis = next(
             (item for item in detailed_plan.analyses if item.analysis_id == analysis_id),
             None,
@@ -4300,11 +4415,11 @@ class RuntimeAnalysisMixin:
         selected_citations = tuple(
             item for item in citation_bindings if item.dataset_id in selected_dataset_ids
         )
-        raw_contexts = self._state(run_context).get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+        raw_contexts = (() if execution is not None else
+            self._state(run_context).get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ()))
         try:
-            dataset_contexts = tuple(
-                DatasetAnalysisContext.model_validate(item) for item in raw_contexts
-            )
+            if dataset_contexts is None:
+                dataset_contexts = tuple(DatasetAnalysisContext.model_validate(item) for item in raw_contexts)
             dataset_inputs = _analysis_item_dataset_inputs(selected_handles, dataset_contexts)
         except (TypeError, ValueError, ValidationError) as error:
             if isinstance(error, ReportingError):
@@ -4329,6 +4444,21 @@ class RuntimeAnalysisMixin:
                 "report_analysis_facts_invalid",
                 "固定 facts 文件与当前分析项身份不一致。",
             )
+        if execution is not None:
+            if deterministic_facts.metric_context != view:
+                raise ReportingError('report_revision_execution_mismatch', '分析任务事实不属于当前新批次。')
+            if analysis_id in durable.payload.get('completedAnalysisIds', ()) and any(
+                    item.work_kind == 'analysis_item' and item.analysis_id == analysis_id and item.status == 'completed'
+                    for item in checkpoint.trace):
+                return checkpoint
+        if adoption_run:
+            view = await self._metric_planning_context(run_context)
+            if deterministic_facts.metric_context != view:
+                raise ReportingError('report_policy_adoption_mismatch', '分析事实与新口径登记计算不一致。')
+            if analysis_id in registered_adoption.payload.get('completedAnalysisIds', ()) and any(
+                    item.work_kind == 'analysis_item' and item.analysis_id == analysis_id and item.status == 'completed'
+                    for item in checkpoint.trace):
+                return checkpoint
         last_error: Exception | None = _checkpoint_retry_error(
             checkpoint,
             work_kind="analysis_item",
@@ -4400,7 +4530,6 @@ class RuntimeAnalysisMixin:
                         "datasetIds",
                         "evidencePaths",
                         "citationIds",
-                        "metrics",
                         "chartIds",
                         "profileReadReceiptIds",
                         "warnings",
@@ -4410,8 +4539,8 @@ class RuntimeAnalysisMixin:
             instruction_payload = {
                 "phase": "analysis",
                 "taskKind": "analysis_item",
-                "reportGoal": self._envelope(run_context).report_goal,
-                "deliveryFormat": self._envelope(run_context).delivery_format,
+                "reportGoal": report_goal,
+                "deliveryFormat": delivery_format,
                 "sectionGoal": dict(section_goal),
                 "currentAnalysisId": analysis_id,
                 "currentAnalysis": analysis_plan,
@@ -4440,7 +4569,7 @@ class RuntimeAnalysisMixin:
                 ],
                 "sourceWarnings": [
                     item.model_dump(mode="json", by_alias=True)
-                    for item in _source_warnings_from_state(self._state(run_context))
+                    for item in (() if execution is not None else _source_warnings_from_state(self._state(run_context)))
                     if set(item.dataset_ids) & selected_dataset_ids
                 ],
                 "reviewFeedback": feedback,
@@ -4542,7 +4671,7 @@ class RuntimeAnalysisMixin:
                     ),
                     last_error=None,
                 )
-                await self._persist_reporting_checkpoint(run_context, checkpoint)
+                await self._persist_reporting_checkpoint(run_context, checkpoint, execution=execution)
             trace_metrics: dict[str, Any] = {}
             started_at = time.monotonic()
             try:
@@ -4577,7 +4706,7 @@ class RuntimeAnalysisMixin:
 
                 receipt = await self.task_runner.run(
                     task_scope,
-                    parent_run_id=str(run_context.run_id or ""),
+                    parent_run_id=report_run_id,
                     executor=execute_analysis_item,
                 )
                 trace_metrics = self._trace_metrics_from_receipt(receipt)
@@ -4621,9 +4750,12 @@ class RuntimeAnalysisMixin:
                     files=self._merge_checkpoint_files(checkpoint.files, *identities),
                     last_error=None,
                 )
-                await self._persist_reporting_checkpoint(run_context, checkpoint)
+                await self._persist_reporting_checkpoint(run_context, checkpoint, execution=execution)
                 return checkpoint
             except Exception as error:
+                if (execution is not None or adoption_run) and not isinstance(error, ReportingError):
+                    # 响应可能丢失：保留started身份，恢复读取同Task回执，不换新attempt。
+                    raise
                 last_error = error
                 trace_metrics.setdefault("duration_seconds", time.monotonic() - started_at)
                 code = (
@@ -4657,7 +4789,7 @@ class RuntimeAnalysisMixin:
                         ).model_dump(mode="json", by_alias=True),
                     },
                 )
-                await self._persist_reporting_checkpoint(run_context, checkpoint)
+                await self._persist_reporting_checkpoint(run_context, checkpoint, execution=execution)
                 if fresh_attempt_futile(error):
                     # 与可视化章节同一口径：基础设施/部署配置类失败不再开新 attempt。
                     raise
@@ -4825,28 +4957,10 @@ class RuntimeAnalysisMixin:
         """分析与补证完成后冻结图谱；恢复同时核对补证和引用身份。"""
 
         items = analysis_items or {}
-        from ...profile.metric_usage import select_metrics_by_usage
-
-        profile = self._profile(run_context)
-        metric_definitions = tuple(metric.model_dump(mode="json", by_alias=True) for metric in profile.metrics)
-        raw_plan = self._state(run_context).get(REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY)
-        metric_scopes: dict[str, Mapping[str, Any]] = {}
-        if any(metric.get("purpose") for metric in metric_definitions):
-            # An old/missing plan cannot authorize supplemental metrics by itself.
-            metric_scopes = {aid: {"allowedMetricCodes": (), "allowedFieldRefs": ()} for aid in fact_files}
-        if raw_plan is not None:
-            detailed_plan = DetailedAnalysisPlan.model_validate(raw_plan)
-            for analysis in detailed_plan.analyses:
-                usage = select_metrics_by_usage(
-                    metric_definitions, domain=analysis.domain, purposes=analysis.metric_purposes,
-                )
-                if usage.allowed_field_refs is not None:
-                    metric_scopes[analysis.analysis_id] = {
-                        "allowedMetricCodes": tuple(str(metric["code"]) for metric in usage.metrics),
-                        "allowedFieldRefs": tuple(sorted(usage.allowed_field_refs)),
-                    }
+        metric_context = await self._metric_planning_context(run_context)
         snapshot_payload = {
             "revision": revision,
+            "metricContext": metric_context.model_dump(mode="json", by_alias=True),
             "profileCoverage": checkpoint.profile_coverage.model_dump(mode="json", by_alias=True),
             "factFiles": [
                 {"analysisId": aid, "sha256": fact_files[aid].sha256}
@@ -4880,17 +4994,10 @@ class RuntimeAnalysisMixin:
 
         facts: list[DeterministicAnalysisBundle] = []
         supplements: dict[str, list[tuple[Mapping[str, Any], str, str]]] = {}
-        citations: dict[str, tuple[str, ...]] = {}
         for analysis_id, identity in fact_files.items():
             item = items.get(analysis_id)
             if not isinstance(item, Mapping) or item.get("analysisId") != analysis_id:
                 raise ReportingError("report_analysis_evidence_incomplete", "发现图谱只能在全部分析补证完成后冻结。")
-            dataset_ids = set(item.get("datasetIds", ()))
-            citations[analysis_id] = tuple(
-                binding.citation_id for binding in citation_bindings if binding.dataset_id in dataset_ids
-            )
-            if not citations[analysis_id]:
-                raise ReportingError("report_analysis_evidence_invalid", "管理发现缺少已登记数据集引用。")
             fact = await self._read_identity_model(thread_id, identity, DeterministicAnalysisBundle)
             if fact.analysis_id != analysis_id:
                 raise ReportingError(
@@ -4912,17 +5019,14 @@ class RuntimeAnalysisMixin:
                 supplements.setdefault(analysis_id, []).append((
                     evidence.model_dump(mode="json", by_alias=True), evidence_file.path, evidence_file.sha256,
                 ))
-        graph = build_finding_graph(
-            facts,
-            None,
-            metric_definitions,
-            snapshot_hash=snapshot_hash,
-            citation_ids_by_analysis=citations,
-            fact_file_paths={analysis_id: identity.path for analysis_id, identity in fact_files.items()},
-            fact_file_sha256s={analysis_id: identity.sha256 for analysis_id, identity in fact_files.items()},
-            supplemental_sources=supplements,
-            metric_scopes=metric_scopes,
-        )
+        graph = build_registered_finding_graph(facts, context=metric_context,
+            snapshot_hash=snapshot_hash, files={analysis_id: identity.model_dump(mode="json", by_alias=True)
+                for analysis_id, identity in fact_files.items()}, citations=citation_bindings,
+            dataset_snapshots={handle.dataset_id: handle.sha256
+                for handle in await self._registered_metric_dataset_handles(run_context)})
+        if supplements:
+            graph = graph.model_copy(update={"warnings": (*graph.warnings,
+                "补充分析已保存；其推断尚未完成ClaimSupport核对，不作为正式计算依据。")})
         content = json.dumps(
             graph.model_dump(mode="json", by_alias=True),
             ensure_ascii=False,
@@ -4941,6 +5045,51 @@ class RuntimeAnalysisMixin:
         )
         return await self._persist_reporting_checkpoint(run_context, checkpoint)
 
+    async def _prepare_registered_revision_findings(
+        self, *, run_context: RunContext, thread_id: str, report_run_id: str, revision: int,
+        report_revision: str, fact_files: Mapping[str, FileIdentity], execution=None,
+    ) -> tuple[FileIdentity, tuple[Citation, ...]]:
+        """为已登记分析修订生成原生发现引用，不改写原运行checkpoint。"""
+        if execution is not None:
+            from ..revision_execution import require_revision_execution
+
+            await require_revision_execution(self, run_context, execution, report_revision=report_revision, revision=revision)
+        scope = self._scope(run_context)
+        if thread_id != scope['threadId'] or report_run_id != str(run_context.run_id):
+            raise ReportingError('report_workflow_scope_mismatch', '新分析产物必须属于当前报告工作区。')
+        metric_context = await self._metric_planning_context(run_context, report_revision=report_revision)
+        handles = await self._registered_metric_dataset_handles(run_context, report_revision=report_revision)
+        lineage = tuple(DatasetLineage(datasetId=item.dataset_id, sourceId=item.source_id,
+            requirementId=item.requirement_id, sqlHash=item.sql_hash, rowCount=item.row_count,
+            size=item.size, sha256=item.sha256, periodRoles=item.period_roles,
+            queryWindowId=item.query_window_id) for item in handles)
+        citations = authoritative_citations(lineage)
+        facts = []
+        for analysis_id, identity in sorted(fact_files.items()):
+            fact = await self._read_identity_model(thread_id, identity, DeterministicAnalysisBundle)
+            if fact.analysis_id != analysis_id:
+                raise ReportingError('report_analysis_facts_invalid', '事实文件与分析身份不一致。')
+            facts.append(fact)
+        if not facts:
+            raise ReportingError('report_analysis_facts_invalid', '新分析修订缺少已登记事实文件。')
+        snapshot_hash = payload_sha256({
+            'metricContext': metric_context.model_dump(mode='json', by_alias=True),
+            'factFiles': {key: value.model_dump(mode='json', by_alias=True) for key, value in sorted(fact_files.items())},
+            'citations': [item.model_dump(mode='json', by_alias=True) for item in citations],
+        })
+        graph = build_registered_finding_graph(facts, context=metric_context, snapshot_hash=snapshot_hash,
+            files={key: value.model_dump(mode='json', by_alias=True) for key, value in fact_files.items()},
+            citations=citations, dataset_snapshots={item.dataset_id: item.sha256 for item in handles})
+        namespace = await _sha256_hex(report_revision.encode())
+        path = f'报表/智能分析/{report_run_id}/findings/metric-revision-{namespace}/revision-{revision}/finding-graph.json'
+        identity = await self._write_immutable_artifact(thread_id, path, json.dumps(
+            graph.model_dump(mode='json', by_alias=True), ensure_ascii=False, sort_keys=True,
+            separators=(',', ':'), allow_nan=False).encode())
+        await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+            commandId=f'registered-revision-findings:{namespace}:{identity.sha256}',
+            payload={'artifact': identity.model_dump(mode='json', by_alias=True)}), execution=execution)
+        return identity, citations
+
     async def _prepare_deterministic_analysis_facts(
         self,
         *,
@@ -4950,8 +5099,26 @@ class RuntimeAnalysisMixin:
         revision: int,
         detailed_plan: DetailedAnalysisPlan,
         dataset_handles: tuple[DatasetHandle, ...],
+        metric_report_revision: str = 'initial',
+        execution=None,
+        dataset_contexts=None,
     ) -> dict[str, FileIdentity]:
-        raw_contexts = self._state(run_context).get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+        if execution is not None:
+            from ..revision_execution import require_revision_execution
+
+            await require_revision_execution(self, run_context, execution,
+                report_revision=metric_report_revision, revision=revision)
+            from ..revision_execution import prepare_revision_dataset_contexts
+
+            registered_contexts = await prepare_revision_dataset_contexts(self, run_context, execution)
+            if dataset_contexts is not None and tuple(dataset_contexts) != registered_contexts:
+                raise ReportingError('report_revision_execution_mismatch', '新事实只能采用本执行登记的真实数据画像。')
+            dataset_contexts = registered_contexts
+        if metric_report_revision != 'initial' and (report_run_id != str(run_context.run_id)
+                or thread_id != self._scope(run_context)['threadId']):
+            raise ReportingError('report_workflow_scope_mismatch', '新分析产物必须属于当前报告工作区。')
+        raw_contexts = (self._state(run_context).get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
+            if dataset_contexts is None else [item.model_dump(mode='json', by_alias=True) for item in dataset_contexts])
         context_values = tuple(
             DatasetAnalysisContext.model_validate(item)
             for item in raw_contexts
@@ -4959,16 +5126,10 @@ class RuntimeAnalysisMixin:
         )
         context_by_id = {item.dataset_id: item for item in context_values}
         handle_by_id = {item.dataset_id: item for item in dataset_handles}
-        profile = self._profile(run_context)
-        profile_metrics = tuple(
-            item.model_dump(mode="json", by_alias=True) for item in profile.metrics
-        )
-        profile_reconciliations = tuple(
-            item.model_dump(mode="json", by_alias=True) for item in profile.reconciliations
-        )
-        profile_dimensions = tuple(
-            item.model_dump(mode="json", by_alias=True) for item in profile.dimensions
-        )
+        metric_context = (await self._metric_planning_context(run_context) if metric_report_revision == 'initial'
+            else await self._metric_planning_context(run_context, report_revision=metric_report_revision))
+        metric_namespace = ('' if metric_report_revision == 'initial'
+            else f'metric-revision-{await _sha256_hex(metric_report_revision.encode())}/')
         contents: dict[str, bytes] = {}
         for handle in dataset_handles:
             content = await self.workspace_service.read_limited_regular_file(
@@ -4980,7 +5141,6 @@ class RuntimeAnalysisMixin:
                 raise ReportingError("stale_dataset", "确定性事实计算前 Dataset 身份已变化。")
             contents[handle.dataset_id] = content
         identities: dict[str, FileIdentity] = {}
-        parsed_inputs = BatchAnalysisInputCache()
         for analysis in detailed_plan.analyses:
             datasets = tuple(
                 (
@@ -4991,26 +5151,7 @@ class RuntimeAnalysisMixin:
                 )
                 for dataset_id in analysis.dataset_ids
             )
-            bundle = await anyio.to_thread.run_sync(
-                partial(
-                    build_deterministic_analysis_bundle,
-                    analysis,
-                    datasets,
-                    profile_metrics=profile_metrics,
-                    profile_reconciliations=profile_reconciliations,
-                    profile_dimensions=profile_dimensions,
-                    profile_hash=profile.effective_profile_hash,
-                    _input_cache=parsed_inputs,
-                )
-            )
-            try:
-                validate_metric_code_bindings(bundle)
-            except ValueError as error:
-                raise ReportingError(
-                    "report_analysis_metric_definition_incomplete",
-                    "确定性数值事实缺少 Effective Profile 提供的权威指标定义，已拒绝冻结。",
-                    details={"analysisId": analysis.analysis_id, "reason": str(error)},
-                ) from error
+            bundle = build_registered_analysis_bundle(analysis, metric_context, datasets, report_revision=metric_report_revision)
             content = json.dumps(
                 bundle.model_dump(mode="json", by_alias=True),
                 ensure_ascii=False,
@@ -5019,7 +5160,7 @@ class RuntimeAnalysisMixin:
                 allow_nan=False,
             ).encode("utf-8")
             path = (
-                f"报表/智能分析/{report_run_id}/facts/revision-{revision}/"
+                f"报表/智能分析/{report_run_id}/facts/{metric_namespace}revision-{revision}/"
                 f"{analysis.analysis_id}.json"
             )
             identity = await self._write_immutable_artifact(thread_id, path, content)
@@ -5030,7 +5171,7 @@ class RuntimeAnalysisMixin:
                     name="record_artifact",
                     commandId=f"deterministic-fact:{analysis.analysis_id}:{identity.sha256}",
                     payload={"artifact": identity.model_dump(mode="json", by_alias=True)},
-                ),
+                ), execution=execution,
             )
         return identities
 
@@ -5182,6 +5323,69 @@ def _reporting_detailed_analysis_plan(
     }
 
 
+def _registered_semantic_catalog(fact_bundles, dataset_ids):
+    """正式计算输出粒度与定义；业务明细粒度不得从聚合CSV推断。"""
+    from ...semantics.chart_projection import _registered_chart_results
+    from ...semantics.planning_contracts import MetricPlanningContext
+
+    try:
+        contexts = tuple(MetricPlanningContext.model_validate(item['metricContext']) for item in fact_bundles.values())
+        if not contexts or any(item != contexts[0] for item in contexts):
+            raise ValueError('registered evidence context mismatch')
+        context = contexts[0]
+        grains = {key: set() for key in dataset_ids}
+        versions, periods, warnings = {}, {}, []
+        for index, calculation in enumerate(context.calculations):
+            for position in range(len(calculation.results)):
+                _, definition, selected = _registered_chart_results(context,
+                    ('metricContext', 'calculations', index, 'results', position))
+                result = selected[0][1]
+                if set(result.dataset_ids) - set(dataset_ids):
+                    raise ValueError('registered evidence dataset mismatch')
+                for key in result.dataset_ids:
+                    grains[key].add(tuple(item.dimension_id for item in result.dimensions))
+                versions.setdefault(definition.id, {})[definition.revision] = definition
+                periods.setdefault(definition.id, set()).add((result.period.start.isoformat(), result.period.end.isoformat()))
+        datasets = []
+        for key, shapes in grains.items():
+            row_grain = 'unknown'
+            if len(shapes) == 1:
+                dimensions = next(iter(shapes))
+                row_grain = 'registered_metric_result' + (':' + '+'.join(dimensions) if dimensions else '')
+                if len(row_grain) > 128:
+                    row_grain = 'unknown'
+            if row_grain == 'unknown':
+                warnings.append({'ruleCode': 'report_dataset_grain_missing', 'subjectType': 'dataset_semantics',
+                    'subjectId': key, 'message': '正式计算输出粒度缺失或不一致，需核对。'})
+            datasets.append({'datasetId': key, 'rowGrain': row_grain, 'duplicateResolution': 'not_applicable'})
+        metrics = []
+        for code, definitions in sorted(versions.items()):
+            if len(definitions) != 1:
+                warnings.append({'ruleCode': 'report_metric_semantic_incomplete', 'subjectType': 'metric_definition',
+                    'subjectId': code, 'message': f'指标 {code} 存在多个精确版本，不能折叠为单一业务定义。'})
+                continue
+            definition = next(iter(definitions.values()))
+            if definition.kind == 'ratio':
+                numerator, denominator = definition.numerator_version, definition.denominator_version
+                formula = f'{numerator.metric_id}@{numerator.revision} / {denominator.metric_id}@{denominator.revision}'
+                if definition.unit == '%':
+                    formula += ' × 100（百分点值）'
+            else:
+                formula = f'{definition.kind}({definition.field_ref})'
+            period_basis = '；'.join(f'[{start}, {end})' for start, end in sorted(periods[code]))
+            if len(period_basis) > 500:
+                warnings.append({'ruleCode': 'report_metric_semantic_incomplete', 'subjectType': 'metric_definition',
+                    'subjectId': code, 'message': f'指标 {code} 的完整期间超过展示目录容量，请按精确事实引用核对。'})
+                continue
+            metrics.append({'code': code, 'name': definition.name, 'unit': definition.unit,
+                'definition': f'{code}@{definition.revision}；{formula}；正式依据 {context.basis_id}；'
+                    f'口径 {context.policy.id}@{context.policy.revision}；字段与筛选以正式依据为准。',
+                'periodBasis': period_basis})
+        return datasets, metrics, warnings
+    except (ValueError, KeyError, IndexError) as error:
+        raise ReportingError('report_analysis_semantic_invalid', '正式证据目录与登记计算上下文不一致。') from error
+
+
 def _finalize_semantic_catalog(
     *,
     analysis_plans: Mapping[str, Mapping[str, Any]],
@@ -5227,6 +5431,8 @@ def _finalize_semantic_catalog(
             "report_analysis_dataset_inconsistent",
             "分析计划 Dataset 必须精确覆盖 evidence-derived Dataset。",
         )
+    if any('metricContext' in bundle for bundle in fact_bundles.values()):
+        return _registered_semantic_catalog(fact_bundles, dataset_ids)
     findings: list[dict[str, Any]] = []
     for dataset_id, grains in grains_by_dataset.items():
         if not grains:

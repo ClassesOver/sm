@@ -89,6 +89,22 @@ async def recover_chart_fact_refs(
             raise ValueError("chart_input_projection_mismatch")
         tokens = parse_data_path(binding.data_path)
         if origin.content_kind == "deterministic_bundle":
+            if tokens[0] == "metricContext":
+                from ..semantics.chart_projection import registered_chart_results
+
+                context, _, results = registered_chart_results(payload, tokens)
+                known_datasets = {dataset.dataset_id for dataset in index.datasets}
+                if context.basis_id != index.report_basis_id:
+                    raise ValueError("chart_fact_basis_mismatch")
+                for position, result in results:
+                    if (not result.dataset_ids or not set(result.dataset_ids).issubset(known_datasets)
+                            or not set(result.dataset_ids).issubset(chart.dataset_ids)):
+                        raise ValueError("chart_fact_dataset_mismatch")
+                    pointer = f"/metricContext/calculations/{tokens[2]}/results/{position}"
+                    ref = FactRefV1(analysisId=origin.analysis_id, fileResourceId=origin.file_resource_id,
+                        jsonPointer=pointer, factKind="metric", factKey=result.fact_id)
+                    refs[(ref.file_resource_id, ref.json_pointer)] = ref
+                continue
             if tokens[0] not in {array for _, array in FACT_ARRAYS}:
                 raise ValueError("chart_fact_selector_unregistered")
             if len(tokens) == 1:

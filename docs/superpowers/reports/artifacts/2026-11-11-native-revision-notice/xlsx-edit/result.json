@@ -1,0 +1,27 @@
+{
+  "reportId": "policy-adoption-f031a2cd684e9876167a96230692440f15d12c401ad4fe4558b19f9b2583af13",
+  "revision": 3,
+  "revisionRegistered": true,
+  "xlsx": {
+    "path": "报表/智能分析/policy-adoption-f031a2cd684e9876167a96230692440f15d12c401ad4fe4558b19f9b2583af13/workbook/revision-2/report-r3-c8d27cc3dc9c.xlsx",
+    "size": 13789,
+    "sha256": "4339fff66cb4843532982ef39c0009d257cc6f2d408d43fe4d9c4d29e074db20",
+    "downloadUrl": "https://reports.test/reports/v1/download/8VV2ajmotb4LafiKiSDQr9Q6BFFE-taLVAUHujC1bjE/xlsx"
+  },
+  "editor": {
+    "openUrl": "https://reports.test/reports/v1/workbooks/open/gAAAAABq9F1N7kOtn-aHIXaMpj_xLwjUBJTRsaT6lEx3tA35s6XMqsbetBtQzjSTeJltGHfZ-wBABeviK-Lxw5h3htqN-hX_PTHudAc9Zg5aWc3OSFfRHUoNFqGzu0XIpWkA2fKG4-o03MQ5VNBAYQrB-w2vpOX-uBxAXZKf6fQhhhboMScNVbNdClwGfjf2XIhJv7vQpho4SN3oPlydTy2J4NQkQcV56nO73tazlgzVmrvncxUi8zoGQs4qJ0gG5oTSm5aRAEc-ZWTPmnS8rbNS3H-G1xZFr33r3QhLP44puHehmyfgwya-eEBkgYJJPVHPAm66bGYKV7WCEOsK0LeKDj4My0rAFC59JEV2kjHOkSQL6YbJl9wysTxsDEadp6elwBQv-SeSGgO_g9Ym0kZp8dwybh-Vq5KIw4oeqPrC4h0jp70toE-RYPuJeQWps_wlmbzfSyFjFUxL3_kQXyAWMyrAeMPChEx9uuBsBlBCTNSm84BQdHL4NWne1bV2jZCbBl6Bt5XPs8GOT3L0QgmID0PO8jp3qzaNnrFHhLSkj5s6qFaaxOqsbELMfRrMr0_yV-4ot5dLGGlSQNY8Tjy_R8rv8m6ROw=="
+  },
+  "validation": {
+    "ok": false,
+    "issues": [
+      {
+        "code": "workbook_semantic_verification_pending",
+        "message": "新修订尚未重新进行业务语义验收，不继承旧版本验收结论。"
+      },
+      {
+        "code": "workbook_sources_need_verification",
+        "message": "编辑值与原始证据分开保留，来源关联需重新核验。"
+      }
+    ]
+  }
+}

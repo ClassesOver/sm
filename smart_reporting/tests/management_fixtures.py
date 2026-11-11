@@ -60,30 +60,6 @@ def physical_catalog(source_id="operations", database="warehouse"):
 
 async def publish_dependencies(scopes, raw_session, scope, source_id="operations", draft_version=1):
     from smart_reporting.management.catalog import CatalogService
-    from smart_reporting.management.profiles import ProfileService
-
-    profiles = ProfileService(scopes)
-    try:
-        await profiles.get_version(raw_session, scope, "base", 1)
-    except Exception as error:
-        from smart_reporting.management.models import ManagementError
-
-        if (
-            not isinstance(error, ManagementError)
-            or error.code != "management_profile_version_not_found"
-        ):
-            raise
-        draft = await profiles.save_draft(
-            raw_session,
-            scope,
-            {
-                "profileId": "base",
-                "revision": "r1",
-                "dimensions": [],
-            },
-            0,
-        )
-        await profiles.publish(raw_session, scope, "base", draft["version"])
     catalogs = CatalogService(scopes)
     synced = await catalogs.sync(
         raw_session,
@@ -94,3 +70,25 @@ async def publish_dependencies(scopes, raw_session, scope, source_id="operations
         metadata=business_metadata(source_id, scope.database),
     )
     await catalogs.publish(raw_session, scope, source_id, synced["revision"])
+
+
+async def confirm_table_access(scopes, vault, token, scope, source_id, expected_version, monkeypatch):
+    """仅替换外部数仓 I/O，真实执行发现、范围保存和版本 CAS。"""
+    from smart_reporting.management.catalog import CatalogService
+    from smart_reporting.management.table_access import TableAccessService
+
+    access = TableAccessService(scopes, vault)
+    catalog = physical_catalog(source_id, scope.database)
+
+    async def discover(config):
+        return [dict(table, type="table") for table in CatalogService._payload(catalog)]
+
+    async def read_selected(config, selected):
+        assert selected == [(scope.database, "orders")]
+        return catalog
+
+    monkeypatch.setattr(access, "_discover", discover)
+    monkeypatch.setattr(access, "_read_selected", read_selected)
+    discovered = await access.discover(token, scope, source_id, expected_version)
+    return await access.save(token, scope, source_id, expected_version,
+                             discovered["discoveryId"], [(scope.database, "orders")])

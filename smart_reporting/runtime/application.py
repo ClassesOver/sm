@@ -30,6 +30,7 @@ class ApplicationContext:
     mcp_auth: AuthProvider | None = None
     reporting_code_mode_runtime: ReportingCodeModeRuntime | None = None
     reporting_lsp_process_manager: ReportingLspProcessManager | None = None
+    recalculation_editor: object | None = None
 
 
 def create_agentos_app(
@@ -78,5 +79,45 @@ def create_agentos_app(
         mcp_auth=context.mcp_auth,
     )
     application = agent_os.get_app()
+    if context.recalculation_editor is not None:
+        original_lifespan = application.router.lifespan_context
+
+        @asynccontextmanager
+        async def refresh_lifespan(app: FastAPI):
+            from agno.os.job_queue import QueueWorker, resolve_queue_store
+
+            from ..report_editor.policy_recovery import create_policy_recovery_workflow
+            from ..report_editor.recalculation import (
+                create_policy_adoption_workflow,
+                create_refresh_workflow,
+                recalculation_queue_config,
+            )
+
+            editor = context.recalculation_editor
+            async with original_lifespan(app) as state:
+                config = recalculation_queue_config()
+                database = editor.recalculation_database
+
+                def resolve_component(kind, component_id):
+                    if (kind, component_id) == ('workflow', 'report-editor-refresh'):
+                        return create_refresh_workflow(editor, runtime=editor.recalculation_runtime, database=database)
+                    if (kind, component_id) == ('workflow', 'report-editor-policy-adoption'):
+                        return create_policy_adoption_workflow(editor, runtime=editor.recalculation_runtime, database=database)
+                    if (kind, component_id) == ('workflow', 'report-editor-policy-recovery'):
+                        return create_policy_recovery_workflow(editor, runtime=editor.recalculation_runtime, database=database)
+                    return None
+
+                worker = QueueWorker(store=resolve_queue_store(config, database), config=config,
+                    resolve_component=resolve_component)
+                await worker.start()
+                editor.recalculation_queue_worker = worker
+                try:
+                    yield state
+                finally:
+                    editor.recalculation_queue_worker = None
+                    # 先停止原生worker，再退出AgentOS生命周期关闭数据库及代码执行资源。
+                    await worker.stop()
+
+        application.router.lifespan_context = refresh_lifespan
     enable_reporting_background_streams(application, context.report_agent.id)
     return agent_os, application

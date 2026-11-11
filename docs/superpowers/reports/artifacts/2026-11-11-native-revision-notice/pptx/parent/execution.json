@@ -1,0 +1,32 @@
+{
+  "requestId": "c33-historical-report",
+  "sourceScope": {
+    "run_id": "run-basis",
+    "external_run_id": "external-basis",
+    "session_id": "session-basis",
+    "caller_thread_id": "thread-basis",
+    "user_id": "7",
+    "database": "warehouse",
+    "company_id": "a",
+    "thread_lease_key": "reporting-thread-76a785b6792921c516f66466655c49727268946b0df509b4225fa6cffdb9f8ac",
+    "workspace_key": "reporting-run-7e88b9a4a34c6c77393fc71cb6d14ffaf804ac6a2447a4fea063bb93d63a2e24"
+  },
+  "scope": {
+    "run_id": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "external_run_id": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "session_id": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "caller_thread_id": "thread-basis",
+    "user_id": "7",
+    "database": "warehouse",
+    "company_id": "a",
+    "thread_lease_key": "reporting-thread-76a785b6792921c516f66466655c49727268946b0df509b4225fa6cffdb9f8ac",
+    "workspace_key": "reporting-run-5a0010ba84687cd85a56e16f5a8ccc6a1354fe6b06a251255996f71ebcad2a33"
+  },
+  "parentBasisId": "8eaa9ce2-3e0c-529f-8986-927527410b94",
+  "basisId": "0ee4e45d-550e-5b0f-a8a2-c143a380115e",
+  "registrationSha256": "8d75d8d65b90199632e1de46b2a2c21cada9782dfbcb2452d59f1e87736262d8",
+  "outputRevision": 4,
+  "requestedOutputs": [
+    "pptx"
+  ]
+}

@@ -13,6 +13,25 @@ from smart_reporting.report_editor.service import ReportEditorContext, ReportEdi
 from smart_reporting.reporting.models import ReportingError
 
 
+def test_manual_workbook_mapping_does_not_reuse_parent_claim_acceptance():
+    from zipfile import ZipFile
+
+    from smart_reporting.report_editor.workbook import ReportWorkbookEditorService
+
+    mapping = {'sources': {'cells': [{'cell': 'A1', 'exactValue': '70'}], 'claims': [
+        {'support': {'kind': 'recommendation', 'supportStatus': 'supported', 'evidenceRefs': ['old-background'],
+            'factRefs': [], 'subjectId': 'original-subject'}}]}}
+    content = ReportWorkbookEditorService._mark_sources_unverified(_bytes(), mapping, 'a' * 64)
+    with ZipFile(BytesIO(content)) as package:
+        revised = json.loads(package.read('smart-reporting/source-mapping.json'))
+    support = revised['sources']['claims'][0]['support']
+    assert support['supportStatus'] == 'unverified' and not support['evidenceRefs']
+    assert support['subjectId'] == 'original-subject'
+    assert revised['sources']['cells'][0]['exactValue'] == '70'
+    assert revised['sourceWorkbookSha256'] == 'a' * 64
+    assert mapping['sources']['claims'][0]['support']['supportStatus'] == 'supported'
+
+
 def _bytes(value=12):
     book = openpyxl.Workbook()
     book.active.title = '汇总'
@@ -95,7 +114,9 @@ async def test_workbook_save_preserves_source_and_publishes_when_context_and_per
     })
 
     assert files[context.xlsx_path] == original
-    assert files[result['xlsx']['path']] == modified
+    saved = openpyxl.load_workbook(BytesIO(files[result['xlsx']['path']]))
+    assert saved['汇总']['A1'].value == 99
+    assert saved.worksheets[0]['A1'].value == '本修订待核验'
     assert result['revision'] == 2
     assert result['xlsx']['downloadUrl'].endswith('/xlsx')
     assert result['validation']['ok'] is False

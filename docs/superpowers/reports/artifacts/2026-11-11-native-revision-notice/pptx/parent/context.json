@@ -1,0 +1,50 @@
+{
+  "reportId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+  "revision": 4,
+  "jobId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+  "job": {
+    "jobId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "sources": [],
+    "render": {
+      "markdown": {
+        "path": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/slides.md",
+        "mediaType": "text/markdown",
+        "size": 1027,
+        "sha256": "366e974a437248bdae9b780c78ea64c2c5a9ae355bf34dd75c94117306ca1156"
+      }
+    }
+  },
+  "workflowRunId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+  "markdownPath": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/slides.md",
+  "artifactManifest": {
+    "path": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/slides.manifest.json",
+    "mediaType": "application/json",
+    "size": 1857,
+    "sha256": "596718d3848d8cfb91b1df7bdfbc614109c824bfa2e9b5470dce1da627a6d205"
+  },
+  "analysisContextFile": {
+    "path": "报表/分析计划/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/detailed-analysis-context.json",
+    "size": 22586,
+    "sha256": "cf63742a9e2a1c12a3e32c498276116ba9f4af806691ce539703937c39d3dc7c"
+  },
+  "scope": {
+    "externalRunId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "sessionId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "threadId": "reporting-run-5a0010ba84687cd85a56e16f5a8ccc6a1354fe6b06a251255996f71ebcad2a33",
+    "callerThreadId": "thread-basis",
+    "userId": "7",
+    "database": "warehouse",
+    "companyId": "a",
+    "threadLeaseKey": "reporting-thread-76a785b6792921c516f66466655c49727268946b0df509b4225fa6cffdb9f8ac"
+  },
+  "source": "published",
+  "createdAt": null,
+  "note": "",
+  "deliveryFormat": "pptx",
+  "pptxPath": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/report.pptx",
+  "pptxSize": 17671,
+  "pptxSha256": "e3e0db2267cb29b5188debab7cd490dc0f7f077a73e9eed071df201865e80887",
+  "xlsxPath": null,
+  "xlsxSize": null,
+  "xlsxSha256": null
+}

@@ -322,6 +322,7 @@ async def test_xlsx_render_uses_frozen_inputs_reuses_checkpoint_and_retains_on_f
     runtime._envelope = lambda _ctx: ReportRequestEnvelope(reportGoal='收入', deliveryFormat='xlsx',
         period={'start': '2025-01-01', 'end': '2025-12-31'})
     runtime._apply_durable_command = AsyncMock(side_effect=RuntimeError('checkpoint unavailable') if checkpoint_failure else None)
+    runtime._native_claim_presentations = AsyncMock(return_value={})
 
     async def persist(_context, value):
         current[0] = value
@@ -348,6 +349,8 @@ async def test_xlsx_render_uses_frozen_inputs_reuses_checkpoint_and_retains_on_f
     workbook = load_workbook(io.BytesIO(content), data_only=True)
     assert workbook['汇总']['D2'].value == 0
     assert workbook['收入']['C2'].value == 0
+    assert workbook['汇总']['G2'].value == '保留已核验结论（支持关系待核实）'
+    assert rendered['validation']['claimSupport'][0]['support']['supportStatus'] == 'unverified'
     details = workbook.worksheets[-1]
     assert details['A2'].value == '001'
     assert details['B2'].value == 0

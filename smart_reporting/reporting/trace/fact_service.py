@@ -12,7 +12,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from pydantic import ValidationError
+
 from ..models import ReportingError
+from ..semantics.planning_contracts import MetricPlanningContext
 from .contracts_v1 import TRACE_BUDGETS_V1, FactRefV1
 from .fact_index import FACT_ARRAYS, fact_entry_from_pointer
 from .numeric_text import PERCENT_POINT
@@ -55,6 +58,26 @@ def read_fact_document(bundle_bytes: bytes) -> Mapping[str, Any]:
     if not isinstance(document, Mapping):
         raise ReportingError("snapshot_integrity_failed", "事实文件结构无效。")
     fact_ids: set[str] = set()
+    if document.get("metricContext") is not None:
+        try:
+            context = MetricPlanningContext.model_validate(document["metricContext"])
+        except ValidationError as error:
+            raise ReportingError("snapshot_integrity_failed", "事实文件正式计算上下文无效。") from error
+        definitions = {metric.version_ref(): metric for metric in context.metrics}
+        if len(definitions) != len(context.metrics):
+            raise ReportingError("snapshot_integrity_failed", "事实文件正式计算指标版本重复。")
+        for calculation in context.calculations:
+            if calculation.request.basis_id != context.basis_id:
+                raise ReportingError("snapshot_integrity_failed", "事实文件正式计算请求与依据不一致。")
+            for result in calculation.results:
+                definition = definitions.get(result.metric_version)
+                if (definition is None or result.basis_id != context.basis_id
+                        or result.calculation_id != calculation.receipt_id
+                        or result.period != calculation.request.period or result.unit != definition.unit):
+                    raise ReportingError("snapshot_integrity_failed", "事实文件正式计算结果与登记身份不一致。")
+                if result.fact_id in fact_ids:
+                    raise ReportingError("snapshot_integrity_failed", "事实文件包含重复的事实 ID。")
+                fact_ids.add(result.fact_id)
     for _, key in FACT_ARRAYS:
         if key not in document:
             continue
@@ -261,6 +284,13 @@ def fact_input_relations_from_document(
     metrics = document.get("metrics")
     metrics_by_code: dict[str, str] = {}
     pointers: dict[str, str] = {}
+    context = document.get("metricContext")
+    if isinstance(context, Mapping):
+        for calculation_index, calculation in enumerate(context["calculations"]):
+            for result_index, result in enumerate(calculation["results"]):
+                pointers[result["factId"]] = (
+                    f"/metricContext/calculations/{calculation_index}/results/{result_index}"
+                )
     if isinstance(metrics, list):
         for index, metric in enumerate(metrics):
             if not isinstance(metric, Mapping):

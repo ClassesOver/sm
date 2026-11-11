@@ -342,6 +342,14 @@ class ReportSlidesEditorService:
             revised = await run_office_engine(replace_pptx_pictures, revised, chart_replacements)
         # 从旧修订或多个标签页保存时，不能复用“当前修订 + 1”的固定文件名。
         next_revision, revision_issues = await next_manual_revision(self.state_repository, context)
+        try:
+            from .revision_notice import add_slides_revision_notice
+
+            revised = await run_office_engine(add_slides_revision_notice, revised,
+                revision=next_revision, parent_revision=context.revision)
+        except Exception:
+            revision_issues.append({"code": "pptx_revision_notice_unavailable",
+                "message": "PPTX 已保存，但文件内修订核验说明未能更新；本修订仍待核验，文件可下载。"})
         revision_path = revision_file_path(context.pptx_path or "report.pptx", next_revision, suffix=".pptx")
         thread_id = context.scope["threadId"]
         await self.workspace.awrite_bytes(thread_id, revision_path, revised, overwrite=False)
@@ -407,6 +415,7 @@ class ReportSlidesEditorService:
             reportId=context.report_id,
             revision=next_revision,
             jobId=context.job_id,
+            analysisContextFile=context.analysis_context_file,
             workflowRunId=context.workflow_run_id,
             markdownPath=context.markdown_path,
             artifactManifest=context.artifact_manifest,

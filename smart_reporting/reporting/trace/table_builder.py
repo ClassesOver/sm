@@ -515,6 +515,10 @@ def build_analysis_tables(
     metric_descriptions: Mapping[str, str] | None = None,
 ) -> tuple[tuple[TableTraceV1, str], ...]:
     """按列数、行数和单元格预算分表；在完整 bundle 中解析原始事实指针。"""
+    if bundle.metric_context is not None:
+        from ..semantics.tables import build_registered_result_tables
+
+        return build_registered_result_tables(bundle, fact_file_resource_id=fact_file_resource_id)
     options = dict(fact_file_resource_id=fact_file_resource_id,
                    dataset_contexts=dataset_contexts, metric_descriptions=metric_descriptions)
     # 先统计实际列，再构建受限分表；不能先生成可能超过单元格预算的整张表。

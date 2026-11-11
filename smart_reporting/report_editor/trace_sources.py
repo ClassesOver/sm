@@ -25,10 +25,12 @@ from typing import Any, Protocol
 
 import anyio
 from loguru import logger
+from pydantic_core import to_jsonable_python
 
 from ..reporting.delivery.artifacts_v1 import ReportArtifactManifest
 from ..reporting.delivery.report_runtime.markdown import readable_formula
 from ..reporting.models import ReportingError
+from ..reporting.semantics.planning_contracts import MetricPlanningContext
 from ..reporting.trace.contracts_v1 import (
     TRACE_BUDGETS_V1,
     RevisionTraceIndexV1,
@@ -206,8 +208,11 @@ def check_mismatched(check: Any) -> bool:
 
 class ReportEditorTraceService:
     def __init__(self, workspace: Any, *, cursor_secret: bytes,
-                 chart_edit_lineage: Callable[..., Awaitable[Any]] | None = None) -> None:
+                 chart_edit_lineage: Callable[..., Awaitable[Any]] | None = None,
+                 report_basis_service: Any | None = None, business_evidence_service: Any | None = None) -> None:
         self._workspace = workspace
+        self.report_basis_service = report_basis_service
+        self.business_evidence_service = business_evidence_service
         self._chart_edit_lineage = chart_edit_lineage
         self._preview = TraceCsvPreviewService(secret=cursor_secret)
         self._drilldown = TraceDrilldownService(secret=cursor_secret)
@@ -216,6 +221,52 @@ class ReportEditorTraceService:
         self._drilldown_tasks: set[asyncio.Task[Any]] = set()
         self._validation_limiter = anyio.CapacityLimiter(2)
         self.exports = TraceDerivedExportService(workspace)
+
+    async def knowledge_detail(self, context, subject_id, evidence_id):
+        """只读取当前报告声明已登记、且此刻仍授权的知识片段。"""
+        index = await self.require_index(context)
+        subject = next((item for item in index.subject_bindings if item.subject_id == subject_id), None)
+        binding = (subject.narrative_reference or subject.number_reference) if subject else None
+        receipt = binding.semantic_receipt if binding else None
+        reference = next((ref for ref in receipt.knowledge_references if ref.evidence_id == evidence_id), None) if receipt else None
+        if reference is None:
+            raise ReportingError('source_missing', '该声明未登记此知识来源。')
+        status, candidates = await self.resolve_knowledge_dependencies(context, index)
+        candidate = candidates.get(evidence_id)
+        if (candidate is None or candidate.reference != reference
+                or reference.section_code != subject.locator.section_id or reference.basis_id != index.report_basis_id):
+            codes = [*status['issueCodes'], *(code for section in status['sections'] for code in section['issueCodes'])]
+            return {'available': False, 'evidenceId': evidence_id,
+                'issueCodes': list(dict.fromkeys(codes or ['knowledge_evidence_unavailable']))}
+        return {'available': True, 'title': candidate.hit.title, 'quote': candidate.hit.quote,
+            'reference': reference.model_dump(mode='json', by_alias=True),
+            'requestedPeriod': candidate.period.model_dump(mode='json'),
+            'recordedAt': candidate.hit.recorded_at.isoformat(),
+            'eventTime': candidate.hit.event_time.isoformat() if candidate.hit.event_time else None,
+            'recordedRelationships': [{'relationship': relation.relationship, 'explanationType': relation.explanation_type}
+                for relation in receipt.interpretation.knowledge_relations if relation.evidence_id == evidence_id]}
+
+    async def knowledge_dependencies(self, context, index):
+        status, _ = await self.resolve_knowledge_dependencies(context, index)
+        return status
+
+    async def resolve_knowledge_dependencies(self, context, index):
+        from ..management.models import ManagementScope
+        from ..reporting.business_knowledge.dependencies import resolve_knowledge_dependencies
+
+        try:
+            scope = context.scope
+            return await resolve_knowledge_dependencies(
+                self.report_basis_service, self.business_evidence_service,
+                identity=dict(run_id=str(context.workflow_run_id),
+                    scope=ManagementScope(scope['database'], scope['companyId']),
+                    user_id=scope['userId'], thread_id=scope['callerThreadId']),
+                basis_id=index.report_basis_id, dependencies=index.knowledge_dependencies,
+                registration_status=index.knowledge_registration_status)
+        except Exception as error:  # 旧会话缺身份或知识后端不可用，仍可编辑与导出
+            logger.warning('editor_knowledge_dependencies_unavailable reason={}', type(error).__name__)
+            return {'status': 'unavailable', 'interpretationStatus': 'unverified', 'sections': [],
+                'issueCodes': ['knowledge_identity_unavailable']}, {}
 
     # ------------------------------------------------------------------
     # 索引加载
@@ -282,6 +333,7 @@ class ReportEditorTraceService:
             markdown_file is None
             or markdown_file.size != manifest.markdown.size
             or markdown_file.sha256 != manifest.markdown.sha256
+            or index.report_basis_id != manifest.report_basis_id
             or index.report_id != str(context.report_id)
             or index.revision != int(context.revision)
             or index.workflow_run_id != str(context.workflow_run_id)
@@ -376,6 +428,40 @@ class ReportEditorTraceService:
                 document = read_fact_document(raw)
                 if document.get("analysisId") != entry.analysis_id:
                     raise ReportingError("fact_binding_unavailable", "事实文件与登记分析身份不匹配。")
+                registered_facts = []
+                if document.get("metricContext") is not None:
+                    metric_context = MetricPlanningContext.model_validate(document["metricContext"])
+                    if metric_context.basis_id != index.report_basis_id:
+                        raise ReportingError("fact_binding_unavailable", "正式结果不属于本修订登记计算依据。")
+                    definitions = {metric.version_ref(): metric for metric in metric_context.metrics}
+                    for calculation in metric_context.calculations:
+                        for result in calculation.results:
+                            metric = definitions.get(result.metric_version)
+                            if (metric is None or result.basis_id != metric_context.basis_id
+                                    or result.unit != metric.unit
+                                    or set(result.dataset_ids) - registered_dataset_ids):
+                                raise ReportingError("fact_binding_unavailable", "正式结果与登记指标或来源身份不匹配。")
+                            period_label = f"[{result.period.start}, {result.period.end})"
+                            registered_facts.append({
+                                "analysisId": entry.analysis_id,
+                                "analysisName": document.get("analysisName"),
+                                "factId": result.fact_id,
+                                "factKind": "metric",
+                                "name": metric.name,
+                                "label": f"指标 · {metric.name} · 版本 {result.metric_version.revision} · {period_label}（含起日、不含止日）",
+                                "metricVersion": result.metric_version.model_dump(mode="json", by_alias=True),
+                                "basisId": result.basis_id,
+                                "calculationId": result.calculation_id,
+                                "period": result.period.model_dump(mode="json"),
+                                "periodBoundary": "half_open",
+                                "periodRoles": [],
+                                "dimensions": [item.model_dump(mode="json", by_alias=True) for item in result.dimensions],
+                                "displayValue": format(result.value, "f") if result.value is not None else None,
+                                "unit": result.unit,
+                                "status": result.status,
+                                "issueCodes": list(result.issue_codes),
+                                "datasetIds": list(result.dataset_ids),
+                            })
             except (ReportingError, ValueError) as error:
                 # 事实目录只是概览：保留期回收或文件损坏时不拖垮整个来源页，
                 # 数据集元数据照常返回；事实明细接口仍按登记身份严格校验。
@@ -384,6 +470,7 @@ class ReportEditorTraceService:
                     context.report_id, context.revision, entry.analysis_id, error,
                 )
                 continue
+            facts.extend(registered_facts)
             for kind, key in FACT_ARRAYS:
                 for fact in document.get(key, ()):
                     if not fact.get("factId"):
@@ -456,7 +543,22 @@ class ReportEditorTraceService:
                         ],
                     }
                 )
+        knowledge_status, knowledge_evidence = await self.resolve_knowledge_dependencies(context, index)
+        knowledge_by_subject = {}
+        for subject in index.subject_bindings:
+            binding = subject.narrative_reference or subject.number_reference
+            receipt = binding.semantic_receipt if binding else None
+            citations = []
+            for reference in receipt.knowledge_references if receipt else ():
+                candidate = knowledge_evidence.get(reference.evidence_id)
+                available = (candidate is not None and candidate.reference == reference
+                    and reference.section_code == subject.locator.section_id and reference.basis_id == index.report_basis_id)
+                citations.append({**reference.model_dump(mode='json', by_alias=True),
+                    'available': available, 'title': candidate.hit.title if available else None})
+            knowledge_by_subject[subject.subject_id] = citations
         return {
+            "businessKnowledge": knowledge_status,
+            "snapshotVerification": {"available": bool(index.report_basis_id), "parentRevision": context.revision},
             "available": True,
             "reason": None,
             "version": index.version,
@@ -476,6 +578,7 @@ class ReportEditorTraceService:
                 {
                     "subjectId": subject.subject_id,
                     "subjectKind": subject.subject_kind,
+                    "knowledgeReferences": knowledge_by_subject[subject.subject_id],
                     "locator": subject.locator.model_dump(mode="json", by_alias=True),
                     "factRefs": [
                         {
@@ -801,7 +904,7 @@ class ReportEditorTraceService:
     ) -> dict[str, Any]:
         """按 (analysisId, factId) 解析具体事实与一层输入（计划 5.1）。
 
-        bundle 从索引登记的冻结文件读取并复核身份；factId 在四类数组中
+        bundle 从索引登记的冻结文件读取并复核身份；factId 在登记事实中
         唯一定位，未知即 fact_binding_unavailable。
         """
 
@@ -829,6 +932,9 @@ class ReportEditorTraceService:
             context, file_ref, max_bytes=16 * 1024 * 1024
         )
         document = read_fact_document(bundle_bytes)
+        metric_context = document.get("metricContext")
+        if isinstance(metric_context, Mapping) and metric_context.get("basisId") != index.report_basis_id:
+            raise ReportingError("fact_binding_unavailable", "正式结果不属于本修订登记计算依据。")
         pointer = self._locate_fact_pointer(document, fact_id)
         fact_ref = FactRefV1(
             analysisId=analysis_id,
@@ -843,6 +949,12 @@ class ReportEditorTraceService:
 
     @staticmethod
     def _locate_fact_pointer(document: Mapping[str, Any], fact_id: str) -> str:
+        metric_context = document.get("metricContext")
+        if isinstance(metric_context, Mapping):
+            for calculation_index, calculation in enumerate(metric_context.get("calculations", ())):
+                for result_index, result in enumerate(calculation.get("results", ())):
+                    if result.get("factId") == fact_id:
+                        return f"/metricContext/calculations/{calculation_index}/results/{result_index}"
         # 与 fact_index 的 factId 分配范围一致：相关性事实同样进入正文引用的事实目录。
         for _, array_name in FACT_ARRAYS:
             for index, item in enumerate(document.get(array_name, ()) or ()):
@@ -1207,7 +1319,26 @@ class ReportEditorTraceService:
                 "scope": _entry_scope(entry),
                 "datasetIds": _entry_dataset_ids(entry),
             }
+        revision_changes = {'text_edit': [], 'manual_override': []}
         for binding in index.subject_bindings:
+            if binding.narrative_reference is not None:
+                from ..reporting.trace.claim_semantics import semantic_receipt_status
+
+                if statement_fingerprints(markdown, (binding.claim_id,))[binding.claim_id] != binding.narrative_reference.statement_sha256:
+                    revision_changes['text_edit'].append(binding.subject_id)
+                receipt = binding.narrative_reference.semantic_receipt
+                interpreted = semantic_receipt_status(semantic_markdown, binding.claim_id, receipt) == 'interpreted'
+                status = 'valid' if interpreted else 'stale' if receipt else 'unbound'
+                summary[status] += 1
+                subjects.append({'subjectId': binding.subject_id, 'claimId': binding.claim_id,
+                    'sectionId': binding.locator.section_id, 'status': status, 'sourceStatus': 'unknown',
+                    'bindingStatus': 'bound' if interpreted else 'invalidated' if receipt else 'unbound',
+                    'supportStatus': 'unknown', 'checkStatus': 'completed', 'sourceIssues': [],
+                    'factValue': None, 'computation': None, 'restoreText': None,
+                    'warnings': [] if interpreted else ['文字声明已修改或语义复核不可用，请重新核验依据。'],
+                    'semanticCheck': {'method': receipt.method, 'status': 'interpreted',
+                        'interpretation': receipt.interpretation.model_dump(mode='json', by_alias=True)} if interpreted else None})
+                continue
             if not binding.claim_id or not (binding.fact_refs or (
                 binding.number_reference is not None
                 and binding.number_reference.table_derivation is not None
@@ -1277,6 +1408,12 @@ class ReportEditorTraceService:
                     detail["status"] = "stale"
                     detail["warnings"].append("引用所在陈述已修改，请复核指标、期间和范围。")
                     detail["comparable"] = False
+            if number is not None and selected is not None and selected.get('period_boundary') == 'half_open':
+                shown = bound_number_display(markdown, binding.claim_id, selected)
+                if shown is not None and not shown.verified:
+                    revision_changes['manual_override'].append(binding.subject_id)
+                elif fingerprints[binding.claim_id] != number.statement_sha256:
+                    revision_changes['text_edit'].append(binding.subject_id)
             dependency_ids = {ref.file_resource_id for ref in binding.fact_refs}
             if number is not None and number.table_derivation is not None:
                 dependency_ids.update(derivation_resource_ids(number.table_derivation))
@@ -1487,9 +1624,11 @@ class ReportEditorTraceService:
             evaluate_quality_bundle,
         )
 
+        knowledge_status, knowledge_evidence = await self.resolve_knowledge_dependencies(context, index)
         try:
             questions = None
             answer_review_plan = None
+            registered_answer_plan = None
             chart_quality_ids = {chart.image_file_resource_id for chart in index.chart_traces}
             from ..reporting.trace.chart_quality import (
                 QUALITY_IMAGE_BYTE_BUDGET,
@@ -1521,9 +1660,10 @@ class ReportEditorTraceService:
                     ))
                     # Only frozen requirements are carried across revisions;
                     # previous pass/coverage results are never reused.
-                    if historical.report_id == index.report_id:
+                    if historical.report_id == index.report_id and historical.report_basis_id == index.report_basis_id:
                         questions = historical.question_specs
                         answer_review_plan = historical.answer_review_plan
+                        registered_answer_plan = historical.registered_answer_plan
                 except Exception as error:
                     logger.warning("editor_question_specs_unavailable reason={}", type(error).__name__)
             if any(table.origin_markdown is None for table in index.tables):
@@ -1541,19 +1681,33 @@ class ReportEditorTraceService:
                 }),
                 questions=questions,
                 answer_review_plan=answer_review_plan,
+                registered_answer_plan=registered_answer_plan,
+                knowledge_evidence=knowledge_evidence,
                 heading_numbers=heading_numbers,
             ), limiter=self._validation_limiter)
             quality_payload = {
                 "status": "evaluated", "inputSha256": quality.input_sha256,
+                "reportBasisId": quality.report_basis_id,
+                "claimSupport": [support.model_dump(mode='json', by_alias=True) for support in quality.claim_support],
+                "registeredQuestionCoverage": [item.model_dump(mode='json', by_alias=True)
+                                               for item in quality.registered_question_coverage],
                 "allKeyFactsEvaluated": quality.all_key_facts_evaluated,
                 "questionCoverage": quality.question_coverage,
                 "answerReview": quality.answer_review.model_dump(mode="json", by_alias=True) if quality.answer_review is not None else None,
+                "registeredManagementOverview": quality.registered_management_overview.model_dump(mode="json", by_alias=True) if quality.registered_management_overview is not None else None,
                 "managementOverview": quality.management_overview.model_dump(mode="json", by_alias=True) if quality.management_overview is not None else None,
                 "issues": [issue.model_dump(mode="json", by_alias=True) for issue in quality.issues],
                 "tableChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.table_checks.items()},
                 "semanticChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.semantic_checks.items()},
                 "chartChecks": {key: check.model_dump(mode="json", by_alias=True) for key, check in quality.chart_checks.items()},
             }
+            native_supports = {support.subject_id: support for support in quality.claim_support}
+            for subject in subjects:
+                support = native_supports.get(subject['subjectId'])
+                if support is not None:
+                    subject['supportStatus'] = {
+                        'supported': 'supported', 'unverified': 'unknown', 'conflicted': 'conflicting',
+                    }[support.support_status]
             try:
                 from ..reporting.trace.warning_ledger import build_warning_ledger
 
@@ -1586,14 +1740,34 @@ class ReportEditorTraceService:
             for chart in charts_payload:
                 chart["dataCheck"] = {"status": "unknown", "scope": "registered_arrays", "reason": "chart_check_failed"}
                 chart["semanticCheck"] = {"status": "unknown", "scope": "registered_fact_projection", "reasons": ["chart_semantic_check_failed"]}
+        from ..reporting.trace.revision_impact import RevisionChange, assess_revision_impact
+
+        revision_impact_issues = []
+        try:
+            revision_impacts = [assess_revision_impact(index, RevisionChange(basisId=index.report_basis_id,
+                parentRevision=index.revision, operation=operation, subjectIds=tuple(ids)))
+                for operation, ids in revision_changes.items() if ids]
+        except Exception as error:
+            logger.warning("editor_revision_impact_unavailable reason={}", type(error).__name__)
+            revision_impacts = []
+            revision_impact_issues = ["revision_impact_unavailable"]
+        edit_statuses = {item.subject_id: item.status for impact in revision_impacts for item in impact.subjects}
+        for subject in subjects:
+            subject['editStatus'] = edit_statuses.get(subject['subjectId'])
+            if subject['editStatus'] == 'manual_override':
+                subject['supportStatus'] = 'unknown'
         logger.info(
             "report_source_validation_completed report_id={} revision={} subjects={} tables={} duration_ms={}",
             context.report_id, context.revision, len(subjects), len(tables_payload),
             round((perf_counter() - started) * 1000),
         )
-        return {
+        # 正式计算的 Decimal 按 Pydantic JSON 契约保留为精确字符串，不转浮点。
+        return to_jsonable_python({
+            "businessKnowledge": knowledge_status,
             "draftSha256": draft_sha256,
             "quality": quality_payload,
+            "revisionImpactIssues": revision_impact_issues,
+            "revisionImpacts": [item.model_dump(mode="json", by_alias=True) for item in revision_impacts],
             "sourceIssues": [{"resourceId": key, "code": value}
                              for key, value in sorted(source_failures.items())],
             "warnings": warnings,
@@ -1608,7 +1782,7 @@ class ReportEditorTraceService:
                  "bound": review_markdown.count(f"[[claim:{notice.claim_id}]]") == 1}
                 for notice in index.review_notices
             ]} if index.review_notices is not None else {}),
-        }
+        })
 
     @staticmethod
     def _evaluate_charts(index: Any, draft_markdown: str) -> list[dict[str, Any]]:

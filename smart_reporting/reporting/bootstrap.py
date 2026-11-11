@@ -8,6 +8,8 @@ from agno.agent import Agent
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ..management.auth import AdminAuthService
+from ..management.business_documents import BusinessDocumentService
+from ..management.business_evidence import BusinessEvidenceService
 from ..management.data_sources.secrets import CredentialVault
 from ..management.models import ManagementError
 from ..management.repository import AdminRepository
@@ -24,9 +26,8 @@ from .agent import (
     create_reporting_generator_agent,
     create_reporting_phase_agent,
 )
+from .business_knowledge.originals import BusinessOriginalStore
 from .code_agent.context import ReportingCodingTaskRegistry
-from .data_source import load_configured_report_source_registry
-from .data_source.models import ReportSourceRegistryConfig
 from .delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
@@ -36,8 +37,6 @@ from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .instructions import HOSPITAL_REPORT_WRITING_INSTRUCTIONS
 from .knowledge import ReportingKnowledgeIndex
 from .metadata import ReportingMetadataClient
-from .profile import load_configured_reporting_profiles
-from .profile.models import ReportingProfileRegistry
 from .vision import ReportVisionReviewer
 from .workflow.execution import ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
@@ -148,16 +147,10 @@ _VISUALIZATION_CODE_INSTRUCTIONS = (
 def _configuration_sources(
     context: ExecutionContext,
     settings: AgentSettings,
-) -> tuple[
-    ReportSourceRegistryConfig | None,
-    ReportingProfileRegistry | None,
-    ManagedConfigurationProvider | None,
-]:
-    if settings.report_configuration_mode == "file":
-        return (
-            load_configured_report_source_registry(settings.report_data_sources_dir),
-            load_configured_reporting_profiles(settings.report_data_sources_dir),
-            None,
+) -> ManagedConfigurationProvider:
+    if settings.report_configuration_mode != "database":
+        raise ManagementError(
+            "report_contract_retired", "旧文件业务配置已停用，请登记新指标及统计口径。", 409
         )
     vault = CredentialVault()
     if not vault.active_key_id:
@@ -170,11 +163,7 @@ def _configuration_sources(
             "management_database_unavailable", "数据库配置模式必须使用 PostgreSQL 异步连接。", 503
         )
     repository = AdminRepository(engine)
-    return (
-        None,
-        None,
-        ManagedConfigurationProvider(ScopeService(AdminAuthService(repository)), vault),
-    )
+    return ManagedConfigurationProvider(ScopeService(AdminAuthService(repository)), vault)
 
 
 def create_report_runtime(
@@ -241,7 +230,7 @@ def create_report_runtime(
             strong_model_id=settings.model_strong_id,
         ),
     )
-    registry, profiles, configuration_provider = _configuration_sources(context, settings)
+    configuration_provider = _configuration_sources(context, settings)
     runtime = ReportWorkflowRuntime(
         db=context.database,
         reporting_agent_template=reporting_agent_template,
@@ -256,10 +245,12 @@ def create_report_runtime(
         workspace_registry=workspace_registry,
         code_mode_runtime=code_mode_runtime,
         knowledge_index=knowledge_index,
+        business_evidence_service=BusinessEvidenceService(BusinessDocumentService(
+            configuration_provider.scope_service, BusinessOriginalStore(workspace_registry.root / "business-knowledge")), None),
         lsp_manager=lsp_manager,
         coding_task_registry=coding_task_registry,
-        registry=registry,
-        profiles=profiles,
+        registry=None,
+        profiles=None,
         configuration_provider=configuration_provider,
         planner_enable_thinking=settings.report_enable_thinking,
         planner_reasoning_effort=settings.report_planner_reasoning_effort,
@@ -281,6 +272,8 @@ def create_report_runtime(
             settings.report_public_base_url if download_grants is not None else None
         ),
         report_completion_template=settings.report_completion_template,
+        delivery_settings=settings.report_delivery_settings,
+        report_build_identity=settings.report_build_identity,
         state_repository=state_repository,
         analysis_concurrency=settings.report_analysis_concurrency,
         section_concurrency=settings.report_section_concurrency,

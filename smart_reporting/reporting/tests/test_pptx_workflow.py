@@ -26,8 +26,8 @@ def _factory(**overrides):
         return StepOutput(content={"status": "completed"})
 
     names = (
-        "normalize_report_request", "confirm_source", "prepare_data_profile",
-        "propose_measure_semantics", "commit_measure_semantics", "generate_outline",
+        "normalize_report_request", "confirm_source", "select_report_metrics", "calculate_report_metrics", "prepare_data_profile",
+        "generate_outline",
         "generate_analysis_plan", "generate_query_candidates", "materialize_datasets",
         "prepare_analysis_context", "generate_detailed_analysis_plan", "run_reporting_analysis",
         "assemble_report", "validate_report", "finalize_publication",
@@ -163,7 +163,8 @@ def test_slide_outline_rejects_unfrozen_analysis_binding():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_pptx_renderer_consumes_frozen_slide_outline_without_document_manifest(anyio_backend, tmp_path, monkeypatch):
+@pytest.mark.parametrize('summary_relation', [None, 'mixed'], ids=['numeric-only', 'mixed-narrative'])
+async def test_pptx_renderer_consumes_frozen_slide_outline_without_document_manifest(anyio_backend, tmp_path, monkeypatch, summary_relation):
     from hashlib import sha256
 
     from pptx import Presentation
@@ -196,9 +197,27 @@ async def test_pptx_renderer_consumes_frozen_slide_outline_without_document_mani
             content = target.read_bytes()
             return {"path": path, "size": len(content), "sha256": sha256(content).hexdigest()}
 
+    summaries, presentations = (), {}
+    if summary_relation:
+        from smart_reporting.reporting.tests.test_slide_summary_claims import summary_inputs
+        from smart_reporting.reporting.trace.native_claims import native_claim_presentations
+        from smart_reporting.reporting.trace.registered_claims import registered_narrative_support
+        from smart_reporting.reporting.trace.semantic_bindings import anchor_bound_numbers
+        from smart_reporting.reporting.trace.subject_builder import build_claim_subject_bindings
+
+        artifact, _, _, view, evidence = await summary_inputs(monkeypatch, summary_relation)
+        summaries = (artifact,)
+        block, = artifact.blocks
+        text = anchor_bound_numbers(block.markdown, block.narrative_references)
+        subjects = build_claim_subject_bindings(summaries, {}, {})
+        supports = tuple(registered_narrative_support(subject, text, basis_id=view.basis_id,
+            knowledge_evidence={evidence.reference.evidence_id: evidence})[0] for subject in subjects)
+        assert [item.support_status for item in supports] == ['supported', 'conflicted']
+        presentations = native_claim_presentations(SimpleNamespace(subject_bindings=subjects), text, supports)
+
     manifest = AnalysisEvidenceManifest(
         evidence=(AnalysisEvidence(
-            analysisId="analysis_001", summary="收入同比增长5%", datasetIds=("dataset-1",),
+            analysisId="analysis_001", summary=summaries[0].blocks[0].markdown if summaries else "收入同比增长5%", datasetIds=("dataset-1",),
             evidenceFiles=(FileIdentity(path="facts.json", size=1, sha256="a" * 64),),
             citationIds=("citation_001",),
         ),),
@@ -206,7 +225,7 @@ async def test_pptx_renderer_consumes_frozen_slide_outline_without_document_mani
             datasetId="dataset-1", rowGrain="month", duplicateResolution="not_applicable",
         ),),
     )
-    planned = build_slide_outline(graph(finding()), manifest, title="医院运营分析")
+    planned = build_slide_outline(graph(finding()), manifest, title="医院运营分析", analysis_summaries=summaries)
     raw = planned.model_dump_json(by_alias=True).encode()
     (tmp_path / "slides.json").write_bytes(raw)
     graph_raw = graph(finding()).model_dump_json(by_alias=True).encode()
@@ -226,6 +245,7 @@ async def test_pptx_renderer_consumes_frozen_slide_outline_without_document_mani
     runtime._scope = lambda context: {"threadId": "thread-1", "externalRunId": "external-1"}
     runtime._envelope = lambda context: SimpleNamespace(period=ReportPeriod(start="2025-01-01", end="2025-12-31"))
     runtime._apply_durable_command = AsyncMock()
+    runtime._native_claim_presentations = AsyncMock(return_value=presentations)
     context = RunContext(run_id="run-1", session_id="session-1", session_state={
         "report_request_context": {"deliveryFormat": "pptx"},
     })
@@ -234,11 +254,22 @@ async def test_pptx_renderer_consumes_frozen_slide_outline_without_document_mani
         "sections": [{"code": "section_001", "sectionNumber": "1", "title": "分析分区", "analysisIds": ["analysis_001"]}],
     })
     output = await runtime._render_pptx(context, {"revision": 0}, outline)
-    assert output["status"] == "validated"
+    assert output['status'] in ('validated', 'validation_failed') if summary_relation else output['status'] == 'validated'
     presentation = Presentation(tmp_path / output["pptxPath"])
     assert len(presentation.slides) == 2
+    cover = '\n'.join(shape.text for shape in presentation.slides[0].shapes if shape.has_text_frame)
+    assert '2025-01-01 至 2025-12-31' in cover
+    assert 'datetime.date' not in cover
     assert "finding_0000000000000001" in presentation.slides[1].notes_slide.notes_text_frame.text
     assert "citation_001" in presentation.slides[1].notes_slide.notes_text_frame.text
+    assert any('收入发生变化（支持关系待核实）' in shape.text
+        for shape in presentation.slides[1].shapes if shape.has_text_frame)
+    assert output['validation']['claimSupport'][0]['support']['supportStatus'] == 'unverified'
+    if summary_relation:
+        shown = '\n'.join(shape.text for shape in presentation.slides[1].shapes if shape.has_text_frame)
+        assert '建议按原始金额累计预算，避免把期间平均当作合计。（建议）' in shown
+        assert '建议采用期间平均作为预算合计。（建议，存在反证）' in shown
+        assert [item['support']['supportStatus'] for item in output['validation']['claimSupport'][1:]] == ['supported', 'conflicted']
 
 
 def test_slide_outline_assigns_registered_static_chart_by_frozen_citation():
@@ -371,7 +402,7 @@ async def test_pptx_assembly_registers_real_static_chart_and_plot_data_for_edito
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.workspace_service = workspace
     runtime._scope = lambda context: {"threadId":scope.workspace_key, "externalRunId":"run-1"}
-    runtime._profile = lambda context: SimpleNamespace(effective_profile_hash="b"*64)
+    runtime._basis_execution_context = AsyncMock(return_value=SimpleNamespace(basis=SimpleNamespace(id="basis-test")))
     runtime._persist_reporting_checkpoint = AsyncMock(side_effect=lambda context, value: value)
     runtime._apply_durable_command = AsyncMock()
     runtime._slide_checkpoint = AsyncMock(return_value=(SimpleNamespace(phase="sections"), checkpoint))
@@ -384,7 +415,7 @@ async def test_pptx_assembly_registers_real_static_chart_and_plot_data_for_edito
                 durable.payload.setdefault("reportEditorContexts", {})[str(command.payload["context"]["revision"])] = command.payload["context"]
     runtime.state_repository = Repository()
     async def trace(manifest_relative, **kwargs):
-        index = build_csv_trace_index(handles=kwargs["handles"], lineage=kwargs["lineage"], report_id="run-1",
+        index = build_csv_trace_index(report_basis_id="basis-test", handles=kwargs["handles"], lineage=kwargs["lineage"], report_id="run-1",
             revision=1, workflow_run_id="run-1", markdown_file=kwargs["markdown_artifact"],
             fact_files=kwargs["fact_files"], chart_trace_files=kwargs["chart_trace_files"], chart_traces=kwargs["chart_traces"])
         identity = await runtime._write_immutable_artifact(scope.workspace_key, "slides/trace-index-v1.json", encode_trace_index(index))
@@ -621,13 +652,14 @@ async def test_native_legacy_document_pause_resumes_into_current_delivery_dispat
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_slide_planning_freezes_visualization_once_and_reuses_outline_on_resume(anyio_backend):
+async def test_slide_planning_freezes_visualization_once_and_reuses_outline_on_resume(anyio_backend, monkeypatch):
     from hashlib import sha256
 
     from smart_reporting.reporting.hospital_operation.detailed_analysis import DetailedAnalysisPlan
     from smart_reporting.reporting.hospital_operation.outline import ReportOutline
     from smart_reporting.reporting.tests.test_deterministic_analysis import analysis
     from smart_reporting.reporting.tests.test_dynamic_checkpoint import _coverage
+    from smart_reporting.reporting.tests.test_slide_summary_claims import summary_inputs
     from smart_reporting.reporting.workflow.checkpoint import (
         AnalysisArtifact,
         AnalysisDatasetSemantics,
@@ -637,9 +669,17 @@ async def test_slide_planning_freezes_visualization_once_and_reuses_outline_on_r
         ReportBrief,
         ReportingCheckpoint,
     )
+    from smart_reporting.reporting.workflow.runtime import slides as slide_runtime
     from smart_reporting.reporting.workflow.runtime.base import payload_sha256
     from smart_reporting.reporting.workflow.state import ReportingPhase
 
+    summary_section, _, _, view, _ = await summary_inputs(monkeypatch)
+    build_summary = slide_runtime.build_analysis_summary_section
+    summary_calls = []
+    async def counted_summary(*args, **kwargs):
+        summary_calls.append(kwargs['section'].code)
+        return await build_summary(*args, **kwargs)
+    monkeypatch.setattr(slide_runtime, 'build_analysis_summary_section', counted_summary)
     documents = {}
     async def write(thread, path, content):
         documents[path] = content
@@ -650,7 +690,7 @@ async def test_slide_planning_freezes_visualization_once_and_reuses_outline_on_r
     graph_file = await write("thread", "graph.json", graph(finding()).model_dump_json(by_alias=True).encode())
     validation = await write("thread", "report.validation-context.json", b'{}')
     evidence = AnalysisEvidenceManifest(
-        evidence=(AnalysisEvidence(analysisId="analysis_001", summary="收入变化",
+        evidence=(AnalysisEvidence(analysisId="analysis_001", summary=summary_section.blocks[0].markdown,
             datasetIds=("current",), evidenceFiles=(fact,), citationIds=("citation_001",)),),
         datasetSemantics=(AnalysisDatasetSemantics(datasetId="current", rowGrain="month",
             duplicateResolution="not_applicable"),),
@@ -672,8 +712,17 @@ async def test_slide_planning_freezes_visualization_once_and_reuses_outline_on_r
         if command.name == "complete_narrative_planning":
             durable.phase = ReportingPhase.SECTIONS
     runtime._slide_checkpoint = current
-    runtime._scope = lambda _: {"threadId": "thread"}
+    runtime._scope = lambda _: {"threadId": "thread", "userId": "tester"}
+    runtime.report_basis_service = object()
+    runtime.section_generator = object()
+    runtime._metric_planning_context = AsyncMock(return_value=view)
     runtime._read_identity_model, runtime._write_immutable_artifact = read, write
+    async def read_bytes(thread, path, **kwargs):
+        return documents[path]
+    async def hash_files(thread, paths):
+        return [{'path': path, 'missing': True} if path not in documents else {
+            'path': path, 'size': len(documents[path]), 'sha256': sha256(documents[path]).hexdigest()} for path in paths]
+    runtime.workspace_service = SimpleNamespace(read_limited_regular_file=read_bytes, abatch_hash_files=hash_files)
     runtime._persist_reporting_checkpoint = persist
     runtime._current_reporting_checkpoint = AsyncMock(side_effect=lambda context, value: checkpoint)
     runtime._apply_durable_command = AsyncMock(side_effect=apply)
@@ -695,4 +744,11 @@ async def test_slide_planning_freezes_visualization_once_and_reuses_outline_on_r
     assert checkpoint.evidence_manifest == evidence
     runtime._run_visualization_section_task.assert_awaited_once()
     runtime._build_reporting_artifact.assert_awaited_once()
-    runtime._apply_durable_command.assert_awaited_once()
+    assert summary_calls == ['section_001']
+    assert [call.args[1].name for call in runtime._apply_durable_command.await_args_list] == [
+        'complete_narrative_planning', 'record_artifact']
+    checkpoint = checkpoint.model_copy(update={'slide_outline_file': None})
+    with pytest.raises(ReportingError, match='登记未完成'):
+        await runtime.generate_slide_outline(StepInput(input='未知写入结果'), context)
+    runtime._run_visualization_section_task.assert_awaited_once()
+    assert summary_calls == ['section_001']

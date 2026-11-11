@@ -608,7 +608,7 @@ async def _make_editor_with_subject(
         table_trace = TableTraceV1(tableId="tbl-1", rowKeys=row_keys, columnKeys=("数值",), cells=tuple(
             TableCellBindingV1(rowKey=row, columnKey="数值", factRefs=(comparison_ref,)) for row in row_keys
         ))
-    index = build_csv_trace_index(
+    index = build_csv_trace_index(report_basis_id="basis-test",
         handles=(handle,),
         lineage=(lineage,),
         report_id=report_id,

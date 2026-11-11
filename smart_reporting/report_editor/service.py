@@ -55,6 +55,7 @@ from ..reporting.trace.contracts_v1 import (
     TraceFileRefV1,
     derive_resource_id,
 )
+from ..reporting.workflow.checkpoint import FileIdentity
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
@@ -430,6 +431,7 @@ class ReportEditorContext(BaseModel):
     workflow_run_id: str = Field(alias="workflowRunId", min_length=1, max_length=256)
     markdown_path: str = Field(alias="markdownPath", min_length=1, max_length=1024)
     artifact_manifest: ArtifactFile | None = Field(default=None, alias="artifactManifest")
+    analysis_context_file: FileIdentity | None = Field(default=None, alias="analysisContextFile")
     scope: dict[str, str]
     source: str = Field(default="published", pattern=r"^(published|manual)$")
     created_at: datetime | None = Field(default=None, alias="createdAt")
@@ -687,12 +689,21 @@ class ReportEditorService:
         design_templates: Any | None = None,
         export_timeout_seconds: float = 1200.0,
         trace_cursor_secret: bytes | None = None,
+        report_basis_service: Any | None = None,
+        business_evidence_service: Any | None = None,
+        recalculation_runtime: Any | None = None,
+        recalculation_database: Any | None = None,
+        recalculation_durable: bool = False,
         lineage_panel_enabled: bool = True,
         lineage_download_enabled: bool = True,
         lineage_drilldown_enabled: bool = True,
         lineage_export_sources_enabled: bool = True,
     ) -> None:
         self.state_repository = state_repository
+        self.recalculation_runtime = recalculation_runtime
+        self.recalculation_database = recalculation_database
+        self.recalculation_durable = recalculation_durable
+        self.recalculation_queue_worker = None
         self.design = ReportEditorDesignService(self)
         self.design_templates = design_templates
         self.design_preview = ReportDesignPreviewService(self)
@@ -721,6 +732,8 @@ class ReportEditorService:
             workspace,
             cursor_secret=trace_cursor_secret or secrets.token_bytes(32),
             chart_edit_lineage=self._chart_edit_lineage,
+            report_basis_service=report_basis_service,
+            business_evidence_service=business_evidence_service,
         )
         cast(Any, self.trace.exports).source_guard = self._derived_source_guard
 
@@ -1250,6 +1263,8 @@ class ReportEditorService:
     async def _registered_analysis_context_file(
         self, context: ReportEditorContext
     ) -> Mapping[str, Any] | None:
+        if context.analysis_context_file is not None:
+            return context.analysis_context_file.model_dump(mode='json', by_alias=True)
         state = await self.state_repository.get(context.workflow_run_id)
         return _analysis_context_file_from_state(state)
 
@@ -1269,6 +1284,11 @@ class ReportEditorService:
         state = await self.state_repository.get(context.workflow_run_id)
         analysis_context_file = _analysis_context_file_from_state(state)
         result = await self.trace.sources(context, session.capabilities, analysis_context_file=analysis_context_file)
+        result["dataRefresh"] = {
+            "available": bool(result.get("snapshotVerification", {}).get("available")
+                and self.recalculation_runtime is not None and self.recalculation_database is not None),
+            "parentRevision": expected.revision,
+        }
         # 历史事实文件没有名称时，用同一工作流中登记的分析计划补充展示名称。
         plans = state.payload.get("analysisPlans", {}) if state else {}
         if not isinstance(plans, Mapping):
@@ -1581,6 +1601,13 @@ class ReportEditorService:
         return await self.trace.fact_detail(context, analysis_id, fact_id)
 
     @source_lifecycle
+    async def trace_knowledge_detail(self, expected: ReportEditorContext, session: ReportEditorSession,
+        subject_id: str, evidence_id: str) -> dict[str, Any]:
+        self._require_lineage_feature('panel')
+        context = await self._source_context(expected)
+        return await self.trace.knowledge_detail(context, subject_id, evidence_id)
+
+    @source_lifecycle
     async def trace_charts(
         self, expected: ReportEditorContext, session: ReportEditorSession
     ) -> dict[str, Any]:
@@ -1647,6 +1674,110 @@ class ReportEditorService:
             draft_sha256,
             analysis_context_file=await self._registered_analysis_context_file(context),
         )
+
+    async def issue_reviews(self, expected: ReportEditorContext, *, issue_id=None, limit=50, after=None) -> dict[str, Any]:
+        from .issue_reviews import report_issue_reviews
+
+        return await report_issue_reviews(self, expected, issue_id=issue_id, limit=limit, after=after)
+
+    async def submit_issue_review(self, expected: ReportEditorContext, payload) -> dict[str, Any]:
+        from .issue_reviews import report_issue_reviews
+
+        return await report_issue_reviews(self, expected, submission=payload)
+
+    async def policy_adoption_options(self, expected: ReportEditorContext, *, limit=50, after=None) -> dict[str, Any]:
+        from .recalculation import policy_adoption_options
+
+        return await policy_adoption_options(self, expected, limit=limit, after=after)
+
+    async def preview_policy_adoption(self, expected: ReportEditorContext, request) -> dict[str, Any]:
+        from .recalculation import preview_policy_adoption
+
+        return await preview_policy_adoption(self, expected, request)
+
+    async def start_recalculation(self, expected: ReportEditorContext, request) -> dict[str, Any]:
+        from .recalculation import start_recalculation
+
+        return await start_recalculation(self, expected, request)
+
+    async def recalculation_status(self, expected: ReportEditorContext, request_id: str) -> dict[str, Any]:
+        from .recalculation import read_task, task_response
+
+        self._require_lineage_feature("panel")
+        context = await self._restore(expected)
+        task = await read_task(self, context, request_id)
+        if task is None:
+            raise ReportingError("source_missing", "复核任务不存在。")
+        return await task_response(self, context, task)
+
+    async def recalculation_task_status(self, expected: ReportEditorContext, task_id: str) -> dict[str, Any]:
+        from .recalculation import read_task_by_id, task_response
+
+        self._require_lineage_feature("panel")
+        context = await self._restore(expected)
+        task = await read_task_by_id(self, context, task_id)
+        if task is None:
+            raise ReportingError("source_missing", "复核任务不存在。")
+        return await task_response(self, context, task)
+
+    async def resume_recalculation_preparation(self, expected: ReportEditorContext, task_id: str, request) -> dict[str, Any]:
+        from .policy_recovery import dispatch_policy_recovery
+
+        if self.recalculation_runtime is None or self.recalculation_database is None:
+            raise ReportingError('report_editor_recalculation_unavailable', '续跑持久后台尚未启用。')
+        return await dispatch_policy_recovery(self, expected, task_id, request,
+            runtime=self.recalculation_runtime, database=self.recalculation_database)
+
+    async def recalculation_recovery_status(self, expected: ReportEditorContext, task_id: str, recovery_id: str) -> dict[str, Any]:
+        from .policy_recovery import read_policy_recovery
+
+        if self.recalculation_database is None:
+            raise ReportingError('report_editor_recalculation_unavailable', '续跑状态读取服务尚未启用。')
+        return await read_policy_recovery(self, expected, task_id, recovery_id, database=self.recalculation_database)
+
+    async def confirm_recalculation_preparation(self, expected: ReportEditorContext, task_id: str, request) -> dict[str, Any]:
+        from .recalculation import confirm_policy_adoption_preparation_request
+
+        if self.recalculation_runtime is None or self.recalculation_database is None:
+            raise ReportingError('report_editor_recalculation_unavailable', '重算确认服务尚未启用。')
+        return await confirm_policy_adoption_preparation_request(self, expected, task_id, request,
+            runtime=self.recalculation_runtime, database=self.recalculation_database)
+
+    async def recalculation_preparation(self, expected: ReportEditorContext, task_id: str) -> dict[str, Any]:
+        from .recalculation import read_policy_adoption_preparation
+
+        if self.recalculation_runtime is None:
+            raise ReportingError('report_editor_recalculation_unavailable', '重算核对服务尚未启用。')
+        return await read_policy_adoption_preparation(self, expected, task_id, runtime=self.recalculation_runtime)
+
+    async def recalculation_delivery(self, expected: ReportEditorContext, task_id: str) -> dict[str, Any]:
+        from ..reporting.workflow.scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
+        from .recalculation import (
+            read_policy_adoption_delivery,
+            read_refresh_delivery,
+            read_task_by_id,
+        )
+
+        self._require_lineage_feature("panel")
+        if self.recalculation_runtime is None:
+            raise ReportingError("report_editor_recalculation_unavailable", "重算交付读取服务尚未启用。")
+        context = await self._restore(expected)
+        registered = await read_task_by_id(self, context, task_id)
+        if registered is not None and registered.request.operation == 'adopt_policy':
+            task, published, execution = await read_policy_adoption_delivery(
+                self, context, task_id, runtime=self.recalculation_runtime)
+            scope = execution.scope.as_state()
+            run_id = execution.scope.run_id
+        else:
+            task, published = await read_refresh_delivery(self, context, task_id, runtime=self.recalculation_runtime)
+            scope = context.scope
+            run_id = context.workflow_run_id
+        delivery = await self.recalculation_runtime.issue_http_publication(
+            thread_id=scope["threadId"], caller_thread_id=scope["callerThreadId"], user_id=scope["userId"],
+            workflow_session_id=scope["sessionId"], workflow_run_id=run_id,
+            dependencies={REPORT_WORKFLOW_SCOPE_DEPENDENCY: {**scope, "threadId": scope["callerThreadId"]}},
+            output=published)
+        return {"task": task.model_dump(mode="json", by_alias=True), "delivery": delivery}
 
     @source_lifecycle
     async def save_draft(
@@ -2288,6 +2419,7 @@ class ReportEditorService:
                 workflowRunId=context.workflow_run_id,
                 markdownPath=markdown_path,
                 artifactManifest=next_manifest_identity,
+                analysisContextFile=context.analysis_context_file,
                 job=next_job,
                 scope=scope.as_state(),
                 source="manual",

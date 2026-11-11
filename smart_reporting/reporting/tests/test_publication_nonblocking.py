@@ -13,7 +13,7 @@ from smart_reporting.reporting.workflow.runtime import publication
 async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, failure):
     manifest = {
         "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
-        "datasetSnapshotHash": "a" * 64, "effectiveProfileHash": "b" * 64,
+        "datasetSnapshotHash": "a" * 64, "reportBasisId": "b" * 64,
         "markdown": {"path": "reports/report.md", "mediaType": "text/markdown",
                      "size": 1, "sha256": "c" * 64},
         "citations": [{"citationId": "citation_001", "datasetId": "dataset_001",
@@ -61,9 +61,7 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     if failure == "overview_prepare":
         from smart_reporting.reporting.workflow import overview_sources
 
-        # 经营总览只在注入回答审核计划提供方时启用；这里注入后再让总览来源失败。
-        runtime.answer_review_plan_provider = object()
-
+        # 不依赖业务批准提供方，来源故障仍保留缺项投影并继续渲染。
         async def unavailable(*args):
             called.append(True)
             raise OSError("overview source unavailable")
@@ -82,8 +80,8 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
         assert any(item["code"] == "management_overview_evidence_unavailable" and item["revision"] == 1
                    for item in state["report_quality_issues"])
     else:
-        # 未注入提供方：不构建经营总览，渲染沿用各章核心结论。
-        assert runtime.report_tools._render_report_pair.call_args.kwargs["management_overview"] is None
+        # 缺少总览来源时也不能回退到未经核验的章节摘录。
+        assert runtime.report_tools._render_report_pair.call_args.kwargs["management_overview"]["status"] == "unavailable"
     assert result["wordSha256"] == "b" * 64
     assert result["pdfPath"] == "reports/report.pdf"
     assert result["wordPath"] == "reports/report.docx"
@@ -95,7 +93,7 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
 async def test_source_index_failure_keeps_workflow_rendering_nonblocking(monkeypatch):
     manifest = {
         "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
-        "datasetSnapshotHash": "a" * 64, "effectiveProfileHash": "b" * 64,
+        "datasetSnapshotHash": "a" * 64, "reportBasisId": "b" * 64,
         "markdown": {"path": "reports/report.md", "mediaType": "text/markdown", "size": 1, "sha256": "c" * 64},
         "citations": [{"citationId": "citation_001", "datasetId": "dataset_001", "requirementId": "requirement_001", "snapshotHash": "a" * 64}],
         "sections": ["section_001"], "sectionNumbers": ["1"],
@@ -158,11 +156,25 @@ def test_agents_nonblocking_contract_registry_points_at_existing_tests():
 # 这类 raise 必须位于 try 体内且有 except Exception（或裸 except）兜底，把原因转为
 # validation.issues / publicationGate.issues 后继续。新增此类 raise 未兜底即失败。
 _SIGNING_CHAIN = {
+    "smart_reporting/reporting/workflow/claim_presentation.py": ("_registered_claim_support", "registered_claim_support_projection", "registered_native_claim_presentations"),
+    "smart_reporting/reporting/trace/native_claims.py": ("native_claim_presentations", "present_native_summary"),
+    "smart_reporting/reporting/trace/claim_presentation.py": ("claim_support_projection",),
+    "smart_reporting/reporting/delivery/report_runtime/claim_support.py": ("insert_claim_support",),
+    "smart_reporting/report_editor/recalculation.py": ("run_refresh_request", "read_refresh_delivery", "run_policy_adoption_request", "read_policy_adoption_delivery"),
+    "smart_reporting/reporting/workflow/revision_execution.py": ("continue_revision_delivery",),
+    "smart_reporting/reporting/workflow/policy_adoption_analysis.py": ("continue_policy_adoption_delivery",),
+    "smart_reporting/reporting/trace/revision_impact.py": ("assess_revision_impact",),
+    "smart_reporting/reporting/trace/narrative_claims.py": ("narrative_paragraphs",),
+    "smart_reporting/reporting/trace/registered_claims.py": ("registered_claim_support", "registered_narrative_support"),
+    "smart_reporting/reporting/business_knowledge/claims.py": ("knowledge_support",),
+    "smart_reporting/reporting/workflow/runtime/business_evidence.py": ("register_section_knowledge", "resolve_runtime_knowledge", "revalidate_section_knowledge", "withdraw_knowledge_blocks"),
+    "smart_reporting/reporting/business_knowledge/dependencies.py": ("read_knowledge_dependencies", "resolve_knowledge_dependencies"),
     "smart_reporting/report_editor/render_preparation.py": ("prepare_editor_render",),
-    "smart_reporting/reporting/workflow/runtime/publication.py": ("_render_and_validate", "_render_pptx", "_render_xlsx", "publish_report", "_write_trace_index"),
+    "smart_reporting/reporting/workflow/runtime/publication.py": ("_native_claim_presentations", "_verify_claim_fact_bindings", "_render_and_validate", "_render_revision_document", "_render_pptx", "_render_xlsx", "publish_report", "_publish_revision_report", "_write_trace_index"),
     "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication", "_issue_http_pptx_publication", "_issue_http_xlsx_publication", "_issue_http_office_publication"),
     "smart_reporting/reporting/workspace.py": ("_render_report_pair",),
     "smart_reporting/report_editor/service.py": (
+        "recalculation_delivery",
         "_export_revision",
         "_retry_export_delivery",
         "_persist_delivery",
@@ -170,7 +182,8 @@ _SIGNING_CHAIN = {
         "_record_delivery",
     ),
     "smart_reporting/report_editor/slides.py": ("save_revision",),
-    "smart_reporting/report_editor/workbook.py": ("save_revision",),
+    "smart_reporting/report_editor/workbook.py": ("save_revision", "_mark_sources_unverified", "_drop_source_mapping"),
+    "smart_reporting/report_editor/revision_notice.py": ("add_workbook_revision_notice", "add_slides_revision_notice"),
     "smart_reporting/report_editor/native_publication.py": (
         "save_revision", "_save_reserved", "_publish_artifacts", "_issue_links",
     ),
@@ -178,7 +191,13 @@ _SIGNING_CHAIN = {
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。
 _CALLER_GUARDED = {
-    "smart_reporting/reporting/workflow/runtime/publication.py": (("publish_report", "_dataset_publication_gate"),),
+    "smart_reporting/reporting/workflow/runtime/publication.py": (
+        ("publish_report", "_dataset_publication_gate"),
+        ("_render_and_validate", "registered_claim_support_projection"),
+        ("_render_revision_document", "registered_claim_support_projection"),
+        ("_render_pptx", "_native_claim_presentations"),
+        ("_render_xlsx", "_native_claim_presentations"),
+    ),
 }
 
 
@@ -390,7 +409,8 @@ async def test_pptx_publication_gate_checks_pptx_identity_without_document_expor
 
 
 @pytest.mark.anyio
-async def test_publication_gate_preserves_caption_review_from_checkpoint():
+@pytest.mark.parametrize("knowledge_fault", [None, "revoked", "unavailable"])
+async def test_publication_gate_preserves_caption_review_from_checkpoint(monkeypatch, knowledge_fault):
     from smart_reporting.reporting.workflow.checkpoint import ReportingCheckpoint
 
     caption_warning = {
@@ -422,6 +442,30 @@ async def test_publication_gate_preserves_caption_review_from_checkpoint():
         },
         "warnings": [caption_warning, {"code": "unrelated_checkpoint_warning"}],
     })
+    from smart_reporting.reporting.workflow.checkpoint import CompletedSection, SectionArtifact
+    from smart_reporting.reporting.workflow.runtime import business_evidence
+
+    artifact = SectionArtifact(sectionCode='section_001', blocks=[{
+        'blockId': 'block_001', 'markdown': '旧业务解释', 'claimIds': ['c']}],
+        claims=[{'claimId': 'c', 'metricCode': 'budget', 'value': 1, 'periodBasis': '本期',
+                 'managementQuestion': '预算变化', 'currentPeriod': '本期', 'citationIds': ['citation_001']}],
+        knowledgeReceiptIds=('knowledge-rules',))
+    checkpoint = checkpoint.model_copy(update={'completed_sections': (CompletedSection(
+        sectionCode='section_001', workItemHash='a' * 64,
+        artifactFile={'path': 'section.json', 'size': 1, 'sha256': 'b' * 64}),)})
+    async def revalidate(_runtime, _context, value, *, report_revision):
+        assert report_revision == '1'
+        assert value == artifact
+        if knowledge_fault == 'unavailable':
+            raise OSError('knowledge backend unavailable')
+        if knowledge_fault == 'revoked':
+            return artifact.model_copy(update={'knowledge_status': 'unavailable', 'claims': (),
+                'blocks': (artifact.blocks[0].model_copy(update={'claim_ids': (), 'markdown': '知识依据不可用'}),),
+                'warnings': ({
+                'code': 'report_section_knowledge_unavailable', 'message': '知识已撤销'},)})
+        return value
+    checked = AsyncMock(side_effect=revalidate)
+    monkeypatch.setattr(business_evidence, 'revalidate_section_knowledge', checked)
     state: dict = {}
     runtime = SimpleNamespace(
         _state=lambda _context: state,
@@ -433,6 +477,7 @@ async def test_publication_gate_preserves_caption_review_from_checkpoint():
             payload={"workflowCheckpoint": checkpoint.model_dump(mode="json", by_alias=True)},
         ))),
         _verify_claim_fact_bindings=AsyncMock(return_value=([], [])),
+        _read_identity_model=AsyncMock(return_value=artifact),
         quality_warning_service=None,
     )
 
@@ -440,6 +485,13 @@ async def test_publication_gate_preserves_caption_review_from_checkpoint():
         runtime, RunContext(run_id="run", session_id="thread", session_state=state), {"revision": 1}
     )
 
+    checked.assert_awaited_once()
+    if knowledge_fault:
+        assert any(item['code'] == 'report_section_knowledge_unavailable' for item in gate['warnings'])
+        assert any(item['code'] == 'report_section_knowledge_unavailable' for item in gate['issues'])
+        assert not gate['formalReleaseAllowed']
+    else:
+        assert not any(item['code'] == 'report_section_knowledge_unavailable' for item in gate['issues'])
     assert caption_warning in gate["warnings"]
     assert not any(item.get("code") == "unrelated_checkpoint_warning" for item in gate["warnings"])
     assert not any(item["code"] == "chart_caption_numeric_review" for item in gate["issues"])

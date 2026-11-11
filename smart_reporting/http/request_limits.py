@@ -15,6 +15,7 @@ MAX_AGENT_RUN_FILES = 8
 # 编辑器 Markdown 上限 10 MiB，JSON 编码与其余字段留出余量。
 MAX_REPORT_EDITOR_WRITE_REQUEST_BYTES = 12 * 1024 * 1024
 MAX_NATIVE_IMPORT_REQUEST_BYTES = MAX_AGENT_RUN_FILE_BYTES + 64 * 1024
+MAX_BUSINESS_DOCUMENT_REQUEST_BYTES = 20 * 1024 * 1024 + 64 * 1024
 _AGENTOS_COMPONENT_PATHS = frozenset({"agents", "teams", "workflows"})
 
 
@@ -83,6 +84,12 @@ def report_editor_write_request_limit(path: str, method: str) -> int | None:
 def native_import_request_limit(path: str, method: str) -> int | None:
     if method.upper() == "POST" and str(path).rstrip("/") == "/reports/v1/native/import":
         return MAX_NATIVE_IMPORT_REQUEST_BYTES
+    return None
+
+
+def business_document_upload_request_limit(path: str, method: str) -> int | None:
+    if method.upper() == "POST" and str(path).rstrip("/") == "/management/api/v1/business-documents":
+        return MAX_BUSINESS_DOCUMENT_REQUEST_BYTES
     return None
 
 

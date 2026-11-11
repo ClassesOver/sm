@@ -274,6 +274,7 @@ class ReportRuntime:
                 source_bytes, context["sections"], citation_presentations=state.get("_citationPresentations"),
                 include_sources=include_sources, trace_sources=state.get("_traceSourcePresentations"),
                 management_overview=load_overview(state, self.workspace),
+                claim_support=state.get('_claimSupportProjection'),
             )
             pdf_markdown, citation_presentations, trace_source_render = (
                 projection.markdown, projection.citation_presentations, projection.trace_source_render,
@@ -343,6 +344,8 @@ class ReportRuntime:
                 design=design,
             )
             render_issues: list[dict[str, str]] = []
+            if projection.claim_support_check is not None and projection.claim_support_check['status'] != 'verified':
+                render_issues.append({'code': 'claim_support_projection_unknown', 'message': '解释与建议支持状态未能核验，已保留提示和可读报告。'})
             if projection.overview_check is not None and projection.overview_check["status"] != "verified":
                 render_issues.append({"code": "management_overview_projection_unknown", "message": "经营总览身份未获核验，已保留缺项说明和可读报告。"})
 
@@ -878,6 +881,7 @@ class ReportRuntime:
                     include_sources=isinstance(export_settings, dict) and export_settings.get("sources") is True,
                     trace_sources=state.get("_traceSourcePresentations"),
                     management_overview=load_overview(state, self.workspace),
+                    claim_support=state.get('_claimSupportProjection'),
                 )
             except Exception:
                 projection_check = {"status": "unknown", "reason": "projection_source_unavailable"}
@@ -891,6 +895,11 @@ class ReportRuntime:
                 validation["ok"] = False
                 validation["status"] = "validation_failed"
                 validation["issues"].append({"code": "management_overview_projection_unknown", "message": "经营总览未通过核验，产物及缺项说明已保留。"})
+            if any(issue.get('code') == 'claim_support_projection_unknown' for issue in render.get('renderIssues', ())):
+                validation['ok'] = False
+                validation['status'] = 'validation_failed'
+                validation['issues'].append({'code': 'claim_support_projection_unknown',
+                    'message': '解释与建议支持状态未能核验，产物及提示已保留。'})
             if projection_check["status"] != "verified":
                 validation["ok"] = False
                 validation["status"] = "validation_failed"

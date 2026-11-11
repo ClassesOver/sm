@@ -1228,6 +1228,27 @@ def test_set_analysis_plan_freezes_matching_durable_plan_details():
     assert raised.value.code == "report_analysis_plan_invalid"
 
 
+def test_set_analysis_plan_retains_full_approved_plan_and_rejects_rebinding():
+    from smart_reporting.reporting.tests.test_refresh_planning import detail_plan_inputs
+
+    plan, _, _ = detail_plan_inputs()
+    state = apply_phase(initial_state(), "start_analysis")
+    arguments = {'analysisIds': ['analysis_001'], 'datasetIds': list(plan.dataset_ids),
+        'detailedAnalysisPlan': plan.model_dump(mode='json', by_alias=True)}
+    frozen = ReportingStateReducer.apply(state, {'name': 'set_analysis_plan', 'commandId': 'full-plan',
+        'payload': arguments}, state.state_version).state
+    assert frozen.payload['detailedAnalysisPlan'] == arguments['detailedAnalysisPlan']
+    arguments['detailedAnalysisPlan']['analysisGoal'] = 'modified'
+    assert frozen.payload['detailedAnalysisPlan']['analysisGoal'] == plan.analysis_goal
+    with pytest.raises(ReportingStateError):
+        ReportingStateReducer.apply(frozen, {'name': 'set_analysis_plan', 'commandId': 'rebound-full-plan',
+            'payload': arguments}, frozen.state_version)
+    arguments['analysisIds'] = ['analysis_002']
+    with pytest.raises(ReportingStateError):
+        ReportingStateReducer.apply(state, {'name': 'set_analysis_plan', 'commandId': 'foreign-full-plan',
+            'payload': arguments}, state.state_version)
+
+
 def test_targeted_rework_requires_analysis_ids_and_missing_evidence():
     state = initial_state()
     state = apply_phase(state, "start_analysis")

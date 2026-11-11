@@ -1,0 +1,41 @@
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+____ test_workbook_notice_preserves_cells_and_updates_one_identified_sheet _____
+
+    def test_workbook_notice_preserves_cells_and_updates_one_identified_sheet():
+        from smart_reporting.report_editor.revision_notice import add_workbook_revision_notice
+    
+        book = openpyxl.Workbook()
+        book.active.title = '修订核验说明'
+        book.active['A1'] = '同名业务表，不得覆盖'
+        book.active['B2'] = '=SUM(1,2)'
+        stream = BytesIO()
+        book.save(stream)
+        original = stream.getvalue()
+        revised = add_workbook_revision_notice(original, revision=2, parent_revision=1)
+        with ZipFile(BytesIO(original)) as before, ZipFile(BytesIO(revised)) as after:
+            assert before.read('xl/worksheets/sheet1.xml') == after.read('xl/worksheets/sheet1.xml')
+        current = openpyxl.load_workbook(BytesIO(revised))
+        assert len(current.worksheets) == 2
+        assert current.worksheets[0]['A1'].value == '本修订待核验'
+        assert '第 2 版' in current.worksheets[0]['A3'].value
+        assert current['修订核验说明']['A1'].value == '同名业务表，不得覆盖'
+        assert current['修订核验说明']['B2'].value == '=SUM(1,2)'
+        again = add_workbook_revision_notice(revised, revision=3, parent_revision=2)
+        current = openpyxl.load_workbook(BytesIO(again))
+        assert len(current.worksheets) == 2
+        assert '第 3 版' in current.worksheets[0]['A3'].value
+>       assert '尚未重新核验' in current.worksheets[0]['A5'].value
+E       AssertionError: assert '尚未重新核验' in '本文件为人工保存的新修订。'
+E        +  where '本文件为人工保存的新修订。' = <Cell '修订核验说明 2'.A5>.value
+
+smart_reporting/reporting/tests/test_native_revision_notice.py:34: AssertionError
+=============================== warnings summary ===============================
+smart_reporting/reporting/tests/test_native_revision_notice.py::test_workbook_notice_preserves_cells_and_updates_one_identified_sheet
+  /home/junge/pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2: DeprecationWarning: 'imghdr' is deprecated and slated for removal in Python 3.13
+    from imghdr import tests
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED smart_reporting/reporting/tests/test_native_revision_notice.py::test_workbook_notice_preserves_cells_and_updates_one_identified_sheet
+1 failed, 1 passed, 1 warning in 9.39s

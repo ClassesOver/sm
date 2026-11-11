@@ -1,0 +1,46 @@
+{
+  "materials": [
+    {
+      "resource": "smart_reporting/reporting/tests/semantic_fixtures/actual.csv",
+      "sha256": "b1058879b1294bb23ce4a4158561ac3c34686d1e1783e31802263f63f61a8428",
+      "source": "人工合成工程基准",
+      "business_approved": false,
+      "scope": "synthetic-only",
+      "collected_on": "2026-11-09",
+      "conflict_status": "not_applicable"
+    },
+    {
+      "resource": "smart_reporting/reporting/tests/semantic_fixtures/budget.csv",
+      "sha256": "7de6d9e751dfb5976fb7b9b1988b8bc7d4ac2e0a98ad70d6af7013d7424dfcd1",
+      "source": "人工合成工程基准",
+      "business_approved": false,
+      "scope": "synthetic-only",
+      "collected_on": "2026-11-09",
+      "conflict_status": "not_applicable"
+    },
+    {
+      "resource": "smart_reporting/reporting/tests/semantic_fixtures/documents/synthetic-budget-policy.md",
+      "sha256": "29e485357737b208961cf6fd938c09d4151ae487946ecc6e336b37c34b1aea62",
+      "source": "人工合成工程基准",
+      "business_approved": false,
+      "scope": "synthetic-only",
+      "collected_on": "2026-11-09",
+      "conflict_status": "not_applicable"
+    },
+    {
+      "resource": "smart_reporting/reporting/tests/semantic_fixtures/documents/synthetic-project-background.md",
+      "sha256": "6a007535fca37535c0f98cb1917e4d5d230a2566b3be2adb320cdf2efaaa7b18",
+      "source": "人工合成工程基准",
+      "business_approved": false,
+      "scope": "synthetic-only",
+      "collected_on": "2026-11-09",
+      "conflict_status": "not_applicable"
+    }
+  ],
+  "missing_originals": [
+    "正式制度原件与业务签认",
+    "源表DDL/视图/ETL版本",
+    "原始单据状态与去重键",
+    "已签认对账表及差异裁定"
+  ]
+}

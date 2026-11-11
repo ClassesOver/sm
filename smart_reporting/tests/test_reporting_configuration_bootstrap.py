@@ -21,8 +21,9 @@ async def test_database_bootstrap_never_loads_files_and_requires_credential_key(
     def forbidden(*args, **kwargs):
         raise AssertionError("database 模式不能读取文件配置")
 
-    monkeypatch.setattr(bootstrap, "load_configured_report_source_registry", forbidden)
-    monkeypatch.setattr(bootstrap, "load_configured_reporting_profiles", forbidden)
+    from smart_reporting.reporting import data_source, profile
+    monkeypatch.setattr(data_source, "load_configured_report_source_registry", forbidden)
+    monkeypatch.setattr(profile, "load_configured_reporting_profiles", forbidden)
     settings = AgentSettings.from_environment(
         {"AGENT_REPORT_CONFIGURATION_MODE": "database"}, load_env_file=False
     )
@@ -30,8 +31,7 @@ async def test_database_bootstrap_never_loads_files_and_requires_credential_key(
     context = SimpleNamespace(database=SimpleNamespace(db_engine=engine))
     monkeypatch.setenv("AGENT_MANAGEMENT_CREDENTIAL_KEYS", f"test:{Fernet.generate_key().decode()}")
     try:
-        registry, profiles, provider = bootstrap._configuration_sources(context, settings)
-        assert registry is None and profiles is None
+        provider = bootstrap._configuration_sources(context, settings)
         assert provider.repository.engine is engine
         monkeypatch.delenv("AGENT_MANAGEMENT_CREDENTIAL_KEYS")
         with pytest.raises(ManagementError, match="management_secrets_unavailable"):

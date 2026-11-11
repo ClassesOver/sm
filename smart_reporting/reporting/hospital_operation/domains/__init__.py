@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
-DomainCode = Literal["income", "workload", "budget", "full_cost", "cost_control", "funds"]
+from ...semantics.request_types import DomainCode as DomainCode
+
 DOMAIN_CODES: tuple[DomainCode, ...] = (
     "income",
     "workload",

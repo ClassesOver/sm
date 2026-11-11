@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -21,17 +22,13 @@ from sqlglot import exp, parse
 from .cumulative_policy import CumulativeSnapshotPolicy as CumulativeSnapshotPolicy
 from .hospital_operation.domains import DOMAIN_CODES
 from .models import ReportingError
+from .semantics.request_types import FIELD_REF_PATTERN as FIELD_REF_PATTERN
+from .semantics.request_types import SHA256_PATTERN as SHA256_PATTERN
+from .semantics.request_types import Identity, PolicyVersionRef, ReportQuestion
 from .type_normalization import normalize_data_type
 
 REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 
-SHA256_PATTERN = r"^[0-9a-f]{64}$"
-FIELD_REF_PATTERN = (
-    r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
-    r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
-    r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."
-    r"[A-Za-z_][A-Za-z0-9_$]{0,127}$"
-)
 _CONNECTION_KEYS = frozenset(
     {
         "connection",
@@ -158,6 +155,14 @@ class ReportFileInput(StrictModel):
 
 
 class ReportRequestEnvelope(StrictModel):
+    knowledge_as_of: AwareDatetime | None = Field(default=None, alias="knowledgeAsOf")
+    scenario: Identity | None = None
+    statistical_policy_version: PolicyVersionRef | None = Field(
+        default=None, alias="statisticalPolicyVersion"
+    )
+    questions: tuple[ReportQuestion, ...] | None = Field(default=None, min_length=1, max_length=50)
+    display_unit: str | None = Field(default=None, alias="displayUnit", min_length=1, max_length=32)
+    comparison_period: ReportPeriod | None = Field(default=None, alias="comparisonPeriod")
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
@@ -176,6 +181,20 @@ class ReportRequestEnvelope(StrictModel):
         default="static", alias="visualizationMode"
     )
     file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
+
+    @field_validator("knowledge_as_of", mode="before")
+    @classmethod
+    def explicit_knowledge_time(cls, value):
+        if isinstance(value, (int, float, bool)):
+            raise ValueError("knowledgeAsOf须为带时区的明确日期时间")
+        return value
+
+    @field_validator("questions")
+    @classmethod
+    def unique_questions(cls, value: tuple[ReportQuestion, ...] | None):
+        if value is not None and len({item.id for item in value}) != len(value):
+            raise ValueError("问题ID不能重复")
+        return value
 
     @field_validator("report_goal")
     @classmethod
@@ -236,7 +255,7 @@ class ReportRequestEnvelope(StrictModel):
             raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。") from error
 
     def workflow_payload(self, *, default_source_ids: tuple[str, ...]) -> dict[str, Any]:
-        payload = self.model_dump(mode="json", by_alias=True, exclude_none=True)
+        payload = self.model_dump(mode="json", by_alias=True, exclude_none=True, exclude_unset=True)
         payload["sourceIds"] = list(self.source_ids or default_source_ids)
         return payload
 
@@ -290,6 +309,14 @@ class ReportPromptInput(StrictModel):
 class ReportingWorkflowInput(StrictModel):
     """AgentOS 可校验的 Workflow 顶层联合输入。"""
 
+    knowledge_as_of: AwareDatetime | None = Field(default=None, alias="knowledgeAsOf")
+    scenario: Identity | None = None
+    statistical_policy_version: PolicyVersionRef | None = Field(
+        default=None, alias="statisticalPolicyVersion"
+    )
+    questions: tuple[ReportQuestion, ...] | None = Field(default=None, min_length=1, max_length=50)
+    display_unit: str | None = Field(default=None, alias="displayUnit", min_length=1, max_length=32)
+    comparison_period: ReportPeriod | None = Field(default=None, alias="comparisonPeriod")
     version: Literal["1"] = "1"
     prompt: str | None = Field(default=None, min_length=1, max_length=20_000)
     report_goal: str | None = Field(
@@ -311,12 +338,23 @@ class ReportingWorkflowInput(StrictModel):
         default=None, alias="fileInputs", max_length=20
     )
 
+    @field_validator("knowledge_as_of", mode="before")
+    @classmethod
+    def explicit_knowledge_time(cls, value):
+        return ReportRequestEnvelope.explicit_knowledge_time(value)
+
     @model_validator(mode="after")
     def validate_variant(self) -> ReportingWorkflowInput:
         if self.prompt is not None:
             if any(
                 value is not None
                 for value in (
+                    self.knowledge_as_of,
+                    self.scenario,
+                    self.statistical_policy_version,
+                    self.questions,
+                    self.display_unit,
+                    self.comparison_period,
                     self.report_goal,
                     self.report_type,
                     self.section_count,

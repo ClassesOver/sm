@@ -7,8 +7,9 @@ from typing import Any, Literal
 from loguru import logger
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
-from ...contract import FIELD_REF_PATTERN, MeasureSemantic, ReportPeriod, StrictModel
+from ...contract import MeasureSemantic, ReportPeriod, StrictModel
 from ...data_sources import MAX_REPORT_INPUTS
+from ...semantics.request_types import Identity, ReportQuestion
 from ..query_pipeline import QueryRequirement
 
 MAX_ANALYSIS_REQUIREMENTS = MAX_REPORT_INPUTS // 3
@@ -25,6 +26,10 @@ class _StrictModel(StrictModel):
 
 
 class NormalizedReportPrompt(_StrictModel):
+    scenario: Identity | None = None
+    questions: tuple[ReportQuestion, ...] | None = Field(default=None, min_length=1, max_length=50)
+    display_unit: str | None = Field(default=None, alias="displayUnit", min_length=1, max_length=32)
+    comparison_period: ReportPeriod | None = Field(default=None, alias="comparisonPeriod")
     delivery_format: Literal["document", "pptx", "xlsx"] | None = Field(default=None, alias="deliveryFormat")
     delivery_format_ambiguous: bool = Field(default=False, alias="deliveryFormatAmbiguous")
     period: ReportPeriod | None = None
@@ -106,46 +111,6 @@ class PlanningSchema(_StrictModel):
     measure_semantics: tuple[MeasureSemantic, ...] = Field(
         default=(), alias="measureSemantics", max_length=2_000
     )
-
-
-class MeasureSemanticDecision(_StrictModel):
-    field_ref: str = Field(alias="fieldRef", pattern=FIELD_REF_PATTERN)
-    classification: Literal["measure", "dimension"]
-    reason: str = Field(min_length=1, max_length=1_000)
-    measure_semantic: MeasureSemantic | None = Field(default=None, alias="measureSemantic")
-
-    @field_validator("field_ref")
-    @classmethod
-    def normalize_field_ref(cls, value: str) -> str:
-        return value.lower()
-
-    @model_validator(mode="after")
-    def validate_classification(self) -> MeasureSemanticDecision:
-        # 决策对象同时保留字段分类和可审阅理由，但只有 measure 可以携带
-        # MeasureSemantic。这个互斥约束防止模型把同一字段一边声明为维度，
-        # 一边又偷偷提供聚合规则，导致审核界面与最终提交内容不一致。
-        if self.classification == "measure":
-            if self.measure_semantic is None:
-                raise ValueError("measure 分类必须提供 measureSemantic")
-            if self.measure_semantic.field_ref.lower() != self.field_ref:
-                raise ValueError("measureSemantic.fieldRef 必须与决策字段一致")
-        elif self.measure_semantic is not None:
-            raise ValueError("dimension 分类不得提供 measureSemantic")
-        return self
-
-
-class MeasureSemanticProposal(_StrictModel):
-    decisions: tuple[MeasureSemanticDecision, ...] = Field(default=(), max_length=2_000)
-
-    @field_validator("decisions")
-    @classmethod
-    def validate_decisions(
-        cls, value: tuple[MeasureSemanticDecision, ...]
-    ) -> tuple[MeasureSemanticDecision, ...]:
-        field_refs = [item.field_ref for item in value]
-        if len(field_refs) != len(set(field_refs)):
-            raise ValueError("指标语义候选不能重复分类同一字段")
-        return value
 
 
 class AnalysisItem(_StrictModel):
@@ -419,8 +384,6 @@ __all__ = [
     "PlanningSchemaColumn",
     "PlanningSchemaTable",
     "PlanningSchema",
-    "MeasureSemanticDecision",
-    "MeasureSemanticProposal",
     "AnalysisItem",
     "AnalysisBundle",
     "GeneratedQuery",

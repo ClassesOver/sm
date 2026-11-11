@@ -14,6 +14,7 @@ from typing import Any
 
 from ..hospital_operation.deterministic_analysis import DeterministicMetricFact, _parse_fact_period
 from ..units import MONEY_UNITS, VISIT_UNITS
+from .decimal_math import snapshot_difference
 
 _SCALAR_UNITS = frozenset((*MONEY_UNITS, *VISIT_UNITS, "人", "次", "床日", "床"))
 
@@ -98,7 +99,7 @@ def registered_cumulative_changes(
                 # Missing snapshots are not implicit zero baselines.
                 continue
             baseline = Decimal(0) if reset else amounts[index - 1]
-            value = current - baseline
+            value = snapshot_difference(current, baseline)
             converted = float(value)
             if not math.isfinite(converted) or (value != 0 and converted == 0):
                 return {}, ("cumulative_difference_out_of_range",)

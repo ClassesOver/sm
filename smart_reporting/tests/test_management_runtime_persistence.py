@@ -9,7 +9,7 @@ from smart_reporting.management.data_sources.models import SourceDraftInput
 from smart_reporting.management.models import ManagementError
 from smart_reporting.management.repository import sources, tenant_settings
 from smart_reporting.management.runtime import ManagedConfigurationProvider
-from smart_reporting.tests.management_fixtures import publish_dependencies
+from smart_reporting.tests.management_fixtures import confirm_table_access, publish_dependencies
 from smart_reporting.tests.test_management_persistence import auth_context as auth_context
 from smart_reporting.tests.test_management_release_dependencies import (
     release_context as release_context,
@@ -31,7 +31,7 @@ async def pinned_context(release_context):
     return provider, service, scopes, repo, token, scope
 
 
-async def test_runtime_snapshot_survives_provider_restart_and_source_republication(pinned_context):
+async def test_runtime_snapshot_survives_provider_restart_and_source_republication(pinned_context, monkeypatch):
     provider, service, scopes, repo, token, scope = pinned_context
     first = await provider.freeze("run-1", scope)
     old_dsn = first.sources["operations"].connection_dsn()
@@ -45,7 +45,9 @@ async def test_runtime_snapshot_survives_provider_restart_and_source_republicati
         }
     )
     await service.save_draft(token, scope, "operations", payload, 1)
-    await service.publish(token, scope, "operations", 2)
+    confirmed = await confirm_table_access(scopes, service.vault, token, scope, "operations", 2, monkeypatch)
+    assert confirmed["draftVersion"] == 3
+    await service.publish(token, scope, "operations", 3)
     restarted = ManagedConfigurationProvider(scopes, service.vault)
     restored = await restarted.load_pinned(scope, first.references)
     assert restored.source_versions == {"operations": 1}
@@ -135,7 +137,7 @@ async def test_tampered_catalog_is_not_used_to_restore_frozen_configuration(pinn
 
 
 @pytest.mark.parametrize("write", ["create", "save"])
-async def test_normalized_source_input_remains_readable_after_publication(release_context, write):
+async def test_normalized_source_input_remains_readable_after_publication(release_context, write, monkeypatch):
     service, scopes, _, token, scope = release_context
     source_id = "normalized" if write == "create" else "operations"
     payload = SourceDraftInput.model_validate(
@@ -152,6 +154,9 @@ async def test_normalized_source_input_remains_readable_after_publication(releas
     else:
         draft = await service.save_draft(token, scope, source_id, payload, 1)
     await publish_dependencies(scopes, token, scope, source_id, draft["version"])
+    if write == "save":
+        confirmed = await confirm_table_access(scopes, service.vault, token, scope, source_id, draft["version"], monkeypatch)
+        draft["version"] = confirmed["draftVersion"]
     published = await service.publish(token, scope, source_id, draft["version"])
     provider = ManagedConfigurationProvider(scopes, service.vault)
     await provider.register_run(

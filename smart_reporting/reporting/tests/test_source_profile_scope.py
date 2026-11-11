@@ -7,6 +7,8 @@ import sqlglot
 
 from smart_reporting.reporting.data_source.models import CatalogColumn, CatalogTable, QueryResult
 from smart_reporting.reporting.data_source.profiling import collect_data_shape
+from smart_reporting.reporting.semantics.models import StatisticalPolicy
+from smart_reporting.reporting.tests.test_semantic_models import policy_payload
 
 
 @pytest.mark.anyio
@@ -63,6 +65,10 @@ async def test_profile_statistics_and_top_values_exclude_other_organizations(
             cursor = connection.execute(sqlglot.transpile(sql, read="starrocks", write="duckdb")[0])
             return QueryResult(tuple(item[0] for item in cursor.description), cursor.fetchall(), 0)
 
+        async def query_bound(self, sql, parameters):
+            cursor = connection.execute(sqlglot.transpile(sql, read="starrocks", write="duckdb")[0], parameters)
+            return QueryResult(tuple(item[0] for item in cursor.description), cursor.fetchall(), 0)
+
     try:
         shape = await collect_data_shape(
             Adapter(),
@@ -73,7 +79,10 @@ async def test_profile_statistics_and_top_values_exclude_other_organizations(
             period_granularities={"warehouse.orders": "year"},
             metadata_revision="1",
             schema_hash="a" * 64,
-            scope_filters={"warehouse.orders": {"company_id": company}},
+            policy=StatisticalPolicy.model_validate(policy_payload(filters=[{
+                "fieldRef": f"source.warehouse.orders.{company_column}",
+                "operator": "eq", "values": [company]}])),
+            policy_catalog=(table,),
         )
         result = shape.tables[0]
         assert (

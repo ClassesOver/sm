@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal
 from functools import partial
 from typing import Any
 
@@ -12,6 +15,7 @@ from pydantic import SecretStr
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
+from sqlglot import exp, parse_one
 
 from ..models import ReportingError
 from .materialization import CsvMaterializer
@@ -34,7 +38,6 @@ _SOURCE_FIELDS = frozenset(
         "topValuesLimit",
         "profileConcurrency",
         "queryConcurrency",
-        "reportingProfile",
     }
 )
 
@@ -46,7 +49,6 @@ class StarRocksSourceConfig:
     dsn_env: str
     dsn: SecretStr
     database: str
-    reporting_profile: str | None
     limits: QueryLimits
     source_type: str = "starrocks"
 
@@ -68,7 +70,6 @@ class StarRocksSourceConfig:
             "sourceType": self.source_type,
             "name": self.name,
             "database": self.database,
-            "reportingProfile": self.reporting_profile,
             "limits": self.limits.public_dict(),
         }
 
@@ -121,7 +122,6 @@ def parse_starrocks_source(
         dsn_env=dsn_env,
         dsn=SecretStr(dsn),
         database=database.lower(),
-        reporting_profile=_optional_id(raw.get("reportingProfile"), source_id),
         limits=QueryLimits(
             statement_timeout_seconds=_bounded(raw.get("statementTimeoutSeconds"), 30, 1, 300),
             max_rows=_bounded(raw.get("maxRows"), 1_000_000, 1, 5_000_000),
@@ -189,6 +189,29 @@ class StarRocksDataSourceAdapter:
         )
         return await anyio.to_thread.run_sync(partial(self._query, normalized))
 
+    def _bound_sql(self, sql: str, parameters: Mapping[str, object]) -> str:
+        normalized = validate_starrocks_read_only_sql(sql, database=self.config.database, allowed_tables=self.allowed_tables)
+        placeholders = tuple(parse_one(normalized, read="mysql").find_all(exp.Placeholder))
+        names = {item.name for item in placeholders}
+        if (not isinstance(parameters, Mapping) or any(not name or not re.fullmatch(r"p[0-9]+", name) for name in names)
+            or names != set(parameters)
+            or any(not isinstance(value, (str, int, float, Decimal, date, datetime, type(None)))
+                or (isinstance(value, float) and not math.isfinite(value))
+                or (isinstance(value, Decimal) and not value.is_finite()) for value in parameters.values())):
+            raise ReportingError("query_parameters_invalid", "查询参数与已登记SQL不一致。")
+        return normalized
+
+    async def query_bound(self, sql: str, parameters: Mapping[str, object]) -> QueryResult:
+        normalized = self._bound_sql(sql, parameters)
+        return await anyio.to_thread.run_sync(partial(self._query, normalized, parameters=dict(parameters)))
+
+    async def materialize_bound(self, sql: str, parameters: Mapping[str, object], *, max_bytes: int | None = None) -> MaterializedQueryResult:
+        normalized = self._bound_sql(sql, parameters)
+        effective_max_bytes = min(self.config.max_bytes, self.config.max_bytes if max_bytes is None else max_bytes)
+        if effective_max_bytes <= 0:
+            raise ReportingError("query_result_too_large", "查询结果字节上限无效。")
+        return await anyio.to_thread.run_sync(partial(self._materialize, normalized, parameters=dict(parameters), max_bytes=effective_max_bytes))
+
     async def materialize(
         self, sql: str, *, max_bytes: int | None = None
     ) -> MaterializedQueryResult:
@@ -251,7 +274,7 @@ class StarRocksDataSourceAdapter:
             raise ReportingError("report_catalog_failed", "无法读取 StarRocks catalog。") from error
         return tuple(result)
 
-    def _query(self, sql: str) -> QueryResult:
+    def _query(self, sql: str, *, parameters: Mapping[str, object] | None = None) -> QueryResult:
         rows: list[tuple[Any, ...]] = []
         try:
             with self._engine.connect() as connection:
@@ -260,9 +283,9 @@ class StarRocksDataSourceAdapter:
                 )
                 # SQL 已完整校验；直接交给驱动，避免 :name 字面量被识别为绑定参数。
                 # 无参数调用也防止 MySQL 驱动把字面量中的 % 作为占位符展开。
-                result = connection.execution_options(
-                    stream_results=True, no_parameters=True
-                ).exec_driver_sql(sql)
+                result = (connection.execution_options(stream_results=True).execute(text(sql), parameters)
+                    if parameters is not None else connection.execution_options(
+                        stream_results=True, no_parameters=True).exec_driver_sql(sql))
                 columns = tuple(str(name) for name in result.keys())
                 byte_count = 2
                 if byte_count > self.config.max_bytes:
@@ -292,16 +315,16 @@ class StarRocksDataSourceAdapter:
             raise ReportingError("source_query_failed", "StarRocks 查询执行失败。") from error
         return QueryResult(columns=columns, rows=tuple(rows), byte_count=byte_count)
 
-    def _materialize(self, sql: str, *, max_bytes: int | None = None) -> MaterializedQueryResult:
+    def _materialize(self, sql: str, *, max_bytes: int | None = None, parameters: Mapping[str, object] | None = None) -> MaterializedQueryResult:
         try:
             with self._engine.connect() as connection:
                 connection.execute(
                     text(f"SET query_timeout = {self.config.statement_timeout_seconds}")
                 )
                 # 与 query 使用相同的无参数执行契约，保留已校验 SQL 的原始字面量。
-                result = connection.execution_options(
-                    stream_results=True, no_parameters=True
-                ).exec_driver_sql(sql)
+                result = (connection.execution_options(stream_results=True).execute(text(sql), parameters)
+                    if parameters is not None else connection.execution_options(
+                        stream_results=True, no_parameters=True).exec_driver_sql(sql))
                 columns = tuple(str(name) for name in result.keys())
                 materializer = CsvMaterializer(
                     columns,
@@ -328,14 +351,6 @@ def _name(value: Any, source_id: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > 200:
         raise ValueError(f"报表数据源 {source_id} 的 name 无效。")
     return value.strip()
-
-
-def _optional_id(value: Any, source_id: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
-        raise ValueError(f"报表数据源 {source_id} 的 reportingProfile 无效。")
-    return value
 
 
 def _runtime_tables(value: tuple[str, ...], database: str) -> tuple[str, ...]:

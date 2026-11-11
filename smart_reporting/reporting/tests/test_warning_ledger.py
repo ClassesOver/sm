@@ -46,7 +46,7 @@ async def test_review_packet_preserves_individual_evidence_and_binds_versions(tm
     index = await editor.trace.require_index(context)
     subject = next(item for item in index.subject_bindings if item.number_reference is not None)
     markdown = next(file for file in index.files if file.resource_id == index.markdown_file_resource_id)
-    quality = QualityBundle(reportId=index.report_id, revision=index.revision,
+    quality = QualityBundle(reportId=index.report_id, reportBasisId=index.report_basis_id, revision=index.revision,
                             markdownSha256=markdown.sha256, inputSha256="b" * 64, issues=(
         QualityIssue(code="assertion_support_unknown", subjectId=subject.subject_id, reasons=("scope_unknown",)),
         QualityIssue(code="assertion_support_unknown", subjectId=subject.subject_id, reasons=("statement_not_supported",)),
@@ -100,7 +100,7 @@ async def test_ledger_groups_dependencies_without_losing_or_adjudicating_issues(
         QualityIssue(code="future_check", reasons=("future_reason",)),
         QualityIssue(code="future_check", reasons=()),
     )
-    quality = QualityBundle(reportId=index.report_id, revision=index.revision,
+    quality = QualityBundle(reportId=index.report_id, reportBasisId=index.report_basis_id, revision=index.revision,
                             markdownSha256="a" * 64, inputSha256="b" * 64, issues=issues)
     before = quality.model_dump_json()
     ledger = build_warning_ledger(quality, index)
@@ -138,7 +138,7 @@ async def test_same_fact_key_cannot_merge_distinct_frozen_references(tmp_path, c
     refs = (*subject.fact_refs, other_ref) if change == "extra_unkeyed" else (other_ref,)
     other = subject.model_copy(update={"subject_id": "sub-" + "f" * 16, "fact_refs": refs})
     index = index.model_copy(update={"subject_bindings": (subject, other)})
-    quality = QualityBundle(reportId=index.report_id, revision=index.revision,
+    quality = QualityBundle(reportId=index.report_id, reportBasisId=index.report_basis_id, revision=index.revision,
                             markdownSha256="a" * 64, inputSha256="b" * 64, issues=tuple(
         QualityIssue(code="assertion_support_unknown", subjectId=item.subject_id, reasons=("scope_unknown",))
         for item in (subject, other)
@@ -162,7 +162,7 @@ async def test_group_identity_tracks_frozen_bytes_and_ignores_reference_order(tm
     subject = subject.model_copy(update={"fact_refs": (first, second)})
     copy = subject.model_copy(update={"subject_id": "sub-" + "f" * 16, "fact_refs": (second, first, first)})
     index = index.model_copy(update={"subject_bindings": (subject, copy)})
-    quality = QualityBundle(reportId=index.report_id, revision=index.revision,
+    quality = QualityBundle(reportId=index.report_id, reportBasisId=index.report_basis_id, revision=index.revision,
                             markdownSha256="a" * 64, inputSha256="b" * 64, issues=tuple(
         QualityIssue(code="assertion_support_unknown", subjectId=item.subject_id, reasons=("scope_unknown",))
         for item in (subject, copy)

@@ -14,6 +14,8 @@ from ..hospital_operation.professional_review import (
     PROFESSIONAL_REVIEW_VERSION,
     review_professional_content,
 )
+from ..semantics.models import ClaimSupport, Identity, QuestionCoverage
+from ..semantics.question_coverage import RegisteredAnswerPlan
 from ..workflow.answer_review import AnswerReviewPlan, AnswerReviewResult, evaluate_answer_review
 from ..workflow.management_overview import (
     OVERVIEW_VERSION,
@@ -21,6 +23,10 @@ from ..workflow.management_overview import (
     build_management_overview,
 )
 from ..workflow.questions import QuestionSet
+from ..workflow.registered_overview import (
+    RegisteredManagementOverview,
+    build_registered_management_overview,
+)
 from .assertions import (
     RULE_VERSION,
     AssertionCompiler,
@@ -30,7 +36,7 @@ from .assertions import (
 from .chart_quality import ChartQualityCheck, evaluate_chart_quality
 from .contracts_v1 import RevisionTraceIndexV1, canonical_sha256
 from .semantic_alignment import SemanticAlignmentCheck, evaluate_semantic_alignment
-from .semantic_bindings import reference_fact_ids, statement_fingerprints
+from .semantic_bindings import NumberReferenceResolver, reference_fact_ids, statement_fingerprints
 from .table_quality import TableQualityCheck, evaluate_table_quality, uncovered_table_lines
 
 if TYPE_CHECKING:
@@ -41,6 +47,13 @@ SEMANTIC_RULE_VERSIONS = {"chartReview": "2", "quantityBinding": "2", "tableCalc
 
 
 SEMANTIC_RULE_VERSIONS["standardMatplotlib"] = "1"
+SEMANTIC_RULE_VERSIONS["registeredMetricResults"] = "1"
+SEMANTIC_RULE_VERSIONS["reportBasisPublication"] = "1"
+SEMANTIC_RULE_VERSIONS["registeredClaimPeriod"] = "1"
+SEMANTIC_RULE_VERSIONS["registeredClaimSupport"] = "2"
+SEMANTIC_RULE_VERSIONS["registeredKnowledgeSupport"] = "2"
+SEMANTIC_RULE_VERSIONS["registeredQuestionCoverage"] = "1"
+SEMANTIC_RULE_VERSIONS["registeredManagementOverview"] = "1"
 
 
 class StatementReview(StrictModel):
@@ -67,12 +80,16 @@ class QualityBundle(StrictModel):
     version: Literal["1"] = "1"
     checker_version: Literal["assertions/1"] = Field(default=RULE_VERSION, alias="checkerVersion")
     report_id: str = Field(alias="reportId")
+    report_basis_id: Identity = Field(alias='reportBasisId')
     revision: int
     markdown_sha256: str = Field(alias="markdownSha256", pattern=SHA256_PATTERN)
     input_sha256: str = Field(alias="inputSha256", pattern=SHA256_PATTERN)
     mode: Literal["shadow", "enabled"] = "shadow"
     all_key_facts_evaluated: Literal[False] = Field(default=False, alias="allKeyFactsEvaluated")
     assertions: tuple[AssertionResult, ...] = ()
+    claim_support: tuple[ClaimSupport, ...] = Field(default=(), alias='claimSupport')
+    registered_question_coverage: tuple[QuestionCoverage, ...] = Field(default=(), alias='registeredQuestionCoverage')
+    registered_answer_plan: RegisteredAnswerPlan | None = Field(default=None, alias='registeredAnswerPlan')
     issues: tuple[QualityIssue, ...] = ()
     subject_assertions: dict[str, str] = Field(default_factory=dict, alias="subjectAssertions")
     chart_checks: dict[str, ChartQualityCheck] = Field(default_factory=dict, alias="chartChecks")
@@ -82,6 +99,7 @@ class QualityBundle(StrictModel):
     question_specs: QuestionSet | None = Field(default=None, alias="questionSpecs")
     answer_review_plan: AnswerReviewPlan | None = Field(default=None, alias="answerReviewPlan")
     answer_review: AnswerReviewResult | None = Field(default=None, alias="answerReview")
+    registered_management_overview: RegisteredManagementOverview | None = Field(default=None, alias="registeredManagementOverview")
     management_overview: ManagementOverview | None = Field(default=None, alias="managementOverview")
     question_coverage: dict = Field(default_factory=dict, alias="questionCoverage")
     question_assertions: dict[str, tuple[str, ...]] = Field(
@@ -99,6 +117,8 @@ def evaluate_quality_bundle(
     questions: QuestionSet | None = None,
     answer_review_plan: AnswerReviewPlan | None = None,
     heading_numbers: tuple[HeadingNumber, ...] = (),
+    registered_answer_plan: RegisteredAnswerPlan | None = None,
+    knowledge_evidence: Mapping | None = None,
 ) -> QualityBundle:
     """Identity-check again at this boundary. Missing data only degrades dependents."""
     from .markdown_body import trace_body_cache_scope_sync
@@ -116,6 +136,8 @@ def evaluate_quality_bundle(
             questions=questions,
             answer_review_plan=answer_review_plan,
             heading_numbers=heading_numbers,
+            registered_answer_plan=registered_answer_plan,
+            knowledge_evidence=knowledge_evidence,
         )
 
 
@@ -129,6 +151,8 @@ def _evaluate_quality_bundle(
     questions: QuestionSet | None,
     answer_review_plan: AnswerReviewPlan | None,
     heading_numbers: tuple[HeadingNumber, ...],
+    registered_answer_plan: RegisteredAnswerPlan | None,
+    knowledge_evidence: Mapping | None,
 ) -> QualityBundle:
     trusted: list[str] = []
     documents = {}
@@ -162,15 +186,17 @@ def _evaluate_quality_bundle(
             ):
                 unavailable.add(file.resource_id)
                 continue
+            metric_context = document.get("metricContext")
+            if isinstance(metric_context, Mapping) and metric_context.get("basisId") != index.report_basis_id:
+                unavailable.add(file.resource_id)
+                continue
             documents[file.resource_id] = document
             trusted.append(raw.decode("utf-8"))
         except (UnicodeDecodeError, ReportingError):
             unavailable.add(file.resource_id)
-    compiler = AssertionCompiler(
-        trusted,
-        profile_hash=index.profile_hash or "0" * 64,
-        authorization_scope_hash=authorization_scope_hash,
-    )
+    resolver = NumberReferenceResolver(trusted)
+    compiler = None
+    claim_support = []
     issues: list[QualityIssue] = []
     issues.extend(QualityIssue(code=issue.code, reasons=(issue.message, *issue.review_ids))
                   for issue in review_professional_content(markdown))
@@ -240,6 +266,16 @@ def _evaluate_quality_bundle(
         ),
     )
     for subject in index.subject_bindings:
+        if subject.narrative_reference is not None:
+            from .registered_claims import registered_narrative_support
+
+            support, reasons = registered_narrative_support(subject, markdown,
+                basis_id=index.report_basis_id, knowledge_evidence=knowledge_evidence or {})
+            claim_support.append(support)
+            if reasons:
+                issues.append(QualityIssue(code='registered_claim_support_unknown', subjectId=subject.subject_id,
+                    reasons=reasons))
+            continue
         number = subject.number_reference
         if number is None:
             continue
@@ -266,9 +302,33 @@ def _evaluate_quality_bundle(
                     reasons.append("fact_binding_mismatch")
         if fingerprints[number.claim_id] != number.statement_sha256:
             reasons.append("statement_changed")
+        selected = resolver.resolve(number.token) if number.table_derivation is None else None
+        native_subject = bool(subject.fact_refs) and all(
+            ref.json_pointer.startswith('/metricContext/calculations/') for ref in subject.fact_refs)
+        if native_subject and selected is None:
+            claim_support.append(ClaimSupport(subject_id=subject.subject_id, kind='fact',
+                fact_refs=tuple(ref.fact_key for ref in subject.fact_refs if ref.fact_key), support_status='unverified'))
+            issues.append(QualityIssue(code='registered_claim_support_unknown', subjectId=subject.subject_id,
+                reasons=tuple(dict.fromkeys((*reasons, 'registered_result_unavailable')))))
+            continue
+        if selected is not None and selected.get('period_boundary') == 'half_open':
+            from .registered_claims import registered_claim_support
+
+            detail = check_claim(number.claim_id, selected['value'], expected_unit=selected['unit'],
+                expected_scope=selected['scope'], expected_reference=selected,
+                semantic_receipt=number.semantic_receipt, section_id=subject.locator.section_id)
+            # 空分组维度表示口径内总体，不再借用旧Profile的scope_unknown规则。
+            support, native_reasons = registered_claim_support(subject, selected,
+                project_semantic_headings(markdown, heading_numbers), detail, reasons, knowledge_evidence=knowledge_evidence)
+            claim_support.append(support)
+            if native_reasons:
+                issues.append(QualityIssue(code='registered_claim_support_unknown', subjectId=subject.subject_id,
+                    reasons=native_reasons, statementReview=StatementReview(
+                        numericStatus=detail['status'], warnings=tuple(detail['warnings']))))
+            continue
         calc = number.table_derivation is None and number.token.startswith("{{calc:")
         request = (
-            assertion_request_for_token(number.token, compiler.resolver)
+            assertion_request_for_token(number.token, resolver)
             if number.table_derivation is None and not calc
             else None
         )
@@ -289,7 +349,7 @@ def _evaluate_quality_bundle(
                     number.token, number.table_derivation, calculation_sources,
                 )
             else:
-                selected = None if reasons else compiler.resolver.resolve(number.token)
+                selected = None if reasons else resolver.resolve(number.token)
             if not reasons and selected is None:
                 reasons.append("operation_semantics_not_evaluated")
             elif selected is not None:
@@ -311,6 +371,9 @@ def _evaluate_quality_bundle(
                     # 与已登记运算语义的引用一致：未登记统计范围时不默认全院。
                     reasons.append("scope_unknown")
         elif not reasons:
+            if compiler is None:
+                compiler = AssertionCompiler(trusted, profile_hash=index.profile_hash or '0' * 64,
+                    authorization_scope_hash=authorization_scope_hash)
             assertion = compiler.compile(request)
             assertions[assertion.assertion_id] = assertion
             bindings[subject.subject_id] = assertion.assertion_id
@@ -322,7 +385,7 @@ def _evaluate_quality_bundle(
                             assertion.assertion_id
                         )
             reasons.extend(assertion.reasons)
-            selected = compiler.resolver.resolve(number.token)
+            selected = resolver.resolve(number.token)
             if selected is not None:
                 detail = check_claim(
                     number.claim_id,
@@ -351,6 +414,7 @@ def _evaluate_quality_bundle(
     input_hash = canonical_sha256(
         {
             "markdownSha256": markdown_hash,
+            "reportBasisId": index.report_basis_id,
             "profileHash": index.profile_hash,
             "sourceIdentities": sorted(
                 (file.resource_id, file.sha256)
@@ -360,12 +424,16 @@ def _evaluate_quality_bundle(
             "bindings": [
                 item.model_dump(mode="json", by_alias=True) for item in index.subject_bindings
             ],
+            "knowledgeEvidence": [{'reference': item.reference.model_dump(mode='json', by_alias=True),
+                'hit': item.hit.model_dump(mode='json', by_alias=True), 'period': item.period.model_dump(mode='json')}
+                for _, item in sorted((knowledge_evidence or {}).items())],
             "unavailable": sorted(unavailable),
             "ruleVersion": RULE_VERSION,
             "semanticRuleVersions": SEMANTIC_RULE_VERSIONS,
             "headingNumbers": [heading.model_dump(mode="json", by_alias=True) for heading in heading_numbers],
             "authorizationScopeHash": authorization_scope_hash,
             "answerReviewPlan": answer_review_plan.model_dump(mode="json", by_alias=True) if answer_review_plan else None,
+            "registeredAnswerPlan": registered_answer_plan.model_dump(mode='json', by_alias=True) if registered_answer_plan else None,
             "questionSpecs": questions.model_dump(mode="json", by_alias=True)
             if questions
             else None,
@@ -379,13 +447,15 @@ def _evaluate_quality_bundle(
             },
         }
     )
+    native_inputs = any(document.get('metricContext') for document in documents.values()) or any(
+        ref.json_pointer.startswith('/metricContext/') for subject in index.subject_bindings for ref in subject.fact_refs)
     review = None
     coverage = {
         "required": len(questions.required_question_ids) if questions is not None else None,
         "evaluated": 0, "answered": 0, "effectiveAnswerRate": None,
         "evaluationStatus": "review_unavailable" if questions is not None else "specification_unavailable",
     }
-    if questions is not None:
+    if questions is not None and not native_inputs:
         try:
             review = evaluate_answer_review(
                 questions, answer_review_plan, tuple(assertions.values()), bindings,
@@ -405,14 +475,28 @@ def _evaluate_quality_bundle(
             review = None
             logger.warning("answer_review_unavailable reason={}", type(error).__name__)
             issues.append(QualityIssue(code="answer_review_unavailable", reasons=("review_plan_or_checker_invalid",)))
+    from ..semantics.question_coverage import evaluate_registered_question_coverage
+
+    native_questions = evaluate_registered_question_coverage(basis_id=index.report_basis_id,
+        documents=documents, supports=claim_support, questions=questions, plan=registered_answer_plan) if native_inputs else ()
+    if native_questions:
+        evaluated = sum('question_completion_mapping_unavailable' not in item.issue_codes for item in native_questions)
+        answered = sum(item.status == 'answered' for item in native_questions)
+        coverage = {'required': len(native_questions), 'evaluated': evaluated, 'answered': answered,
+            'effectiveAnswerRate': answered / len(native_questions) if evaluated == len(native_questions) else None,
+            'evaluationStatus': 'evaluated' if evaluated == len(native_questions) else 'not_fully_evaluated'}
     bundle = QualityBundle(
         reportId=index.report_id,
+        reportBasisId=index.report_basis_id,
         revision=index.revision,
         markdownSha256=markdown_hash,
         inputSha256=input_hash,
         mode=mode,
         semanticRuleVersions=SEMANTIC_RULE_VERSIONS,
         assertions=tuple(assertions.values()),
+        claimSupport=tuple(claim_support),
+        registeredQuestionCoverage=native_questions,
+        registeredAnswerPlan=registered_answer_plan,
         subjectAssertions=bindings,
         chartChecks=chart_checks,
         semanticChecks=semantic_checks,
@@ -427,6 +511,8 @@ def _evaluate_quality_bundle(
         },
     )
     try:
+        if native_inputs:
+            return bundle.model_copy(update={"registered_management_overview": build_registered_management_overview(bundle, documents)})
         overview = build_management_overview(bundle)
     except Exception as error:
         from loguru import logger
@@ -440,6 +526,10 @@ def _evaluate_quality_bundle(
         bundle = bundle.model_copy(update={"issues": (*bundle.issues, QualityIssue(
             code="management_overview_unavailable", reasons=("overview_check_failed",),
         ))})
+    if native_inputs:
+        return bundle.model_copy(update={"registered_management_overview": RegisteredManagementOverview(
+            report_basis_id=index.report_basis_id, input_sha256=input_hash, markdown_sha256=markdown_hash,
+            status='unavailable', issue_codes=('overview_check_failed',))})
     return bundle.model_copy(update={"management_overview": overview})
 
 
@@ -452,6 +542,7 @@ def quality_bundle_is_current(
 ) -> bool:
     return (
         bundle.report_id == index.report_id
+        and bundle.report_basis_id == index.report_basis_id
         and bundle.revision == index.revision
         and bundle.markdown_sha256 == hashlib.sha256(markdown.encode()).hexdigest()
         and bundle.input_sha256 == input_sha256

@@ -42,7 +42,6 @@ async def release_context(auth_context):
             "name": "经营数仓",
             "database": "warehouse",
             "dsn": "starrocks://reporter:test-secret@localhost:9030/warehouse",
-            "reportingProfileVersionId": "base:1",
             "metadataVersionId": "operations:1",
         }
     )
@@ -100,7 +99,6 @@ async def test_publication_requires_published_complete_catalog_in_same_scope(rel
             "name": "另一公司",
             "database": "warehouse",
             "dsn": "starrocks://reporter:other-secret@localhost:9030/warehouse",
-            "reportingProfileVersionId": "base:1",
             "metadataVersionId": "operations:1",
         }
     )

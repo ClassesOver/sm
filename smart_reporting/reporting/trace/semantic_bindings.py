@@ -41,6 +41,9 @@ from .value_references import UNREGISTERED_NUMBER_REASON, value_reference_failur
 
 
 def reference_fact_ids(token: str) -> tuple[str, ...]:
+    native = re.fullmatch(r'\{\{value:([A-Za-z0-9][A-Za-z0-9_.:-]*):value:([^:{}]*)\}\}', token)
+    if native:
+        return (native[1],)
     return tuple(dict.fromkeys(re.findall(r"fact-[0-9a-f]{16}", token)))
 
 
@@ -140,6 +143,11 @@ def _statement_fingerprint(markdown: str, claim_id: str) -> str | None:
     if markdown.count(marker) != 1:
         return None
     before, after = markdown.split(marker)
+    before = re.sub(r"\[\[[^\]\n]+\]\]", "", before).rstrip(" \t")
+    if before.endswith(tuple("。！？；;")):
+        # 句末文字引用属于刚结束的句子，不绑定空文本或后面另一句。
+        before = before.rstrip("。！？；;")
+        after = ""
     # 只取标记所在句：从前文末尾反查断句符、在后文中正查，不切分整段正文。
     start = max(before.rfind(mark) for mark in _STATEMENT_BREAKS) + 1
     end_match = _STATEMENT_BREAK.search(after)
@@ -415,6 +423,8 @@ class NumberReferenceResolver:
         for token, value, unit, target in _frozen_number_entries(contents):
             self.numbers.setdefault(token, []).append((value, unit, target))
         self.entries = {}
+        self.registered_results = {}
+        self.registered_definitions = {}
         self.conflicts = set()
         records = {}
         for bundle in frozen_fact_bundles(contents):
@@ -426,6 +436,15 @@ class NumberReferenceResolver:
                     record = merged or record
                 records[key] = record
             document = bundle.model_dump(mode="json", by_alias=True)
+            if bundle.metric_context is not None:
+                for calculation in bundle.metric_context.calculations:
+                    for result in calculation.results:
+                        self.entries[result.fact_id] = result.model_dump(mode="json", by_alias=True)
+                        self.registered_results[result.fact_id] = result
+                        definitions = [metric for metric in bundle.metric_context.metrics
+                                       if metric.version_ref() == result.metric_version]
+                        if len(definitions) == 1:
+                            self.registered_definitions[result.fact_id] = definitions[0]
             for _, array in FACT_ARRAYS:
                 for fact in document.get(array, ()):
                     key = fact.get("factId")
@@ -451,7 +470,11 @@ class NumberReferenceResolver:
             candidates: dict[tuple[str, str], list[str]] = {}
             preferred: dict[tuple[str, str], str] = {}
             for token, matches in self.numbers.items():
-                _, fact, field, _ = token[2:-2].split(":", 3)
+                ids = reference_fact_ids(token)
+                if len(ids) == 1 and ids[0] in self.registered_results:
+                    fact, field = ids[0], 'value'
+                else:
+                    _, fact, field, _ = token[2:-2].split(":", 3)
                 candidates.setdefault((fact, field), []).append(token)
                 # 显示单位与登记单位相同的写法即原值；百分点等只有一种写法时直接采用。
                 if any((target or "") == (unit or "") for _, unit, target in matches):
@@ -526,6 +549,21 @@ class NumberReferenceResolver:
         matches = self.numbers.get(token, ())
         if not matches or len({(str(value), unit, target) for value, unit, target in matches}) != 1:
             return None
+        ids = reference_fact_ids(token)
+        primary_id = ids[0] if len(ids) == 1 else token[2:-2].split(":", 3)[1]
+        if primary_id in self.registered_results:
+            result = self.registered_results[primary_id]
+            if (primary_id in self.conflicts or result.status != "computed"
+                    or primary_id not in self.registered_definitions
+                    or token != f"{{{{value:{primary_id}:value:{result.unit}}}}}"):
+                return None
+            return {"value": result.value, "unit": result.unit,
+                    "period": result.period.model_dump(mode="json", by_alias=True),
+                    "period_boundary": "half_open",
+                    "metric_definition": self.registered_definitions[primary_id].model_dump(mode='json', by_alias=True),
+                    "periods": (), "period_roles": {},
+                    "scope": {item.dimension_id: str(item.value) for item in result.dimensions},
+                    "formula": None, "entry": self.entries[primary_id], "selector": "value"}
         ids = reference_fact_ids(token)
         if not ids or any(key not in self.entries or key in self.conflicts for key in ids):
             return None

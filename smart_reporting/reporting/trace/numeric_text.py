@@ -476,6 +476,12 @@ def _frozen_number_entries(
         document = _fact_bundle_document(content)
         if bundle is None or document is None:
             continue
+        if bundle.metric_context is not None:
+            for calculation in bundle.metric_context.calculations:
+                for result in calculation.results:
+                    if result.status == "computed":
+                        yield (f"{{{{value:{result.fact_id}:value:{result.unit}}}}}",
+                               result.value, result.unit, result.unit)
         metric_entries = {item["factId"]: item for item in document["metrics"] if item.get("factId")}
         fact_warnings = {item["factId"]: item.get("warnings", ()) for item in (*document["metrics"], *document["comparisons"]) if item.get("factId")}
         for array, fields in (
@@ -754,7 +760,9 @@ def _frozen_number_catalog(contents: tuple[str, ...]) -> dict[str, str]:
     catalog: dict[str, str] = {}
     originals: dict[str, tuple[Decimal, str | None, str | None]] = {}
     for token, value, unit, target in _frozen_number_entries(contents):
-        if any(fact_id in conflicts for fact_id in re.findall(r"fact-[0-9a-f]{16}", token)):
+        if token.split(":", 2)[1] in conflicts or any(
+            fact_id in conflicts for fact_id in re.findall(r"fact-[0-9a-f]{16}", token)
+        ):
             catalog[token] = "数值待核实"
             continue
         original = (Decimal(str(value)), unit, target)
@@ -837,6 +845,27 @@ def frozen_number_guide(
         bundle = _parsed_fact_bundle(content)
         if bundle is None:
             continue
+        if bundle.metric_context is not None:
+            definitions = {metric.version_ref(): metric for metric in bundle.metric_context.metrics}
+            for calculation in bundle.metric_context.calculations:
+                for result in calculation.results:
+                    if result.fact_id in seen:
+                        continue
+                    seen.add(result.fact_id)
+                    token = f"{{{{value:{result.fact_id}:value:{result.unit}}}}}"
+                    metric = definitions.get(result.metric_version)
+                    guide.append({
+                        "factId": result.fact_id, "analysisId": bundle.analysis_id,
+                        "metric": metric.name if metric is not None else result.metric_version.metric_id,
+                        "metricVersion": result.metric_version.model_dump(by_alias=True),
+                        "basisId": result.basis_id, "calculationId": result.calculation_id,
+                        "period": result.period.model_dump(mode="json", by_alias=True),
+                        "dimensions": [item.model_dump(mode="json", by_alias=True) for item in result.dimensions],
+                        "status": result.status, "issueCodes": list(result.issue_codes),
+                        "unit": result.unit,
+                        "references": {"value": token if token in catalog and catalog[token] != "数值待核实" else None},
+                        "meaning": "已登记精确指标版本的正式计算值；期间含起日、不含止日；不能外推、重新聚合或作为因果证明。",
+                    })
         comparisons = budget_comparison_values(bundle)
         project_ratios = project_ratio_values(bundle)
         metric_shares = metric_share_values(bundle)

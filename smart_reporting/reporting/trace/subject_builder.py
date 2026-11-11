@@ -104,6 +104,14 @@ def build_claim_subject_bindings(
         for block in getattr(artifact, "blocks", ()):
             if getattr(block, "review_notices", None) is not None:
                 structured_claims.update(block.claim_ids)
+            for narrative in getattr(block, 'narrative_references', ()):
+                subject_id = _subject_id(section_code, narrative.claim_id)
+                if subject_id in used_ids:
+                    continue
+                used_ids.add(subject_id)
+                bindings.append(SubjectBindingV1(subjectId=subject_id, subjectKind='text_claim',
+                    locator=SubjectLocatorV1(sectionId=section_code), subjectSha256=narrative.statement_sha256,
+                    claimId=narrative.claim_id, narrativeReference=narrative, evidenceKind='interpretation'))
             for number in getattr(block, "number_references", ()):
                 table_derived = number.table_derivation is not None
                 ids = () if table_derived else reference_fact_ids(number.token)

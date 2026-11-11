@@ -17,14 +17,44 @@ def settings(values=None, **overrides):
     return AgentSettings.from_environment(environ, load_env_file=False)
 
 
-@pytest.mark.parametrize("mode", ["file", "database"])
+@pytest.mark.parametrize("mode", ["database"])
 def test_report_configuration_mode_is_deployment_configuration(mode):
     assert settings(AGENT_REPORT_CONFIGURATION_MODE=mode).report_configuration_mode == mode
 
 
-def test_invalid_report_configuration_mode_never_silently_uses_files():
+@pytest.mark.parametrize("mode", ["file", "unknown"])
+def test_invalid_report_configuration_mode_never_silently_uses_files(mode):
     with pytest.raises(ValueError, match="AGENT_REPORT_CONFIGURATION_MODE"):
-        settings(AGENT_REPORT_CONFIGURATION_MODE="unknown")
+        settings(AGENT_REPORT_CONFIGURATION_MODE=mode)
+
+
+def test_new_report_configuration_defaults_to_authoritative_database():
+    assert settings().report_configuration_mode == "database"
+
+
+def test_report_delivery_settings_are_loaded_from_deployment_environment():
+    current = settings(AGENT_REPORT_ORGANIZATION_NAME="试点医院",
+                       AGENT_REPORT_HEADER_LEFT="{title}",
+                       AGENT_REPORT_WATERMARK_TEXT="内部资料")
+    assert current.report_delivery_settings.branding.organization_name == "试点医院"
+    assert current.report_delivery_settings.branding.watermark_text == "内部资料"
+    assert current.report_delivery_settings.page_layout.header_left == "{title}"
+
+
+def test_report_build_identity_requires_complete_explicit_deployment_values():
+    configured = settings(AGENT_REPORT_BUILD_COMMIT="a" * 40,
+        AGENT_REPORT_SOURCE_HASH="b" * 64, AGENT_REPORT_DEPENDENCY_HASH="c" * 64,
+        AGENT_REPORT_COMPILER_VERSION="semantic-v1")
+    assert configured.report_build_identity.commit == "a" * 40
+    assert configured.report_build_identity.source_hash == "b" * 64
+    assert configured.report_build_identity.dependency_hash == "c" * 64
+    assert settings().report_build_identity is None
+    with pytest.raises(ValueError):
+        settings(AGENT_REPORT_BUILD_COMMIT="a" * 40)
+    with pytest.raises(ValueError):
+        settings(AGENT_REPORT_BUILD_COMMIT="invalid",
+            AGENT_REPORT_SOURCE_HASH="b" * 64, AGENT_REPORT_DEPENDENCY_HASH="c" * 64,
+            AGENT_REPORT_COMPILER_VERSION="semantic-v1")
 
 
 def test_settings_defaults():

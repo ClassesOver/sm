@@ -428,9 +428,9 @@ def create_reporting_workflow(
     normalize_report_request: StepExecutor,
     prepare_reference_materials: StepExecutor | None = None,
     confirm_source: StepExecutor,
+    select_report_metrics: StepExecutor,
+    calculate_report_metrics: StepExecutor,
     prepare_data_profile: StepExecutor,
-    propose_measure_semantics: StepExecutor,
-    commit_measure_semantics: StepExecutor,
     generate_outline: StepExecutor,
     generate_analysis_plan: StepExecutor,
     generate_query_candidates: StepExecutor,
@@ -498,7 +498,21 @@ def create_reporting_workflow(
                 max_retries=1,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
-            # 数据理解计划决定画像范围，画像结果又是后续语义和分析规划的唯一输入。
+            Step(
+                step_id="select-report-metrics",
+                name="匹配问题与已发布指标",
+                executor=_timed_step_executor(select_report_metrics, step_id="select-report-metrics"),
+                max_retries=0,
+                human_review=HumanReview(on_error=OnError.fail),
+            ),
+            Step(
+                step_id="calculate-report-metrics",
+                name="计算并登记正式指标",
+                executor=_timed_step_executor(calculate_report_metrics, step_id="calculate-report-metrics"),
+                max_retries=0,
+                human_review=HumanReview(on_error=OnError.fail),
+            ),
+            # 数据理解计划决定受限画像范围；正式指标定义只来自已登记口径。
             # 两者之间没有人工审核或可恢复副作用，放在同一失败关闭步骤中可以避免把
             # 同一份中间状态重复持久化；内部仍按“先计划、后画像”顺序执行，不能绕过
             # 计划对数据探查范围的限制。
@@ -507,27 +521,6 @@ def create_reporting_workflow(
                 name="确定数据范围并执行受限数据画像",
                 executor=_timed_step_executor(prepare_data_profile, step_id="prepare-data-profile"),
                 max_retries=1,
-                human_review=HumanReview(on_error=OnError.fail),
-            ),
-            # 指标语义候选与正式提交必须拆成两个 Workflow Step。前一步只允许模型生成
-            # 候选且不能修改 session_state；后一步由确定性服务端代码重新校验候选并写入
-            # 结构快照，模型不能通过直接改 Workflow state 绕过服务端口径约束。
-            Step(
-                step_id="propose-measure-semantics",
-                name="生成指标语义候选",
-                executor=_timed_step_executor(
-                    propose_measure_semantics, step_id="propose-measure-semantics"
-                ),
-                max_retries=1,
-                human_review=HumanReview(on_error=OnError.fail),
-            ),
-            Step(
-                step_id="commit-measure-semantics",
-                name="提交已确认指标语义",
-                executor=_timed_step_executor(
-                    commit_measure_semantics, step_id="commit-measure-semantics"
-                ),
-                max_retries=0,
                 human_review=HumanReview(on_error=OnError.fail),
             ),
             Step(

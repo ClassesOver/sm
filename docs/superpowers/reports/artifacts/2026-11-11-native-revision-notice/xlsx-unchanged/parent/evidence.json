@@ -1,0 +1,27 @@
+{
+  "caseId": "C02",
+  "basisId": "85cd85a2-6e36-52ec-8b8b-62b576bfbbe1",
+  "calculationReceiptId": "initial-ca1721a2a0964bf71c9304dd37ac5a91bae96e9b1a2a0bdba2d0460b2cbb30c2",
+  "rootFactId": "fact-a0eb121836a296ae",
+  "expectedValue": "70",
+  "files": [
+    {
+      "file": "c02-corrected.xlsx",
+      "path": "报表/智能分析/policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3/workbook/revision-3/report.xlsx",
+      "sha256": "7e7f6a474d89b5802ed4a4df239dfdb0fe896048b206d39ed6552d6133093945",
+      "size": 7351
+    }
+  ],
+  "factPresentation": {
+    "factPresentationVerified": true,
+    "coveredFactIds": [
+      "fact-a0eb121836a296ae"
+    ],
+    "missingFactIds": [],
+    "businessApproval": "not_performed"
+  },
+  "newEditorVerified": true,
+  "httpDownloadsVerified": true,
+  "businessApproval": "not_performed",
+  "parentEditorFlowVerified": false
+}

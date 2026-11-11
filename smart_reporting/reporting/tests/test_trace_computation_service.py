@@ -440,7 +440,7 @@ def test_finalize_extracts_computation_records_into_index() -> None:
     from .test_trace_index_builder import MARKDOWN, _handle, _lineage
 
     record = _record(finding_count=2)
-    index = build_csv_trace_index(
+    index = build_csv_trace_index(report_basis_id="basis-test",
         handles=(_handle("dataset-url-abc0001"),),
         lineage=(_lineage("dataset-url-abc0001"),),
         report_id="run1",

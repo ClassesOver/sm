@@ -12,7 +12,7 @@ const smokeCase = process.env.WORKBOOK_SMOKE_CASE ?? 'format-autosum'
 if (!['format-autosum', 'sort', 'row-column', 'draft-recovery', 'structural-undo', 'rotation'].includes(smokeCase)) throw new Error(`Unknown workbook smoke case: ${smokeCase}`)
 const baseUrl = `http://127.0.0.1:${port}`
 const runPython = input => {
-  const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', `
+  const result = spawnSync(process.env.WORKBOOK_SMOKE_PYTHON ?? `${repo}/.venv/bin/python`, ['-c', `
 import base64, json, sys
 from io import BytesIO
 from openpyxl import Workbook, load_workbook
@@ -89,7 +89,11 @@ const sourceSha = createHash('sha256').update(sourceBytes).digest('hex')
 let savedBytes
 let savePayload
 const saveAttempts = []
-const server = spawn('./node_modules/.bin/vite', ['--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+const builtDirectory = process.env.WORKBOOK_SMOKE_BUILD_DIR
+const server = spawn('./node_modules/.bin/vite', [
+  ...(builtDirectory ? ['preview', '--outDir', builtDirectory] : []),
+  '--host', '127.0.0.1', '--port', String(port), '--strictPort',
+], { cwd: frontend, stdio: 'ignore' })
 let browser
 try {
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -291,7 +295,7 @@ try {
     assert.equal(await page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('native-editor-draft:'))), false)
   }
   assert.deepEqual(pageErrors, [])
-  const evidence = { ok: true, scenario: smokeCase, browserVersion: browser.version(), sourceSha256:sourceSha, downloadedSha256:createHash('sha256').update(downloaded).digest('hex'), operations:savePayload.operations, operationKinds: savePayload.operations.map(operation => operation.kind), downloadedBytes: downloaded.length, reopened, desktopVerified:false }
+  const evidence = { ok: true, scenario: smokeCase, productionBuild: !!builtDirectory, browserVersion: browser.version(), sourceSha256:sourceSha, downloadedSha256:createHash('sha256').update(downloaded).digest('hex'), operations:savePayload.operations, operationKinds: savePayload.operations.map(operation => operation.kind), downloadedBytes: downloaded.length, reopened, desktopVerified:false }
   if (process.env.WORKBOOK_SMOKE_EVIDENCE_DIR) { await mkdir(process.env.WORKBOOK_SMOKE_EVIDENCE_DIR,{recursive:true}); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/source.xlsx`,sourceBytes); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/downloaded.xlsx`,downloaded); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/evidence.json`,JSON.stringify(evidence,null,2)) }
   console.log(JSON.stringify(evidence))
 } finally {

@@ -72,8 +72,9 @@ async def test_dynamic_production_steps_do_not_plan_outline_before_evidence(anyi
     workflow = create_reporting_workflow(
         db=object(), lifecycle=object(),
         **{name: executor(name) for name in (
-            "normalize_report_request", "confirm_source", "prepare_data_profile",
-            "propose_measure_semantics", "commit_measure_semantics", "generate_outline",
+            "normalize_report_request", "confirm_source", "select_report_metrics",
+            "calculate_report_metrics", "prepare_data_profile",
+            "generate_outline",
             "generate_analysis_plan", "generate_query_candidates", "materialize_datasets",
             "prepare_analysis_context", "generate_detailed_analysis_plan", "run_reporting_analysis",
             "assemble_report", "validate_report", "finalize_publication",
@@ -81,6 +82,18 @@ async def test_dynamic_production_steps_do_not_plan_outline_before_evidence(anyi
         )},
     )
     ids = [step.step_id for step in workflow.steps]
+    assert ids[:4] == ["normalize-report-request", "confirm-source", "select-report-metrics", "calculate-report-metrics"]
+    for step in workflow.steps[:4]:
+        await step.executor(StepInput(input="运营分析"), RunContext(run_id="run-1", session_id="session-1"))
+    assert calls == ["normalize_report_request", "confirm_source", "select_report_metrics", "calculate_report_metrics"]
+    calls.clear()
+    # 正式计算后不得再用模型推断、提交另一套指标语义。
+    start = ids.index("calculate-report-metrics") + 1
+    finish = ids.index("generate-analysis-plan") + 1
+    for step in workflow.steps[start:finish]:
+        await step.executor(StepInput(input="运营分析"), RunContext(run_id="run-1", session_id="session-1"))
+    assert calls == ["prepare_data_profile", "generate_analysis_plan"]
+    calls.clear()
     assert "generate-outline" not in ids
     index = ids.index("generate-detailed-analysis-plan")
     assert ids[index + 1:index + 4] == [

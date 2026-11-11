@@ -1246,7 +1246,7 @@ async def test_publication_gate_exception_preserves_download_input_and_failed_va
 
     manifest = {
         "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
-        "datasetSnapshotHash": "a" * 64, "effectiveProfileHash": "b" * 64,
+        "datasetSnapshotHash": "a" * 64, "reportBasisId": "b" * 64,
         "markdown": {"path": "reports/report.md", "mediaType": "text/markdown",
                      "size": 1, "sha256": "c" * 64},
         "citations": [{"citationId": "citation_001", "datasetId": "dataset_001",
@@ -1292,7 +1292,7 @@ async def test_publication_manifest_failures_keep_artifacts_and_report_issue(mon
 
     manifest = {
         "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
-        "datasetSnapshotHash": "a" * 64, "effectiveProfileHash": "b" * 64,
+        "datasetSnapshotHash": "a" * 64, "reportBasisId": "b" * 64,
         "markdown": {"path": "reports/report.md", "mediaType": "text/markdown",
                      "size": 1, "sha256": "c" * 64},
         "citations": [{"citationId": "citation_001", "datasetId": "dataset_001",

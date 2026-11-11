@@ -1,0 +1,2 @@
+# 隔离验收证据按原始字节保存，避免换行转换破坏登记哈希。
+docs/superpowers/reports/artifacts/2026-11-11-native-revision-notice/** -text -diff

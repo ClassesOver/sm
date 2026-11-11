@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 from functools import partial
+from hashlib import sha256
 
 from loguru import logger
 
+from ....management.models import ManagementError, ManagementScope
+from ...data_source.policy_scope import PolicyQueryAdapter
+from ...data_source.starrocks import StarRocksDataSourceAdapter
 from ...hospital_operation.professional_review import (
     BUDGET_CALCULATION_CONDITION,
     review_professional_content,
 )
+from ...semantics.basis import BasisCalculationReceipt, BasisSelectionReceipt
+from ...semantics.compiler import compile_metric
+from ...semantics.dataset_bindings import MetricDatasetBinding
+from ...semantics.execution import execute_metric
+from ...semantics.models import MetricRequest
+from ..query_pipeline import DatasetLineage, project_registered_metric_bindings
+from ..scope import resolve_reporting_workflow_scope
 from .base import (
     DOMAIN_CODES,
     MAX_REPORT_INPUTS,
@@ -18,10 +29,10 @@ from .base import (
     REPORT_ANALYSIS_PLAN_STATE_KEY,
     REPORT_APPROVED_QUERIES_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
+    REPORT_DATA_SHAPE_ISSUES_STATE_KEY,
     REPORT_DATA_SHAPES_STATE_KEY,
     REPORT_DATASET_LINEAGE_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
-    REPORT_EFFECTIVE_PROFILE_STATE_KEY,
     REPORT_PROFILE_COVERAGE_STATE_KEY,
     REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY,
     REPORT_WORKFLOW_RESULT_STATE_KEY,
@@ -52,7 +63,6 @@ from .base import (
     hashlib,
     payload_sha256,
     profile_csv_dataset,
-    project_measure_semantics_to_query_outputs,
     time_series_diagnostics_requested,
 )
 from .validation import (
@@ -80,6 +90,110 @@ async def _run_profile_job(profile_job: Any, limiter: anyio.CapacityLimiter) -> 
 
 
 class RuntimeDatasetsMixin:
+    async def _policy_query_adapters(self, run_context: RunContext) -> dict[str, PolicyQueryAdapter]:
+        """探索取数使用登记连接、目录和口径，不读取可编辑的会话筛选。"""
+        from .planning import _catalog_scope
+
+        context = await self._basis_execution_context(run_context)
+        return {
+            source_id: PolicyQueryAdapter(
+                StarRocksDataSourceAdapter(source, allowed_tables=tuple(
+                    f"{table.database}.{table.name}" for table in context.metadata[source_id].tables
+                )),
+                policy=context.policy,
+                catalog=_catalog_scope(context.metadata[source_id].tables),
+            )
+            for source_id, source in context.sources.items()
+        }
+
+    async def calculate_report_metrics(
+        self, _step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        """正式数值只执行登记定义；恢复读取已核验CSV，不重新查询当前数据。"""
+        context = await self._basis_execution_context(run_context)
+        scope = self._scope(run_context)
+        managed_scope = ManagementScope(scope["database"], scope["companyId"])
+        identity = {"user_id": scope["userId"], "thread_id": scope["callerThreadId"],
+            "report_revision": "initial"}
+        service = self.report_basis_service
+        workflow_scope = resolve_reporting_workflow_scope(
+            run_id=str(run_context.run_id), session_id=scope["sessionId"],
+            user_id=scope["userId"], stored_scope=scope,
+        )
+        tool_context = self._tool_context(run_context)
+        try:
+            receipts = await service.load_basis_receipts(
+                str(run_context.run_id), managed_scope, **identity,
+            )
+            selection = next((item for item in receipts if isinstance(item, BasisSelectionReceipt)
+                and item.receipt_id == "initial-metric-selection"), None)
+            if selection is None:
+                raise ReportingError("report_metric_selection_missing", "尚未登记本报告的问题与指标选择。")
+            adoption = await service.load_basis_receipts(
+                str(run_context.run_id), managed_scope, user_id=scope["userId"],
+                thread_id=scope["callerThreadId"], report_revision="policy-adoption-registration",
+            )
+            if adoption:
+                # 依据登记来自可信管理库，不能由会话标记选择绕过耐久取数意图。
+                calculated = await service.calculate_adoption_metrics(
+                    str(run_context.run_id), managed_scope, user_id=scope["userId"],
+                    thread_id=scope["callerThreadId"], vault=self.configuration_provider.vault,
+                    dataset_store=self.datasets, run_context=tool_context, workflow_scope=workflow_scope,
+                )
+                await service.restore_receipt_datasets(
+                    str(run_context.run_id), managed_scope, **identity, dataset_store=self.datasets,
+                    run_context=tool_context, workflow_scope=workflow_scope,
+                )
+                return StepOutput(content={"basisId": context.basis.id,
+                    "selections": [item.model_dump(mode="json", by_alias=True) for item in selection.selections],
+                    "calculations": [item.model_dump(mode="json", by_alias=True) for item in calculated]})
+            await service.restore_receipt_datasets(
+                str(run_context.run_id), managed_scope, **identity, dataset_store=self.datasets,
+                run_context=tool_context, workflow_scope=workflow_scope,
+            )
+            existing = {item.receipt_id: item for item in receipts if isinstance(item, BasisCalculationReceipt)}
+            catalog = tuple(table for metadata in context.metadata.values() for table in metadata.tables)
+            selected = tuple(dict.fromkeys(item.selected for item in selection.selections
+                if item.status == "resolved"))
+            periods = tuple(dict.fromkeys(period for period in (context.basis.request_summary.period,
+                context.basis.request_summary.comparison_period) if period is not None))
+            calculations = []
+            for metric in selected:
+                for period in periods:
+                    request = MetricRequest(metric_version=metric, basis_id=context.basis.id, period=period)
+                    calculation_id = "initial-" + sha256(request.model_dump_json().encode()).hexdigest()
+                    stored = existing.get(calculation_id)
+                    if stored is not None:
+                        if stored.request != request:
+                            raise ReportingError("report_metric_receipt_mismatch", "计算回执与登记选择不一致。")
+                    else:
+                        plan = compile_metric(request, context.policy, context.metrics, catalog)
+                        adapters = {}
+                        try:
+                            for source_id in dict.fromkeys(query.source_id for query in (*plan.checks, *plan.queries)):
+                                allowed = tuple(dict.fromkeys(table for query in (*plan.checks, *plan.queries)
+                                    if query.source_id == source_id for table in query.allowed_tables))
+                                adapters[source_id] = StarRocksDataSourceAdapter(
+                                    context.sources[source_id], allowed_tables=allowed,
+                                )
+                            calculated = await execute_metric(plan, adapters, datasets=self.datasets,
+                                run_context=tool_context, calculation_id=calculation_id)
+                        finally:
+                            for adapter in adapters.values():
+                                await adapter.aclose()
+                        stored = await service.append_basis_receipt(
+                            str(run_context.run_id), managed_scope, **identity, receipt_id=calculation_id,
+                            request=request, results=calculated.results, readiness=calculated.readiness,
+                            dataset_handles=calculated.datasets, dataset_store=self.datasets,
+                            run_context=tool_context, workflow_scope=workflow_scope,
+                        )
+                    calculations.append(stored.model_dump(mode="json", by_alias=True))
+        except ManagementError as error:
+            raise ReportingError(error.code, error.message) from error
+        return StepOutput(content={"basisId": context.basis.id,
+            "selections": [item.model_dump(mode="json", by_alias=True) for item in selection.selections],
+            "calculations": calculations})
+
     async def materialize_datasets(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -88,14 +202,13 @@ class RuntimeDatasetsMixin:
             for item in self._state(run_context)[REPORT_APPROVED_QUERIES_STATE_KEY]
         )
         attachments = self._envelope(run_context).file_inputs
-        if len(approved) + len(attachments) > MAX_REPORT_INPUTS:
+        formal_handles = await self._registered_metric_dataset_handles(run_context)
+        if len(approved) + len(attachments) + len(formal_handles) > MAX_REPORT_INPUTS:
             raise ReportingError(
-                "report_dataset_count_invalid", "SQL 数据集与 URL CSV 附件总数超过限制。"
+                "report_dataset_count_invalid", "正式计算、SQL 数据集与 URL CSV 附件总数超过限制。"
             )
-        adapters = {
-            source.id: self._adapter(source, run_context)
-            for source in await self._sources(run_context)
-        }
+        metric_context = await self._metric_planning_context(run_context)
+        adapters = await self._policy_query_adapters(run_context)
         try:
             if getattr(self, "configuration_provider", None) is not None:
                 # session PATCH 可同时改写 SQL 与其 hash，取数前必须重新审核完整契约。
@@ -111,6 +224,7 @@ class RuntimeDatasetsMixin:
                     sources={source_id: adapter.config for source_id, adapter in adapters.items()},
                     snapshots=self._snapshots(run_context),
                     envelope=self._envelope(run_context),
+                    registered_metrics=metric_context.metrics,
                     requirements=tuple(
                         QueryRequirement.model_validate(item)
                         for item in state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, ())
@@ -133,14 +247,17 @@ class RuntimeDatasetsMixin:
             attachments,
             run_context=self._tool_context(run_context),
         )
-        handles = (*handles, *attachment_handles)
-        lineage = (*lineage, *attachment_lineage)
+        handles = (*handles, *attachment_handles, *formal_handles)
+        lineage = (*lineage, *attachment_lineage, *(DatasetLineage(
+            datasetId=item.dataset_id, sourceId=item.source_id, requirementId=item.requirement_id,
+            sqlHash=item.sql_hash, rowCount=item.row_count, size=item.size, sha256=item.sha256,
+            periodRoles=item.period_roles, queryWindowId=item.query_window_id) for item in formal_handles))
         prepared = await self.report_tools.report_prepare_dataset(
             [item.dataset_id for item in handles], run_context=self._tool_context(run_context)
         )
         await self.report_tools.bind_page_layout(
             str(prepared["jobId"]),
-            self._profile(run_context).page_layout.model_dump(mode="json", by_alias=True),
+            self.delivery_settings.page_layout.model_dump(mode="json", by_alias=True),
             run_context=self._tool_context(run_context),
         )
         state = self._state(run_context)
@@ -159,6 +276,7 @@ class RuntimeDatasetsMixin:
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
         """并发生成完整 Profile 文件，并只把同源模型视图保存在 Workflow state。"""
+        metric_context = await self._metric_planning_context(run_context)
         state = self._state(run_context)
         result = self._workflow_result(state)
         handles = tuple(DatasetHandle.from_state(item) for item in result.get("datasets", ()))
@@ -182,19 +300,15 @@ class RuntimeDatasetsMixin:
                 for value in state.get(REPORT_APPROVED_QUERIES_STATE_KEY, ())
             )
         }
-        metric_semantics_by_dataset: dict[str, tuple[dict[str, Any], ...]] = {}
+        metric_bindings_by_dataset: dict[str, tuple[MetricDatasetBinding, ...]] = {}
         for handle in handles:
             requirement = requirements.get(handle.requirement_id)
             if requirement is None or handle.source_type == "url_csv":
-                metric_semantics_by_dataset[handle.dataset_id] = ()
+                metric_bindings_by_dataset[handle.dataset_id] = ()
                 continue
             measure_field_refs = _requirement_measure_field_refs(requirement, snapshots)
-            semantics = tuple(
-                item
-                for snapshot in snapshots
-                for item in snapshot.measure_semantics
-                if item.field_ref.lower() in measure_field_refs
-            )
+            metrics = tuple(metric for metric in metric_context.metrics
+                if metric.field_ref is not None and metric.field_ref.casefold() in measure_field_refs)
             query = approved_queries.get(
                 (handle.source_id, handle.requirement_id, handle.query_window_id)
             )
@@ -205,8 +319,8 @@ class RuntimeDatasetsMixin:
                 )
             # fieldRef 始终保留权威物理字段身份；datasetField 只能来自已批准
             # SQL 的列级血缘，供后续事实引擎读取别名列，禁止按列名相似度猜测。
-            metric_semantics_by_dataset[handle.dataset_id] = (
-                project_measure_semantics_to_query_outputs(query, semantics)
+            metric_bindings_by_dataset[handle.dataset_id] = (
+                project_registered_metric_bindings(query, metrics)
             )
         try:
             cached_contexts = {
@@ -231,12 +345,25 @@ class RuntimeDatasetsMixin:
         enable_time_series_diagnostics = time_series_diagnostics_requested(
             self._envelope(run_context).report_goal
         )
-        # 查询仍按 DATE 精确过滤；Profile 已确认为“月份”维度的日期列在事实计算中按月解释，
-        # 否则月初日期按日判断连续，同比只会对齐最后一个月。不从月初日期本身猜测月度。
-        monthly_period_columns = _profile_monthly_period_columns(state.get(REPORT_EFFECTIVE_PROFILE_STATE_KEY))
 
         def profile_path(handle: DatasetHandle) -> str:
             return f"报表/分析计划/{run_id}/profiles/{handle.dataset_id}.profile.json"
+
+        def period_granularities(handle: DatasetHandle) -> dict[str, str]:
+            requirement = requirements.get(handle.requirement_id)
+            declared = {f"{requirement.source_id}.{table.table}.{table.period_column}".casefold():
+                table.period_granularity for table in requirement.tables} if requirement is not None else {}
+            return {binding.time.dataset_field: declared[binding.time.field_ref.casefold()]
+                for binding in metric_bindings_by_dataset[handle.dataset_id]
+                if binding.time.field_ref.casefold() in declared}
+
+        def organization_grain(handle: DatasetHandle) -> tuple[str, ...]:
+            requirement = requirements.get(handle.requirement_id)
+            bindings = metric_bindings_by_dataset[handle.dataset_id]
+            names = {item.field_ref.rsplit('.', 1)[-1].casefold(): item.dataset_field
+                for binding in bindings for item in (binding.time, *binding.grain)}
+            return tuple(dict.fromkeys(names.get(column.casefold(), column)
+                for column in (requirement.grain_columns if requirement is not None else ())))
 
         def cached_context(handle: DatasetHandle) -> DatasetAnalysisContext | None:
             candidate = cached_contexts.get(handle.dataset_id)
@@ -247,7 +374,10 @@ class RuntimeDatasetsMixin:
                 or candidate.sha256 != handle.sha256
                 or candidate.row_count != handle.row_count
                 or candidate.profile_file.path != profile_path(handle)
-                or candidate.metric_semantics != metric_semantics_by_dataset[handle.dataset_id]
+                or candidate.metric_semantics
+                or candidate.metric_bindings != metric_bindings_by_dataset[handle.dataset_id]
+                or candidate.period_granularities != period_granularities(handle)
+                or candidate.organization_grain != organization_grain(handle)
             ):
                 return None
             return candidate
@@ -294,11 +424,7 @@ class RuntimeDatasetsMixin:
                     path=handle.path,
                     expected_sha256=handle.sha256,
                     profile_path=profile_path(handle),
-                    period_fields=(
-                        tuple(dict.fromkeys(table.period_column for table in requirement.tables))
-                        if requirement is not None
-                        else ()
-                    ),
+                    period_fields=tuple(period_granularities(handle)),
                     schema={
                         "sourceId": handle.source_id,
                         "requirementId": handle.requirement_id,
@@ -319,10 +445,8 @@ class RuntimeDatasetsMixin:
                             )
                         ],
                     },
-                    organization_grain=(
-                        tuple(requirement.grain_columns) if requirement is not None else ()
-                    ),
-                    metric_semantics=metric_semantics_by_dataset[handle.dataset_id],
+                    organization_grain=organization_grain(handle),
+                    metric_bindings=metric_bindings_by_dataset[handle.dataset_id],
                     source_warnings=source_warning_messages,
                     enable_time_series_diagnostics=enable_time_series_diagnostics,
                 )
@@ -351,16 +475,7 @@ class RuntimeDatasetsMixin:
                         "完整数据画像写入后发生变化。",
                     )
                 contexts[index] = profiled.context.model_copy(update={
-                    "period_granularities": {
-                        table.period_column: (
-                            "month"
-                            if table.period_granularity == "date"
-                            and (table.table.rsplit(".", 1)[-1].lower(), table.period_column.lower())
-                            in monthly_period_columns
-                            else table.period_granularity
-                        )
-                        for table in (requirement.tables if requirement is not None else ())
-                    },
+                    "period_granularities": period_granularities(handle),
                 })
             except Exception as error:
                 errors[index] = error
@@ -401,12 +516,15 @@ class RuntimeDatasetsMixin:
     async def generate_detailed_analysis_plan(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
-        """把已批准分析范围与 Profile 索引编排成可执行计划。"""
+        """以登记的正式指标回执和CSV画像组织分析，不从用途名称重新选择公式。"""
         state = self._state(run_context)
-        from ...profile.metric_usage import select_metrics_by_usage
-
-        profile_metrics = tuple(metric.model_dump(mode="json", by_alias=True)
-                                for metric in self._profile(run_context).metrics)
+        metric_context = await self._metric_planning_context(run_context)
+        calculated_versions = {result.metric_version for calculation in metric_context.calculations
+            for result in calculation.results}
+        registered_metrics = tuple(metric for metric in metric_context.metrics
+            if metric.version_ref() in calculated_versions)
+        allowed_field_refs = frozenset(metric.field_ref.casefold() for metric in registered_metrics
+            if metric.field_ref is not None)
         raw_contexts = state.get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
         if not raw_contexts:
             raise ReportingError("report_analysis_context_unavailable", "分析数据上下文缺失。")
@@ -457,11 +575,13 @@ class RuntimeDatasetsMixin:
             "datasetContexts": [item.model_dump(mode="json", by_alias=True) for item in contexts],
             "profileCoverageManifest": profile_coverage.model_dump(mode="json", by_alias=True),
             "initialRequirements": state.get(REPORT_DATA_REQUIREMENTS_STATE_KEY, []),
+            "metricContext": metric_context.model_dump(mode="json", by_alias=True),
             "reportGoal": envelope.report_goal,
             "deliveryFormat": envelope.delivery_format,
             "analysisGoal": envelope.report_goal,
             "allowedDomains": list(domains),
             "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),
+            "dataShapeIssues": state.get(REPORT_DATA_SHAPE_ISSUES_STATE_KEY, []),
             "warnings": list(profile_warnings),
         }
         context_path = f"报表/分析计划/{run_context.run_id}/detailed-analysis-context.json"
@@ -476,10 +596,13 @@ class RuntimeDatasetsMixin:
         role_labels = {"current": "本期", "yoy": "同比", "mom": "环比"}
         for initial_item in initial:
             requirement_ids = set(initial_item.requirement_ids)
+            formal_dataset_ids = {dataset_id for calculation in metric_context.calculations
+                for result in calculation.results for dataset_id in result.dataset_ids}
             referenced_handles = tuple(
                 handle
                 for handle in handles
-                if (handle.requirement_id in requirement_ids or handle.source_type == "url_csv")
+                if (handle.requirement_id in requirement_ids or handle.source_type == "url_csv"
+                    or handle.dataset_id in formal_dataset_ids)
                 and (not initial_item.period_roles or set(handle.period_roles) & set(initial_item.period_roles))
             )
             if not referenced_handles:
@@ -506,24 +629,17 @@ class RuntimeDatasetsMixin:
             field_candidates: list[str] = []
             metric_candidates: list[str] = []
             periods: list[str] = []
-            usage = select_metrics_by_usage(
-                profile_metrics, domain=domain, purposes=initial_item.metric_purposes,
-            )
             for context in referenced_contexts:
                 field_candidates.extend(context.organization_grain)
                 if context.time_series_sort_field:
                     field_candidates.append(context.time_series_sort_field)
                 field_candidates.extend(context.numeric_fields)
                 field_candidates.extend(context.fields)
-                semantic_metrics = [
-                    str(item.get("datasetField") or str(item.get("fieldRef", "")).rsplit(".", 1)[-1])
-                    for item in context.metric_semantics
-                    if isinstance(item, Mapping) and item.get("fieldRef")
-                    and (usage.allowed_field_refs is None
-                         or str(item["fieldRef"]).casefold() in usage.allowed_field_refs)
-                ]
-                metric_candidates.extend(semantic_metrics if usage.allowed_field_refs is not None
-                                         else semantic_metrics or context.numeric_fields)
+                semantic_metrics = [binding.measure.dataset_field
+                    for binding in context.metric_bindings
+                    if binding.metric_version in calculated_versions
+                    and binding.measure.field_ref.casefold() in allowed_field_refs]
+                metric_candidates.extend(semantic_metrics)
                 period_values = list(context.period_values)
                 periods.extend(
                     period_values
@@ -567,14 +683,13 @@ class RuntimeDatasetsMixin:
             )
             if unverified_budget_rate:
                 actions.insert(0, BUDGET_CALCULATION_CONDITION)
-            item_warnings = (*usage.warnings, *professional_warnings, *tuple(
+            item_warnings = (*professional_warnings, *tuple(
                 dict.fromkeys(
                     warning
                     for context in referenced_contexts
                     for warning in (*context.source_warnings, *context.quality_warnings)
                 )
             ))
-            plan_warnings.extend(usage.warnings)
             plan_warnings.extend(professional_warnings)
             profile_coverages = tuple(
                 coverage
@@ -632,11 +747,8 @@ class RuntimeDatasetsMixin:
                     seriesGranularity=initial_item.series_granularity,
                     analysisId=f"analysis_{len(analyses) + 1:03d}",
                     domain=domain,
-                    metricPurposes=initial_item.metric_purposes,
-                    allowedMetricCodes=(tuple(str(metric["code"]) for metric in usage.metrics)
-                                        if usage.allowed_field_refs is not None else None),
-                    allowedFieldRefs=(tuple(sorted(usage.allowed_field_refs))
-                                      if usage.allowed_field_refs is not None else None),
+                    allowedMetricCodes=tuple(dict.fromkeys(metric.id for metric in registered_metrics)),
+                    allowedFieldRefs=tuple(sorted(allowed_field_refs)),
                     managementQuestion=(initial_item.management_question),
                     primaryMetricFamily=initial_item.primary_metric_family,
                     datasetIds=tuple(handle.dataset_id for handle in referenced_handles),
@@ -692,15 +804,13 @@ class RuntimeDatasetsMixin:
             warnings=unique_warnings,
         )
         state[REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY] = plan.model_dump(mode="json", by_alias=True)
-        from ..questions import QuestionSet, freeze_plan_questions, request_questions
+        from ..questions import freeze_plan_questions, request_questions
 
         request_context = state.get("report_request_context", {})
-        raw_questions = request_context.get("questionSpecs")
-        questions = QuestionSet.model_validate(raw_questions) if raw_questions is not None else request_questions(
-            request_context.get("originalGoal", envelope.report_goal),
-        )
         feedback = tuple(item["content"] for item in request_context.get("feedback", ())
                          if isinstance(item, dict) and isinstance(item.get("content"), str))
+        questions = request_questions(metric_context.request.goal,
+            questions=metric_context.request.questions)
         frozen_questions = freeze_plan_questions(
             questions, [item.model_dump(mode="json", by_alias=True) for item in plan.analyses],
             goal=request_context.get("originalGoal", envelope.report_goal), feedback=feedback,
@@ -716,6 +826,7 @@ class RuntimeDatasetsMixin:
                 payload={
                     "analysisIds": [item.analysis_id for item in plan.analyses],
                     "datasetIds": list(plan.dataset_ids),
+                    "detailedAnalysisPlan": plan.model_dump(mode="json", by_alias=True),
                     "questionSpecs": frozen_questions.model_dump(mode="json", by_alias=True),
                     "analysisPlans": {
                         item.analysis_id: {
@@ -857,17 +968,3 @@ def _requirement_measure_field_refs(
             if measure.lower() in available_columns
         )
     return field_refs
-
-
-def _profile_monthly_period_columns(profile: Any) -> frozenset[tuple[str, str]]:
-    """Profile 中只登记为“month”时间维度的 table.column；缺失或冲突时不推断。"""
-    declared: dict[tuple[str, str], set[str]] = {}
-    dimensions = profile.get("dimensions") if isinstance(profile, dict) else None
-    for dimension in dimensions if isinstance(dimensions, list) else ():
-        if not isinstance(dimension, dict) or dimension.get("kind") != "time":
-            continue
-        for field_ref in dimension.get("fieldRefs") or ():
-            parts = str(field_ref).lower().split(".")
-            if len(parts) >= 2:
-                declared.setdefault((parts[-2], parts[-1]), set()).add(str(dimension.get("code")))
-    return frozenset(key for key, codes in declared.items() if codes == {"month"})
