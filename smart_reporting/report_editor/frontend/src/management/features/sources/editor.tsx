@@ -32,50 +32,41 @@ import { sourceDetailPath } from './paths'
 type Values = {
   name: string
   database: string
-  profile: string
   metadata: string
 }
 const publicValues = (d: Draft): Values => ({
   name: d.name,
   database: d.database,
-  profile: d.profile_version_id || '',
   metadata: d.metadata_version_id || '',
 })
 const labels: Record<keyof Values, string> = {
   name: '数据源名称',
   database: '连接数据库',
-  profile: '业务口径版本',
   metadata: '数据目录版本',
 }
 function VersionSelect({
   scope,
   id,
   sourceId,
-  kind,
   value,
   onChange,
 }: {
   scope: ScopeIdentity
   id?: string
   sourceId?: string
-  kind: 'profiles' | 'catalog'
   value?: string
   onChange?: (v: string) => void
 }) {
-  const path =
-    kind === 'profiles'
-      ? '/profiles/versions'
-      : `/sources/${encodeURIComponent(sourceId || '')}/catalog/versions`
+  const path = `/sources/${encodeURIComponent(sourceId || '')}/catalog/versions`
   const query = useInfiniteQuery({
     queryKey: [
       'management',
       'versions',
       scope.database,
       scope.companyId,
-      kind,
       sourceId,
     ],
-    enabled: kind === 'profiles' || !!sourceId,
+    enabled: !!sourceId,
     initialPageParam: '',
     queryFn: ({ pageParam, signal }) =>
       request(
@@ -98,7 +89,7 @@ function VersionSelect({
     <>
       <Select
         id={id}
-        aria-label={kind === 'profiles' ? '业务口径版本' : '数据目录版本'}
+        aria-label="数据目录版本"
         allowClear
         value={value || undefined}
         onChange={(v) => onChange?.(v || '')}
@@ -108,7 +99,7 @@ function VersionSelect({
         notFoundContent={
           query.error
             ? '读取失败'
-            : kind === 'catalog' && !sourceId
+            : !sourceId
               ? '先保存数据源后配置目录'
               : '尚无已发布版本'
         }
@@ -213,7 +204,6 @@ function Editor({
         name: values.name,
         type: 'starrocks',
         database: values.database,
-        reportingProfileVersionId: values.profile || null,
         metadataVersionId: values.metadata || null,
         ...(replace ? { dsn: values.dsn } : {}),
         ...(id
@@ -265,7 +255,6 @@ function Editor({
             name:
               (
                 {
-                  reportingProfileVersionId: 'profile',
                   metadataVersionId: 'metadata',
                 } as Record<string, string>
               )[f.field] || f.field,
@@ -374,7 +363,7 @@ function Editor({
         initialValues={
           initial
             ? publicValues(initial)
-            : { name: '', database: '', profile: '', metadata: '' }
+            : { name: '', database: '', metadata: '' }
         }
         onValuesChange={() => setDirty(true)}
         onFinish={submit}
@@ -459,13 +448,10 @@ function Editor({
           </Card>
           <Card title="发布依赖" className="management-editor-dependencies">
             <p>
-              只可选择已有已发布版本。无可选项时请联系运维发布业务口径和同步目录。
+              保存连接后，进入“管理表”刷新数据库目录并选择暴露范围，再发布数据源。统计口径在报告场景中单独配置。
             </p>
-            <Form.Item name="profile" label="业务口径版本">
-              <VersionSelect scope={scope} kind="profiles" />
-            </Form.Item>
             <Form.Item name="metadata" label="数据目录版本">
-              <VersionSelect scope={scope} sourceId={id} kind="catalog" />
+              <VersionSelect scope={scope} sourceId={id} />
             </Form.Item>
           </Card>
         </div>

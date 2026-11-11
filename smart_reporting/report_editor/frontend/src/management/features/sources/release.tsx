@@ -160,7 +160,6 @@ export function Release({
                         name: '数据源名称',
                         type: '数据库类型',
                         database: '连接数据库',
-                        reportingProfileVersionId: '业务口径版本',
                         metadataVersionId: '目录版本',
                       })[field] || field,
                   },

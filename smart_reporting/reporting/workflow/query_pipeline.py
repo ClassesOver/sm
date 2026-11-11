@@ -28,6 +28,8 @@ from ..data_source.models import ColumnShape, DataShape, TableDataShape
 from ..data_source.sql_validation import validate_starrocks_read_only_sql
 from ..data_source.starrocks import StarRocksSourceConfig
 from ..models import ReportingError
+from ..semantics.dataset_bindings import DatasetFieldBinding, MetricDatasetBinding
+from ..semantics.models import MetricDefinition
 
 __all__ = [
     "ApprovedQuery",
@@ -221,14 +223,7 @@ class QueryRequirement(StrictModel):
         return self
 
 
-def project_measure_semantics_to_query_outputs(
-    query: ApprovedQuery,
-    semantics: tuple[MeasureSemantic, ...],
-) -> tuple[dict[str, Any], ...]:
-    """把权威源字段语义绑定到物化查询唯一的顶层输出列。"""
-
-    if not semantics:
-        return ()
+def _query_output_origins(query: ApprovedQuery):
     statement = parse_one(query.sql, read="mysql")
     if not isinstance(statement, exp.Query):
         raise ReportingError(
@@ -253,6 +248,9 @@ def project_measure_semantics_to_query_outputs(
                     "SQL 顶层投影必须显式命名指标输出列。",
                 )
             output_key = output_name.casefold()
+            if output_key in output_names:
+                raise ReportingError("report_query_measure_projection_invalid",
+                    "SQL 顶层输出列名称不能重复。")
             output_names[output_key] = output_name
             origins = origins_by_output.setdefault(output_key, set())
             for node in column_lineage(
@@ -276,6 +274,19 @@ def project_measure_semantics_to_query_outputs(
             "无法确定 SQL 指标输出列的源字段血缘。",
         ) from error
 
+    return origins_by_output, output_names
+
+
+def project_measure_semantics_to_query_outputs(
+    query: ApprovedQuery,
+    semantics: tuple[MeasureSemantic, ...],
+) -> tuple[dict[str, Any], ...]:
+    """把权威源字段语义绑定到物化查询唯一的顶层输出列。"""
+
+    if not semantics:
+        return ()
+    origins_by_output, output_names = _query_output_origins(query)
+
     projected: list[dict[str, Any]] = []
     for semantic in semantics:
         _source_id, database, table, column = semantic.field_ref.casefold().split(".", 3)
@@ -298,6 +309,30 @@ def project_measure_semantics_to_query_outputs(
         payload["datasetField"] = output_names[next(iter(matching_outputs))]
         projected.append(payload)
     return tuple(projected)
+
+
+def project_registered_metric_bindings(
+    query: ApprovedQuery, metrics: tuple[MetricDefinition, ...],
+) -> tuple[MetricDatasetBinding, ...]:
+    """按SQL列级血缘绑定每个精确版本；丢失或多义输出拒绝使用。"""
+    origins, names = _query_output_origins(query)
+
+    def bind(reference):
+        source, database, table, column = reference.casefold().split('.', 3)
+        if source != query.source_id.casefold():
+            raise ReportingError('report_metric_binding_invalid', '登记指标与查询数据源不一致。')
+        matches = [output for output, values in origins.items() if any(
+            physical_table == table and physical_column == column
+            and (not physical_database or physical_database == database)
+            for physical_database, physical_table, physical_column in values)]
+        if len(matches) != 1:
+            raise ReportingError('report_metric_binding_invalid', '登记字段无法唯一绑定数据集输出列。')
+        return DatasetFieldBinding(field_ref=reference, dataset_field=names[matches[0]])
+
+    return tuple(MetricDatasetBinding(metric_version=metric.version_ref(), unit=metric.unit,
+        measure=bind(metric.field_ref), time=bind(metric.time_field),
+        grain=tuple(bind(dimension.field_ref) for dimension in metric.dimensions
+            if dimension.id in metric.grain)) for metric in metrics)
 
 
 def _normalized_identifiers(value: tuple[str, ...], label: str) -> tuple[str, ...]:
@@ -440,6 +475,7 @@ def approve_query_batch(
     snapshots: tuple[SourceSchemaSnapshot, ...],
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
+    registered_metrics: tuple[MetricDefinition, ...],
     row_preserving_requirement_ids: tuple[str, ...] = (),
     data_shapes: tuple[DataShape, ...] = (),
     require_complete_batch: bool = True,
@@ -459,14 +495,6 @@ def approve_query_batch(
             "report_query_batch_invalid", "原始行保留查询引用了未知或重复 requirement。"
         )
     snapshot_tables = _snapshot_tables(snapshots)
-    snapshots_by_source = {
-        table.source_id: snapshot for snapshot in snapshots for table in snapshot.tables[:1]
-    }
-    measure_semantics = {
-        item.field_ref.lower(): item
-        for snapshot in snapshots
-        for item in snapshot.measure_semantics
-    }
     windows_by_requirement = {
         requirement.requirement_id: envelope.model_copy(
             update={
@@ -538,9 +566,7 @@ def approve_query_batch(
             requirement,
             database=source.database,
             snapshot_tables=scoped_tables,
-            measure_semantics=measure_semantics,
-            data_shapes=data_shapes,
-            snapshot=snapshots_by_source.get(source.id),
+            registered_metrics=registered_metrics,
         )
         sql = validate_starrocks_read_only_sql(
             item["sql"],
@@ -553,7 +579,6 @@ def approve_query_batch(
             requirement=requirement,
             period=window.period,
             snapshot_tables=scoped_tables,
-            measure_semantics=measure_semantics,
             row_preserving=requirement_id in row_preserving_ids,
         )
         result.append(
@@ -611,15 +636,56 @@ def _snapshot_tables(
     return result
 
 
+def registered_metric_requirement_issues(
+    requirement: QueryRequirement, index: int, metrics: tuple[MetricDefinition, ...],
+) -> list[dict[str, Any]]:
+    """探索聚合仅使用登记的事件流sum并保留粒度，不重定义正式计算。"""
+    issues = []
+    for table_index, table in enumerate(requirement.tables):
+        prefix = f'{requirement.source_id}.{table.table}.'.casefold()
+        allowed = tuple(metric for metric in metrics
+            if metric.field_ref and metric.field_ref.casefold().startswith(prefix)
+            and metric.kind == 'sum' and metric.aggregation_policy.observation_kind == 'flow'
+            and metric.aggregation_policy.time_aggregation == 'sum')
+        for measure in table.measure_columns:
+            matched = tuple(metric for metric in allowed
+                if metric.field_ref.casefold() == prefix + measure.casefold())
+            if not matched:
+                issues.append({'path': f'requirements[{index}].tables[{table_index}].measureColumns',
+                    'rejectedValue': measure,
+                    'reason': '探索聚合字段未登记为可求和事件流；正式指标只能引用计算回执。',
+                    'allowedValues': sorted({metric.field_ref.rsplit('.', 1)[-1] for metric in allowed}),
+                    'requiredAction': '删除未登记的探索聚合，不改变正式指标定义。'})
+                continue
+            required = {table.period_column}
+            for metric in matched:
+                if metric.time_field.casefold() != prefix + table.period_column.casefold():
+                    issues.append({'path': f'requirements[{index}].tables[{table_index}].periodColumn',
+                        'rejectedValue': table.period_column,
+                        'reason': '探索期间字段与登记指标时间身份不一致。',
+                        'requiredAction': '使用登记时间字段；不同时间口径拆成独立取数需求。'})
+                required.update(dimension.field_ref.rsplit('.', 1)[-1].casefold()
+                    for dimension in metric.dimensions if dimension.id in metric.grain
+                    and dimension.field_ref.casefold().startswith(prefix))
+            missing = sorted(required - set(requirement.grain_columns))
+            if missing:
+                issues.append({'path': f'requirements[{index}].grainColumns', 'missingValues': missing,
+                    'reason': '探索取数须保留已登记指标粒度和期间字段。',
+                    'requiredAction': '将缺失字段加入grainColumns和dimensionColumns。'})
+    return issues
+
+
+
 def _validate_requirement_scope(
     requirement: QueryRequirement,
     *,
     database: str,
     snapshot_tables: dict[str, ModelTable],
-    measure_semantics: dict[str, MeasureSemantic],
-    data_shapes: tuple[DataShape, ...] = (),
-    snapshot: SourceSchemaSnapshot | None = None,
+    registered_metrics: tuple[MetricDefinition, ...],
 ) -> None:
+    issues = registered_metric_requirement_issues(requirement, 0, registered_metrics)
+    if issues:
+        raise ReportingError("report_registered_metric_invalid", issues[0]["reason"])
     available_dimensions: set[str] = set()
     table_columns: dict[str, set[str]] = {}
     for requested in requirement.tables:
@@ -635,38 +701,6 @@ def _validate_requirement_scope(
         }
         if required - columns:
             raise ReportingError("report_query_scope_invalid", "取数需求引用了结构快照外的字段。")
-        table_prefix = f"{requirement.source_id}.{qualified}.".lower()
-        declared_measure_columns = {
-            field_ref.rsplit(".", 1)[-1]
-            for field_ref in measure_semantics
-            if field_ref.startswith(table_prefix)
-        }
-        for measure in requested.measure_columns:
-            field_ref = f"{requirement.source_id}.{qualified}.{measure}".lower()
-            semantic = measure_semantics.get(field_ref)
-            if semantic is None:
-                raise ReportingError(
-                    "report_measure_semantic_missing",
-                    f"指标 {field_ref} 缺少服务端聚合语义契约。",
-                )
-            ungoverned_dimensions = (
-                columns
-                - declared_measure_columns
-                - set(requirement.grain_columns)
-                - set(semantic.additive_across)
-                - set(semantic.exclusive_scope)
-                - _exact_constant_numeric_columns(
-                    requirement.source_id,
-                    qualified,
-                    snapshot,
-                    data_shapes,
-                )
-            )
-            if ungoverned_dimensions:
-                raise ReportingError(
-                    "report_measure_additivity_invalid",
-                    "指标表存在未保留、未固定且未声明为可加的维度。",
-                )
         table_columns[requested.table] = columns
         available_dimensions.update(columns)
     if set(requirement.dimension_columns) - available_dimensions:
@@ -732,7 +766,6 @@ def _validate_query_contract(
     requirement: QueryRequirement,
     period: ReportPeriod,
     snapshot_tables: dict[str, ModelTable],
-    measure_semantics: dict[str, MeasureSemantic],
     row_preserving: bool = False,
 ) -> None:
     statement = parse_one(sql, read="mysql")
@@ -770,6 +803,19 @@ def _validate_query_contract(
             "report_query_row_preserving_invalid", "原始行冲突探测只允许单表查询。"
         )
 
+    if not row_preserving:
+        for scope in scopes:
+            physical = any(isinstance(source, exp.Table)
+                for _, source in scope.selected_sources.values())
+            for projection in scope.expression.selects:
+                value = projection.unalias()
+                if isinstance(value, exp.Column):
+                    continue
+                if physical and isinstance(value, exp.Sum) and isinstance(value.this, exp.Column):
+                    continue
+                raise ReportingError("report_query_aggregation_invalid",
+                    "探索查询只能投影登记粒度和直接求和结果，不得在外层重算或改写数值。")
+
     for scope, alias, table_requirement, snapshot_table in physical_scopes:
         _validate_scope_columns(scope, alias=alias, table=snapshot_table)
         if not _has_complete_period_filter(
@@ -803,32 +849,14 @@ def _validate_query_contract(
                 raise ReportingError(
                     "report_query_measure_invalid", "SQL 未聚合 requirement 声明的全部指标字段。"
                 )
-        qualified = _qualified_requirement_table(table_requirement.table, database)
-        for measure in table_requirement.measure_columns:
-            field_ref = f"{requirement.source_id}.{qualified}.{measure}".lower()
-            semantic = measure_semantics.get(field_ref)
-            if semantic is None:
-                raise ReportingError(
-                    "report_measure_semantic_missing", "SQL 指标缺少服务端聚合语义契约。"
-                )
-            if not row_preserving and not _scope_has_semantic_measure(
-                scope.expression,
-                alias=alias,
-                column=measure,
-                aggregation=semantic.aggregation,
-            ):
-                raise ReportingError(
-                    "report_query_aggregation_invalid",
-                    "SQL 指标聚合函数与服务端语义契约不一致。",
-                )
-            for column, value in semantic.exclusive_scope.items():
-                if not _has_exact_scope_filter(
-                    scope.expression, alias=alias, column=column, value=value
-                ):
-                    raise ReportingError(
-                        "report_query_scope_semantic_invalid",
-                        "SQL 缺少指标语义契约要求的固定口径过滤。",
-                    )
+        if not row_preserving:
+            for aggregate in scope.expression.find_all(exp.AggFunc):
+                if (not isinstance(aggregate, exp.Sum)
+                    or not isinstance(aggregate.this, exp.Column)
+                    or not any(_matches_column(aggregate.this, alias, measure)
+                        for measure in table_requirement.measure_columns)):
+                    raise ReportingError("report_query_aggregation_invalid",
+                        "探索查询只能直接求和登记字段，不能改写指标或引入其他聚合。")
 
     if len(actual_tables) > 1:
         for scope in scopes:
@@ -907,56 +935,6 @@ def _scope_has_measures(expression: exp.Expression, measure_columns: tuple[str, 
         for column in aggregate.find_all(exp.Column)
     }
     return set(measure_columns).issubset(aggregated_columns)
-
-
-def _scope_has_semantic_measure(
-    expression: exp.Expression,
-    *,
-    alias: str,
-    column: str,
-    aggregation: str,
-) -> bool:
-    for aggregate in expression.find_all(exp.AggFunc):
-        if not any(_matches_column(item, alias, column) for item in aggregate.find_all(exp.Column)):
-            continue
-        if aggregation == "sum" and isinstance(aggregate, exp.Sum):
-            return True
-        if aggregation == "average" and isinstance(aggregate, exp.Avg):
-            return True
-        if aggregation == "min" and isinstance(aggregate, exp.Min):
-            return True
-        if aggregation == "max" and isinstance(aggregate, exp.Max):
-            return True
-        is_distinct = isinstance(aggregate.this, exp.Distinct) or bool(
-            aggregate.args.get("distinct")
-        )
-        if aggregation == "count" and isinstance(aggregate, exp.Count) and not is_distinct:
-            return True
-        if aggregation == "count_distinct" and isinstance(aggregate, exp.Count) and is_distinct:
-            return True
-    return False
-
-
-def _has_exact_scope_filter(
-    expression: exp.Expression,
-    *,
-    alias: str,
-    column: str,
-    value: str,
-) -> bool:
-    where = expression.args.get("where")
-    if where is None:
-        return False
-    for predicate in _and_predicates(where.this):
-        if not isinstance(predicate, exp.EQ):
-            continue
-        left, right = predicate.this, predicate.expression
-        literal = right if _matches_column(left, alias, column) else left
-        if not (_matches_column(left, alias, column) or _matches_column(right, alias, column)):
-            continue
-        if isinstance(literal, exp.Literal) and str(literal.this) == value:
-            return True
-    return False
 
 
 _TIME_OF_DAY_TYPE = re.compile(r"timestamp|datetime", re.IGNORECASE)

@@ -4,6 +4,7 @@ import hashlib
 
 import pytest
 
+from smart_reporting.reporting.delivery.settings import ReportDeliverySettings
 from smart_reporting.reporting.hospital_operation.professional_review import (
     PROFESSIONAL_CRITERIA,
     PROFESSIONAL_EXPRESSION_PATTERNS,
@@ -16,7 +17,6 @@ from smart_reporting.reporting.instructions import (
     HOSPITAL_OUTLINE_INSTRUCTIONS,
     HOSPITAL_REPORT_WRITING_INSTRUCTIONS,
 )
-from smart_reporting.reporting.profile.models import EffectiveDocumentBranding
 from smart_reporting.reporting.trace.content_review import review_content_result
 
 from .test_trace_subject_validate import _make_editor_with_subject
@@ -51,15 +51,15 @@ def test_writing_instructions_keep_requested_window_and_do_not_force_causes_or_a
     assert "主口径必须采用最新完整" not in guide
 
 
-def test_branding_uses_original_default_or_environment(monkeypatch):
-    monkeypatch.delenv('AGENT_REPORT_ORGANIZATION_NAME', raising=False)
-    assert EffectiveDocumentBranding().organization_name == '上海鼎医信息技术有限公司'
-    monkeypatch.setenv('AGENT_REPORT_ORGANIZATION_NAME', '  环境配置编制单位  ')
-    assert EffectiveDocumentBranding().organization_name == '环境配置编制单位'
-    configured = EffectiveDocumentBranding.model_validate({'organizationName': '示例医院财务部'})
-    assert configured.organization_name == '示例医院财务部'
-    monkeypatch.setenv('AGENT_REPORT_ORGANIZATION_NAME', '  ')
-    assert EffectiveDocumentBranding().organization_name == '上海鼎医信息技术有限公司'
+def test_branding_uses_deployment_default_or_explicit_environment():
+    assert ReportDeliverySettings.from_env({}).branding.organization_name == '上海鼎医信息技术有限公司'
+    configured = ReportDeliverySettings.from_env({
+        'AGENT_REPORT_ORGANIZATION_NAME': '  环境配置编制单位  ',
+    })
+    assert configured.branding.organization_name == '环境配置编制单位'
+    assert ReportDeliverySettings.from_env({
+        'AGENT_REPORT_ORGANIZATION_NAME': '  ',
+    }).branding.organization_name == '上海鼎医信息技术有限公司'
 
 
 @pytest.mark.parametrize('stage,instructions', [

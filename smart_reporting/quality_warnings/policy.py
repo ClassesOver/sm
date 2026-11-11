@@ -37,6 +37,7 @@ _QUALITY_WARNING_CODES: Final[frozenset[str]] = frozenset(
         "report_chart_extreme_aspect_ratio",
         "report_chart_metric_unfrozen",
         "report_chart_dataset_unfrozen",
+        "report_section_knowledge_unavailable",
         "report_section_claim_invalid",
         "report_section_claim_duplicate",
         "report_section_claim_metric_unknown",

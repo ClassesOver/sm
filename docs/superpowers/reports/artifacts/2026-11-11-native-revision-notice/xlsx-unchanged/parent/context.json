@@ -1,0 +1,177 @@
+{
+  "reportId": "policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3",
+  "revision": 3,
+  "jobId": "policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3",
+  "job": {
+    "jobId": "policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3",
+    "sources": [],
+    "render": {
+      "markdown": {
+        "path": "报表/智能分析/policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3/workbook/revision-3/report.md",
+        "mediaType": "text/markdown",
+        "size": 1494,
+        "sha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e"
+      }
+    },
+    "workbookSources": [
+      {
+        "sheet": "总体执行率与计算依据",
+        "cell": "C2",
+        "sectionId": "section_001",
+        "analysisId": "analysis_001",
+        "factId": "fact-de33078bcf858cfe",
+        "datasetIds": [
+          "dataset-4ce11f449bb7f8d114f664b851c7b6fa"
+        ],
+        "factArray": "metricContext/calculations/0/results",
+        "scope": {},
+        "periodStart": "2026-11-01",
+        "periodEnd": "2026-12-01",
+        "basisId": "85cd85a2-6e36-52ec-8b8b-62b576bfbbe1",
+        "metricVersion": {
+          "metricId": "completion_equivalents",
+          "revision": 1
+        },
+        "calculationId": "initial-ca1721a2a0964bf71c9304dd37ac5a91bae96e9b1a2a0bdba2d0460b2cbb30c2",
+        "status": "computed",
+        "issueCodes": [
+          "data_readiness_unknown"
+        ],
+        "exactValue": "1.40000000",
+        "jsonPointer": "/metricContext/calculations/0/results/0",
+        "datasets": {
+          "dataset-4ce11f449bb7f8d114f664b851c7b6fa": {
+            "path": "报表/数据集/0b297bf049bc7ef1aeb9ea34/batch-cedda0387959b7bbb6932d0cb739c54a/dataset-4ce11f449bb7f8d114f664b851c7b6fa.csv",
+            "size": 52,
+            "sha256": "77100ab70e9b772de439f1b666628ba20319f323fdfa7bab399897f3a22ffc2c",
+            "periodRoles": [
+              "current"
+            ],
+            "requirementId": "metric-5f7a39ae2ad37f7269d2dddfda4e6c12b4875e8008432e5901c3eda606b584f1",
+            "sheet": "明细1_dataset-4ce11f449bb7f8d114f"
+          }
+        }
+      },
+      {
+        "sheet": "总体执行率与计算依据",
+        "cell": "C3",
+        "sectionId": "section_001",
+        "analysisId": "analysis_001",
+        "factId": "fact-f1c1b2b571cd21fa",
+        "datasetIds": [
+          "dataset-0a4b13b6a8be7121f6e9eb69bca32732"
+        ],
+        "factArray": "metricContext/calculations/0/results",
+        "scope": {},
+        "periodStart": "2026-11-01",
+        "periodEnd": "2026-12-01",
+        "basisId": "85cd85a2-6e36-52ec-8b8b-62b576bfbbe1",
+        "metricVersion": {
+          "metricId": "project_count",
+          "revision": 1
+        },
+        "calculationId": "initial-ca1721a2a0964bf71c9304dd37ac5a91bae96e9b1a2a0bdba2d0460b2cbb30c2",
+        "status": "computed",
+        "issueCodes": [
+          "data_readiness_unknown"
+        ],
+        "exactValue": "2",
+        "jsonPointer": "/metricContext/calculations/0/results/1",
+        "datasets": {
+          "dataset-0a4b13b6a8be7121f6e9eb69bca32732": {
+            "path": "报表/数据集/0b297bf049bc7ef1aeb9ea34/batch-cedda0387959b7bbb6932d0cb739c54a/dataset-0a4b13b6a8be7121f6e9eb69bca32732.csv",
+            "size": 43,
+            "sha256": "d4591264c8b30c0e153447039f35a6b4edbcd669976a694c594ec7aa23b2f4a3",
+            "periodRoles": [
+              "current"
+            ],
+            "requirementId": "metric-25e8328d2fef139d0408490c4999cf5c674268502fa4c13a842f15df7e32fd82",
+            "sheet": "明细2_dataset-0a4b13b6a8be7121f6e"
+          }
+        }
+      },
+      {
+        "sheet": "总体执行率与计算依据",
+        "cell": "C4",
+        "sectionId": "section_001",
+        "analysisId": "analysis_001",
+        "factId": "fact-a0eb121836a296ae",
+        "datasetIds": [
+          "dataset-4ce11f449bb7f8d114f664b851c7b6fa",
+          "dataset-0a4b13b6a8be7121f6e9eb69bca32732"
+        ],
+        "factArray": "metricContext/calculations/0/results",
+        "scope": {},
+        "periodStart": "2026-11-01",
+        "periodEnd": "2026-12-01",
+        "basisId": "85cd85a2-6e36-52ec-8b8b-62b576bfbbe1",
+        "metricVersion": {
+          "metricId": "rate",
+          "revision": 1
+        },
+        "calculationId": "initial-ca1721a2a0964bf71c9304dd37ac5a91bae96e9b1a2a0bdba2d0460b2cbb30c2",
+        "status": "computed",
+        "issueCodes": [
+          "data_readiness_unknown"
+        ],
+        "exactValue": "70.00000000",
+        "jsonPointer": "/metricContext/calculations/0/results/2",
+        "datasets": {
+          "dataset-4ce11f449bb7f8d114f664b851c7b6fa": {
+            "path": "报表/数据集/0b297bf049bc7ef1aeb9ea34/batch-cedda0387959b7bbb6932d0cb739c54a/dataset-4ce11f449bb7f8d114f664b851c7b6fa.csv",
+            "size": 52,
+            "sha256": "77100ab70e9b772de439f1b666628ba20319f323fdfa7bab399897f3a22ffc2c",
+            "periodRoles": [
+              "current"
+            ],
+            "requirementId": "metric-5f7a39ae2ad37f7269d2dddfda4e6c12b4875e8008432e5901c3eda606b584f1",
+            "sheet": "明细1_dataset-4ce11f449bb7f8d114f"
+          },
+          "dataset-0a4b13b6a8be7121f6e9eb69bca32732": {
+            "path": "报表/数据集/0b297bf049bc7ef1aeb9ea34/batch-cedda0387959b7bbb6932d0cb739c54a/dataset-0a4b13b6a8be7121f6e9eb69bca32732.csv",
+            "size": 43,
+            "sha256": "d4591264c8b30c0e153447039f35a6b4edbcd669976a694c594ec7aa23b2f4a3",
+            "periodRoles": [
+              "current"
+            ],
+            "requirementId": "metric-25e8328d2fef139d0408490c4999cf5c674268502fa4c13a842f15df7e32fd82",
+            "sheet": "明细2_dataset-0a4b13b6a8be7121f6e"
+          }
+        }
+      }
+    ]
+  },
+  "workflowRunId": "policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3",
+  "markdownPath": "报表/智能分析/policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3/workbook/revision-3/report.md",
+  "artifactManifest": {
+    "path": "报表/智能分析/policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3/workbook/revision-3/report.manifest.json",
+    "mediaType": "application/json",
+    "size": 2132,
+    "sha256": "18e7ac923d250e5fac869497ec1e277ae5683dc594cd440c7ca2c5d89fede592"
+  },
+  "analysisContextFile": {
+    "path": "报表/分析计划/policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3/detailed-analysis-context.json",
+    "size": 22586,
+    "sha256": "5d82257477188e75fe34376cfcf3907ed7b6def8f9e25395fe86002d674eba36"
+  },
+  "scope": {
+    "externalRunId": "policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3",
+    "sessionId": "policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3",
+    "threadId": "reporting-run-782201f1b6adafa436320e0e9ba4b22f65d63ca2d72f0c8f3d9d4055c4f71cb7",
+    "callerThreadId": "thread-basis",
+    "userId": "7",
+    "database": "warehouse",
+    "companyId": "a",
+    "threadLeaseKey": "reporting-thread-76a785b6792921c516f66466655c49727268946b0df509b4225fa6cffdb9f8ac"
+  },
+  "source": "published",
+  "createdAt": null,
+  "note": "",
+  "deliveryFormat": "xlsx",
+  "pptxPath": null,
+  "pptxSize": null,
+  "pptxSha256": null,
+  "xlsxPath": "报表/智能分析/policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3/workbook/revision-3/report.xlsx",
+  "xlsxSize": 7351,
+  "xlsxSha256": "7e7f6a474d89b5802ed4a4df239dfdb0fe896048b206d39ed6552d6133093945"
+}

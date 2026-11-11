@@ -1,0 +1,9 @@
+$ /home/junge/pros/smart_reporting/.venv/bin/ruff check smart_reporting/report_editor/revision_notice.py smart_reporting/report_editor/workbook.py smart_reporting/report_editor/slides.py smart_reporting/reporting/tests/test_native_revision_notice.py smart_reporting/reporting/tests/test_workbook_editor.py smart_reporting/reporting/tests/test_publication_nonblocking.py smart_reporting/tests/test_report_edit_withdrawal_delivery.py
+All checks passed!
+
+
+exit_code=0
+$ git diff --check
+
+
+exit_code=0

@@ -8,7 +8,8 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from ...profile.models import EffectiveMetric
-from ..query_pipeline import _exact_constant_numeric_columns
+from ...semantics.models import MetricDefinition
+from ..query_pipeline import _exact_constant_numeric_columns, registered_metric_requirement_issues
 from .base import (
     AnalysisBundle,
     AnalysisItem,
@@ -60,6 +61,7 @@ def _analysis_bundle_semantic_issues(
     snapshots: tuple[SourceSchemaSnapshot, ...],
     envelope: ReportRequestEnvelope | None = None,
     data_shapes: tuple[DataShape, ...] = (),
+    *, registered_metrics: tuple[MetricDefinition, ...],
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     try:
@@ -89,7 +91,7 @@ def _analysis_bundle_semantic_issues(
                 issues.append(comparison_issue)
         issues.extend(_requirement_column_issues(requirement, index, snapshots))
         issues.extend(_measure_column_issues(requirement, index, snapshots))
-        issues.extend(_measure_semantic_issues(requirement, index, snapshots, data_shapes))
+        issues.extend(registered_metric_requirement_issues(requirement, index, registered_metrics))
         issues.extend(_multi_table_requirement_issues(requirement, index, snapshots))
     requirement_ids = {item.requirement_id for item in bundle.requirements}
     for index, analysis in enumerate(bundle.analyses):
@@ -289,6 +291,7 @@ def _measure_column_issues(
                 }
             )
     return [*issues, *measure_issues]
+
 
 
 def _measure_semantic_issues(

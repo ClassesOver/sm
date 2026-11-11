@@ -1,0 +1,22 @@
+{
+  "reportId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+  "revision": 5,
+  "pptx": {
+    "path": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/report-r5-8d28fe59b23f.pptx",
+    "size": 21524,
+    "sha256": "33777fe5331930454a85b95fda75a3d98e2e713cda9b60125476058d1285f707",
+    "downloadUrl": "https://reports.test/reports/v1/slides/download/gAAAAABq9F1o9mZsvLxBgr1VWnih1xeE-7X25B9KnQedxkHks9Ly5P1pWiII229EZY1fT47ljgAFXLQC82FP9QaKOrSF5t33iQthhdf604qkRY-xpDjLcABijIB2X-SBRXGvz1SUG07TajNP0Qn3llQVNzjCMX5fKjTa1Vf0CyW9CWxLzJepTNrBQp3DCfPENTxmmsbarCF7Iu3vqPD2f7VKKFT4tZCd1eP50TkhaHGg72aSDocVu3_BRuke4o2nFVeFKO2N1GhOE6YygwjEEceBHIVsBFEBW6VYFQ10JpHfsZPhKl8RSCcrER5bT9Vg7m_nKwIzXkDJB3bD21lm941lMClfhYr7A_rvgJP_UDnzkwYnc53sdDtTNmf5X4kGNsD8kOgeLhnRsHB_KqKJNJl_SIONgx1gi-nssPvnpGsyaZCDV48UYj5TKvvAzq1b5a6knRdWgtVLyukb2savFvRe6daA631QPF1E9R0_6ZqiUT-yIVGkdiyDYycJxj1IKVNtnI5CVFiVxvOKV5i_1MPPQJ0yOCkw0G-iTgZvMpWORTXlh7Ue7oNhnZ5NdTrPDGhf7z_iNvv_eV1O_mCl-rpY4zQfzMh-HA=="
+  },
+  "editor": {
+    "openUrl": "https://reports.test/reports/v1/slides/open/gAAAAABq9F1otMxIcpgbaddeGxvrWsDv0KSlqEvhmDYb-wHPG25YJiCiVsrcnqcCuo-yOPIUD95krUIV20fA5-loqGTK1mQyckEzhMJkC012PfwFoQwv8HzMejLCkKSWOchsfB1SIRlOp-FEoY1SsKAku_emWAVYbNZqAcXq8vCv1C4mQzhXIMhrBojKOVoSx1v1tktTv6TE9WkzMCnHvWTUDc_ZiN3a-pehK5TcKuC6ogg0u6bUBcG-zrVWuP83srEZK2qwYUpQM21ORWgEjszuFM_o9N-5n30Ldjn3ZthgEgWk-zUC7iWax0TdCGVM6hWEPFsJFA09eM3Czuz7ofdEIDDozrNf9w7KALxMUBlTOQxmyJHAWaSz-xmW9Pk9QLpaZLE2oAYbCuFkqM7sxCejjmd37swPRk1_qNrY6370smz2KvnB2fM7YVID-xgjAjJuqTpXoaPPP_O3M-AXzEvJQx-HrMpjmCFM5rZSqQzR-EyJKPV9KgVDDXj4l1mMvJ7ka6q0kh_dY5OrzgG-VwZ6gvAyEe65BDRpk16S2vPH7Eqv_1WP2MCDhbNwWkeunESB5cUPZOU30WzFLjU7N8MBzrGFt-jgqQ=="
+  },
+  "validation": {
+    "ok": false,
+    "issues": [
+      {
+        "code": "pptx_semantic_verification_pending",
+        "message": "新修订尚未重新进行业务语义验收，不继承旧版本验收结论。"
+      }
+    ]
+  }
+}

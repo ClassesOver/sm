@@ -1,0 +1,37 @@
+{
+  "claims": [],
+  "tables": [
+    {
+      "tableId": "table-analysis_001-registered-0-0-0",
+      "subjectIds": [
+        "sub-7837d5781a746fb6"
+      ],
+      "status": "valid",
+      "datasetIds": [
+        "dataset-url-abc0001"
+      ],
+      "methods": [
+        "预算额（第1版）：求和；采用合成预算执行（第1版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 300.123456789123456789 CNY；取数时间未登记；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+      ],
+      "periods": [
+        "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+      ],
+      "links": [
+        {
+          "subjectId": "sub-7837d5781a746fb6",
+          "url": "https://reports.example.com/reports/v1/editor/report-1/3?subject=sub-7837d5781a746fb6"
+        }
+      ]
+    }
+  ],
+  "charts": [],
+  "datasets": {
+    "dataset-url-abc0001": {
+      "filename": "input.csv",
+      "businessLabel": null,
+      "periodRoles": [
+        "current"
+      ]
+    }
+  }
+}

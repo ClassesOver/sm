@@ -19,6 +19,7 @@ import polars as pl
 from pydantic import Field
 
 from ..cumulative_policy import CumulativeSnapshotPolicy
+from ..semantics.planning_contracts import MetricPlanningContext
 from ..units import unit_conversion_scale
 from .detailed_analysis import (
     AnalysisModel,
@@ -231,6 +232,8 @@ class CorrelationDetail(AnalysisModel):
 
 class DeterministicAnalysisBundle(AnalysisModel):
     version: str = "1"
+    metric_context: MetricPlanningContext | None = Field(default=None, alias="metricContext",
+        exclude_if=lambda value: value is None)
     analysis_id: str = Field(alias="analysisId", pattern=r"^analysis_[0-9]{3,6}$")
     analysis_name: str | None = Field(default=None, alias="analysisName", min_length=1, max_length=2_000)
     metrics: tuple[DeterministicMetricFact, ...] = Field(default=(), max_length=500)

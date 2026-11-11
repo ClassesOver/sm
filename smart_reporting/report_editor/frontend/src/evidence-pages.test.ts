@@ -191,6 +191,32 @@ it.each(['valid', 'stale'] as const)('shows table-cell citation status from exac
   expect(container.querySelector('.evidence-status-chip')?.getAttribute('data-status')).toBe(status)
 })
 
+describe('正式指标事实页', () => {
+  it('shows original version, half-open period and unavailable reason', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async input => {
+      if (String(input).includes('/api/facts/')) return json({ ...FACT_DETAIL,
+        displayValue: null, entry: { factId: 'fact-aaaaaaaaaaaaaaaa',
+          metricVersion: { metricId: 'budget', revision: 3 }, basisId: 'basis-original',
+          calculationId: 'calc-original', period: { start: '2026-01-01', end: '2027-01-01' },
+          status: 'unavailable', value: null, unit: '元', dimensions: [{ dimensionId: 'project', value: 'A' }],
+          issueCodes: ['missing_data'], datasetIds: [],
+        } })
+      return json({ available: true, facts: [], datasets: [], subjects: [] })
+    })
+    const { container, ctx } = setupPage(fetcher, {
+      kind: 'fact', key: 'fact-aaaaaaaaaaaaaaaa', analysisId: 'analysis_001', label: '预算额',
+    })
+    await renderEvidencePage(container, ctx)
+    expect(container.textContent).toContain('暂不可计算：missing_data')
+    expect(container.textContent).toContain('[2026-01-01, 2027-01-01)（含起日、不含止日）')
+    expect(container.textContent).toContain('budget · 版本 3')
+    expect(container.textContent).toContain('basis-original')
+    expect(container.textContent).toContain('calc-original')
+    expect(container.textContent).toContain('project：A')
+    expect(container.textContent).not.toContain('登记值 0')
+  })
+})
+
 describe('事实页', () => {
   const FACT_REF: EvidenceObjectRef = {
     kind: 'fact',
@@ -857,6 +883,8 @@ describe('事实页', () => {
     const graph = section.querySelector('.evidence-graph[data-graph-host]')!
     const nodes = graph.querySelectorAll<HTMLButtonElement>('.evidence-node')
     expect(nodes).toHaveLength(4)
+    // 原生按钮名称包含标题、关系状态与当前页标记，不用 aria-label 截断可见文字。
+    for (const node of nodes) expect(node.getAttribute('aria-label')).toBeNull()
     expect(graph.querySelectorAll('.evidence-node-heading svg[aria-hidden="true"]')).toHaveLength(4)
     expect(graph.querySelector('.evidence-node.is-current .evidence-node-title')?.textContent).toBe(FACT_REF.label)
     expect(graph.querySelector('.evidence-node.is-current .evidence-node-info')?.textContent).toBe('事实 · 已加载 3 条关系')
@@ -1592,13 +1620,16 @@ describe('详情入口统一导航', () => {
 })
 
 describe('subject trace chain', () => {
-  it.each(['interpreted', 'invalidated'] as const)('shows model semantic provenance as %s', async (status) => {
+  it.each([
+    ['interpreted', 'model_context_interpretation_v1'], ['invalidated', 'model_context_interpretation_v1'],
+    ['interpreted', 'registered_result_projection_v1'], ['invalidated', 'registered_result_projection_v1'],
+  ] as const)('shows semantic provenance as %s from %s', async (status, method) => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
       if (String(input).endsWith('/api/sources')) return json(SOURCES_PAYLOAD)
       if (String(input).endsWith('/api/sources/validate')) return json({
         draftSha256: JSON.parse(String(init!.body)).draftSha256,
         subjects: [{ subjectId: 'sub-cccccccccccccccc', status: 'valid', factValue: 200, warnings: [],
-          semanticCheck: { method: 'model_context_interpretation_v1', status, interpretation: {
+          semanticCheck: { method, status, interpretation: {
             claimId: 'claim-c', scope: [{ field: 'income_nature', value: '开单收入', status: 'resolved',
               evidence: ['本段金额均属开单收入'] }], periods: [], periodEvidence: [],
           } },
@@ -1610,7 +1641,10 @@ describe('subject trace chain', () => {
       { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用 · 收入' },
       { getDraft: () => ({ markdown: '本段金额均属开单收入。南院200元', sha256: 'draft' }) })
     await renderEvidencePage(container, ctx)
-    expect(container.textContent).toContain(status === 'interpreted' ? '模型语义解释' : '原语义判断已失效')
+    expect(container.textContent).toContain(status === 'interpreted'
+      ? method === 'registered_result_projection_v1' ? '正式结果投影' : '模型语义解释'
+      : '原语义判断已失效')
+    if (method === 'registered_result_projection_v1') expect(container.textContent).not.toContain('模型语义解释')
     if (status === 'interpreted') {
       expect(container.textContent).toContain('不代表业务验收通过')
       expect(container.textContent).toContain('原文依据：本段金额均属开单收入')
@@ -2192,5 +2226,82 @@ describe('节点分支加载', () => {
     await vi.waitFor(() => expect(graph.branches.has('computation:comp-001')).toBe(false))
     expect(graph.nodes.has('dataset:dataset-url-abc0001')).toBe(false)
     expect(ctx.navigate).not.toHaveBeenCalled()
+  })
+})
+
+describe('引用页业务知识原文', () => {
+  it('loads authorized material on demand and clears it before a revoked read or history return', async () => {
+    let revoked = false
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async input => {
+      if (String(input).includes('/knowledge/')) return json(revoked
+        ? { available: false, issueCodes: ['document_revoked'] }
+        : { available: true, title: '预算制度', quote: '按原始金额累计，不取平均。',
+          reference: { documentRevision: 1, role: 'rule_evidence', locator: { kind: 'text_lines', lineStart: 3, lineEnd: 4 } } })
+      return json({ ...SOURCES_PAYLOAD, subjects: [{ ...SOURCES_PAYLOAD.subjects[0], knowledgeReferences: [{
+        evidenceId: 'evidence-budget', title: '预算制度', documentRevision: 1, role: 'rule_evidence',
+        available: true, locator: { kind: 'text_lines', lineStart: 3, lineEnd: 4 } }] }] })
+    })
+    const { container, ctx } = setupPage(fetcher, { kind: 'subject', key: 'sub-cccccccccccccccc', label: '预算建议' })
+    await renderEvidencePage(container, ctx)
+    expect(container.textContent).toContain('业务知识依据')
+    expect(container.textContent).not.toContain('按原始金额累计，不取平均。')
+    const toggle = container.querySelector<HTMLButtonElement>('.evidence-knowledge-toggle')!
+    expect(toggle).not.toBeNull()
+    toggle.click()
+    await vi.waitFor(() => expect(container.textContent).toContain('按原始金额累计，不取平均。'))
+    expect(container.textContent).toContain('第 3–4 行')
+    expect(JSON.stringify(ctx.pageData())).not.toContain('按原始金额累计，不取平均。')
+    toggle.click()
+    revoked = true
+    toggle.click()
+    await vi.waitFor(() => expect(container.textContent).toContain('材料当前不可引用'))
+    expect(container.textContent).not.toContain('按原始金额累计，不取平均。')
+    await renderEvidencePage(container, ctx)
+    expect(container.textContent).not.toContain('按原始金额累计，不取平均。')
+  })
+})
+
+it('rechecks knowledge support when returning with unchanged draft text', async () => {
+  let revoked = false
+  let checks = 0
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+    if (String(input).includes('/validate')) {
+      checks += 1
+      return json({ draftSha256: JSON.parse(String(init!.body)).draftSha256,
+        subjects: [{ subjectId: 'sub-cccccccccccccccc', status: 'valid', factValue: null }],
+        summary: { valid: 1, stale: 0, unbound: 0 }, quality: { claimSupport: [{
+          subjectId: 'sub-cccccccccccccccc', kind: 'recommendation', evidenceRefs: [], factRefs: [],
+          supportStatus: revoked ? 'unverified' : 'supported' }] } })
+    }
+    return json({ ...SOURCES_PAYLOAD, subjects: [{ ...SOURCES_PAYLOAD.subjects[0], knowledgeReferences: [{
+      evidenceId: 'evidence-budget', title: '预算制度', documentRevision: 1, role: 'rule_evidence',
+      available: true, locator: { kind: 'text_lines', lineStart: 3, lineEnd: 4 } }] }] })
+  })
+  const { container, ctx } = setupPage(fetcher, { kind: 'subject', key: 'sub-cccccccccccccccc', label: '预算建议' },
+    { getDraft: () => ({ markdown: '建议核对预算规则。', sha256: 'original' }) })
+  await renderEvidencePage(container, ctx)
+  expect(container.querySelector('.evidence-knowledge-status')?.textContent).toContain('有依据')
+  revoked = true
+  await renderEvidencePage(container, ctx)
+  expect(container.querySelector('.evidence-knowledge-status')?.textContent).toContain('待核实')
+  expect(checks).toBe(2)
+})
+
+describe('修订影响提示', () => {
+  it.each([
+    ['manual_override', '人工覆盖，未继承计算核对'],
+    ['support_review_required', '文字已修改，支持关系待复核'],
+  ])('shows %s without claiming recalculation', async (editStatus, label) => {
+    const ref: EvidenceObjectRef = { kind: 'subject', key: 'sub-cccccccccccccccc', label: '正文引用' }
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+      if (String(input).includes('/validate')) return json({ draftSha256: JSON.parse(String(init!.body)).draftSha256,
+        subjects: [{ subjectId: ref.key, status: 'stale', factValue: 12450, editStatus }],
+        summary: { valid: 0, stale: 1, unbound: 0 } })
+      return json(SOURCES_PAYLOAD)
+    })
+    const { container, ctx } = setupPage(fetcher, ref, { getDraft: () => ({ markdown: '收入999元', sha256: 'x' }) })
+    await renderEvidencePage(container, ctx)
+    expect(container.querySelector('[data-status-row="revision-impact"]')?.textContent).toContain(label)
+    expect(container.textContent).toContain('原计算快照保持不变；导出将生成新修订')
   })
 })

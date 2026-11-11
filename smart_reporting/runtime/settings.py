@@ -1,11 +1,14 @@
 import os
 from collections.abc import MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, cast
 from urllib.parse import quote, urlsplit
 
 from dingyi_agno.platform.settings import PlatformSettings
 from dotenv import dotenv_values
+
+from ..reporting.delivery.settings import ReportDeliverySettings
+from ..reporting.semantics.models import BuildIdentity
 
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_MODEL_FAST_ID = "qwen3.6-35b-a3b"
@@ -21,6 +24,21 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:18069",
     "http://localhost:18069",
 )
+
+
+def _report_build_identity(values: MutableMapping[str, str]) -> BuildIdentity | None:
+    fields = {
+        field: values.get(key, "").strip()
+        for field, key in (
+            ("commit", "AGENT_REPORT_BUILD_COMMIT"),
+            ("sourceHash", "AGENT_REPORT_SOURCE_HASH"),
+            ("dependencyHash", "AGENT_REPORT_DEPENDENCY_HASH"),
+            ("compilerVersion", "AGENT_REPORT_COMPILER_VERSION"),
+        )
+    }
+    if not any(fields.values()):
+        return None
+    return BuildIdentity.model_validate(fields)
 
 
 def _flag(value: str | None, default: bool = False) -> bool:
@@ -242,7 +260,9 @@ class AgentSettings:
     # 编辑器前端静态目录；镜像把构建产物放在源码 bind mount 之外，避免被宿主目录覆盖。
     report_editor_static_dir: str | None = None
     platform_settings: PlatformSettings | None = None
-    report_configuration_mode: Literal["file", "database"] = "file"
+    report_configuration_mode: Literal["database"] = "database"
+    report_delivery_settings: ReportDeliverySettings = field(default_factory=ReportDeliverySettings)
+    report_build_identity: BuildIdentity | None = None
 
     @classmethod
     def from_environment(
@@ -300,9 +320,9 @@ class AgentSettings:
         )
         if reporting_execution_mode not in {"sequential", "parallel"}:
             raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")
-        configuration_mode = values.get("AGENT_REPORT_CONFIGURATION_MODE", "file").strip().lower()
-        if configuration_mode not in {"file", "database"}:
-            raise ValueError("AGENT_REPORT_CONFIGURATION_MODE 必须是 file 或 database")
+        configuration_mode = values.get("AGENT_REPORT_CONFIGURATION_MODE", "database").strip().lower()
+        if configuration_mode != "database":
+            raise ValueError("AGENT_REPORT_CONFIGURATION_MODE 仅支持 database，旧文件业务配置已停用")
         from ..reporting.host_workspace import validate_host_workspace_root
 
         reporting_host_workspace_root = str(
@@ -362,7 +382,9 @@ class AgentSettings:
             report_data_sources_dir=(
                 values.get("AGENT_REPORT_DATA_SOURCES_DIR", "").strip() or None
             ),
-            report_configuration_mode=cast(Literal["file", "database"], configuration_mode),
+            report_configuration_mode=cast(Literal["database"], configuration_mode),
+            report_delivery_settings=ReportDeliverySettings.from_env(values),
+            report_build_identity=_report_build_identity(values),
             report_metadata_url=_report_metadata_url(values),
             report_metadata_token=(values.get("AGENT_REPORT_METADATA_TOKEN", "").strip() or None),
             report_public_base_url=_report_public_base_url(values),

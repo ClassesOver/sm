@@ -55,6 +55,9 @@ def finding_evidence_view(
                 tokens = pointer.split("/")
                 if len(tokens) >= 3 and tokens[1] in _ATOMIC_ARRAYS and tokens[2].isdigit():
                     pointer = "/".join(tokens[:3])
+                elif (len(tokens) >= 6 and tokens[1:3] == ["metricContext", "calculations"]
+                      and tokens[3].isdigit() and tokens[4] == "results" and tokens[5].isdigit()):
+                    pointer = "/".join(tokens[:6])
                 value = resolve_pointer_value(document, pointer)
             except (KeyError, ValueError, TypeError, IndexError):
                 warnings.append({

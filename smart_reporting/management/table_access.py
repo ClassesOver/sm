@@ -575,7 +575,6 @@ class TableAccessService:
                 "name": current["name"],
                 "type": current["source_type"],
                 "database": current["database"],
-                "reportingProfileVersionId": current["profile_version_id"],
                 "metadataVersionId": f"{source_id}:{revision}",
             }
             digest = self.sources._config_hash(

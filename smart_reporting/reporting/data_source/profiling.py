@@ -6,9 +6,9 @@ from datetime import date
 from typing import Any
 
 import anyio
-from sqlglot import exp
 
 from ..models import ReportingError
+from ..semantics.models import StatisticalPolicy
 from ..type_normalization import normalize_data_type
 from .models import (
     CatalogColumn,
@@ -21,6 +21,7 @@ from .models import (
     TopValue,
 )
 from .period import PeriodGranularity, normalized_period_sql, period_filter_sql
+from .policy_scope import PolicyProfileAdapter, compile_profile_scope
 
 STATISTICS_VERSION = "1"
 _NUMERIC_TYPES = re.compile(
@@ -45,7 +46,8 @@ async def collect_data_shape(
     metadata_revision: str,
     schema_hash: str,
     global_limiter: anyio.CapacityLimiter | None = None,
-    scope_filters: Mapping[str, Mapping[str, str]] | None = None,
+    policy: StatisticalPolicy,
+    policy_catalog: tuple[CatalogTable, ...],
     preserve_metadata: bool = False,
 ) -> DataShape:
     if period_start > period_end:
@@ -68,14 +70,27 @@ async def collect_data_shape(
                 raise ReportingError(
                     "report_period_granularity_invalid", "数据表期间粒度配置无效。"
                 )
+        scopes = {(table.database.lower(), table.name.lower()): compile_profile_scope(table, policy, policy_catalog)
+            for table in catalog}
+        checks = tuple(dict.fromkeys(check for scope in scopes.values() for check in scope.checks))
         source_limiter = anyio.CapacityLimiter(adapter.config.limits.profile_concurrency)
+
+        async def verify_joins():
+            for sql in checks:
+                result = await _limited_query(adapter, sql, source_limiter, global_limiter)
+                if result.columns != ('violation_count',) or len(result.rows) != 1 or len(result.rows[0]) != 1:
+                    raise ReportingError('report_data_shape_failed', '画像关联核对结果无效。')
+                if result.rows[0][0] != 0:
+                    raise ReportingError('join_fanout', '画像维度键不唯一，不能使用此范围统计。')
+
+        await verify_joins()
+        scoped_adapter = PolicyProfileAdapter(adapter, scopes)
         results: list[tuple[TableDataShape, int] | None] = [None] * len(catalog)
 
         async def profile(index: int, table: CatalogTable) -> None:
             results[index] = await _profile_table(
-                adapter,
+                scoped_adapter,
                 table,
-                scope_filters=(scope_filters or {}).get(table.qualified_name, {}),
                 period_column=period_columns[table.qualified_name],
                 period_granularity=(period_granularities or {}).get(table.qualified_name, "date"),
                 period_start=period_start,
@@ -88,11 +103,12 @@ async def collect_data_shape(
             for index, table in enumerate(catalog):
                 task_group.start_soon(profile, index, table)
 
+        await verify_joins()
         completed = [item for item in results if item is not None]
         if len(completed) != len(catalog):
             raise ReportingError("report_data_shape_failed", "数据画像采集结果不完整。")
         shapes = [item[0] for item in completed]
-        query_count = sum(item[1] for item in completed)
+        query_count = sum(item[1] for item in completed) + 2 * len(checks)
         return DataShape(
             sourceId=adapter.config.id,
             metadataRevision=metadata_revision,
@@ -104,7 +120,9 @@ async def collect_data_shape(
             tables=tuple(shapes),
         )
     except ReportingError as error:
-        if error.code in {"report_period_invalid", "report_period_column_missing"}:
+        if error.code in {"report_period_invalid", "report_period_column_missing",
+            "metric_field_denied", "metric_filter_not_applicable", "metric_filter_null_comparison",
+            "metric_join_not_supported", "join_fanout"}:
             raise
         raise ReportingError("report_data_shape_failed", "数据画像采集失败。") from error
     except Exception as error:
@@ -115,7 +133,6 @@ async def _profile_table(
     adapter: DataSourceAdapter,
     table: CatalogTable,
     *,
-    scope_filters: Mapping[str, str],
     period_column: str,
     period_granularity: PeriodGranularity,
     period_start: date,
@@ -138,18 +155,7 @@ async def _profile_table(
         period_end,
         data_type=columns[period_column].data_type,
     )
-    column_names = {name.lower(): name for name in columns}
-    if {name.lower() for name in scope_filters} - set(column_names):
-        raise ReportingError(
-            "report_profile_scope_filter_invalid", "画像范围过滤引用了未发布字段。"
-        )
-    scope_filter = " AND ".join(
-        f"{_identifier(column_names[column.lower()])} = {exp.Literal.string(value).sql(dialect='starrocks')}"
-        for column, value in sorted(scope_filters.items())
-    )
-    scoped_period_filter = (
-        f"({scope_filter}) AND ({period_filter})" if scope_filter else period_filter
-    )
+    scoped_period_filter = period_filter
     qualified = f"{_identifier(table.database)}.{_identifier(table.name)}"
     base_aliases = (
         "total_row_count",
@@ -161,13 +167,13 @@ async def _profile_table(
     )
     base_sql = (
         "SELECT COUNT(*) AS total_row_count, "
-        f"COUNT_IF({period_filter}) AS period_row_count, "
-        f"COUNT_IF({period_identifier} IS NOT NULL AND NOT ({period_filter})) "
+        f"COALESCE(COUNT_IF({period_filter}), 0) AS period_row_count, "
+        f"COALESCE(COUNT_IF({period_identifier} IS NOT NULL AND NOT ({period_filter})), 0) "
         "AS outside_period_row_count, "
-        f"COUNT_IF({period_identifier} IS NULL) AS period_null_count, "
+        f"COALESCE(COUNT_IF({period_identifier} IS NULL), 0) AS period_null_count, "
         f"MIN(IF({period_filter}, {period_identifier}, NULL)) AS first_effective_date, "
         f"MAX(IF({period_filter}, {period_identifier}, NULL)) AS last_effective_date "
-        f"FROM {qualified}" + (f" WHERE {scope_filter}" if scope_filter else "")
+        f"FROM {qualified}"
     )
     base = _single_row(
         await _limited_query(adapter, base_sql, source_limiter, global_limiter), base_aliases
@@ -345,7 +351,7 @@ def _column_aggregates(
         else f"APPROX_COUNT_DISTINCT({identifier})"
     )
     values = [
-        (f"{prefix}_nulls", f"COUNT_IF({identifier} IS NULL) AS {prefix}_nulls"),
+        (f"{prefix}_nulls", f"COALESCE(COUNT_IF({identifier} IS NULL), 0) AS {prefix}_nulls"),
         (f"{prefix}_distinct", f"{distinct} AS {prefix}_distinct"),
         (
             f"{prefix}_min",
@@ -363,10 +369,10 @@ def _column_aggregates(
     if _NUMERIC_TYPES.match(column.data_type):
         values.extend(
             (
-                (f"{prefix}_zeros", f"COUNT_IF({identifier} = 0) AS {prefix}_zeros"),
+                (f"{prefix}_zeros", f"COALESCE(COUNT_IF({identifier} = 0), 0) AS {prefix}_zeros"),
                 (
                     f"{prefix}_negatives",
-                    f"COUNT_IF({identifier} < 0) AS {prefix}_negatives",
+                    f"COALESCE(COUNT_IF({identifier} < 0), 0) AS {prefix}_negatives",
                 ),
                 (f"{prefix}_average", f"AVG({identifier}) AS {prefix}_average"),
                 (f"{prefix}_stddev", f"STDDEV_POP({identifier}) AS {prefix}_stddev"),

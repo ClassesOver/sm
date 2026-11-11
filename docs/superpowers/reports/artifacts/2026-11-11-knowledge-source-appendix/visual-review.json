@@ -1,0 +1,16 @@
+{
+  "pdfPages": 2,
+  "wordPages": 2,
+  "inspected": [
+    "rendered/contact.png",
+    "rendered/pdf-pages/page-2.png",
+    "rendered/word-pages/page-2.png"
+  ],
+  "result": "Chinese quote/version/original coordinates/period/unverified status readable; no obvious overlap on inspected pages",
+  "limitations": [
+    "minimal synthetic report",
+    "large whitespace",
+    "ISO recorded_at retained",
+    "not full browser or four-width acceptance"
+  ]
+}

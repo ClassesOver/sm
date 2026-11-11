@@ -1,0 +1,14 @@
+{
+  "kind": "layered_synthetic_technical_evidence",
+  "python": "3.12.3",
+  "baseCommit": "826bdd4e999f4f94915e5f8252eff29b80746a7d",
+  "environmentFile": "/dev/null",
+  "editorProjection": "real_trace_validation_with_injected_current_authorized_candidates",
+  "renderer": "actual_WeasyPrint_pandoc_with_typed_synthetic_display_payload",
+  "httpFault": "real_editor_export_and_ASGI_download_with_in_memory_repositories",
+  "managementDatabase": "not_exercised_in_this_increment",
+  "originalDocumentRevocation": "simulated_candidate_withdrawal_not_real_management_revocation",
+  "starrocks": "not_exercised",
+  "realModel": "not_exercised",
+  "businessApproval": "not_performed"
+}

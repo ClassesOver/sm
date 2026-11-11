@@ -130,7 +130,6 @@ from smart_reporting.reporting.workflow.runtime.datasets import (
 from smart_reporting.reporting.workflow.runtime.models import (
     AnalysisBundle,
     DataUnderstandingPlan,
-    MeasureSemanticProposal,
     _normalize_analysis_bundle_table_refs,
 )
 from smart_reporting.reporting.workflow.runtime.phase_models import SectionBlockContent
@@ -830,8 +829,15 @@ def test_single_table_query_compiler_keeps_unapproved_numeric_fields_in_grain() 
         }
     )
 
+    from smart_reporting.reporting.semantics.models import MetricDefinition
+    from smart_reporting.reporting.tests.test_semantic_models import metric_payload
+    metrics = (MetricDefinition.model_validate(metric_payload(
+        fieldRef='rj.rj.income_budget.actual_medical_income', timeField='rj.rj.income_budget.data_date',
+        grain=['date'], dimensions=[{'id': 'date', 'fieldRef': 'rj.rj.income_budget.data_date'}])),)
+
     generated = reporting_runtime._compile_single_table_queries(
         (requirement,),
+        registered_metrics=metrics,
         snapshots=(snapshot,),
         envelope=envelope,
     )
@@ -840,6 +846,7 @@ def test_single_table_query_compiler_keeps_unapproved_numeric_fields_in_grain() 
     approved, issues = reporting_runtime._approve_generated_queries(
         generated,
         sources={"rj": SimpleNamespace(id="rj", database="rj")},
+        registered_metrics=metrics,
         snapshots=(snapshot,),
         envelope=envelope,
         requirements=(requirement,),
@@ -850,7 +857,7 @@ def test_single_table_query_compiler_keeps_unapproved_numeric_fields_in_grain() 
     assert all("SUM(actual_medical_income)" in query.sql for query in approved)
 
 
-def test_single_table_query_compiler_preserves_scope_and_approved_grain() -> None:
+def test_single_table_query_compiler_uses_registered_grain_without_copying_catalog_scope() -> None:
     requirement = reporting_runtime.QueryRequirement.model_validate(
         {
             "requirementId": "req_drug_cost",
@@ -886,19 +893,26 @@ def test_single_table_query_compiler_preserves_scope_and_approved_grain() -> Non
         "sourceIds": ["rj"], "comparisonRoles": [],
     })
 
+    from smart_reporting.reporting.semantics.models import MetricDefinition
+    from smart_reporting.reporting.tests.test_semantic_models import metric_payload
+    metrics = (MetricDefinition.model_validate(metric_payload(
+        fieldRef='rj.rj.cost_view.indicator_value', timeField='rj.rj.cost_view.data_date',
+        grain=['date'], dimensions=[{'id': 'date', 'fieldRef': 'rj.rj.cost_view.data_date'}])),)
+
     generated = reporting_runtime._compile_single_table_queries(
-        (requirement,), snapshots=(snapshot,), envelope=envelope,
+        (requirement,), snapshots=(snapshot,), envelope=envelope, registered_metrics=metrics,
     )
 
     assert generated is not None
     approved, issues = reporting_runtime._approve_generated_queries(
         generated, sources={"rj": SimpleNamespace(id="rj", database="rj")},
+        registered_metrics=metrics,
         snapshots=(snapshot,), envelope=envelope, requirements=(requirement,),
     )
     assert issues == []
     assert len(approved) == 1
     query = parse_one(approved[0].sql, dialect="mysql")
-    assert "indicator_name = '药品成本'" in query.args['where'].sql()
+    assert 'indicator_name' not in query.args['where'].sql()
     assert [column.name for column in query.args['group'].expressions] == ['data_date']
 
 
@@ -1541,116 +1555,6 @@ def test_freeze_outline_derives_focus_from_signed_management_questions() -> None
     assert outline.sections[0].focus == ("成本效率如何", "收入趋势如何")
 
 
-@pytest.mark.anyio
-async def test_confirm_source_keeps_internal_agent_out_of_request_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source_id = "source-1"
-    source = SimpleNamespace(id=source_id, name="测试数据源", database="reporting")
-    profile = SimpleNamespace(
-        dimensions=(),
-        metrics=(),
-        reconciliations=(),
-        scope_filters=(),
-        measure_semantics=(),
-        profile_id="profile-1",
-        effective_profile_hash="a" * 64,
-        model_dump=lambda **_: {
-            "profileId": "profile-1",
-            "effectiveProfileHash": "a" * 64,
-        },
-    )
-    snapshot = SimpleNamespace(
-        revision="revision-1",
-        schema_hash="b" * 64,
-        tables=(),
-        model_dump=lambda **_: {
-            "source": "metadata_api",
-            "revision": "revision-1",
-            "schemaHash": "b" * 64,
-            "tables": [],
-            "terms": [],
-            "measureSemantics": [],
-        },
-    )
-    runtime: Any = object.__new__(ReportWorkflowRuntime)
-    runtime.registry = SimpleNamespace(
-        default_source_ids=(source_id,),
-        sources={source_id: object()},
-    )
-    runtime.metadata_client = SimpleNamespace(
-        query_agent=AsyncMock(return_value=SimpleNamespace(code="1")),
-        query_model=AsyncMock(return_value=None),
-    )
-    runtime._starrocks_source = lambda _item: source
-    runtime._resolve_profile = lambda _sources: profile
-    runtime._state = lambda context: context.session_state
-    runtime._assert_state_safe = lambda _state: None
-    monkeypatch.setattr(
-        reporting_runtime,
-        "require_sources",
-        lambda _sources, _source_ids: (object(),),
-    )
-    monkeypatch.setattr(
-        reporting_runtime,
-        "_schema_scope_tables",
-        lambda *_args, **_kwargs: (),
-    )
-    monkeypatch.setattr(
-        reporting_runtime,
-        "StarRocksDataSourceAdapter",
-        type(
-            "EmptyAdapter",
-            (),
-            {
-                "__init__": lambda self, *_args, **_kwargs: None,
-                "catalog": lambda self: _empty_catalog(),
-                "aclose": lambda self: _empty_close(),
-            },
-        ),
-    )
-    monkeypatch.setattr(
-        reporting_runtime,
-        "resolve_schema_snapshot",
-        lambda *_args, **_kwargs: snapshot,
-    )
-    monkeypatch.setattr(
-        reporting_runtime,
-        "_apply_profile_scope_filters_to_snapshots",
-        lambda snapshots, _profile: snapshots,
-    )
-
-    request = reporting_contract.ReportRequestEnvelope.model_validate(
-        {
-            "reportGoal": "验证请求状态边界",
-            "reportType": "comprehensive",
-            "period": {"start": "2025-01-01", "end": "2025-12-31"},
-            "sourceIds": [source_id],
-        }
-    )
-    context = SimpleNamespace(
-        input=request.model_dump(mode="json", by_alias=True),
-        previous_step_content=None,
-        session_state={},
-    )
-
-    await runtime.confirm_source(context, context)
-
-    workflow_input = context.session_state[REPORT_WORKFLOW_INPUT_STATE_KEY]
-    assert "agentId" not in workflow_input
-    assert reporting_contract.ReportRequestEnvelope.from_untrusted(workflow_input).report_goal == (
-        "验证请求状态边界"
-    )
-
-
-async def _empty_catalog() -> tuple[object, ...]:
-    return ()
-
-
-async def _empty_close() -> None:
-    return None
-
-
 def test_analysis_item_instructions_delegate_execution_to_fixed_workflow() -> None:
     instructions = "\n".join(REPORT_ANALYSIS_ITEM_AGENT_INSTRUCTIONS)
 
@@ -1873,7 +1777,7 @@ def test_phase_instructions_do_not_expose_patch_hash_protocol() -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("scoped", [False, True])
-@pytest.mark.parametrize("purpose_catalog", [None, "收入多维分析", "成本多维分析"])
+@pytest.mark.parametrize("registered_field", [True, False])
 @pytest.mark.parametrize(
     ("requested_domain", "expected_domain"),
     (("income", "income"), ("full_cost", "full_cost")),
@@ -1882,7 +1786,7 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     requested_domain: str,
     expected_domain: str,
     scoped: bool,
-    purpose_catalog: str | None,
+    registered_field: bool,
     budget_gap: bool = False,
 ) -> None:
     context = DatasetAnalysisContext(
@@ -1897,12 +1801,12 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
         columnCount=3,
         fields=("month", "department", "amount"),
         organizationGrain=("department",),
-        metricSemantics=(
-            {
-                "fieldRef": "source.database.income.amount",
-                "aggregation": "sum",
-            },
-        ),
+        metricBindings=({'metricVersion': {'metricId': 'budget' if registered_field else 'actual', 'revision': 1},
+            'unit': 'CNY',
+            'measure': {'fieldRef': 'warehouse.test.budget.amount' if registered_field else 'warehouse.test.actual.amount',
+                'datasetField': 'amount'},
+            'time': {'fieldRef': 'warehouse.test.budget.period', 'datasetField': 'month'},
+            'grain': [{'fieldRef': 'warehouse.test.budget.project_id', 'datasetField': 'department'}]},),
         numericFields=("amount",),
         periodValues=("2025-01",),
         timeSeriesSortField="month",
@@ -2005,16 +1909,13 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     runtime._envelope = lambda _run_context: SimpleNamespace(
         domains=(requested_domain,), report_goal="分析医院经营主题", delivery_format="document"
     )
-    from smart_reporting.reporting.profile.models import EffectiveMetric
+    from smart_reporting.reporting.semantics.planning import build_metric_planning_context
+    from smart_reporting.reporting.tests.test_semantic_planning import receipts
+    from smart_reporting.reporting.tests.test_semantic_selection import selection_context
 
-    profile_metrics = (() if purpose_catalog is None else (EffectiveMetric(
-        code="amount", kind="currency", description="同名金额", aggregation="sum",
-        fieldRef="source.database.income.amount", purpose=purpose_catalog,
-    ),))
-    if scoped and purpose_catalog:
-        for item in state[REPORT_ANALYSIS_PLAN_STATE_KEY]:
-            item["metricPurposes"] = [purpose_catalog]
-    runtime._profile = lambda _run_context: SimpleNamespace(metrics=profile_metrics)
+    execution = selection_context()
+    view = build_metric_planning_context(execution, receipts(execution), report_revision='initial')
+    runtime._metric_planning_context = AsyncMock(return_value=view)
     runtime._workflow_result = lambda _state: dict(state[REPORT_WORKFLOW_RESULT_STATE_KEY])
     runtime._scope = lambda _run_context: {"threadId": "thread-1"}
     runtime._write_artifact_validation_context = AsyncMock(
@@ -2028,6 +1929,8 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
     )
 
     analysis = DetailedAnalysisPlan.model_validate(output.content).analyses[0]
+    assert runtime._apply_durable_command.call_args.args[1].payload['detailedAnalysisPlan'] == (
+        DetailedAnalysisPlan.model_validate(output.content).model_dump(mode='json', by_alias=True))
     from smart_reporting.reporting.hospital_operation.professional_review import (
         BUDGET_CALCULATION_CONDITION,
     )
@@ -2043,16 +1946,10 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
         assert BUDGET_CALCULATION_CONDITION not in plan.analyses[1].actions
         assert analysis.suggested_section == '预算口径核实与可独立分析事项'
     assert analysis.domain == expected_domain
-    selected_purpose = purpose_catalog if scoped else {
-        "income": "收入多维分析", "full_cost": "成本多维分析",
-    }[expected_domain]
-    assert analysis.metrics == (("amount",) if purpose_catalog is None or purpose_catalog == selected_purpose else ())
-    assert analysis.metric_purposes == ((purpose_catalog,) if scoped and purpose_catalog else ())
-    if purpose_catalog is None:
-        assert analysis.allowed_metric_codes is None and analysis.allowed_field_refs is None
-    else:
-        assert analysis.allowed_metric_codes == (("amount",) if purpose_catalog == selected_purpose else ())
-        assert analysis.allowed_field_refs == (("source.database.income.amount",) if purpose_catalog == selected_purpose else ())
+    assert analysis.metrics == (("amount",) if registered_field else ())
+    assert analysis.allowed_metric_codes == ("budget",)
+    assert analysis.allowed_field_refs == ("warehouse.test.budget.amount",)
+    assert analysis.metric_purposes == ()
     assert analysis.dataset_ids == (("dataset-1",) if scoped else ("dataset-1", "attachment-dataset"))
     if scoped:
         comparison = DetailedAnalysisPlan.model_validate(output.content).analyses[1]
@@ -2083,7 +1980,7 @@ async def test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv
 async def test_unverified_budget_rate_warns_without_dropping_independent_analysis():
     await test_detailed_analysis_plan_uses_semantic_domain_and_only_requires_csv_for_fact_gaps(
         requested_domain='income', expected_domain='income', scoped=False,
-        purpose_catalog=None, budget_gap=True,
+        registered_field=True, budget_gap=True,
     )
 
 
@@ -2182,9 +2079,11 @@ def test_analysis_item_prompt_does_not_duplicate_detailed_plan() -> None:
     source = textwrap.dedent(inspect.getsource(ReportWorkflowRuntime._execute_analysis_item_task))
     tree = ast.parse(source)
     string_keys = {
-        node.value
+        key.value
         for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
     }
 
     assert "analysisPlans" in string_keys
@@ -3150,7 +3049,7 @@ def test_runtime_defaults_analysis_evidence_planner_to_dynamic_requirements() ->
     expected_policies = (
         (runtime._request_normalizer, "request_normalization"),
         (runtime._data_understanding_agent, "data_understanding"),
-        (runtime._measure_semantic_agent, "measure_semantics"),
+        (runtime._metric_selection_agent, "measure_semantics"),
         (runtime._outline_agent, "outline_planning"),
         (runtime._analysis_agent, "analysis_planning"),
         (runtime._analysis_evidence_agent, "analysis_evidence"),
@@ -3772,7 +3671,7 @@ def test_runtime_planner_policies_honor_disabled_thinking() -> None:
     stages = (
         runtime._request_normalizer,
         runtime._data_understanding_agent,
-        runtime._measure_semantic_agent,
+        runtime._metric_selection_agent,
         runtime._outline_agent,
         runtime._analysis_agent,
         runtime._analysis_evidence_agent,
@@ -4107,35 +4006,6 @@ def test_dashscope_qwen_request_does_not_send_two_thinking_controls(provider_url
     )
 
 
-def test_measure_semantic_projection_drops_non_candidate_context_fields() -> None:
-    candidate = "rj.rj.dwd_hdc_income_summary_view.indicator_value"
-    proposal = MeasureSemanticProposal.model_validate(
-        {
-            "decisions": [
-                {
-                    "fieldRef": candidate,
-                    "classification": "measure",
-                    "reason": "收入金额字段。",
-                    "measureSemantic": {
-                        "fieldRef": candidate,
-                        "aggregation": "sum",
-                        "additiveAcross": ["period_code"],
-                    },
-                },
-                {
-                    "fieldRef": "rj.rj.dwd_hdc_income_summary_view.period_code",
-                    "classification": "dimension",
-                    "reason": "月份上下文字段。",
-                },
-            ]
-        }
-    )
-
-    projected = reporting_runtime._project_measure_semantic_candidates(proposal, (candidate,))
-
-    assert tuple(item.field_ref for item in projected.decisions) == (candidate,)
-
-
 def test_analysis_planner_normalizes_repeated_source_prefix_before_schema_validation() -> None:
     planner = Agent(
         model=ReportingPhaseOpenAIChat(id="deepseek-v4-flash-0731", api_key="test"),
@@ -4296,11 +4166,9 @@ def test_analysis_grain_correction_allows_related_join_columns() -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("missing_purpose", [False, True])
 @pytest.mark.parametrize("delivery_format", ["document", "xlsx"])
 async def test_generate_analysis_plan_retries_with_structural_validation_feedback(
     monkeypatch: pytest.MonkeyPatch,
-    missing_purpose: bool,
     delivery_format: str,
 ) -> None:
     valid = analysis_bundle(
@@ -4308,10 +4176,6 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
         period_granularity="date",
     )
     invalid_payload = valid.model_dump(mode="json", by_alias=True)
-    if missing_purpose:
-        valid = valid.model_copy(update={"analyses": tuple(
-            item.model_copy(update={"metric_purposes": ("收入多维分析",)}) for item in valid.analyses
-        )})
     invalid_payload["requirements"][0]["tables"][0]["table"] = (
         "other.rj.dwd_hdc_income_summary_view"
     )
@@ -4332,16 +4196,10 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
         planner_calls += 1
         assert payload["deliveryFormat"] == delivery_format
         if planner_calls == 1:
-            if missing_purpose:
-                original = valid.model_dump(mode="json", by_alias=True)
-                for item in original["analyses"]:
-                    item.pop("metricPurposes", None)
-                return AnalysisBundle.model_validate(original)
             validator = getattr(_agent.model, "_report_response_validator")
             validator(json.dumps(invalid_payload))
         correction = payload["correction"]
-        assert correction["allowedMutationPaths"] == (["analyses[0]"] if missing_purpose
-                                                      else ["requirements[0].tables[0].table"])
+        assert correction["allowedMutationPaths"] == ["requirements[0].tables[0].table"]
         assert correction["validationFeedback"]["code"] == "report_analysis_plan_invalid"
         return valid
 
@@ -4362,30 +4220,25 @@ async def test_generate_analysis_plan_retries_with_structural_validation_feedbac
             mode="json", by_alias=True
         ),
     }
-    profile = SimpleNamespace(reconciliations=(), duplicate_conflicts=(), metrics=())
-    if missing_purpose:
-        from smart_reporting.reporting.profile.models import EffectiveMetric
+    from smart_reporting.reporting.tests.test_semantic_planning import receipts
+    from smart_reporting.reporting.tests.test_semantic_selection import selection_context
 
-        profile.metrics = (EffectiveMetric(code="income", kind="currency", description="收入",
-                                          fieldRef="rj.rj.dwd_hdc_income_summary_view.amount",
-                                          aggregation="sum", purpose="收入多维分析"),)
+    execution = selection_context()
     runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._basis_execution_context = AsyncMock(return_value=execution)
+    runtime.report_basis_service = SimpleNamespace(load_basis_receipts=AsyncMock(return_value=receipts(execution)))
+    runtime._scope = lambda context: {'database': 'test', 'companyId': '1', 'userId': '7', 'callerThreadId': 'thread'}
     runtime._analysis_agent = stage
     runtime._state = lambda _run_context: state
     runtime._snapshots = lambda _run_context: ()
-    runtime._profile = lambda _run_context: profile
-    runtime._capabilities = lambda _run_context: SimpleNamespace()
     runtime._data_shapes = lambda _run_context: ()
     runtime._data_understanding = lambda _run_context: understanding
     runtime._envelope = lambda _run_context: envelope
-    runtime.resolve_capabilities = AsyncMock()
     runtime._run_planner = fake_run_planner
-    monkeypatch.setattr(reporting_runtime, "build_outline_shape_view", lambda *args: None)
-    monkeypatch.setattr(reporting_runtime, "_analysis_context_payload", lambda _value: {})
-    monkeypatch.setattr(reporting_runtime, "_analysis_bundle_semantic_issues", lambda *args: [])
+    monkeypatch.setattr(reporting_runtime, "_analysis_bundle_semantic_issues", lambda *args, **kwargs: [])
 
     output = await runtime.generate_analysis_plan(
-        SimpleNamespace(), SimpleNamespace(session_state=state)
+        SimpleNamespace(), SimpleNamespace(run_id="run-selection", session_state=state)
     )
 
     assert planner_calls == 2
@@ -5089,7 +4942,13 @@ async def test_sql_planner_budget_exhaustion_falls_back_to_compiler(monkeypatch)
         period=ReportPeriod(start=date(2025, 1, 1), end=date(2025, 12, 31)),
         period_windows=lambda: SimpleNamespace(public_dict=lambda: {}),
     )
+    from smart_reporting.reporting.semantics.planning import build_metric_planning_context
+    from smart_reporting.reporting.tests.test_semantic_planning import receipts
+    from smart_reporting.reporting.tests.test_semantic_selection import selection_context
+    execution = selection_context()
+    view = build_metric_planning_context(execution, receipts(execution), report_revision='initial')
     runtime = SimpleNamespace(
+        _metric_planning_context=AsyncMock(return_value=view),
         _state=lambda _context: state,
         _data_shapes=lambda _context: (),
         _snapshots=lambda _context: (),
@@ -5135,7 +4994,13 @@ async def test_sql_planner_receives_requirement_scoped_period_windows() -> None:
         assert windows['current_only']['windows'][0]['period']['end'] == '2025-12-31'
         raise ReportingError('probe_complete', '已检查模型实际接收的期间范围。')
 
+    from smart_reporting.reporting.semantics.planning import build_metric_planning_context
+    from smart_reporting.reporting.tests.test_semantic_planning import receipts
+    from smart_reporting.reporting.tests.test_semantic_selection import selection_context
+    execution = selection_context()
+    view = build_metric_planning_context(execution, receipts(execution), report_revision='initial')
     runtime = SimpleNamespace(
+        _metric_planning_context=AsyncMock(return_value=view),
         _state=lambda _context: state, _data_shapes=lambda _context: (),
         _snapshots=lambda _context: (), _envelope=lambda _context: envelope,
         _feedback=lambda _input: None, _sources=AsyncMock(return_value=()),
@@ -5146,50 +5011,6 @@ async def test_sql_planner_receives_requirement_scoped_period_windows() -> None:
         await reporting_planning.RuntimePlanningMixin.generate_query_candidates(
             runtime, SimpleNamespace(), RunContext(run_id='run-1', session_id='session-1')
         )
-
-
-@pytest.mark.anyio
-async def test_measure_semantic_batches_keep_all_fields_and_fail_without_partial_commit(monkeypatch):
-    from smart_reporting.reporting.workflow.runtime import planning as reporting_planning
-    from smart_reporting.reporting.workflow.runtime.models import MeasureSemanticProposal
-
-    refs = tuple(f'rj.rj.first.amount_{index}' for index in range(8)) + ('rj.rj.second.amount',)
-    monkeypatch.setattr(reporting_planning, '_measure_semantic_candidate_refs', lambda *a: refs)
-    monkeypatch.setattr(reporting_planning, '_apply_confirmed_measure_semantics', lambda *a: ())
-    state = {'unchanged': True}
-    calls = []
-    fail_second = False
-
-    async def propose_batch(_step, _context, **kwargs):
-        batch = kwargs['candidate_refs']
-        calls.append(batch)
-        if fail_second and len(calls) == 2:
-            raise ReportingError('provider_failure', '上游失败。')
-        return StepOutput(content=MeasureSemanticProposal.model_validate({'decisions': [
-            {'fieldRef': ref, 'classification': 'dimension', 'reason': '非聚合维度'} for ref in batch
-        ]}))
-
-    runtime = SimpleNamespace(
-        _snapshots=lambda _: (), _data_understanding=lambda _: object(),
-        _profile=lambda _: object(), _propose_measure_semantic_batch=propose_batch,
-        _ensure_managed_execution_state=AsyncMock(return_value=None),
-    )
-    context = RunContext(run_id='run-1', session_id='s-1', session_state=state)
-    result = await reporting_planning.RuntimePlanningMixin.propose_measure_semantics(
-        runtime, SimpleNamespace(), context
-    )
-    assert tuple(d.field_ref for d in result.content.decisions) == refs
-    assert [len(c) for c in calls] == [6, 2, 1]
-    assert all(len({ref.rsplit('.', 1)[0] for ref in c}) == 1 for c in calls)
-    assert state == {'unchanged': True}
-    calls.clear()
-    fail_second = True
-    with pytest.raises(ReportingError, match='上游失败'):
-        await reporting_planning.RuntimePlanningMixin.propose_measure_semantics(
-            runtime, SimpleNamespace(), context
-        )
-    assert len(calls) == 2
-    assert state == {'unchanged': True}
 
 
 @pytest.mark.parametrize(('statuses', 'expected'), [
@@ -5205,48 +5026,6 @@ def test_visualization_rework_keeps_bounded_attempts_without_reusing_task_identi
     from smart_reporting.reporting.workflow.runtime.analysis import _visualization_attempts
     traces = [SimpleNamespace(attempt=index, status=status) for index, status in enumerate(statuses)]
     assert list(_visualization_attempts(traces)) == expected
-
-
-@pytest.mark.anyio
-async def test_measure_semantic_batch_only_sends_candidate_table_shapes():
-    snapshot = _multi_date_snapshot(('amount', 'DECIMAL(18,2)', '金额'),
-                                    ('department', 'VARCHAR(100)', '科室'))
-    table = snapshot.tables[0]
-    other_table = table.model_copy(update={'name': 'unrelated'})
-    snapshot = snapshot.model_copy(update={'tables': (table, other_table)})
-    shape_table = {
-        'sourceId': 'rj', 'database': 'rj', 'table': 'dwd_visit',
-        'totalRowCount': 0, 'periodRowCount': 0, 'outsidePeriodRowCount': 0,
-        'periodNullCount': 0, 'columnCount': 1,
-        'columns': [{'name': 'amount', 'dataType': 'DECIMAL(18,2)', 'nullable': True,
-                     'nullCount': 0, 'nullRate': 0, 'distinctCount': 0,
-                     'distinctMode': 'exact', 'cardinalityRate': 0, 'unique': False}],
-    }
-    shape = DataShape.model_validate({
-        'sourceId': 'rj', 'metadataRevision': 'revision-1', 'schemaHash': 'a' * 64,
-        'statisticsVersion': '1', 'queryCount': 2,
-        'periodStart': '2025-01-01', 'periodEnd': '2025-12-31',
-        'tables': [shape_table, {**shape_table, 'table': 'unrelated'}],
-    })
-
-    async def inspect_payload(_agent, payload, _context, **_kwargs):
-        assert payload['candidateFieldRefs'] == ['rj.rj.dwd_visit.amount']
-        assert payload['candidateFieldContexts'][0]['sameTableColumnNames'] == ['department']
-        assert [t['table'] for s in payload['schemas'] for t in s['tables']] == ['rj.dwd_visit']
-        assert [t['table'] for s in payload['dataShapes'] for t in s['tables']] == ['dwd_visit']
-        raise ReportingError('probe_complete', '已检查实际输入过滤。')
-
-    runtime = SimpleNamespace(
-        _envelope=lambda _: SimpleNamespace(report_goal='综合运营分析'),
-        _data_shapes=lambda _: (shape,), _feedback=lambda _: None,
-        _run_planner=inspect_payload, _measure_semantic_agent=object(),
-    )
-    with pytest.raises(ReportingError, match='已检查实际输入过滤'):
-        await reporting_runtime.RuntimePlanningMixin._propose_measure_semantic_batch(
-            runtime, SimpleNamespace(), RunContext(run_id='run-1', session_id='s-1'),
-            snapshots=(snapshot,), profile=SimpleNamespace(scope_filters=()),
-            candidate_refs=('rj.rj.dwd_visit.amount',),
-        )
 
 
 def _outline_proposal(*sections: tuple[str, list[str]], report_type: str = "comprehensive"):

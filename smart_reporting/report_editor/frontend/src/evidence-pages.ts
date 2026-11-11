@@ -2,6 +2,7 @@ import { renderEvidenceNotes } from './evidence-notes'
 import { createEvidenceGraph, mergeEvidenceGraph, graphRelations, type EvidenceGraph } from './evidence-graph'
 import {
   ReportEditorApiError,
+  type KnowledgeLocator,
   type ReportEditorClient,
   type TraceChartSource,
   type TraceComputationDetail,
@@ -619,7 +620,6 @@ function renderEvidenceGraph(host: HTMLElement, ctx: EvidencePageContext, relati
     })
     button.style.left = `${position.x - position.width / 2}px`
     button.style.top = `${position.y - position.height / 2}px`
-    button.setAttribute('aria-label', `${KIND_LABELS[node.kind]}：${node.label}`)
     button.setAttribute('aria-pressed', String(ctx.page.selected !== null && sameEvidenceRef(ctx.page.selected, node)))
     if (relatedIds.has(evidenceRefId(node))) button.classList.add('is-related')
     if (sameEvidenceRef(node, ctx.page.ref)) button.classList.add('is-current')
@@ -1403,6 +1403,8 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   container.innerHTML = ''
   const { detail } = data
   const entry = detail.entry as Record<string, unknown>
+  const registeredVersion = entry.metricVersion && typeof entry.metricVersion === 'object'
+    ? entry.metricVersion as { metricId?: unknown; revision?: unknown } : null
   const unit = entry.total == null && entry.percentage != null ? '%'
     : detail.factKind === 'derived' && entry.value != null ? ''
     : typeof entry.unit === 'string' ? entry.unit : ''
@@ -1415,7 +1417,9 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
   const valueLine = document.createElement('p')
   valueLine.className = 'evidence-fact-value'
   const valueLabel = detail.factKind === 'comparison' ? '登记变化额' : detail.factKind === 'reconciliation' ? '登记核对差额' : '登记值'
-  valueLine.textContent = `${valueLabel} ${groupDigits(detail.displayValue)}${unit ? ` ${unit}` : ''}`
+  valueLine.textContent = registeredVersion && entry.status === 'unavailable'
+    ? `暂不可计算：${Array.isArray(entry.issueCodes) ? entry.issueCodes.join('、') : '原因未登记'}`
+    : `${valueLabel} ${groupDigits(detail.displayValue)}${unit ? ` ${unit}` : ''}`
   skeleton.statusArea.append(valueLine)
   const metadata = document.createElement('dl')
   metadata.className = 'evidence-fact-metadata'
@@ -1441,7 +1445,18 @@ async function renderFactPage(container: HTMLElement, ctx: EvidencePageContext):
     row.append(term, description)
     metadata.append(row)
   }
-  addMetadata('统计期间', factPeriodLabel(entry))
+  addMetadata('统计期间', factPeriodLabel(registeredVersion ? { ...entry, periodBoundary: 'half_open' } : entry))
+  if (registeredVersion) {
+    addMetadata('指标版本', `${registeredVersion.metricId} · 版本 ${registeredVersion.revision}`)
+    addMetadata('计算依据', entry.basisId)
+    addMetadata('计算回执', entry.calculationId)
+    if (Array.isArray(entry.dimensions)) {
+      addMetadata('统计范围', entry.dimensions.map(item => `${item.dimensionId}：${item.value}`).join('；'))
+    }
+    if (entry.status !== 'unavailable' && Array.isArray(entry.issueCodes)) {
+      addMetadata('计算限制', entry.issueCodes.join('、'))
+    }
+  }
   if (data.name && data.name !== entry.field && typeof entry.field === 'string') addMetadata('数据字段', entry.field)
   const aggregationLabels: Record<string, string> = { sum: '合计', mean: '平均值', average: '平均值', count: '计数', min: '最小值', max: '最大值', latest: '末期值' }
   if (typeof entry.aggregation === 'string') addMetadata('汇总方式', aggregationLabels[entry.aggregation] ?? entry.aggregation)
@@ -2391,6 +2406,94 @@ function renderTraceChain(detail: TraceSubjectInfo, sources: TraceSources | null
   return section
 }
 
+function knowledgeLocatorLabel(locator: KnowledgeLocator): string {
+  if (locator.kind === 'text_lines') return locator.lineStart === locator.lineEnd
+    ? `第 ${locator.lineStart} 行` : `第 ${locator.lineStart}–${locator.lineEnd} 行`
+  if (locator.kind === 'pdf_page') return `第 ${locator.page} 页`
+  if (locator.kind === 'docx_paragraph') return `第 ${locator.paragraph} 段`
+  return `表 ${locator.table} · 第 ${locator.row} 行 · 第 ${locator.column} 列`
+}
+
+function renderKnowledgeSources(detail: TraceSubjectInfo, validation: TraceValidation | null, ctx: EvidencePageContext): HTMLElement | null {
+  if (!detail.knowledgeReferences?.length) return null
+  const section = document.createElement('section')
+  section.className = 'evidence-knowledge'
+  section.setAttribute('aria-label', '业务知识依据')
+  const heading = document.createElement('h2')
+  heading.textContent = '业务知识依据'
+  const initialDraft = ctx.getDraft()
+  const support = validation?.quality?.claimSupport?.find(item => item.subjectId === detail.subjectId)
+  const status = document.createElement('p')
+  status.className = 'evidence-knowledge-status'
+  status.textContent = '当前正文支持关系：' + (support
+    ? { supported: '有依据', unverified: '待核实', conflicted: '存在反证' }[support.supportStatus]
+    : '尚未复核')
+  const note = document.createElement('p')
+  note.textContent = '材料可引用与结论有依据分别核验；本期原因还需观察事实支持。'
+  section.append(heading, status, note)
+  for (const reference of detail.knowledgeReferences) {
+    const card = document.createElement('article')
+    card.className = 'evidence-knowledge-card'
+    const title = document.createElement('h3')
+    title.textContent = `${reference.title || '知识材料'} · 修订 ${reference.documentRevision}`
+    const location = document.createElement('p')
+    location.textContent = `${reference.role === 'rule_evidence' ? '规则依据' : '背景材料'} · ${knowledgeLocatorLabel(reference.locator)}${reference.available ? '' : ' · 当前不可引用'}`
+    const toggle = makeButton('查看原文片段', 'ui-button evidence-knowledge-toggle')
+    const content = document.createElement('div')
+    content.className = 'evidence-knowledge-content'
+    content.id = `knowledge-${detail.subjectId}-${reference.evidenceId}`
+    content.hidden = true
+    content.setAttribute('aria-live', 'polite')
+    toggle.setAttribute('aria-controls', content.id)
+    toggle.setAttribute('aria-expanded', 'false')
+    let generation = 0
+    toggle.addEventListener('click', async () => {
+      const request = ++generation
+      const opening = content.hidden
+      content.replaceChildren()
+      content.hidden = !opening
+      toggle.setAttribute('aria-expanded', String(opening))
+      toggle.textContent = opening ? '收起原文片段' : '查看原文片段'
+      if (!opening) return
+      if (!sameDraft(initialDraft, ctx.getDraft())) status.textContent = '当前正文支持关系：待核实'
+      content.textContent = '正在核验材料权限与原件…'
+      try {
+        const result = await ctx.client.knowledgeDetail(detail.subjectId, reference.evidenceId, ctx.signal)
+        if (ctx.isStale() || generation !== request) return
+        content.replaceChildren()
+        if (!result.available || !result.quote || !result.reference) {
+          status.textContent = '当前正文支持关系：待核实'
+          content.textContent = '材料当前不可引用，请核对授权、撤销状态或原件是否可用。'
+          return
+        }
+        const locator = document.createElement('p')
+        locator.textContent = `${result.title || '知识材料'} · 修订 ${result.reference.documentRevision} · ${knowledgeLocatorLabel(result.reference.locator)}`
+        const quote = document.createElement('blockquote')
+        quote.textContent = result.quote
+        content.append(locator, quote)
+        if (result.recordedRelationships?.length) {
+          const review = document.createElement('details')
+          const summary = document.createElement('summary')
+          summary.textContent = '生成时的关系记录'
+          const relationships = document.createElement('p')
+          relationships.textContent = result.recordedRelationships.map(item => ({
+            supports: '支持', contradicts: '反证', irrelevant: '无关', unknown: '待核实',
+          })[item.relationship]).join('、') + '。该记录不代替当前正文复核。'
+          review.append(summary, relationships)
+          content.append(review)
+        }
+      } catch (error) {
+        if (ctx.isStale() || generation !== request) return
+        status.textContent = '当前正文支持关系：待核实'
+        content.textContent = '材料读取失败，请收起后重试。'
+      }
+    })
+    card.append(title, location, toggle, content)
+    section.append(card)
+  }
+  return section
+}
+
 async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContext): Promise<void> {
   let data = ctx.pageData<SubjectPageData>()
   if (!data) {
@@ -2407,6 +2510,11 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
       renderPageError(container, ctx, error)
       return
     }
+  }
+  // 原文授权会在正文不变时撤销，知识声明不能沿用历史页面的核验结果。
+  if (data.detail.knowledgeReferences?.length) {
+    data.validation = null
+    data.validatedDraft = null
   }
   await refreshDraftValidation(data, ctx, container)
   if (ctx.isStale()) return
@@ -2427,11 +2535,24 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
       ? (CITATION_STATUS_LABELS[entryResult.status] ?? entryResult.status)
       : '未绑定'
     value.append(chip)
+    const editStatus = data.validation.subjects.find(subject => subject.subjectId === detail.subjectId)?.editStatus
+    if (editStatus) {
+      const impact = makeStatusRow(skeleton.statusArea, '修订影响', 'revision-impact')
+      impact.textContent = { manual_override: '人工覆盖，未继承计算核对',
+        support_review_required: '文字已修改，支持关系待复核', stale: '依赖已变化，需重新计算' }[editStatus]
+      const note = document.createElement('p')
+      note.textContent = '原计算快照保持不变；导出将生成新修订'
+      impact.append(note)
+    } else if (data.validation.revisionImpactIssues?.length) {
+      makeStatusRow(skeleton.statusArea, '修订影响', 'revision-impact').textContent = '影响范围暂无法核验，请复核修改；仍可导出'
+    }
     const semantic = data.validation.subjects.find(subject => subject.subjectId === detail.subjectId)?.semanticCheck
     if (semantic) {
       const description = makeStatusRow(skeleton.statusArea, '语义归属', 'semantics')
       description.textContent = semantic.status === 'interpreted'
-        ? '模型语义解释 · 依据当前正文，不代表业务验收通过'
+        ? semantic.method === 'registered_result_projection_v1'
+          ? '正式结果投影 · 与冻结计算同源，不代表业务验收通过'
+          : '模型语义解释 · 依据当前正文，不代表业务验收通过'
         : '原语义判断已失效，需重新复核'
       if (semantic.status === 'interpreted') {
         const evidence = semantic.interpretation.scope.flatMap(item => item.evidence)
@@ -2512,6 +2633,8 @@ async function renderSubjectPage(container: HTMLElement, ctx: EvidencePageContex
     li.textContent = '没有登记的关联对象'
     list.append(li)
   }
+  const knowledge = renderKnowledgeSources(detail, data.validation, ctx)
+  if (knowledge) skeleton.detailBox.append(knowledge)
   skeleton.detailBox.append(heading, list)
 
   finishRender(container, ctx, skeleton.title)

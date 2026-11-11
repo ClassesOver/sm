@@ -37,7 +37,8 @@ export async function request<T>(
 ): Promise<T> {
   const started = epoch
   const headers: Record<string, string> = {}
-  if (options.body !== undefined) headers['content-type'] = 'application/json'
+  const multipart = options.body instanceof FormData
+  if (options.body !== undefined && !multipart) headers['content-type'] = 'application/json'
   if (options.csrf) headers['x-csrf-token'] = options.csrf
   let response: Response
   try {
@@ -47,7 +48,7 @@ export async function request<T>(
       credentials: 'same-origin',
       cache: 'no-store',
       body:
-        options.body === undefined ? undefined : JSON.stringify(options.body),
+        options.body === undefined ? undefined : multipart ? options.body as FormData : JSON.stringify(options.body),
       signal: options.signal,
     })
   } catch (error) {

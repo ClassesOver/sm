@@ -1,0 +1,33 @@
+{
+  "caseId": "C02",
+  "basisId": "59af6d81-dcd9-5bde-b116-dbdc52de35e6",
+  "calculationReceiptId": "initial-f1c111c1c965382f6c67c300435bc71f4d6a2df5c6d493330277f5a0c99ec39e",
+  "rootFactId": "fact-12857c602e313461",
+  "expectedValue": "70",
+  "files": [
+    {
+      "file": "c02-corrected.pdf",
+      "path": "报表/智能分析/policy-adoption-032b7676a5246e854af237469361dc7eb070000b6969a5bcf243157b4f3e1d00/document-render/revision-3/report.pdf",
+      "sha256": "9c605c0f1a5212e40029afa51ca1753cafa4f6dbc757f35592accd0750a75095",
+      "size": 834493
+    },
+    {
+      "file": "c02-corrected.docx",
+      "path": "报表/智能分析/policy-adoption-032b7676a5246e854af237469361dc7eb070000b6969a5bcf243157b4f3e1d00/document-render/revision-3/report.docx",
+      "sha256": "bf1de51bf6802c905cc15653d597a2297d079974d34f5e251c9aca1ad88fe034",
+      "size": 18936
+    }
+  ],
+  "factPresentation": {
+    "factPresentationVerified": true,
+    "coveredFactIds": [
+      "fact-12857c602e313461"
+    ],
+    "missingFactIds": [],
+    "businessApproval": "not_performed"
+  },
+  "newEditorVerified": true,
+  "httpDownloadsVerified": true,
+  "businessApproval": "not_performed",
+  "parentEditorFlowVerified": false
+}

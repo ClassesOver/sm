@@ -13,7 +13,7 @@ from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ..contract import StrictModel, safe_relative_posix_path
 from ..models import ReportingError
-from ..trace.contracts_v1 import NumberReferenceV1, ReviewNoticeV1
+from ..trace.contracts_v1 import NarrativeReferenceV1, NumberReferenceV1, ReviewNoticeV1
 from .report_runtime.markdown import (
     CJK_ENUMERATION_LINE,
     HEADING_QUANTITY_WORDS,
@@ -164,6 +164,7 @@ class ReportChartRegistration(StrictModel):
 
 
 class ReportDraftBlock(StrictModel):
+    knowledge_withdrawn: bool = Field(default=False, alias="knowledgeWithdrawn")
     block_id: str = Field(alias="blockId", min_length=1, max_length=128)
     markdown: str = Field(min_length=1, max_length=64_000)
     citation_ids: tuple[str, ...] = Field(default=(), alias="citationIds", max_length=100)
@@ -172,6 +173,7 @@ class ReportDraftBlock(StrictModel):
         alias="chartIds",
         description="当前正文块实际展示的冻结图表 ID；使用图表时必须显式填写。",
     )
+    narrative_references: tuple[NarrativeReferenceV1, ...] = Field(default=(), alias="narrativeReferences", max_length=500)
     number_references: tuple[NumberReferenceV1, ...] = Field(default=(), alias="numberReferences", max_length=500)
     review_notices: tuple[ReviewNoticeV1, ...] | None = Field(default=None, alias="reviewNotices", max_length=500)
     chart_placement: Literal["legacy", "explicit"] = Field(default="legacy", alias="chartPlacement")
@@ -825,6 +827,7 @@ def assemble_report_markdown(
     charts: tuple[ReportChartInput, ...] = (),
     require_table: bool = False,
     server_tables: tuple[ReportServerTable, ...] = (),
+    server_narrative_sections: tuple[ReportDraftSection, ...] = (),
     claim_values: Mapping[tuple[str, str], tuple[Any, str | None]] | None = None,
 ) -> RenderedReportDraft:
     section_registry = {item.code: item for item in sections}
@@ -839,6 +842,14 @@ def assemble_report_markdown(
         raise ReportingError(
             "report_draft_section_mismatch", "草稿章节必须按 effectiveProfile 的顺序完整生成。"
         )
+    server_narratives: dict[str, tuple[ReportDraftBlock, ...]] = {}
+    for section in server_narrative_sections:
+        if section.section_code not in section_registry or section.section_code in server_narratives:
+            raise ReportingError('report_draft_registry_invalid', '服务端摘要章节必须已登记且不能重复。')
+        if any(block.chart_ids or block.citation_ids or block.number_references or block.claim_ids
+                for block in section.blocks):
+            raise ReportingError('report_draft_registry_invalid', '服务端摘要只接纳独立叙述声明。')
+        server_narratives[section.section_code] = section.blocks
 
     citation_registry = set(citation_ids)
     if len(citation_registry) != len(citation_ids):
@@ -1001,11 +1012,11 @@ def assemble_report_markdown(
                     "message": "汇总表未命中具体声明，保留在已绑定的分析章节末尾。",
                 })
         server_tables_by_section[definition.code] = appendix_tables
-        for block_index, block in enumerate(section.blocks):
+        for block_index, block in enumerate((*section.blocks, *server_narratives.get(definition.code, ()))):
             from ..trace.semantic_bindings import anchor_bound_numbers
 
             validate_report_body_markdown(block.markdown)
-            source_markdown = anchor_bound_numbers(block.markdown, block.number_references, block.review_notices)
+            source_markdown = anchor_bound_numbers(block.markdown, (*block.number_references, *block.narrative_references), block.review_notices)
             # 中文正文的半角逗号/冒号/分号统一为全角，ISO 期间改为中文日期、yoy/mom 改为同比/环比；
             # 单个换行分隔的“1、”“（1）”等中文条目各自成段；千分位、时间、英文、文件名与机器文本不变。
             block_markdown = separate_enumerated_lines(normalize_cjk_punctuation(
@@ -1061,7 +1072,7 @@ def assemble_report_markdown(
             )
             from ..trace.subject_builder import _subject_id
 
-            for number in block.number_references:
+            for number in (*block.number_references, *block.narrative_references):
                 marker = f"[[claim:{number.claim_id}]]"
                 anchored_markdown = anchored_markdown.replace(
                     marker, f"[[citation:{_subject_id(definition.code, number.claim_id)}]]" + marker,

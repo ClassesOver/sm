@@ -53,10 +53,227 @@ from smart_reporting.reporting.workflow.scope import (
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
     resolve_reporting_workflow_scope,
 )
+from smart_reporting.tests.test_report_background_delivery import (
+    auth_context as auth_context,
+)
+from smart_reporting.tests.test_report_background_delivery import (
+    basis_context as basis_context,
+)
+from smart_reporting.tests.test_report_background_delivery import (
+    document_context as document_context,
+)
+from smart_reporting.tests.test_report_background_delivery import (
+    exercise_background_report,
+)
+from smart_reporting.tests.test_report_background_delivery import (
+    index_context as index_context,
+)
+from smart_reporting.tests.test_report_background_delivery import (
+    receipt_snapshot as receipt_snapshot,
+)
+
 
 from .delivery_fakes import InMemoryDownloadGrantRepository, InMemoryReportArtifactRepository
 from .lineage_fixtures.manifest import register_trace_manifest
 from .test_native_publication_nonblocking import create_publication
+
+
+@pytest.mark.anyio
+async def test_http_editor_export_keeps_files_when_formal_source_explanation_fails(tmp_path, monkeypatch):
+    from .test_formal_source_explanations import exercise_formal_source_export_fault
+
+    await exercise_formal_source_export_fault(tmp_path, monkeypatch)
+
+
+@pytest.mark.anyio
+async def test_http_editor_export_keeps_files_when_knowledge_source_projection_fails(tmp_path, monkeypatch):
+    from .test_formal_source_explanations import exercise_formal_source_export_fault
+
+    await exercise_formal_source_export_fault(tmp_path, monkeypatch, stage='knowledge')
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_http_initial_workbook_retains_download_on_publication_fact_read_failure(
+    basis_context, document_context, receipt_snapshot, monkeypatch,
+):
+    from smart_reporting.tests.test_initial_workbook_delivery import (
+        exercise_initial_workbook_delivery,
+    )
+
+    await exercise_initial_workbook_delivery(basis_context, document_context, receipt_snapshot,
+        monkeypatch, fact_read_failure=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_http_initial_pptx_retains_download_on_slide_knowledge_registration_failure(
+    basis_context, document_context, receipt_snapshot, monkeypatch,
+):
+    from smart_reporting.tests.test_initial_workbook_delivery import exercise_initial_workbook_delivery
+
+    await exercise_initial_workbook_delivery(basis_context, document_context, receipt_snapshot,
+        monkeypatch, delivery_format='pptx', knowledge_registration_failure=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_http_initial_pptx_retains_download_on_narrative_parsing_failure(
+    basis_context, document_context, receipt_snapshot, monkeypatch,
+):
+    from smart_reporting.tests.test_initial_workbook_delivery import exercise_initial_workbook_delivery
+
+    await exercise_initial_workbook_delivery(basis_context, document_context, receipt_snapshot,
+        monkeypatch, delivery_format='pptx', narrative_parsing_failure=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_http_publication_keeps_pdf_word_links_when_claim_support_projection_fails(
+    basis_context, document_context, receipt_snapshot, monkeypatch,
+):
+    """新增解释展示步骤失败时，实际双格式仍经原生生成、签发及HTTP字节核验。"""
+    await exercise_background_report(basis_context, document_context, receipt_snapshot, monkeypatch,
+        'causal', 'unverified', projection_failure=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+@pytest.mark.parametrize('initial_pipeline', [True, False], ids=['initial', 'recalculation'])
+async def test_http_document_publication_keeps_links_when_knowledge_source_projection_fails(
+    basis_context, document_context, receipt_snapshot, monkeypatch, initial_pipeline,
+):
+    await exercise_background_report(basis_context, document_context, receipt_snapshot, monkeypatch,
+        'known', 'supported', knowledge_projection_failure=True, initial_pipeline=initial_pipeline)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+@pytest.mark.parametrize('outputs', [['pptx'], ['xlsx']], ids=['pptx', 'xlsx'])
+@pytest.mark.parametrize('support_failure', [False, True], ids=['current', 'support-failure'])
+async def test_http_native_summary_support_is_visible_and_failure_keeps_downloads(
+    basis_context, receipt_snapshot, monkeypatch, outputs, support_failure,
+):
+    """新增原生展示步骤：真实生成/登记/HTTP下载，支持失败不能丢掉文件。"""
+    import os
+    import shutil
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+    from pptx import Presentation
+
+    from smart_reporting.reporting.workflow import claim_presentation
+    from smart_reporting.tests import c02_native_delivery, test_report_issue_c02
+
+    original = c02_native_delivery.exercise_c02_native_delivery
+    calls = []
+    if support_failure:
+        async def unavailable(*args):
+            calls.append('injected')
+            raise OSError('injected native claim support failure')
+
+        monkeypatch.setattr(claim_presentation, 'registered_native_claim_presentations', unavailable)
+
+    async def inspect(report):
+        format = outputs[0]
+        output = Path('/tmp') / f'smart-reporting-native-claims-{os.getpid()}-{format}-{support_failure}'
+        output.mkdir(exist_ok=True)
+        shutil.copytree(report.evidence_dir, output / 'native', dirs_exist_ok=True)
+        validation = report.content['validation']
+        support = validation['claimSupport']
+        assert support
+        if support_failure:
+            assert calls == ['injected']
+            assert validation['ok'] is False
+            assert any(item['code'] == 'native_claim_support_unavailable' for item in validation['issues'])
+        else:
+            assert not any(item['code'] == 'native_claim_support_unavailable' for item in validation['issues'])
+        file = output / 'native' / ('c02-corrected.' + format)
+        if format == 'pptx':
+            presentation = Presentation(file)
+            text = '\n'.join(shape.text for slide in presentation.slides for shape in slide.shapes if shape.has_text_frame)
+            if support_failure:
+                assert '（支持关系待核实）' in text
+            else:
+                current = await report.editor.trace.validate(report.context,
+                    (await report.editor.read_document(report.context)).markdown,
+                    (await report.editor.read_document(report.context)).sha256)
+                actual = {item['subjectId']: item for item in current['quality']['claimSupport']}
+                assert all(item['support'].get('subjectId') in actual for item in support)
+                assert all(item['support']['supportStatus'] == actual[item['support']['subjectId']]['supportStatus']
+                    for item in support)
+        else:
+            workbook = load_workbook(BytesIO(file.read_bytes()), data_only=True)
+            text = '\n'.join(str(cell.value or '') for row in workbook['汇总'] for cell in row)
+            workbook.close()
+            if support_failure:
+                assert '（支持关系待核实）' in text
+            else:
+                current_document = await report.editor.read_document(report.context)
+                current = await report.editor.trace.validate(report.context,
+                    current_document.markdown, current_document.sha256)
+                actual = {item['subjectId']: item for item in current['quality']['claimSupport']}
+                assert all(item['support'].get('subjectId') in actual for item in support)
+                assert all(item['support']['supportStatus'] == actual[item['support']['subjectId']]['supportStatus']
+                    for item in support)
+                assert '（推断，待核实）' in text
+            assert all(item['support']['supportStatus'] == 'unverified' for item in support)
+        (output / 'text.txt').write_text(text)
+        (output / 'evidence.json').write_text(json.dumps({'format': format, 'supportFailure': support_failure,
+            'injectionCalls': len(calls), 'validation': validation,
+            'httpDownloadsVerified': True, 'businessApproval': 'not_performed'}, ensure_ascii=False, indent=2))
+
+    async def native(*args, **kwargs):
+        return await original(*args, **kwargs, after_report=inspect)
+
+    monkeypatch.setattr(c02_native_delivery, 'exercise_c02_native_delivery', native)
+    await test_report_issue_c02.test_c02_published_ratio_replaces_real_project_mean_and_rejects_70_expectation(
+        basis_context, receipt_snapshot, monkeypatch, outputs)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
+async def test_http_workbook_summary_registration_fault_keeps_actual_download(
+    basis_context, receipt_snapshot, monkeypatch,
+):
+    """摘要知识登记读取失败只撤回支持关系，不阻断实际 XLSX 签发。"""
+    import os
+    import shutil
+
+    from smart_reporting.reporting.workflow.analysis_summaries import AnalysisSummarySection
+    from smart_reporting.tests import c02_native_delivery, test_report_issue_c02
+
+    read_model = ReportWorkflowRuntime._read_identity_model
+    native = c02_native_delivery.exercise_c02_native_delivery
+    calls = []
+
+    async def unavailable(self, thread_id, file, model):
+        if model is AnalysisSummarySection:
+            calls.append(file.path)
+            raise OSError('injected workbook knowledge registration failure')
+        return await read_model(self, thread_id, file, model)
+
+    monkeypatch.setattr(ReportWorkflowRuntime, '_read_identity_model', unavailable)
+
+    async def inspect(report):
+        index = await report.editor.trace.require_index(report.context)
+        assert index.knowledge_registration_status == 'unavailable'
+        assert len(calls) == 1
+        support = report.content['validation']['claimSupport']
+        assert support and all(item['support']['supportStatus'] == 'unverified' for item in support)
+        output = Path('/tmp') / f'smart-reporting-workbook-registration-fault-{os.getpid()}'
+        shutil.copytree(report.evidence_dir, output / 'native', dirs_exist_ok=True)
+        (output / 'evidence.json').write_text(json.dumps({'injectionCalls': len(calls),
+            'knowledgeRegistrationStatus': index.knowledge_registration_status,
+            'validation': report.content['validation'], 'httpDownloadsVerified': True,
+            'businessApproval': 'not_performed'}, ensure_ascii=False, indent=2))
+
+    async def exercise(*args, **kwargs):
+        return await native(*args, **kwargs, after_report=inspect)
+
+    monkeypatch.setattr(c02_native_delivery, 'exercise_c02_native_delivery', exercise)
+    await test_report_issue_c02.test_c02_published_ratio_replaces_real_project_mean_and_rejects_70_expectation(
+        basis_context, receipt_snapshot, monkeypatch, ['xlsx'])
 
 
 @pytest.mark.anyio
@@ -308,7 +525,7 @@ async def test_registration_switch_omits_new_trace_index_without_removing_report
     runtime.workspace_service = workspace
     runtime.trace_registration_enabled = False
     runtime._scope = lambda _context: scope.as_state()
-    runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash="p" * 64)
+    runtime._basis_execution_context = AsyncMock(return_value=SimpleNamespace(basis=SimpleNamespace(id="basis-test")))
     runtime._state = lambda _context: {}
     runtime._write_trace_index = AsyncMock()
     captured: dict[str, object] = {}
@@ -344,6 +561,8 @@ async def test_registration_switch_omits_new_trace_index_without_removing_report
 
     assert manifest.trace_index is None
     assert captured["trace_index"] is None
+    assert captured["report_basis_id"] == "basis-test"
+    assert "effective_profile_hash" not in captured
     runtime._write_trace_index.assert_not_awaited()
     assert await workspace.apath_exists(scope.workspace_key, manifest_path)
     assert not await workspace.apath_exists(
@@ -362,7 +581,7 @@ def _identity(path: str, content: bytes, media_type: str) -> ArtifactFile:
 
 async def _publication_fixture(
     tmp_path: Path, *, forged: str | None = None, table_source: bool = False, source_cell: bool = False, denominator: bool = False, population: bool = False,
-    quality_record: bool = False,
+    quality_record: bool = False, registered_result: bool = False, native_document: bool = False,
 ):
     dependencies = {
         REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
@@ -392,6 +611,32 @@ async def _publication_fixture(
         "reports/report.docx": b"PK report",
     }
     table_source_path = "evidence/table.json"
+    registered_tables = ()
+    registered_fact_files = {}
+    report_basis_id = "basis-test"
+    if registered_result:
+        from smart_reporting.reporting.semantics.analysis_facts import (
+            build_registered_analysis_bundle,
+        )
+        from smart_reporting.reporting.trace.table_builder import build_analysis_tables
+
+        from .test_registered_analysis_facts import analysis_inputs
+
+        analysis, context, result = analysis_inputs()
+        report_basis_id = context.basis_id
+        result = result.model_copy(update={'dataset_ids': ('dataset-url-abc0001',)})
+        context = context.model_copy(update={'calculations': (context.calculations[0].model_copy(update={'results': (result,)}),)})
+        bundle = build_registered_analysis_bundle(analysis, context, ())
+        path = 'facts/registered.json'
+        files[path] = bundle.model_dump_json(by_alias=True).encode()
+        registered_fact_files = {analysis.analysis_id: _identity(path, files[path], 'application/json')}
+        trace, table_markdown = build_analysis_tables(bundle, fact_file_resource_id=derive_resource_id(path))[0]
+        registered_tables = (trace,)
+        heading = '# Report\n\n'
+        if native_document:
+            heading += '[[section:overview]]\n\n## 1. 经营概览\n\n'
+        markdown = (heading + table_markdown).encode()
+        files['reports/report.md'] = markdown
     if table_source:
         files[table_source_path] = table_bytes
     denominator_path = "facts/denominator.json"
@@ -503,7 +748,7 @@ async def _publication_fixture(
     else:
         subject = None
         table_source_identity = None
-    index = build_csv_trace_index(
+    index = build_csv_trace_index(report_basis_id=report_basis_id,
         handles=(handle,),
         lineage=(lineage,),
         report_id="report-1",
@@ -513,9 +758,9 @@ async def _publication_fixture(
         table_source_files=(() if table_source_identity is None else (table_source_identity,))
         + ((_identity(denominator_path, files[denominator_path], "application/json"),) if denominator or population else ()),
         fact_files=({"analysis_001": _identity(denominator_path, files[denominator_path], "application/json")}
-                    if denominator or population else None),
+                    if denominator or population else registered_fact_files or None),
         subject_bindings=() if subject is None else (subject,),
-        server_table_traces=(() if not source_cell else (TableTraceV1.model_validate({
+        server_table_traces=registered_tables + (() if not source_cell else (TableTraceV1.model_validate({
             "tableId": "table-source-cell", "rowKeys": ["source-row:0"], "columnKeys": ["收入"],
             "cells": [{"rowKey": "source-row:0", "columnKey": "收入", "sourceCell": {
                 "fileResourceId": table_resource_id, "tablePointer": "/tables/0",
@@ -553,6 +798,7 @@ async def _publication_fixture(
         manifest = manifest.model_copy(
             update={
                 "report_id": "report-1",
+                "report_basis_id": "basis-test",
                 "revision": 1,
                 "markdown": _identity("reports/report.md", markdown, "text/markdown"),
                 "trace_index": _identity(
@@ -638,11 +884,37 @@ async def _publication_fixture(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "heading_projection", "standard_proof_sources", "overview_evaluate", "runtime_state", "quality_source_selection", "write", "read"])
+@pytest.mark.parametrize("fault", ["state", "evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "heading_projection", "standard_proof_sources", "overview_evaluate", "runtime_state", "quality_source_selection", "registered_claim_support", "registered_narrative_support", "registered_question_coverage", "registered_answer_provider", "registered_overview", "knowledge_authorization", "revision_quality_notice", "write", "read"])
 async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch, fault):
     from smart_reporting.reporting.trace import quality_bundle
 
-    runtime, arguments, scope, durable, _, _, files, index = await _publication_fixture(tmp_path)
+    if fault in {'registered_narrative_support', 'registered_claim_support', 'registered_question_coverage', 'registered_answer_provider', 'registered_overview'}:
+        from .test_registered_claim_support import native_quality_inputs
+
+        runtime, arguments, scope, durable, _, _, files, index = await native_quality_inputs(
+            tmp_path, publication_fixture=True)
+        if fault == 'registered_narrative_support':
+            from smart_reporting.reporting.trace.contracts_v1 import NarrativeReferenceV1, SubjectBindingV1
+
+            narrative = NarrativeReferenceV1(offset=0, claimId='narr-http', basisId=index.report_basis_id,
+                period={'start': '2026-11-01', 'end': '2026-12-01'}, statementSha256='a' * 64)
+            subject = SubjectBindingV1(subjectId='sub-' + 'a' * 16, subjectKind='text_claim',
+                locator={'sectionId': 'section_001'}, subjectSha256='a' * 64, claimId=narrative.claim_id,
+                narrativeReference=narrative)
+            index = index.model_copy(update={'subject_bindings': (*index.subject_bindings, subject)})
+        if fault == 'registered_answer_provider':
+            from smart_reporting.reporting.semantics.request_types import ReportQuestion
+            from smart_reporting.reporting.workflow.questions import request_questions
+
+            required = request_questions('核对预算', questions=(ReportQuestion(id='q-budget', text='预算是多少？'),))
+            durable.payload['questionSpecs'] = required.model_dump(mode='json', by_alias=True)
+
+            async def unavailable_native_provider(_context):
+                raise OSError('injected registered answer provider failure')
+
+            runtime.registered_answer_plan_provider = unavailable_native_provider
+    else:
+        runtime, arguments, scope, durable, _, _, files, index = await _publication_fixture(tmp_path)
     original_get = runtime.state_repository.get
     async def get(run_id):
         if run_id == "report-1":
@@ -658,19 +930,41 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
         def unavailable_state(_context):
             raise OSError("injected quality state failure")
         runtime._state = unavailable_state
-    runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._basis_execution_context = AsyncMock(return_value=SimpleNamespace(basis=SimpleNamespace(id=index.report_basis_id)))
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_kwargs: index)
-    if fault in {"evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate"}:
+    if fault == "knowledge_authorization":
+        from smart_reporting.reporting.workflow.runtime import business_evidence
+
+        async def failed_knowledge_authorization(*args, **kwargs):
+            raise OSError("knowledge authorization unavailable")
+        monkeypatch.setattr(business_evidence, "resolve_runtime_knowledge", failed_knowledge_authorization)
+    elif fault in {"evaluate", "chart_evaluate", "table_evaluate", "semantic_evaluate", "overview_evaluate"}:
         def fail(*_args, **_kwargs):
             raise RuntimeError("injected quality evaluation failure")
         monkeypatch.setattr(quality_bundle, {"evaluate": "evaluate_quality_bundle", "chart_evaluate": "evaluate_chart_quality", "table_evaluate": "evaluate_table_quality", "semantic_evaluate": "evaluate_semantic_alignment", "overview_evaluate": "build_management_overview"}[fault], fail)
+    elif fault == 'registered_overview':
+        def fail(*_args, **_kwargs):
+            raise RuntimeError('injected native overview failure')
+        monkeypatch.setattr(quality_bundle, 'build_registered_management_overview', fail)
     elif fault == "heading_projection":
         from smart_reporting.reporting.trace import claim_semantics
 
         def fail(*_args, **_kwargs):
             raise RuntimeError("injected semantic heading projection failure")
         monkeypatch.setattr(claim_semantics, "project_semantic_headings", fail)
+    elif fault in {'registered_claim_support', 'registered_narrative_support'}:
+        from smart_reporting.reporting.trace import registered_claims
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError('injected registered claim support failure')
+        monkeypatch.setattr(registered_claims, fault, fail)
+    elif fault == 'registered_question_coverage':
+        from smart_reporting.reporting.semantics import question_coverage
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError('injected registered question coverage failure')
+        monkeypatch.setattr(question_coverage, 'evaluate_registered_question_coverage', fail)
     elif fault == "standard_proof_sources":
         from smart_reporting.reporting.trace import chart_quality
 
@@ -689,13 +983,24 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
                 raise OSError("injected quality storage failure")
             return await original(thread_id, path, *args, **kwargs)
         monkeypatch.setattr(workspace, "awrite_bytes" if fault == "write" else "read_limited_regular_file", fail)
+    execution_options = {}
+    if fault == 'revision_quality_notice':
+        from smart_reporting.reporting.workflow import revision_execution
+
+        execution = SimpleNamespace(execution_run_id='revision-execution', basis_id=index.report_basis_id)
+        monkeypatch.setattr(revision_execution, 'require_revision_execution', AsyncMock(return_value=durable))
+        runtime._apply_durable_command = AsyncMock(side_effect=OSError('injected revision quality notice failure'))
+        def failed_quality(*args, **kwargs):
+            raise OSError('injected revision quality evaluation failure')
+        monkeypatch.setattr(quality_bundle, 'evaluate_quality_bundle', failed_quality)
+        execution_options = {'execution': execution}
     identity = await runtime._write_trace_index(
-        "reports/artifact-manifest.json", handles=(), lineage=(),
+        "reports/artifact-manifest.json", report_basis_id=index.report_basis_id, handles=(), lineage=(),
         markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
         revision=1, run_context=SimpleNamespace(run_id="report-1"),
-        markdown=files["reports/report.md"].decode(),
+        markdown=files["reports/report.md"].decode(), **execution_options,
     )
-    if fault == "overview_evaluate":
+    if fault in {"overview_evaluate", 'registered_answer_provider', 'registered_overview'}:
         index_raw = await runtime.workspace_service.read_limited_regular_file(
             scope.workspace_key, identity.path, max_bytes=16 * 1024 * 1024,
         )
@@ -708,11 +1013,22 @@ async def test_quality_record_failure_preserves_index_and_http_downloads(tmp_pat
             scope.workspace_key, "reports/quality-bundle-v1.json", max_bytes=16 * 1024 * 1024,
         )
         quality = quality_bundle.QualityBundle.model_validate_json(quality_raw)
-        assert quality.management_overview.status == "unavailable"
-        assert any(issue.code == "management_overview_unavailable" for issue in quality.issues)
+        if fault in {'registered_answer_provider', 'registered_overview'}:
+            assert quality.registered_management_overview is not None
+            if fault == 'registered_overview':
+                assert quality.registered_management_overview.status == 'unavailable'
+                assert quality.claim_support[0].support_status == 'supported'
+        else:
+            assert quality.management_overview.status == "unavailable"
+        assert any(issue.code == ('registered_answer_plan_unavailable'
+            if fault == 'registered_answer_provider' else 'management_overview_unavailable') for issue in quality.issues)
     else:
         assert identity.sha256 == hashlib.sha256(encode_trace_index(index)).hexdigest()
-    if fault not in {"runtime_state", "overview_evaluate"}:
+    if fault == 'revision_quality_notice':
+        runtime._apply_durable_command.assert_awaited_once()
+        assert runtime._apply_durable_command.call_args.args[1].name == 'record_warnings'
+        assert state == {}
+    elif fault not in {"runtime_state", "overview_evaluate", "registered_overview"}:
         assert state["report_quality_issues"][0]["status"] == "unknown"
     elif fault == "runtime_state":
         runtime._state = lambda _context: state
@@ -758,10 +1074,10 @@ async def test_answer_registration_failure_preserves_quality_index_and_http_down
     state = {}
     runtime._scope = lambda _: scope.as_state()
     runtime._state = lambda _: state
-    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._basis_execution_context = AsyncMock(return_value=SimpleNamespace(basis=SimpleNamespace(id="basis-test")))
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_: index)
-    identity = await runtime._write_trace_index("reports/report.manifest.json", handles=(), lineage=(),
+    identity = await runtime._write_trace_index("reports/report.manifest.json", report_basis_id="basis-test", handles=(), lineage=(),
         markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
         revision=1, run_context=SimpleNamespace(run_id="report-1"), markdown=files["reports/report.md"].decode())
     expected = [] if fault == "invalid_frozen" else ["provider"] if fault == "provider" else ["provider", "freeze"]
@@ -897,6 +1213,7 @@ async def test_http_publication_relocates_registered_lineage_and_replays(tmp_pat
         "markdownFileResourceId",
         "markdownSize",
         "markdownSha256",
+        "reportBasisId",
     ],
 )
 async def test_http_publication_drops_hash_registered_foreign_index_but_still_issues_links(
@@ -965,7 +1282,8 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
 
 
 @pytest.mark.anyio
-async def test_http_pptx_download_survives_generated_artifact_audit_exception(tmp_path, monkeypatch):
+@pytest.mark.parametrize('fault', ['layout_audit', 'slide_projection'])
+async def test_http_pptx_download_survives_generated_artifact_audit_exception(tmp_path, monkeypatch, fault):
     from dataclasses import replace
 
     from smart_reporting.reporting.contract import ReportPeriod
@@ -1034,6 +1352,19 @@ async def test_http_pptx_download_survives_generated_artifact_audit_exception(tm
     rendered = await runtime._render_pptx(context, content, outline)
     assert rendered["validation"]["ok"] is False
     assert rendered["validation"]["issues"][0]["message"] == "PPTX layout audit failed: injected"
+    if fault == 'slide_projection':
+        # 已生成文件仍存在；重新核对正式摘要时失败，不得丢弃其实际身份或下载资格。
+        from smart_reporting.reporting.workflow.runtime import slides as slides_module
+
+        def unavailable_projection(*args, **kwargs):
+            raise ValueError('injected registered result projection failure')
+
+        monkeypatch.setattr(slides_module, 'build_slide_outline', unavailable_projection)
+        original_identity = rendered['pptxSha256'], rendered['pptxSize']
+        rendered = await runtime._render_pptx(context, content, outline)
+        assert rendered['validation']['ok'] is False
+        assert (rendered['pptxSha256'], rendered['pptxSize']) == original_identity
+        assert 'pptx_generation_failed' in {item['code'] for item in rendered['validation']['issues']}
     result = await runtime.issue_http_publication(**{**arguments, "output": rendered})
     assert result["validation"]["ok"] is False
     assert result["pptx"]["downloadUrl"]
@@ -1047,7 +1378,8 @@ async def test_http_pptx_download_survives_generated_artifact_audit_exception(tm
 
 
 @pytest.mark.anyio
-async def test_http_pptx_publication_keeps_link_when_layout_audit_fails(monkeypatch):
+@pytest.mark.parametrize('issue_code', ['pptx_layout_audit', 'pptx_generation_failed', 'pptx_validation_receipt_unavailable'])
+async def test_http_pptx_publication_keeps_link_when_layout_audit_fails(monkeypatch, issue_code):
     pptx = b"pptx bytes"
     digest = hashlib.sha256(pptx).hexdigest()
     expires = datetime.now(UTC)
@@ -1123,8 +1455,8 @@ async def test_http_pptx_publication_keeps_link_when_layout_audit_fails(monkeypa
             "pptxPath": "reports/board.pptx",
             "pptxSize": len(pptx),
             "pptxSha256": digest,
-            "validation": {"ok": False, "issues": [{"code": "pptx_layout_audit"}]},
-            "validationIssues": [{"code": "pptx_layout_audit", "message": "版式溢出"}],
+            "validation": {"ok": False, "issues": [{"code": issue_code}]},
+            "validationIssues": [{"code": issue_code, "message": "版式溢出"}],
             "publicationGate": {"formalReleaseAllowed": False, "issues": [{"code": "quality_audit_failed"}]},
         },
     )
@@ -1137,7 +1469,7 @@ async def test_http_pptx_publication_keeps_link_when_layout_audit_fails(monkeypa
     assert captured["editor_capabilities"] == {"pptx_editor": True}
     assert captured["editor_context"].pptx_path == "reports/board.pptx"
     assert output["validation"]["ok"] is False
-    assert output["validationIssues"][0]["code"] == "pptx_layout_audit"
+    assert output["validationIssues"][0]["code"] == issue_code
     assert output["publicationGate"]["formalReleaseAllowed"] is False
 
 
@@ -1235,9 +1567,10 @@ async def test_http_pptx_publication_falls_back_to_verified_editor_download_on_p
 @pytest.mark.anyio
 @pytest.mark.parametrize("fault", [
     "manifest_unreadable", "manifest_changed", "index_unreadable", "lineage_snapshot",
-    "lineage_runtime", "editor_snapshot", "editor_context", "editor_state_read", "editor_scope",
+    "lineage_runtime", "editor_snapshot", "revision_editor_input", "editor_context", "editor_state_read", "editor_scope",
     "table_source_missing", "table_source_changed", "source_cell_missing", "source_cell_changed", "denominator_missing", "denominator_changed", "population_missing", "population_changed",
     "quality_record_missing", "quality_record_changed",
+    "registered_result_missing", "registered_result_changed",
 ])
 async def test_http_publication_never_blocks_links_on_lineage_faults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
@@ -1248,11 +1581,19 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     table_source_fault = fault.startswith(("table_source_", "source_cell_", "denominator_", "population_"))
     runtime, arguments, scope, durable, artifacts, grants, files, index = await _publication_fixture(
         tmp_path, table_source=table_source_fault, source_cell=fault.startswith("source_cell_"), denominator=fault.startswith("denominator_"), population=fault.startswith("population_"), quality_record=fault.startswith("quality_record_"),
+        registered_result=fault.startswith("registered_result_"),
     )
     manifest_path = arguments["output"]["artifactManifest"]["path"]
     workspace = runtime.workspace_service
     original_read = workspace.read_limited_regular_file
-    if fault.startswith("quality_record_"):
+    if fault.startswith("registered_result_"):
+        source_path = 'facts/registered.json'
+        assert index.tables[0].cells[0].fact_refs[0].json_pointer == '/metricContext/calculations/0/results/0'
+        if fault == 'registered_result_missing':
+            await workspace.adelete_file(scope.workspace_key, source_path)
+        else:
+            await workspace.awrite_bytes(scope.workspace_key, source_path, b'{}', overwrite=True)
+    elif fault.startswith("quality_record_"):
         if fault == "quality_record_missing":
             await workspace.adelete_file(scope.workspace_key, "reports/quality-bundle-v1.json")
         else:
@@ -1280,6 +1621,10 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
             return await original_read(thread_id, path, **kwargs)
 
         monkeypatch.setattr(workspace, "read_limited_regular_file", failing_read)
+    elif fault == "revision_editor_input":
+        arguments['output']['editorAvailable'] = False
+        arguments['output']['publicationGate'] = {'formalReleaseAllowed': False, 'issues': [
+            {'code': 'revision_publication_editor_job_unavailable', 'message': '编辑任务身份未核实。'}]}
     elif fault == "editor_snapshot":
         original_write = workspace.awrite_text
 
@@ -1320,10 +1665,11 @@ async def test_http_publication_never_blocks_links_on_lineage_faults(
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
     assert artifacts.records and grants.records
     assert result["publicationIssues"] and all(item["message"] for item in result["publicationIssues"])
-    if fault in {"editor_snapshot", "editor_context", "editor_state_read", "editor_scope"}:
+    if fault in {"editor_snapshot", "revision_editor_input", "editor_context", "editor_state_read", "editor_scope"}:
         assert "editor" not in result
         assert result["publicationIssues"][-1]["code"] == {
             "editor_snapshot": "report_editor_snapshot_unavailable",
+            "revision_editor_input": "report_editor_snapshot_unavailable",
             "editor_context": "report_editor_context_unavailable",
             "editor_state_read": "report_editor_context_unavailable",
             "editor_scope": "report_editor_scope_mismatch",
@@ -1492,11 +1838,11 @@ async def test_published_quality_uses_cas_frozen_requirements_over_session_mirro
     state = {"report_request_context": {"questionSpecs": request_questions("只问收入").model_dump(mode="json", by_alias=True)}}
     runtime._scope = lambda _context: scope.as_state()
     runtime._state = lambda _context: state
-    runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._basis_execution_context = AsyncMock(return_value=SimpleNamespace(basis=SimpleNamespace(id="basis-test")))
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_kwargs: index)
     identity = await runtime._write_trace_index(
-        "reports/artifact-manifest.json", handles=(), lineage=(),
+        "reports/artifact-manifest.json", report_basis_id="basis-test", handles=(), lineage=(),
         markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
         revision=1, run_context=SimpleNamespace(run_id="report-1"),
         markdown=files["reports/report.md"].decode(),
@@ -1544,7 +1890,8 @@ async def test_format_persistence_failure_keeps_other_download(tmp_path, failed_
 
 
 @pytest.mark.anyio
-async def test_chart_fact_binding_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch):
+@pytest.mark.parametrize('notice_unavailable', [False, True])
+async def test_chart_fact_binding_failure_preserves_index_and_http_downloads(tmp_path, monkeypatch, notice_unavailable):
     from smart_reporting.reporting.tests.test_report_editor_chart_ai import _png_bytes
     from smart_reporting.reporting.trace import chart_facts
     from smart_reporting.reporting.trace.contracts_v1 import ChartTraceV1, TraceFileRefV1
@@ -1563,20 +1910,26 @@ async def test_chart_fact_binding_failure_preserves_index_and_http_downloads(tmp
     index = index.model_copy(update={"files": (*index.files, *refs), "chart_traces": (chart,)})
     state = {}
     runtime._scope = lambda _: scope.as_state()
-    runtime._state = lambda _: state
-    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
+    def read_notice_state(_):
+        if notice_unavailable:
+            raise OSError('injected chart notice storage failure')
+        return state
+    runtime._state = read_notice_state
+    runtime._basis_execution_context = AsyncMock(return_value=SimpleNamespace(basis=SimpleNamespace(id="basis-test")))
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_: index)
     fail = AsyncMock(side_effect=RuntimeError("injected chart fact binding failure"))
     monkeypatch.setattr(chart_facts, "recover_chart_fact_refs", fail)
-    identity = await runtime._write_trace_index("reports/report.manifest.json", handles=(), lineage=(),
+    identity = await runtime._write_trace_index("reports/report.manifest.json", report_basis_id="basis-test", handles=(), lineage=(),
         markdown_artifact=_identity("reports/report.md", files["reports/report.md"], "text/markdown"),
         revision=1, run_context=SimpleNamespace(run_id="report-1"))
     fail.assert_awaited_once()
     saved = RevisionTraceIndexV1.model_validate_json(await runtime.workspace_service.read_limited_regular_file(
         scope.workspace_key, identity.path, max_bytes=identity.size))
     assert saved.chart_traces[0].fact_refs == ()
-    assert state["report_quality_issues"][0]["code"] == "chart_fact_binding_unavailable"
+    if not notice_unavailable:
+        assert state["report_quality_issues"][0]["code"] == "chart_fact_binding_unavailable"
+    runtime._state = lambda _: state
     manifest = await register_trace_manifest(runtime.workspace_service, scope.workspace_key, saved, overwrite=True)
     arguments["output"]["artifactManifest"] = manifest.model_dump(mode="json", by_alias=True)
     result = await runtime.issue_http_publication(**arguments)
@@ -1618,7 +1971,7 @@ async def test_answer_review_checker_failure_preserves_index_and_downloads(tmp_p
     runtime._scope = lambda _: scope.as_state()
     state = {}
     runtime._state = lambda _: state
-    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
+    runtime._basis_execution_context = AsyncMock(return_value=SimpleNamespace(basis=SimpleNamespace(id="basis-test")))
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication_module, "build_csv_trace_index", lambda **_: index)
 
@@ -1628,7 +1981,7 @@ async def test_answer_review_checker_failure_preserves_index_and_downloads(tmp_p
     monkeypatch.setattr(quality_bundle, "evaluate_answer_review", fail)
     identity = await runtime._write_trace_index(
         "reports/artifact-manifest.json",
-        handles=(),
+        report_basis_id="basis-test", handles=(),
         lineage=(),
         markdown_artifact=_identity(
             "reports/report.md", files["reports/report.md"], "text/markdown"
@@ -1751,13 +2104,103 @@ async def test_office_publication_faults_retain_verified_downloads(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("fault", ["source_mapping", "source_marking", "inspection", "revision_lookup", "revision_reservation", "persistence", "context_write", "editor_grant"])
+@pytest.mark.parametrize('issue_code', ['xlsx_generation_failed', 'xlsx_validation_receipt_unavailable',
+    'pptx_generation_failed', 'pptx_validation_receipt_unavailable', 'refresh_completion_record_unavailable',
+    'policy_adoption_completion_record_unavailable'])
+@pytest.mark.parametrize('delivery_format', ['xlsx', 'pptx'])
+async def test_xlsx_revision_validation_fault_preserves_http_download(tmp_path, issue_code, delivery_format):
+    """登记刷新交付只读恢复的完成记录缺失；身份和恢复执行另由PG节点核验。"""
+    runtime, arguments, scope, _, artifacts, _, _, _ = await _publication_fixture(tmp_path)
+    content = b'PK isolated-workbook-identity-fixture'
+    path = f'reports/revision-office.{delivery_format}'
+    await runtime.workspace_service.awrite_bytes(scope.workspace_key, path, content)
+    issue = {'code': issue_code, 'message': '工作簿已生成，验收或来源登记未完成。'}
+    arguments['output'].update({'deliveryFormat': delivery_format, f'{delivery_format}Path': path,
+        f'{delivery_format}Size': len(content), f'{delivery_format}Sha256': hashlib.sha256(content).hexdigest(),
+        'validation': {'ok': False, 'issues': [issue]}, 'validationIssues': [issue]})
+    result = await runtime.issue_http_publication(**arguments)
+    assert result['validation']['ok'] is False
+    assert any(item['code'] == issue_code for item in result['validationIssues'])
+    assert result[delivery_format]['downloadUrl']
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        runtime.download_grants, artifacts, workspace_service=runtime.workspace_service)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        downloaded = await client.get(result[delivery_format]['downloadUrl'])
+    assert downloaded.status_code == 200 and downloaded.content == content
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('issue_code', [
+    'document_validation_receipt_unavailable', 'document_result_checkpoint_unavailable',
+    'refresh_completion_record_unavailable',
+    'policy_adoption_completion_record_unavailable', 'policy_adoption_pdf_artifact_unavailable',
+    'policy_adoption_word_artifact_unavailable',
+    'refresh_pdf_artifact_unavailable',
+    'report_pdf_checkpoint_unavailable', 'report_word_checkpoint_unavailable',
+    'report_pdf_receipt_mismatch', 'report_word_receipt_mismatch',
+])
+async def test_document_revision_validation_fault_preserves_http_downloads(tmp_path, issue_code):
+    """登记独立文档渲染的新增签发失败点；真实渲染/PG故障由刷新节点验证。"""
+    runtime, arguments, _, _, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    issue = {'code': issue_code, 'message': '文档已生成，验收或完成状态尚需复核。'}
+    arguments['output'].update({'deliveryFormat': 'document',
+        'validation': {'ok': False, 'issues': [issue]}, 'validationIssues': [issue]})
+    result = await runtime.issue_http_publication(**arguments)
+    assert result['validation']['ok'] is False
+    assert any(item['code'] == issue_code for item in result['validationIssues'])
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        runtime.download_grants, artifacts, workspace_service=runtime.workspace_service)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        for label, suffix in (('pdf', 'pdf'), ('word', 'docx')):
+            downloaded = await client.get(result[label]['downloadUrl'])
+            assert downloaded.status_code == 200
+            assert downloaded.content == files[f'reports/report.{suffix}']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('damaged', ['pdf', 'word'])
+async def test_document_recovery_drops_changed_format_but_issues_other_download(tmp_path, damaged):
+    """新口径复用的文档恢复边界：只撤回损坏格式，另一实际文件照常HTTP下载。"""
+    runtime, arguments, scope, _, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    output = arguments['output']
+    await runtime.workspace_service.awrite_bytes(scope.workspace_key, output[f'{damaged}Path'], b'changed', overwrite=True)
+    for suffix in ('Path', 'Size', 'Sha256'):
+        output.pop(f'{damaged}{suffix}')
+    issue = {'code': f'report_{damaged}_artifact_unavailable', 'message': '已登记格式身份变化，仅保留其他实际可读文件。'}
+    output.update({'deliveryFormat': 'document', 'validation': {'ok': False, 'issues': [issue]}, 'validationIssues': [issue]})
+    result = await runtime.issue_http_publication(**arguments)
+    retained, extension = ('word', 'docx') if damaged == 'pdf' else ('pdf', 'pdf')
+    assert not result.get(damaged) and result['validation']['ok'] is False
+    assert any(item['code'] == issue['code'] for item in result['validationIssues'])
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        runtime.download_grants, artifacts, workspace_service=runtime.workspace_service)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        downloaded = await client.get(result[retained]['downloadUrl'])
+    assert downloaded.status_code == 200 and downloaded.content == files[f'reports/report.{extension}']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["source_mapping", "source_marking", "source_marking_unchanged", "source_mapping_drop", "inspection", "revision_lookup", "revision_reservation", "persistence", "context_write", "editor_grant"])
 async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, monkeypatch, fault):
+    from io import BytesIO
+    from zipfile import ZipFile
+
     from smart_reporting.report_editor import workbook as workbook_module
     from smart_reporting.reporting.tests.test_workbook_editor import _bytes
 
     runtime, _, scope, durable, artifacts, _, _, _ = await _publication_fixture(tmp_path)
-    source = _bytes(12)
+    original = _bytes(12)
+    stream = BytesIO()
+    mapping = {"sources": {"cells": [{"cell": "A1", "exactValue": "12"}], "claims": [{
+        "support": {"kind": "recommendation", "supportStatus": "supported", "evidenceRefs": ["old-background"]}}]}}
+    with ZipFile(BytesIO(original)) as package, ZipFile(stream, "w") as target:
+        for info in package.infolist():
+            target.writestr(info, package.read(info.filename))
+        target.writestr("smart-reporting/source-mapping.json", json.dumps(mapping))
+    source = stream.getvalue()
     source_path = "reports/editable.xlsx"
     await runtime.workspace_service.awrite_bytes(scope.workspace_key, source_path, source)
     context = ReportEditorContext(
@@ -1777,9 +2220,10 @@ async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, mon
         return AsyncMock(side_effect=OSError("injected workbook delivery failure"))
     if fault == "source_mapping":
         monkeypatch.setattr(editor, "_source_mapping", lambda *_: (_ for _ in ()).throw(ValueError("mapping unavailable")))
-    elif fault == "source_marking":
-        monkeypatch.setattr(editor, "_source_mapping", lambda *_: {"sources": {"cells": []}})
+    elif fault in {"source_marking", "source_marking_unchanged", "source_mapping_drop"}:
         monkeypatch.setattr(editor, "_mark_sources_unverified", lambda *_: (_ for _ in ()).throw(ValueError("mapping write unavailable")))
+        if fault == "source_mapping_drop":
+            monkeypatch.setattr(editor, "_drop_source_mapping", lambda *_: (_ for _ in ()).throw(ValueError("mapping removal unavailable")))
     elif fault == "inspection":
         monkeypatch.setattr(workbook_module, "inspect_workbook", lambda *_: (_ for _ in ()).throw(ValueError("inspection unavailable")))
     elif fault == "revision_lookup":
@@ -1802,13 +2246,15 @@ async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, mon
 
     result = await editor.save_revision(None, {"expectedSha256": context.xlsx_sha256,
         "operations": [{"kind": "applyCellEdits", "edits": [{"sheetName": "汇总", "row": 0,
-            "column": 0, "writeValue": True, "cell": {"value": 99}}]}]})
+            "column": 0, "writeValue": True, "cell": {"value": 99}}]}] if fault != "source_marking_unchanged" else []})
 
     assert result["xlsx"]["downloadUrl"]
     if fault == "revision_reservation":
         assert any(issue["code"] == "report_editor_revision_lookup_failed" for issue in result["validation"]["issues"])
     assert result["validation"]["ok"] is False
     assert result["validation"]["issues"]
+    if fault == "source_mapping_drop":
+        assert "workbook_source_mapping_unavailable" in {issue["code"] for issue in result["validation"]["issues"]}
     assert (await runtime.workspace_service.afile_bytes(scope.workspace_key, source_path))[0] == source
     app = FastAPI()
     app.include_router(create_report_download_router(ReportDownloadHttpService(
@@ -1816,8 +2262,78 @@ async def test_workbook_editor_save_faults_keep_verified_downloads(tmp_path, mon
     )))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
         response = await client.get(result["xlsx"]["downloadUrl"])
+    with ZipFile(BytesIO(response.content)) as package:
+        if "smart-reporting/source-mapping.json" in package.namelist() and fault != "source_mapping_drop":
+            current = json.loads(package.read("smart-reporting/source-mapping.json"))
+            assert all(item["support"]["supportStatus"] == "unverified" and not item["support"]["evidenceRefs"]
+                for item in current["sources"].get("claims", []))
     assert response.status_code == 200
     assert hashlib.sha256(response.content).hexdigest() == result["xlsx"]["sha256"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('format_', ['xlsx', 'pptx'])
+async def test_native_revision_notice_failure_keeps_actual_http_download(tmp_path, monkeypatch, format_):
+    from io import BytesIO
+
+    from pptx import Presentation
+
+    from smart_reporting.report_editor import revision_notice, workbook
+    from smart_reporting.report_editor.slides import ReportSlidesEditorService
+    from smart_reporting.reporting.tests.test_workbook_editor import _bytes
+
+    runtime, _, scope, _, artifacts, _, _, _ = await _publication_fixture(tmp_path)
+    if format_ == 'xlsx':
+        content = _bytes(12)
+        service_type = workbook.ReportWorkbookEditorService
+    else:
+        deck = Presentation()
+        deck.slides.add_slide(deck.slide_layouts[6])
+        stream = BytesIO()
+        deck.save(stream)
+        content = stream.getvalue()
+        service_type = ReportSlidesEditorService
+    path = f'reports/notice-source.{format_}'
+    await runtime.workspace_service.awrite_bytes(scope.workspace_key, path, content)
+    context = ReportEditorContext(reportId='report-1', revision=2, jobId='job-1', workflowRunId='workflow-run',
+        markdownPath='reports/report.md', job={'jobId': 'job-1'}, scope=scope.as_state(), deliveryFormat=format_,
+        **{f'{format_}Path': path, f'{format_}Size': len(content), f'{format_}Sha256': hashlib.sha256(content).hexdigest()})
+    editor = service_type(state_repository=runtime.state_repository, workspace_registry=runtime.workspace_registry,
+        workspace=runtime.workspace_service, editor_grants=runtime.editor_grants,
+        artifact_persistence=runtime.artifact_persistence, download_grants=runtime.download_grants,
+        public_base_url='http://reports.test')
+    editor.context_for_session = AsyncMock(return_value=context)
+    calls = []
+
+    def unavailable(*args, **kwargs):
+        calls.append(kwargs)
+        raise OSError('injected visible revision notice failure')
+
+    if format_ == 'xlsx':
+        monkeypatch.setattr(workbook, 'add_workbook_revision_notice', unavailable)
+    else:
+        monkeypatch.setattr(revision_notice, 'add_slides_revision_notice', unavailable)
+        monkeypatch.setattr(editor, '_run_engine', lambda *args, **kwargs: {'bytes': content, 'issues': []})
+        monkeypatch.setattr(editor, '_render_pdf', lambda *args: b'%PDF-preview')
+    result = await editor.save_revision(None, {'expectedSha256': getattr(context, f'{format_}_sha256')})
+    assert len(calls) == 1 and calls[0]['parent_revision'] == 2
+    code = f'{"workbook" if format_ == "xlsx" else "pptx"}_revision_notice_unavailable'
+    assert code in {issue['code'] for issue in result['validation']['issues']}
+    assert result['validation']['ok'] is False
+    app = FastAPI()
+    if format_ == 'pptx':
+        from smart_reporting.report_editor.slides_api import create_report_slides_editor_router
+
+        app.include_router(create_report_slides_editor_router(runtime.editor_grants, slides=editor,
+            static_dir=tmp_path, cookie_secure=False))
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        runtime.download_grants, artifacts, workspace_service=runtime.workspace_service)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        response = await client.get(result[format_]['downloadUrl'])
+    assert response.status_code == 200
+    assert len(response.content) == result[format_]['size']
+    assert hashlib.sha256(response.content).hexdigest() == result[format_]['sha256']
+    assert (await runtime.workspace_service.afile_bytes(scope.workspace_key, path))[0] == content
 
 
 @pytest.mark.anyio
@@ -2802,3 +3318,163 @@ async def test_native_office_postwrite_validation_failure_keeps_http_download(tm
             assert load_workbook(BytesIO(actual.content)).active['A1'].value == '修改值'
         else:
             assert len(Presentation(BytesIO(actual.content)).slides[0].shapes) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['revoked', 'partial', 'backend_unavailable'])
+async def test_http_publication_keeps_downloads_after_section_knowledge_recheck(tmp_path, monkeypatch, fault):
+    """发布前知识核验新增失败点：旧解释不通过验收，已核验文件仍可下载。"""
+    from smart_reporting.reporting.tests.test_dynamic_checkpoint import _coverage
+    from smart_reporting.reporting.workflow.checkpoint import ReportingCheckpoint, SectionArtifact
+    from smart_reporting.reporting.workflow.runtime import business_evidence
+
+    runtime, arguments, scope, durable, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    artifact = SectionArtifact(sectionCode='section_001', blocks=[{
+        'blockId': 'b', 'markdown': '旧解释', 'claimIds': ['c']}], claims=[{
+        'claimId': 'c', 'metricCode': 'budget', 'value': 1, 'periodBasis': '本期',
+        'managementQuestion': '预算变化', 'currentPeriod': '本期', 'citationIds': ['citation_001']}],
+        knowledgeReceiptIds=('knowledge-rules',))
+    checkpoint = ReportingCheckpoint.model_validate({
+        'revision': 1, 'phase': 'analysis', 'outlineHash': 'a' * 64,
+        'profileCoverage': _coverage().model_dump(mode='json', by_alias=True),
+        'evidenceManifest': {
+            'evidence': [{'analysisId': 'analysis_001', 'summary': '预算',
+                'datasetIds': ['dataset-1'], 'citationIds': ['citation_001'],
+                'evidenceFiles': [{'path': 'facts.json', 'size': 1, 'sha256': 'a' * 64}]}],
+            'datasetSemantics': [{'datasetId': 'dataset-1', 'rowGrain': 'month',
+                'duplicateResolution': 'not_applicable'}]},
+        'completedSections': [{'sectionCode': 'section_001', 'workItemHash': 'a' * 64,
+            'artifactFile': {'path': 'section.json', 'size': 1, 'sha256': 'b' * 64}}],
+    })
+    durable.payload['workflowCheckpoint'] = checkpoint.model_dump(mode='json', by_alias=True)
+    runtime._scope = lambda _: scope.as_state()
+    runtime._state = lambda _: {}
+    runtime._workflow_result = lambda _: {}
+    runtime._read_identity_model = AsyncMock(return_value=artifact)
+    runtime._verify_claim_fact_bindings = AsyncMock(return_value=([], []))
+    runtime.quality_warning_service = None
+    async def revalidate(*args, **kwargs):
+        if fault == 'backend_unavailable':
+            raise OSError('knowledge backend unavailable')
+        if fault == 'partial':
+            from smart_reporting.reporting.delivery.draft_v1 import ReportDraftBlock
+
+            return SectionArtifact.model_validate({**dict(artifact), 'knowledge_status': 'partial',
+                'blocks': (artifact.blocks[0], ReportDraftBlock(blockId='withdrawn', knowledgeWithdrawn=True,
+                    markdown='知识依据不可用，受影响解释暂不列示。')),
+                'warnings': ({'code': 'report_section_knowledge_unavailable', 'message': '知识部分撤销'},)})
+        return artifact.model_copy(update={'knowledge_status': 'unavailable', 'claims': (),
+            'blocks': (artifact.blocks[0].model_copy(update={'claim_ids': (), 'markdown': '知识不可用'}),),
+            'warnings': ({'code': 'report_section_knowledge_unavailable', 'message': '知识已撤销'},)})
+    checked = AsyncMock(side_effect=revalidate)
+    monkeypatch.setattr(business_evidence, 'revalidate_section_knowledge', checked)
+    output = arguments['output']
+    gate = await runtime._dataset_publication_gate(RunContext(run_id='workflow-run', session_id='workflow-session'), output)
+    checked.assert_awaited_once()
+    assert not gate['formalReleaseAllowed']
+    assert any(item['code'] == 'report_section_knowledge_unavailable' for item in gate['issues'])
+    assert any(item['code'] == 'report_section_knowledge_unavailable' for item in gate['warnings'])
+    result = await runtime.issue_http_publication(**{**arguments, 'output': {**output, 'publicationGate': gate}})
+    # issue_http_publication只返回签发结果；工作流持有原始门禁并合并签发问题。
+    from smart_reporting.reporting.workflow.runtime.base import merge_publication_issues
+
+    assert merge_publication_issues(gate, result.get('publicationIssues'))['formalReleaseAllowed'] is False
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        for kind, suffix in (('pdf', 'pdf'), ('word', 'docx')):
+            response = await client.get(result[kind]['downloadUrl'])
+            assert response.status_code == 200
+            assert response.content == files[f'reports/report.{suffix}']
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_editor_knowledge_unavailable_preserves_export_links_and_dependency(tmp_path, monkeypatch):
+    """登记编辑器导出知识核验失败点：保留文件交付和原始依赖身份。"""
+    from smart_reporting.reporting.tests.test_report_editor_lineage_export import (
+        test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing,
+    )
+
+    await test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing(
+        tmp_path, "knowledge", monkeypatch)
+
+
+@pytest.mark.anyio
+async def test_knowledge_registration_failure_keeps_trace_index_and_http_downloads(tmp_path, monkeypatch):
+    """新增签发步骤登记：知识注册后端异常仅登记不可用，不丢弃独立来源与下载。"""
+    runtime, arguments, scope, _, artifacts, _, files, index = await _publication_fixture(tmp_path)
+    runtime._scope = lambda _: scope.as_state()
+    runtime.report_basis_service = SimpleNamespace(load_report_basis=AsyncMock(side_effect=OSError('registry unavailable')))
+    runtime._build_drilldown_metrics = AsyncMock(return_value=())
+    observed = []
+    def build(**kwargs):
+        observed.append(kwargs['knowledge_registration_status'])
+        assert kwargs['knowledge_dependencies'] == ()
+        return index.model_copy(update={'knowledge_registration_status': kwargs['knowledge_registration_status']})
+    monkeypatch.setattr(publication_module, 'build_csv_trace_index', build)
+    await runtime._write_trace_index('reports/report.manifest.json', report_basis_id=index.report_basis_id,
+        handles=(), lineage=(), revision=index.revision, run_context=SimpleNamespace(run_id='workflow-run'),
+        markdown_artifact=_identity('reports/report.md', files['reports/report.md'], 'text/markdown'))
+    assert observed == ['unavailable']
+    saved = RevisionTraceIndexV1.model_validate_json(await runtime.workspace_service.read_limited_regular_file(
+        scope.workspace_key, 'reports/trace-index-v1.json', max_bytes=1024 * 1024))
+    assert saved.knowledge_registration_status == 'unavailable'
+    assert saved.datasets == index.datasets
+    manifest = await register_trace_manifest(runtime.workspace_service, scope.workspace_key, saved, overwrite=True)
+    output = {**arguments['output'], 'artifactManifest': manifest.model_dump(mode='json', by_alias=True)}
+    result = await runtime.issue_http_publication(**{**arguments, 'output': output})
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        for kind, suffix in (('pdf', 'pdf'), ('word', 'docx')):
+            response = await client.get(result[kind]['downloadUrl'])
+            assert response.status_code == 200
+            assert response.content == files[f'reports/report.{suffix}']
+
+
+@pytest.mark.anyio
+async def test_editor_revision_impact_failure_preserves_export_links(tmp_path, monkeypatch):
+    from smart_reporting.reporting.tests.test_report_editor_lineage_export import (
+        test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing,
+    )
+
+    await test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing(
+        tmp_path, 'revision_impact', monkeypatch,
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('delivery_format', ['pptx', 'xlsx'])
+@pytest.mark.parametrize('fault', ['editor_input_unavailable', 'analysis_context_invalid',
+    'source_receipt_unavailable', 'policy_adoption_preparation_unavailable'])
+async def test_revision_editor_input_failure_keeps_office_download(tmp_path, delivery_format, fault):
+    runtime, arguments, scope, durable, artifacts, _, _, _ = await _publication_fixture(tmp_path)
+    raw = b'office-http-identity-fixture'
+    path = f'reports/revision-2/report.{delivery_format}'
+    await runtime.workspace_service.awrite_bytes(scope.workspace_key, path, raw)
+    content = {key: value for key, value in arguments['output'].items()
+        if not key.startswith(('pdf', 'word'))}
+    content.update({'deliveryFormat': delivery_format, f'{delivery_format}Path': path,
+        f'{delivery_format}Size': len(raw), f'{delivery_format}Sha256': hashlib.sha256(raw).hexdigest(),
+        'validation': {'ok': False, 'issues': [{'code': 'revision_publication_editor_job_unavailable',
+            'message': '新修订编辑输入未核实。'}]}})
+    if fault in {'editor_input_unavailable', 'source_receipt_unavailable', 'policy_adoption_preparation_unavailable'}:
+        content['editorAvailable'] = False
+        if fault == 'source_receipt_unavailable':
+            content['validation']['issues'].append({'code': f'{delivery_format}_validation_receipt_unavailable',
+                'message': '当前修订来源回执无法核验。'})
+    else:
+        content['analysisContextFile'] = {'path': 'foreign', 'size': 1, 'sha256': 'invalid'}
+    result = await runtime.issue_http_publication(**{**arguments, 'output': content})
+    assert 'editor' not in result
+    assert result['validation']['ok'] is False
+    if fault == 'source_receipt_unavailable':
+        assert f'{delivery_format}_validation_receipt_unavailable' in {
+            item['code'] for item in result['validation']['issues']}
+    assert 'reportEditorContexts' not in durable.payload
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        response = await client.get(result[delivery_format]['downloadUrl'])
+    assert response.status_code == 200 and response.content == raw

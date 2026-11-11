@@ -290,3 +290,57 @@ async def test_default_application_exposes_explicit_context():
         "continue_run",
         "cancel_run",
     }
+
+@pytest.mark.anyio
+async def test_refresh_worker_stops_before_native_database_lifespan(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    events = []
+    class FakeAgentOS:
+        def __init__(self, **values):
+            self.values = values
+        def get_app(self):
+            app = self.values['base_app']
+            @asynccontextmanager
+            async def native(app):
+                events.append('database_open')
+                try:
+                    yield
+                finally:
+                    events.append('database_close')
+            app.router.lifespan_context = native
+            return app
+    class Worker:
+        def __init__(self, **values):
+            self.values = values
+        async def start(self):
+            events.append('worker_start')
+        async def stop(self):
+            events.append('worker_stop')
+    monkeypatch.setattr('smart_reporting.runtime.application.AgentOS', FakeAgentOS)
+    monkeypatch.setattr('agno.os.job_queue.QueueWorker', Worker)
+    monkeypatch.setattr('agno.os.job_queue.resolve_queue_store', lambda *args: object())
+    refresh, adoption, recovery = object(), object(), object()
+    monkeypatch.setattr('smart_reporting.report_editor.recalculation.create_refresh_workflow', lambda *args, **kwargs: refresh)
+    monkeypatch.setattr('smart_reporting.report_editor.recalculation.create_policy_adoption_workflow', lambda *args, **kwargs: adoption)
+    monkeypatch.setattr('smart_reporting.report_editor.policy_recovery.create_policy_recovery_workflow', lambda *args, **kwargs: recovery)
+    editor = SimpleNamespace(recalculation_database=object(), recalculation_runtime=object(),
+        recalculation_queue_worker=None)
+    context = ApplicationContext(AgentSettings.from_environment({}, load_env_file=False),
+        FakeAgent(), FakeWorkflow(), recalculation_editor=editor)
+    agent_os, app = create_agentos_app(context, FastAPI())
+    with pytest.raises(RuntimeError, match='serving failure'):
+        async with app.router.lifespan_context(app):
+            worker = editor.recalculation_queue_worker
+            assert worker.values['config'].max_attempts == 1
+            assert worker.values['config'].deployment_id == 'report-editor-refresh'
+            assert worker.values['resolve_component']('workflow', 'unknown') is None
+            assert worker.values['resolve_component']('workflow', 'report-editor-refresh') is refresh
+            assert worker.values['resolve_component']('workflow', 'report-editor-policy-adoption') is adoption
+            assert worker.values['resolve_component']('workflow', 'report-editor-policy-recovery') is recovery
+            assert worker.values['resolve_component']('agent', 'report-editor-policy-adoption') is None
+            # 内部工作流不注册公共AgentOS路由，不扩大编辑器会话入口。
+            assert agent_os.values['workflows'] == [context.report_workflow]
+            raise RuntimeError('serving failure')
+    assert editor.recalculation_queue_worker is None
+    assert events == ['database_open', 'worker_start', 'worker_stop', 'database_close']

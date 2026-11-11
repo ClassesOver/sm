@@ -357,6 +357,21 @@ def test_table_header_and_explicit_units_have_compatible_dimensions(
     assert table_value_matches(text, value, source_unit, header) is expected
 
 
+@pytest.mark.parametrize('text,header,expected', [
+    ('63.33333333333333333333333333', '计算结果（%）', True),
+    ('63.33333333333333333333333333%', '计算结果（%）', True),
+    ('63.33', '计算结果（%）', True),
+    ('63.33333333333333333333333334', '计算结果（%）', False),
+    ('6333.333333333333333333333333', '计算结果（%）', False),
+    ('63.33333333333333333333333333', '计算结果（元）', False),
+])
+def test_table_exact_decimal_survives_header_unit_check(text, header, expected):
+    """精确循环小数不能被float显示候选截断；改变末位或量纲仍拒绝。"""
+    from smart_reporting.reporting.trace.table_quality import table_value_matches
+
+    assert table_value_matches(text, '63.33333333333333333333333333', '%', header) is expected
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize(

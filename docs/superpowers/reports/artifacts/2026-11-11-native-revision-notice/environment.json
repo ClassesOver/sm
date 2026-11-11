@@ -1,0 +1,18 @@
+{
+  "python": "3.12.3",
+  "packages": {
+    "agno": "3.1.2",
+    "lxml": "6.1.1",
+    "openpyxl": "3.1.5",
+    "python-pptx": "1.0.2",
+    "fastapi": "0.141.1"
+  },
+  "gitHead": "7ef25eb1ee6993cbac939ca462ead2f36899869b",
+  "inheritedDirtyBaseline": true,
+  "agentEnvFile": "/dev/null",
+  "realModel": false,
+  "realStarRocks": false,
+  "businessApproval": "not_performed",
+  "integration": "actual isolated PG/pgvector + synthetic DuckDB + controlled model/vector responses",
+  "entrypoint": "adoption fixture native delivery then real ASGI HTTP editor/CSRF/save/download"
+}

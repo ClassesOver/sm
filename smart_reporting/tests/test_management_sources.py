@@ -35,7 +35,7 @@ async def test_source_release_versions_credentials_and_cas(auth_context, monkeyp
     payload = SourceDraftInput.model_validate({
         'name': '生产数仓', 'type': 'starrocks', 'database': 'warehouse',
         'dsn': 'starrocks://reporter:first-secret@localhost:9030/warehouse',
-        'reportingProfileVersionId': 'base:1', 'metadataVersionId': 'operations:1',
+        'metadataVersionId': 'operations:1',
     })
     draft = await service.create_draft(admin.raw_token, scope, 'operations', payload)
     assert draft['version'] == 1
@@ -51,7 +51,7 @@ async def test_source_release_versions_credentials_and_cas(auth_context, monkeyp
     updated_payload = SourceDraftInput.model_validate({
         'name': '生产数仓改密', 'type': 'starrocks', 'database': 'warehouse',
         'dsn': 'starrocks://reporter:second-secret@localhost:9030/warehouse',
-        'reportingProfileVersionId': 'base:1', 'metadataVersionId': 'operations:1',
+        'metadataVersionId': 'operations:1',
     })
     with pytest.raises(Exception, match='management_version_conflict'):
         await service.save_draft(admin.raw_token, scope, 'operations', updated_payload, 2)

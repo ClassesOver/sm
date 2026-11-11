@@ -249,6 +249,9 @@
 #management-root .ant-alert + .ant-alert {
   margin-top: 8px;
 }
+#management-root .management-report-issues > .ant-card {
+  margin-top: 16px;
+}
 #management-root .ant-table-wrapper {
   overflow-x: auto;
 }
@@ -631,6 +634,37 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+#management-root .issue-fix-versions {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #dce3ec;
+  border-radius: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#management-root .issue-fix-versions p { margin: 0; }
+#management-root .issue-fix-versions .ant-radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+#management-root .issue-fix-versions > div:has(> .ant-checkbox-wrapper) {
+  padding: 12px 0;
+  border-bottom: 1px solid #e8edf3;
+}
+#management-root .issue-fix-versions .ant-tag { white-space: normal; max-width: 100%; }
+#management-root .issue-regressions > .ant-card-body { display: grid; gap: 12px; }
+#management-root .issue-regressions p { margin: 0; }
+#management-root .issue-regressions fieldset {
+  min-width: 0;
+  padding: 16px;
+  margin: 16px 0;
+  border: 1px solid #dce3ec;
+  border-radius: 8px;
+}
+#management-root .issue-regressions legend { padding: 0 4px; width: auto; font-size: 14px; }
+#management-root .issue-regressions pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#management-root .issue-regressions { overflow-wrap: anywhere; }
+#management-root .issue-regression-comparison { padding: 12px 0; border-bottom: 1px solid #e8edf3; }
+#management-root .issue-regressions .issue-regression-failed { color: #873800; background: #fff7e6; border-color: #e4b776; }
+#management-root .issue-current-regressions { display: grid; gap: 12px; min-width: 0; }
 @media (prefers-reduced-motion: reduce) {
   #management-root *,
   #management-root *::before,

@@ -126,7 +126,7 @@ async def test_management_migration_is_repeatable_and_preserves_account():
                 await connection.scalar(
                     text("SELECT version_num FROM reporting_management.alembic_version")
                 )
-                == "0008_table_discoveries"
+                == "0009_semantic_assets"
             )
             from smart_reporting.management.repository import source_drafts, table_discoveries
 
@@ -141,6 +141,16 @@ async def test_management_migration_is_repeatable_and_preserves_account():
             old_run = (await connection.execute(select(runtime_snapshots))).mappings().one()
             assert old_run["references"] == references
             assert old_run["reference_hash"] == "c" * 64
+
+            semantic_names = set((await connection.execute(text(
+                "SELECT tablename FROM pg_tables WHERE schemaname='reporting_management'"
+            ))).scalars())
+            assert {"metric_versions", "statistical_policy_versions", "business_document_revisions",
+                    "business_ingestion_jobs", "business_evidence_releases", "report_bases",
+                    "report_basis_receipts", "report_issue_reviews"}.issubset(semantic_names)
+            assert await connection.scalar(text(
+                "SELECT count(*) FROM pg_trigger WHERE tgname='immutable_metric_versions'"
+            )) == 1
 
     finally:
         await engine.dispose()

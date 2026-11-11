@@ -1,0 +1,20 @@
+{
+  "pageCounts": {
+    "xlsx-edit": 5,
+    "xlsx-unchanged": 5,
+    "pptx": 5
+  },
+  "contactSheetsInspected": true,
+  "fullPageInspections": [
+    "xlsx-edit/page-1.png",
+    "xlsx-unchanged/page-1.png",
+    "pptx/page-1.png"
+  ],
+  "noticeReadability": "Chinese status, exact revision and pending verification visible, no obvious clipping or overlap on inspected pages",
+  "unchangedLimitations": [
+    "old native paragraph labels are retained with explicit report-level notice",
+    "existing XLSX conclusion column narrow and dense",
+    "browser/four-width/native-chart visual acceptance not performed"
+  ],
+  "completeSemanticReverification": false
+}

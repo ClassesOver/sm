@@ -1,0 +1,26 @@
+{
+  "baseCommit": "ccc1f83fa6dbed1a7ded8821f6a69c562170e9fc",
+  "branch": "codex/report-semantic-evidence-20261111",
+  "python": "3.12.3",
+  "packages": {
+    "agno": "3.1.2",
+    "pydantic": "2.13.5",
+    "weasyprint": "69.0",
+    "python-docx": "1.2.0",
+    "pypdf": "6.14.2"
+  },
+  "managementDatabase": "temporary dedicated PostgreSQL/pgvector container; cleanup confirmed",
+  "originals": "synthetic UTF-8 original documents registered and authorized by real management service",
+  "model": "controlled section outputs; no real-model evaluation",
+  "embedding": "fixed synthetic 8-dimensional protocol embedder",
+  "queryBackend": "synthetic DuckDB through materialization port; not real StarRocks",
+  "businessApproval": "not_performed",
+  "businessEnvRead": false,
+  "databaseReset": "temporary isolated management database only",
+  "merged": false,
+  "initialPath": "adoption fixture prepares registered evidence; native document generation uses execution=None; not a full new-report request entrance test",
+  "visualReview": "two successful branches: PDF 6 pages and Word 5 pages each; 22-page contact sheets and two initial appendix pages inspected; retained whitespace and ISO timestamps",
+  "browserReview": "same continuous service and originals; 4 viewport checks per case; technical accessibility checks do not constitute business approval",
+  "lastInitialPathRunPid": 959708,
+  "registeredInputCoverage": "all five registered files for both final initial cases; remaining three cases archive registered fact file and markdown, not every input"
+}

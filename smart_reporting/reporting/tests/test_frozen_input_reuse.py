@@ -159,17 +159,16 @@ async def test_runtime_fact_preparation_reuses_only_verified_input(monkeypatch, 
     raw = b'month,department,amount\n2025-01,001,10\n2025-02,002,-5\n2025-03,001,\n'
     digest = hashlib.sha256(raw).hexdigest()
     current = context('current', sha256=digest)
-    plans = tuple(analysis().model_copy(update={'analysis_id': f'analysis_{i:03}',
-                                              'dataset_ids': ('current',)}) for i in range(1, 7))
-    metric = {'code': 'income', 'fieldRef': 'dynamic_source.dynamic_db.dynamic_table.amount',
-              'kind': 'amount', 'aggregation': 'sum'}
-    profile = SimpleNamespace(metrics=(SimpleNamespace(model_dump=lambda **_: metric),),
-                              reconciliations=(), dimensions=(), effective_profile_hash='c' * 64)
+    from smart_reporting.reporting.semantics.analysis_facts import build_registered_analysis_bundle
+
+    from .test_registered_analysis_facts import analysis_inputs
+
+    registered_analysis, metric_context, result = analysis_inputs()
+    plans = tuple(registered_analysis.model_copy(update={'analysis_id': f'analysis_{i:03}',
+                                                        'dataset_ids': ('current',)}) for i in range(1, 7))
     expected = {
-        plan.analysis_id: deterministic.build_deterministic_analysis_bundle(
-            plan, (('current', raw, current, ('current',)),),
-            profile_metrics=(metric,), profile_hash=profile.effective_profile_hash,
-        ).model_dump(mode='json', by_alias=True) for plan in plans
+        plan.analysis_id: build_registered_analysis_bundle(plan, metric_context, ()).model_dump(mode='json', by_alias=True)
+        for plan in plans
     }
     calls = _track_reads(monkeypatch)
     stored = {}
@@ -182,7 +181,7 @@ async def test_runtime_fact_preparation_reuses_only_verified_input(monkeypatch, 
     read = AsyncMock(return_value=raw.replace(b'002,-5', b'002,-6') if stale else raw)
     harness = SimpleNamespace(
         _state=lambda _: {REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [current.model_dump(by_alias=True)]},
-        _profile=lambda _: profile,
+        _metric_planning_context=AsyncMock(return_value=metric_context),
         workspace_service=SimpleNamespace(read_limited_regular_file=read),
         _write_immutable_artifact=write, _apply_durable_command=AsyncMock(),
     )
@@ -200,9 +199,11 @@ async def test_runtime_fact_preparation_reuses_only_verified_input(monkeypatch, 
         harness._apply_durable_command.assert_not_awaited()
     else:
         identities = await RuntimeAnalysisMixin._prepare_deterministic_analysis_facts(harness, **arguments)
-        assert calls == [raw]
+        assert not calls  # 正式结果直接来自核验回执，不重新聚合探索CSV。
         assert set(identities) == set(expected)
         assert harness._apply_durable_command.await_count == 6
         for analysis_id, identity in identities.items():
-            assert json.loads(stored[identity.path]) == expected[analysis_id]
+            document = json.loads(stored[identity.path])
+            assert document == expected[analysis_id]
+            assert document["metricContext"]["calculations"][0]["results"][0]["factId"] == result.fact_id
     read.assert_awaited_once()

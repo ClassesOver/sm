@@ -1,0 +1,226 @@
+INFO    Processing batch starting at index 0, size: 1
+INFO    Upserted batch of 1 documents.
+INFO    Processing batch starting at index 0, size: 2
+INFO    Upserted batch of 2 documents.
+2026-11-11 20:17:42.082 | INFO     | smart_reporting.management.report_adoption_calculations:calculate_adoption_metrics:108 - report_adoption_calculation_recorded run_id=policy-adoption-dfbff2eef17ec322c7b6f384b333aff4e4903e58564cc889cb5d6d19d762f530 receipt_id=initial-8e6d9f916cd775091c55ab16acd92b3ef07a539baa435f097773d3d6e820c423
+2026-11-11 20:17:43.014 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_data_scope_tokenizer_fallback
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 50533.78it/s]
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 44779.05it/s]
+2026-11-11 20:17:47.773 | INFO     | smart_reporting.model_routing.observability:log_model_selection:13 - report_model_selected task_kind=analysis_item complexity=standard tier=standard model_id=deepseek-v4-flash-0731 attempt=0 reason=complexity_route policy_version=v1
+2026-11-11 20:17:47.816 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=read-facts analysis_id=analysis_001
+2026-11-11 20:17:47.826 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=read-facts analysis_id=analysis_001 status=completed duration_ms=10
+2026-11-11 20:17:47.826 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=plan-evidence analysis_id=analysis_001
+2026-11-11 20:17:47.826 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_decide_evidence:1353 - report_analysis_standard_candidates_prepared analysis_id=analysis_001 candidates=0 grouping_sources=0
+2026-11-11 20:17:47.827 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_evidence_tokenizer_fallback
+2026-11-11 20:17:47.898 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=plan-evidence analysis_id=analysis_001 status=completed duration_ms=72
+2026-11-11 20:17:47.899 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=complete-analysis analysis_id=analysis_001
+2026-11-11 20:17:47.900 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_summary_tokenizer_fallback
+2026-11-11 20:17:48.011 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=complete-analysis analysis_id=analysis_001 status=completed duration_ms=112
+2026-11-11 20:17:48.022 | DEBUG    | smart_reporting.reporting.workflow.execution:settle:331 - report_worker_model_metrics_settled task_id=report-coding-6fcfa90de0a10dc23c268d17f6a3b6a5448adb53 phase_attempt=0 agno_run_id=0b12816fb7734afc266692eced0385e2 outcome=completed request_count=0 total_tokens=0 reasoning_tokens=0 time_to_first_token_seconds=None stage_metrics={}
+2026-11-11 20:17:48.596 | INFO     | smart_reporting.reporting.workflow.runtime.analysis:_plan_narrative_outline:2643 - report_narrative_batch_completed batch=1 total=1 findings=3
+INFO    Found 1 documents
+2026-11-11 20:17:49.552 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3463 - report_claim_semantics_batch_started section=section_001 batch=1 processed=0 total=1 batch_size=1
+2026-11-11 20:17:49.552 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3467 - report_claim_semantics_batch_prepared section=section_001 batch=1 input_tokens=None payload_bytes=1473 preparation_ms=1
+2026-11-11 20:17:49.552 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3506 - report_claim_semantics_batch_model_elapsed section=section_001 batch=1 model_ms=0
+2026-11-11 20:17:49.552 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3510 - report_claim_semantics_batch_completed section=section_001 batch=1 processed=1 total=1 status=completed elapsed_ms=1
+2026-11-11 20:17:49.553 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3635 - report_claim_semantics_completed section=section_001 references=1 interpreted=1 elapsed_ms=2
+2026-11-11 20:17:49.952 | INFO     | smart_reporting.reporting.workflow.runtime.publication:_write_trace_index:2674 - revision 追溯索引已写入: revision=2 datasets=2 path=报表/智能分析/policy-adoption-dfbff2eef17ec322c7b6f384b333aff4e4903e58564cc889cb5d6d19d762f530/workbook/revision-2/trace-index-v1.json
+2026-11-11 20:17:53.308 | INFO     | smart_reporting.reporting.workflow.runtime.planning:_release_workspace:441 - report_host_workspace_released workspace_key=reporting-run-e94012f531d63c4d8326ec45d9e46644f35c24b55791a1054b6fb66c15c27a34
+2026-11-11 20:17:53.651 | INFO     | smart_reporting.report_editor.trace_sources:validate:1759 - report_source_validation_completed report_id=policy-adoption-dfbff2eef17ec322c7b6f384b333aff4e4903e58564cc889cb5d6d19d762f530 revision=2 subjects=1 tables=3 duration_ms=218
+FINFO    Table 'semantic_probe.evidence_8319ae7a065b4fa2b859cbba438eff47' dropped successfully.
+
+=================================== FAILURES ===================================
+_ test_workbook_edit_after_source_withdrawal_does_not_inherit_supported_claims[unchanged-export] _
+
+basis_context = {'scopes': <smart_reporting.management.scopes.ScopeService object at 0x718cca3375f0>, 'repository': <smart_reporting.m...icy_service': <smart_reporting.management.statistical_policies.StatisticalPolicyService object at 0x718cca3e1dc0>, ...}
+document_context = (<smart_reporting.management.business_documents.BusinessDocumentService object at 0x718cca335f70>, '22RlexSICnNfntCrio...(database='warehouse', company_id='b'), '2da920e9-0736-41f8-9deb-24ed57b64e2c', '255f516b-6367-4b09-9426-f404f913f220')
+receipt_snapshot = ({'dataset_handles': (DatasetHandle(dataset_id='dataset-budget01', source_id='warehouse', path='datasets/budget.csv', ...test_workbook_edit_after_sourc0/workspaces/sessions/95235c5d676041d1a3125e161561e98ca40aececb41aac3913d86345d6a4d4b3'))
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x718cc8642600>
+edit_title = False
+
+    @pytest.mark.parametrize('edit_title', [True, False], ids=['edit', 'unchanged-export'])
+    async def test_workbook_edit_after_source_withdrawal_does_not_inherit_supported_claims(
+        basis_context, document_context, receipt_snapshot, monkeypatch, edit_title,
+    ):
+        async def inspect(report):
+            runtime = report.runtime
+            folder = Path('/tmp') / f'smart-reporting-edit-withdrawal-{os.getpid()}-xlsx-{"edit" if edit_title else "unchanged"}'
+            folder.mkdir(exist_ok=True)
+            shutil.copytree(report.evidence_dir, folder / 'parent', dirs_exist_ok=True)
+            await archive_registered_sources(report, report.editor, report.context, folder / 'parent')
+            parent = (report.evidence_dir / 'c02-corrected.xlsx').read_bytes()
+            with ZipFile(BytesIO(parent)) as package:
+                mapping = json.loads(package.read('smart-reporting/source-mapping.json'))
+            assert mapping['sources']['claims']
+            assert all(item['support']['supportStatus'] == 'supported' for item in mapping['sources']['claims'])
+            service = ReportWorkbookEditorService(state_repository=runtime.state_repository,
+                workspace_registry=runtime.workspace_registry, workspace=runtime.workspace_service,
+                editor_grants=runtime.editor_grants, artifact_persistence=runtime.artifact_persistence,
+                download_grants=runtime.download_grants, public_base_url='https://reports.test')
+            grant, _ = await runtime.editor_grants.issue(report.context, capabilities={'xlsx_editor': True})
+            app = report.download_app
+            app.include_router(create_report_workbook_editor_router(runtime.editor_grants, workbooks=service,
+                static_dir=Path(__file__).resolve().parents[1] / 'report_editor/static', cookie_secure=False))
+            document = await report.editor.read_document(report.context)
+            async with AsyncClient(transport=ASGITransport(app), base_url='https://reports.test') as client:
+                opened = await client.get('/reports/v1/workbooks/open/' + grant)
+                assert opened.status_code == 303
+                prefix = opened.headers['location'] + '/api'
+                headers = {'X-CSRF-Token': client.cookies.get('report_workbook_csrf')}
+                payload = {'expectedSha256': report.context.xlsx_sha256, 'operations': [{'kind': 'applyCellEdits',
+                    'edits': [{'sheetName': '汇总', 'row': 0, 'column': 0, 'writeValue': True,
+                        'cell': {'value': '预算执行报告 人工复核'}}]}] if edit_title else []}
+                documents, token, scope = document_context[:3]
+                detail = await documents.get_document(token, scope, 'known-context')
+                await documents.review_revision(token, scope, 'known-context', 1, decision='revoked',
+                    reason='编辑后重新导出前撤销支持原件', expected_version=detail['revisions'][0]['stateVersion'])
+                current = await report.editor.trace.validate(report.context, document.markdown, document.sha256)
+                assert any(item['kind'] == 'recommendation' and item['supportStatus'] == 'unverified'
+                    and not item['evidenceRefs'] for item in current['quality']['claimSupport'])
+                historical = await client.get(report.delivery['xlsx']['downloadUrl'])
+                assert historical.status_code == 200 and historical.content == parent
+                response = await client.post(prefix + '/save', json=payload, headers=headers)
+                assert response.status_code == 200, response.text
+                result = response.json()
+                assert result['revision'] == report.context.revision + 1 and result['revisionRegistered']
+                assert not result['validation']['ok']
+                assert 'workbook_semantic_verification_pending' in {item['code'] for item in result['validation']['issues']}
+                download = await client.get(result['xlsx']['downloadUrl'])
+                assert download.status_code == 200
+                raw = download.content
+                assert len(raw) == result['xlsx']['size'] and hashlib.sha256(raw).hexdigest() == result['xlsx']['sha256']
+                historical = await client.get(report.delivery['xlsx']['downloadUrl'])
+                # 新修订签发会轮换旧下载授权；原件撤销本身不使原授权失效。
+                assert historical.status_code == 404
+                assert historical.json()['detail']['code'] == 'report_download_grant_invalid'
+                opened = await client.get(result['editor']['openUrl'])
+                assert opened.status_code == 303
+                current_file = await client.get(opened.headers['location'] + '/api/file')
+                assert current_file.status_code == 200 and current_file.content == raw
+            (folder / 'edited.xlsx').write_bytes(raw)
+            (folder / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+            (folder / 'current-after-withdrawal.json').write_text(json.dumps(current, ensure_ascii=False, indent=2))
+            with ZipFile(BytesIO(raw)) as package:
+                revised = json.loads(package.read('smart-reporting/source-mapping.json'))
+            (folder / 'edited-source-mapping.json').write_text(json.dumps(revised, ensure_ascii=False, indent=2))
+            book = load_workbook(BytesIO(raw), data_only=True)
+            try:
+                assert book.worksheets[0]['A1'].value == '本修订待核验'
+                assert '尚未重新核验' in book.worksheets[0]['A6'].value
+                assert f'第 {result["revision"]} 版' in book.worksheets[0]['A3'].value
+                if edit_title:
+                    assert book['汇总']['A1'].value == '预算执行报告 人工复核'
+            finally:
+                book.close()
+            assert revised['sources']['claims']
+            assert all(item['support']['supportStatus'] == 'unverified' and not item['support']['evidenceRefs']
+                for item in revised['sources']['claims']), '新文件保留了已撤销原件的旧支持结论'
+            assert await report.editor.read_document(report.context) == document
+            original, _ = await runtime.workspace_service.afile_bytes(report.context.scope['threadId'], report.context.xlsx_path)
+            assert original == parent
+            assert urlsplit(result['editor']['openUrl']).path.startswith('/reports/v1/workbooks/open/')
+    
+>       await exercise_background_report(basis_context, document_context, receipt_snapshot, monkeypatch,
+            'known', 'supported', delivery_format='xlsx', after_native_report=inspect)
+
+smart_reporting/tests/test_report_edit_withdrawal_delivery.py:146: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+smart_reporting/tests/test_report_background_delivery.py:106: in exercise_background_report
+    with duckdb.connect() as connection:
+smart_reporting/tests/test_report_background_delivery.py:240: in exercise_background_report
+    await exercise_c02_native_delivery(ctx, bases, store, receipt_snapshot[0]['workflow_scope'], adoption,
+smart_reporting/tests/c02_native_delivery.py:295: in exercise_c02_native_delivery
+    return await after_report(SimpleNamespace(runtime=runtime, database=database, editor=editor,
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+report = namespace(runtime=<smart_reporting.reporting.workflow.runtime.facade.ReportWorkflowRuntime object at 0x718cc851b170>, ...b218541ed885310ef9e9b3be3ff7df6c9189ebdb23285')), download_app=<fastapi.applications.FastAPI object at 0x718cc87a7620>)
+
+    async def inspect(report):
+        runtime = report.runtime
+        folder = Path('/tmp') / f'smart-reporting-edit-withdrawal-{os.getpid()}-xlsx-{"edit" if edit_title else "unchanged"}'
+        folder.mkdir(exist_ok=True)
+        shutil.copytree(report.evidence_dir, folder / 'parent', dirs_exist_ok=True)
+        await archive_registered_sources(report, report.editor, report.context, folder / 'parent')
+        parent = (report.evidence_dir / 'c02-corrected.xlsx').read_bytes()
+        with ZipFile(BytesIO(parent)) as package:
+            mapping = json.loads(package.read('smart-reporting/source-mapping.json'))
+        assert mapping['sources']['claims']
+        assert all(item['support']['supportStatus'] == 'supported' for item in mapping['sources']['claims'])
+        service = ReportWorkbookEditorService(state_repository=runtime.state_repository,
+            workspace_registry=runtime.workspace_registry, workspace=runtime.workspace_service,
+            editor_grants=runtime.editor_grants, artifact_persistence=runtime.artifact_persistence,
+            download_grants=runtime.download_grants, public_base_url='https://reports.test')
+        grant, _ = await runtime.editor_grants.issue(report.context, capabilities={'xlsx_editor': True})
+        app = report.download_app
+        app.include_router(create_report_workbook_editor_router(runtime.editor_grants, workbooks=service,
+            static_dir=Path(__file__).resolve().parents[1] / 'report_editor/static', cookie_secure=False))
+        document = await report.editor.read_document(report.context)
+        async with AsyncClient(transport=ASGITransport(app), base_url='https://reports.test') as client:
+            opened = await client.get('/reports/v1/workbooks/open/' + grant)
+            assert opened.status_code == 303
+            prefix = opened.headers['location'] + '/api'
+            headers = {'X-CSRF-Token': client.cookies.get('report_workbook_csrf')}
+            payload = {'expectedSha256': report.context.xlsx_sha256, 'operations': [{'kind': 'applyCellEdits',
+                'edits': [{'sheetName': '汇总', 'row': 0, 'column': 0, 'writeValue': True,
+                    'cell': {'value': '预算执行报告 人工复核'}}]}] if edit_title else []}
+            documents, token, scope = document_context[:3]
+            detail = await documents.get_document(token, scope, 'known-context')
+            await documents.review_revision(token, scope, 'known-context', 1, decision='revoked',
+                reason='编辑后重新导出前撤销支持原件', expected_version=detail['revisions'][0]['stateVersion'])
+            current = await report.editor.trace.validate(report.context, document.markdown, document.sha256)
+            assert any(item['kind'] == 'recommendation' and item['supportStatus'] == 'unverified'
+                and not item['evidenceRefs'] for item in current['quality']['claimSupport'])
+            historical = await client.get(report.delivery['xlsx']['downloadUrl'])
+            assert historical.status_code == 200 and historical.content == parent
+            response = await client.post(prefix + '/save', json=payload, headers=headers)
+            assert response.status_code == 200, response.text
+            result = response.json()
+            assert result['revision'] == report.context.revision + 1 and result['revisionRegistered']
+            assert not result['validation']['ok']
+            assert 'workbook_semantic_verification_pending' in {item['code'] for item in result['validation']['issues']}
+            download = await client.get(result['xlsx']['downloadUrl'])
+            assert download.status_code == 200
+            raw = download.content
+            assert len(raw) == result['xlsx']['size'] and hashlib.sha256(raw).hexdigest() == result['xlsx']['sha256']
+            historical = await client.get(report.delivery['xlsx']['downloadUrl'])
+            # 新修订签发会轮换旧下载授权；原件撤销本身不使原授权失效。
+            assert historical.status_code == 404
+            assert historical.json()['detail']['code'] == 'report_download_grant_invalid'
+            opened = await client.get(result['editor']['openUrl'])
+            assert opened.status_code == 303
+            current_file = await client.get(opened.headers['location'] + '/api/file')
+            assert current_file.status_code == 200 and current_file.content == raw
+        (folder / 'edited.xlsx').write_bytes(raw)
+        (folder / 'result.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        (folder / 'current-after-withdrawal.json').write_text(json.dumps(current, ensure_ascii=False, indent=2))
+        with ZipFile(BytesIO(raw)) as package:
+            revised = json.loads(package.read('smart-reporting/source-mapping.json'))
+        (folder / 'edited-source-mapping.json').write_text(json.dumps(revised, ensure_ascii=False, indent=2))
+        book = load_workbook(BytesIO(raw), data_only=True)
+        try:
+>           assert book.worksheets[0]['A1'].value == '本修订待核验'
+E           AssertionError: assert '主题' == '本修订待核验'
+E             
+E             - 本修订待核验
+E             + 主题
+
+smart_reporting/tests/test_report_edit_withdrawal_delivery.py:131: AssertionError
+------------------------------ Captured log setup ------------------------------
+INFO     agno:log.py:66 Processing batch starting at index 0, size: 1
+INFO     agno:log.py:66 Upserted batch of 1 documents.
+------------------------------ Captured log call -------------------------------
+INFO     agno:log.py:66 Processing batch starting at index 0, size: 2
+INFO     agno:log.py:66 Upserted batch of 2 documents.
+INFO     agno:log.py:66 Found 1 documents
+---------------------------- Captured log teardown -----------------------------
+INFO     agno:log.py:66 Table 'semantic_probe.evidence_8319ae7a065b4fa2b859cbba438eff47' dropped successfully.
+=============================== warnings summary ===============================
+../../../../pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2
+  /home/junge/pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2: DeprecationWarning: 'imghdr' is deprecated and slated for removal in Python 3.13
+    from imghdr import tests
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED smart_reporting/tests/test_report_edit_withdrawal_delivery.py::test_workbook_edit_after_source_withdrawal_does_not_inherit_supported_claims[unchanged-export]
+1 failed, 3 deselected, 1 warning in 25.97s
+isolated_vector_database_cleanup=True

@@ -380,6 +380,12 @@ class ReportingTaskCoordinator:
         parent_run_id: str = "",
         executor: ReportTaskExecutor,
     ) -> dict[str, Any]:
+        existing = await self.repository.get_task_snapshot(scope.external_run_id)
+        if existing is not None:
+            if existing.scope != scope:
+                raise ReportingError("report_worker_task_scope_mismatch", "报表任务与请求作用域不一致。")
+            if existing.state is TaskState.COMPLETED:
+                return self._finish_receipt(existing)
         async with TaskSession(self.repository, scope) as session:
             await self.execution_cleanup.cleanup_old_epoch(scope, session.lease.epoch)
             task = await self.repository.get_task_snapshot(scope.external_run_id)

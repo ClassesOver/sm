@@ -134,6 +134,22 @@ async def test_logout_is_server_side_and_idempotent(client):
     ).status_code == 401
 
 
+async def test_management_report_issues_page_requires_admin(client):
+    from urllib.parse import parse_qs, urlsplit
+
+    target = "/management/report-issues?database=warehouse&companyId=100"
+    response = await client.get(target)
+    assert response.status_code == 303
+    location = urlsplit(response.headers["location"])
+    assert location.path == "/management/login"
+    assert parse_qs(location.query)["returnTo"] == [target]
+    await login(client)
+    response = await client.get(target)
+    # 本 fixture 未部署前端；认证成功后应抵达静态页面检查，而非 404。
+    assert response.status_code == 503
+    assert response.json()["code"] == "management_frontend_unavailable"
+
+
 async def test_audit_and_business_routes_require_admin(client):
     response = await client.get("/management/api/v1/audit")
     assert response.status_code == 401

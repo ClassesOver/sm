@@ -15,7 +15,6 @@ export const draftSchema = z.object({
   name: z.string(),
   source_type: z.string(),
   database: z.string(),
-  profile_version_id: z.string().nullable(),
   metadata_version_id: z.string().nullable(),
   content_hash: z.string(),
 })
@@ -27,7 +26,6 @@ export const publishedSchema = z.object({
   name: z.string(),
   type: z.string(),
   database: z.string(),
-  reportingProfileVersionId: z.string().nullable(),
   metadataVersionId: z.string().nullable(),
 })
 export const sourceSchema = draftSchema.extend({
@@ -47,7 +45,6 @@ export const optionSchema = z.object({
   revision: z.number(),
   publishedAt: z.string().nullable(),
   syncedAt: z.string().optional(),
-  profileId: z.string().optional(),
 })
 export const checkSchema = z.object({
   tableAccessChanges: z

@@ -46,6 +46,8 @@ _MAX_TRACE_CLAIMS = 400
 _MAX_TRACE_TABLES = 400
 _MAX_TRACE_CHARTS = 200
 _MAX_TRACE_NUMBERED = 999
+# 单条正式说明保留精确版本、原值和限制；不得比上游附录总载荷16KiB更窄。
+_MAX_TRACE_EXPLANATION_CHARS = 16 * 1024
 _TRACE_STATUS_LABELS = frozenset({"valid", "stale", "unbound", "missing"})
 _TRACE_COMMON_KEYS = frozenset({"subjectIds", "status", "datasetIds", "links"})
 _TRACE_CLAIM_KEYS = _TRACE_COMMON_KEYS | {
@@ -96,11 +98,12 @@ def _trace_links(value: Any) -> list[dict[str, str]]:
 def _normalize_trace_entry(
     item: Any, *, keys: frozenset[str], kind: str
 ) -> dict[str, Any]:
-    if not isinstance(item, dict) or set(item) - {"omittedCounts"} != keys:
+    optional = {"omittedCounts", "periods"} if kind == 'table' else {"omittedCounts"}
+    if not isinstance(item, dict) or set(item) - optional != keys:
         raise ReportFailure("PDF 数据来源展示信息无效")
     omitted = item.get("omittedCounts", {})
     if not isinstance(omitted, dict) or any(
-        field not in {"datasetIds", "methods", "transformNotes", "subjectIds", "links"}
+        field not in {"datasetIds", "methods", "transformNotes", "subjectIds", "links", "periods"}
         or isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100000
         for field, count in omitted.items()
     ):
@@ -131,7 +134,7 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
         return {"claims": {}, "tables": {}, "charts": [], "datasets": {}}
     if (
         not isinstance(value, dict)
-        or set(value) != {"claims", "tables", "charts", "datasets"}
+        or set(value) - {'knowledge'} != {"claims", "tables", "charts", "datasets"}
         or not isinstance(value["claims"], list)
         or not isinstance(value["tables"], list)
         or not isinstance(value["charts"], list)
@@ -200,7 +203,7 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
             raise ReportFailure("PDF 数据来源事实值无效")
         if unit is not None and (not isinstance(unit, str) or len(unit) > 64):
             raise ReportFailure("PDF 数据来源单位无效")
-        if formula is not None and (not isinstance(formula, str) or len(formula) > 1000):
+        if formula is not None and (not isinstance(formula, str) or len(formula) > _MAX_TRACE_EXPLANATION_CHARS):
             raise ReportFailure("PDF 数据来源方法无效")
         if not isinstance(scope, dict) or len(scope) > 20 or any(
             not isinstance(key, str)
@@ -245,7 +248,9 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
             or table_id in tables
         ):
             raise ReportFailure("PDF 数据来源表格无效或重复")
-        entry["methods"] = _trace_str_list(entry["methods"], field="方法", max_items=5, max_length=128)
+        entry["methods"] = _trace_str_list(entry["methods"], field="方法", max_items=5, max_length=_MAX_TRACE_EXPLANATION_CHARS)
+        if 'periods' in entry:
+            entry['periods'] = _trace_str_list(entry['periods'], field='期间', max_items=10, max_length=128)
         tables[table_id] = entry
     charts: list[dict[str, Any]] = []
     chart_ids: set[str] = set()
@@ -276,7 +281,21 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
             entry["transformNotes"], field="转换说明", max_items=10, max_length=200
         )
         charts.append(entry)
-    return {"claims": claims, "tables": tables, "charts": charts, "datasets": datasets}
+    knowledge = value.get('knowledge', [])
+    if not isinstance(knowledge, list) or len(knowledge) > 400:
+        raise ReportFailure('PDF 业务知识来源数量无效')
+    normalized_knowledge = []
+    for item in knowledge:
+        if (not isinstance(item, dict) or set(item) != {'subjectId', 'summary', 'links'}
+                or not isinstance(item['subjectId'], str) or not 1 <= len(item['subjectId']) <= 256):
+            raise ReportFailure('PDF 业务知识来源展示信息无效')
+        normalized_knowledge.append({'subjectId': item['subjectId'],
+            'summary': _trace_str_list(item['summary'], field='知识摘录', max_items=10, max_length=1500),
+            'links': _trace_links(item['links'])})
+    result = {"claims": claims, "tables": tables, "charts": charts, "datasets": datasets}
+    if normalized_knowledge:
+        result['knowledge'] = normalized_knowledge
+    return result
 
 
 def _trace_claim_at(trace: dict[str, Any], markdown: str, position: int, claim_id: str) -> dict[str, Any] | None:
@@ -541,7 +560,10 @@ def _pdf_markdown(
         for entry in (*trace["claims"].values(), *trace["tables"].values(), *trace["charts"])
     }
     entries = [entries_by_alias[alias] for alias in sorted(entries_by_alias)]
-    return visible_markdown, normalized, {"entries": entries, "datasets": trace["datasets"]}
+    rendered = {"entries": entries, "datasets": trace["datasets"]}
+    if trace.get('knowledge'):
+        rendered['knowledge'] = trace['knowledge']
+    return visible_markdown, normalized, rendered
 
 
 def _valid_source_url(value: Any, subject_id: str | None) -> bool:

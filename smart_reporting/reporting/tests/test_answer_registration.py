@@ -57,7 +57,6 @@ async def publication_case(tmp_path, *, provider=None, fault=None):
         answer_review_plan_provider=provider)
     runtime._scope = lambda _: context.scope
     runtime.workspace_service = editor.workspace
-    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="0" * 64)
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     run_context = RunContext(run_id=index.report_id, session_id=context.scope["threadId"], session_state={})
     files = {file.resource_id: file for file in index.files}
@@ -69,7 +68,7 @@ async def publication_case(tmp_path, *, provider=None, fault=None):
     lineage = DatasetLineage(datasetId=handle.dataset_id, sourceId=handle.source_id, sourceType=handle.source_type,
         size=handle.size, sha256=handle.sha256, rowCount=handle.row_count,
         requirementId=handle.requirement_id, sqlHash=handle.sql_hash)
-    args = {"handles": (handle,), "lineage": (lineage,), "revision": 1, "run_context": run_context,
+    args = {"report_basis_id": "basis-test", "handles": (handle,), "lineage": (lineage,), "revision": 1, "run_context": run_context,
         "markdown_artifact": ArtifactFile.model_validate(files[index.markdown_file_resource_id].model_dump(exclude={"resource_id"})),
         "markdown": markdown, "subject_bindings": index.subject_bindings,
         "fact_files": {entry.analysis_id: ArtifactFile(path=files[entry.file_resource_id].path,
@@ -243,15 +242,14 @@ async def test_registration_cannot_manufacture_approval_or_erase_independent_fac
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_registered_mapping_reaches_real_exports_and_withdraws_after_scope_edit(tmp_path):
+async def test_retired_mapping_is_not_reused_and_real_exports_remain_available(tmp_path):
     import pypdf
     from docx import Document
 
     from smart_reporting.reporting.delivery.report_runtime.runtime import ReportRuntime
     from smart_reporting.reporting.trace.contracts_v1 import canonical_sha256
     from smart_reporting.reporting.workflow.management_overview import (
-        ManagementOverview,
-        management_overview_projection,
+        unavailable_management_overview_projection,
     )
     from smart_reporting.reporting.workflow.overview_sources import registered_management_overview
 
@@ -277,15 +275,10 @@ async def test_registered_mapping_reaches_real_exports_and_withdraws_after_scope
     manifest_identity = await register_trace_manifest(runtime.workspace_service, context.scope["threadId"], index, overwrite=True)
     context = context.model_copy(update={"artifact_manifest": manifest_identity})
     manifest = await editor.trace.load_manifest(context)
-    # Register the same profile as the real runtime/index, not the fixture default.
-    manifest = manifest.model_copy(update={"effective_profile_hash": "0" * 64})
-    raw = manifest.model_dump_json(by_alias=True).encode()
-    await runtime.workspace_service.awrite_bytes(context.scope["threadId"], manifest_identity.path, raw, overwrite=True)
-    context = context.model_copy(update={"artifact_manifest": manifest_identity.model_copy(update={
-        "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})})
-    approved = await registered_management_overview(runtime.workspace_service, context.scope["threadId"], manifest,
-        canonical_sha256({key: context.scope[key] for key in ("userId", "threadId")}))
-    assert approved.rows[0].status == "met" and quality.answer_review_plan == plan
+    with pytest.raises(ValueError, match="retired business Profile"):
+        await registered_management_overview(runtime.workspace_service, context.scope["threadId"], manifest,
+            canonical_sha256({key: context.scope[key] for key in ("userId", "threadId")}))
+    assert quality.answer_review_plan == plan
     workspace = tmp_path / "render"
     state = _build_workspace(workspace)
     state["_documentContext"].update({
@@ -297,10 +290,9 @@ async def test_registered_mapping_reaches_real_exports_and_withdraws_after_scope
     for stage, text in enumerate((markdown, markdown.replace("北院", "南院"))):
         if stage:
             checked = await editor.trace.validate(context, text, hashlib.sha256(text.encode()).hexdigest())
-            approved = ManagementOverview.model_validate(checked["quality"]["managementOverview"])
-            assert approved.rows[0].status == "unknown"
+            assert checked["quality"]["managementOverview"]["rows"][0]["status"] == "unknown"
         (workspace / "report.md").write_text(text)
-        state["_managementOverviewProjection"] = management_overview_projection(approved, hashlib.sha256(text.encode()).hexdigest())
+        state["_managementOverviewProjection"] = unavailable_management_overview_projection(hashlib.sha256(text.encode()).hexdigest())
         result = ReportRuntime(workspace).render_markdown(state, "report.md", f"revision-{stage}/report.pdf",
             f".reporting-tmp/workspace-report-registration-{stage}-render/render.pdf")
         assert result["status"] == "rendered"
@@ -308,9 +300,9 @@ async def test_registered_mapping_reaches_real_exports_and_withdraws_after_scope
         word = Document(workspace / result["wordPath"])
         pdf_text = "".join((page.extract_text() or "") for page in pdf.pages)
         table_text = "".join(cell.text for table in word.tables for row in table.rows for cell in row.cells)
-        assert ("2400.0万元" in table_text) == (stage == 0)
-        assert ("该项已核验" in pdf_text) == (stage == 0)
-        assert "该项待核实" in table_text
+        assert "2400.0万元" not in table_text
+        assert "该项已核验" not in pdf_text
+        assert "暂不列示汇总数值" in pdf_text
         assert "智能运营验证机构" in pdf_text
         assert any("智能运营验证机构" in paragraph.text for paragraph in word.paragraphs)
         state["render"] = result["render"]

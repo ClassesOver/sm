@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from cryptography.fernet import Fernet
 
 
 @pytest.mark.anyio
@@ -14,6 +15,7 @@ async def test_application_registers_native_schema_startup(monkeypatch):
     monkeypatch.setattr(
         "smart_reporting.integrations.dingyi_process.mount_process_routes", lambda *args: None
     )
+    monkeypatch.setenv("AGENT_MANAGEMENT_CREDENTIAL_KEYS", f"test:{Fernet.generate_key().decode()}")
     import smart_reporting.app as app_module
 
     create_schema = AsyncMock()

@@ -41,6 +41,8 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      { find: /^@sheets-web\/xlsx-engine$/, replacement: fileURLToPath(new URL('../../reporting/workbook_engine/packages/xlsx-engine/src/index.ts', import.meta.url)) },
+      { find: /^@sheets-web\/xlsx-engine\/(.+)$/, replacement: fileURLToPath(new URL('../../reporting/workbook_engine/packages/xlsx-engine/src/', import.meta.url)) + '$1.ts' },
       { find: '@genoffice/docx-engine', replacement: fileURLToPath(new URL('../../reporting/doc_engine/packages/docx-engine/src/index.ts', import.meta.url)) },
       { find: /^@genoffice\/pptx-engine\/(.+)$/, replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-engine/src/', import.meta.url)) + '$1.ts' },
       { find: '@genoffice/pptx-render/preset-geometry', replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-render/src/preset-geometry.ts', import.meta.url)) },

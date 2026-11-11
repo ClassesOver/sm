@@ -74,30 +74,26 @@ async def test_structured_projection_refuses_stale_or_malformed_overviews(tmp_pa
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
 @pytest.mark.parametrize("fault", ["none", "source", "authorization", "markdown", "quality", "profile"])
-async def test_first_publication_checks_registered_overview_sources(tmp_path, fault):
+async def test_first_publication_rejects_retired_overview_and_mismatched_basis(tmp_path, fault):
     editor, context, index, markdown, sources, questions, plan = await case(tmp_path)
-    # This fixture's legacy facts use the compiler's zero-profile fallback.
-    # Register that profile explicitly, as production indexes do.
+    # 旧Profile断言即使hash一致，也不能获得新计算依据的认证。
     index = index.model_copy(update={"profile_hash": "0" * 64})
     quality = evaluate(index, markdown, sources, questions, plan)
     context = await register_quality(editor, context, index, quality)
     manifest, index = await editor.trace.load_manifest_and_index(context)
-    if fault != "profile":
-        manifest = manifest.model_copy(update={"effective_profile_hash": index.profile_hash})
+    if fault == "profile":
+        manifest = manifest.model_copy(update={"report_basis_id": "basis-foreign"})
     if fault in {"source", "markdown", "quality"}:
         file = (next(file for file in index.files if file.resource_id == index.fact_files[0].file_resource_id)
                 if fault == "source" else next(file for file in index.files if file.path.endswith("quality-bundle-v1.json"))
                 if fault == "quality" else manifest.markdown)
         await editor.workspace.awrite_bytes(context.scope["threadId"], file.path, b"changed", overwrite=True)
-    if fault == "none":
-        overview = await registered_management_overview(editor.workspace, context.scope["threadId"], manifest, "c" * 64)
-        assert overview.rows[0].status == "met"
-    else:
-        expected = ("provenance mismatch" if fault == "authorization" else "index identity mismatch"
-                    if fault == "profile" else "input identity changed")
-        with pytest.raises(ValueError, match=expected):
-            await registered_management_overview(editor.workspace, context.scope["threadId"], manifest,
-                                                 "d" * 64 if fault == "authorization" else "c" * 64)
+    expected = ("index identity mismatch" if fault == "profile" else "input identity changed"
+                if fault in {"markdown", "quality"} else "retired business Profile")
+    with pytest.raises(ValueError, match=expected):
+        await registered_management_overview(editor.workspace, context.scope["threadId"], manifest,
+                                             "d" * 64 if fault == "authorization" else "c" * 64)
+
 
 
 @pytest.mark.anyio

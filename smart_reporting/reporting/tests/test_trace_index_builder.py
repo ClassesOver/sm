@@ -75,6 +75,7 @@ def _build(handles, lineage, **overrides):
         revision=1,
         workflow_run_id="run1",
         markdown_file=MARKDOWN,
+        report_basis_id="basis-test",
         profile_hash=SHA,
     )
     params.update(overrides)
@@ -481,3 +482,34 @@ def test_invalid_mixed_subject_with_production_fact_refs_is_dropped_without_harm
     index = _build_table(table_source_files=sources, subject_bindings=(subject, ordinary),
                          fact_files={'analysis_001': ArtifactFile(**denominator, mediaType='application/json')})
     assert [item.claim_id for item in index.subject_bindings] == ['claim-unaffected']
+
+
+def test_trace_index_keeps_knowledge_receipt_identity_without_quote():
+    dependency = {'sectionCode': 'section_001', 'reportRevision': '1',
+                  'receiptIds': ['knowledge-rules', 'knowledge-background']}
+    index = _build((_handle('dataset-abc0001'),), (_lineage('dataset-abc0001'),),
+        knowledge_dependencies=(dependency,), knowledge_registration_status='registered')
+    payload = json.loads(encode_trace_index(index))
+    assert payload['knowledgeDependencies'] == [dependency]
+    assert payload['knowledgeRegistrationStatus'] == 'registered'
+    assert RevisionTraceIndexV1.model_validate(payload) == index
+    with pytest.raises(ValidationError):
+        _build((_handle('dataset-abc0001'),), (_lineage('dataset-abc0001'),),
+            knowledge_dependencies=(dependency, dependency), knowledge_registration_status='registered')
+    with pytest.raises(ValidationError):
+        _build((_handle('dataset-abc0001'),), (_lineage('dataset-abc0001'),),
+            knowledge_dependencies=({**dependency, 'receiptIds': ['same', 'same']},),
+            knowledge_registration_status='registered')
+
+
+def test_document_and_workbook_summary_keep_distinct_revision_receipts_for_same_section():
+    document = {'sectionCode': 'section_001', 'reportRevision': '1', 'receiptIds': ['document-receipt']}
+    summary = {'sectionCode': 'section_001', 'reportRevision': 'initial', 'receiptIds': ['summary-receipt']}
+    index = _build((_handle('dataset-abc0001'),), (_lineage('dataset-abc0001'),),
+        knowledge_dependencies=(document, summary), knowledge_registration_status='registered')
+    assert [(item.section_code, item.report_revision, item.receipt_ids) for item in index.knowledge_dependencies] == [
+        ('section_001', '1', ('document-receipt',)), ('section_001', 'initial', ('summary-receipt',))]
+    for invalid in ({**summary, 'reportRevision': '1'}, {**summary, 'receiptIds': document['receiptIds']}):
+        with pytest.raises(ValidationError):
+            _build((_handle('dataset-abc0001'),), (_lineage('dataset-abc0001'),),
+                knowledge_dependencies=(document, invalid), knowledge_registration_status='registered')

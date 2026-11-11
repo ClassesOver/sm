@@ -65,7 +65,7 @@ class SourceService:
             query = select(
                 source_drafts.c.source_id, source_drafts.c.version, source_drafts.c.name,
                 source_drafts.c.source_type, source_drafts.c.database,
-                source_drafts.c.profile_version_id, source_drafts.c.metadata_version_id,
+                source_drafts.c.metadata_version_id,
                 source_drafts.c.content_hash, sources.c.enabled, sources.c.published_revision,
             ).join(sources, (sources.c.scope_id == source_drafts.c.scope_id)
                    & (sources.c.source_id == source_drafts.c.source_id)).where(
@@ -127,7 +127,7 @@ class SourceService:
                           name=payload.name.strip(), source_type=payload.source_type,
                           database=payload.database.lower(), credential_ref=credential_ref,
                           credential_revision=1,
-                          profile_version_id=payload.profile_version_id,
+                          profile_version_id=None,
                           metadata_version_id=payload.metadata_version_id,
                           content_hash=digest, execution_parameters=execution_parameters)
             await connection.execute(insert(sources).values(scope_id=scope_id, source_id=source_id,
@@ -154,6 +154,9 @@ class SourceService:
             current = await self.sources.get_draft(connection, scope_id, source_id)
             if current['version'] != expected_version:
                 raise ManagementError('management_version_conflict', '草稿已被其他操作更新，请重新载入。', 409)
+            if current['profile_version_id'] is not None:
+                raise ManagementError('management_source_contract_retired',
+                    '该连接仍绑定已停用的业务Profile，请按新契约重新登记连接与表范围。', 409)
             execution_parameters = current['execution_parameters']
             if execution_parameters is None:
                 raise ManagementError('management_source_reimport_required', '旧配置缺少执行参数快照，请从原配置文件重新导入并对账。', 422)
@@ -168,7 +171,6 @@ class SourceService:
             values = dict(version=expected_version + 1, name=payload.name.strip(),
                           source_type=payload.source_type, database=payload.database.lower(),
                           credential_ref=credential_ref, credential_revision=credential_revision,
-                          profile_version_id=payload.profile_version_id,
                           metadata_version_id=content['metadataVersionId'],
                           requires_table_discovery=1 if payload.dsn is not None else current['requires_table_discovery'],
                           content_hash=digest)
@@ -222,7 +224,7 @@ class SourceService:
                 content_hash=draft['content_hash'], published_at=now,
                 name=draft['name'], source_type=draft['source_type'], database=draft['database'],
                 credential_ref=draft['credential_ref'], credential_revision=draft['credential_revision'],
-                profile_version_id=draft['profile_version_id'], metadata_version_id=draft['metadata_version_id'],
+                profile_version_id=None, metadata_version_id=draft['metadata_version_id'],
                 execution_parameters=draft['execution_parameters']))
             await connection.execute(update(sources).where(sources.c.scope_id == scope_id,
                 sources.c.source_id == source_id).values(published_revision=revision, enabled=1, updated_at=now))
@@ -231,7 +233,7 @@ class SourceService:
             await self.scope_service.audit(connection, actor, 'source_version_published', {'sourceId': source_id, 'revision': revision})
             return {'sourceId': source_id, 'revision': revision, 'contentHash': draft['content_hash'],
                     'publishedAt': now.isoformat(), 'name': draft['name'], 'type': draft['source_type'],
-                    'database': draft['database'], 'reportingProfileVersionId': draft['profile_version_id'],
+                    'database': draft['database'],
                     'metadataVersionId': draft['metadata_version_id']}
 
     async def _read_detail(self, connection, scope_id: str, source_id: str):
@@ -269,7 +271,7 @@ class SourceService:
                                'message': '旧配置缺少执行参数快照，请从原配置文件重新导入并对账。'})
             else:
                 try:
-                    _, catalog, _ = await require_release_dependencies(connection, scope_id, source_id, draft)
+                    catalog, _ = await require_release_dependencies(connection, scope_id, source_id, draft)
                     warnings = catalog["catalog"].get("warnings", [])
                 except ManagementError as error:
                     if error.status != 422:
@@ -277,7 +279,6 @@ class SourceService:
                     issues.append({'code': error.code, 'message': error.message})
             fields = []
             for public, key in (('name', 'name'), ('type', 'source_type'), ('database', 'database'),
-                                ('reportingProfileVersionId', 'profile_version_id'),
                                 ('metadataVersionId', 'metadata_version_id')):
                 before = published[key] if published else None
                 if before != draft[key]:
@@ -305,4 +306,4 @@ class SourceService:
     @staticmethod
     def public_draft(row: dict) -> dict:
         return {key: row[key] for key in ('source_id', 'version', 'name', 'source_type', 'database',
-                'profile_version_id', 'metadata_version_id', 'content_hash')}
+                'metadata_version_id', 'content_hash')}

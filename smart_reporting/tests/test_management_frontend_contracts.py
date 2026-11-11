@@ -47,7 +47,6 @@ async def test_editor_preserves_credentials_and_checks_release(release_context, 
             "expectedVersion": 1,
             "name": "新名称",
             "database": "warehouse",
-            "reportingProfileVersionId": "base:1",
             "metadataVersionId": "operations:1",
         }
         saved = await c.put(url + "/draft", json=body, headers=headers)
@@ -108,20 +107,18 @@ async def test_version_options_are_scoped_and_precheck_does_not_authorize_future
         transport=httpx.ASGITransport(app), base_url="https://reports.test"
     ) as c:
         c.cookies.set("report_management_session", token, path="/management")
-        for path in ["/profiles/versions", "/sources/operations/catalog/versions"]:
-            response = await c.get("/management/api/v1" + path, params=query)
-            assert response.status_code == 200, response.text
-            assert len(response.json()["items"]) == 1
-            if "catalog" in path:
-                assert response.json()["items"][0]["publishedAt"] is None
-                assert response.json()["items"][0]["syncedAt"]
-            assert (
-                await c.get("/management/api/v1" + path, params={**query, "after": "not-a-cursor"})
-            ).status_code == 422
-        response = await c.get(
-            "/management/api/v1/profiles/versions", params={**query, "companyId": "foreign"}
-        )
-        assert response.json()["items"] == []
+        path = "/management/api/v1/sources/operations/catalog/versions"
+        response = await c.get(path, params=query)
+        assert response.status_code == 200, response.text
+        assert len(response.json()["items"]) == 1
+        assert response.json()["items"][0]["publishedAt"] is None
+        assert response.json()["items"][0]["syncedAt"]
+        assert (
+            await c.get(path, params={**query, "after": "not-a-cursor"})
+        ).status_code == 422
+        assert (
+            await c.get(path, params={**query, "companyId": "foreign"})
+        ).status_code == 404
         assert (
             await c.get(
                 "/management/api/v1/sources/operations", params={**query, "companyId": "foreign"}
@@ -159,7 +156,6 @@ async def test_search_is_literal_and_status_uses_hash_not_draft_version(release_
         {
             "name": "收入100%_!",
             "database": "warehouse",
-            "reportingProfileVersionId": "base:1",
             "metadataVersionId": "operations:1",
         }
     )
@@ -208,17 +204,12 @@ async def test_search_is_literal_and_status_uses_hash_not_draft_version(release_
         )
 
 
-async def test_published_version_cursor_is_stable_and_strict(release_context):
-    from smart_reporting.management.profiles import ProfileService
+async def test_published_catalog_cursor_is_stable_and_strict(release_context):
     from smart_reporting.management.version_options import create_version_options_router
 
     service, scopes, repo, token, scope = release_context
-    profiles = ProfileService(scopes)
-    for identifier in ["alpha", "base", "zeta"]:
-        draft = await profiles.save_draft(
-            token, scope, {"profileId": identifier, "revision": "r1", "dimensions": []}, 0
-        )
-        await profiles.publish(token, scope, identifier, draft["version"])
+    for _ in range(3):
+        await publish_dependencies(scopes, token, scope)
     app = FastAPI()
     app.include_router(create_version_options_router(scopes))
     query = {"scopeDatabase": scope.database, "companyId": scope.company_id, "limit": 1}
@@ -230,7 +221,7 @@ async def test_published_version_cursor_is_stable_and_strict(release_context):
         cursor = None
         for _ in range(3):
             response = await client.get(
-                "/management/api/v1/profiles/versions",
+                "/management/api/v1/sources/operations/catalog/versions",
                 params={**query, **({"after": cursor} if cursor else {})},
             )
             assert response.status_code == 200, response.text
@@ -238,8 +229,8 @@ async def test_published_version_cursor_is_stable_and_strict(release_context):
             cursor = response.json()["nextCursor"]
             if len(refs) == 1:
                 malformed = await client.get(
-                    "/management/api/v1/profiles/versions", params={**query, "after": cursor + "$"}
+                    "/management/api/v1/sources/operations/catalog/versions", params={**query, "after": cursor + "$"}
                 )
                 assert malformed.status_code == 422
-        assert refs == ["alpha:1", "base:1", "zeta:1"]
+        assert refs == ["operations:3", "operations:2", "operations:1"]
         assert cursor is None

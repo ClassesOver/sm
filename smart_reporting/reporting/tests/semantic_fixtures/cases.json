@@ -1,0 +1,272 @@
+{
+  "fixture_kind": "synthetic",
+  "business_approved": false,
+  "cases": [
+    {
+      "case_id": "C01",
+      "input": "同粒度预算与实际",
+      "expected": "与独立Decimal汇总一致",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C02",
+      "input": "90/100、100/200",
+      "expected": "总执行率63.33%，不能70%",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C03",
+      "input": "预算一行关联多条实际",
+      "expected": "先聚合，预算不放大",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C04",
+      "input": "维度键不唯一",
+      "expected": "join_fanout，无伪值",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C05",
+      "input": "请求未有分摊规则的细维度预算",
+      "expected": "grain_not_supported",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C06",
+      "input": "两个月累计快照",
+      "expected": "按声明策略差分，不能累加快照",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C07",
+      "input": "年初累计重置且缺政策",
+      "expected": "无值+具体原因",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C08",
+      "input": "跨组织同名数据",
+      "expected": "无跨组织计入/检索",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C09",
+      "input": "退款冲销负值",
+      "expected": "按已确认规则核对净额",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C10",
+      "input": "时区月底边界",
+      "expected": "半开区间无重复/漏计",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C11",
+      "input": "分母0",
+      "expected": "无值/披露，不能填0%",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C12",
+      "input": "NULL或无数据",
+      "expected": "与合法0区分",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C13",
+      "input": "两个同义候选指标",
+      "expected": "候选+差异，无静默择一",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C14",
+      "input": "问题换说法",
+      "expected": "相同语义映射，同指标身份",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C15",
+      "input": "已过期制度",
+      "expected": "不作本期正式依据",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C16",
+      "input": "中途规则生效",
+      "expected": "分段有依据，否则不可比告警",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C17",
+      "input": "两份制度冲突",
+      "expected": "保留冲突、来源与未解决状态",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C18",
+      "input": "背景文档提出另一公式",
+      "expected": "不覆盖正式指标定义",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C19",
+      "input": "文档提示注入",
+      "expected": "不执行文本指令，不扩权",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C20",
+      "input": "未发布文档或伪造集合",
+      "expected": "不进入模型上下文",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C21",
+      "input": "原文定位/哈希错误",
+      "expected": "引用不可用，不谎称支持",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C22",
+      "input": "索引中断/服务重启",
+      "expected": "幂等恢复，无半发布状态",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C23",
+      "input": "口径发布但未设默认",
+      "expected": "新报告仍明确原默认",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C24",
+      "input": "切默认后恢复新模型旧run",
+      "expected": "本报告依据不漂移",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C25",
+      "input": "session_state/请求替换版本",
+      "expected": "按可信登记拒绝越界",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C26",
+      "input": "旧Profile输入/旧run恢复",
+      "expected": "明确停用、零取数",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C27",
+      "input": "原数仓数据变化",
+      "expected": "结果快照复核一致，重查差异披露",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C28",
+      "input": "文档撤销访问",
+      "expected": "不读原文，报告披露不可访问",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C29",
+      "input": "编辑正文或数字",
+      "expected": "新修订，原核对状态不能无条件沿用",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C30",
+      "input": "已生成PDF/Word后知识/追溯故障",
+      "expected": "仍签发、返回真实失败原因",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C31",
+      "input": "三个问题只能回答两个",
+      "expected": "问题逐项映射，第三项显示未解决；不标全部完成",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C32",
+      "input": "缺月/迟到数据/未匹配事实/基期不可比",
+      "expected": "不解释为下降，未匹配金额披露，无误导增长率",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C33",
+      "input": "新背景事件但公式未变",
+      "expected": "独立背景集合发布；旧run不漂移，后知事件不伪装当时依据",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C34",
+      "input": "正文/表格/图表/导出同一指标",
+      "expected": "同事实身份、范围/单位/舍入一致；相关性不冒充原因",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C35",
+      "input": "重算响应丢失且图表未完成",
+      "expected": "幂等任务，新修订不混旧图；旧核对结果按依赖失效",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C36",
+      "input": "用户报告计算错误并经核实",
+      "expected": "反馈→裁定→反例→新发布→新修订形成关联，不自动改正式规则",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C37",
+      "input": "错误指标版本退役且为默认依赖",
+      "expected": "展示受影响口径/报告；新选用拒绝，无静默最新回退",
+      "status": "not_run",
+      "evidence": []
+    },
+    {
+      "case_id": "C38",
+      "input": "清理/备份恢复后原件缺失或到期",
+      "expected": "保留期保护有效；不可复现明确披露，产物下载不新增阻断",
+      "status": "not_run",
+      "evidence": []
+    }
+  ]
+}

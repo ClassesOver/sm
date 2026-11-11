@@ -60,30 +60,6 @@ def physical_catalog(source_id="operations", database="warehouse"):
 
 async def publish_dependencies(scopes, raw_session, scope, source_id="operations", draft_version=1):
     from smart_reporting.management.catalog import CatalogService
-    from smart_reporting.management.profiles import ProfileService
-
-    profiles = ProfileService(scopes)
-    try:
-        await profiles.get_version(raw_session, scope, "base", 1)
-    except Exception as error:
-        from smart_reporting.management.models import ManagementError
-
-        if (
-            not isinstance(error, ManagementError)
-            or error.code != "management_profile_version_not_found"
-        ):
-            raise
-        draft = await profiles.save_draft(
-            raw_session,
-            scope,
-            {
-                "profileId": "base",
-                "revision": "r1",
-                "dimensions": [],
-            },
-            0,
-        )
-        await profiles.publish(raw_session, scope, "base", draft["version"])
     catalogs = CatalogService(scopes)
     synced = await catalogs.sync(
         raw_session,

@@ -13,7 +13,6 @@ class SourceDraftInput(BaseModel):
     source_type: str = Field(default='starrocks', alias='type', pattern='^starrocks$')
     database: str = Field(min_length=1, max_length=128, pattern=r'^[A-Za-z_][A-Za-z0-9_$]*$')
     dsn: SecretStr | None = Field(default=None, min_length=1, max_length=4096, repr=False)
-    profile_version_id: str | None = Field(default=None, alias='reportingProfileVersionId', max_length=64)
     metadata_version_id: str | None = Field(default=None, alias='metadataVersionId', max_length=64)
 
     @field_validator('name')
@@ -39,7 +38,6 @@ class SourceDraft:
     source_type: str
     database: str
     credential_ref: str
-    profile_version_id: str | None
     metadata_version_id: str | None
 
 
@@ -52,7 +50,6 @@ class SourceVersion:
     name: str
     source_type: str
     database: str
-    profile_version_id: str | None
     metadata_version_id: str | None
     credential_revision: int
 
@@ -60,5 +57,4 @@ class SourceVersion:
         return {'sourceId': self.source_id, 'revision': self.revision,
                 'contentHash': self.content_hash, 'publishedAt': self.published_at.isoformat(),
                 'name': self.name, 'type': self.source_type, 'database': self.database,
-                'reportingProfileVersionId': self.profile_version_id,
                 'metadataVersionId': self.metadata_version_id}

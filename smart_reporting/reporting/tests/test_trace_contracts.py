@@ -498,7 +498,7 @@ def _index(**overrides) -> RevisionTraceIndexV1:
         ),
     )
     base.update(overrides)
-    return RevisionTraceIndexV1(**base)
+    return RevisionTraceIndexV1(reportBasisId="basis-test", **base)
 
 
 def test_minimal_index_roundtrip() -> None:

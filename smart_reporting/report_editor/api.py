@@ -19,12 +19,19 @@ from fastapi.responses import (
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from ..management.report_issue_reviews import IssueSubmission
 from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
 from .capabilities import EditorCapabilities
 from .chart_ai import ChartAIEditRequest, ChartStandardEditRequest, ChartTemplateApplyRequest
+from .recalculation import (
+    PolicyAdoptionPreviewRequest,
+    PolicyAdoptionRequest,
+    PreparationConfirmationRequest,
+    RecalculationRequest,
+)
 from .data_revision_contract import ReportDataEditRequest
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
 from .table_ai import TableAIEditRequest, TableTemplateApplyRequest
@@ -554,6 +561,20 @@ def create_report_editor_router(
             return JSONResponse(sources, headers={"Cache-Control": "no-store"})
 
         @router.get(
+            '/reports/v1/editor/{report_id}/{revision}/api/sources/{subject_id}/knowledge/{evidence_id}',
+            include_in_schema=False,
+        )
+        async def read_report_editor_knowledge(report_id: str, revision: int, subject_id: str,
+            evidence_id: str, request: Request) -> JSONResponse:
+            session, context = await _read_session_context(
+                grants, editor, request, report_id=report_id, revision=revision)
+            try:
+                detail = await editor.trace_knowledge_detail(context, session, subject_id, evidence_id)
+            except ReportingError as error:
+                _editor_http_error(error, request_id=_request_id(request.headers.get('x-request-id')))
+            return JSONResponse(detail, headers={'Cache-Control': 'no-store'})
+
+        @router.get(
             "/reports/v1/editor/{report_id}/{revision}/api/facts",
             include_in_schema=False,
         )
@@ -717,6 +738,179 @@ def create_report_editor_router(
             except ReportingError as error:
                 _editor_http_error(error, request_id=request_id)
             return JSONResponse(source, headers={"Cache-Control": "no-store"})
+
+        @router.get("/reports/v1/editor/{report_id}/{revision}/api/issue-reviews", include_in_schema=False)
+        async def read_report_issue_reviews(
+            report_id: str, revision: int, request: Request,
+            limit: int = Query(default=50, ge=1, le=100), after: str | None = Query(default=None, max_length=128),
+            issue_id: str | None = Query(default=None, alias='issueId', max_length=128),
+        ) -> JSONResponse:
+            from ..management.models import ManagementError
+
+            _session, context = await _read_session_context(grants, editor, request,
+                report_id=report_id, revision=revision)
+            try:
+                result = await editor.issue_reviews(context, issue_id=issue_id, limit=limit, after=after)
+            except ManagementError as error:
+                raise HTTPException(status_code=error.status,
+                    detail={'code': error.code, 'message': error.message}) from error
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.post("/reports/v1/editor/{report_id}/{revision}/api/issue-reviews", include_in_schema=False)
+        async def submit_report_issue_review(
+            report_id: str, revision: int, payload: IssueSubmission, request: Request,
+        ) -> JSONResponse:
+            from ..management.models import ManagementError
+
+            _session, context = await _write_session_context(grants, editor, request,
+                report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+            try:
+                result = await editor.submit_issue_review(context, payload)
+            except ManagementError as error:
+                raise HTTPException(status_code=error.status,
+                    detail={'code': error.code, 'message': error.message}) from error
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.get("/reports/v1/editor/{report_id}/{revision}/api/policy-adoption-options", include_in_schema=False)
+        async def read_report_policy_adoption_options(
+            report_id: str, revision: int, request: Request, limit: int = 50, after: str | None = None,
+        ) -> JSONResponse:
+            from ..management.models import ManagementError
+
+            _session, context = await _read_session_context(grants, editor, request,
+                report_id=report_id, revision=revision)
+            try:
+                result = await editor.policy_adoption_options(context, limit=limit, after=after)
+            except ManagementError as error:
+                raise HTTPException(status_code=error.status,
+                    detail={'code': error.code, 'message': error.message}) from error
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.post("/reports/v1/editor/{report_id}/{revision}/api/policy-adoption-preview", include_in_schema=False)
+        async def preview_report_policy_adoption(
+            report_id: str, revision: int, payload: PolicyAdoptionPreviewRequest, request: Request,
+        ) -> JSONResponse:
+            from ..management.models import ManagementError
+
+            _session, context = await _write_session_context(grants, editor, request,
+                report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+            try:
+                result = await editor.preview_policy_adoption(context, payload)
+            except ManagementError as error:
+                raise HTTPException(status_code=error.status,
+                    detail={'code': error.code, 'message': error.message}) from error
+            except ReportingError as error:
+                _editor_http_error(error, request_id=_request_id(request.headers.get("x-request-id")))
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.post("/reports/v1/editor/{report_id}/{revision}/api/recalculations", include_in_schema=False)
+        async def request_report_recalculation(
+            report_id: str, revision: int, payload: RecalculationRequest | PolicyAdoptionRequest, request: Request,
+        ) -> JSONResponse:
+            from ..management.models import ManagementError
+
+            _session, context = await _write_session_context(grants, editor, request,
+                report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+            try:
+                result = await editor.start_recalculation(context, payload)
+            except ManagementError as error:
+                raise HTTPException(status_code=error.status,
+                    detail={'code': error.code, 'message': error.message}) from error
+            except ReportingError as error:
+                _editor_http_error(error, request_id=_request_id(request.headers.get("x-request-id")))
+            status_code = 202 if payload.operation in {'refresh_data', 'adopt_policy'} and result['status'] == 'pending' else 200
+            return JSONResponse(result, status_code=status_code, headers={"Cache-Control": "no-store"})
+
+        @router.get("/reports/v1/editor/{report_id}/{revision}/api/recalculations/{task_id}", include_in_schema=False)
+        async def read_report_recalculation_task(
+            report_id: str, revision: int, task_id: str, request: Request,
+        ) -> JSONResponse:
+            _session, context = await _read_session_context(grants, editor, request,
+                report_id=report_id, revision=revision)
+            try:
+                result = await editor.recalculation_task_status(context, task_id)
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.post("/reports/v1/editor/{report_id}/{revision}/api/recalculations/{task_id}/preparation/resume", include_in_schema=False)
+        async def resume_report_recalculation_preparation(
+            report_id: str, revision: int, task_id: str, payload: PreparationConfirmationRequest, request: Request,
+        ) -> JSONResponse:
+            _session, context = await _write_session_context(grants, editor, request,
+                report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+            try:
+                result = await editor.resume_recalculation_preparation(context, task_id, payload)
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, status_code=202 if result['status'] in {'pending', 'running'} else 200,
+                headers={"Cache-Control": "no-store"})
+
+        @router.get("/reports/v1/editor/{report_id}/{revision}/api/recalculations/{task_id}/preparation/recoveries/{recovery_id}", include_in_schema=False)
+        async def read_report_recalculation_recovery(
+            report_id: str, revision: int, task_id: str, recovery_id: str, request: Request,
+        ) -> JSONResponse:
+            _session, context = await _read_session_context(grants, editor, request,
+                report_id=report_id, revision=revision)
+            try:
+                result = await editor.recalculation_recovery_status(context, task_id, recovery_id)
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.post("/reports/v1/editor/{report_id}/{revision}/api/recalculations/{task_id}/preparation/confirm", include_in_schema=False)
+        async def confirm_report_recalculation_preparation(
+            report_id: str, revision: int, task_id: str, payload: PreparationConfirmationRequest, request: Request,
+        ) -> JSONResponse:
+            _session, context = await _write_session_context(grants, editor, request,
+                report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+            try:
+                result = await editor.confirm_recalculation_preparation(context, task_id, payload)
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.get("/reports/v1/editor/{report_id}/{revision}/api/recalculations/{task_id}/preparation", include_in_schema=False)
+        async def read_report_recalculation_preparation(
+            report_id: str, revision: int, task_id: str, request: Request,
+        ) -> JSONResponse:
+            _session, context = await _read_session_context(grants, editor, request,
+                report_id=report_id, revision=revision)
+            try:
+                result = await editor.recalculation_preparation(context, task_id)
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.get("/reports/v1/editor/{report_id}/{revision}/api/recalculations/{task_id}/delivery", include_in_schema=False)
+        async def read_report_recalculation_delivery(
+            report_id: str, revision: int, task_id: str, request: Request,
+        ) -> JSONResponse:
+            _session, context = await _read_session_context(grants, editor, request,
+                report_id=report_id, revision=revision)
+            try:
+                result = await editor.recalculation_delivery(context, task_id)
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        @router.get("/reports/v1/editor/{report_id}/{revision}/api/recalculation-requests/{request_id}", include_in_schema=False)
+        async def read_report_recalculation(
+            report_id: str, revision: int, request_id: str, request: Request,
+        ) -> JSONResponse:
+            _session, context = await _read_session_context(grants, editor, request,
+                report_id=report_id, revision=revision)
+            try:
+                result = await editor.recalculation_status(context, request_id)
+            except ReportingError as error:
+                _editor_http_error(error)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
         @router.post(
             "/reports/v1/editor/{report_id}/{revision}/api/sources/validate",
@@ -1535,6 +1729,8 @@ def _editor_error_status(code: str) -> int:
         "report_editor_export_running",
     }:
         return 409
+    if code == "report_editor_recalculation_unavailable":
+        return 503
     if code == "report_editor_export_busy":
         return 429
     if code == "report_editor_export_timeout":

@@ -33,6 +33,7 @@ from .models import (
     ManagementError,
     invalid_credentials,
 )
+from .semantic_schema import register_semantic_tables
 
 metadata = MetaData(schema="reporting_management")
 accounts = Table(
@@ -434,3 +435,23 @@ source_credentials = Table(
     Column("ciphertext", JSON, nullable=False),
     Column("secret_hash", String(64), nullable=False),
 )
+
+# 新业务契约独立登记；旧Profile表仅待切换归档，不向新表转换。
+semantic_tables = register_semantic_tables(metadata)
+metric_drafts = semantic_tables["metric_drafts"]
+metric_versions = semantic_tables["metric_versions"]
+metric_dependencies = semantic_tables["metric_dependencies"]
+statistical_policy_drafts = semantic_tables["statistical_policy_drafts"]
+statistical_policy_versions = semantic_tables["statistical_policy_versions"]
+statistical_policy_metrics = semantic_tables["statistical_policy_metrics"]
+reporting_policy_defaults = semantic_tables["reporting_policy_defaults"]
+business_documents = semantic_tables["business_documents"]
+business_document_revisions = semantic_tables["business_document_revisions"]
+business_revision_states = semantic_tables["business_revision_states"]
+business_ingestion_jobs = semantic_tables["business_ingestion_jobs"]
+business_evidence_releases = semantic_tables["business_evidence_releases"]
+business_evidence_release_documents = semantic_tables["business_evidence_release_documents"]
+report_bases = semantic_tables["report_bases"]
+report_basis_receipts = semantic_tables["report_basis_receipts"]
+semantic_asset_retirements = semantic_tables["semantic_asset_retirements"]
+report_issue_reviews = semantic_tables["report_issue_reviews"]

@@ -274,6 +274,7 @@ class ReportRuntime:
                 source_bytes, context["sections"], citation_presentations=state.get("_citationPresentations"),
                 include_sources=include_sources, trace_sources=state.get("_traceSourcePresentations"),
                 management_overview=load_overview(state, self.workspace),
+                claim_support=state.get('_claimSupportProjection'),
             )
             pdf_markdown, citation_presentations, trace_source_render = (
                 projection.markdown, projection.citation_presentations, projection.trace_source_render,
@@ -343,6 +344,8 @@ class ReportRuntime:
                 design=design,
             )
             render_issues: list[dict[str, str]] = []
+            if projection.claim_support_check is not None and projection.claim_support_check['status'] != 'verified':
+                render_issues.append({'code': 'claim_support_projection_unknown', 'message': '解释与建议支持状态未能核验，已保留提示和可读报告。'})
             if projection.overview_check is not None and projection.overview_check["status"] != "verified":
                 render_issues.append({"code": "management_overview_projection_unknown", "message": "经营总览身份未获核验，已保留缺项说明和可读报告。"})
 
@@ -538,6 +541,8 @@ class ReportRuntime:
                 "traceSourcePresentations": trace_source_render,
                 "traceSourceAppendixPresent": include_sources
                 and bool(trace_source_render["entries"]),
+                "knowledgeSourceAppendixPresent": include_sources
+                and bool(trace_source_render.get('knowledge')),
             }
             result = {
                 "status": "rendered" if len(artifacts) == 2 else "partial_rendered",
@@ -878,6 +883,7 @@ class ReportRuntime:
                     include_sources=isinstance(export_settings, dict) and export_settings.get("sources") is True,
                     trace_sources=state.get("_traceSourcePresentations"),
                     management_overview=load_overview(state, self.workspace),
+                    claim_support=state.get('_claimSupportProjection'),
                 )
             except Exception:
                 projection_check = {"status": "unknown", "reason": "projection_source_unavailable"}
@@ -891,6 +897,11 @@ class ReportRuntime:
                 validation["ok"] = False
                 validation["status"] = "validation_failed"
                 validation["issues"].append({"code": "management_overview_projection_unknown", "message": "经营总览未通过核验，产物及缺项说明已保留。"})
+            if any(issue.get('code') == 'claim_support_projection_unknown' for issue in render.get('renderIssues', ())):
+                validation['ok'] = False
+                validation['status'] = 'validation_failed'
+                validation['issues'].append({'code': 'claim_support_projection_unknown',
+                    'message': '解释与建议支持状态未能核验，产物及提示已保留。'})
             if projection_check["status"] != "verified":
                 validation["ok"] = False
                 validation["status"] = "validation_failed"
@@ -936,6 +947,18 @@ class ReportRuntime:
                 raise ReportFailure("PDF 关闭来源展示后仍出现数据来源内容")
         if "[[claim:" in extracted_text or "[[table:" in extracted_text:
             raise ReportFailure("PDF 不应显示数据来源协议标记")
+        knowledge = trace.get('knowledge', []) if isinstance(trace, dict) else []
+        knowledge_present = render.get('knowledgeSourceAppendixPresent', False)
+        compact = re.sub(r'\s+', '', extracted_text)
+        if sources_enabled:
+            if knowledge_present is not bool(knowledge) or (knowledge and '业务知识来源' not in compact):
+                raise ReportFailure('PDF 业务知识来源附录不完整')
+            for number, item in enumerate(knowledge, 1):
+                expected = [f'[知识来源{number:03d}]', *item['summary']]
+                if any(re.sub(r'\s+', '', text) not in compact for text in expected):
+                    raise ReportFailure('PDF 业务知识来源编号或原文摘要不完整')
+        elif knowledge_present is not False or '业务知识来源' in compact or '[知识来源' in compact:
+            raise ReportFailure('PDF 关闭来源展示后仍出现业务知识来源')
 
     def _validate_manifest_markers(
         self,

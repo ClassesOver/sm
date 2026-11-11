@@ -13,7 +13,6 @@ const draft = {
   name: '数仓',
   source_type: 'starrocks',
   database: 'warehouse',
-  profile_version_id: 'base:1',
   metadata_version_id: 'operations:1',
   content_hash: 'hash1',
 }
@@ -25,7 +24,6 @@ const published = {
   name: '数仓',
   type: 'starrocks',
   database: 'warehouse',
-  reportingProfileVersionId: 'base:1',
   metadataVersionId: 'operations:1',
 }
 it('已核实丢失的发布响应后，新草稿重开发布不继承旧结果未知状态', async () => {

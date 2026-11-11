@@ -1488,7 +1488,9 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
             assert artifact_manifest is None
             assert run_context.session_state["report_workflow_scope"] == scope.as_state()
             frozen = run_context.session_state[REPORT_JOBS_STATE_KEY][job_id]
-            assert {key: value for key, value in frozen.items() if key not in {"_reportDesign", "_editorExportSettings"}} == job
+            assert frozen['_claimSupportProjection'] == {'invalid': 'claim_support_unavailable'}
+            assert {key: value for key, value in frozen.items()
+                if key not in {"_reportDesign", "_editorExportSettings", '_claimSupportProjection'}} == job
             assert frozen["_reportDesign"]["cover"]["title"]["text"] == "设计后的封面"
             assert frozen["_editorExportSettings"]["cover"] is True
             await workspace.awrite_bytes(scope.workspace_key, output_path, b"new-pdf")

@@ -12,6 +12,7 @@ from ..reporting.workflow.management_overview import (
     management_overview_projection,
     unavailable_management_overview_projection,
 )
+from ..reporting.workflow.registered_overview import RegisteredManagementOverview
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
 from .trace_revisions import rebuild_edited_manifest, verify_revision_lineage_files
 
@@ -31,6 +32,7 @@ async def prepare_editor_render(editor, *, context, source_context, document, sn
     # 原因写入 validation.issues 并照常签发。
     lineage_issues: list[dict[str, str]] = []
     target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
+    target_job['_claimSupportProjection'] = {'invalid': 'claim_support_unavailable'}
     original_presentations = copy.deepcopy(target_job.get("_citationPresentations"))
     # 报告没有实际评估过的经营总览（旧报告或未启用回答审核）时沿用各章核心结论；
     # 评估过时才用总览投影，缺证据的问题显示缺项说明。
@@ -118,6 +120,24 @@ async def prepare_editor_render(editor, *, context, source_context, document, sn
                     source_context
                 ),
             )
+            from ..reporting.trace.claim_presentation import claim_support_projection
+
+            target_job['_claimSupportProjection'] = claim_support_projection(
+                trace_index, document.sha256, validation.get('quality', {}).get('claimSupport', ()))
+            if validation.get("revisionImpactIssues"):
+                lineage_issues.append({
+                    "code": "report_editor_revision_impact_unavailable",
+                    "message": "修订影响范围暂无法核验，请复核修改；原计算快照保留，文件仍可下载。",
+                })
+            knowledge = validation.get("businessKnowledge", {})
+            if validation.get('knowledgeSourceIssues'):
+                lineage_issues.append({'code': 'report_editor_knowledge_source_unavailable',
+                    'message': '业务知识原文附录未能生成，相关解释待核实；文件仍可下载。'})
+            if trace_index.knowledge_dependencies and knowledge.get("status") != "available":
+                lineage_issues.append({
+                    "code": "report_editor_knowledge_unavailable",
+                    "message": "章节知识依据已撤销、不可用或无法核验，相关解释未获确认；导出可能保留旧解释，文件仍可下载。",
+                })
             if isinstance(target_job.get("_citationPresentations"), list):
                 target_job["_citationPresentations"] = _export_citation_presentations(
                     target_job["_citationPresentations"],
@@ -128,14 +148,14 @@ async def prepare_editor_render(editor, *, context, source_context, document, sn
                     revision=next_revision,
                     citations=artifact_manifest.citations if artifact_manifest is not None else (),
                 )
-            raw_overview = validation.get("quality", {}).get("managementOverview")
-            # 未启用回答审核时质量记录里的总览恒为 unavailable（无审核记录）；只有实际
-            # 评估过的总览才替换各章核心结论。
-            if isinstance(raw_overview, dict) and raw_overview.get("status") == "evaluated":
+            native_overview = validation.get("quality", {}).get("registeredManagementOverview")
+            raw_overview = native_overview if isinstance(native_overview, dict) else validation.get("quality", {}).get("managementOverview")
+            # 原生总览保留部分回答与缺项；通过当前来源核验后才展示事实。
+            if isinstance(raw_overview, dict) and (isinstance(native_overview, dict) or raw_overview.get("status") == "evaluated"):
                 # 总览只是展示载荷：单独降级，不能连带丢弃已核验的追溯与引用展示。
                 try:
                     overview_projection = management_overview_projection(
-                        ManagementOverview.model_validate(raw_overview),
+                        (RegisteredManagementOverview if isinstance(native_overview, dict) else ManagementOverview).model_validate(raw_overview),
                         document.sha256, target_job.get("_citationPresentations"),
                     )
                 except Exception as error:  # noqa: BLE001 - 总览降级，导出继续
@@ -174,6 +194,7 @@ async def prepare_editor_render(editor, *, context, source_context, document, sn
         if isinstance(original_presentations, list):
             target_job["_citationPresentations"] = original_presentations
         target_job.pop("_traceSourcePresentations", None)
+        target_job['_claimSupportProjection'] = {'invalid': 'claim_support_unavailable'}
         if overview_projection is not None:
             overview_projection = unavailable_management_overview_projection(document.sha256)
         logger.opt(exception=error).warning(

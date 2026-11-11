@@ -55,3 +55,14 @@ it('当前密码错误不会清除仍有效的会话', async () => {
   ).rejects.toMatchObject({ status: 401 })
   expect(handler).not.toHaveBeenCalled()
 })
+it('sends multipart bodies unchanged without a JSON content type and keeps CSRF', async () => {
+ const data = new FormData(); data.set('metadata', '{"id":"rules"}')
+ const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true })))
+ vi.stubGlobal('fetch', fetcher)
+ await request('/business-documents', z.object({ ok: z.boolean() }), { method: 'POST', body: data, csrf: 'csrf-value' })
+ const options = fetcher.mock.calls[0][1]
+ expect(options.body).toBe(data)
+ expect(options.headers['content-type']).toBeUndefined()
+ expect(options.headers['x-csrf-token']).toBe('csrf-value')
+ expect(options.credentials).toBe('same-origin'); expect(options.cache).toBe('no-store')
+})

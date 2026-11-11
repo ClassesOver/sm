@@ -83,7 +83,95 @@ export interface TraceDatasetInfo {
   queryWindowId: string
 }
 
+export interface BusinessKnowledgeStatus {
+  status: 'available' | 'unavailable'
+  interpretationStatus: 'unverified'
+  issueCodes: string[]
+  sections: { sectionCode: string; reportRevision: string; receiptIds: string[];
+    status: 'available' | 'unavailable'; issueCodes: string[] }[]
+}
+
+export interface SnapshotVerificationRequest {
+  requestId: string
+  parentRevision: number
+  expectedSha256: string
+  operation: 'verify_snapshot'
+}
+
+export interface SnapshotVerificationTask {
+  taskId: string
+  status: 'pending' | 'completed' | 'failed'
+  checkedAt: string | null
+  errorCode: string | null
+  result: { calculationStatus: 'not_recalculated'; businessApproval: 'not_performed';
+    sourceIssueCount: number; invalidSubjectIds: string[]; issueCodes: string[];
+    knowledgeStatus: 'available' | 'unavailable'; allKeyFactsEvaluated: false } | null
+}
+
+export type DataRefreshRequest = Omit<SnapshotVerificationRequest, 'operation'> & { operation: 'refresh_data' }
+export interface PolicyVersion { policyId: string; revision: number }
+export interface MetricVersion { metricId: string; revision: number }
+export interface PolicyAdoptionOptions {
+  parentBasisId: string; parentRevision: number
+  items: { policyVersion: PolicyVersion; name: string }[]; nextCursor: string | null
+}
+export interface PolicyAdoptionPreview {
+  previewHash: string
+  preview: {
+    originalPolicyVersion: PolicyVersion; targetPolicyVersion: PolicyVersion
+    questions: { id: string; text: string }[]
+    metricOptions: { metricVersion: MetricVersion; name: string; unit: string }[]
+    changedFields: string[]; issues: { code: string; message: string }[]
+    changes: { field: string; before: string; after: string }[]
+  }
+}
+export type PolicyAdoptionRequest = Omit<SnapshotVerificationRequest, 'operation'> & {
+  operation: 'adopt_policy'
+  confirmation: { requestId: string; targetPolicyVersion: PolicyVersion; previewHash: string
+    questionChoices: { questionId: string; metricVersion: MetricVersion | null; reason: string }[] }
+}
+export interface DataRefreshTask {
+  taskId: string
+  status: 'pending' | 'completed' | 'failed'
+  result: { issueCodes: string[] } | null
+  execution: { runId: string | null; status: string; issueCodes: string[] }
+}
+export interface ReportIssueSubmission {
+  issueId: string; objectRefs: string[]
+  category: 'calculation' | 'policy' | 'data' | 'citation' | 'interpretation'
+  description: string
+}
+export interface ReportIssueRecord {
+  version: number; reportId: string; revision: number; basisId: string
+  review: ReportIssueSubmission & { status: 'open' | 'needs_evidence' | 'accepted' | 'rejected' | 'resolved'
+    decisionReason: string; correctedVersions: { assetType: string; assetId: string; revision: number | null }[]
+    regressionCaseIds: string[]; newReportRevision: string | null; notRecalculatedReason: string }
+  proposal: { changeSummary: string; counterexample: string } | null
+}
+export interface PreparationConfirmation {
+  kind: 'analysis' | 'document'
+  identity: { path: string; size: number; sha256: string }
+  expectedStateVersion: number
+}
+export interface PolicyPreparation {
+  taskId: string; runId: string; outputRevision: number; stateVersion: number
+  analysis: PolicyPreparationStage; document: PolicyPreparationStage
+}
+export interface PolicyPreparationStage {
+  status: 'not_generated' | 'registered' | 'awaiting_confirmation' | 'unverifiable' | 'not_applicable'
+  identity?: PreparationConfirmation['identity']; recoveryId?: string; issueCodes: string[]; message?: string
+}
+export interface PolicyRecovery {
+  taskId: string; recoveryId: string; status: string
+  deliveryStatus: 'pending' | 'completed' | 'failed'; issueCodes: string[]
+}
+export type RefreshDelivery = Omit<ExportResult, 'revision'> & { revision: number;
+  pptx?: { downloadUrl: string }; xlsx?: { downloadUrl: string } }
+
 export interface TraceSources {
+  dataRefresh?: { available: boolean; parentRevision: number }
+  snapshotVerification?: { available: boolean; parentRevision: number }
+  businessKnowledge?: BusinessKnowledgeStatus
   narrativeSections?: {
     sectionCode: string
     findingIds: string[]
@@ -95,6 +183,10 @@ export interface TraceSources {
     analysisName?: string | null
     name?: string; periodStart?: string | null; periodEnd?: string | null; periodRoles?: string[]
     comparisonType?: string | null; displayValue?: unknown; unit?: string | null
+    period?: { start: string; end: string }; periodBoundary?: 'half_open'
+    metricVersion?: { metricId: string; revision: number }; basisId?: string; calculationId?: string
+    status?: 'computed' | 'unavailable'; issueCodes?: string[]
+    dimensions?: { dimensionId: string; value: string | number | boolean | null }[]
   }[]
   available: boolean
   reason?: string | null
@@ -107,9 +199,43 @@ export interface TraceSources {
   }
 }
 
+export interface KnowledgeLocator {
+  kind: 'text_lines' | 'pdf_page' | 'docx_paragraph' | 'docx_table_cell'
+  lineStart?: number | null
+  lineEnd?: number | null
+  page?: number | null
+  paragraph?: number | null
+  table?: number | null
+  row?: number | null
+  column?: number | null
+}
+
+export interface TraceKnowledgeReference {
+  evidenceId: string
+  documentRevision: number
+  role: 'rule_evidence' | 'background'
+  locator: KnowledgeLocator
+  available: boolean
+  title?: string | null
+}
+
+export interface TraceKnowledgeDetail {
+  available: boolean
+  evidenceId?: string
+  title?: string
+  quote?: string
+  reference?: Omit<TraceKnowledgeReference, 'available' | 'title'>
+  requestedPeriod?: { start: string; end: string }
+  recordedAt?: string
+  eventTime?: string | null
+  issueCodes?: string[]
+  recordedRelationships?: { relationship: 'supports' | 'contradicts' | 'irrelevant' | 'unknown'; explanationType: string }[]
+}
+
 export interface TraceSubjectInfo {
   subjectId: string
   subjectKind: 'text_claim' | 'table_cell' | 'chart' | 'chart_caption'
+  knowledgeReferences?: TraceKnowledgeReference[]
   locator: {
     sectionId?: string | null
     tableId?: string | null
@@ -402,8 +528,11 @@ export interface TraceChartSource {
 }
 
 export interface TraceValidation {
+  businessKnowledge?: BusinessKnowledgeStatus
+  revisionImpactIssues?: string[]
+  revisionImpacts?: { basisId: string; parentRevision: number; operation: string; exportsStatus: 'unaffected' | 'stale'; subjects: { subjectId: string; status: 'support_review_required' | 'manual_override' | 'stale'; reason: string }[]; artifacts: { kind: 'markdown' | 'chart' | 'table'; artifactId: string; status: 'stale'; reason: string }[] }[]
   sourceIssues?: { resourceId: string; code: string }[]
-  quality?: { status: 'evaluated' | 'failed'; inputSha256?: string; allKeyFactsEvaluated: false; warningLedger?: { qualityInputSha256: string; originalIssueCount: number; groups: { groupId: string; issueIndices: number[] }[] }; questionCoverage?: { required: number | null; evaluated: number; answered: number; effectiveAnswerRate: number | null; evaluationStatus: string }; issues: { code: string; subjectId?: string | null; reasons?: string[] }[] }
+  quality?: { status: 'evaluated' | 'failed'; inputSha256?: string; reportBasisId?: string; claimSupport?: { subjectId: string; kind: 'fact' | 'inference' | 'recommendation'; factRefs: string[]; evidenceRefs: string[]; supportStatus: 'supported' | 'unverified' | 'conflicted' }[]; registeredQuestionCoverage?: { questionId: string; status: 'answered' | 'partial' | 'unavailable'; findingIds: string[]; subjectIds: string[]; issueCodes: string[] }[]; allKeyFactsEvaluated: false; warningLedger?: { qualityInputSha256: string; originalIssueCount: number; groups: { groupId: string; issueIndices: number[] }[] }; questionCoverage?: { required: number | null; evaluated: number; answered: number; effectiveAnswerRate: number | null; evaluationStatus: string }; issues: { code: string; subjectId?: string | null; reasons?: string[] }[] }
   reviewNotices?: { claimId: string; sectionId: string | null; kind: 'numeric_unverified' | 'source_review'; originalText?: string | null; reason?: string | null; occurrences: number; bound: boolean }[]
   draftSha256: string
   warnings?: string[]
@@ -412,8 +541,9 @@ export interface TraceValidation {
     claimId: string
     sectionId: string | null
     status: 'valid' | 'stale' | 'unbound'
-    sourceStatus?: 'available' | 'integrity_failed'
+    sourceStatus?: 'available' | 'integrity_failed' | 'unknown'
     bindingStatus?: 'bound' | 'invalidated' | 'unbound'
+    editStatus?: 'support_review_required' | 'manual_override' | 'stale' | null
     supportStatus?: 'supported' | 'unknown' | 'conflicting'
     checkStatus?: 'completed' | 'failed'
     sourceIssues?: { resourceId: string; code: string }[]
@@ -437,9 +567,9 @@ export interface TraceValidation {
     datasetIds?: string[]
     /** 数值取得方式：直接取登记事实、服务端按登记原值派生，或按运算式由服务端重算。 */
     computation?: 'registered' | 'derived' | 'calc' | null
-    /** 模型对当前正文的语义解释，独立于确定性数值和来源核验。 */
+    /** 当前正文的模型解释或服务端正式结果投影；不代表业务签认。 */
     semanticCheck?: {
-      method: 'model_context_interpretation_v1'
+      method: 'model_context_interpretation_v1' | 'registered_result_projection_v1'
       status: 'interpreted' | 'invalidated' | 'unavailable'
       interpretation: { claimId: string; scope: { field: string; value: string | null; status: 'resolved' | 'unknown' | 'conflicting'; evidence: string[] }[]; periods: string[]; periodEvidence: string[] }
     } | null
@@ -633,8 +763,67 @@ export class ReportEditorClient {
     })
   }
 
+  verifySnapshot(payload: SnapshotVerificationRequest): Promise<SnapshotVerificationTask> {
+    return this.request('/api/recalculations', { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  snapshotVerification(requestId: string): Promise<SnapshotVerificationTask> {
+    return this.request(`/api/recalculation-requests/${encodeURIComponent(requestId)}`)
+  }
+
+  refreshData(payload: DataRefreshRequest): Promise<DataRefreshTask> {
+    return this.request('/api/recalculations', { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  dataRefreshStatus(requestId: string): Promise<DataRefreshTask> {
+    return this.request(`/api/recalculation-requests/${encodeURIComponent(requestId)}`)
+  }
+
+  dataRefreshDelivery(taskId: string): Promise<{ task: Omit<DataRefreshTask, 'execution'>; delivery: RefreshDelivery }> {
+    return this.request(`/api/recalculations/${encodeURIComponent(taskId)}/delivery`)
+  }
+
+  policyAdoptionOptions(after?: string): Promise<PolicyAdoptionOptions> {
+    return this.request('/api/policy-adoption-options' + (after ? '?after=' + encodeURIComponent(after) : ''))
+  }
+
+  previewPolicyAdoption(payload: { parentRevision: number; expectedSha256: string; policyVersion: PolicyVersion }): Promise<PolicyAdoptionPreview> {
+    return this.request('/api/policy-adoption-preview', { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  adoptPolicy(payload: PolicyAdoptionRequest): Promise<DataRefreshTask> {
+    return this.request('/api/recalculations', { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  reportIssues(options: { issueId?: string; after?: string } = {}): Promise<{ items: ReportIssueRecord[]; nextCursor: string | null }> {
+    const query = new URLSearchParams(options)
+    return this.request('/api/issue-reviews' + (query.size ? '?' + query.toString() : ''))
+  }
+
+  submitReportIssue(payload: ReportIssueSubmission): Promise<ReportIssueRecord> {
+    return this.request('/api/issue-reviews', { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  policyPreparation(taskId: string): Promise<PolicyPreparation> {
+    return this.request(`/api/recalculations/${encodeURIComponent(taskId)}/preparation`)
+  }
+
+  resumePolicyPreparation(taskId: string, payload: PreparationConfirmation): Promise<PolicyRecovery> {
+    return this.request(`/api/recalculations/${encodeURIComponent(taskId)}/preparation/resume`,
+      { method: 'POST', body: JSON.stringify(payload) })
+  }
+
+  policyRecovery(taskId: string, recoveryId: string): Promise<PolicyRecovery> {
+    return this.request(`/api/recalculations/${encodeURIComponent(taskId)}/preparation/recoveries/${encodeURIComponent(recoveryId)}`)
+  }
+
   async sources(signal?: AbortSignal): Promise<TraceSources> {
     return this.request<TraceSources>('/api/sources', { signal })
+  }
+
+  async knowledgeDetail(subjectId: string, evidenceId: string, signal?: AbortSignal): Promise<TraceKnowledgeDetail> {
+    return this.request<TraceKnowledgeDetail>(
+      `/api/sources/${encodeURIComponent(subjectId)}/knowledge/${encodeURIComponent(evidenceId)}`, { signal })
   }
 
   async drilldown(

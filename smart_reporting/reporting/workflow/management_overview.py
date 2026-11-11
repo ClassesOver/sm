@@ -200,6 +200,10 @@ def unavailable_management_overview_projection(markdown_sha256: str) -> dict:
 def management_overview_projection(overview: ManagementOverview | None, markdown_sha256: str,
                                    presentations=None) -> dict:
     """Server-only presentation envelope; not a signature or a source proof."""
+    from .registered_overview import RegisteredManagementOverview, registered_overview_projection
+
+    if isinstance(overview, RegisteredManagementOverview):
+        return registered_overview_projection(overview, markdown_sha256, presentations)
     overview = overview or ManagementOverview(
         inputSha256="0" * 64, status="unavailable", requiredQuestionCount=None,
         reasons=("question_specification_unavailable",),

@@ -14,6 +14,10 @@ import UserOutlined from '@ant-design/icons/UserOutlined'
 import { ProductIdentity } from '../components/common'
 import DatabaseOutlined from '@ant-design/icons/DatabaseOutlined'
 import ApartmentOutlined from '@ant-design/icons/ApartmentOutlined'
+import CommentOutlined from '@ant-design/icons/CommentOutlined'
+import AuditOutlined from '@ant-design/icons/AuditOutlined'
+import BarChartOutlined from '@ant-design/icons/BarChartOutlined'
+import BookOutlined from '@ant-design/icons/BookOutlined'
 import MenuFoldOutlined from '@ant-design/icons/MenuFoldOutlined'
 import MenuUnfoldOutlined from '@ant-design/icons/MenuUnfoldOutlined'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
@@ -80,18 +84,22 @@ function Shell() {
             : []),
           ...(path[2] === 'edit' ? [{ title: '编辑草稿' }] : []),
         ]
-      : [{ title: path[0] === 'organizations' ? '组织' : '修改密码' }]
+      : [{ title: path[0] === 'knowledge' ? '业务知识' : path[0] === 'metrics' ? '业务指标' : path[0] === 'statistical-policies' ? '统计口径' : path[0] === 'report-issues' ? '报告问题' : path[0] === 'organizations' ? '组织' : '修改密码' }]
   const menu = (
     <Menu
       theme="light"
       inlineCollapsed={collapsed}
       mode="inline"
       selectedKeys={[
-        location.pathname.startsWith('/organizations')
+        location.pathname.startsWith('/knowledge') ? 'knowledge' : location.pathname.startsWith('/metrics') ? 'metrics' : location.pathname.startsWith('/statistical-policies') ? 'statistical-policies' : location.pathname.startsWith('/report-issues') ? 'report-issues' : location.pathname.startsWith('/organizations')
           ? 'organizations'
           : 'sources',
       ]}
       items={[
+        { key: 'knowledge', icon: <BookOutlined />, label: <Link to={'/knowledge' + location.search}>业务知识</Link> },
+        { key: 'metrics', icon: <BarChartOutlined />, label: <Link to={'/metrics' + location.search}>业务指标</Link> },
+        { key: 'statistical-policies', icon: <AuditOutlined />, label: <Link to={'/statistical-policies' + location.search}>统计口径</Link> },
+        { key: 'report-issues', icon: <CommentOutlined />, label: <Link to={'/report-issues' + location.search}>报告问题</Link> },
         {
           key: 'sources',
           icon: <DatabaseOutlined />,
@@ -168,7 +176,7 @@ function Shell() {
               onChange={(value) => {
                 const [database, companyId] = JSON.parse(value)
                 navigate(
-                  '/sources?' + new URLSearchParams({ database, companyId }),
+                  (location.pathname.startsWith('/knowledge') ? '/knowledge?' : location.pathname.startsWith('/metrics') ? '/metrics?' : location.pathname.startsWith('/statistical-policies') ? '/statistical-policies?' : location.pathname.startsWith('/report-issues') ? '/report-issues?' : '/sources?') + new URLSearchParams({ database, companyId }),
                 )
               }}
               options={options}

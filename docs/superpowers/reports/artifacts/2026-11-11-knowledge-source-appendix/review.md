@@ -1,0 +1,7 @@
+# 同模型限定独立复核
+
+既有formal_sources_review只读检查生产增量和已有日志，未编辑或运行测试、未读.env。
+
+发现Important：原生成品可见性漏掉知识附录，及Minor：Word标题未套用既有附录样式分页。已分别补三条真实红例、独立knowledgeSourceAppendixPresent/完整摘要可见性核验，以及原生Word样式/分页断言。
+
+最终复核原Important和Minor均已解决，无新增直接问题。审核明确限定Editor链路；首次交付及PPTX/XLSX仍缺。最后增加的四项开关与成品可见性重读验证见独立日志。

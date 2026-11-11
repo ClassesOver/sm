@@ -163,3 +163,29 @@ async def test_analysis_item_task_runs_without_worker_agent() -> None:
     ]
     assert receipt["summary"] == "分析完成"
     execution_kernel.cleanup_old_epoch.assert_awaited_once_with(scope, 1)
+
+
+@pytest.mark.anyio
+async def test_completed_analysis_restores_receipt_without_claiming_a_lease():
+    scope = TaskExecutionScope('completed-analysis', 'user-1', 'thread-1', 'sandbox-1', 'reporting-analysis-workflow')
+    repository = _Repository(scope)
+    repository.task = replace(repository.task, state=TaskState.COMPLETED,
+        finish_receipt={'summary': '完成回执', 'artifactPaths': []})
+    repository.claim_lease = AsyncMock(side_effect=AssertionError('已完成任务不能重新领取租约'))
+    executor = AsyncMock(side_effect=AssertionError('已完成任务不能重新执行'))
+    coordinator = ReportingTaskCoordinator(repository, SimpleNamespace(), model_profiles=DEFAULT_MODEL_PROFILES)
+    assert await coordinator.run(scope, executor=executor) == repository.task.finish_receipt
+    executor.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('field', ['owner_user_id', 'thread_id', 'sandbox_id', 'executor_id'])
+async def test_completed_analysis_receipt_rejects_foreign_scope(field):
+    scope = TaskExecutionScope('completed-analysis', 'user-1', 'thread-1', 'sandbox-1', 'reporting-analysis-workflow')
+    repository = _Repository(scope)
+    repository.task = replace(repository.task, state=TaskState.COMPLETED,
+        finish_receipt={'summary': '完成回执', 'artifactPaths': []})
+    coordinator = ReportingTaskCoordinator(repository, SimpleNamespace(), model_profiles=DEFAULT_MODEL_PROFILES)
+    from smart_reporting.reporting.models import ReportingError
+    with pytest.raises(ReportingError, match='report_worker_task_scope_mismatch'):
+        await coordinator.run(replace(scope, **{field: 'foreign-scope'}), executor=AsyncMock())

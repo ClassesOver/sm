@@ -1,0 +1,482 @@
+[
+  {
+    "path": "README.md",
+    "size": 4106,
+    "sha256": "19e1b65e48f95a6a37a94daa93d125f00b5347c57d118ef1d5055edaef5b3699"
+  },
+  {
+    "path": "environment.json",
+    "size": 576,
+    "sha256": "978a7bce4fe0382317d9eea0a8c541632af2b23db3893368e2974359e566a1c0"
+  },
+  {
+    "path": "logs/final-static-checks.log",
+    "size": 498,
+    "sha256": "13d6f56eae19f69302594f2dcf49581b30fdf535802f843a279f1274ac843178"
+  },
+  {
+    "path": "logs/native-revision-notice-affected.log",
+    "size": 606,
+    "sha256": "9ba9c831ff54b7928cca860f3f032cc74b7f661bf90cb6b789ad1679d545d383"
+  },
+  {
+    "path": "logs/native-revision-notice-integration-red.log",
+    "size": 21215,
+    "sha256": "316d155def508abfbae00d607a26098dd68df3d445dddd22eb3b955aa96f2200"
+  },
+  {
+    "path": "logs/native-revision-notice-integration.log",
+    "size": 17617,
+    "sha256": "31b42317b9721890ed9c7249906612680bcb1fc28bee0b9bc056b517ac32a96b"
+  },
+  {
+    "path": "logs/native-revision-notice-nonblocking.log",
+    "size": 710,
+    "sha256": "5ce7bbaeb6ccb83a18dfd04066e47935c9c1008909fb5def353cd9b70f7419b2"
+  },
+  {
+    "path": "logs/native-revision-notice-preservation.log",
+    "size": 625,
+    "sha256": "a051512e45f239ee9778431c6c95ccfb4e70e9a1d29e4e9f8df935ced7eaa5a3"
+  },
+  {
+    "path": "logs/native-revision-notice-red.log",
+    "size": 1958,
+    "sha256": "5f6cf2a3abfcbd0f57b3b7d669a7289371177634af19dbe4f952bbf2ab7f9328"
+  },
+  {
+    "path": "logs/native-revision-notice-unit-green-2.log",
+    "size": 624,
+    "sha256": "221a2f1c00b028b08f5a2e7154e24599b9ae5363a20248b493e1c2cf959f6208"
+  },
+  {
+    "path": "logs/native-revision-notice-unit-green.log",
+    "size": 2760,
+    "sha256": "b6c5dfeb1e89b1deadefeb87181eb8de513ee956bbf58c6787d901a15af89f54"
+  },
+  {
+    "path": "pptx/current-after-withdrawal.json",
+    "size": 15594,
+    "sha256": "e380b4fe1d57d2ce46a27ed312d47354b6fb16d66180225b3bc978059a7e5f81"
+  },
+  {
+    "path": "pptx/edited.pptx",
+    "size": 21524,
+    "sha256": "33777fe5331930454a85b95fda75a3d98e2e713cda9b60125476058d1285f707"
+  },
+  {
+    "path": "pptx/new-context.json",
+    "size": 3078,
+    "sha256": "d3857d1fe3e225ed67f02e986564126ec759d2f3ce98a7f2e4cba155796d6fa3"
+  },
+  {
+    "path": "pptx/parent/artifact-manifest.json",
+    "size": 1857,
+    "sha256": "596718d3848d8cfb91b1df7bdfbc614109c824bfa2e9b5470dce1da627a6d205"
+  },
+  {
+    "path": "pptx/parent/c02-corrected.pptx",
+    "size": 17671,
+    "sha256": "e3e0db2267cb29b5188debab7cd490dc0f7f077a73e9eed071df201865e80887"
+  },
+  {
+    "path": "pptx/parent/calculation.json",
+    "size": 7933,
+    "sha256": "c85d581fd86293c256a770c06aae4a91fee667d23fecb73f3aae3b1583a1201f"
+  },
+  {
+    "path": "pptx/parent/context.json",
+    "size": 2478,
+    "sha256": "ed49cc15af323c044a46d516be07b2e903b0403b39b4409fae955544d0359813"
+  },
+  {
+    "path": "pptx/parent/evidence.json",
+    "size": 893,
+    "sha256": "2e2f4eabcf2f83669c6769228509e06f900cf7cb51a471abae09ee10e3ef4328"
+  },
+  {
+    "path": "pptx/parent/execution.json",
+    "size": 1408,
+    "sha256": "89efeaea1b40f3a51d79e9c1a0511904f522f8a7b1cec8bfba5711c07b312b67"
+  },
+  {
+    "path": "pptx/parent/registered-files/trf-2e30ff3edb983f6d5e34",
+    "size": 43,
+    "sha256": "d4591264c8b30c0e153447039f35a6b4edbcd669976a694c594ec7aa23b2f4a3"
+  },
+  {
+    "path": "pptx/parent/registered-files/trf-5c89bd76a7de21d34f89",
+    "size": 5743,
+    "sha256": "706bd1fe3cd23df7f990020eda37212159ff7144dea7d2fd566d1a5600b3c61e"
+  },
+  {
+    "path": "pptx/parent/registered-files/trf-c000ddb575614eae67f8",
+    "size": 52,
+    "sha256": "77100ab70e9b772de439f1b666628ba20319f323fdfa7bab399897f3a22ffc2c"
+  },
+  {
+    "path": "pptx/parent/registered-files/trf-d8e3d4230c049f18b600",
+    "size": 1027,
+    "sha256": "366e974a437248bdae9b780c78ea64c2c5a9ae355bf34dd75c94117306ca1156"
+  },
+  {
+    "path": "pptx/parent/registered-files/trf-fba919a00b2582baa232",
+    "size": 7074,
+    "sha256": "446980adfb3f52c6d477378526dfcb6b58cbb823ef3341a0dd19b902e70491d8"
+  },
+  {
+    "path": "pptx/parent/report.md",
+    "size": 1027,
+    "sha256": "366e974a437248bdae9b780c78ea64c2c5a9ae355bf34dd75c94117306ca1156"
+  },
+  {
+    "path": "pptx/parent/trace-index.json",
+    "size": 11441,
+    "sha256": "76073f141bc9f01a552cb10532ffc8dd2fba4ef2c08d3b478d141999b6affcb9"
+  },
+  {
+    "path": "pptx/parent/trf-fba919a00b2582baa232.json",
+    "size": 7074,
+    "sha256": "446980adfb3f52c6d477378526dfcb6b58cbb823ef3341a0dd19b902e70491d8"
+  },
+  {
+    "path": "pptx/pptx-text.txt",
+    "size": 1119,
+    "sha256": "7e287189a24f673c5929df5b63e61f3eefc1b7f712d792e6bcf45b704c9c291c"
+  },
+  {
+    "path": "pptx/result.json",
+    "size": 2007,
+    "sha256": "7ac3404a12edae27bad32424c91ae8adde14de2bbbf0816be7c6643e4981429f"
+  },
+  {
+    "path": "review.md",
+    "size": 1264,
+    "sha256": "6175dcfa816100c5155e0740ef8e81888f884f969e1d137d0f9e82b162a2176f"
+  },
+  {
+    "path": "source/smart_reporting/report_editor/revision_notice.py",
+    "size": 8803,
+    "sha256": "dde8af97a030ec9b384a21536fb16b588e5eb78dc836477d2e398515648a8325"
+  },
+  {
+    "path": "source/smart_reporting/report_editor/slides.py",
+    "size": 29686,
+    "sha256": "19a7b6646283e275e37151b326e34ff540daf803c30f53734f1f76cfc2605c0f"
+  },
+  {
+    "path": "source/smart_reporting/report_editor/workbook.py",
+    "size": 17165,
+    "sha256": "226f6181295e617dc14dc83cebe9b0d91874045718d60077f7c687671ed874bd"
+  },
+  {
+    "path": "source/smart_reporting/reporting/tests/test_http_publication_lineage.py",
+    "size": 134322,
+    "sha256": "c41f12e5ea362d8c142978f67e33a73dbebecc9b89591212820e59f8067a8fe6"
+  },
+  {
+    "path": "source/smart_reporting/reporting/tests/test_native_revision_notice.py",
+    "size": 3930,
+    "sha256": "b2d1e96b02e898a2bf5f304dde3429fb5a5a15220d83fe081f8f6379547be95d"
+  },
+  {
+    "path": "source/smart_reporting/reporting/tests/test_publication_nonblocking.py",
+    "size": 25274,
+    "sha256": "8c59dd478eab8c8eb7551c3a099d24c54d5409e27951665515629e2d09400ab9"
+  },
+  {
+    "path": "source/smart_reporting/reporting/tests/test_workbook_editor.py",
+    "size": 11964,
+    "sha256": "3491b9f43d2e10bb758d58d1400ee9eebd2c9f6f0938733b2d8cfd71e5874797"
+  },
+  {
+    "path": "source/smart_reporting/tests/test_report_edit_withdrawal_delivery.py",
+    "size": 19787,
+    "sha256": "53946acbda96f65bbecbab3ec58fb9697cdf497bb5ff7c69e1b4a593a4566dd9"
+  },
+  {
+    "path": "verify.py",
+    "size": 5813,
+    "sha256": "574abacf414f967affb55de41ca0ca1c5c2da1c0c1ab5d623777ad7d6e95517c"
+  },
+  {
+    "path": "visual/pptx/edited.pdf",
+    "size": 103608,
+    "sha256": "e85fb722c02b6159475fa8fb93c5066c8aa96fc6575e1a90af7f5208d721abc4"
+  },
+  {
+    "path": "visual/pptx/page-1.png",
+    "size": 63111,
+    "sha256": "f200eadf4b1bab10984863b5046b1d8454bbe4a8b41278e729585ac7ccc235b5"
+  },
+  {
+    "path": "visual/pptx/page-2.png",
+    "size": 28166,
+    "sha256": "a97573129b1cf692ddcf39521bce41aba1b76b116162a6a80e65532443ebe26f"
+  },
+  {
+    "path": "visual/pptx/page-3.png",
+    "size": 71782,
+    "sha256": "13fb028fdfcc036429d7c4973e84793d17a0662c1066f2f1246a1b50630cbf8f"
+  },
+  {
+    "path": "visual/pptx/page-4.png",
+    "size": 45815,
+    "sha256": "5d42cb50a0a24892c0f432fa2eb55e065ba163d79e602984de96094577b39505"
+  },
+  {
+    "path": "visual/pptx/page-5.png",
+    "size": 59062,
+    "sha256": "355e993a75bb280b24f7c3df340ace9359d47102ada7ba2185714651eb943f3a"
+  },
+  {
+    "path": "visual/xlsx-edit/edited.pdf",
+    "size": 95703,
+    "sha256": "072585d6fce1cd0c3b927e6eeaa710d1e51a1b6a5c8556937922afc654f1dfb7"
+  },
+  {
+    "path": "visual/xlsx-edit/page-1.png",
+    "size": 57952,
+    "sha256": "326974b77e7392a6c52b5f0fae49629d0f1eed0055e0eaf7657c39fdbb842210"
+  },
+  {
+    "path": "visual/xlsx-edit/page-2.png",
+    "size": 140766,
+    "sha256": "f26614a102003e548c58b366279dddc466259bc8e21dadda3a1cb97b12d3dcdc"
+  },
+  {
+    "path": "visual/xlsx-edit/page-3.png",
+    "size": 86515,
+    "sha256": "9a0bf7c6df7dce5b5eaf855fbd190b821f8328101baec98c984fe48966391097"
+  },
+  {
+    "path": "visual/xlsx-edit/page-4.png",
+    "size": 12852,
+    "sha256": "435ff19f05d8487a427a45fd12b407d13d2cd844dd7d957d8448bb0432fc5140"
+  },
+  {
+    "path": "visual/xlsx-edit/page-5.png",
+    "size": 11444,
+    "sha256": "58285d401400a57868a55918567125202ae3536a9281cd0f8b316f30923e1450"
+  },
+  {
+    "path": "visual/xlsx-unchanged/edited.pdf",
+    "size": 92825,
+    "sha256": "d847d6401d6472343bab85e40103b58adf9bfb873fc730aa9a411fa0143dc981"
+  },
+  {
+    "path": "visual/xlsx-unchanged/page-1.png",
+    "size": 57891,
+    "sha256": "aff2d858b8433653ffc524e5eda479f0b8234617eebb90f944d0f55ecfc1ffd1"
+  },
+  {
+    "path": "visual/xlsx-unchanged/page-2.png",
+    "size": 136910,
+    "sha256": "e5a5fd3684710d86db7451f764bfea6896d08160d9314c159f34f20ec1dcb983"
+  },
+  {
+    "path": "visual/xlsx-unchanged/page-3.png",
+    "size": 84663,
+    "sha256": "3b22ec9f192997ffdadfadf0e1ea7ff819dd990a5d330429ad4b02e74733777a"
+  },
+  {
+    "path": "visual/xlsx-unchanged/page-4.png",
+    "size": 12852,
+    "sha256": "435ff19f05d8487a427a45fd12b407d13d2cd844dd7d957d8448bb0432fc5140"
+  },
+  {
+    "path": "visual/xlsx-unchanged/page-5.png",
+    "size": 11444,
+    "sha256": "58285d401400a57868a55918567125202ae3536a9281cd0f8b316f30923e1450"
+  },
+  {
+    "path": "visual-review.json",
+    "size": 659,
+    "sha256": "6cb2cfa7a8a761009b20e1e6a8eef114c6d47402a68f4ae690efa2b6e8142a50"
+  },
+  {
+    "path": "xlsx-edit/current-after-withdrawal.json",
+    "size": 10386,
+    "sha256": "e948ad36356a50421fee338913cb9a7dfc5389129dbf92881a056d254d3c04dc"
+  },
+  {
+    "path": "xlsx-edit/edited-source-mapping.json",
+    "size": 6922,
+    "sha256": "9a620533091297f4255fab81b1cba91abc3ddf0fa2ec2bd5c69f5adb845a31bd"
+  },
+  {
+    "path": "xlsx-edit/edited.xlsx",
+    "size": 13789,
+    "sha256": "4339fff66cb4843532982ef39c0009d257cc6f2d408d43fe4d9c4d29e074db20"
+  },
+  {
+    "path": "xlsx-edit/parent/artifact-manifest.json",
+    "size": 2132,
+    "sha256": "87c13b28d53ac9dace1ad9c06f1317626da0471b53097bcc9cf71ee30f245066"
+  },
+  {
+    "path": "xlsx-edit/parent/c02-corrected.xlsx",
+    "size": 7350,
+    "sha256": "1b63837c4600428b95d8cd6df3bfdaa9e55073be171faf9151caf0ad528c860d"
+  },
+  {
+    "path": "xlsx-edit/parent/calculation.json",
+    "size": 7933,
+    "sha256": "d17bb3789cfda36beb6428a828e4ddd630aa443cf12046ce1a3302752907050e"
+  },
+  {
+    "path": "xlsx-edit/parent/context.json",
+    "size": 7643,
+    "sha256": "34dfabda5be9636dab596945da39c51aeb72581496d2f9e3f17bf1143facb9a8"
+  },
+  {
+    "path": "xlsx-edit/parent/evidence.json",
+    "size": 894,
+    "sha256": "82429f9a59c8f3c0da3ce6a99335556eb14316b2b3b0617449f8fc1652542a8f"
+  },
+  {
+    "path": "xlsx-edit/parent/execution.json",
+    "size": 1408,
+    "sha256": "918f82dc17bce077521c72c1b84c16957861fd7b650c7b638b514929e0b37cab"
+  },
+  {
+    "path": "xlsx-edit/parent/registered-files/trf-58df711122ef8e53b3cd",
+    "size": 52,
+    "sha256": "77100ab70e9b772de439f1b666628ba20319f323fdfa7bab399897f3a22ffc2c"
+  },
+  {
+    "path": "xlsx-edit/parent/registered-files/trf-6b1c905d4e1323a2eef3",
+    "size": 7074,
+    "sha256": "9ee6b956dc7d6fc3e4af7f9bcb73c56c151a8a6918a6d67c9e7286388f21a0a8"
+  },
+  {
+    "path": "xlsx-edit/parent/registered-files/trf-86f89912acf7a54d659d",
+    "size": 1494,
+    "sha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e"
+  },
+  {
+    "path": "xlsx-edit/parent/registered-files/trf-ac36c20b07f346eb3dfa",
+    "size": 4992,
+    "sha256": "ce959171d38e6e69cd08f969b6997b20602958d28b65db6fea0745c415355d1f"
+  },
+  {
+    "path": "xlsx-edit/parent/registered-files/trf-e1cd4b21e517dc1de718",
+    "size": 43,
+    "sha256": "d4591264c8b30c0e153447039f35a6b4edbcd669976a694c594ec7aa23b2f4a3"
+  },
+  {
+    "path": "xlsx-edit/parent/report.md",
+    "size": 1494,
+    "sha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e"
+  },
+  {
+    "path": "xlsx-edit/parent/trace-index.json",
+    "size": 12164,
+    "sha256": "d5bd9a8c9fc22f7e44f58b879b6715b03c98a94fc4dfe5bc0d033c61133d832f"
+  },
+  {
+    "path": "xlsx-edit/parent/trf-6b1c905d4e1323a2eef3.json",
+    "size": 7074,
+    "sha256": "9ee6b956dc7d6fc3e4af7f9bcb73c56c151a8a6918a6d67c9e7286388f21a0a8"
+  },
+  {
+    "path": "xlsx-edit/result.json",
+    "size": 1637,
+    "sha256": "91ba5c375b0d28e72b73bd495ffec66c02aca02652cef46577deed0fb3f25a61"
+  },
+  {
+    "path": "xlsx-unchanged/current-after-withdrawal.json",
+    "size": 10386,
+    "sha256": "e5039470bfcfacaec29d7c774794a5ee6784199dab7c18e039e075353ef84d74"
+  },
+  {
+    "path": "xlsx-unchanged/edited-source-mapping.json",
+    "size": 6922,
+    "sha256": "e0da264c2ffbc5915f7fe1c77eab626d850f8990fc60a9ef0fe532a91c7e8bb1"
+  },
+  {
+    "path": "xlsx-unchanged/edited.xlsx",
+    "size": 13775,
+    "sha256": "fbf8a9b32a66cb98bbb363c5bd339f3853a1283acf184c08862b00deb3790c39"
+  },
+  {
+    "path": "xlsx-unchanged/parent/artifact-manifest.json",
+    "size": 2132,
+    "sha256": "18e7ac923d250e5fac869497ec1e277ae5683dc594cd440c7ca2c5d89fede592"
+  },
+  {
+    "path": "xlsx-unchanged/parent/c02-corrected.xlsx",
+    "size": 7351,
+    "sha256": "7e7f6a474d89b5802ed4a4df239dfdb0fe896048b206d39ed6552d6133093945"
+  },
+  {
+    "path": "xlsx-unchanged/parent/calculation.json",
+    "size": 7933,
+    "sha256": "ae620694488d4ef7050485391299824edbc2250b2355350a19b1b9e7cb8d0613"
+  },
+  {
+    "path": "xlsx-unchanged/parent/context.json",
+    "size": 7643,
+    "sha256": "4db4fc41aee8fbc56a511cd284509ca0a3507b49f61fa6d819e43711f0b71385"
+  },
+  {
+    "path": "xlsx-unchanged/parent/evidence.json",
+    "size": 894,
+    "sha256": "970254b9736a03f9177d91c857679a789238b96ff80a518d9705500e9e829ffa"
+  },
+  {
+    "path": "xlsx-unchanged/parent/execution.json",
+    "size": 1408,
+    "sha256": "69960811870786f219c45c6721f2ff6b16cd154e7367bd62a99ee5b654389e9e"
+  },
+  {
+    "path": "xlsx-unchanged/parent/registered-files/trf-121cdef64ebf3ff52a2f",
+    "size": 1494,
+    "sha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e"
+  },
+  {
+    "path": "xlsx-unchanged/parent/registered-files/trf-3c3362aa25d99eb2fab0",
+    "size": 52,
+    "sha256": "77100ab70e9b772de439f1b666628ba20319f323fdfa7bab399897f3a22ffc2c"
+  },
+  {
+    "path": "xlsx-unchanged/parent/registered-files/trf-427f94a82d9dd094919d",
+    "size": 4992,
+    "sha256": "8c6e826f7a0ae9bd6ebd137340344040f94c79aac2271d6443303072278abf58"
+  },
+  {
+    "path": "xlsx-unchanged/parent/registered-files/trf-9dd338e1b79fbb7412c7",
+    "size": 43,
+    "sha256": "d4591264c8b30c0e153447039f35a6b4edbcd669976a694c594ec7aa23b2f4a3"
+  },
+  {
+    "path": "xlsx-unchanged/parent/registered-files/trf-cf5819f66f760a6c0d9d",
+    "size": 7074,
+    "sha256": "38ac5cebcddc959661a42c2276015a7df5a06b4fa41faf77c5af39a8511e39f9"
+  },
+  {
+    "path": "xlsx-unchanged/parent/report.md",
+    "size": 1494,
+    "sha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e"
+  },
+  {
+    "path": "xlsx-unchanged/parent/trace-index.json",
+    "size": 12164,
+    "sha256": "5a2925a72f06c46c16716ad1c0be78aa9cc5dc33eb6a06ca987b49a333da4e95"
+  },
+  {
+    "path": "xlsx-unchanged/parent/trf-6b1c905d4e1323a2eef3.json",
+    "size": 7074,
+    "sha256": "9ee6b956dc7d6fc3e4af7f9bcb73c56c151a8a6918a6d67c9e7286388f21a0a8"
+  },
+  {
+    "path": "xlsx-unchanged/parent/trf-cf5819f66f760a6c0d9d.json",
+    "size": 7074,
+    "sha256": "38ac5cebcddc959661a42c2276015a7df5a06b4fa41faf77c5af39a8511e39f9"
+  },
+  {
+    "path": "xlsx-unchanged/result.json",
+    "size": 1475,
+    "sha256": "147a26a562d6f724fe830da174534c3e844db346e7a98cc074347b317830d5e6"
+  }
+]

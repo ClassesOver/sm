@@ -76,7 +76,7 @@ class ScopeInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
-def create_management_router(auth: AdminAuthService, settings: ManagementSettings) -> APIRouter:
+def create_management_router(auth: AdminAuthService, settings: ManagementSettings, *, report_runtime=None) -> APIRouter:
     router = APIRouter(route_class=ManagementRoute, tags=["management"])
 
     async def require_admin(request: Request) -> AdminAccount:
@@ -211,6 +211,13 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
                                      ManagementScope(payload.database, payload.company_id), payload.name)
 
     router.include_router(protected)
+    from .report_bases import ReportBasisService
+    from .report_issue_reviews import ReportIssueReviewService
+    from .report_issue_reviews_api import create_report_issue_reviews_router
+
+    router.include_router(create_report_issue_reviews_router(
+        ReportIssueReviewService(ReportBasisService(scopes)), settings, report_runtime=report_runtime,
+    ))
 
     def page():
         path = settings.static_dir / "management.html" if settings.static_dir else None
@@ -243,6 +250,7 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     @router.get("/management/sources/{source_id}/view", include_in_schema=False)
     @router.get("/management/sources/{source_id}/edit", include_in_schema=False)
     @router.get("/management/organizations", include_in_schema=False)
+    @router.get("/management/report-issues", include_in_schema=False)
     @router.get("/management/account/password", include_in_schema=False)
     async def management_page(request: Request):
         try:

@@ -111,7 +111,7 @@ def test_table_trace_embeds_into_revision_index() -> None:
     trace, _markdown = build_table_trace(
         bundle, _spec(), fact_file_resource_id=FACT_FILE_RESOURCE
     )
-    index = RevisionTraceIndexV1(
+    index = RevisionTraceIndexV1(reportBasisId="basis-test",
         reportId="report-1",
         revision=1,
         workflowRunId="run-1",

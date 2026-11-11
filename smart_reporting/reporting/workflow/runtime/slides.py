@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from agno.run import RunContext
@@ -13,10 +14,14 @@ from pydantic import Field
 
 from ...contract import REPORT_DELIVERY_FORMATS, StrictModel
 from ...delivery.artifacts_v1 import ArtifactFile
-from ...delivery.draft_v1 import HeadingNumber
+from ...delivery.draft_v1 import HeadingNumber, ReportDraftBlock
 from ...hospital_operation.findings import FindingGraph
 from ...models import ReportingError
+from ...semantics.presentation import semantic_issue_message
 from ...trace.contracts_v1 import ChartTraceV1, derive_resource_id
+from ...trace.semantic_bindings import anchor_bound_numbers
+from ...trace.subject_builder import build_claim_subject_bindings
+from ..analysis_summaries import AnalysisSummarySection, build_analysis_summary_section
 from ..checkpoint import (
     AnalysisArtifact,
     AnalysisEvidenceManifest,
@@ -41,6 +46,7 @@ from .base import (
     parse_reporting_workflow_input,
 )
 from .sections import _evidence_and_computation_layers
+from .slide_bindings import registered_slide_summary
 
 
 class SlideContent(StrictModel):
@@ -50,6 +56,7 @@ class SlideContent(StrictModel):
     finding_ids: tuple[str, ...] = Field(alias="findingIds", min_length=1)
     evidence_ids: tuple[str, ...] = Field(alias="evidenceIds", min_length=1)
     chart_ids: tuple[str, ...] = Field(default=(), alias="chartIds")
+    summary_block: ReportDraftBlock | None = Field(default=None, alias='summaryBlock')
 
 
 class SlideOutline(StrictModel):
@@ -57,13 +64,44 @@ class SlideOutline(StrictModel):
     title: str = Field(min_length=1)
     snapshot_hash: str = Field(alias="snapshotHash", pattern=r"^[0-9a-f]{64}$")
     slides: tuple[SlideContent, ...] = Field(min_length=1)
+    analysis_summaries: tuple[AnalysisSummarySection, ...] = Field(default=(), alias='analysisSummaries', max_length=200)
+
+
+def slide_summary_sources(outline, manifest):
+    included, selected = set(), []
+    for section in outline.sections:
+        evidence = tuple(item for item in manifest.evidence
+            if item.analysis_id in section.analysis_ids and item.analysis_id not in included)
+        if evidence:
+            selected.append((section, evidence))
+            included.update(item.analysis_id for item in evidence)
+    return tuple(selected)
+
+
+def validate_slide_summaries(summaries, outline, manifest, view):
+    expected = tuple((section.code, tuple((item.analysis_id, item.summary.strip()) for item in evidence))
+        for section, evidence in slide_summary_sources(outline, manifest))
+    actual = tuple((item.section_code, tuple((block.block_id, block.markdown) for block in item.blocks))
+        for item in summaries)
+    if actual != expected or any((item.basis_id, item.report_revision, item.period) !=
+            (view.basis_id, view.report_revision, view.request.period) for item in summaries):
+        raise ReportingError('report_slide_evidence_invalid', '幻灯片说明必须完整绑定本修订、章节、分析及原文。')
 
 
 def build_slide_outline(
     graph: FindingGraph, manifest: AnalysisEvidenceManifest, *, title: str,
+    fact_contents: Mapping[str, bytes] | None = None,
+    analysis_summaries: tuple[AnalysisSummarySection, ...] = (),
 ) -> SlideOutline:
     """按核验发现分配页面，并把每页绑定到其自身的分析与引用。"""
     evidence = {item.analysis_id: item for item in manifest.evidence}
+    seen = set()
+    for summary in analysis_summaries:
+        for block in summary.blocks:
+            source = evidence.get(block.block_id)
+            if block.block_id in seen or source is None or block.markdown != source.summary.strip():
+                raise ReportingError('report_slide_evidence_invalid', '幻灯片分析说明与冻结原文不一致。')
+            seen.add(block.block_id)
     if any(set(card.analysis_ids) - evidence.keys() for card in graph.findings):
         raise ReportingError("report_slide_evidence_invalid", "幻灯片发现缺少冻结证据。")
     registered_charts = tuple(getattr(manifest, "charts", ()))
@@ -86,12 +124,16 @@ def build_slide_outline(
             raise ReportingError("report_slide_evidence_invalid", "幻灯片引用超出冻结证据范围。")
         charts = tuple(chart.chart_id for chart in registered_charts
             if chart_owners[chart.chart_id].intersection(card.analysis_ids))
+        summary = registered_slide_summary(card, fact_contents)
         slides.append(SlideContent(
             slideId=f"slide_{index:03d}", title=card.title,
-            bullets=(card.summary, *card.limitations), findingIds=(card.finding_id,),
+            bullets=(summary.markdown[2:] if summary else card.summary,
+                *(semantic_issue_message(item) for item in card.limitations)), findingIds=(card.finding_id,),
             evidenceIds=(*card.analysis_ids, *card.citation_ids), chartIds=charts,
+            summaryBlock=summary,
         ))
-    return SlideOutline(title=title, snapshotHash=graph.snapshot_hash, slides=tuple(slides))
+    return SlideOutline(title=title, snapshotHash=graph.snapshot_hash, slides=tuple(slides),
+        analysisSummaries=analysis_summaries)
 
 
 class RuntimeSlidesMixin:
@@ -149,15 +191,37 @@ class RuntimeSlidesMixin:
             payload={"deliveryFormat": delivery_format},
         ))
 
-    async def _slide_checkpoint(self, run_context: RunContext):
-        durable = await self.state_repository.get(str(run_context.run_id))
+    async def _slide_checkpoint(self, run_context: RunContext, *, execution=None):
+        if execution is None:
+            durable = await self.state_repository.get(str(run_context.run_id))
+        else:
+            from ..revision_execution import require_revision_execution
+
+            durable = await require_revision_execution(self, run_context, execution)
+            if execution.requested_outputs != ('pptx',) or durable.payload.get('deliveryFormat') != 'pptx':
+                raise ReportingError('report_revision_execution_mismatch', '幻灯片仅接受明确选择PPTX的新修订。')
         stored = durable.payload.get("workflowCheckpoint") if durable is not None else None
         if not isinstance(stored, Mapping):
             raise ReportingError("report_checkpoint_invalid", "PPT 缺少冻结分析检查点。")
         return durable, ReportingCheckpoint.model_validate(stored)
 
-    async def generate_slide_outline(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
-        durable, checkpoint = await self._slide_checkpoint(run_context)
+    async def generate_slide_outline(self, _step_input: StepInput, run_context: RunContext, *, execution=None) -> StepOutput:
+        execution_options = {} if execution is None else {'execution': execution}
+        durable, checkpoint = await self._slide_checkpoint(run_context, **execution_options)
+        run_id = str(run_context.run_id) if execution is None else execution.execution_run_id
+        if execution is not None:
+            from ..revision_execution import load_revision_outline
+
+            source_outline = await load_revision_outline(self, run_context, execution)
+            if checkpoint.evidence_manifest is None or checkpoint.analysis_manifest_file is None:
+                raise ReportingError('report_analysis_evidence_incomplete', '新幻灯片必须先冻结本修订的分析证据。')
+            registered = durable.payload.get('artifacts', ())
+            if any(file.model_dump(mode='json', by_alias=True) not in registered
+                    for file in (checkpoint.analysis_manifest_file, checkpoint.finding_graph_file, checkpoint.slide_outline_file)
+                    if file is not None):
+                raise ReportingError('report_revision_execution_mismatch', '幻灯片只能使用本修订登记证据。')
+        else:
+            source_outline = _frozen_outline(self._state(run_context))
         entered_sections = False
         scope = self._scope(run_context)
         if checkpoint.finding_graph_file is None:
@@ -206,37 +270,69 @@ class RuntimeSlidesMixin:
             )
             checkpoint = await self._persist_reporting_checkpoint(run_context, checkpoint)
         artifact = await self._read_identity_model(scope["threadId"], checkpoint.analysis_manifest_file, AnalysisArtifact)
-        if artifact.evidence_manifest != checkpoint.evidence_manifest:
+        if (artifact.evidence_manifest != checkpoint.evidence_manifest
+                or (execution is not None and artifact.report_brief != checkpoint.report_brief)):
             raise ReportingError("report_checkpoint_conflict", "PPT 冻结证据与检查点不一致。")
-        outline = build_slide_outline(graph, checkpoint.evidence_manifest, title=_frozen_outline(self._state(run_context)).title)
+        fact_contents = {key: await self._read_identity_bytes(scope['threadId'], identity)
+            for key, identity in checkpoint.deterministic_fact_files.items()}
+        view = (await self._metric_planning_context(run_context,
+            report_revision=execution.report_revision if execution is not None else 'initial')
+            if getattr(self, 'report_basis_service', None) is not None else None)
         if checkpoint.slide_outline_file is not None:
             stored_outline = await self._read_identity_model(scope["threadId"], checkpoint.slide_outline_file, SlideOutline)
+            summaries = stored_outline.analysis_summaries
+            if view is not None:
+                validate_slide_summaries(summaries, source_outline, checkpoint.evidence_manifest, view)
+            outline = build_slide_outline(graph, checkpoint.evidence_manifest, title=source_outline.title,
+                fact_contents=fact_contents, analysis_summaries=summaries)
             if stored_outline != outline:
                 raise ReportingError("report_checkpoint_conflict", "幻灯片提纲与冻结证据不一致。")
             outline = stored_outline
         else:
+            path = f"报表/智能分析/{run_id}/slides/revision-{checkpoint.revision}/outline.json"
+            if not (await self.workspace_service.abatch_hash_files(scope['threadId'], [path]))[0].get('missing'):
+                raise ReportingError('report_slide_outcome_unknown', '幻灯片提纲已有文件但登记未完成，需核对结果，禁止自动重跑。')
+            summaries = tuple([await build_analysis_summary_section(self, run_context,
+                section=section, evidence=evidence, view=view)
+                for section, evidence in slide_summary_sources(source_outline, checkpoint.evidence_manifest)]) if view is not None else ()
+            if view is not None:
+                validate_slide_summaries(summaries, source_outline, checkpoint.evidence_manifest, view)
+            outline = build_slide_outline(graph, checkpoint.evidence_manifest, title=source_outline.title,
+                fact_contents=fact_contents, analysis_summaries=summaries)
             identity = await self._write_immutable_artifact(
-                scope["threadId"], f"报表/智能分析/{run_context.run_id}/slides/revision-{checkpoint.revision}/outline.json",
+                scope["threadId"], path,
                 outline.model_dump_json(by_alias=True).encode("utf-8"),
             )
             checkpoint = self._update_reporting_checkpoint(
                 checkpoint, slide_outline_file=identity, files=self._merge_checkpoint_files(checkpoint.files, identity),
             )
-            await self._persist_reporting_checkpoint(run_context, checkpoint)
+            await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+                commandId=f'revision-slide-outline:{identity.sha256}',
+                payload={'artifact': identity.model_dump(mode='json', by_alias=True)}), **execution_options)
+            await self._persist_reporting_checkpoint(run_context, checkpoint, **execution_options)
         if not entered_sections and durable.phase is ReportingPhase.NARRATIVE_PLANNING:
             await self._apply_durable_command(run_context, ReportingCommand(
                 name="complete_narrative_planning", commandId=f"slide-planning-start:{checkpoint.revision}",
-            ))
+            ), **execution_options)
         return StepOutput(content={"status": "completed", "slideCount": len(outline.slides)})
 
-    async def assemble_slides(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
+    async def assemble_slides(self, _step_input: StepInput, run_context: RunContext, *, execution=None) -> StepOutput:
         """将冻结页面、图片及作图数据交给现有 manifest/trace 服务归档。"""
-        _durable, checkpoint = await self._slide_checkpoint(run_context)
+        execution_options = {} if execution is None else {'execution': execution}
+        if execution is not None:
+            await self.generate_slide_outline(_step_input, run_context, execution=execution)
+        _durable, checkpoint = await self._slide_checkpoint(run_context, **execution_options)
+        run_id = str(run_context.run_id) if execution is None else execution.execution_run_id
+        if execution is not None and checkpoint.phase == 'completed':
+            result = _durable.payload.get('result', {})
+            for item in (result.get('markdown'), result.get('manifest'), *result.get('charts', ())):
+                await self._read_identity_bytes(execution.source_scope.workspace_key, FileIdentity.model_validate(item))
+            return StepOutput(content={'status': 'completed', 'markdownPath': result['markdown']['path']})
         scope = self._scope(run_context)
         if checkpoint.slide_outline_file is None or checkpoint.evidence_manifest is None:
             raise ReportingError("report_slide_outline_missing", "PPT 缺少冻结幻灯片提纲或证据。")
         outline = await self._read_identity_model(scope["threadId"], checkpoint.slide_outline_file, SlideOutline)
-        root = PurePosixPath(f"报表/智能分析/{run_context.run_id}/slides/revision-{checkpoint.revision}")
+        root = PurePosixPath(f"报表/智能分析/{run_id}/slides/revision-{checkpoint.revision}")
         charts = {item.chart_id: item for item in checkpoint.evidence_manifest.charts}
         chart_files = []
         trace_files = []
@@ -265,41 +361,77 @@ class RuntimeSlidesMixin:
                     datasetIds=(chart.source_dataset_id,),
                     transformNotes=("复用冻结 Matplotlib 图片及同一份 chart-input/v1 作图数据",),
                 ))
-        source_outline = _frozen_outline(self._state(run_context))
+        if execution is None:
+            source_outline = _frozen_outline(self._state(run_context))
+        else:
+            from ..revision_execution import load_revision_outline
+
+            source_outline = await load_revision_outline(self, run_context, execution)
+        graph = await self._read_identity_model(scope['threadId'], checkpoint.finding_graph_file, FindingGraph)
+        fact_directory = {card.fact_refs[0]: (ref.analysis_id, ref.pointer)
+            for card in graph.findings if len(card.fact_refs) == 1
+            for ref in card.source_refs if ref.pointer.startswith('/metricContext/')}
+        section_artifacts = []
         lines = [f"# {outline.title}"]
         for section in source_outline.sections:
             lines.extend(["", f"## {section.section_number} {section.title}"])
+            blocks = []
             for slide in outline.slides:
                 if not set(section.analysis_ids).intersection(slide.evidence_ids):
                     continue
-                lines.extend(["", f"### {slide.title}", *[f"- {text}" for text in slide.bullets]])
+                lines.extend(["", f"### {slide.title}", ""])
+                if slide.summary_block is not None:
+                    block = slide.summary_block
+                    blocks.append(block)
+                    lines.append(anchor_bound_numbers(block.markdown, block.number_references, block.review_notices))
+                    lines.extend(['', *[f'- {text}' for text in slide.bullets[1:]]])
+                else:
+                    lines.extend(f'- {text}' for text in slide.bullets)
                 lines.extend(f"[[analysis:{ref}]]" for ref in slide.evidence_ids if ref.startswith("analysis_"))
                 for chart_id in slide.chart_ids:
                     chart = charts[chart_id]
                     citations = " ".join(f"[[citation:{ref}]]" for ref in chart.citation_ids)
                     lines.extend(["", f"![{chart.alt_text}]({PurePosixPath(chart_destinations[chart_id]).name}) {citations}"])
+            for summary in outline.analysis_summaries:
+                if summary.section_code != section.code:
+                    continue
+                for block in summary.blocks:
+                    blocks.append(block)
+                    lines.extend(['', anchor_bound_numbers(block.markdown, block.narrative_references, block.review_notices)])
+            section_artifacts.append(SimpleNamespace(section_code=section.code, blocks=tuple(blocks), claims=()))
         markdown = chr(10).join(lines).encode("utf-8")
         markdown_file = await self._write_immutable_artifact(scope["threadId"], root.joinpath("slides.md").as_posix(), markdown)
-        state = self._state(run_context)
-        result = self._workflow_result(state)
-        lineage = tuple(DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY])
+        if execution is None:
+            state = self._state(run_context)
+            result = self._workflow_result(state)
+            handles = tuple(DatasetHandle.from_state(item) for item in result.get('datasets', ()))
+            lineage = tuple(DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY])
+        else:
+            state, result = {}, {}
+            handles = await self._registered_metric_dataset_handles(run_context, report_revision=execution.report_revision)
+            lineage = tuple(DatasetLineage(datasetId=item.dataset_id, sourceId=item.source_id,
+                requirementId=item.requirement_id, sqlHash=item.sql_hash, rowCount=item.row_count,
+                size=item.size, sha256=item.sha256, periodRoles=item.period_roles, queryWindowId=item.query_window_id)
+                for item in handles)
         manifest_path = root.joinpath("slides.manifest.json").as_posix()
         computations, computation_files = _evidence_and_computation_layers(checkpoint.evidence_manifest)
         manifest = await self._build_and_write_artifact_manifest(
             manifest_path, accepted_artifacts=[item.model_dump(mode="json", by_alias=True) for item in (markdown_file, *chart_files)],
-            handles=tuple(DatasetHandle.from_state(item) for item in result.get("datasets", ())),
+            handles=handles,
             fact_files={key: ArtifactFile(**item.model_dump(), mediaType="application/json")
                         for key, item in checkpoint.deterministic_fact_files.items()},
             chart_trace_files=tuple((*chart_files, *trace_files)), chart_traces=tuple(chart_traces),
             computation_files=computation_files, computations=computations,
+            subject_bindings=build_claim_subject_bindings(section_artifacts, fact_directory,
+                {key: derive_resource_id(identity.path) for key, identity in checkpoint.deterministic_fact_files.items()}),
             markdown_path=markdown_file.path, lineage=lineage, revision=checkpoint.revision,
-            task_key=f"pptx-{run_context.run_id}",
+            task_key=f"pptx-{run_id}",
             section_numbers=tuple(section.section_number for section in source_outline.sections),
             heading_numbers=tuple(HeadingNumber(
                 level=2, number=section.section_number, title=section.title, sectionCode=section.code,
                 anchor=f"report-section-{section.code}",
             ) for section in source_outline.sections),
-            source_warnings=_source_warnings_from_state(state), run_context=run_context,
+            source_warnings=_source_warnings_from_state(state), run_context=run_context, **execution_options,
             section_finding_ids={section.code: tuple(
                 ref for slide in outline.slides if set(section.analysis_ids).intersection(slide.evidence_ids)
                 for ref in slide.finding_ids
@@ -316,7 +448,12 @@ class RuntimeSlidesMixin:
                     sha256=manifest.trace_index.sha256),) if manifest.trace_index is not None else ()),
             ),
         )
-        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        if execution is not None:
+            for file in checkpoint.files:
+                await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+                    commandId=f'revision-slide-output:{derive_resource_id(file.path)}:{file.sha256}',
+                    payload={'artifact': file.model_dump(mode='json', by_alias=True)}), **execution_options)
+        await self._persist_reporting_checkpoint(run_context, checkpoint, **execution_options)
         if not already_completed:
             await self._apply_durable_command(run_context, ReportingCommand(
                 name="complete", commandId=f"slides-complete:{checkpoint.revision}:{manifest_file['sha256']}",
@@ -325,9 +462,9 @@ class RuntimeSlidesMixin:
                     "manifest": manifest_file,
                     "charts": [item.model_dump(mode="json", by_alias=True) for item in chart_files],
                 },
-            ))
+            ), **execution_options)
         checkpoint = self._update_reporting_checkpoint(checkpoint, phase="completed")
-        await self._persist_reporting_checkpoint(run_context, checkpoint)
+        await self._persist_reporting_checkpoint(run_context, checkpoint, **execution_options)
         result.update({
             "markdownPath": markdown_file.path, "deliveryFormat": "pptx", "artifactManifestPath": manifest_path,
             "revision": checkpoint.revision,
@@ -337,5 +474,26 @@ class RuntimeSlidesMixin:
         state[REPORT_ARTIFACTS_STATE_KEY] = {"draft": manifest.model_dump(mode="json", by_alias=True)}
         return StepOutput(content={"status": "completed", "markdownPath": markdown_file.path})
 
-    async def validate_slides(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
-        return StepOutput(content=await self._render_and_validate(run_context))
+    async def validate_slides(self, _step_input: StepInput, run_context: RunContext, *, execution=None) -> StepOutput:
+        if execution is None:
+            return StepOutput(content=await self._render_and_validate(run_context))
+        from ..revision_execution import load_revision_outline, require_revision_execution
+
+        durable = await require_revision_execution(self, run_context, execution)
+        path = f'报表/智能分析/{execution.execution_run_id}/slides/revision-{execution.output_revision}/report.pptx'
+        if any(item.get('path') == path for item in durable.payload.get('artifacts', ())):
+            return StepOutput(content=await self._render_pptx(run_context,
+                {'revision': execution.output_revision}, None, execution=execution))
+        await self.generate_slide_outline(_step_input, run_context, execution=execution)
+        durable, checkpoint = await self._slide_checkpoint(run_context, execution=execution)
+        result = durable.payload.get('result', {})
+        if checkpoint.phase != 'completed' or not result.get('markdown') or not result.get('manifest'):
+            raise ReportingError('report_revision_execution_mismatch', '新PPTX必须先完成本修订内容组装。')
+        for file in (result['markdown'], result['manifest'], *result.get('charts', ())):
+            await self._read_identity_bytes(execution.source_scope.workspace_key, FileIdentity.model_validate(file))
+        outline = await load_revision_outline(self, run_context, execution)
+        return StepOutput(content=await self._render_pptx(run_context, {
+            'revision': execution.output_revision, 'markdownPath': result['markdown']['path'],
+            'artifactManifestPath': result['manifest']['path'],
+            'artifactManifest': {**result['manifest'], 'mediaType': 'application/json'},
+        }, outline, execution=execution))

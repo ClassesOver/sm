@@ -131,12 +131,6 @@ export default function SourceDetail() {
                             children: query.data.draft.database,
                           },
                           {
-                            key: 'profile',
-                            label: '业务口径',
-                            children:
-                              query.data.draft.profile_version_id || '未绑定',
-                          },
-                          {
                             key: 'metadata',
                             label: '数据目录',
                             children:

@@ -135,7 +135,6 @@ async def test_new_report_archive_persists_recovered_chart_facts(monkeypatch):
     index, chart, documents = _case()
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime._scope = lambda _: {"threadId": "thread-1"}
-    runtime._profile = lambda _: SimpleNamespace(effective_profile_hash="a" * 64)
     runtime._state = lambda _: {}
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     async def read(_thread, path, **_kwargs):
@@ -146,7 +145,7 @@ async def test_new_report_archive_persists_recovered_chart_facts(monkeypatch):
         validate_content=lambda _: None)
     monkeypatch.setattr(publication, "build_csv_trace_index", lambda **_: index)
     markdown = next(f for f in index.files if f.resource_id == index.markdown_file_resource_id)
-    identity = await runtime._write_trace_index("report/manifest.json", handles=(), lineage=(),
+    identity = await runtime._write_trace_index("report/manifest.json", report_basis_id="basis-test", handles=(), lineage=(),
         markdown_artifact=markdown, revision=1, run_context=SimpleNamespace(run_id="run1"))
     saved = RevisionTraceIndexV1.model_validate_json(documents[identity.path])
     assert {r.fact_kind for r in saved.chart_traces[0].fact_refs} == {"metric", "comparison"}

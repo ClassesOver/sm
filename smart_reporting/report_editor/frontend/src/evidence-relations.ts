@@ -18,7 +18,13 @@ export const EVIDENCE_KIND_COLORS: Record<EvidenceObjectKind, string> = {
 }
 
 /** 仅展示登记的期间和角色，不从名称或数据值推断日期。 */
-export function factPeriodLabel(entry: { periodStart?: unknown; periodEnd?: unknown; periodRoles?: unknown; periodRole?: unknown; comparisonType?: unknown }): string {
+export function factPeriodLabel(entry: { period?: unknown; periodBoundary?: unknown; periodStart?: unknown; periodEnd?: unknown; periodRoles?: unknown; periodRole?: unknown; comparisonType?: unknown }): string {
+  if (entry.periodBoundary === 'half_open' && entry.period && typeof entry.period === 'object') {
+    const period = entry.period as { start?: unknown; end?: unknown }
+    if (typeof period.start === 'string' && typeof period.end === 'string') {
+      return `[${period.start}, ${period.end})（含起日、不含止日）`
+    }
+  }
   const roles: Record<string, string> = { current: '本期', yoy: '同比基期', mom: '环比基期' }
   const periods = [...new Set([entry.periodStart, entry.periodEnd].filter(value => typeof value === 'string' && value))]
   const registeredRoles = Array.isArray(entry.periodRoles) ? entry.periodRoles : entry.periodRole ? [entry.periodRole] : []

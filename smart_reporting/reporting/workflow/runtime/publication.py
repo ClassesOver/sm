@@ -30,6 +30,7 @@ from ...trace.index_builder import (
     encode_trace_index,
     trace_index_path_for,
 )
+from ...trace.narrative_claims import narrative_paragraphs
 from ..checkpoint import AnalysisEvidenceManifest, SectionArtifact, SectionCitation
 from .base import (
     REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY,
@@ -239,10 +240,6 @@ def evaluate_publication_semantics(
     return {"formalReleaseAllowed": True, "issues": [], "warnings": warnings}
 
 
-class _OverviewDisabled(Exception):
-    """未注入回答审核计划提供方：不构建经营总览，渲染沿用各章核心结论。"""
-
-
 def build_with_optional_computation_layer(
     build: Callable[[tuple[FileIdentity, ...], tuple], Any],
     computation_files: tuple[FileIdentity, ...],
@@ -335,7 +332,9 @@ class RuntimePublicationMixin:
     async def validate_report(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
         return StepOutput(content=await self._render_and_validate(run_context))
 
-    async def _render_and_validate(self, run_context: RunContext) -> dict[str, Any]:
+    async def _render_and_validate(self, run_context: RunContext, *, execution=None) -> dict[str, Any]:
+        if execution is not None:
+            return await self._render_revision_document(run_context, execution)
         state = self._state(run_context)
         result = self._workflow_result(state)
         outline = _frozen_outline(state)
@@ -343,12 +342,6 @@ class RuntimePublicationMixin:
             return await self._render_xlsx(run_context, result, outline)
         if state.get("report_request_context", {}).get("deliveryFormat") == "pptx":
             return await self._render_pptx(run_context, result, outline)
-        pdf_path = _report_pdf_path(
-            str(run_context.run_id),
-            int(result.get("revision", 0)) + 1,
-            outline.title,
-            self._envelope(run_context).period,
-        )
         context = self._tool_context(run_context)
         try:
             draft = ReportArtifactManifest.model_validate(
@@ -362,6 +355,9 @@ class RuntimePublicationMixin:
             raise ReportingError(
                 "report_artifact_manifest_invalid", "报告产物清单状态无效。"
             ) from error
+        pdf_path = _report_pdf_path(
+            str(run_context.run_id), draft.revision, outline.title, self._envelope(run_context).period,
+        )
         requirements = tuple(
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
@@ -399,17 +395,11 @@ class RuntimePublicationMixin:
             ),
             run_context=context,
         )
-        # 经营问题矩阵依赖服务端注入的回答审核计划提供方；应用/CLI 默认不注入。未启用时沿用
-        # 各章核心结论，避免每份报告的首页都只剩缺项说明。启用后缺少证据才显示缺项说明。
-        overview_enabled = getattr(self, "answer_review_plan_provider", None) is not None
+        # 总览始终保留问题缺项；没有业务批准映射也不能回退到未经核验的摘录。
         from ..management_overview import unavailable_management_overview_projection
 
-        overview_projection = (
-            unavailable_management_overview_projection(draft.markdown.sha256) if overview_enabled else None
-        )
+        overview_projection = unavailable_management_overview_projection(draft.markdown.sha256)
         try:
-            if not overview_enabled:
-                raise _OverviewDisabled
             from ...trace.contracts_v1 import canonical_sha256
             from ..management_overview import management_overview_projection
             from ..overview_sources import registered_management_overview
@@ -423,8 +413,6 @@ class RuntimePublicationMixin:
             overview_projection = management_overview_projection(
                 overview, draft.markdown.sha256, job.get("_citationPresentations"),
             )
-        except _OverviewDisabled:
-            pass
         except Exception as error:
             logger.warning("report_management_overview_unavailable reason={}", type(error).__name__)
             # 带修订号：反馈重跑时按修订清理，不重复累积或残留到后续修订。
@@ -436,6 +424,28 @@ class RuntimePublicationMixin:
             issues = state.setdefault("report_quality_issues", [])
             if issue not in issues:
                 issues.append(issue)
+        document_issues = []
+        try:
+            from ..claim_presentation import registered_document_presentations
+
+            job = self.report_tools._load_job(str(result['jobId']), context)
+            job['_claimSupportProjection'] = {'invalid': 'claim_support_unavailable'}
+            job.pop('_traceSourcePresentations', None)
+            self.report_tools._store_job(job, context)
+            presentations = await registered_document_presentations(self, run_context, draft)
+            job['_claimSupportProjection'] = presentations['claimSupport']
+            job['_traceSourcePresentations'] = presentations['traceSources']
+            if presentations['traceSources'] is not None:
+                options = job.get('_reportDesign', {}).get('options', {})
+                job.setdefault('_editorExportSettings', {}).setdefault('sources', options.get('sources', True))
+            if presentations.get('sourceIssue'):
+                document_issues.append(presentations['sourceIssue'])
+            self.report_tools._store_job(job, context)
+        except Exception as error:
+            logger.warning('report_claim_support_projection_unavailable reason={}', type(error).__name__)
+            document_issues.append({'code': 'claim_support_projection_unavailable',
+                'revision': draft.revision, 'status': 'unknown', 'message': '解释支持状态无法核验，已保留提示和下载。'})
+        state.setdefault('report_quality_issues', []).extend(document_issues)
         rendered_result = await self.report_tools._render_report_pair(
             str(result["jobId"]),
             str(result["markdownPath"]),
@@ -448,13 +458,15 @@ class RuntimePublicationMixin:
         word_path = str(PurePosixPath(pdf_path).with_suffix(".docx"))
         validation = rendered_result.get("validation") if isinstance(rendered_result, dict) else None
         if source_link_issue is not None:
+            document_issues.append(source_link_issue)
+        if document_issues:
             validation = validation if isinstance(validation, dict) else {"ok": False, "issues": []}
             validation = {
                 **validation,
                 "ok": False,
                 "issues": [
                     *(validation.get("issues") if isinstance(validation.get("issues"), list) else []),
-                    source_link_issue,
+                    *document_issues,
                 ],
             }
         if not isinstance(validation, dict) or validation.get("ok") is not True:
@@ -516,7 +528,7 @@ class RuntimePublicationMixin:
             common_manifest_fields = {
                 "reportId": draft.report_id,
                 "revision": draft.revision,
-                "effectiveProfileHash": draft.effective_profile_hash,
+                "reportBasisId": draft.report_basis_id,
                 "sourceMarkdownSha256": draft.markdown.sha256,
                 "sourceChartSha256s": source_chart_sha256s,
                 "renderedChartIds": tuple(validation.get("chartIds") or ()),
@@ -633,19 +645,343 @@ class RuntimePublicationMixin:
             )
             raise
 
-    async def _render_pptx(self, run_context: RunContext, result: dict[str, Any], outline: Any) -> dict[str, Any]:
-        state = self._state(run_context)
+    async def _render_revision_document(self, run_context: RunContext, execution) -> dict[str, Any]:
+        """以独立原生文档任务渲染新修订；已登记文件的恢复不依赖来源仍可读取。"""
+        from datetime import datetime
+        from uuid import NAMESPACE_URL, uuid5
+        from zoneinfo import ZoneInfo
+
+        from ...data_sources import thread_binding
+        from ..management_overview import unavailable_management_overview_projection
+        from ..policy_adoption import (
+            PolicyAdoptionExecution,
+            policy_adoption_run_context,
+            require_policy_adoption_execution,
+        )
+        from ..revision_execution import load_revision_outline, require_revision_execution
+
+        source_context = run_context
+        adoption = isinstance(execution, PolicyAdoptionExecution)
+        if adoption:
+            durable = await require_policy_adoption_execution(self, source_context, execution)
+            execution_run_id = execution.scope.run_id
+            report_id = execution.scope.run_id
+            thread_id = execution.scope.workspace_key
+            report_revision = 'initial'
+            execution_options = {}
+            run_context = policy_adoption_run_context(execution)
+        else:
+            durable = await require_revision_execution(self, run_context, execution)
+            execution_run_id = execution.execution_run_id
+            report_id = execution.source_scope.run_id
+            thread_id = execution.source_scope.workspace_key
+            report_revision = execution.report_revision
+            execution_options = {'execution': execution}
+        if (not set(execution.requested_outputs) <= {'pdf', 'docx'}
+                or durable.payload.get('deliveryFormat') != 'document'
+                or durable.phase is not DurableReportingPhase.COMPLETED):
+            raise ReportingError('report_revision_execution_mismatch', '文档渲染需要本修订已完成的文档装配。')
+        revision = execution.output_revision
+        root = f'报表/智能分析/{execution_run_id}/document-render/revision-{revision}'
+        paths = {'pdf': f'{root}/report.pdf', 'word': f'{root}/report.docx'}
+        requested = tuple(label for label, output in (('pdf', 'pdf'), ('word', 'docx'))
+            if output in execution.requested_outputs)
+        registered = {item['path']: FileIdentity.model_validate(item) for item in durable.payload.get('artifacts', ())}
+        job_id = str(uuid5(NAMESPACE_URL, f'{execution_run_id}:document:{revision}'))
+        result = {'revision': revision, 'jobId': job_id, 'deliveryFormat': 'document'}
+        restored = {label: registered[paths[label]] for label in requested if paths[label] in registered}
+        if restored:
+            invalid = []
+            for label, file in tuple(restored.items()):
+                try:
+                    await self._read_identity_bytes(thread_id, file, max_bytes=file.size)
+                except Exception as error:
+                    logger.warning('revision_document_artifact_unavailable format={} error_type={}', label, type(error).__name__)
+                    restored.pop(label)
+                    invalid.append({'code': f'report_{label}_artifact_unavailable',
+                        'message': f'{"PDF" if label == "pdf" else "Word"} 已登记文件的实际身份无法核验，未使用该文件。'})
+            saved = durable.payload.get('result', {}).get('renderedDocument')
+            if (not invalid and isinstance(saved, dict) and saved.get('revision') == revision and saved.get('jobId') == job_id
+                    and isinstance(saved.get('validation'), dict) and isinstance(saved['validation'].get('ok'), bool)
+                    and all((saved.get(f'{label}Path'), saved.get(f'{label}Sha256'), saved.get(f'{label}Size')) == (
+                        paths[label], restored[label].sha256, restored[label].size)
+                        if label in restored and label in requested else not saved.get(f'{label}Path') for label in paths)
+                    and any(saved.get(f'{label}Path') for label in requested)):
+                return dict(saved)
+            issue = {'code': 'document_validation_receipt_unavailable',
+                'message': '文档文件已恢复，验收记录缺失或身份不一致，需复核。'}
+            for label in requested:
+                if label in restored:
+                    result.update({f'{label}Path': paths[label], f'{label}Sha256': restored[label].sha256,
+                        f'{label}Size': restored[label].size})
+            if not any(result.get(f'{label}Path') for label in requested):
+                raise ReportingError('report_artifact_unavailable', '没有可读取身份的已请求报告格式。')
+            return {**result, 'status': 'validation_failed', 'validation': {'ok': False, 'issues': [issue, *invalid]},
+                'validationIssues': [issue, *invalid]}
+        job_path = f'{root}.job.json'
+        existing = await self.workspace_service.abatch_hash_files(thread_id, [*paths.values(), job_path])
+        if any(not item.get('missing') for item in existing):
+            raise ReportingError('report_revision_document_outcome_unknown',
+                '文档渲染已有任务或文件但无可恢复产物登记，需核对实际结果，禁止自动覆盖或重跑。')
+        assembly = durable.payload.get('result', {})
+        manifest_file = FileIdentity.model_validate(assembly.get('manifest'))
+        if registered.get(manifest_file.path) != manifest_file:
+            raise ReportingError('report_revision_execution_mismatch', '文档清单未登记到本修订。')
+        draft = await self._read_identity_model(thread_id, manifest_file, ReportArtifactManifest)
+        if (draft.report_id != report_id or draft.revision != revision
+                or draft.report_basis_id != execution.basis_id):
+            raise ReportingError('report_revision_execution_mismatch', '文档清单与本修订计算依据不一致。')
+        markdown_file = FileIdentity(path=draft.markdown.path, size=draft.markdown.size, sha256=draft.markdown.sha256)
+        if registered.get(markdown_file.path) != markdown_file:
+            raise ReportingError('report_revision_execution_mismatch', '文档正文未登记到本修订。')
+        await self._read_identity_bytes(thread_id, markdown_file, max_bytes=markdown_file.size)
+        if adoption:
+            from ..policy_adoption_analysis import assemble_policy_adoption_document
+
+            run_context = await assemble_policy_adoption_document(self, source_context, execution)
+            outline = _frozen_outline(self._state(run_context))
+        else:
+            outline = await load_revision_outline(self, run_context, execution)
+        view = await self._metric_planning_context(run_context, report_revision=report_revision)
+        handles = await self._registered_metric_dataset_handles(run_context, report_revision=report_revision)
+        lineage = tuple(DatasetLineage(datasetId=item.dataset_id, sourceId=item.source_id,
+            requirementId=item.requirement_id, sqlHash=item.sql_hash, rowCount=item.row_count, size=item.size,
+            sha256=item.sha256, periodRoles=item.period_roles, queryWindowId=item.query_window_id) for item in handles)
+        if draft.citations != authoritative_citations(lineage):
+            raise ReportingError('report_revision_execution_mismatch', '文档引用与新修订数据集不一致。')
+        context = RunContext(run_id=execution_run_id, session_id=thread_id,
+            user_id=execution.source_scope.user_id, session_state={})
+        sources = [await self.workspace_service.ahash_file(thread_id, item.path) for item in handles]
+        if any(item.get('missing') or (item.get('size'), item.get('sha256')) != (handle.size, handle.sha256)
+                for item, handle in zip(sources, handles, strict=True)):
+            raise ReportingError('report_revision_execution_mismatch', '文档数据集实际身份与新修订不一致。')
+        self.report_tools._store_job({'jobId': job_id, '_threadBinding': thread_binding(thread_id),
+            'sources': sources}, context)
+        branding = self.delivery_settings.branding
+        await self.report_tools.bind_page_layout(job_id,
+            self.delivery_settings.page_layout.model_dump(mode='json', by_alias=True), run_context=context)
+        await self.report_tools.bind_document_context(job_id, {
+            'title': outline.title,
+            'periodLabel': f'[{view.request.period.start.isoformat()}, {view.request.period.end.isoformat()})',
+            'organizationName': branding.organization_name, 'generatedByLabel': branding.generated_by_label,
+            'watermarkText': branding.watermark_text,
+            'generatedDate': datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),
+            'sectionNumbers': list(draft.section_numbers),
+            'sections': [{'code': section.code, 'sectionNumber': section.section_number, 'title': section.title}
+                for section in outline.sections],
+        }, run_context=context)
+        await self.report_tools.complete_document_heading_numbers(job_id,
+            [item.model_dump(mode='json', by_alias=True) for item in draft.heading_numbers], run_context=context)
+        issues = []
+        try:
+            source_links = await self._source_links_by_dataset(draft, run_context)
+        except Exception as error:
+            logger.warning('revision_document_sources_unavailable error_type={}', type(error).__name__)
+            source_links = {}
+            issues.append({'code': 'report_source_appendix_unavailable',
+                'message': '来源附录无法核对，已继续生成文档。'})
+        await self.report_tools.bind_citation_presentations(job_id, _citation_presentations(
+            lineage=lineage, requirements=(), analyses=(), snapshots=(), observed_facts=[],
+            source_links_by_dataset=source_links), run_context=context)
+        job_file = await self._write_immutable_artifact(thread_id, job_path, json.dumps({
+            'execution': execution.model_dump(mode='json', by_alias=True),
+            'manifest': manifest_file.model_dump(mode='json', by_alias=True),
+            'job': self.report_tools._load_job(job_id, context),
+        }, ensure_ascii=False, sort_keys=True, allow_nan=False).encode())
+        await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+            commandId=f'revision-document-job:{job_file.sha256}',
+            payload={'artifact': job_file.model_dump(mode='json', by_alias=True)}), **execution_options)
+        overview = unavailable_management_overview_projection(draft.markdown.sha256)
+        try:
+            from ...trace.contracts_v1 import canonical_sha256
+            from ..management_overview import management_overview_projection
+            from ..overview_sources import registered_management_overview
+
+            scope = self._scope(run_context)
+            registered_overview = await registered_management_overview(self.workspace_service, thread_id, draft,
+                canonical_sha256({key: scope[key] for key in ('userId', 'threadId')}))
+            overview = management_overview_projection(registered_overview, draft.markdown.sha256,
+                self.report_tools._load_job(job_id, context).get('_citationPresentations'))
+        except Exception as error:
+            logger.warning('revision_document_overview_unavailable error_type={}', type(error).__name__)
+            issues.append({'code': 'management_overview_evidence_unavailable',
+                'message': '经营总览证据不可用，已保留缺项说明并继续生成文档。'})
+        try:
+            from ..claim_presentation import registered_document_presentations
+
+            job = self.report_tools._load_job(job_id, context)
+            job['_claimSupportProjection'] = {'invalid': 'claim_support_unavailable'}
+            job.pop('_traceSourcePresentations', None)
+            self.report_tools._store_job(job, context)
+            presentations = await registered_document_presentations(self, run_context, draft)
+            job['_claimSupportProjection'] = presentations['claimSupport']
+            job['_traceSourcePresentations'] = presentations['traceSources']
+            if presentations['traceSources'] is not None:
+                options = job.get('_reportDesign', {}).get('options', {})
+                job.setdefault('_editorExportSettings', {}).setdefault('sources', options.get('sources', True))
+            if presentations.get('sourceIssue'):
+                issues.append(presentations['sourceIssue'])
+            self.report_tools._store_job(job, context)
+        except Exception as error:
+            logger.warning('revision_claim_support_projection_unavailable reason={}', type(error).__name__)
+            issues.append({'code': 'claim_support_projection_unavailable',
+                'message': '解释支持状态无法核验，已保留提示和下载。'})
+        try:
+            rendered = await self.report_tools._render_report_pair(job_id, draft.markdown.path, paths['pdf'],
+                artifact_manifest=draft.model_dump(mode='json', by_alias=True), management_overview=overview, run_context=context)
+        except Exception as error:
+            logger.warning('revision_document_render_response_unavailable error_type={}', type(error).__name__)
+            rendered = None
+        raw_validation = rendered.get('validation') if isinstance(rendered, dict) else None
+        validation = dict(raw_validation) if isinstance(raw_validation, dict) else {'ok': False, 'issues': [
+            {'code': 'document_validation_receipt_unavailable', 'message': '文档验收记录不可用。'}]}
+        validation['issues'] = [*(validation.get('issues') or []), *issues]
+        if issues:
+            validation['ok'] = False
+        actual_files = {}
+        for label, path in paths.items():
+            try:
+                actual = await self.workspace_service.ahash_file(thread_id, path)
+                if actual.get('missing') or not actual.get('size') or not actual.get('sha256'):
+                    raise OSError('document identity unavailable')
+                actual_files[label] = actual
+                if label in requested:
+                    result.update({f'{label}Path': path, f'{label}Sha256': actual['sha256'], f'{label}Size': actual['size']})
+                if validation.get(f'{label}Sha256') != actual['sha256']:
+                    validation['ok'] = False
+                    validation['issues'].append({'code': f'report_{label}_receipt_mismatch',
+                        'message': '文档验收回执与实际身份不一致，实际文件已保留。'})
+                await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+                    commandId=f'revision-document-{label}:{revision}:{actual["sha256"]}', payload={'artifact': actual}),
+                    **execution_options)
+            except Exception as error:
+                logger.warning('revision_document_checkpoint_unavailable format={} error_type={}', label, type(error).__name__)
+                validation['ok'] = False
+                validation['issues'].append({'code': f'report_{label}_checkpoint_unavailable',
+                    'message': '文档身份或检查点无法核对，实际可读格式已保留。'})
+        if not any(result.get(f'{label}Path') for label in requested):
+            raise ReportingError('report_artifact_unavailable', '没有可读取身份的已请求报告格式。')
+        if validation.get('ok') is True:
+            try:
+                common = dict(reportId=draft.report_id, revision=revision, reportBasisId=draft.report_basis_id,
+                    sourceMarkdownSha256=draft.markdown.sha256, sourceChartSha256s=tuple(item.sha256 for item in draft.charts),
+                    renderedChartIds=tuple(validation.get('chartIds') or ()), citationIds=tuple(validation.get('citationIds') or ()),
+                    sections=tuple(validation.get('sectionIds') or ()), sectionNumbers=draft.section_numbers,
+                    headingNumbers=draft.heading_numbers, sourceWarnings=draft.source_warnings)
+                def artifact(label, media):
+                    return ArtifactFile(path=paths[label], size=actual_files[label]['size'],
+                        sha256=actual_files[label]['sha256'], mediaType=media)
+                pdf = PdfArtifactManifest(**common, pdf=artifact('pdf', 'application/pdf'), pageCount=validation['pageCount'])
+                word = DocxArtifactManifest(**common, docx=artifact('word',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+                    convertedPageCount=validation['word']['convertedPageCount'],
+                    sectionCount=validation['word']['sectionCount'], tocEntryCount=validation['word']['tocEntryCount'])
+                validate_rendered_artifacts(draft, pdf, word, lineage=lineage)
+            except Exception as error:
+                logger.warning('revision_document_validation_failed error_type={}', type(error).__name__)
+                validation['ok'] = False
+                validation['issues'].append({'code': 'report_artifact_validation_failed',
+                    'message': '文档联合验收无法完成，实际文件已保留。'})
+        result.update({'markdownPath': draft.markdown.path, 'status': 'validated' if validation.get('ok') is True else 'validation_failed',
+            'validation': validation, 'validationIssues': list(validation['issues'])})
+        try:
+            await self._apply_durable_command(run_context, ReportingCommand(name='complete',
+                commandId=f'revision-document-render-complete:{revision}:{job_file.sha256}',
+                payload={**assembly, 'renderedDocument': dict(result)}), **execution_options)
+        except Exception as error:
+            logger.warning('revision_document_result_unavailable error_type={}', type(error).__name__)
+            issue = {'code': 'document_result_checkpoint_unavailable', 'message': '文档完成状态未确认，实际文件已保留，请读取任务结果核对。'}
+            result = {**result, 'status': 'validation_failed', 'validation': {**validation, 'ok': False,
+                'issues': [*validation['issues'], issue]}, 'validationIssues': [*validation['issues'], issue]}
+        return result
+
+    async def _native_claim_presentations(self, run_context, *, execution=None):
+        from ..claim_presentation import registered_native_claim_presentations
+        from ..policy_adoption import PolicyAdoptionExecution
+
+        if execution is None:
+            manifest = ReportArtifactManifest.model_validate(self._state(run_context)[REPORT_ARTIFACTS_STATE_KEY]['draft'])
+        else:
+            target_id = (execution.scope.run_id if isinstance(execution, PolicyAdoptionExecution)
+                else execution.execution_run_id)
+            durable = await self.state_repository.get(target_id)
+            identity = FileIdentity.model_validate(durable.payload['result']['manifest'])
+            if identity.model_dump(mode='json', by_alias=True) not in durable.payload.get('artifacts', ()):
+                raise ValueError('native claim manifest not registered')
+            manifest = await self._read_identity_model(self._scope(run_context)['threadId'], identity, ReportArtifactManifest)
+        return await registered_native_claim_presentations(self, run_context, manifest)
+
+    async def _render_pptx(self, run_context: RunContext, result: dict[str, Any], outline: Any, *, execution=None) -> dict[str, Any]:
+        from ..policy_adoption import (
+            PolicyAdoptionExecution,
+            policy_adoption_run_context,
+            require_policy_adoption_execution,
+        )
+
+        source_context = run_context
+        adoption = isinstance(execution, PolicyAdoptionExecution)
+        if adoption:
+            durable = await require_policy_adoption_execution(self, source_context, execution)
+            run_context = policy_adoption_run_context(execution)
+        execution_options = {} if execution is None or adoption else {'execution': execution}
         revision = max(1, int(result.get("revision", 0)))
-        title = outline.title
-        period = self._envelope(run_context).period
-        pptx_path = str(PurePosixPath(_report_pdf_path(
-            str(run_context.run_id), revision, title, period,
-        )).with_suffix(".pptx"))
+        if execution is None:
+            title = outline.title
+            state = self._state(run_context)
+            period = self._envelope(run_context).period
+            pptx_path = str(PurePosixPath(_report_pdf_path(
+                str(run_context.run_id), revision, title, period,
+            )).with_suffix(".pptx"))
+            period = f'{period.start.isoformat()} 至 {period.end.isoformat()}' if period is not None else ''
+        else:
+            from ..revision_execution import load_revision_outline, require_revision_execution
+
+            if not adoption:
+                durable = await require_revision_execution(self, run_context, execution, revision=revision)
+            if revision != execution.output_revision:
+                raise ReportingError('report_revision_execution_mismatch', '幻灯片修订号与已登记执行不同。')
+            target_run_id = execution.scope.run_id if adoption else execution.execution_run_id
+            thread_id = execution.scope.workspace_key if adoption else execution.source_scope.workspace_key
+            report_revision = 'initial' if adoption else execution.report_revision
+            if execution.requested_outputs != ('pptx',) or durable.payload.get('deliveryFormat') != 'pptx':
+                raise ReportingError('report_revision_execution_mismatch', 'PPTX渲染必须使用本修订冻结格式。')
+            # 新请求契约尚未冻结主题；使用引擎默认主题，不读取原报告可变会话配置。
+            state = {}
+            pptx_path = f'报表/智能分析/{target_run_id}/slides/revision-{revision}/report.pptx'
+            registered = next((FileIdentity.model_validate(item) for item in durable.payload.get('artifacts', ())
+                if item.get('path') == pptx_path), None)
+            if registered is not None:
+                await self._read_identity_bytes(thread_id, registered)
+                saved = durable.payload.get('result', {}).get('renderedPptx')
+                if isinstance(saved, Mapping) and (saved.get('pptxPath'), saved.get('pptxSha256'), saved.get('pptxSize')) == (
+                        registered.path, registered.sha256, registered.size):
+                    return dict(saved)
+                issue = {'code': 'pptx_validation_receipt_unavailable', 'message': 'PPTX文件已恢复，验收记录缺失或身份不一致，需复核。'}
+                return {**result, 'status': 'validation_failed', 'deliveryFormat': 'pptx',
+                    'pptxPath': registered.path, 'pptxSize': registered.size, 'pptxSha256': registered.sha256,
+                    'validation': {'ok': False, 'issues': [issue]}, 'validationIssues': [issue]}
+            existing = (await self.workspace_service.abatch_hash_files(self._scope(run_context)['threadId'], [pptx_path]))[0]
+            if not existing.get('missing'):
+                raise ReportingError('report_revision_execution_mismatch', '发现未登记PPTX，禁止自动覆盖或重新渲染，需核对实际结果。')
+            if adoption:
+                from ..policy_adoption_analysis import assemble_policy_adoption_slides
+
+                run_context = await assemble_policy_adoption_slides(self, source_context, execution)
+                expected_outline = _frozen_outline(self._state(run_context))
+                durable = await require_policy_adoption_execution(self, source_context, execution)
+            else:
+                expected_outline = await load_revision_outline(self, run_context, execution)
+            if outline != expected_outline:
+                raise ReportingError('report_revision_execution_mismatch', 'PPTX渲染必须使用本修订冻结提纲。')
+            title = outline.title
+            view = await self._metric_planning_context(run_context, report_revision=report_revision)
+            period = f'[{view.request.period.start.isoformat()}, {view.request.period.end.isoformat()})'
         validation: dict[str, Any] = {"ok": False, "issues": []}
         try:
-            durable = await self.state_repository.get(
-                str(run_context.run_id or self._scope(run_context)["externalRunId"])
-            )
+            if execution is None:
+                durable = await self.state_repository.get(
+                    str(run_context.run_id or self._scope(run_context)["externalRunId"])
+                )
             checkpoint = ReportingCheckpoint.model_validate(
                 durable.payload.get("workflowCheckpoint") if durable is not None else None
             )
@@ -654,6 +990,8 @@ class RuntimePublicationMixin:
                 raise ValueError("frozen analysis evidence unavailable")
             from .slides import SlideOutline, build_slide_outline
 
+            fact_contents = {key: await self._read_identity_bytes(self._scope(run_context)['threadId'], identity)
+                for key, identity in checkpoint.deterministic_fact_files.items()}
             if checkpoint.slide_outline_file is not None:
                 slide_outline = await self._read_identity_model(
                     self._scope(run_context)["threadId"], checkpoint.slide_outline_file, SlideOutline,
@@ -663,17 +1001,63 @@ class RuntimePublicationMixin:
                 graph = await self._read_identity_model(
                     self._scope(run_context)["threadId"], checkpoint.finding_graph_file, FindingGraph,
                 )
-                if slide_outline != build_slide_outline(graph, manifest, title=title):
+                if slide_outline != build_slide_outline(graph, manifest, title=title, fact_contents=fact_contents,
+                        analysis_summaries=slide_outline.analysis_summaries):
                     raise ValueError("slide outline evidence mismatch")
             else:
                 graph = await self._read_identity_model(
                     self._scope(run_context)["threadId"], checkpoint.finding_graph_file, FindingGraph,
                 )
-                slide_outline = build_slide_outline(graph, manifest, title=title)
+                slide_outline = build_slide_outline(graph, manifest, title=title, fact_contents=fact_contents)
             chart_files = {item.chart_id: item.source_file for item in manifest.charts}
+            from ...trace.native_claims import present_native_summary
+
+            try:
+                claim_presentations = await self._native_claim_presentations(run_context, execution=execution)
+            except Exception as error:
+                logger.warning('report_native_claim_support_unavailable format=pptx error_type={}', type(error).__name__)
+                claim_presentations = {}
+                validation['issues'].append({'code': 'native_claim_support_unavailable',
+                    'message': '解释支持关系未能核验，已保留待核实提示和实际文件。'})
+            validation['claimSupport'] = []
             pages: list[dict[str, object]] = []
             chart_assets: dict[str, bytes] = {}
+            presented_analyses = set()
             for slide in slide_outline.slides:
+                conclusion = present_native_summary(slide.bullets[0], claim_presentations,
+                    section_ids=tuple(section.code for section in outline.sections
+                        if set(section.analysis_ids).intersection(slide.evidence_ids)),
+                    analysis_ids=slide.evidence_ids)
+                validation['claimSupport'].append({'slideId': slide.slide_id, 'bulletIndex': 0,
+                    'support': conclusion['support']})
+                bullets = [conclusion['text'], *slide.bullets[1:]]
+                for summary in slide_outline.analysis_summaries:
+                    for block in summary.blocks:
+                        if block.block_id in presented_analyses or block.block_id not in slide.evidence_ids:
+                            continue
+                        fragments, cursor = [], 0
+                        try:
+                            for _, end, text in narrative_paragraphs(block):
+                                prefix = block.markdown[cursor:end - len(text)].strip()
+                                if prefix:
+                                    fragments.append(prefix)
+                                fragments.append(text)
+                                cursor = end
+                            suffix = block.markdown[cursor:].strip()
+                            if suffix:
+                                fragments.append(suffix)
+                        except Exception as error:
+                            logger.warning('pptx_narrative_paragraphs_unavailable error_type={}', type(error).__name__)
+                            validation['issues'].append({'code': 'pptx_narrative_paragraphs_unavailable',
+                                'message': '分析说明逐段展示未能核验，已保留原文和实际文件。'})
+                            fragments = [block.markdown]
+                        for text in fragments:
+                            shown = present_native_summary(text, claim_presentations,
+                                section_ids=(summary.section_code,), analysis_ids=(block.block_id,))
+                            validation['claimSupport'].append({'slideId': slide.slide_id, 'bulletIndex': len(bullets),
+                                'support': shown['support']})
+                            bullets.append(shown['text'])
+                        presented_analyses.add(block.block_id)
                 chart_name = None
                 for chart_id in slide.chart_ids:
                     chart = chart_files.get(chart_id)
@@ -697,7 +1081,7 @@ class RuntimePublicationMixin:
                     break
                 pages.append({
                     "title": slide.title,
-                    "bullets": list(slide.bullets),
+                    "bullets": bullets,
                     "evidenceIds": [*slide.finding_ids, *slide.evidence_ids],
                     **({"chartPath": chart_name} if chart_name else {}),
                 })
@@ -750,8 +1134,12 @@ class RuntimePublicationMixin:
                     name="record_artifact",
                     commandId=f"rendered-pptx:{revision}:{actual['sha256']}",
                     payload={"artifact": actual},
-                ),
+                ), **execution_options,
             )
+            if execution is not None:
+                await self._apply_durable_command(run_context, ReportingCommand(
+                    name='complete', commandId=f'revision-pptx-complete:{revision}:{actual["sha256"]}',
+                    payload={**durable.payload['result'], 'renderedPptx': dict(result)}), **execution_options)
         except Exception as error:
             logger.warning("report_pptx_generation_failed error_type={}", type(error).__name__)
             validation["issues"].append({"code": "pptx_generation_failed", "message": "PPTX 生成或验收失败。"})
@@ -762,17 +1150,29 @@ class RuntimePublicationMixin:
             except Exception:
                 pass
             result.update({"status": "validation_failed", "deliveryFormat": "pptx", "validation": {**validation, "ok": False}, "validationIssues": list(validation["issues"])})
-        self._state(run_context)[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+        if execution is None:
+            self._state(run_context)[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
         return result
 
-    async def _draft_workbook(self, run_context: RunContext, *, spec_path: str, output_path: str) -> Any:
+    async def _draft_workbook(self, run_context: RunContext, *, spec_path: str, output_path: str, execution=None) -> Any:
         from ...code_agent.context import ReportingCodingTaskContext
         from .code_generation import ReportingCodeGenerationRunner
 
         if self.code_mode_runtime is None:
             raise ReportingError("report_code_mode_runtime_missing", "工作簿汇编 CodeMode runtime 未配置。")
+        task_run_id = str(run_context.run_id)
+        if execution is not None:
+            from ..revision_execution import require_revision_execution
+
+            await require_revision_execution(self, run_context, execution)
+            root = PurePosixPath(f'报表/智能分析/{execution.execution_run_id}/workbook/revision-{execution.output_revision}')
+            if execution.requested_outputs != ('xlsx',) or any(
+                    not PurePosixPath(self.workspace_service.normalize_path(path, allow_root=False)).is_relative_to(root)
+                    for path in (spec_path, output_path)):
+                raise ReportingError('report_revision_execution_mismatch', '工作簿汇编只能读写本修订声明的目录。')
+            task_run_id = execution.execution_run_id
         workspace = self._run_workspace(run_context)
-        task_id = f"workbook:{run_context.run_id}:{hashlib.sha256(output_path.encode()).hexdigest()[:20]}"
+        task_id = f"workbook:{task_run_id}:{hashlib.sha256(output_path.encode()).hexdigest()[:20]}"
         script_path = str(PurePosixPath(output_path).with_suffix(".workbook.py"))
         task = ReportingCodingTaskContext(
             task_id=task_id, task_kind="workbook", code_mode_session_id=task_id,
@@ -795,24 +1195,120 @@ class RuntimePublicationMixin:
         )
         return await runner.run_workbook(task, workspace, source)
 
-    async def _render_xlsx(self, run_context: RunContext, result: dict[str, Any], outline: Any) -> dict[str, Any]:
+    async def _render_xlsx(self, run_context: RunContext, result: dict[str, Any], outline: Any, *, execution=None) -> dict[str, Any]:
         """只从冻结事实与实际使用的 CSV 汇编；所有后续故障保留已生成文件。"""
         from ...delivery.xlsx import inspect_workbook
+        from ..policy_adoption import (
+            PolicyAdoptionExecution,
+            policy_adoption_run_context,
+            require_policy_adoption_execution,
+        )
 
-        state = self._state(run_context)
+        source_context = run_context
+        adoption = isinstance(execution, PolicyAdoptionExecution)
+        if adoption:
+            durable = await require_policy_adoption_execution(self, source_context, execution)
+            run_context = policy_adoption_run_context(execution)
+        execution_options = {} if execution is None or adoption else {'execution': execution}
         thread_id = self._scope(run_context)["threadId"]
-        revision = int(result.get("revision", 0)) + 1
-        period = self._envelope(run_context).period
-        period_label = f"{period.start.isoformat()} 至 {period.end.isoformat()}"
-        path = str(PurePosixPath(_report_pdf_path(str(run_context.run_id), revision, outline.title, period)).with_suffix(".xlsx"))
+        if execution is None:
+            state = self._state(run_context)
+            revision = int(result['revision'])
+            period = self._envelope(run_context).period
+            period_label = f"{period.start.isoformat()} 至 {period.end.isoformat()}"
+            path = str(PurePosixPath(_report_pdf_path(str(run_context.run_id), revision, outline.title, period)).with_suffix(".xlsx"))
+        else:
+            from ..revision_execution import (
+                load_revision_outline,
+                prepare_revision_dataset_contexts,
+                require_revision_execution,
+            )
+
+            revision = int(result.get('revision', 0))
+            if not adoption:
+                durable = await require_revision_execution(self, run_context, execution, revision=revision)
+            if revision != execution.output_revision:
+                raise ReportingError('report_revision_execution_mismatch', '工作簿修订号与已登记执行不同。')
+            target_run_id = execution.scope.run_id if adoption else execution.execution_run_id
+            report_revision = 'initial' if adoption else execution.report_revision
+            if execution.requested_outputs != ('xlsx',) or durable.payload.get('deliveryFormat') != 'xlsx':
+                raise ReportingError('report_revision_execution_mismatch', '工作簿必须使用本修订冻结格式。')
+            # 恢复只接受本修订登记来源，不能把调用方携带的旧结果当成新文件依据。
+            result = {key: value for key, value in result.items() if key not in {
+                'datasets', 'workbookSources', 'xlsxPath', 'xlsxSize', 'xlsxSha256',
+                'validation', 'validationIssues', 'status'}}
+            path = f'报表/智能分析/{target_run_id}/workbook/revision-{revision}/report.xlsx'
+            registered = {item['path']: FileIdentity.model_validate(item) for item in durable.payload.get('artifacts', ())}
+            if path in registered:
+                actual = registered[path]
+                await self._read_identity_bytes(thread_id, actual, max_bytes=actual.size)
+                try:
+                    receipt_identity = registered[path + '.receipt.json']
+                    saved = json.loads(await self._read_identity_bytes(thread_id, receipt_identity, max_bytes=receipt_identity.size))
+                    if (saved.get('execution') != execution.model_dump(mode='json', by_alias=True)
+                            or FileIdentity.model_validate(saved['artifact']) != actual
+                            or FileIdentity.model_validate(saved['spec']) != registered.get(saved['spec']['path'])):
+                        raise ValueError('workbook receipt identity mismatch')
+                    spec_identity = FileIdentity.model_validate(saved['spec'])
+                    await self._read_identity_bytes(thread_id, spec_identity, max_bytes=spec_identity.size)
+                    from ...code_agent.context import ExecutionReceipt
+
+                    receipt = ExecutionReceipt.model_validate(saved['executionReceipt'])
+                    if (receipt.source_file != registered.get(receipt.source_file.path)
+                            or receipt.output_files != (actual,)):
+                        raise ValueError('workbook execution receipt mismatch')
+                    await self._read_identity_bytes(thread_id, receipt.source_file, max_bytes=receipt.source_file.size)
+                    return {**result, 'deliveryFormat': 'xlsx', 'xlsxPath': path,
+                        'xlsxSize': actual.size, 'xlsxSha256': actual.sha256,
+                        'validation': saved['validation'], 'validationIssues': saved['validation'].get('issues', []),
+                        'workbookSources': saved.get('workbookSources', []),
+                        'status': 'validated' if saved['validation'].get('ok') else 'validation_failed'}
+                except Exception as error:
+                    logger.warning('report_revision_workbook_receipt_unavailable error_type={}', type(error).__name__)
+                    issue = {'code': 'xlsx_validation_receipt_unavailable', 'message': '工作簿已恢复，验收或来源记录未获核验，需复核。'}
+                    return {**result, 'status': 'validation_failed', 'deliveryFormat': 'xlsx',
+                        'xlsxPath': path, 'xlsxSize': actual.size, 'xlsxSha256': actual.sha256,
+                        'validation': {'ok': False, 'issues': [issue]}, 'validationIssues': [issue]}
+            existing = (await self.workspace_service.abatch_hash_files(thread_id, [path]))[0]
+            if not existing.get('missing'):
+                raise ReportingError('report_revision_execution_mismatch', '发现未登记工作簿，禁止自动覆盖或重新汇编，需核对实际结果。')
+            if adoption:
+                from ..policy_adoption_analysis import prepare_policy_adoption_narrative
+
+                run_context = await prepare_policy_adoption_narrative(self, source_context, execution)
+                expected_outline = _frozen_outline(self._state(run_context))
+            else:
+                expected_outline = await load_revision_outline(self, run_context, execution)
+            if outline != expected_outline:
+                raise ReportingError('report_revision_execution_mismatch', '工作簿必须使用本修订冻结提纲。')
+            view = await self._metric_planning_context(run_context, report_revision=report_revision)
+            period = view.request.period
+            period_label = f'[{period.start.isoformat()}, {period.end.isoformat()})'
+            if adoption:
+                state = self._state(run_context)
+            else:
+                contexts = await prepare_revision_dataset_contexts(self, run_context, execution)
+                state = {REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY: [item.model_dump(mode='json', by_alias=True) for item in contexts]}
+            handles = await self._registered_metric_dataset_handles(run_context, report_revision=report_revision)
+            result = {**result, 'datasets': [item.public_dict() for item in handles]}
         receipt_path = str(PurePosixPath(path).with_suffix(".xlsx.receipt.json"))
         validation: dict[str, Any] = {"ok": False, "issues": []}
         try:
-            durable = await self.state_repository.get(str(run_context.run_id or self._scope(run_context)["externalRunId"]))
+            if execution is None:
+                durable = await self.state_repository.get(str(run_context.run_id or self._scope(run_context)["externalRunId"]))
             checkpoint = ReportingCheckpoint.model_validate(durable.payload.get("workflowCheckpoint") if durable is not None else None)
+            if execution is not None:
+                from ..checkpoint import AnalysisArtifact
+
+                identities = (checkpoint.analysis_manifest_file, *checkpoint.deterministic_fact_files.values())
+                if any(file is None or registered.get(file.path) != file for file in identities):
+                    raise ValueError('workbook analysis evidence not registered')
+                artifact = await self._read_identity_model(thread_id, checkpoint.analysis_manifest_file, AnalysisArtifact)
+                if artifact.evidence_manifest != checkpoint.evidence_manifest:
+                    raise ValueError('workbook frozen evidence mismatch')
             # 与 PDF/Word 一样复用当前 revision 检查点；读取回执前验证其登记身份。
             frozen_receipt = next((item for item in checkpoint.files if item.path == receipt_path), None)
-            if frozen_receipt is not None:
+            if execution is None and frozen_receipt is not None:
                 raw = await self._read_identity_bytes(thread_id, frozen_receipt, max_bytes=4 * 1024 * 1024)
                 saved = json.loads(raw)
                 actual = await self.workspace_service.ahash_file(thread_id, path)
@@ -858,13 +1354,21 @@ class RuntimePublicationMixin:
                         break
                 if evidence.analysis_id not in documents:
                     validation["issues"].append({"code": "xlsx_fact_values_unavailable", "message": "部分分析未登记结构化数值，工作簿保留结论与明细，不从正文反推指标。", "analysisId": evidence.analysis_id})
+            try:
+                claim_presentations = await self._native_claim_presentations(run_context, execution=execution)
+            except Exception as error:
+                logger.warning('report_native_claim_support_unavailable format=xlsx error_type={}', type(error).__name__)
+                claim_presentations = {}
+                validation['issues'].append({'code': 'native_claim_support_unavailable',
+                    'message': '解释支持关系未能核验，已保留待核实提示和实际文件。'})
             sheets, sources = build_workbook_sheets(manifest=manifest, outline=outline,
-                fact_documents=documents, datasets=datasets, period=period_label)
+                fact_documents=documents, datasets=datasets, period=period_label, claim_presentations=claim_presentations)
+            validation['claimSupport'] = sources['claims']
             workbook_sources = [{**item, "datasets": {key: sources["datasets"][key] for key in item["datasetIds"] if key in sources["datasets"]}} for item in sources["cells"]]
             spec = json.dumps({"title": outline.title, "period": period_label, "sheets": sheets, "sourceMapping": sources}, ensure_ascii=False, allow_nan=False).encode()
             spec_path = str(PurePosixPath(path).parent / f"workbook-spec-{hashlib.sha256(spec).hexdigest()}.json")
             spec_identity = await self._write_immutable_artifact(thread_id, spec_path, spec)
-            generated = await self._draft_workbook(run_context, spec_path=spec_path, output_path=path)
+            generated = await self._draft_workbook(run_context, spec_path=spec_path, output_path=path, **execution_options)
             actual = await self.workspace_service.ahash_file(thread_id, path)
             output = next(item for item in generated.execution_receipt.output_files if item.path == path)
             if actual.get("missing") or actual.get("sha256") != output.sha256 or actual.get("size") != output.size:
@@ -880,12 +1384,19 @@ class RuntimePublicationMixin:
                 "xlsxPath": path, "xlsxSize": actual["size"], "xlsxSha256": actual["sha256"],
                 "validation": validation, "validationIssues": list(validation["issues"]), "workbookSources": workbook_sources})
             receipt_data = json.dumps({"artifact": actual, "spec": spec_identity.model_dump(mode="json", by_alias=True),
-                "executionReceipt": generated.execution_receipt.model_dump(mode="json", by_alias=True), "validation": validation, "workbookSources": workbook_sources}, ensure_ascii=False).encode()
+                "executionReceipt": generated.execution_receipt.model_dump(mode="json", by_alias=True), "validation": validation, "workbookSources": workbook_sources,
+                **({'execution': execution.model_dump(mode='json', by_alias=True)} if execution is not None else {})}, ensure_ascii=False).encode()
             receipt_identity = await self._write_immutable_artifact(thread_id, receipt_path, receipt_data)
-            await self._apply_durable_command(run_context, ReportingCommand(name="record_artifact",
-                commandId=f"rendered-xlsx:{revision}:{actual['sha256']}", payload={"artifact": actual}))
+            if execution is None:
+                await self._apply_durable_command(run_context, ReportingCommand(name="record_artifact",
+                    commandId=f"rendered-xlsx:{revision}:{actual['sha256']}", payload={"artifact": actual}))
+            else:
+                for file in (spec_identity, generated.script_file, output, receipt_identity):
+                    await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+                        commandId=f'revision-workbook:{hashlib.sha256(file.path.encode()).hexdigest()}:{file.sha256}',
+                        payload={'artifact': file.model_dump(mode='json', by_alias=True)}), **execution_options)
             files = self._merge_checkpoint_files(checkpoint.files, spec_identity, receipt_identity, generated.script_file, output)
-            await self._persist_reporting_checkpoint(run_context, checkpoint.model_copy(update={"files": files}))
+            await self._persist_reporting_checkpoint(run_context, checkpoint.model_copy(update={"files": files}), **execution_options)
         except Exception as error:
             logger.warning("report_xlsx_generation_failed error_type={}", type(error).__name__)
             validation["issues"].append({"code": "xlsx_generation_failed", "message": "工作簿汇编、验收或检查点登记未完成，实际已生成文件仍可下载。", "details": {"errorType": type(error).__name__}})
@@ -896,7 +1407,8 @@ class RuntimePublicationMixin:
             except Exception:
                 pass
             result.update({"status": "validation_failed", "deliveryFormat": "xlsx", "validation": {**validation, "ok": False}, "validationIssues": list(validation["issues"])})
-        state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
+        if execution is None:
+            state[REPORT_WORKFLOW_RESULT_STATE_KEY] = result
         return result
 
     async def _source_links_by_dataset(
@@ -1173,9 +1685,33 @@ class RuntimePublicationMixin:
                     completed.artifact_file,
                     SectionArtifact,
                 )
+                from .business_evidence import revalidate_section_knowledge
+
+                try:
+                    current_section = await revalidate_section_knowledge(
+                        self, run_context, stored_section,
+                        report_revision=str(checkpoint.revision),
+                    )
+                except Exception as error:  # 知识核验失败不阻断已生成文件签发
+                    logger.warning("publication_section_knowledge_unavailable reason={}", type(error).__name__)
+                    warning = {
+                        "code": "report_section_knowledge_unavailable",
+                        "message": "发布前无法核验章节知识依据，相关解释未获确认；已有文件仍可下载。",
+                        "sectionCode": stored_section.section_code,
+                    }
+                    warnings.append(warning)
+                    issue(warning["code"], warning["message"], sectionCode=stored_section.section_code)
+                    # 不把旧 claims 交给后续语义验收。
+                    continue
+                if current_section.knowledge_status in {"partial", "unavailable"}:
+                    issue(
+                        "report_section_knowledge_unavailable",
+                        "发布前章节知识依据已撤销或不可核验，已有文件可能包含旧解释，仍可下载。",
+                        sectionCode=current_section.section_code,
+                    )
                 parsed_section_artifacts.append(
                     SectionArtifact.model_validate(
-                        stored_section.model_dump(mode="json", by_alias=True)
+                        current_section.model_dump(mode="json", by_alias=True)
                     )
                 )
             section_artifacts = tuple(parsed_section_artifacts)
@@ -1301,7 +1837,114 @@ class RuntimePublicationMixin:
             "auditSummary": audit_summary,
         }
 
-    async def publish_report(self, step_input: StepInput, run_context: RunContext) -> StepOutput:
+    async def _publish_revision_report(self, run_context: RunContext, execution) -> StepOutput:
+        """从已登记子执行恢复发布输入；不借用原会话，也不重新渲染。"""
+        from ..policy_adoption import PolicyAdoptionExecution, require_policy_adoption_execution
+        from ..revision_execution import require_revision_execution
+
+        adoption = isinstance(execution, PolicyAdoptionExecution)
+        if adoption:
+            durable = await require_policy_adoption_execution(self, run_context, execution)
+            self.workspace_service.registry.resolve(execution.scope)
+            execution_run_id = execution.scope.run_id
+            report_id = execution.scope.run_id
+            thread_id = execution.scope.workspace_key
+        else:
+            durable = await require_revision_execution(self, run_context, execution)
+            execution_run_id = execution.execution_run_id
+            report_id = execution.source_scope.run_id
+            thread_id = execution.source_scope.workspace_key
+        delivery = durable.payload.get('deliveryFormat')
+        if delivery not in {'document', 'pptx', 'xlsx'}:
+            raise ReportingError('report_revision_publication_unavailable', '本修订格式尚未完成正式交付登记。')
+        root = f'报表/智能分析/{execution_run_id}'
+        expected = ({'pdf': f'{root}/document-render/revision-{execution.output_revision}/report.pdf',
+            'docx': f'{root}/document-render/revision-{execution.output_revision}/report.docx'}
+            if delivery == 'document' else {delivery: f'{root}/{"slides" if delivery == "pptx" else "workbook"}/revision-{execution.output_revision}/report.{delivery}'})
+        registered = {item['path']: FileIdentity.model_validate(item) for item in durable.payload.get('artifacts', ())}
+        if not any(expected[output] in registered for output in execution.requested_outputs):
+            raise ReportingError('report_artifact_unavailable', '本修订尚无可恢复的已登记交付文件，发布不会自动启动渲染。')
+        rendered = (await self._render_and_validate(run_context, execution=execution) if delivery == 'document'
+            else await (self._render_pptx if delivery == 'pptx' else self._render_xlsx)(
+                run_context, {'revision': execution.output_revision}, None, execution=execution))
+        issues = [{'code': 'revision_publication_review_incomplete',
+            'message': '新修订业务发布核对尚未完成，已生成文件仍可下载；不表示业务验收通过。'}]
+        content = {**rendered, 'reportId': report_id,
+            'revision': execution.output_revision, 'deliveryFormat': delivery,
+            'jobId': rendered.get('jobId', execution_run_id),
+            'editorJob': {'jobId': rendered.get('jobId', execution_run_id)},
+            'editorAvailable': False, 'reportTitle': '新修订报告',
+            'markdownPath': f'{root}/unavailable.md', 'sourceWarnings': [], 'codingReceipts': []}
+        manifest = None
+        try:
+            identity = FileIdentity.model_validate(durable.payload['result']['manifest'])
+            if registered.get(identity.path) != identity:
+                raise ValueError('revision manifest registration mismatch')
+            manifest = await self._read_identity_model(thread_id, identity, ReportArtifactManifest)
+            if (manifest.report_id != report_id or manifest.revision != execution.output_revision
+                    or manifest.report_basis_id != execution.basis_id):
+                raise ValueError('revision manifest ownership mismatch')
+            markdown = FileIdentity(path=manifest.markdown.path, size=manifest.markdown.size, sha256=manifest.markdown.sha256)
+            if registered.get(markdown.path) != markdown:
+                raise ValueError('revision markdown registration mismatch')
+            data = await self._read_identity_bytes(thread_id, markdown)
+            content.update({'artifactManifest': {**identity.model_dump(mode='json', by_alias=True), 'mediaType': 'application/json'},
+                'artifactManifestPath': identity.path, 'markdownPath': markdown.path,
+                'reportTitle': data.decode('utf-8').splitlines()[0].lstrip('# ').strip() or '新修订报告'})
+        except Exception as error:
+            logger.warning('revision_publication_manifest_unavailable error_type={}', type(error).__name__)
+            issues.append({'code': 'revision_publication_manifest_unavailable',
+                'message': '新修订来源清单或正文身份无法核验，未提供编辑与追溯；实际文件仍可下载。'})
+        if content.get('artifactManifest'):
+            try:
+                if delivery == 'document':
+                    job_path = f'{root}/document-render/revision-{execution.output_revision}.job.json'
+                    job_file = registered[job_path]
+                    saved = json.loads(await self._read_identity_bytes(thread_id, job_file))
+                    if (saved['execution'] != execution.model_dump(mode='json', by_alias=True)
+                            or FileIdentity.model_validate(saved['manifest']) != identity
+                            or saved['job']['jobId'] != rendered['jobId']):
+                        raise ValueError('revision document job mismatch')
+                    job = saved['job']
+                    job['render'] = {'markdown': manifest.markdown.model_dump(mode='json', by_alias=True),
+                        **{label: {'path': rendered[f'{label}Path'], 'size': rendered[f'{label}Size'],
+                            'sha256': rendered[f'{label}Sha256']} for label in ('pdf', 'word') if rendered.get(f'{label}Path')}}
+                else:
+                    job = {'jobId': content['jobId'], 'sources': [], 'render': {
+                        'markdown': manifest.markdown.model_dump(mode='json', by_alias=True)}}
+                    if delivery == 'xlsx':
+                        if not isinstance(rendered.get('workbookSources'), list):
+                            raise ValueError('workbook source receipt unavailable')
+                        job['workbookSources'] = rendered['workbookSources']
+                if adoption:
+                    from ...trace.contracts_v1 import canonical_sha256
+                    from ..policy_adoption_analysis import PolicyAdoptionAnalysis
+
+                    preparation = await self._read_identity_model(thread_id,
+                        registered[f'{root}/policy-adoption/analysis-preparation.json'], PolicyAdoptionAnalysis)
+                    if preparation.execution_sha256 != canonical_sha256(execution.model_dump(mode='json', by_alias=True)):
+                        raise ValueError('policy adoption analysis preparation mismatch')
+                    context_file = preparation.context_file
+                    if registered.get(context_file.path) != context_file:
+                        raise ValueError('policy adoption analysis context not registered')
+                else:
+                    context_path = (f'报表/智能分析/{execution.source_scope.run_id}/revision-executions/'
+                        f'{execution_run_id}/dataset-contexts.json')
+                    context_file = registered[context_path]
+                await self._read_identity_bytes(thread_id, context_file)
+                content.update({'editorJob': job, 'editorAvailable': True,
+                    'analysisContextFile': context_file.model_dump(mode='json', by_alias=True)})
+            except Exception as error:
+                logger.warning('revision_publication_editor_job_unavailable error_type={}', type(error).__name__)
+                issues.append({'code': 'revision_publication_editor_job_unavailable',
+                    'message': '新修订编辑任务身份无法核验，暂不提供编辑入口；实际文件仍可下载。'})
+        content.update({'formalReleaseAllowed': False,
+            'publicationGate': {'formalReleaseAllowed': False, 'issues': issues, 'warnings': []}})
+        return StepOutput(content=content)
+
+    async def publish_report(self, step_input: StepInput, run_context: RunContext, *, execution=None) -> StepOutput:
+        if execution is not None:
+            return await self._publish_revision_report(run_context, execution)
         feedback = self._feedback(step_input)
         if feedback:
             # 反馈恢复沿用已冻结的交付分支，不让 PPT 进入文档成稿。
@@ -1418,9 +2061,8 @@ class RuntimePublicationMixin:
                 "reportTitle": _frozen_outline(state).title,
                 "deliveryFormat": state.get("report_request_context", {}).get("deliveryFormat", "document"),
                 "revision": (
+                    manifest.revision if manifest is not None else
                     int(result.get("revision", 1))
-                    if state.get("report_request_context", {}).get("deliveryFormat") == "pptx"
-                    else int(result.get("revision", 0)) + 1
                 ),
                 "markdownPath": result["markdownPath"],
                 **(
@@ -1447,7 +2089,7 @@ class RuntimePublicationMixin:
         checkpoint: ReportingCheckpoint,
         section_artifacts: tuple[SectionArtifact, ...],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """核对 claim.factIds 是否存在于冻结 bundle，异常写入验收原因。
+        """核对 claim.factIds 是否存在于冻结事实或正式计算，异常写入验收原因。
 
         SectionClaim 未绑定数值选择器，不能将其 value 与事实的 total/change
         猜测比较；基期、月均和单月均可能引用同一事实。正文数值由已有的
@@ -1466,7 +2108,18 @@ class RuntimePublicationMixin:
         for analysis_id, identity in checkpoint.deterministic_fact_files.items():
             try:
                 raw = await self._read_identity_bytes(thread_id, identity, max_bytes=16 * 1024 * 1024)
-                document = json.loads(raw)
+                document = read_fact_document(raw)
+                document_facts = {}
+                context = document.get("metricContext")
+                if context is not None:
+                    for calculation in context["calculations"]:
+                        for entry in calculation["results"]:
+                            document_facts[entry["factId"]] = entry
+                for array_name in ("metrics", "breakdowns", "derivedMetrics", "comparisons", "reconciliations"):
+                    for entry in document.get(array_name, ()) or ():
+                        fact_id = entry.get("factId") if isinstance(entry, dict) else None
+                        if isinstance(fact_id, str):
+                            document_facts[fact_id] = entry
             except Exception:
                 issues.append(
                     {
@@ -1476,11 +2129,7 @@ class RuntimePublicationMixin:
                     }
                 )
                 continue
-            for array_name in ("metrics", "breakdowns", "derivedMetrics", "comparisons", "reconciliations"):
-                for entry in document.get(array_name, ()) or ():
-                    fact_id = entry.get("factId") if isinstance(entry, dict) else None
-                    if isinstance(fact_id, str):
-                        fact_ids[fact_id] = entry
+            fact_ids.update(document_facts)
         for artifact in section_artifacts:
             for claim in artifact.claims:
                 for fact_id in claim.fact_ids:
@@ -1525,8 +2174,29 @@ class RuntimePublicationMixin:
         source_warnings: tuple[SourceWarning, ...] = (),
         section_finding_ids: Mapping[str, tuple[str, ...]] | None = None,
         section_grouping_reasons: Mapping[str, str] | None = None,
+        execution=None,
     ) -> ReportArtifactManifest:
         scope = self._scope(run_context)
+        execution_options = {} if execution is None else {'execution': execution}
+        if execution is not None:
+            from ..revision_execution import load_revision_outline, require_revision_execution
+
+            child = await require_revision_execution(self, run_context, execution, revision=revision)
+            output_root = f'报表/智能分析/{execution.execution_run_id}/'
+            if any(not self.workspace_service.normalize_path(path, allow_root=False).startswith(output_root)
+                    for path in (manifest_path, markdown_path)):
+                raise ReportingError('report_revision_execution_mismatch', '新修订清单不得写入原报告或其他执行目录。')
+            checkpoint = ReportingCheckpoint.model_validate(child.payload['workflowCheckpoint'])
+            expected_handles = await self._registered_metric_dataset_handles(run_context, report_revision=execution.report_revision)
+            expected_lineage = tuple(DatasetLineage(datasetId=item.dataset_id, sourceId=item.source_id,
+                requirementId=item.requirement_id, sqlHash=item.sql_hash, rowCount=item.row_count,
+                size=item.size, sha256=item.sha256, periodRoles=item.period_roles, queryWindowId=item.query_window_id)
+                for item in expected_handles)
+            if (handles != expected_handles or lineage != expected_lineage
+                    or {key: (item.path, item.size, item.sha256) for key, item in (fact_files or {}).items()}
+                    != {key: (item.path, item.size, item.sha256) for key, item in checkpoint.deterministic_fact_files.items()}):
+                raise ReportingError('report_revision_execution_mismatch', '新修订清单必须使用完整登记的数据集和事实。')
+            source_outline = await load_revision_outline(self, run_context, execution)
         accepted_by_path: dict[str, dict[str, Any]] = {}
         for item in accepted_artifacts:
             path = item.get("path") if isinstance(item, dict) else None
@@ -1584,10 +2254,17 @@ class RuntimePublicationMixin:
                     "report_artifact_file_changed",
                     "报告 Markdown 在正式验收后发生变化。",
                 )
+            if execution is None:
+                basis_id = (await self._basis_execution_context(run_context)).basis.id
+                source_outline = _frozen_outline(self._state(run_context))
+            else:
+                view = await self._metric_planning_context(run_context, report_revision=execution.report_revision)
+                basis_id = view.basis_id
             trace_index_file = None
             if getattr(self, "trace_registration_enabled", True):
                 trace_index_file = await self._write_trace_index(
                     manifest_relative,
+                    report_basis_id=basis_id,
                     handles=handles,
                     lineage=lineage,
                     markdown_artifact=ArtifactFile(
@@ -1609,18 +2286,19 @@ class RuntimePublicationMixin:
                     heading_numbers=heading_numbers,
                     revision=revision,
                     run_context=run_context,
+                    **execution_options,
                 )
             manifest = build_authoritative_manifest(
                 report_id=str(run_context.run_id),
                 revision=revision,
                 task_key=task_key,
-                effective_profile_hash=self._profile(run_context).effective_profile_hash,
+                report_basis_id=basis_id,
                 markdown_path=markdown_path,
                 markdown=markdown_bytes.decode("utf-8"),
                 accepted_artifacts=current_artifacts,
                 lineage=lineage,
                 sections=tuple(
-                    section.code for section in _frozen_outline(self._state(run_context)).sections
+                    section.code for section in source_outline.sections
                 ),
                 section_finding_ids=section_finding_ids,
                 section_grouping_reasons=section_grouping_reasons,
@@ -1660,6 +2338,7 @@ class RuntimePublicationMixin:
         self,
         manifest_relative: str,
         *,
+        report_basis_id: str,
         handles: tuple[DatasetHandle, ...],
         lineage: tuple[DatasetLineage, ...],
         markdown_artifact: ArtifactFile,
@@ -1676,6 +2355,7 @@ class RuntimePublicationMixin:
         review_notices: tuple | None = None,
         markdown: str | None = None,
         heading_numbers: tuple[HeadingNumber, ...] = (),
+        execution=None,
     ) -> ArtifactFile:
         """构建并写入 revision 追溯索引，返回供权威清单登记的产物身份。
 
@@ -1685,9 +2365,25 @@ class RuntimePublicationMixin:
 
         scope = self._scope(run_context)
         run_id = str(run_context.run_id or scope["externalRunId"])
+        execution_options = {} if execution is None else {'execution': execution}
+        if execution is None:
+            quality_state = {}
+            durable_run_id = run_id
+        else:
+            from ..revision_execution import require_revision_execution
+
+            await require_revision_execution(self, run_context, execution, revision=revision)
+            if report_basis_id != execution.basis_id:
+                raise ReportingError('report_revision_execution_mismatch', '追溯计算依据与新执行不同。')
+            durable_run_id = execution.execution_run_id
+            quality_state = {'report_quality_issues': []}
         drilldown_metrics = await self._build_drilldown_metrics(
-            fact_files=fact_files or {}, run_context=run_context
+            fact_files=fact_files or {}, run_context=run_context, **execution_options
         )
+        from .business_evidence import register_section_knowledge
+
+        knowledge_dependencies, knowledge_registration_status = await register_section_knowledge(
+            self, run_context, basis_id=report_basis_id, **execution_options)
         def build(computation_files: tuple[FileIdentity, ...], computations: tuple) -> Any:
             return build_csv_trace_index(
                 handles=handles,
@@ -1696,7 +2392,7 @@ class RuntimePublicationMixin:
                 revision=revision,
                 workflow_run_id=run_id,
                 markdown_file=markdown_artifact,
-                profile_hash=self._profile(run_context).effective_profile_hash,
+                report_basis_id=report_basis_id,
                 fact_files=fact_files,
                 server_table_traces=server_table_traces,
                 chart_trace_files=chart_trace_files,
@@ -1707,6 +2403,8 @@ class RuntimePublicationMixin:
                 subject_bindings=subject_bindings,
                 review_notices=review_notices,
                 drilldown_metrics=drilldown_metrics,
+                knowledge_dependencies=knowledge_dependencies,
+                knowledge_registration_status=knowledge_registration_status,
             )
 
         index = build_with_optional_computation_layer(build, computation_files, computations)
@@ -1720,7 +2418,8 @@ class RuntimePublicationMixin:
             # Register a versioned shadow record through the existing file
             # channel; old strict manifest/index shapes remain unchanged.
             try:
-                quality_state = self._state(run_context)
+                if execution is None:
+                    quality_state = self._state(run_context)
                 quality_state["report_quality_issues"] = [
                     item for item in quality_state.get("report_quality_issues", [])
                     if item.get("revision") != revision
@@ -1743,12 +2442,12 @@ class RuntimePublicationMixin:
                 )
                 from ..questions import QuestionSet
 
-                policy = self._state(run_context).get("report_request_context", {}).get("assertionPolicy", {})
+                policy = quality_state.get("report_request_context", {}).get("assertionPolicy", {})
                 if policy.get("mode", "shadow") != "off":
                     if policy.get("ruleVersion", "assertions/1") != "assertions/1":
                         raise ReportingError("quality_rule_unavailable", "历史质量规则不可执行，不能用新规则替代原核验。")
                     sources = {}
-                    durable_questions = await self.state_repository.get(run_id)
+                    durable_questions = await self.state_repository.get(durable_run_id)
                     raw_questions = durable_questions.payload.get("questionSpecs") if durable_questions is not None else None
                     questions = QuestionSet.model_validate(raw_questions) if raw_questions is not None else None
                     from ..answer_review import AnswerReviewPlan
@@ -1789,16 +2488,72 @@ class RuntimePublicationMixin:
                             sources[file.resource_id] = raw_source
                         except Exception:
                             logger.warning("quality_source_unavailable resource_id={}", file.resource_id)
+                    from .business_evidence import resolve_runtime_knowledge
+
+                    _, knowledge_evidence = await resolve_runtime_knowledge(self, run_context, index)
                     evaluate = partial(
                         evaluate_quality_bundle, index, markdown, sources,
+                        knowledge_evidence=knowledge_evidence,
                         authorization_scope_hash=canonical_sha256({key: scope[key] for key in ("userId", "threadId")}),
                         mode="enabled" if policy.get("mode") == "enabled" else "shadow",
                         questions=questions,
                         heading_numbers=heading_numbers,
                     )
                     bundle = await anyio.to_thread.run_sync(partial(evaluate, answer_review_plan=answer_review_plan))
+                    if bundle.registered_question_coverage and questions is not None:
+                        from ...semantics.question_coverage import RegisteredAnswerPlan
+                        from ..registered_answer_registration import (
+                            RegisteredAnswerRegistrationContext,
+                            validate_registered_answer_plan,
+                        )
+
+                        native_raw = durable_questions.payload.get('registeredAnswerPlan') if durable_questions else None
+                        native_provider = getattr(self, 'registered_answer_plan_provider', None)
+                        native_stage = 'read'
+                        try:
+                            approved_native = None
+                            if native_raw is not None:
+                                approved_native = RegisteredAnswerPlan.model_validate(native_raw)
+                                approved_native.validate_questions(questions, index.report_basis_id)
+                            elif native_provider is not None:
+                                import copy
+
+                                native_context = RegisteredAnswerRegistrationContext(index.report_id, index.revision,
+                                    index.report_basis_id, questions, bundle.claim_support, index.subject_bindings)
+                                if len(repr(native_context).encode()) > 2 * 1024 * 1024:
+                                    raise ValueError('正式问题批准上下文超出容量限制')
+                                native_stage = 'provider'
+                                with anyio.fail_after(10):
+                                    proposal = await native_provider(copy.deepcopy(native_context))
+                                if proposal is not None:
+                                    native_stage = 'proposal'
+                                    approved_native = RegisteredAnswerPlan.model_validate_json(proposal.model_dump_json(by_alias=True))
+                                    validate_registered_answer_plan(approved_native, native_context)
+                                    frozen_native = approved_native.model_dump(mode='json', by_alias=True)
+                                    native_stage = 'freeze'
+                                    committed = await self._apply_durable_command(run_context, ReportingCommand(
+                                        name='freeze_registered_answer_plan', commandId='registered-answer:' + canonical_sha256(frozen_native),
+                                        payload={'basisId': index.report_basis_id, 'plan': frozen_native}), **execution_options)
+                                    native_stage = 'receipt'
+                                    if (committed.state.report_run_id != durable_run_id
+                                        or committed.state.payload.get('registeredAnswerPlan') != frozen_native
+                                        or committed.state.payload.get('questionSpecs') != questions.model_dump(mode='json', by_alias=True)):
+                                        raise ValueError('正式问题完成映射的持久化回执不一致')
+                            if approved_native is not None:
+                                native_stage = 'evaluation'
+                                bundle = await anyio.to_thread.run_sync(partial(evaluate,
+                                    registered_answer_plan=approved_native))
+                        except Exception as error:
+                            logger.warning('registered_answer_plan_unavailable stage={} reason={}', native_stage, type(error).__name__)
+                            bundle = bundle.model_copy(update={'issues': (*bundle.issues, QualityIssue(
+                                code='registered_answer_plan_unavailable', reasons=(f'registration_{native_stage}_unavailable',)))})
+                            quality_state.setdefault('report_quality_issues', []).append({
+                                'code': 'registered_answer_plan_unavailable', 'status': 'unknown', 'revision': revision,
+                                'reason': f'registration_{native_stage}_unavailable',
+                                'message': '正式问题完成映射未能核验，保留逐问题缺项；实际可用产物仍可下载。'})
                     # The provider is application construction, never request/session/model data.
-                    provider = getattr(self, "answer_review_plan_provider", None)
+                    provider = (getattr(self, "answer_review_plan_provider", None)
+                                if not bundle.registered_question_coverage else None)
                     if raw_review_plan is None and questions is not None and provider is not None:
                         registration_stage = "context"
                         try:
@@ -1827,9 +2582,9 @@ class RuntimePublicationMixin:
                                     name="freeze_answer_review_plan",
                                     commandId="answer-plan:" + canonical_sha256(frozen),
                                     payload={"plan": frozen},
-                                ))
+                                ), **execution_options)
                                 registration_stage = "receipt"
-                                if (committed.state.report_run_id != index.report_id
+                                if (committed.state.report_run_id != durable_run_id
                                         or committed.state.payload.get("answerReviewPlan") != frozen
                                         or committed.state.payload.get("questionSpecs") != questions.model_dump(mode="json", by_alias=True)):
                                     raise ValueError("answer registration durable receipt mismatch")
@@ -1853,7 +2608,7 @@ class RuntimePublicationMixin:
                             await self._apply_durable_command(run_context, ReportingCommand(
                                 name="record_answer_review", commandId=f"answer-review:{index.revision}:{bundle.input_sha256}",
                                 payload={"revision": index.revision, "review": bundle.answer_review.model_dump(mode="json", by_alias=True)},
-                            ))
+                            ), **execution_options)
                         except Exception:
                             logger.warning("report_answer_review_checkpoint_unavailable")
                     quality_path = str(PurePosixPath(manifest_relative).with_name(QUALITY_FILENAME))
@@ -1877,7 +2632,7 @@ class RuntimePublicationMixin:
             except Exception as error:
                 logger.warning("report_quality_evaluation_unavailable reason={}", type(error).__name__)
                 try:
-                    self._state(run_context).setdefault("report_quality_issues", []).append({
+                    quality_state.setdefault("report_quality_issues", []).append({
                         "code": "quality_evaluation_unavailable", "status": "unknown",
                         "reason": type(error).__name__, "revision": revision,
                         "message": "质量检查或记录暂不可用，未标记通过；实际可用产物仍可下载。",
@@ -1901,7 +2656,9 @@ class RuntimePublicationMixin:
                     logger.warning("report_chart_fact_binding_unavailable chart={} error={}",
                                    chart.chart_id, type(error).__name__)
                     try:
-                        self._state(run_context).setdefault("report_quality_issues", []).append({
+                        if execution is None:
+                            quality_state = self._state(run_context)
+                        quality_state.setdefault("report_quality_issues", []).append({
                             "code": "chart_fact_binding_unavailable", "status": "unknown",
                             "chartId": chart.chart_id, "revision": revision,
                             "message": "图表事实引用未能精确核验，保留图表与下载产物，不标记来源核验通过。",
@@ -1910,6 +2667,13 @@ class RuntimePublicationMixin:
                         logger.warning("report_chart_fact_binding_notice_unavailable")
             bound_charts.append(chart)
         index = index.model_copy(update={"chart_traces": tuple(bound_charts)})
+        if execution is not None and quality_state.get('report_quality_issues'):
+            try:
+                await self._apply_durable_command(run_context, ReportingCommand(name='record_warnings',
+                    commandId=f'revision-trace-quality:{revision}:{markdown_artifact.sha256}',
+                    payload={'warnings': quality_state['report_quality_issues']}), **execution_options)
+            except Exception:
+                logger.warning('report_revision_quality_notice_unavailable')
         content = encode_trace_index(index)
         index_path = trace_index_path_for(manifest_relative)
         self.workspace_service.validate_content(content)
@@ -1941,9 +2705,16 @@ class RuntimePublicationMixin:
         *,
         fact_files: Mapping[str, ArtifactFile],
         run_context: RunContext,
+        execution=None,
     ) -> tuple:
         """从已冻结 facts/Profile/快照列签发 B7 能力；歧义项保持不可用。"""
 
+        if execution is not None:
+            from ..revision_execution import require_revision_execution
+
+            await require_revision_execution(self, run_context, execution)
+            # 正式聚合结果尚未登记可授权下钻的明细粒度；不借用旧Profile签发能力。
+            return ()
         state = self._state(run_context)
         raw_contexts = state.get(REPORT_ANALYSIS_DATA_CONTEXT_STATE_KEY, ())
         dataset_columns: dict[str, tuple[str, ...]] = {}
@@ -1982,6 +2753,9 @@ class RuntimePublicationMixin:
                     f"下钻声明引用的事实文件与登记身份不一致: {analysis_id}",
                 )
             bundles.append(document)
+        # 正式计算上下文不是旧式明细指标；没有下钻操作数就不读取旧Profile或签发能力。
+        if not any(bundle.get('metrics') or bundle.get('derivedMetrics') for bundle in bundles):
+            return ()
         profile = self._profile(run_context)
         snapshots = self._snapshots(run_context)
         row_preserving_requirements = set(

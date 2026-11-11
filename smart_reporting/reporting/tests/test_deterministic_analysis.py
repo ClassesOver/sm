@@ -818,16 +818,7 @@ def test_correlation_skips_incompatible_metric_scopes_with_warning():
 
 
 
-def test_profile_month_dimension_makes_month_start_dates_compare_the_whole_window():
-    from smart_reporting.reporting.workflow.runtime.datasets import _profile_monthly_period_columns
-
-    profile = {"dimensions": [
-        {"code": "month", "kind": "time", "fieldRefs": ["rj.dwd_income_budget_view.data_date"]},
-        {"code": "year", "kind": "time", "fieldRefs": ["rj.dwd_project_budget_view.year"]},
-    ]}
-    assert _profile_monthly_period_columns(profile) == {("dwd_income_budget_view", "data_date")}
-    assert _profile_monthly_period_columns(None) == frozenset()
-
+def test_explicit_month_granularity_compares_the_whole_window():
     current = b"month,department,amount\n2025-01-01,A,10\n2025-02-01,A,20\n2025-03-01,A,30\n"
     baseline = b"month,department,amount\n2024-01-01,A,5\n2024-02-01,A,10\n2024-03-01,A,15\n"
 
@@ -837,7 +828,7 @@ def test_profile_month_dimension_makes_month_start_dates_compare_the_whole_windo
             for role, data in (("current", current), ("yoy", baseline))
         )
 
-    # 未经 Profile 确认的 date 粒度保持按日判断，只能对齐最后一期。
+    # 明确声明date时保持按日判断，不根据月初日期推断month。
     day = build_deterministic_analysis_bundle(analysis(), contexts("date")).comparisons[0]
     assert (day.period_start, day.period_end) == ("2025-03-01", "2025-03-01")
     month = build_deterministic_analysis_bundle(analysis(), contexts("month")).comparisons[0]

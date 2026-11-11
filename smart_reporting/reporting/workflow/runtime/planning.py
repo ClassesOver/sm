@@ -15,6 +15,9 @@ from sqlglot import exp
 from ....report_editor.service import ReportEditorContext
 from ....workspace import WorkspacePathConflict
 from ...delivery.artifacts_v1 import ArtifactFile, ReportArtifactManifest
+from ...semantics.basis import BasisCalculationReceipt, BasisSelectionReceipt
+from ...semantics.models import MetricDefinition, SemanticIssue
+from ...semantics.selection import MetricSelectionProposal
 from ...structured_output import StructuredOutputCallBudget
 from ...trace.contracts_v1 import RevisionTraceIndexV1, derive_resource_id
 from ..query_pipeline import period_column_has_time
@@ -25,10 +28,10 @@ from .base import (
     REPORT_APPROVED_QUERIES_STATE_KEY,
     REPORT_CAPABILITIES_STATE_KEY,
     REPORT_DATA_REQUIREMENTS_STATE_KEY,
+    REPORT_DATA_SHAPE_ISSUES_STATE_KEY,
     REPORT_DATA_SHAPES_STATE_KEY,
     REPORT_DATA_UNDERSTANDING_STATE_KEY,
     REPORT_DETAILED_ANALYSIS_PLAN_STATE_KEY,
-    REPORT_EFFECTIVE_PROFILE_STATE_KEY,
     REPORT_OUTLINE_HASH_STATE_KEY,
     REPORT_OUTLINE_STATE_KEY,
     REPORT_REQUEST_CONTEXT_STATE_KEY,
@@ -50,7 +53,6 @@ from .base import (
     GeneratedQueryBatch,
     Mapping,
     MeasureSemantic,
-    MeasureSemanticProposal,
     ModelColumn,
     ModelTable,
     ModelTermsResponse,
@@ -59,7 +61,6 @@ from .base import (
     PlanningSchemaColumn,
     PlanningSchemaTable,
     QueryRequirement,
-    ReconciliationShape,
     ReportArtifactSpec,
     ReportDownloadScope,
     ReportingCommand,
@@ -86,7 +87,6 @@ from .base import (
     _validation_issue,
     anyio,
     approve_query_batch,
-    build_outline_shape_view,
     cli_result,
     collect_data_shape,
     complete_cleanup,
@@ -97,18 +97,14 @@ from .base import (
     logger,
     loguru_logger,
     parse_ddl,
-    parse_field_ref,
     parse_reporting_workflow_input,
     payload_sha256,
     publication_result,
     re,
-    require_sources,
     resolve_profile_capabilities,
     resolve_reporting_workflow_scope,
     resolve_schema_snapshot,
 )
-from .datasets import _analysis_context_payload
-from .models import _NUMERIC_MEASURE_TYPE_PATTERN, MeasureSemanticDecision
 from .validation import (
     SPLIT_REQUIREMENTS_ACTION,
     _analysis_bundle_semantic_issues,
@@ -119,7 +115,6 @@ from .validation import (
     _normalize_duplicate_requirements,
     _normalize_requirement_columns,
     _normalize_requirement_columns_in_payload,
-    _normalize_requirement_metric_codes,
     _normalize_requirement_periods,
     _normalize_unsafe_multi_table_requirements,
     _resolve_requirement_comparison_roles,
@@ -158,6 +153,46 @@ class _TerminalCleanupCheckpoint(BaseModel):
 
 
 class RuntimePlanningMixin:
+    async def select_report_metrics(
+        self, step_input: StepInput, run_context: RunContext
+    ) -> StepOutput:
+        """首轮选择以不可变回执恢复，模型只能提出已发布指标候选。"""
+        from ....management.models import ManagementError, ManagementScope
+
+        context = await self._basis_execution_context(run_context)
+        scope = self._scope(run_context)
+        identity = {
+            "user_id": scope["userId"], "thread_id": scope["callerThreadId"],
+            "report_revision": "initial",
+        }
+        managed_scope = ManagementScope(scope["database"], scope["companyId"])
+        service = self.report_basis_service
+        try:
+            receipts = await service.load_basis_receipts(
+                str(run_context.run_id), managed_scope, **identity,
+            )
+            stored = next((item for item in receipts if isinstance(item, BasisSelectionReceipt)
+                and item.receipt_id == "initial-metric-selection"), None)
+            if stored is None:
+                proposal = MetricSelectionProposal.model_validate(await self._run_planner(
+                    self._metric_selection_agent, {
+                        "questions": [item.model_dump(mode="json", by_alias=True)
+                            for item in context.basis.request_summary.questions],
+                        "metrics": [item.model_dump(mode="json", by_alias=True)
+                            for item in context.metrics if item.version_ref() in context.policy.metric_versions],
+                        "request": context.basis.request_summary.model_dump(mode="json", by_alias=True),
+                    }, run_context,
+                ))
+                stored = await service.append_selection_receipt(
+                    str(run_context.run_id), managed_scope, **identity,
+                    receipt_id="initial-metric-selection",
+                    requests=[item.model_dump(mode="json", by_alias=True) for item in proposal.questions],
+                    vault=self.configuration_provider.vault,
+                )
+        except ManagementError as error:
+            raise ReportingError(error.code, error.message) from error
+        return StepOutput(content=stored.model_dump(mode="json", by_alias=True))
+
     async def normalize_report_request(
         self, step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
@@ -185,7 +220,7 @@ class RuntimePlanningMixin:
                 request = request.model_copy(update={"delivery_format": frozen_format})
             self._record_normalized_request(state, request)
             return StepOutput(
-                content=request.model_dump(mode="json", by_alias=True, exclude_none=True)
+                content=request.model_dump(mode="json", by_alias=True, exclude_none=True, exclude_unset=True)
             )
 
         assert isinstance(request, ReportPromptInput)
@@ -203,6 +238,18 @@ class RuntimePlanningMixin:
             prompt_payload["referenceIssues"] = reference_issues
         if feedback:
             prompt_payload["supplement"] = feedback
+        basis_service = getattr(self, "report_basis_service", None)
+        scenario_candidates = None
+        if basis_service is not None:
+            from ....management.models import ManagementScope
+
+            scope = self._scope(run_context)
+            scenario_candidates = await basis_service.scenario_candidates(
+                str(run_context.run_id), ManagementScope(scope["database"], scope["companyId"]),
+                user_id=scope["userId"], thread_id=scope["callerThreadId"],
+            )
+            prompt_payload["scenarioCandidates"] = [
+                item.model_dump(mode="json", by_alias=True) for item in scenario_candidates]
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
         # 恢复时沿用已冻结的交付格式，不重新解释原始需求。
@@ -222,6 +269,10 @@ class RuntimePlanningMixin:
         self._record_request_context(state, request.prompt, feedback, delivery_format)
         period = normalized.period or _single_explicit_period(request.prompt, feedback)
         missing: list[str] = []
+        if scenario_candidates is not None and normalized.scenario not in {
+            item.scenario for item in scenario_candidates
+        }:
+            missing.append("请明确已登记的报告场景；尚未登记统计口径的场景暂不可选用。")
         if period is None:
             missing.append(normalized.clarification_question or "请明确唯一的分析期间。")
         semantic_domains = tuple(dict.fromkeys(normalized.domains))
@@ -241,6 +292,12 @@ class RuntimePlanningMixin:
             {
                 "version": "1",
                 "reportGoal": request.prompt,
+                **({"scenario": normalized.scenario} if normalized.scenario else {}),
+                **({"questions": [item.model_dump(mode="json", by_alias=True) for item in normalized.questions]}
+                    if normalized.questions else {}),
+                **({"displayUnit": normalized.display_unit} if normalized.display_unit else {}),
+                **({"comparisonPeriod": normalized.comparison_period.model_dump(mode="json")}
+                    if normalized.comparison_period else {}),
                 "reportType": report_type,
                 "deliveryFormat": delivery_format,
                 **({"sectionCount": normalized.section_count} if normalized.section_count is not None else {}),
@@ -250,7 +307,7 @@ class RuntimePlanningMixin:
         )
         self._record_normalized_request(state, envelope)
         return StepOutput(
-            content=envelope.model_dump(mode="json", by_alias=True, exclude_none=True)
+            content=envelope.model_dump(mode="json", by_alias=True, exclude_none=True, exclude_unset=True)
         )
 
     @staticmethod
@@ -307,6 +364,7 @@ class RuntimePlanningMixin:
         fresh = request_questions(
             current["originalGoal"], tuple(item["content"] for item in current.get("feedback", ())
                                            if isinstance(item, dict) and isinstance(item.get("content"), str)),
+            questions=envelope.questions or (),
         )
         stored = current.get("questionSpecs") or {}
         # 已冻结到分析阶段的问题只在请求未变时沿用；同一会话追加反馈会带来新的必答问题，
@@ -317,6 +375,15 @@ class RuntimePlanningMixin:
             current["questionSpecs"] = fresh.model_dump(mode="json", by_alias=True)
         current.update(
             {
+                "knowledgeAsOf": envelope.knowledge_as_of.isoformat().replace("+00:00", "Z") if envelope.knowledge_as_of else None,
+                "scenario": envelope.scenario,
+                "statisticalPolicyVersion": (envelope.statistical_policy_version.model_dump(mode="json", by_alias=True)
+                    if envelope.statistical_policy_version else None),
+                "questions": ([item.model_dump(mode="json", by_alias=True) for item in envelope.questions]
+                    if envelope.questions else None),
+                "displayUnit": envelope.display_unit,
+                "comparisonPeriod": (envelope.comparison_period.model_dump(mode="json")
+                    if envelope.comparison_period else None),
                 "reportType": envelope.report_type,
                 "deliveryFormat": envelope.delivery_format,
                 "sectionCount": envelope.section_count,
@@ -471,6 +538,7 @@ class RuntimePlanningMixin:
                     )
                     if (
                         index_markdown is None
+                        or source_index.report_basis_id != source_manifest.report_basis_id
                         or source_index.report_id != source_manifest.report_id
                         or source_index.revision != source_manifest.revision
                         or source_index.workflow_run_id != workflow_run_id
@@ -572,8 +640,19 @@ class RuntimePlanningMixin:
 
                 editor_job = _remap_paths(editor_job)
             if source_manifest is not None and manifest_identity is not None:
-                from ....report_editor.trace_revisions import snapshot_revision_lineage
+                from ....report_editor.trace_revisions import (
+                    snapshot_revision_lineage,
+                    verify_revision_lineage_files,
+                )
 
+                if source_markdown == revision_markdown and source_manifest.revision == content['revision']:
+                    try:
+                        await verify_revision_lineage_files(self.workspace_service, thread_id,
+                            manifest=source_manifest, index=source_index)
+                    except Exception as error:
+                        _drop_lineage(error)
+                    # 本修订已经冻结在目标目录；重写清单/索引会与原不可变登记冲突。
+                    return revision_markdown, editor_job
                 target_manifest_path = str(
                     revision_markdown.parent / PurePosixPath(manifest_identity.path).name
                 )
@@ -616,8 +695,10 @@ class RuntimePlanningMixin:
                     )
             return revision_markdown, editor_job
 
-        editor_available = True
+        editor_available = content.get('editorAvailable', True) is True
         try:
+            if not editor_available:
+                raise ValueError('published editor input unavailable')
             revision_markdown, editor_job = await _prepare_editor_snapshot()
         except Exception as error:  # noqa: BLE001 - 编辑快照是附加交付项
             editor_available = False
@@ -717,6 +798,7 @@ class RuntimePlanningMixin:
                     workflowRunId=workflow_run_id,
                     markdownPath=str(revision_markdown),
                     artifactManifest=content.get("artifactManifest"),
+                    analysisContextFile=content.get("analysisContextFile"),
                     job=content["editorJob"],
                     scope=scope.as_state(),
                 )
@@ -784,6 +866,9 @@ class RuntimePlanningMixin:
         )
         if publication_issues:
             result["publicationIssues"] = publication_issues
+        if isinstance(content.get("validation"), dict):
+            result["validation"] = content["validation"]
+            result["validationIssues"] = list(content.get("validationIssues") or [])
         return result
 
     async def _issue_http_pptx_publication(self, **values: Any) -> dict[str, Any]:
@@ -859,7 +944,7 @@ class RuntimePlanningMixin:
         editor_context_persisted = False
         editor_raw: str | None = None
         editor_expires_at: datetime | None = None
-        if selected and self.editor_grants is not None and scope_matches:
+        if selected and self.editor_grants is not None and scope_matches and content.get('editorAvailable', True) is True:
             try:
                 editor_context = ReportEditorContext(
                     reportId=content["reportId"], revision=content["revision"],
@@ -867,6 +952,7 @@ class RuntimePlanningMixin:
                     markdownPath=content["markdownPath"], job=content["editorJob"],
                     scope=scope.as_state(), deliveryFormat=delivery_format,
                     artifactManifest=content.get("artifactManifest"),
+                    analysisContextFile=content.get("analysisContextFile"),
                     **{f"{delivery_format}Path": path, f"{delivery_format}Size": size,
                        f"{delivery_format}Sha256": digest},
                 )
@@ -994,27 +1080,24 @@ class RuntimePlanningMixin:
             if step_input.previous_step_content is not None
             else step_input.input
         )
-        managed = None
-        metadata = None
-        if getattr(self, "configuration_provider", None) is not None:
-            managed = await self._managed_snapshot(
-                run_context, freeze=True, source_ids=envelope.source_ids
+        from ....management.models import ManagementError, ManagementScope
+
+        service = getattr(self, "report_basis_service", None)
+        build = getattr(self, "report_build_identity", None)
+        if service is None or build is None:
+            raise ReportingError("report_configuration_missing", "尚未配置新报告计算依据及构建身份。")
+        scope = self._scope(run_context)
+        try:
+            basis = await service.register_request_basis(
+                str(run_context.run_id), ManagementScope(scope["database"], scope["companyId"]),
+                user_id=scope["userId"], thread_id=scope["callerThreadId"],
+                request=envelope, build_identity=build,
             )
-            sources = tuple(managed.sources.values())
-            profile = managed.profile
-            default_source_ids = tuple(managed.sources)
-        else:
-            source_ids = envelope.source_ids or self.registry.require_defaults()
-            configured = require_sources(self.registry.sources, source_ids)
-            sources = tuple(self._starrocks_source(item) for item in configured)
-            profile = self._resolve_profile(sources)
-            default_source_ids = self.registry.default_source_ids
-            if self.metadata_client is not None:
-                selected_agent = await self.metadata_client.query_agent()
-                metadata = await self.metadata_client.query_model(
-                    agent_id=selected_agent.code,
-                    sources=configured,
-                )
+        except ManagementError as error:
+            raise ReportingError(error.code, error.message) from error
+        managed = await self._basis_execution_context(run_context)
+        sources = tuple(managed.sources.values())
+        default_source_ids = tuple(managed.sources)
 
         snapshots: list[SourceSchemaSnapshot] = []
         previews: list[dict[str, Any]] = []
@@ -1036,8 +1119,7 @@ class RuntimePlanningMixin:
                 source=source,
                 metadata=metadata,
                 catalog=catalog,
-                profile_measure_semantics=profile.measure_semantics,
-                preserve_metadata=managed is not None,
+                preserve_metadata=True,
             )
             if managed is not None:
                 actual = {(table.database.lower(), table.name.lower()): table for table in catalog}
@@ -1079,13 +1161,10 @@ class RuntimePlanningMixin:
                     "allowedTables": list(allowed_tables),
                     "metadataRevision": snapshot.revision,
                     "schemaHash": snapshot.schema_hash,
-                    "reportingProfile": profile.profile_id,
-                    "effectiveProfileHash": profile.effective_profile_hash,
+                    "basisId": basis.id,
                 }
             )
 
-        snapshots = list(_apply_profile_scope_filters_to_snapshots(tuple(snapshots), profile))
-        _validate_reporting_profile_schema(profile, tuple(snapshots))
         state = self._state(run_context)
         workflow_input = envelope.workflow_payload(default_source_ids=default_source_ids)
         workflow_input.pop("schemaInput", None)
@@ -1093,14 +1172,13 @@ class RuntimePlanningMixin:
         state[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in snapshots
         ]
-        state[REPORT_EFFECTIVE_PROFILE_STATE_KEY] = profile.model_dump(mode="json", by_alias=True)
         if managed is not None:
             state["report_configuration_warnings"] = configuration_warnings
         # 元数据 Agent 只用于本步服务端查询；report_workflow_input 是后续各步
         # 反序列化的公开请求契约，不能写入未声明的 agentId 等内部字段。
         self._assert_state_safe(state)
         return StepOutput(
-            content={"sources": previews, "configurationWarnings": configuration_warnings}
+            content={"basisId": basis.id, "sources": previews, "configurationWarnings": configuration_warnings}
         )
 
     def _budgeted_data_scope_schemas(
@@ -1206,8 +1284,8 @@ class RuntimePlanningMixin:
         """在一个 Workflow 边界内先确定画像范围，再执行受限数据画像。
 
         两个内部动作仍保持独立实现和状态写入顺序：画像只能读取已通过校验的数据理解
-        计划，后续语义候选也只能消费完整 DataShape。合并的是外部状态转换，不是数据
-        探查权限或失败语义；任一动作失败都会让当前步骤失败关闭，不能继续到指标语义。
+        计划，后续探索只能消费完整 DataShape。合并的是外部状态转换，不是数据
+        探查权限或失败语义；任一动作失败都会让当前步骤失败关闭，不能伪造完整画像。正式指标结果仍由登记回执提供。
         """
         plan_output = await self.plan_data_scope(step_input, run_context)
         profile_output = await self.profile_source(
@@ -1223,14 +1301,13 @@ class RuntimePlanningMixin:
         return StepOutput(content=profile_content)
 
     async def profile_source(self, _step_input: StepInput, run_context: RunContext) -> StepOutput:
-        await self._ensure_managed_execution_state(run_context)
+        execution = await self._basis_execution_context(run_context)
         envelope = self._envelope(run_context)
         snapshots = self._snapshots(run_context)
-        if getattr(self, "configuration_provider", None) is not None and _semantic_data_understanding_issues(
+        if _semantic_data_understanding_issues(
             self._data_understanding(run_context).model_dump(mode="json", by_alias=True), snapshots
         ):
             raise ReportingError("report_data_understanding_invalid", "画像范围不属于已冻结目录。")
-        profile_filters = _profile_scope_filters_by_table(self._profile(run_context), snapshots)
         selected_source_ids = {
             item.source_id for item in self._data_understanding(run_context).tables
         }
@@ -1245,6 +1322,7 @@ class RuntimePlanningMixin:
         )
         shapes: list[DataShape | None] = [None] * len(inputs)
         errors: list[ReportingError | None] = [None] * len(inputs)
+        issues: list[SemanticIssue | None] = [None] * len(inputs)
 
         async def profile(
             index: int,
@@ -1262,19 +1340,15 @@ class RuntimePlanningMixin:
                 for table in snapshot.tables
                 if f"{table.database.lower()}.{table.name.lower()}" in selected_names
             )
-            allowed_tables = tuple(sorted(selected_names))
+            allowed_tables = tuple(sorted(f"{table.database}.{table.name}" for table in snapshot.tables))
             adapter = StarRocksDataSourceAdapter(source, allowed_tables=allowed_tables)
             try:
                 shapes[index] = await collect_data_shape(
                     adapter,
                     catalog_scope=_catalog_scope(selected_tables),
                     preserve_metadata=getattr(self, "configuration_provider", None) is not None,
-                    scope_filters={
-                        table.qualified_name: profile_filters.get(
-                            (source.id.lower(), table.database.lower(), table.name.lower()), {}
-                        )
-                        for table in _catalog_scope(selected_tables)
-                    },
+                    policy=execution.policy,
+                    policy_catalog=_catalog_scope(tuple(table for item in snapshots for table in item.tables)),
                     period_start=envelope.period.start,
                     period_end=envelope.period.end,
                     period_columns={item.table: item.period_column for item in selected},
@@ -1284,8 +1358,13 @@ class RuntimePlanningMixin:
                     global_limiter=global_limiter,
                 )
             except ReportingError as error:
-                errors[index] = error
-                task_group.cancel_scope.cancel()
+                if error.code in {"metric_filter_not_applicable", "metric_filter_null_comparison",
+                    "metric_join_not_supported", "join_fanout"}:
+                    issues[index] = SemanticIssue(code=error.code, object_id=source.id,
+                        message=error.message, impact="unavailable")
+                else:
+                    errors[index] = error
+                    task_group.cancel_scope.cancel()
             finally:
                 with anyio.CancelScope(shield=True):
                     await adapter.aclose()
@@ -1298,224 +1377,18 @@ class RuntimePlanningMixin:
         if any(errors):
             raise next(error for error in errors if error is not None)
         completed = [shape for shape in shapes if shape is not None]
-        if len(completed) != len(inputs):
+        if len(completed) + sum(issue is not None for issue in issues) != len(inputs):
             raise ReportingError("report_data_shape_failed", "数据画像采集结果不完整。")
         state = self._state(run_context)
         state[REPORT_DATA_SHAPES_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in completed
         ]
-        self._assert_state_safe(state)
-        return StepOutput(content={"dataShapes": state[REPORT_DATA_SHAPES_STATE_KEY]})
-
-    async def propose_measure_semantics(
-        self, step_input: StepInput, run_context: RunContext
-    ) -> StepOutput:
-        await self._ensure_managed_execution_state(run_context)
-        snapshots = self._snapshots(run_context)
-        plan = self._data_understanding(run_context)
-        profile = self._profile(run_context)
-        candidate_refs = _measure_semantic_candidate_refs(snapshots, plan, profile)
-        if not candidate_refs:
-            # API/Profile 已覆盖全部候选，或剩余数值字段已经由 Profile 明确声明为维度。
-            # 此分支不调用模型，HumanReview 谓词也会返回 False，因此不会制造无意义暂停。
-            return StepOutput(content=MeasureSemanticProposal())
-
-        refs_by_table: dict[str, list[str]] = {}
-        for field_ref in candidate_refs:
-            refs_by_table.setdefault(field_ref.rsplit(".", 1)[0], []).append(field_ref)
-        decisions: list[MeasureSemanticDecision] = []
-        for table_refs in refs_by_table.values():
-            for start in range(0, len(table_refs), 6):
-                output = await self._propose_measure_semantic_batch(
-                    step_input, run_context, snapshots=snapshots, profile=profile,
-                    candidate_refs=tuple(table_refs[start:start + 6]),
-                )
-                batch_proposal = MeasureSemanticProposal.model_validate(output.content)
-                decisions.extend(batch_proposal.decisions)
-        proposal = MeasureSemanticProposal(decisions=tuple(decisions))
-        # 分批只缩小单次输入与输出；完整审核对象仍必须覆盖所有候选，不能提交部分分类。
-        _apply_confirmed_measure_semantics(snapshots, proposal, candidate_refs)
-        return StepOutput(content=proposal)
-
-    async def _propose_measure_semantic_batch(
-        self, step_input: StepInput, run_context: RunContext, *,
-        snapshots: tuple[SourceSchemaSnapshot, ...], profile: EffectiveReportingProfile,
-        candidate_refs: tuple[str, ...],
-    ) -> StepOutput:
-        candidate_tables = {ref.rsplit(".", 1)[0].lower() for ref in candidate_refs}
-        selected_tables = {
-            f"{parsed.database}.{parsed.table}" for ref in candidate_refs
-            for parsed in (parse_field_ref(ref),)
-        }
-        tables_by_ref = {
-            (table.source_id.lower(), table.database.lower(), table.name.lower()): table
-            for snapshot in snapshots
-            for table in snapshot.tables
-        }
-        candidate_contexts = []
-        for field_ref in candidate_refs:
-            parsed = parse_field_ref(field_ref)
-            table = tables_by_ref[(parsed.source_id.lower(), parsed.database, parsed.table)]
-            candidate_contexts.append(
-                {
-                    "fieldRef": field_ref,
-                    "sameTableColumnNames": [
-                        column.name
-                        for column in table.columns
-                        if column.name.lower() != parsed.column
-                    ],
-                }
-            )
-        base_payload: dict[str, Any] = {
-            "reportGoal": self._envelope(run_context).report_goal,
-            "candidateFieldRefs": list(candidate_refs),
-            "candidateFieldContexts": candidate_contexts,
-            "schemas": _planning_schema_payload(snapshots, tables=selected_tables),
-            "terms": [
-                item.model_dump(mode="json", by_alias=True)
-                for snapshot in snapshots
-                for item in snapshot.terms
-            ],
-            "dataShapes": [
-                {**item.model_dump(mode="json", by_alias=True), "tables": [
-                    table.model_dump(mode="json", by_alias=True) for table in item.tables
-                    if f"{item.source_id}.{table.database}.{table.table}".lower()
-                    in candidate_tables
-                ]}
-                for item in self._data_shapes(run_context)
-                if any(f"{item.source_id}.{table.database}.{table.table}".lower()
-                       in candidate_tables
-                       for table in item.tables)
-            ],
-            "scopeFilters": [
-                item.model_dump(mode="json", by_alias=True) for item in profile.scope_filters
-            ],
-        }
-        review_feedback = self._feedback(step_input)
-        if review_feedback:
-            base_payload["userReviewFeedback"] = review_feedback
-
-        previous_output: Any = None
-        validation_feedback: dict[str, Any] | None = None
-        call_budget = StructuredOutputCallBudget()
-        for attempt in range(1, 6):
-            payload = dict(base_payload)
-            if validation_feedback is not None:
-                payload["correction"] = _planner_correction_payload(
-                    attempt,
-                    validation_feedback,
-                    "逐项修正 issues，并重新返回 candidateFieldRefs 的完整分类；"
-                    "不得删除候选、增加字段、返回补丁或解释性 Markdown",
-                )
-            try:
-                proposal = await self._run_planner(
-                    self._measure_semantic_agent,
-                    payload,
-                    run_context,
-                    call_budget=call_budget,
-                    attempt=min(attempt - 1, 1),
-                    failure_kind=(
-                        "capability_mapping_failure" if validation_feedback is not None else None
-                    ),
-                )
-            except ValidationError as error:
-                # 兼容端点可能接受 strict tool schema 却仍漏掉嵌套必填字段。
-                # 不在服务端猜测字段值，而是把完整候选和精简校验路径回灌给同一
-                # planner，让模型在既有五次上限内返回完整分类。
-                previous_output = _outline_candidate(error)
-                validation_feedback = {
-                    "code": "report_measure_semantic_proposal_invalid",
-                    "summary": "指标语义候选未通过结构校验",
-                    "issues": _outline_validation_issues(error),
-                }
-                continue
-            assert isinstance(proposal, MeasureSemanticProposal)
-            proposal = _project_measure_semantic_candidates(proposal, candidate_refs)
-            try:
-                _validate_proposed_exclusive_scopes(proposal, self._data_shapes(run_context))
-                proposal = _proposal_with_profile_scope_filters(proposal, snapshots, profile)
-            except ReportingError as error:
-                previous_output = proposal.model_dump(mode="json", by_alias=True)
-                validation_feedback = {
-                    "issues": [
-                        {
-                            "path": "decisions",
-                            "rejectedValue": previous_output,
-                            "reason": error.message,
-                            "requiredAction": "不得覆盖 Profile 强制范围，按 scopeFilters 重新生成完整候选",
-                        }
-                    ]
-                }
-                continue
-            try:
-                # 这里只调用同一套确定性提交校验来验证候选，但不使用返回值，也不写 state。
-                # 用户在 Agno Output Review 中看到的对象，因此与批准后真正提交的对象完全同构。
-                _apply_confirmed_measure_semantics(snapshots, proposal, candidate_refs)
-            except ReportingError as error:
-                previous_output = proposal.model_dump(mode="json", by_alias=True)
-                validation_feedback = {
-                    "issues": [
-                        {
-                            "path": "decisions",
-                            "rejectedValue": previous_output,
-                            "reason": error.message,
-                            "allowedValues": list(candidate_refs),
-                            "requiredAction": "完整分类 allowedValues，且只使用结构快照内的字段和值",
-                        }
-                    ]
-                }
-                continue
-            return StepOutput(content=proposal)
-
-        raise _planner_diagnostic_error(
-            "report_measure_semantic_proposal_invalid",
-            "指标语义候选连续五次未通过校验。最后一次诊断：",
-            previous_output,
-            validation_feedback,
-        )
-
-    async def commit_measure_semantics(
-        self, step_input: StepInput, run_context: RunContext
-    ) -> StepOutput:
-        await self._ensure_managed_execution_state(run_context)
-        try:
-            proposal = MeasureSemanticProposal.model_validate(step_input.previous_step_content)
-        except Exception as error:
-            raise ReportingError(
-                "report_measure_semantic_proposal_invalid", "已审核指标语义候选无效。"
-            ) from error
-        snapshots = self._snapshots(run_context)
-        candidate_refs = _measure_semantic_candidate_refs(
-            snapshots,
-            self._data_understanding(run_context),
-            self._profile(run_context),
-        )
-        profile = self._profile(run_context)
-        _validate_proposed_exclusive_scopes(
-            proposal,
-            self._data_shapes(run_context),
-            trusted_profile=profile,
-        )
-        scoped_proposal = _proposal_with_profile_scope_filters(proposal, snapshots, profile)
-        if scoped_proposal != proposal:
-            raise ReportingError(
-                "report_measure_semantic_proposal_invalid",
-                "已审核指标语义候选缺少 Profile 强制范围或与其冲突。",
-            )
-        # 不信任上一步输出中隐含的候选范围。提交时依据当前已持久化快照重新计算，
-        # 要求审核对象与待定字段精确相等；缺项、增项、重复项和未知字段全部失败关闭。
-        updated = _apply_confirmed_measure_semantics(snapshots, proposal, candidate_refs)
-        state = self._state(run_context)
-        state[REPORT_SCHEMA_SNAPSHOTS_STATE_KEY] = [
-            item.model_dump(mode="json", by_alias=True) for item in updated
+        state[REPORT_DATA_SHAPE_ISSUES_STATE_KEY] = [
+            issue.model_dump(mode="json", by_alias=True) for issue in issues if issue is not None
         ]
         self._assert_state_safe(state)
-        confirmed = [
-            decision.measure_semantic.model_dump(mode="json", by_alias=True)
-            for decision in proposal.decisions
-            if decision.measure_semantic is not None
-        ]
-        return StepOutput(content={"measureSemantics": confirmed})
+        return StepOutput(content={"dataShapes": state[REPORT_DATA_SHAPES_STATE_KEY],
+            "issues": state[REPORT_DATA_SHAPE_ISSUES_STATE_KEY]})
 
     async def resolve_capabilities(
         self, _step_input: StepInput, run_context: RunContext
@@ -1564,6 +1437,7 @@ class RuntimePlanningMixin:
                 item.model_dump(mode="json", by_alias=True) for item in detailed_plan.analyses
             ],
             "dataShapes": state.get(REPORT_DATA_SHAPES_STATE_KEY, []),
+            "dataShapeIssues": state.get(REPORT_DATA_SHAPE_ISSUES_STATE_KEY, []),
             "warnings": list(detailed_plan.warnings),
             "requestContext": request_context,
             "referenceMaterials": [
@@ -1728,37 +1602,67 @@ class RuntimePlanningMixin:
             }
         )
 
+    async def _registered_metric_dataset_handles(self, run_context: RunContext, *, report_revision: str = 'initial'):
+        from ....management.models import ManagementError, ManagementScope
+
+        scope = self._scope(run_context)
+        workflow_scope = resolve_reporting_workflow_scope(
+            run_id=str(run_context.run_id), session_id=scope['sessionId'],
+            user_id=scope['userId'], stored_scope=scope,
+        )
+        try:
+            if report_revision != 'initial':
+                return await self.report_basis_service.load_revision_dataset_handles(
+                    str(run_context.run_id), ManagementScope(scope['database'], scope['companyId']),
+                    user_id=scope['userId'], thread_id=scope['callerThreadId'], report_revision=report_revision,
+                    vault=self.configuration_provider.vault, dataset_store=self.datasets,
+                    run_context=self._tool_context(run_context), workflow_scope=workflow_scope,
+                )
+            return await self.report_basis_service.verify_receipt_datasets(
+                str(run_context.run_id), ManagementScope(scope['database'], scope['companyId']),
+                user_id=scope['userId'], thread_id=scope['callerThreadId'], report_revision='initial',
+                dataset_store=self.datasets, run_context=self._tool_context(run_context),
+                workflow_scope=workflow_scope,
+            )
+        except ManagementError as error:
+            raise ReportingError(error.code, error.message) from error
+
+    async def _metric_planning_context(self, run_context: RunContext, *, report_revision: str = 'initial'):
+        execution = await self._basis_execution_context(run_context)
+        from ....management.models import ManagementError, ManagementScope
+        from ...semantics.planning import build_metric_planning_context
+
+        scope = self._scope(run_context)
+        try:
+            if report_revision != 'initial':
+                workflow_scope = resolve_reporting_workflow_scope(
+                    run_id=str(run_context.run_id), session_id=scope['sessionId'],
+                    user_id=scope['userId'], stored_scope=scope)
+                return await self.report_basis_service.load_revision_planning_context(
+                    str(run_context.run_id), ManagementScope(scope['database'], scope['companyId']),
+                    user_id=scope['userId'], thread_id=scope['callerThreadId'], report_revision=report_revision,
+                    vault=self.configuration_provider.vault, dataset_store=self.datasets,
+                    run_context=self._tool_context(run_context), workflow_scope=workflow_scope,
+                )
+            receipts = await self.report_basis_service.load_basis_receipts(
+                str(run_context.run_id), ManagementScope(scope['database'], scope['companyId']),
+                user_id=scope['userId'], thread_id=scope['callerThreadId'], report_revision='initial',
+            )
+            if any(isinstance(item, BasisCalculationReceipt) and item.datasets for item in receipts):
+                await self._registered_metric_dataset_handles(run_context)
+        except ManagementError as error:
+            raise ReportingError(error.code, error.message) from error
+        return build_metric_planning_context(execution, receipts, report_revision='initial')
+
     async def generate_analysis_plan(
         self, _step_input: StepInput, run_context: RunContext
     ) -> StepOutput:
-        await self._ensure_managed_execution_state(run_context)
+        metric_context = await self._metric_planning_context(run_context)
         state = self._state(run_context)
         snapshots = self._snapshots(run_context)
         data_shapes = self._data_shapes(run_context)
         data_understanding = DataUnderstandingPlan.model_validate(
             state[REPORT_DATA_UNDERSTANDING_STATE_KEY]
-        )
-        # 报表能力是 Profile/Schema 的确定性投影，不需要独立的 Workflow 状态转换。
-        # 在生成分析计划前重新计算并持久化，保证恢复运行时不会信任旧的能力快照，且
-        # Planner 仍能看到与当前结构快照一致的能力集合。
-        await self.resolve_capabilities(_step_input, run_context)
-        profile = self._profile(run_context)
-        analysis_context = build_outline_shape_view(
-            profile,
-            self._capabilities(run_context),
-            snapshots,
-            data_shapes,
-            tuple(
-                ReconciliationShape(
-                    code=item.code,
-                    status="unavailable",
-                    leftMetric=item.left_metric,
-                    rightMetric=item.right_metric,
-                    grain=item.grain,
-                    issues=("等待语义事实物化后执行服务端对账。",),
-                )
-                for item in profile.reconciliations
-            ),
         )
         base_payload = {
             "reportGoal": self._envelope(run_context).report_goal,
@@ -1772,7 +1676,8 @@ class RuntimePlanningMixin:
                 "归因验证",
                 "经营影响",
             ],
-            "analysisContext": _analysis_context_payload(analysis_context),
+            "metricContext": metric_context.model_dump(mode="json", by_alias=True),
+            "dataShapeIssues": state.get(REPORT_DATA_SHAPE_ISSUES_STATE_KEY, []),
             # DataUnderstanding 与 Schema 共享 source/table；将期间元数据附加到
             # Schema 的表项后只保留一份模型输入投影。完整 DataUnderstanding 仍保存在
             # Workflow state，并由服务端 validation 使用，不改变任何硬校验边界。
@@ -1783,12 +1688,6 @@ class RuntimePlanningMixin:
                 data_understanding=data_understanding,
             ),
         }
-        from ...profile.metric_usage import usage_schema_candidates
-
-        base_payload["schemas"] = usage_schema_candidates(
-            base_payload["schemas"],
-            tuple(metric.model_dump(mode="json", by_alias=True) for metric in profile.metrics),
-        )
         validation_feedback: dict[str, Any] | None = None
         previous_output: dict[str, Any] | None = None
         allowed_mutation_paths: tuple[str, ...] = ()
@@ -1826,18 +1725,6 @@ class RuntimePlanningMixin:
                     attempt=min(attempt - 1, 1),
                     failure_kind="schema_failure" if validation_feedback is not None else None,
                 )
-                if any(metric.purpose for metric in profile.metrics):
-                    candidate = output.model_dump(mode="json", by_alias=True)
-                    try:
-                        output = AnalysisBundle.model_validate(candidate, context={
-                            "new_analysis_plan": True, "require_metric_purposes": True,
-                            "registered_metric_purposes": sorted(
-                                {metric.purpose for metric in profile.metrics if metric.purpose}
-                            ),
-                        })
-                    except ValidationError as error:
-                        error._report_candidate = candidate  # type: ignore[attr-defined]
-                        raise
             except ValidationError as error:
                 # Analysis planner 已关闭 Agno 对同一输入的盲重试。结构错误必须携带
                 # 原始候选和精确字段路径进入 Reporting 纠错循环；否则复杂 Bundle
@@ -1861,7 +1748,6 @@ class RuntimePlanningMixin:
             assert isinstance(output, AnalysisBundle)
             output, _ = _apply_bundle_normalizers(
                 output,
-                lambda bundle: _normalize_requirement_metric_codes(bundle, snapshots, profile.metrics),
                 lambda bundle: _normalize_requirement_columns(bundle, snapshots),
                 lambda bundle: _normalize_requirement_periods(
                     bundle, self._data_understanding(run_context)
@@ -1876,12 +1762,9 @@ class RuntimePlanningMixin:
                     # 严格 Schema。纠错基线必须先应用与当前候选相同的确定性列规范化，
                     # 否则服务端自身删除的别名字段会被误判为模型越权修改。
                     previous_output = _normalize_requirement_columns_in_payload(
-                        previous_output, snapshots, profile.metrics
+                        previous_output, snapshots
                     )
                 else:
-                    previous_bundle, _ = _normalize_requirement_metric_codes(
-                        previous_bundle, snapshots, profile.metrics
-                    )
                     normalized_previous, _previous_column_repairs = _normalize_requirement_columns(
                         previous_bundle, snapshots
                     )
@@ -1918,6 +1801,7 @@ class RuntimePlanningMixin:
                 snapshots,
                 self._envelope(run_context),
                 data_shapes,
+                registered_metrics=metric_context.metrics,
             )
             if semantic_issues:
                 validation_feedback = {
@@ -1964,28 +1848,13 @@ class RuntimePlanningMixin:
                 "分析计划连续五次未通过校验。最后一次反馈：",
                 validation_feedback,
             )
-        bundle = bundle.model_copy(
-            update={
-                "requirements": _with_drilldown_projection(
-                    bundle.requirements,
-                    self._profile(run_context),
-                    measure_semantics=tuple(
-                        semantic
-                        for snapshot in self._snapshots(run_context)
-                        for semantic in snapshot.measure_semantics
-                    ),
-                )
-            }
-        )
         state[REPORT_ANALYSIS_PLAN_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in bundle.analyses
         ]
         state[REPORT_DATA_REQUIREMENTS_STATE_KEY] = [
             item.model_dump(mode="json", by_alias=True) for item in bundle.requirements
         ]
-        state[REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY] = list(
-            _row_preserving_requirement_ids(bundle.requirements, self._profile(run_context))
-        )
+        state[REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY] = []
         return StepOutput(content=bundle)
 
     async def generate_query_candidates(
@@ -1993,6 +1862,7 @@ class RuntimePlanningMixin:
     ) -> StepOutput:
         await self._ensure_managed_execution_state(run_context)
         state = self._state(run_context)
+        metric_context = await self._metric_planning_context(run_context)
         data_shapes = self._data_shapes(run_context)
         requirements = tuple(
             QueryRequirement.model_validate(item)
@@ -2006,6 +1876,7 @@ class RuntimePlanningMixin:
             state.get(REPORT_ROW_PRESERVING_REQUIREMENTS_STATE_KEY, ())
         )
         base_payload = {
+            "metricContext": metric_context.model_dump(mode="json", by_alias=True),
             "requirements": state[REPORT_DATA_REQUIREMENTS_STATE_KEY],
             # requirements 已包含每张表的期间字段和粒度；SQL planner 只需列名、类型
             # 和聚合语义，完整 DataUnderstanding 留在服务端状态用于严格审核。
@@ -2075,6 +1946,7 @@ class RuntimePlanningMixin:
                 snapshots=snapshots,
                 envelope=envelope,
                 requirements=requirements,
+                registered_metrics=metric_context.metrics,
                 row_preserving_requirement_ids=row_preserving_ids,
                 data_shapes=data_shapes,
             )
@@ -2092,6 +1964,7 @@ class RuntimePlanningMixin:
             # 单表查询才使用既有确定性编译兜底，避免可恢复的模型波动阻断报表。
             compiled = _compile_single_table_queries(
                 requirements,
+                registered_metrics=metric_context.metrics,
                 snapshots=snapshots,
                 envelope=envelope,
                 row_preserving_requirement_ids=row_preserving_ids,
@@ -2103,6 +1976,7 @@ class RuntimePlanningMixin:
                     snapshots=snapshots,
                     envelope=envelope,
                     requirements=requirements,
+                    registered_metrics=metric_context.metrics,
                     row_preserving_requirement_ids=row_preserving_ids,
                     data_shapes=data_shapes,
                 )
@@ -2251,6 +2125,7 @@ def _single_explicit_period(prompt: str, feedback: str | None) -> ReportPeriod |
 def _compile_single_table_queries(
     requirements: tuple[QueryRequirement, ...],
     *,
+    registered_metrics: tuple[MetricDefinition, ...],
     snapshots: tuple[SourceSchemaSnapshot, ...],
     envelope: ReportRequestEnvelope,
     row_preserving_requirement_ids: tuple[str, ...] = (),
@@ -2259,11 +2134,6 @@ def _compile_single_table_queries(
 
     if not requirements or any(len(requirement.tables) != 1 for requirement in requirements):
         return None
-    semantics = {
-        item.field_ref.lower(): item
-        for snapshot in snapshots
-        for item in snapshot.measure_semantics
-    }
     snapshot_tables = {
         (table.source_id.lower(), f"{table.database}.{table.name}".lower()): table
         for snapshot in snapshots
@@ -2287,12 +2157,9 @@ def _compile_single_table_queries(
         if (requirement.source_id.lower(), qualified_table) not in snapshot_tables:
             return None
 
-        semantic_by_measure = {}
-        for measure in table.measure_columns:
-            semantic = semantics.get(f"{requirement.source_id}.{qualified_table}.{measure}".lower())
-            if semantic is None:
-                return None
-            semantic_by_measure[measure] = semantic
+        from ..query_pipeline import registered_metric_requirement_issues
+        if registered_metric_requirement_issues(requirement, 0, registered_metrics):
+            return None
 
         try:
             comparison_roles = requirement.resolved_comparison_roles(envelope.comparison_roles)
@@ -2312,30 +2179,19 @@ def _compile_single_table_queries(
                     *_period_bound_expressions(window.period, table.period_granularity)
                 )
             ]
-            scope_values: dict[str, str] = {}
-            for semantic in semantic_by_measure.values():
-                for column, value in semantic.exclusive_scope.items():
-                    previous = scope_values.setdefault(column, value)
-                    if previous != value:
-                        return None
-            # 固定过滤保留在 WHERE；不能扩展已批准粒度，否则兜底 SQL 自身无法通过审核。
-            # 未投影的固定字段仍可通过签发的 approved query 复核过滤口径。
+            # 统计口径由执行适配器绑定；编译器只保留登记粒度与期间。
             query_grain_columns = requirement.grain_columns
             if row_preserving:
                 projections = [exp.column(column) for column in query_grain_columns]
                 projections.extend(exp.column(column) for column in table.measure_columns)
             else:
                 projections = [exp.column(column) for column in query_grain_columns]
-                for measure, semantic in semantic_by_measure.items():
+                for measure in table.measure_columns:
                     aggregate = _measure_aggregate_expression(
                         measure,
-                        semantic.aggregation,
+                        "sum",
                     )
                     projections.append(aggregate.as_(measure))
-            predicates.extend(
-                exp.EQ(this=exp.column(column), expression=exp.Literal.string(value))
-                for column, value in sorted(scope_values.items())
-            )
             statement = (
                 exp.select(*projections)
                 .from_(exp.to_table(qualified_table))
@@ -2536,312 +2392,6 @@ def _planning_schema_payload_with_periods(
             if period is not None:
                 table.update(period)
     return payload
-
-
-def _profile_scope_filters_by_table(
-    profile: EffectiveReportingProfile,
-    snapshots: tuple[SourceSchemaSnapshot, ...],
-) -> dict[tuple[str, str, str], dict[str, str]]:
-    table_columns = {
-        (table.source_id.lower(), table.database.lower(), table.name.lower()): {
-            column.name.lower() for column in table.columns
-        }
-        for snapshot in snapshots
-        for table in snapshot.tables
-    }
-    constraints: dict[tuple[str, str, str], dict[str, str]] = {}
-    for scope_filter in profile.scope_filters:
-        refs_by_table: dict[tuple[str, str, str], list[str]] = {}
-        for field_ref in scope_filter.field_refs:
-            parsed = parse_field_ref(field_ref)
-            table_key = (
-                parsed.source_id.lower(),
-                parsed.database.lower(),
-                parsed.table.lower(),
-            )
-            refs_by_table.setdefault(table_key, []).append(parsed.column.lower())
-        if any(len(columns) != 1 for columns in refs_by_table.values()):
-            raise ReportingError(
-                "report_profile_scope_filter_invalid",
-                f"Profile 范围过滤 {scope_filter.code} 在同一表中必须只映射一个字段。",
-            )
-        if scope_filter.required_for_all_tables and set(table_columns) - set(refs_by_table):
-            raise ReportingError(
-                "report_profile_scope_filter_invalid",
-                f"Profile 范围过滤 {scope_filter.code} 未覆盖结构快照中的全部表。",
-            )
-        for table_key, columns in refs_by_table.items():
-            # Profile 可以覆盖同一医院数据源的表超集；本次 Snapshot 未包含的表按现有
-            # capability 缩小原则忽略。只要表实际进入 Snapshot，就必须验证物理字段。
-            available = table_columns.get(table_key)
-            if available is None:
-                continue
-            column = columns[0]
-            if column not in available:
-                raise ReportingError(
-                    "report_profile_scope_filter_invalid",
-                    f"Profile 范围过滤 {scope_filter.code} 引用了结构快照外的字段。",
-                )
-            table_constraints = constraints.setdefault(table_key, {})
-            current = table_constraints.get(column)
-            if current is not None and current != scope_filter.value:
-                raise ReportingError(
-                    "report_profile_scope_filter_conflict",
-                    f"Profile 范围过滤在同一字段上声明了冲突值: {field_ref}",
-                )
-            table_constraints[column] = scope_filter.value
-    return constraints
-
-
-def _semantic_with_scope_filters(
-    semantic: MeasureSemantic,
-    constraints: dict[tuple[str, str, str], dict[str, str]],
-) -> MeasureSemantic:
-    parsed = parse_field_ref(semantic.field_ref)
-    required = constraints.get(
-        (parsed.source_id.lower(), parsed.database.lower(), parsed.table.lower()), {}
-    )
-    exclusive_scope = dict(semantic.exclusive_scope)
-    for column, value in required.items():
-        current = exclusive_scope.get(column)
-        if current is not None and current != value:
-            raise ReportingError(
-                "report_profile_scope_filter_conflict",
-                f"指标语义与 Profile 强制范围冲突: {semantic.field_ref}.{column}",
-            )
-        exclusive_scope[column] = value
-    return semantic.model_copy(update={"exclusive_scope": exclusive_scope})
-
-
-def _apply_profile_scope_filters_to_snapshots(
-    snapshots: tuple[SourceSchemaSnapshot, ...],
-    profile: EffectiveReportingProfile,
-) -> tuple[SourceSchemaSnapshot, ...]:
-    constraints = _profile_scope_filters_by_table(profile, snapshots)
-    updated: list[SourceSchemaSnapshot] = []
-    for snapshot in snapshots:
-        payload = snapshot.model_dump(mode="json", by_alias=True)
-        payload["measureSemantics"] = [
-            _semantic_with_scope_filters(item, constraints).model_dump(mode="json", by_alias=True)
-            for item in snapshot.measure_semantics
-        ]
-        try:
-            updated.append(SourceSchemaSnapshot.model_validate(payload))
-        except ValidationError as error:
-            raise ReportingError(
-                "report_profile_scope_filter_invalid",
-                "Profile 强制范围无法应用到结构快照指标语义。",
-            ) from error
-    return tuple(updated)
-
-
-def _proposal_with_profile_scope_filters(
-    proposal: MeasureSemanticProposal,
-    snapshots: tuple[SourceSchemaSnapshot, ...],
-    profile: EffectiveReportingProfile,
-) -> MeasureSemanticProposal:
-    constraints = _profile_scope_filters_by_table(profile, snapshots)
-    return proposal.model_copy(
-        update={
-            "decisions": tuple(
-                decision.model_copy(
-                    update={
-                        "measure_semantic": _semantic_with_scope_filters(
-                            decision.measure_semantic, constraints
-                        )
-                    }
-                )
-                if decision.measure_semantic is not None
-                else decision
-                for decision in proposal.decisions
-            )
-        }
-    )
-
-
-def _measure_semantic_candidate_refs(
-    snapshots: tuple[SourceSchemaSnapshot, ...],
-    plan: DataUnderstandingPlan,
-    profile: EffectiveReportingProfile,
-) -> tuple[str, ...]:
-    """确定必须由模型分类并经用户确认的数值字段集合。"""
-
-    selected_period_columns = {
-        (item.source_id.lower(), item.table.lower()): item.period_column.lower()
-        for item in plan.tables
-    }
-    existing_semantics = {
-        item.field_ref.lower() for snapshot in snapshots for item in snapshot.measure_semantics
-    }
-    profile_dimensions = {
-        field_ref.lower() for dimension in profile.dimensions for field_ref in dimension.field_refs
-    }
-    profile_metrics = {
-        metric.field_ref.lower() for metric in profile.metrics if metric.field_ref is not None
-    }
-    candidates: list[str] = []
-
-    # DDL 只能证明字段是数值类型，不能证明它是可聚合指标。程序先排除已确认
-    # 语义、已声明维度和本次期间字段，再让模型对剩余字段逐项提出候选。Profile
-    # 同时把同一字段声明为 metric 和 dimension 时，以 metric 为待确认对象，避免
-    # 配置冲突被静默解释成维度后绕过指标语义审核。
-    for snapshot in snapshots:
-        for table in snapshot.tables:
-            qualified = f"{table.database.lower()}.{table.name.lower()}"
-            period_column = selected_period_columns.get((table.source_id.lower(), qualified))
-            if period_column is None:
-                continue
-            for column in table.columns:
-                field_ref = f"{table.source_id}.{table.database}.{table.name}.{column.name}".lower()
-                if field_ref in existing_semantics:
-                    continue
-                if _NUMERIC_MEASURE_TYPE_PATTERN.match(column.data_type) is None:
-                    continue
-                if column.name.lower() == period_column:
-                    continue
-                if field_ref in profile_dimensions and field_ref not in profile_metrics:
-                    continue
-                candidates.append(field_ref)
-    return tuple(candidates)
-
-
-def _apply_confirmed_measure_semantics(
-    snapshots: tuple[SourceSchemaSnapshot, ...],
-    proposal: MeasureSemanticProposal,
-    expected_refs: tuple[str, ...],
-) -> tuple[SourceSchemaSnapshot, ...]:
-    """验证用户审核对象并生成只包含已确认语义的新快照。"""
-
-    actual_refs = tuple(item.field_ref for item in proposal.decisions)
-    if set(actual_refs) != set(expected_refs) or len(actual_refs) != len(expected_refs):
-        raise ReportingError(
-            "report_measure_semantic_proposal_invalid",
-            "指标语义候选必须完整且只能分类当前待确认字段。",
-        )
-
-    additions = {
-        decision.field_ref: decision.measure_semantic
-        for decision in proposal.decisions
-        if decision.classification == "measure" and decision.measure_semantic is not None
-    }
-    available_by_snapshot = [
-        {
-            f"{table.source_id}.{table.database}.{table.name}.{column.name}".lower()
-            for table in snapshot.tables
-            for column in table.columns
-        }
-        for snapshot in snapshots
-    ]
-    if set(actual_refs) - set().union(*available_by_snapshot):
-        raise ReportingError(
-            "report_measure_semantic_proposal_invalid",
-            "指标语义候选引用了结构快照外的字段。",
-        )
-
-    updated: list[SourceSchemaSnapshot] = []
-    for snapshot, available in zip(snapshots, available_by_snapshot, strict=True):
-        snapshot_additions = tuple(
-            semantic
-            for field_ref, semantic in additions.items()
-            if field_ref in available and semantic is not None
-        )
-        payload = snapshot.model_dump(mode="json", by_alias=True)
-        payload["measureSemantics"] = [
-            item.model_dump(mode="json", by_alias=True)
-            for item in (*snapshot.measure_semantics, *snapshot_additions)
-        ]
-        try:
-            # 重新走 SourceSchemaSnapshot 的完整 Pydantic 校验，确保 additiveAcross、
-            # exclusiveScope 和 reconcileWith 只能引用同一受信结构快照中的真实字段。
-            # model_copy(update=...) 默认不重跑 validator，因此这里不能使用它提交候选。
-            updated.append(SourceSchemaSnapshot.model_validate(payload))
-        except ValidationError as error:
-            raise ReportingError(
-                "report_measure_semantic_proposal_invalid",
-                "指标语义候选包含未知维度、固定口径或对账字段。",
-            ) from error
-    return tuple(updated)
-
-
-def _project_measure_semantic_candidates(
-    proposal: MeasureSemanticProposal,
-    candidate_refs: tuple[str, ...],
-) -> MeasureSemanticProposal:
-    """只保留服务端签发的待确认字段，候选自身仍交由提交校验严格验证。"""
-
-    allowed = set(candidate_refs)
-    return proposal.model_copy(
-        update={
-            "decisions": tuple(
-                decision for decision in proposal.decisions if decision.field_ref in allowed
-            )
-        }
-    )
-
-
-def _validate_proposed_exclusive_scopes(
-    proposal: MeasureSemanticProposal,
-    data_shapes: tuple[DataShape, ...],
-    *,
-    trusted_profile: EffectiveReportingProfile | None = None,
-) -> None:
-    """拒绝模型把字段说明或类别名称伪装成已观测的固定口径值。"""
-    observed_values = {
-        (
-            table.source_id.lower(),
-            table.database.lower(),
-            table.table.lower(),
-            column.name.lower(),
-        ): {str(item.value) for item in column.top_values}
-        for shape in data_shapes
-        for table in shape.tables
-        for column in table.columns
-    }
-    trusted_values = {
-        (
-            parsed.source_id.lower(),
-            parsed.database.lower(),
-            parsed.table.lower(),
-            parsed.column.lower(),
-            scope_filter.value,
-        )
-        for scope_filter in (() if trusted_profile is None else trusted_profile.scope_filters)
-        for field_ref in scope_filter.field_refs
-        for parsed in (parse_field_ref(field_ref),)
-    }
-    for decision in proposal.decisions:
-        semantic = decision.measure_semantic
-        if semantic is None:
-            continue
-        parsed = parse_field_ref(semantic.field_ref)
-        for column, value in semantic.exclusive_scope.items():
-            observed = observed_values.get(
-                (
-                    parsed.source_id.lower(),
-                    parsed.database.lower(),
-                    parsed.table.lower(),
-                    column.lower(),
-                ),
-                set(),
-            )
-            # 模型只能从本次受限画像引用精确值；没有 topValues 不是放宽理由。
-            # 部署方明确声明的 Profile scopeFilters 在此校验之后合并，继续以受信
-            # 配置为事实来源，不受画像采样上限影响。
-            trusted_key = (
-                parsed.source_id.lower(),
-                parsed.database.lower(),
-                parsed.table.lower(),
-                column.lower(),
-                value,
-            )
-            if value not in observed and trusted_key not in trusted_values:
-                allowed = sorted(observed)
-                suffix = f"；允许值：{allowed}" if allowed else "；该字段没有可引用的观测值"
-                raise ReportingError(
-                    "report_measure_semantic_scope_unobserved",
-                    f"指标固定口径未被受限画像证明: {semantic.field_ref}.{column}={value!r}"
-                    f"{suffix}。无法证明时必须删除该 exclusiveScope 项。",
-                )
 
 
 def _bounded_description(value: str, limit: int) -> str:
@@ -3733,6 +3283,7 @@ def _approve_generated_queries(
     snapshots: tuple[SourceSchemaSnapshot, ...],
     envelope: ReportRequestEnvelope,
     requirements: tuple[QueryRequirement, ...],
+    registered_metrics: tuple[MetricDefinition, ...],
     row_preserving_requirement_ids: tuple[str, ...] = (),
     data_shapes: tuple[DataShape, ...] = (),
 ) -> tuple[tuple[ApprovedQuery, ...], list[dict[str, Any]]]:
@@ -3812,6 +3363,7 @@ def _approve_generated_queries(
                 snapshots=snapshots,
                 envelope=envelope,
                 requirements=(requirement,),
+                registered_metrics=registered_metrics,
                 row_preserving_requirement_ids=(
                     (requirement.requirement_id,)
                     if requirement.requirement_id in row_preserving_requirement_ids
@@ -3824,7 +3376,6 @@ def _approve_generated_queries(
             approved_window_keys.add(query_key)
         except ReportingError as error:
             expected_period_predicates: list[str] | None = None
-            expected_scope_filters: list[dict[str, str]] | None = None
             if error.code == "report_query_join_grain_invalid":
                 required_action = (
                     "按 requirementContract 为每张表建立独立 CTE，逐表使用完整期间条件并按全部 "
@@ -3851,12 +3402,6 @@ def _approve_generated_queries(
                     "直接投影 requirementContract 的全部 grainColumns 和原始 measureColumns；"
                     "删除聚合函数、GROUP BY、DISTINCT、ORDER BY 和 LIMIT"
                 )
-            elif error.code == "report_query_scope_semantic_invalid":
-                expected_scope_filters = _expected_scope_filters(requirement, snapshots)
-                required_action = (
-                    "逐字使用 expectedScopeFilters 中每个 table、column、value 添加等值过滤；"
-                    "不得改为 IN、非空判断、字段类别名或近义值"
-                )
             else:
                 required_action = "严格按 requirementContract 的 tables、measureColumns、grainColumns 和 relations 修正 SQL"
             query_issue: dict[str, Any] = {
@@ -3868,8 +3413,6 @@ def _approve_generated_queries(
             }
             if expected_period_predicates is not None:
                 query_issue["expectedPeriodPredicates"] = expected_period_predicates
-            if expected_scope_filters is not None:
-                query_issue["expectedScopeFilters"] = expected_scope_filters
             if error.code == "report_query_grain_invalid":
                 query_issue["expectedGrainColumns"] = list(requirement.grain_columns)
             issues.append(query_issue)
@@ -3910,30 +3453,6 @@ def _approve_generated_queries(
         )
     return tuple(approved), issues
 
-
-def _expected_scope_filters(
-    requirement: QueryRequirement,
-    snapshots: tuple[SourceSchemaSnapshot, ...],
-) -> list[dict[str, str]]:
-    semantics = {
-        item.field_ref.lower(): item
-        for snapshot in snapshots
-        for item in snapshot.measure_semantics
-    }
-    filters: dict[tuple[str, str, str], dict[str, str]] = {}
-    for table in requirement.tables:
-        for measure in table.measure_columns:
-            field_ref = f"{requirement.source_id}.{table.table}.{measure}".lower()
-            semantic = semantics.get(field_ref)
-            if semantic is None:
-                continue
-            for column, value in semantic.exclusive_scope.items():
-                filters[(table.table, column, value)] = {
-                    "table": table.table,
-                    "column": column,
-                    "value": value,
-                }
-    return [filters[key] for key in sorted(filters)]
 
 
 def _expected_period_predicates(

@@ -40,7 +40,7 @@ export const managementTheme: ThemeConfig = {
       rowSelectedBg: '#EDF5FC',
       rowSelectedHoverBg: '#E4EDF4',
     },
-    Button: { primaryShadow: '0 1px 4px rgb(11 79 138 / 12%)' },
+    Button: { primaryShadow: '0 1px 4px rgb(11 79 138 / 12%)', opacityLoading: 1 },
     Tabs: { titleFontSize: 14, horizontalItemGutter: 28 },
     Empty: { colorTextDescription: '#5B6B7A' },
     Menu: {
