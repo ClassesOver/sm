@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { auditOfficeDesktopLayout } from './office-desktop-layout.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -131,6 +132,7 @@ try {
     catch { throw new Error(JSON.stringify({ url: page.url(), body: (await page.locator('body').innerText()).slice(0, 1500), pageErrors, failedResponses })) }
   }
   await openRevision(1)
+  await auditOfficeDesktopLayout(page, 'docx')
   const editor = page.getByRole('textbox', { name: 'Word 文档编辑区' })
   await editor.locator('p').filter({ hasText: '经营收入100万元' }).click()
   const home = page.locator('.docx-source-home')

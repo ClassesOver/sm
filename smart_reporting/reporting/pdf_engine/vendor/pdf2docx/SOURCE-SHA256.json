@@ -327,8 +327,8 @@
       "path": "src/rebuild/index.ts",
       "upstreamPath": "packages/pdf2docx/src/rebuild/index.ts",
       "sourceSha256": "fb48f1a3eea0d7376e0da504e2e6cb1a002985ccfaf5369784ab04e3af61fb8c",
-      "localSha256": "69f9bb91f42a27a3460aedcb1c0e388463c2aaaa996e1b7b828998f9e12b5814",
-      "adaptation": "Resolve existing vendored docx-engine source; preserve exact non-palette PDF RGB text fills through existing Run.shading and include shading in run merge identity; retain exact named highlights and white/no-fill behavior"
+      "localSha256": "3bfaf2443915e9bf32c8a11fcf74f3f3be3c0725340bfbf93fd86c1de0e5450e",
+      "adaptation": "Resolve existing vendored doc_engine/packages/docx-engine after shared Word package relocation; preserve exact non-palette PDF RGB text fills through existing Run.shading and include shading in run merge identity; retain exact named highlights and white/no-fill behavior"
     },
     {
       "path": "src/script.ts",

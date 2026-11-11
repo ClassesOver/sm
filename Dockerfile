@@ -26,7 +26,11 @@ COPY smart_reporting/reporting/slides_engine/LICENSE \
 COPY smart_reporting/reporting/slides_engine/packages/pptx-engine /build/smart_reporting/reporting/slides_engine/packages/pptx-engine
 COPY smart_reporting/reporting/slides_engine/packages/zip-gate /build/smart_reporting/reporting/slides_engine/packages/zip-gate
 COPY smart_reporting/reporting/slides_engine/packages/agent-core /build/smart_reporting/reporting/slides_engine/packages/agent-core
-COPY smart_reporting/reporting/slides_engine/packages/docx-engine /build/smart_reporting/reporting/slides_engine/packages/docx-engine
+COPY smart_reporting/reporting/doc_engine/LICENSE \
+    smart_reporting/reporting/doc_engine/NOTICE \
+    smart_reporting/reporting/doc_engine/SOURCE.md \
+    smart_reporting/reporting/doc_engine/tsconfig.base.json /build/smart_reporting/reporting/doc_engine/
+COPY smart_reporting/reporting/doc_engine/packages/docx-engine /build/smart_reporting/reporting/doc_engine/packages/docx-engine
 COPY smart_reporting/reporting/workbook_engine/LICENSE smart_reporting/reporting/workbook_engine/NOTICE smart_reporting/reporting/workbook_engine/SOURCE.md /build/smart_reporting/reporting/workbook_engine/
 COPY smart_reporting/reporting/workbook_engine/packages/xlsx-engine /build/smart_reporting/reporting/workbook_engine/packages/xlsx-engine
 COPY docker/package-office-engine.mjs /build/package-office-engine.mjs
@@ -60,6 +64,7 @@ COPY smart_reporting/reporting/slides_engine/LICENSE \
     smart_reporting/reporting/slides_engine/SOURCE.md ./
 COPY smart_reporting/reporting/slides_engine/packages ./packages
 COPY smart_reporting/reporting/slides_engine/bridge ./bridge
+COPY smart_reporting/reporting/doc_engine/packages /build/smart_reporting/reporting/doc_engine/packages
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     npm ci --registry="${NPM_REGISTRY}" \
@@ -67,6 +72,27 @@ RUN --mount=type=secret,id=proxy_ca \
     && npm run typecheck --workspace @genoffice/pipelines \
     && npm run bundle:bridges -- --metafile=dist/metafile.json \
     && node /build/package-office-engine.mjs . /runtime/reporting-slides-engine
+
+WORKDIR /build/smart_reporting/reporting/doc_engine
+COPY smart_reporting/reporting/doc_engine/package.json \
+    smart_reporting/reporting/doc_engine/package-lock.json \
+    smart_reporting/reporting/doc_engine/tsconfig.base.json ./
+COPY smart_reporting/reporting/doc_engine/LICENSE \
+    smart_reporting/reporting/doc_engine/NOTICE \
+    smart_reporting/reporting/doc_engine/SOURCE.md ./
+COPY smart_reporting/reporting/doc_engine/bridge ./bridge
+# DOCX bridge 的共享投影 core 位于宿主前端，构建时需保持源码相对层级。
+COPY smart_reporting/report_editor/frontend/src /build/smart_reporting/report_editor/frontend/src
+COPY smart_reporting/report_editor/frontend/package.json \
+    smart_reporting/report_editor/frontend/package-lock.json /build/smart_reporting/report_editor/frontend/
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    npm ci --registry="${NPM_REGISTRY}" \
+    && cd /build/smart_reporting/report_editor/frontend \
+    && npm ci --registry="${NPM_REGISTRY}" \
+    && cd /build/smart_reporting/reporting/doc_engine \
+    && npm run bundle:bridges -- --metafile=dist/metafile.json \
+    && node /build/package-office-engine.mjs . /runtime/reporting-doc-engine
 
 # 前端按源码相对路径复用冻结的 GenOffice 类型和浏览器渲染模块。
 WORKDIR /build/smart_reporting/report_editor/frontend
@@ -81,10 +107,10 @@ RUN npm run build && npm run build:slides
 # COPY smart_reporting 会再次带入引擎源码；在独立构建层裁剪，避免镜像层仍保存副本。
 FROM base AS app-source
 COPY smart_reporting /app/smart_reporting
-RUN find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine \
+RUN find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine /app/smart_reporting/reporting/doc_engine \
         -type f ! -iname '*license*' ! -iname '*notice*' ! -iname '*copying*' ! -iname '*copyright*' \
         ! -name 'SOURCE*' ! -name 'UPSTREAM*' -delete \
-    && find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine \
+    && find /app/smart_reporting/reporting/slides_engine /app/smart_reporting/reporting/workbook_engine /app/smart_reporting/reporting/pdf_engine /app/smart_reporting/reporting/doc_engine \
         -depth -type d -empty -delete
 
 FROM base AS env-init
@@ -103,6 +129,7 @@ ARG PYPI_FILES_MIRROR=https://mirrors.aliyun.com/pypi
 COPY --from=uv-source /uv /uvx /bin/
 COPY --from=report-editor-frontend /usr/local /usr/local
 COPY --from=report-editor-frontend /runtime/reporting-slides-engine /opt/reporting-slides-engine
+COPY --from=report-editor-frontend /runtime/reporting-doc-engine /opt/reporting-doc-engine
 COPY --from=report-editor-frontend /runtime/reporting-workbook-engine /opt/reporting-workbook-engine
 COPY --from=report-pdf-engine /runtime/reporting-pdf-engine /opt/reporting-pdf-engine
 
@@ -141,6 +168,7 @@ COPY --from=report-editor-frontend /build/smart_reporting/report_editor/static /
 
 ENV AGENT_OS_HOST=0.0.0.0 \
     AGENT_REPORTING_SLIDES_ENGINE_DIR=/opt/reporting-slides-engine \
+    AGENT_REPORTING_DOC_ENGINE_DIR=/opt/reporting-doc-engine \
     AGENT_REPORTING_WORKBOOK_ENGINE_DIR=/opt/reporting-workbook-engine \
     AGENT_REPORTING_PDF_ENGINE_DIR=/opt/reporting-pdf-engine \
     AGENT_REPORTING_PDF_WASM_DIR=/opt/reporting-pdf-engine/wasm \

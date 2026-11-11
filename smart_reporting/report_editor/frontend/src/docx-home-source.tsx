@@ -1,24 +1,31 @@
+import { OfficeAIEntry } from './office-ai-entry'
 import {
   IconAlignCenter, IconAlignJustify, IconAlignLeft, IconAlignRight, IconBorderAll, IconBorderBottom,
   IconBorderLeft, IconBorderNone, IconBorderRight, IconBorderTop, IconBullets,
   IconChangeCase, IconClearFormat, IconCopy, IconCut, IconFormatPainter,
   IconFontColorA, IconGrowFont, IconHighlight, IconIndentDec, IconIndentInc, IconLineSpacing,
   IconNumbered, IconPaste, IconPasteMerge, IconPasteSource, IconPasteText, IconPicture, IconShading,
-  IconShrinkFont, IconSubscript, IconSuperscript, IconCaret,
+  IconShrinkFont, IconSubscript, IconSuperscript, IconCaret, IconSelectAll, IconSearch, IconReplace, IconConvert,
 } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { DocxPasteMode } from './docx-clipboard'
+import type { CaseMode } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/case-transform'
 import { DOCX_BORDER_COLORS, DOCX_BORDER_WIDTHS_PT, safeDocxBorders, type DocxBorderSpec } from './docx-borders'
 import { DOCX_HIGHLIGHTS } from './docx-highlight'
 import { DOCX_SHADING_COLORS } from './docx-shading'
 import { HIGHLIGHT_CSS } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/marks'
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useDismissablePopover } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { homeRibbonZh as zh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/home-zh'
 import { zh as ribbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
 import { zh as appZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/app/zh'
 
 type Props = {
+  onAssistant?: () => void
+  onClearFormatting?: () => void
+  clearFormattingUnavailable?: string | null
   editable: boolean
+  onChangeCase?: (mode: CaseMode) => void
+  caseUnavailable?: string | null
   paragraphStyleControl?: HTMLElement
   onVerticalAlign?: (kind: 'superscript' | 'subscript') => void
   verticalAlign?: string
@@ -46,6 +53,10 @@ type Props = {
   spaceAfter?: number | null
   lineSpacing?: number | null
   onSpacing?: (values: Record<string, unknown>) => void
+  onLineSpacingOptions?: () => void
+  lineSpacingUnavailable?: string | null
+  onSpecialIndentOptions?: () => void
+  specialIndentUnavailable?: string | null
   onShading?: (value: string) => void
   shading?: string | null
   shadingAvailable?: boolean
@@ -54,6 +65,7 @@ type Props = {
   bordersAvailable?: boolean
   onParagraph?: (command: 'add' | 'delete') => void
   onFindReplace?: (mode: 'find' | 'replace') => void
+  onSelectAll?: () => void
   onPaste?: (mode?: DocxPasteMode) => void
   onCut?: () => void
   onCopy?: () => void
@@ -70,13 +82,23 @@ const unavailable = '原版控件保留；当前 DOCX 原生操作协议未支�
  * recorded in SOURCE-SHA256.json). Its App callbacks are replaced by Native
  * Tiptap/DOCX operations; unsupported commands remain visible and disabled.
  */
-export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, onFindReplace, onPaste, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
+export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, onFindReplace, onSelectAll, onPaste, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
+  const fontListId = useId()
+  const [caseOpen, setCaseOpen] = useState(false)
+  const caseWrap = useRef<HTMLDivElement>(null)
+  useDismissablePopover(caseOpen, () => setCaseOpen(false), { inside: () => [caseWrap.current], escape: true })
+  const canCase = editable && !!onChangeCase && !caseUnavailable
+  const caseModes: [CaseMode, string][] = [
+    ['sentence', ribbonZh.ribbonCaseSentence], ['lower', ribbonZh.ribbonCaseLower], ['upper', ribbonZh.ribbonCaseUpper],
+    ['title', ribbonZh.ribbonCaseTitle], ['toggle', ribbonZh.ribbonCaseToggle],
+    ['halfWidth', ribbonZh.ribbonCaseHalfWidth], ['fullWidth', ribbonZh.ribbonCaseFullWidth],
+  ]
   const [highlightOpen, setHighlightOpen] = useState(false)
   const [penHighlight, setPenHighlight] = useState('yellow')
   const highlightWrap = useRef<HTMLDivElement>(null)
   useDismissablePopover(highlightOpen, () => setHighlightOpen(false), { inside: () => [highlightWrap.current], escape: true })
   const canHighlight = editable && !!highlightAvailable && !!onHighlight
-  const highlightTip = '文字突出显示颜色（整段）；请选择有唯一来源锚点的非空正文段落'
+  const highlightTip = '文字突出显示颜色；作用于选中文字，未选文字时作用于整段'
   const [shadingOpen, setShadingOpen] = useState(false)
   const [penShading, setPenShading] = useState('EDF5FC')
   const shadingWrap = useRef<HTMLDivElement>(null)
@@ -123,12 +145,10 @@ export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onF
     <button type="button" className={`rb-icon${pressed ? ' active' : ''}`} data-action={id} data-editable-action="true" disabled={!editable || !available} title={available ? label : `${label}：${unavailableReason}`} aria-label={available ? label : `${label}，${unavailableReason}`} aria-pressed={pressed} onClick={onClick}>{children}</button>
   )
   const group = (key: string, children: ReactNode) => (
-    <div className="ribbon-group"><div className="ribbon-group-items">{children}</div><div className="ribbon-group-label">{key}</div></div>
+    <div className={key === "AI 助手" ? "ribbon-group office-ai-group" : "ribbon-group"}><div className="ribbon-group-items">{children}</div><div className="ribbon-group-label">{key}</div></div>
   )
   return <div className="ribbon-content docx-source-home">
-    {group('Genspark AI', <button type="button" className="rb-big ai-entry" disabled title={unavailable}>Genspark AI</button>)}
-    <div className="ribbon-sep" />
-    {group('转换', <>{disabled('convert-pdf', '转换为 PDF', <span>PDF</span>)}{disabled('convert-html', '转换为 HTML', <span>HTML</span>)}{disabled('convert-markdown', '转换为 Markdown', <span>MD</span>)}{disabled('export-images', '导出图像', <span>IMG</span>)}</>)}
+    {group('AI 助手', <OfficeAIEntry onOpen={onAssistant} />)}
     <div className="ribbon-sep" />
     {group(zh.ribbonGroupClipboard, <>
       <div className="rb-split-wrap rb-big-split" ref={pasteWrap}>
@@ -161,28 +181,41 @@ export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onF
     <div className="ribbon-sep" />
     {group('字体', <>
       <div className="rb-row">
-        <input className="rb-select rb-font-family" data-action="font-family" data-editable-action="true" aria-label={zh.ribbonFontFamilyTip} placeholder={zh.ribbonFontFamilyTip} disabled={!editable}
+        <input className="rb-select rb-font-family" data-action="font-family" data-editable-action="true" aria-label={zh.ribbonFontFamilyTip} placeholder={zh.ribbonFontFamilyTip} disabled={!editable} list={fontListId} title="选择或输入字体，按 Enter 应用；系统字体需本机安装"
           onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); onFontFamily(event.currentTarget.value.trim()) } }} />
+        <datalist id={fontListId}>
+          <option value="Noto Serif CJK SC" label="思源宋体（内置常用中文）" />
+          <option value="Noto Sans CJK SC" label="思源黑体（内置常用中文）" />
+          <option value="LXGW WenKai" label="霞鹜文楷（内置常用中文）" />
+          <option value="Ma Shan Zheng" label="马善政毛笔楷书（内置常用中文）" />
+          <option value="ZCOOL XiaoWei" label="站酷小薇（内置常用中文）" />
+          {[['SimSun', '宋体'], ['SimHei', '黑体'], ['Microsoft YaHei', '微软雅黑'], ['KaiTi', '楷体'], ['FangSong', '仿宋']].map(([value, label]) => <option key={value} value={value} label={`${label}（系统字体）`} />)}
+        </datalist>
         <input className="rb-select rb-font-size" data-action="font-size" data-editable-action="true" type="number" min="1" max="200" step="0.5" defaultValue="12" aria-label={zh.ribbonFontSizeTip} disabled={!editable}
           onInput={event => { const value = Number(event.currentTarget.value); if (value >= 1 && value <= 200 && Number.isInteger(value * 2)) onFontSizeValue(value) }} />
         {action('grow-font', zh.ribbonGrowFont, <IconGrowFont size={17} />, () => onFontSize(1))}
         {action('shrink-font', zh.ribbonShrinkFont, <IconShrinkFont size={17} />, () => onFontSize(-1))}
-        {disabled('change-case', zh.ribbonChangeCase, <IconChangeCase size={17} />)}{disabled('clear-formatting', zh.ribbonClearFormatting, <IconClearFormat size={17} />)}
+        <div className="rb-split-wrap" ref={caseWrap} onMouseDown={event => event.preventDefault()}>
+          <button type="button" className="rb-icon" data-action="change-case" disabled={!canCase} title={caseUnavailable ?? zh.ribbonChangeCase} aria-label={zh.ribbonChangeCase} aria-expanded={caseOpen && canCase} onClick={() => setCaseOpen(open => !open)}><IconChangeCase size={17} /><span className="rb-caret-inline"><IconCaret /></span></button>
+          {caseOpen && canCase && <div data-rb-panel="" className="spacing-menu case-menu" role="menu">
+            {caseModes.map(([mode, label]) => <button key={mode} type="button" role="menuitem" data-action={`change-case:${mode}`} onClick={() => { setCaseOpen(false); onChangeCase?.(mode) }}>{label}</button>)}
+          </div>}
+        </div>{action('clear-formatting', zh.ribbonClearFormatting, <IconClearFormat size={17} />, () => onClearFormatting?.(), undefined, !!onClearFormatting && !clearFormattingUnavailable, clearFormattingUnavailable ?? '清除格式回调不可用')}
       </div>
       <div className="rb-row">
         {action('bold', zh.ribbonBoldTip, <b>B</b>, () => onMark('bold'))}
         {action('italic', zh.ribbonItalicTip, <i>I</i>, () => onMark('italic'))}
         {action('underline', zh.ribbonUnderlineTip, <u>U</u>, () => onMark('underline'))}
         {action('strike', zh.ribbonStrikethrough, <s>ab</s>, () => onMark('strike'))}
-        {action('subscript', zh.ribbonSubscript, <IconSubscript size={17} />, () => onVerticalAlign?.('subscript'), verticalAlign === 'subscript', !!verticalAlignAvailable, '请先选择有来源锚点的非空正文段落；作用于整段')}
-        {action('superscript', zh.ribbonSuperscript, <IconSuperscript size={17} />, () => onVerticalAlign?.('superscript'), verticalAlign === 'superscript', !!verticalAlignAvailable, '请先选择有来源锚点的非空正文段落；作用于整段')}
+        {action('subscript', zh.ribbonSubscript, <IconSubscript size={17} />, () => onVerticalAlign?.('subscript'), verticalAlign === 'subscript', !!verticalAlignAvailable, '作用于同一来源段落内的选中文字，未选文字时作用于整段')}
+        {action('superscript', zh.ribbonSuperscript, <IconSuperscript size={17} />, () => onVerticalAlign?.('superscript'), verticalAlign === 'superscript', !!verticalAlignAvailable, '作用于同一来源段落内的选中文字，未选文字时作用于整段')}
         <div className="rb-split-wrap docx-ribbon-highlight" ref={highlightWrap} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault() }}>
           <button type="button" className={`rb-icon rb-color-btn${highlight && highlight !== 'none' ? ' active' : ''}`} data-action="highlight" data-editable-action="true" disabled={!canHighlight} title={highlightTip} aria-label={highlightTip} onClick={() => onHighlight?.(highlight === penHighlight ? 'none' : penHighlight)}>
             <span className="rb-color-glyph rb-color-glyph-svg"><IconHighlight size={17} /><span className="rb-color-bar" style={{ background: HIGHLIGHT_CSS[penHighlight] }} /></span>
           </button>
-          <button type="button" className={`rb-caret rb-color-caret${highlightOpen ? ' active' : ''}`} data-action="highlight-palette" disabled={!canHighlight} title={highlightTip} aria-label="高亮颜色选择（整段）" aria-expanded={highlightOpen && canHighlight} onClick={() => setHighlightOpen(open => !open)}><IconCaret size={10} /></button>
+          <button type="button" className={`rb-caret rb-color-caret${highlightOpen ? ' active' : ''}`} data-action="highlight-palette" disabled={!canHighlight} title={highlightTip} aria-label="高亮颜色选择" aria-expanded={highlightOpen && canHighlight} onClick={() => setHighlightOpen(open => !open)}><IconCaret size={10} /></button>
           {highlightOpen && canHighlight && <div data-rb-panel="" className="color-palette color-palette-highlight color-palette-highlight-word docx-ribbon-highlight-palette">
-            <div className="color-section-title color-highlight-title">{ribbonZh.ribbonHighlightColors}（整段）</div>
+            <div className="color-section-title color-highlight-title">{ribbonZh.ribbonHighlightColors}</div>
             <div className="color-highlight-grid">{DOCX_HIGHLIGHTS.map(value => <button type="button" key={value} className={`color-swatch color-highlight-swatch${highlight === value ? ' selected' : ''}`} data-action={`highlight-${value}`} aria-label={value} aria-pressed={highlight === value} title={value} style={{ background: HIGHLIGHT_CSS[value] }} onClick={() => { setPenHighlight(value); onHighlight?.(value) }} />)}</div>
             <button type="button" className={`color-none color-highlight-none${highlight == null || highlight === 'none' ? ' selected' : ''}`} data-action="highlight-none" onClick={() => onHighlight?.('none')}>{ribbonZh.ribbonNoColor}</button>
           </div>}
@@ -213,7 +246,8 @@ export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onF
           {([1, 1.15, 1.5, 2, 2.5, 3] as const).map(value => <button type="button" key={value} data-source-action={`line-spacing-${value}`} disabled={!editable} className={lineSpacing === value ? 'active' : ''} onClick={() => { onSpacing?.({ lineSpacing: value, lineRule: null, lineRawTwips: null }); setSpacingOpen(false) }}>{value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '.0')}</button>)}
           <button type="button" data-action="toggle-space-before" data-source-action="toggle-space-before" disabled={!editable} onClick={() => onSpacing?.({ spaceBefore: Number(spaceBefore) > 0 ? 0 : 240, spaceBeforeAuto: null })}>{Number(spaceBefore) > 0 ? '删除段前间距' : zh.ribbonAddSpaceBefore}</button>
           <button type="button" data-action="toggle-space-after" data-source-action="toggle-space-after" disabled={!editable} onClick={() => onSpacing?.({ spaceAfter: Number(spaceAfter) > 0 ? 0 : 240, spaceAfterAuto: null })}>{Number(spaceAfter) > 0 ? '删除段后间距' : zh.ribbonAddSpaceAfter}</button>
-          <button type="button" data-action="line-spacing-options" data-source-action="line-spacing-options" disabled title={`${zh.ribbonLineSpacingOptions}：精确行距、段落对话框与其他行距单位尚未接入`} aria-label={`${zh.ribbonLineSpacingOptions}，精确行距、段落对话框与其他行距单位尚未接入`}>{zh.ribbonLineSpacingOptions}</button>
+          <button type="button" data-action="line-spacing-options" data-source-action="line-spacing-options" disabled={!editable || !onLineSpacingOptions || !!lineSpacingUnavailable} title={lineSpacingUnavailable ?? zh.ribbonLineSpacingOptions} aria-label={zh.ribbonLineSpacingOptions} onMouseDown={event => event.preventDefault()} onClick={() => { setSpacingOpen(false); onLineSpacingOptions?.() }}>{zh.ribbonLineSpacingOptions}</button>
+          <button type="button" data-action="special-indent-options" disabled={!editable || !onSpecialIndentOptions || !!specialIndentUnavailable} title={specialIndentUnavailable ?? '特殊缩进（首行／悬挂）'} aria-label="特殊缩进" onMouseDown={event => event.preventDefault()} onClick={() => { setSpacingOpen(false); onSpecialIndentOptions?.() }}>特殊缩进…</button>
         </div>
       </div>
       <div className="rb-split-wrap docx-ribbon-shading" ref={shadingWrap} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault() }}>
@@ -252,7 +286,9 @@ export function DocxHomeSource({ editable, onMark, onFontSize, onFontFamily, onF
     <div className="ribbon-sep" />
     {group(zh.ribbonGroupStyles, paragraphStyleControl ? <div ref={element => { if (element && paragraphStyleControl.parentElement !== element) element.append(paragraphStyleControl) }} /> : <button type="button" className="rb-big" disabled title={unavailable}>{zh.ribbonStyleNormal}</button>)}
     <div className="ribbon-sep" />
-    {group(zh.ribbonGroupEditing, <>{(['find', 'replace'] as const).map(mode => <button key={mode} type="button" className="rb-icon docx-source-command" data-action={mode} data-source-action={mode} disabled={!onFindReplace} onClick={() => onFindReplace?.(mode)}>{mode === 'find' ? '查找' : '替换'}</button>)}{disabled('select', '选择', <span>选择</span>)}</>)}
+    {group(zh.ribbonGroupEditing, <>{(['find', 'replace'] as const).map(mode => <button key={mode} type="button" className="rb-icon docx-source-command" data-action={mode} data-source-action={mode} disabled={!onFindReplace} onClick={() => onFindReplace?.(mode)}>{mode === 'find' ? <IconSearch /> : <IconReplace />}{mode === 'find' ? '查找' : '替换'}</button>)}<button type="button" className="rb-small" data-action="select" data-source-action="select" title={ribbonZh.ribbonSelectAllTip} disabled={!onSelectAll} onClick={() => onSelectAll?.()}><IconSelectAll />{ribbonZh.ribbonSelectAll}</button></>)}
+    {group('转换', <>{disabled('convert-pdf', '转换为 PDF', <><IconConvert /><span>PDF</span></>)}{disabled('convert-html', '转换为 HTML', <><IconConvert /><span>HTML</span></>)}{disabled('convert-markdown', '转换为 Markdown', <><IconConvert /><span>MD</span></>)}{disabled('export-images', '导出图像', <><IconPicture /><span>IMG</span></>)}</>)}
+    <div className="ribbon-sep" />
   </div>
 }
 import type { ReactNode } from 'react'

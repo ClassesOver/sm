@@ -18,11 +18,14 @@ export interface NativeContextResponse {
   capabilities: Record<string, unknown>
   editingEnabled: boolean
   aiEnabled?: boolean
+  wordReadAIEnabled?: boolean
   pdfTextEnabled?: boolean
   pdfReadAIEnabled?: boolean
   pdfReviewAIEnabled?: boolean
   pdfFormAIEnabled?: boolean
 }
+export type NativeAIReviewSelection = {sourceId: string; targetId: string} | {blockId: string; revisionId: string}
+export type NativeAINoteSelection = {selectionKind:'note';noteKind:'footnote'|'endnote';noteId:string} | {selectionKind:'noteAnchor';blockId:string}
 export type NativeAISelection = {blockId: string; cellId?: string} | {pageId: string; objectId: string}
 type NativeSkippedOperation = {operationIndex: number; kind: string; pageId: string; reason: string}
 export interface NativeAIJob {
@@ -136,6 +139,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
   return {
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
     file: async (signal?: AbortSignal): Promise<ArrayBuffer> => (await request('file', undefined, signal)).arrayBuffer(),
+    readModel: async <Model = Record<string, unknown>>(signal?: AbortSignal): Promise<{sourceSha256: string; model: Model}> => (await request('read-model', undefined, signal)).json(),
     preview: async <Model = Record<string, unknown>>(payload: NativePreviewRequest, signal?: AbortSignal): Promise<NativePreviewResponse<Model>> => (await request('preview', payload, signal)).json(),
     renderTree: async (payload: NativePreviewRequest, signal?: AbortSignal): Promise<Record<string, unknown>> => (await request('render-tree', payload, signal)).json(),
     previewFile: async (payload: NativePreviewRequest, signal?: AbortSignal): Promise<ArrayBuffer> => {

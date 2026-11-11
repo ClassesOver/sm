@@ -184,10 +184,10 @@ def test_borders_reject_bad_values_and_batch_conflicts():
             [
                 base,
                 {
-                    "kind": "setParagraphAlignment",
+                    "kind": "formatParagraph",
                     "blockId": base["blockId"],
                     "expectedObjectSha256": base["expectedObjectSha256"],
-                    "alignment": "center",
+                    "style": {"bold": True},
                 },
             ],
         )

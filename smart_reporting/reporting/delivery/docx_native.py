@@ -11,9 +11,12 @@ from .office_engine import last_json_line, run_bridge
 
 _MAX_BYTES = 24 * 1024 * 1024
 _OPERATION_KINDS = frozenset({
+    'insertCrossReference', 'insertCaption',
+    'createBookmark', 'deleteBookmark', 'insertToc', 'updateToc', 'deleteComment', 'resolveComment', 'replyComment', 'createComment', 'editCommentText', 'resolveTextRevision', 'insertNote', 'updateNote', 'deleteNote', 'patchParagraphRuns',
+    'clearParagraphFormatting', 'setParagraphRulerIndent', 'setParagraphTabStops', 'setTableCellBorders', 'setTableRepeatHeaders', 'reshapeTableCells', 'resizeTableColumns', 'setTableRowHeights', 'setTableAutoFit', 'setTableCellTextDirection', 'setTableCellAlignment', 'setTableCellMargins', 'setTableCellMarginOverrides', 'setTableRowBreaks', 'setTableAlignment', 'setTableCellWrap', 'setTableAltText',
     'replaceParagraph', 'insertParagraph', 'insertParagraphImage', 'insertTable', 'insertCoverPage', 'deleteParagraph',
     'insertTableRow', 'deleteTableRow', 'insertTableColumn', 'deleteTableColumn', 'restructureTable', 'insertSectionBreak',
-    'formatParagraph', 'formatRange', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceCellText', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpacing', 'setParagraphStyle', 'setParagraphShading', 'setParagraphBorders', 'setParagraphPageBreakBefore', 'setSectionLayout', 'setHeaderFooter',
+    'formatParagraph', 'formatRange', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceNestedCellText', 'replaceCellText', 'setCellShading', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpecialIndent', 'setParagraphSpacing', 'setParagraphStyle', 'setParagraphShading', 'setParagraphBorders', 'setParagraphPageBreakBefore', 'setSectionLayout', 'setHeaderFooter', 'setHeaderFooterLink',
 })
 
 
@@ -34,7 +37,7 @@ def _invoke(content: bytes, operations: list[dict[str, Any]] | None) -> tuple[di
         if len(encoded.encode()) > 12 * 1024 * 1024:
             raise ValueError('docx_operations_too_large')
         request.write_text(encoded, encoding='utf-8')
-        completed = run_bridge('slides', 'edit-docx', request)
+        completed = run_bridge('doc', 'edit-docx', request)
         if completed.returncode:
             raise ValueError(f'docx_engine_failed: {completed.stderr[-2000:]}')
         try:

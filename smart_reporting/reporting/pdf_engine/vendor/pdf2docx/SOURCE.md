@@ -14,7 +14,7 @@ The local bridge binds source SHA, file/page/pixel budgets and nonprotected inpu
 ## DOCX and XLSX extension (2026-11-11)
 
 The fixed-ref closure includes the original DOCX rebuild and XLSX rebuild.
-The DOCX import is redirected to the existing slides_engine/packages/docx-engine;
+The DOCX import is redirected to the existing doc_engine/packages/docx-engine;
 no content reconstruction algorithm is rewritten. XLSX uses the original cell
 rebuild, with a local bridge adaptation embedding scanned/degraded page renders
 through the existing xlsx-engine applyStaticImage writer. Normal-page floating

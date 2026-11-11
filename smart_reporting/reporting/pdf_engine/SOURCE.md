@@ -346,3 +346,13 @@ separately under vendor/pdf2docx. OCR remains disabled.
 2026-11-11 后续限定适配：表单多页选区按固定源逐页排列，跳过不足页并保留未排列控件原AP；测量草稿显示适配位于前端，原生writer不改。PPTX安全span链接复用现有run关系写入API，保留精确文字范围与来源外观，不修正尚无可靠逆映射的首行基线。详见 NATIVE_PDF_AP_ARRANGE_LINKS_ACCEPTANCE.md（report_editor）。
 
 2026-11-11 DOCX exact text-fill adaptation: the PDF IR already records RGB highlights. `vendor/pdf2docx/src/rebuild/index.ts` (converter-relative `src/rebuild/index.ts`) now retains exact non-palette six-digit RGB as the existing shared writer Run.shading and compares shading when merging runs. Exact named palette entries keep named highlight output; white remains unshaded. No shared DOCX writer, layout, font, or dependency change. Notes still lack a shading carrier; complete PDF/DOCX fidelity is not certified. Fixed source hashes remain unchanged, local hashes recorded separately.
+
+
+## Shared DOCX engine relocation (Word PR 214 integration)
+
+The PDF DOCX reader/rebuilder now resolves `doc_engine/packages/docx-engine`,
+matching the shared Word baseline after its package relocation. The PDF Docker
+stage copies that package and its own source/license notices; PDF runtime
+packaging carries the DOCX, workbook and slides notices separately. The source
+reconstruction logic is unchanged. Original upstream source hashes are retained;
+only the local import adaptation and its local hashes change.

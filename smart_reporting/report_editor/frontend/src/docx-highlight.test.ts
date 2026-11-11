@@ -90,11 +90,11 @@ it.each([null, true, 1, '#FFFF00', 'FFFF00', 'accent1', 'Yellow', '', {}, []])('
   expect(sourceOnly(editor)).toEqual(original)
 })
 
-it('rejects partial or mixed highlight edits and stale/foreign draft fields', () => {
+it('saves partial highlight edits and rejects stale/foreign draft fields', () => {
   const editor = setup(), original = sourceOnly(editor)
   editor.commands.setTextSelection({ from: 1, to: 2 })
   editor.commands.setMark('docTextStyle', { highlight: 'green' })
-  expect(() => docxOperations(original, sourceOnly(editor), anchors)).toThrow(/局部高亮/)
+  expect(docxOperations(original, sourceOnly(editor), anchors)).toEqual([{ ...op('green'), kind: 'formatRange', from: 0, to: 1 }])
   expect(() => replayDocxOperations(original, [{ ...op('none'), expectedObjectSha256: 'foreign' }], anchors)).toThrow(/身份/)
   expect(() => replayDocxOperations(original, [{ ...op('none'), rawRPr: '<w:rPr/>' }], anchors)).toThrow(/字段/)
   expect(() => replayDocxOperations(original, [{ ...op('none'), style: { highlight: 'none', themeColor: 'accent1' } }], anchors)).toThrow(/字段/)
@@ -152,4 +152,25 @@ it('reuses the source palette, preserves document selection on palette presses, 
   editor.commands.setTextSelection(2)
   expect(applyParagraphHighlight(editor, [{ ...anchor, editable: false }], 'yellow')).toBe(false)
   expect(highlightTarget(editor, [anchor, anchor])).toBeUndefined()
+})
+
+it('highlights only the selected UTF16 range and rejects a split emoji', () => {
+  const editor = setup(), original = sourceOnly(editor)
+  editor.commands.setTextSelection({ from: 2, to: 5 })
+  expect(applyParagraphHighlight(editor, anchors, 'green')).toBe(true)
+  expect(docxOperations(original, sourceOnly(editor), anchors)).toEqual([{ ...op('green'), kind: 'formatRange', from: 1, to: 4 }])
+  editor.commands.undo(); expect(sourceOnly(editor)).toEqual(original)
+  editor.commands.setTextSelection({ from: 2, to: 3 })
+  expect(applyParagraphHighlight(editor, anchors, 'green')).toBe(false)
+  expect(sourceOnly(editor)).toEqual(original)
+})
+
+it('keeps unsupported source run metadata opaque and rejects edits to it', () => {
+  const editor = setup(), original = sourceOnly(editor)
+  editor.commands.setTextSelection({ from: 2, to: 5 })
+  applyParagraphHighlight(editor, anchors, 'green')
+  const current = sourceOnly(editor)
+  const run = current.content[0].content![0]
+  run.marks!.find(mark => mark.type === 'docTextStyle')!.attrs!.rawRPr = '<w:rPr><w:vanish/></w:rPr>'
+  expect(() => docxOperations(original, current, anchors)).toThrow(/文字样式/)
 })

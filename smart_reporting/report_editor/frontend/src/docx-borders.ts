@@ -110,10 +110,13 @@ export function docxBorderAttrs(spec: DocxBorderSpec | null): { borders: string 
   return { borders: Object.keys(lines).join(''), borderLines: JSON.stringify(lines) }
 }
 
-/** Same target rules as paragraph shading: one uniquely anchored editable body paragraph. */
+export function paragraphBordersTarget(editor: Editor, anchors: Parameters<typeof highlightTarget>[1]) {
+  return highlightTarget(editor, anchors.map(anchor => ({ ...anchor, editable: anchor.paragraphBordersEditable ?? anchor.editable })), true)
+}
+/** 独立来源能力与底纹同规，不放宽普通正文editable。 */
 export function applyParagraphBorders(editor: Editor, anchors: Parameters<typeof highlightTarget>[1], value: unknown) {
   const spec = safeDocxBorders(value)
-  const target = highlightTarget(editor, anchors)
+  const target = paragraphBordersTarget(editor, anchors)
   if (!editor.isEditable || !target) return false
   const attrs = target.node.attrs
   if (attrs.borderReset || attrs.borderPad) return false

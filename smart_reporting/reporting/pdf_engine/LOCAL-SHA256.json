@@ -8,7 +8,7 @@
   "bridge/cli.ts": "d58129763c8f63fc791d5d77a1017162588704269f07e59d3ab4b4fd634e91df",
   "bridge/convert-office-complex.test.ts": "996f6d503acb2b3f164bfd3b240251ea951347823d71efad6bc8c0fb4c82514f",
   "bridge/convert-office.test.ts": "2f6b0c29a17940f0c45b1b996f41b2c1a4ef3fa21b545379f06fadfd3446ae20",
-  "bridge/convert-office.ts": "58e4e1c2180cbaf91d0b58c3ae3172ecc897a265a0479daaee8b08fa4061a125",
+  "bridge/convert-office.ts": "44228d8f9b8c7e5b8292dc787aef5670604cf7adbf527f277c01a22bbcde5554",
   "bridge/docx-exact-shading.test.ts": "9294a1c829501d900c3adf1522a6d76665447e103dbb05180a762529ca39cf75",
   "bridge/drawings.test.ts": "180fec388695d22f5335498815007d8e78eebd7dbe364973504b1fc041425cdb",
   "bridge/existing-image-engine.ts": "9a2e3065c6f6d528e6314f97401b716b65d921d6c5c89b040a41724d05cf0663",
@@ -66,7 +66,7 @@
   "bridge/operations.test.ts": "1fb56168f1571cb5f101b8d893dd9d5d1f454b7bc1bc6dde6651a2c8ba63a1be",
   "bridge/operations.ts": "7640c169a2070e6b218be0f9943e0380f3815234ee56a3991ff38b13df78d1a1",
   "bridge/output-font-aliases.test.ts": "f8dd304f52507f53731dfc2c40979e01aa34a55d1f091d66ba8db16c76aa01f9",
-  "bridge/package-runtime.mjs": "6a81c7828001214aeec6f266b624cfeb6db2fbbe834a803782a17b6ac6c03924",
+  "bridge/package-runtime.mjs": "c7d55de0f80438dba6e058d70023a73fc9e30a83eb4f4b549fc23bfe943aa404",
   "bridge/page-layout.test.ts": "a5eed475d229ed0d1fe35a6a01495f27f8a7ebeecac0d47cc430947a83bd1019",
   "bridge/pending-markup-mapping.test.ts": "7163b49117a127b15624bc738eeae8b2c5ea389cfbf90c3d9464505ed74b9562",
   "bridge/pptx-text-geometry.test.ts": "c80687bc2100973513a69187167e057231b7720bae3b35b0130a82f8318330af",
@@ -184,6 +184,6 @@
   "vendor/pdf2docx/src/rebuild-xlsx/workbook.ts": "4a612428fb73ec41da883e112b5eff4c43b4663374d2de030bd1c4f442e779ac",
   "vendor/pdf2docx/src/rebuild/fit.ts": "8735ef95fbe34d357d95c9d5b96cc3a78db874e1f1c41c279b50ebb68912b3b9",
   "vendor/pdf2docx/src/rebuild/fontmap.ts": "3ec99f2d693db3a83d98b8d95b00560fa46f2b3d6585537b7fd9ef93d36cf004",
-  "vendor/pdf2docx/src/rebuild/index.ts": "69f9bb91f42a27a3460aedcb1c0e388463c2aaaa996e1b7b828998f9e12b5814",
+  "vendor/pdf2docx/src/rebuild/index.ts": "3bfaf2443915e9bf32c8a11fcf74f3f3be3c0725340bfbf93fd86c1de0e5450e",
   "vendor/pdf2docx/src/script.ts": "4d66fddac6af2fc331a1bdf1708bc7fd1e0a31e22ae8a5fbdab16487201be6cb"
 }

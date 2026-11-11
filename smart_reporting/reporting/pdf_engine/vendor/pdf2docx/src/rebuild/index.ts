@@ -14,7 +14,7 @@ import {
   generateTableModelXml,
   parseDocx,
   saveDocx,
-} from '../../../../../slides_engine/packages/docx-engine/src/index'
+} from '../../../../../doc_engine/packages/docx-engine/src/index'
 import type {
   CustomNumberingLevel,
   GeneratedBlock,
@@ -32,7 +32,7 @@ import type {
   TableModel,
   TableParagraph,
   TextboxContentParagraph,
-} from '../../../../../slides_engine/packages/docx-engine/src/index'
+} from '../../../../../doc_engine/packages/docx-engine/src/index'
 import type { FurnitureHf } from '../analyze/furniture'
 import { rowBoundaries } from '../analyze/panels'
 import { detectCellHAlign } from '../analyze/table'

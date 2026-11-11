@@ -932,6 +932,33 @@ export function bumpHfProbeFontEpoch(): void {
   hfProbeFontEpoch++
 }
 
+// Host adapters may give the shared probe the same document-style ancestry as
+// their canvas. With no binding the source app retains its document.body probe.
+const hfProbeParents: { parent: HTMLElement }[] = []
+let hfProbeOriginalParent: HTMLElement | null = null
+export function bindHfProbeParent(parent: HTMLElement): () => void {
+  const probe = document.getElementById('hf-strip-probe')
+  if (!hfProbeParents.length) hfProbeOriginalParent = probe?.parentElement ?? document.body
+  const binding = { parent }
+  hfProbeParents.push(binding)
+  if (probe) parent.appendChild(probe)
+  bumpHfProbeFontEpoch()
+  return () => {
+    const index = hfProbeParents.indexOf(binding)
+    if (index < 0) return
+    const active = index === hfProbeParents.length - 1
+    hfProbeParents.splice(index, 1)
+    if (active) {
+      const next = hfProbeParents.at(-1)?.parent ?? hfProbeOriginalParent
+      const target = next?.isConnected ? next : document.body
+      const current = document.getElementById('hf-strip-probe')
+      if (current) target.appendChild(current)
+      bumpHfProbeFontEpoch()
+    }
+    if (!hfProbeParents.length) hfProbeOriginalParent = null
+  }
+}
+
 function hfProbeHost(): HTMLElement | null {
   if (typeof document === 'undefined' || !document.body) return null
   let host = document.getElementById('hf-strip-probe')
@@ -956,7 +983,8 @@ function hfProbeHost(): HTMLElement | null {
       // floating-box content draws at its anchor, not in the strip flow
       '#hf-strip-probe .page-hf-box-anchored { display: none; }'
     document.head.appendChild(neutralize)
-    document.body.appendChild(host)
+    const parent = hfProbeParents.at(-1)?.parent ?? document.body
+    parent.appendChild(host)
   }
   return host
 }

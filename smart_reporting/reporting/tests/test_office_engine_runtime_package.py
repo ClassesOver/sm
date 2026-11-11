@@ -102,13 +102,13 @@ def test_docx_bundle_runs_without_source_or_node_modules(tmp_path, monkeypatch):
 
     from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
 
-    bundle = _REPO / "smart_reporting/reporting/slides_engine/dist/edit-docx.mjs"
+    bundle = _REPO / "smart_reporting/reporting/doc_engine/dist/edit-docx.mjs"
     if not bundle.is_file():
-        pytest.skip("需要先为 slides_engine 执行 bundle:bridges")
+        pytest.skip("需要先为 doc_engine 执行 bundle:bridges")
     runtime = tmp_path / "runtime"
     (runtime / "dist").mkdir(parents=True)
     shutil.copy2(bundle, runtime / "dist/edit-docx.mjs")
-    monkeypatch.setenv("AGENT_REPORTING_SLIDES_ENGINE_DIR", str(runtime))
+    monkeypatch.setenv("AGENT_REPORTING_DOC_ENGINE_DIR", str(runtime))
     monkeypatch.delenv("NODE_PATH", raising=False)
     monkeypatch.delenv("NODE_OPTIONS", raising=False)
 

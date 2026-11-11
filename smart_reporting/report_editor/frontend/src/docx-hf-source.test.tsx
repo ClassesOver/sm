@@ -125,7 +125,7 @@ function renderSource(controller: DocxHeaderFooterController) {
 }
 
 function button(host: HTMLElement, label: string) {
-  const found = [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === label)
+  const found = [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => (item.getAttribute('aria-label') ?? item.textContent) === label)
   expect(found, label).toBeTruthy()
   return found!
 }
@@ -142,6 +142,17 @@ function typeWithoutBlur(mounted: ObservableMount, text: string) {
   mounted.input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
   expect(document.activeElement).toBe(mounted.input)
 }
+
+it('opens and commits the explicitly requested footer variant without editing the header', () => {
+  const { controller, onCommit } = makeController()
+  const host = document.createElement('div'); document.body.append(host)
+  const root = createRoot(host); roots.add(root)
+  act(() => root.render(<DocxHeaderFooterSource controller={controller} target={{ part: 'footer', variant: 'even' }} />))
+  expect(currentMount().opts.value.text).toBe('footer.even')
+  typeWithoutBlur(currentMount(), 'Changed footer')
+  act(() => currentMount().exit())
+  expect(onCommit).toHaveBeenCalledWith('footer', 'even', expect.objectContaining({ text: 'Changed footer' }), undefined)
+})
 
 it.each([
   { label: '页脚', part: 'footer', variant: 'default' },
@@ -264,6 +275,20 @@ it.each([
   expect(currentMount().input.value).toBe('text typed before option toggle')
 })
 
+it.each([
+  ['hf-title-page', 'titlePgReadOnlyReason'], ['hf-even-odd', 'evenAndOddHeadersReadOnlyReason'],
+] as const)('shows unknown markup in %s without allowing its normalization', (action, reason) => {
+  const { controller, onCommit } = makeController()
+  controller.model[reason] = '页眉选项标记无法解释'
+  const { host } = renderSource(controller)
+  const checkbox = host.querySelector<HTMLInputElement>(`[data-source-action="${action}"]`)!
+  expect(checkbox.disabled).toBe(true)
+  expect(checkbox.indeterminate).toBe(true)
+  expect(checkbox.title).toBe('页眉选项标记无法解释')
+  act(() => checkbox.click())
+  expect(onCommit).not.toHaveBeenCalled()
+})
+
 it('does not rewrite the draft when the registered editor is flushed repeatedly without new edits', () => {
   const { controller, pending, onCommit } = makeController()
   renderSource(controller)
@@ -291,4 +316,65 @@ it('unmount unregisters the pending editor and discards the child without commit
   expect(active.discard).toHaveBeenCalledTimes(1)
   expect(active.exit).not.toHaveBeenCalled()
   expect(onCommit).not.toHaveBeenCalled()
+})
+
+it('confirms replacing the current section variant before discarding local content, and preserves it on cancel', () => {
+  const f = makeController(), onLink = vi.fn()
+  f.controller.linked = () => ({ value: false, ownerLabel: '第 2 节' })
+  f.controller.onLink = onLink
+  const { host } = renderSource(f.controller)
+  const mounted = currentMount()
+  mounted.input.value = 'uncommitted local header'
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  const checkbox = host.querySelector<HTMLInputElement>('[data-source-action="hf-link-previous"]')!
+  act(() => checkbox.click())
+  expect(confirm).toHaveBeenCalledWith(expect.stringContaining('替换'))
+  expect(onLink).not.toHaveBeenCalled()
+  expect(mounted.discard).not.toHaveBeenCalled()
+  expect(mounted.input.value).toBe('uncommitted local header')
+  confirm.mockReturnValue(true)
+  act(() => checkbox.click())
+  expect(onLink).toHaveBeenCalledExactlyOnceWith('header', 'default', true)
+  expect(mounted.discard).toHaveBeenCalledOnce()
+  expect(f.onCommit).not.toHaveBeenCalled()
+  confirm.mockRestore()
+})
+
+
+it('passes pending inherited text to the unlink transaction without discarding it or confirming', () => {
+  const f = makeController(), onLink = vi.fn()
+  f.controller.linked = () => ({ value: true, ownerLabel: '第 1 节' })
+  f.controller.onLink = onLink
+  const { host } = renderSource(f.controller)
+  const mounted = currentMount(); mounted.input.value = 'pending inherited text'
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  act(() => host.querySelector<HTMLInputElement>('[data-source-action="hf-link-previous"]')!.click())
+  expect(confirm).not.toHaveBeenCalled()
+  expect(onLink).toHaveBeenCalledExactlyOnceWith('header', 'default', false, expect.objectContaining({ text: 'pending inherited text' }))
+  expect(mounted.discard).not.toHaveBeenCalled()
+  confirm.mockRestore()
+})
+
+it('ignores a late commit from an editor opened on another section', () => {
+  const f = makeController()
+  renderSource(f.controller)
+  const mounted = currentMount()
+  f.controller.anchor = { sectionId: 'other-section', expectedSectionSha256: 'other-sha' }
+  act(() => mounted.opts.onCommit({ text: 'late content' }))
+  expect(f.onCommit).not.toHaveBeenCalled()
+})
+
+
+it('remounts a discarded editor when linking changes owner but both contents are equal', () => {
+  const f = makeController()
+  let linked = false
+  f.controller.linked = () => ({ value: linked, ownerLabel: linked ? '第 1 节' : '第 2 节' })
+  f.controller.onLink = (_part, _variant, value) => { linked = value }
+  const { host } = renderSource(f.controller), mounted = currentMount()
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  act(() => host.querySelector<HTMLInputElement>('[data-source-action="hf-link-previous"]')!.click())
+  expect(mounted.discard).toHaveBeenCalled()
+  expect(currentMount()).not.toBe(mounted)
+  expect(currentMount().input.disabled).toBe(false)
+  confirm.mockRestore()
 })

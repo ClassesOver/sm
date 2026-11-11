@@ -27,7 +27,7 @@ execFileSync(process.execPath, [packer, source, destination], { stdio: 'inherit'
 mkdirSync(join(destination, 'licenses/vendor/pdf2docx'), { recursive: true })
 for (const name of converterNotices) copyFileSync(join(source, 'vendor/pdf2docx', name), join(destination, 'licenses/vendor/pdf2docx', name))
 // 转换复用 DOCX/XLSX/PPTX 本地源码；运行包须携带各引擎的来源说明和许可。
-for (const engine of ['workbook_engine', 'slides_engine']) {
+for (const engine of ['doc_engine', 'workbook_engine', 'slides_engine']) {
   for (const name of ['LICENSE', 'NOTICE', 'SOURCE.md']) {
     const input = join(source, '..', engine, name)
     if (!existsSync(input)) throw new Error('PDF conversion source notice missing: ' + engine + '/' + name)
