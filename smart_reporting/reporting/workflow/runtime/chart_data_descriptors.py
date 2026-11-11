@@ -43,6 +43,13 @@ def deterministic_chart_descriptors(
     payload: Mapping[str, Any], *, include_all_breakdown_details: bool = False,
 ) -> list[dict[str, Any]]:
     """Sign exact selectors; ranked groups never stand in for a population."""
+    if payload.get('metricContext') is not None:
+        from ...semantics.chart_projection import registered_chart_descriptors
+
+        try:
+            return registered_chart_descriptors(payload)
+        except (ValueError, KeyError, IndexError):
+            return []
     descriptors: list[dict[str, Any]] = []
     for index, metric in enumerate(payload.get("metrics") or ()):
         if not isinstance(metric, Mapping):

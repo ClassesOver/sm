@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "title": "C02项目均值原报告",
+  "period": "[2026-11-01, 2026-12-01)",
+  "sources": {
+    "version": "1",
+    "period": "[2026-11-01, 2026-12-01)",
+    "datasets": {
+      "dataset-fa8812aed54d025c2fac40b8e4110d55": {
+        "path": "报表/数据集/8d96b243275ab623d9a9c733/batch-ae1419d830c587b7335aaab97b2b748d/dataset-fa8812aed54d025c2fac40b8e4110d55.csv",
+        "size": 52,
+        "sha256": "77100ab70e9b772de439f1b666628ba20319f323fdfa7bab399897f3a22ffc2c",
+        "periodRoles": [
+          "current"
+        ],
+        "requirementId": "metric-5f1374778cbcdf8d32df0508e09eb13b18c5a4f69bfc1954ac13029a5cf5b520",
+        "sheet": "明细1_dataset-fa8812aed54d025c2fa"
+      },
+      "dataset-da6cbd49ec5e61e3d5596e41b695e4c1": {
+        "path": "报表/数据集/8d96b243275ab623d9a9c733/batch-ae1419d830c587b7335aaab97b2b748d/dataset-da6cbd49ec5e61e3d5596e41b695e4c1.csv",
+        "size": 43,
+        "sha256": "d4591264c8b30c0e153447039f35a6b4edbcd669976a694c594ec7aa23b2f4a3",
+        "periodRoles": [
+          "current"
+        ],
+        "requirementId": "metric-c665fc735d02df80cc236b09b3e0f4d818a0cf850e051f629876f3718d7a433e",
+        "sheet": "明细2_dataset-da6cbd49ec5e61e3d55"
+      }
+    },
+    "cells": [
+      {
+        "sheet": "总体执行率与计算依据",
+        "cell": "C2",
+        "sectionId": "section_001",
+        "analysisId": "analysis_001",
+        "factId": "fact-0f6d9b777152db49",
+        "datasetIds": [
+          "dataset-fa8812aed54d025c2fac40b8e4110d55"
+        ],
+        "factArray": "metricContext/calculations/0/results",
+        "scope": {},
+        "periodStart": "2026-11-01",
+        "periodEnd": "2026-12-01",
+        "basisId": "a61d17c2-4187-58af-b3d5-ed4ad9c0601c",
+        "metricVersion": {
+          "metricId": "completion_equivalents",
+          "revision": 1
+        },
+        "calculationId": "initial-7a99c306bdc2974aec9e5b9dc930c1b20e3d8d9f55cbc9f44995c31dc3ab3301",
+        "status": "computed",
+        "issueCodes": [
+          "data_readiness_unknown"
+        ],
+        "exactValue": "1.40000000",
+        "jsonPointer": "/metricContext/calculations/0/results/0",
+        "verificationStatus": "needs_verification"
+      },
+      {
+        "sheet": "总体执行率与计算依据",
+        "cell": "C3",
+        "sectionId": "section_001",
+        "analysisId": "analysis_001",
+        "factId": "fact-3a4d8ffa35d008fb",
+        "datasetIds": [
+          "dataset-da6cbd49ec5e61e3d5596e41b695e4c1"
+        ],
+        "factArray": "metricContext/calculations/0/results",
+        "scope": {},
+        "periodStart": "2026-11-01",
+        "periodEnd": "2026-12-01",
+        "basisId": "a61d17c2-4187-58af-b3d5-ed4ad9c0601c",
+        "metricVersion": {
+          "metricId": "project_count",
+          "revision": 1
+        },
+        "calculationId": "initial-7a99c306bdc2974aec9e5b9dc930c1b20e3d8d9f55cbc9f44995c31dc3ab3301",
+        "status": "computed",
+        "issueCodes": [
+          "data_readiness_unknown"
+        ],
+        "exactValue": "2",
+        "jsonPointer": "/metricContext/calculations/0/results/1",
+        "verificationStatus": "needs_verification"
+      },
+      {
+        "sheet": "总体执行率与计算依据",
+        "cell": "C4",
+        "sectionId": "section_001",
+        "analysisId": "analysis_001",
+        "factId": "fact-2595a4b32b4e1213",
+        "datasetIds": [
+          "dataset-fa8812aed54d025c2fac40b8e4110d55",
+          "dataset-da6cbd49ec5e61e3d5596e41b695e4c1"
+        ],
+        "factArray": "metricContext/calculations/0/results",
+        "scope": {},
+        "periodStart": "2026-11-01",
+        "periodEnd": "2026-12-01",
+        "basisId": "a61d17c2-4187-58af-b3d5-ed4ad9c0601c",
+        "metricVersion": {
+          "metricId": "rate",
+          "revision": 1
+        },
+        "calculationId": "initial-7a99c306bdc2974aec9e5b9dc930c1b20e3d8d9f55cbc9f44995c31dc3ab3301",
+        "status": "computed",
+        "issueCodes": [
+          "data_readiness_unknown"
+        ],
+        "exactValue": "70.00000000",
+        "jsonPointer": "/metricContext/calculations/0/results/2",
+        "verificationStatus": "needs_verification"
+      }
+    ],
+    "claims": [
+      {
+        "sheet": "汇总",
+        "cell": "G2",
+        "analysisId": "analysis_001",
+        "support": {
+          "subjectId": "sub-37895dee42af949f",
+          "claimId": "narr-c2e8609554afc8ba5d0e9058",
+          "kind": "recommendation",
+          "sectionId": "section_001",
+          "analysisIds": [
+            "analysis_001"
+          ],
+          "supportStatus": "unverified",
+          "statementSha256": "7babba0671db4c1efe07ded74482bad4f3974afb90cb167918dca7090ba502cc",
+          "sourceSha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e",
+          "factRefs": [],
+          "evidenceRefs": [],
+          "reason": "manual_revision_requires_verification"
+        }
+      },
+      {
+        "sheet": "汇总",
+        "cell": "G3",
+        "analysisId": "analysis_001",
+        "support": {
+          "subjectId": "sub-37895dee42af949f",
+          "claimId": "narr-c2e8609554afc8ba5d0e9058",
+          "kind": "recommendation",
+          "sectionId": "section_001",
+          "analysisIds": [
+            "analysis_001"
+          ],
+          "supportStatus": "unverified",
+          "statementSha256": "7babba0671db4c1efe07ded74482bad4f3974afb90cb167918dca7090ba502cc",
+          "sourceSha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e",
+          "factRefs": [],
+          "evidenceRefs": [],
+          "reason": "manual_revision_requires_verification"
+        }
+      },
+      {
+        "sheet": "汇总",
+        "cell": "G4",
+        "analysisId": "analysis_001",
+        "support": {
+          "subjectId": "sub-37895dee42af949f",
+          "claimId": "narr-c2e8609554afc8ba5d0e9058",
+          "kind": "recommendation",
+          "sectionId": "section_001",
+          "analysisIds": [
+            "analysis_001"
+          ],
+          "supportStatus": "unverified",
+          "statementSha256": "7babba0671db4c1efe07ded74482bad4f3974afb90cb167918dca7090ba502cc",
+          "sourceSha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e",
+          "factRefs": [],
+          "evidenceRefs": [],
+          "reason": "manual_revision_requires_verification"
+        }
+      }
+    ],
+    "verificationStatus": "needs_verification"
+  },
+  "sheets": [
+    {
+      "name": "汇总"
+    },
+    {
+      "name": "总体执行率与计算依据",
+      "sectionId": "section_001",
+      "analysisIds": [
+        "analysis_001"
+      ]
+    },
+    {
+      "name": "明细1_dataset-fa8812aed54d025c2fa"
+    },
+    {
+      "name": "明细2_dataset-da6cbd49ec5e61e3d55"
+    }
+  ],
+  "verificationStatus": "needs_verification",
+  "sourceWorkbookSha256": "1b63837c4600428b95d8cd6df3bfdaa9e55073be171faf9151caf0ad528c860d"
+}

@@ -33,6 +33,7 @@ from .models import (
     ManagementError,
     invalid_credentials,
 )
+from .semantic_schema import register_semantic_tables
 
 metadata = MetaData(schema="reporting_management")
 accounts = Table(
@@ -378,11 +379,26 @@ sources = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
+table_discoveries = Table(
+    "table_discoveries", metadata,
+    Column("scope_id", String(36), primary_key=True),
+    Column("source_id", String(64), primary_key=True),
+    Column("discovery_id", String(36), primary_key=True),
+    Column("database", String(128), nullable=False),
+    Column("credential_ref", String(36), nullable=False),
+    Column("credential_revision", Integer, nullable=False),
+    Column("discovered_at", DateTime(timezone=True), nullable=False),
+    Column("tables", JSON, nullable=False),
+    Column("business_metadata", JSON),
+    Column("warnings", JSON, nullable=False),
+)
+
 source_drafts = Table(
     "source_drafts", metadata,
     Column("scope_id", String(36), primary_key=True),
     Column("source_id", String(64), primary_key=True),
     Column("version", Integer, nullable=False),
+    Column("requires_table_discovery", Integer, nullable=False, server_default="0"),
     Column("name", String(200), nullable=False),
     Column("source_type", String(32), nullable=False),
     Column("database", String(128), nullable=False),
@@ -419,3 +435,23 @@ source_credentials = Table(
     Column("ciphertext", JSON, nullable=False),
     Column("secret_hash", String(64), nullable=False),
 )
+
+# 新业务契约独立登记；旧Profile表仅待切换归档，不向新表转换。
+semantic_tables = register_semantic_tables(metadata)
+metric_drafts = semantic_tables["metric_drafts"]
+metric_versions = semantic_tables["metric_versions"]
+metric_dependencies = semantic_tables["metric_dependencies"]
+statistical_policy_drafts = semantic_tables["statistical_policy_drafts"]
+statistical_policy_versions = semantic_tables["statistical_policy_versions"]
+statistical_policy_metrics = semantic_tables["statistical_policy_metrics"]
+reporting_policy_defaults = semantic_tables["reporting_policy_defaults"]
+business_documents = semantic_tables["business_documents"]
+business_document_revisions = semantic_tables["business_document_revisions"]
+business_revision_states = semantic_tables["business_revision_states"]
+business_ingestion_jobs = semantic_tables["business_ingestion_jobs"]
+business_evidence_releases = semantic_tables["business_evidence_releases"]
+business_evidence_release_documents = semantic_tables["business_evidence_release_documents"]
+report_bases = semantic_tables["report_bases"]
+report_basis_receipts = semantic_tables["report_basis_receipts"]
+semantic_asset_retirements = semantic_tables["semantic_asset_retirements"]
+report_issue_reviews = semantic_tables["report_issue_reviews"]

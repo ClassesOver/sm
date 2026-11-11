@@ -203,10 +203,11 @@ async def test_normalize_multi_domain_topic_without_requesting_clarification() -
         "deliveryFormat": "document",
         "domains": ["income", "full_cost"],
         "period": {"start": "2025-01-01", "end": "2025-12-31"},
-        "comparisonRoles": ["yoy"],
-        "fileInputs": [],
-        "visualizationMode": "static",
     }
+    restored = ReportRequestEnvelope.from_untrusted(output.content)
+    assert restored.comparison_roles == ("yoy",)
+    assert restored.file_inputs == ()
+    assert restored.visualization_mode == "static"
 
 
 @pytest.mark.anyio

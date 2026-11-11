@@ -445,3 +445,9 @@ describe('business labels', () => {
     expect(sectionTitleFromDraft('[[section:sec-1]]\n正文段落', 'sec-1')).toBeUndefined()
   })
 })
+
+it('shows registered half-open periods without reusing closed period endpoints', async () => {
+  const { factPeriodLabel } = await import('./evidence-relations')
+  expect(factPeriodLabel({ period: { start: '2026-01-01', end: '2027-01-01' },
+    periodBoundary: 'half_open', periodRoles: [] })).toBe('[2026-01-01, 2027-01-01)（含起日、不含止日）')
+})

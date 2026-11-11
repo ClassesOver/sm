@@ -359,7 +359,7 @@ async def _write_revision_files(
                 unit="元",
             ),
         )
-    index = build_csv_trace_index(
+    index = build_csv_trace_index(report_basis_id="basis-test",
         handles=(handle,),
         lineage=(lineage,),
         report_id=report_id,
@@ -1275,7 +1275,7 @@ async def _write_two_period_datasets(
                 periodRoles=handle.period_roles,
             )
         )
-    built = build_csv_trace_index(
+    built = build_csv_trace_index(report_basis_id="basis-test",
         handles=tuple(handles),
         lineage=tuple(lineages),
         report_id="report-1",
@@ -2040,7 +2040,7 @@ async def test_reanalysis_new_snapshot_does_not_change_old_revision_drilldown(
         size=second_handle.size,
         sha256=second_handle.sha256,
     )
-    second_index = build_csv_trace_index(
+    second_index = build_csv_trace_index(report_basis_id="basis-test",
         handles=(second_handle,),
         lineage=(second_lineage,),
         report_id="report-1",
@@ -2567,3 +2567,72 @@ async def test_http_chart_preview_respects_column_restrictions(
                 assert response.json()["detail"]["code"] == "dataset_access_denied"
                 assert "plotData" not in response.text
                 assert "3600" not in response.text
+
+
+@pytest.mark.anyio
+async def test_http_knowledge_detail_uses_report_session_and_rechecks_each_read(tmp_path, monkeypatch):
+    from smart_reporting.reporting.business_knowledge.claims import candidate_for_hit
+    from smart_reporting.reporting.tests.lineage_fixtures.manifest import register_trace_manifest
+    from smart_reporting.reporting.tests.test_claim_knowledge_support import candidate
+    from smart_reporting.reporting.trace.contracts_v1 import (
+        ClaimSemanticReceiptV1,
+        NarrativeReferenceV1,
+    )
+
+    editor, grants, workspace = await _make_editor(tmp_path, with_fact_file=True, with_drilldown=True)
+    context = _context()
+    workspace.registry.resolve(_scope())
+    index = await editor.trace.require_index(context)
+    original = candidate()
+    evidence = candidate_for_hit(basis_id=index.report_basis_id, section_code='section-1',
+        receipt_id='knowledge-http', release_id='rules', period=original.period, hit=original.hit)
+    subject = index.subject_bindings[0]
+    receipt = ClaimSemanticReceiptV1(contextSha256='a' * 64, interpretation={'claimId': subject.claim_id},
+        knowledgeReferences=(evidence.reference,))
+    narrative = NarrativeReferenceV1(offset=0, claimId=subject.claim_id, basisId=index.report_basis_id,
+        period=evidence.period, statementSha256='a' * 64, semanticReceipt=receipt)
+    subject = subject.model_copy(update={'fact_refs': (), 'narrative_reference': narrative})
+    index = index.model_copy(update={'subject_bindings': (subject,)})
+    await workspace.awrite_bytes(_scope().workspace_key, 'reports/revision-1/trace-index-v1.json',
+        encode_trace_index(index), overwrite=True)
+    manifest = await register_trace_manifest(workspace, _scope().workspace_key, index, overwrite=True)
+    context = context.model_copy(update={'artifact_manifest': manifest})
+    state = await editor.state_repository.get(context.workflow_run_id)
+    state.payload['reportEditorContexts']['1'] = context.model_dump(mode='json', by_alias=True)
+    current = {evidence.reference.evidence_id: evidence}
+    calls = []
+
+    async def resolve(*args):
+        calls.append(True)
+        return {'status': 'available' if current else 'unavailable', 'issueCodes': [], 'sections': []}, current
+
+    monkeypatch.setattr(editor.trace, 'resolve_knowledge_dependencies', resolve)
+    raw, _ = await grants.issue(context)
+    app = FastAPI()
+    app.include_router(create_report_editor_router(grants, editor=editor, cookie_secure=False))
+    url = f'/reports/v1/editor/report-1/1/api/sources/{subject.subject_id}/knowledge/{evidence.reference.evidence_id}'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        anonymous = await client.get(url)
+        assert anonymous.status_code == 404
+        assert anonymous.json()['detail']['code'] == 'report_editor_session_invalid'
+        assert not calls
+        await client.get(f'/reports/v1/editor/open/{raw}', follow_redirects=False)
+        response = await client.get(url)
+        assert response.status_code == 200
+        assert response.headers['cache-control'] == 'no-store'
+        assert response.json()['quote'] == evidence.hit.quote
+        assert len(calls) == 1
+        for wrong in (url.replace('report-1/1', 'report-2/1'), url.replace('report-1/1', 'report-1/2')):
+            from smart_reporting.report_editor.api import EDITOR_SESSION_COOKIE
+
+            denied = await client.get(wrong, headers={'Cookie': EDITOR_SESSION_COOKIE + '=' + client.cookies.get(EDITOR_SESSION_COOKIE)})
+            assert denied.status_code == 404
+            assert denied.json()['detail']['code'] == 'report_editor_scope_mismatch'
+            assert evidence.hit.quote not in denied.text
+        missing = await client.get(url.replace(evidence.reference.evidence_id, 'evidence-foreign'))
+        assert missing.status_code == 404
+        current.clear()
+        unavailable = await client.get(url)
+        assert unavailable.status_code == 200 and unavailable.json()['available'] is False
+        assert 'quote' not in unavailable.json() and evidence.hit.quote not in unavailable.text
+        assert len(calls) == 2

@@ -21,3 +21,17 @@ async def test_caption_numeric_review_is_recorded_instead_of_dropped():
     assert finding.subject_type == 'analysis_chart'
     assert finding.subject_id == 'section_001_chart_02'
     assert finding.disposition == 'quality_warning'
+
+
+@pytest.mark.anyio
+async def test_knowledge_recheck_failure_is_recorded_for_its_section():
+    audit = QualityAuditCollector(report_run_id='report-run-test', revision=1)
+    skipped = await _record_publication_audit(audit, [{
+        'code': 'report_section_knowledge_unavailable', 'sectionCode': 'section_001',
+        'message': '知识依据无法核验，已有文件仍可下载。',
+    }], service=None, tenant=None, complete=True)
+    assert skipped == 0
+    finding, = audit.build().findings
+    assert finding.subject_type == 'section'
+    assert finding.subject_id == 'section_001'
+    assert finding.disposition == 'quality_warning'

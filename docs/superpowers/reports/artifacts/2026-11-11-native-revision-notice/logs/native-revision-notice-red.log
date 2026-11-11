@@ -1,0 +1,26 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+____ test_workbook_notice_preserves_cells_and_updates_one_identified_sheet _____
+
+    def test_workbook_notice_preserves_cells_and_updates_one_identified_sheet():
+>       from smart_reporting.report_editor.revision_notice import add_workbook_revision_notice
+E       ModuleNotFoundError: No module named 'smart_reporting.report_editor.revision_notice'
+
+smart_reporting/reporting/tests/test_native_revision_notice.py:12: ModuleNotFoundError
+_ test_slides_notice_preserves_original_slide_and_updates_one_identified_slide _
+
+    def test_slides_notice_preserves_original_slide_and_updates_one_identified_slide():
+>       from smart_reporting.report_editor.revision_notice import add_slides_revision_notice
+E       ModuleNotFoundError: No module named 'smart_reporting.report_editor.revision_notice'
+
+smart_reporting/reporting/tests/test_native_revision_notice.py:39: ModuleNotFoundError
+=============================== warnings summary ===============================
+smart_reporting/reporting/tests/test_native_revision_notice.py::test_workbook_notice_preserves_cells_and_updates_one_identified_sheet
+  /home/junge/pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2: DeprecationWarning: 'imghdr' is deprecated and slated for removal in Python 3.13
+    from imghdr import tests
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED smart_reporting/reporting/tests/test_native_revision_notice.py::test_workbook_notice_preserves_cells_and_updates_one_identified_sheet
+FAILED smart_reporting/reporting/tests/test_native_revision_notice.py::test_slides_notice_preserves_original_slide_and_updates_one_identified_slide
+2 failed, 1 warning in 9.18s

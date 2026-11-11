@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from ..semantics.models import ClaimSupport, QuestionCoverage
+from ..semantics.request_types import MetricVersionRef
 from .schema import HospitalOperationSchema
 
 FindingKind = Literal[
@@ -45,6 +47,8 @@ class FindingCard(HospitalOperationSchema):
     kind: FindingKind
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=4000)
+    fact_refs: tuple[str, ...] = Field(default=(), alias="factRefs", max_length=100)
+    metric_versions: tuple[MetricVersionRef, ...] = Field(default=(), alias="metricVersions", max_length=100)
     metric_codes: tuple[str, ...] = Field(alias="metricCodes", min_length=1, max_length=100)
     period_roles: tuple[str, ...] = Field(alias="periodRoles", min_length=1, max_length=3)
     period_start: str | None = Field(default=None, alias="periodStart", max_length=128)
@@ -56,7 +60,7 @@ class FindingCard(HospitalOperationSchema):
     impact_value: float | None = Field(default=None, alias="impactValue")
     impact_unit: str | None = Field(default=None, alias="impactUnit", max_length=64)
     actionability: Actionability
-    citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=1, max_length=100)
+    citation_ids: tuple[str, ...] = Field(alias="citationIds", min_length=0, max_length=100)
     source_refs: tuple[FindingSourceRef, ...] = Field(alias="sourceRefs", min_length=1, max_length=100)
     related_finding_ids: tuple[str, ...] = Field(default=(), alias="relatedFindingIds", max_length=100)
     limitations: tuple[str, ...] = Field(default=(), max_length=100)
@@ -70,6 +74,8 @@ class FindingCard(HospitalOperationSchema):
 
     @model_validator(mode="after")
     def validate_impact(self) -> FindingCard:
+        if not self.citation_ids and self.evidence_level != "evidence_missing":
+            raise ValueError("无数据集引用的发现必须标明证据不足")
         if self.impact_value != self.impact_value:  # NaN without importing math
             raise ValueError("发现影响值不能为 NaN")
         if self.impact_value is not None and self.impact_unit is None:
@@ -80,7 +86,9 @@ class FindingCard(HospitalOperationSchema):
 class FindingGraph(HospitalOperationSchema):
     version: Literal["1"] = "1"
     snapshot_hash: str = Field(alias="snapshotHash", pattern=r"^[0-9a-f]{64}$")
-    findings: tuple[FindingCard, ...] = Field(min_length=1, max_length=2000)
+    findings: tuple[FindingCard, ...] = Field(min_length=0, max_length=2000)
+    claim_support: tuple[ClaimSupport, ...] = Field(default=(), alias="claimSupport", max_length=2000)
+    question_coverage: tuple[QuestionCoverage, ...] = Field(default=(), alias="questionCoverage", max_length=50)
     relations: tuple[FindingRelation, ...] = Field(default=(), max_length=4000)
     warnings: tuple[str, ...] = Field(default=(), max_length=500)
 

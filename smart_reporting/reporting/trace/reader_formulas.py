@@ -245,6 +245,8 @@ def reader_formula(
 def _reader_formula(
     resolved: Mapping[str, Any], ids: Sequence[str], entries: Mapping[str, Mapping[str, Any]],
 ) -> str | None:
+    if resolved.get('period_boundary') == 'half_open':
+        return _formal_metric_formula(resolved)
     selector = resolved["selector"]
     entry = resolved["entry"]
     unit = entry.get("unit")
@@ -373,6 +375,35 @@ def _reader_formula(
         return (f"{member}变化 {_amount(proof['deltas'][index], unit)} ÷ "
                 f"总体净变化 {_amount(proof['netChange'], unit)} × 100%" + result)
     return None
+
+
+def _formal_metric_formula(resolved: Mapping[str, Any]) -> str:
+    """正式结果只展示冻结定义和登记原值，不经 float、不冒称重算或业务批准。"""
+    from ..semantics.presentation import semantic_issue_message
+
+    definition = resolved['metric_definition']
+    source = resolved['calculation_source']
+    kind = definition['kind']
+    if kind == 'ratio':
+        operands = [f"{item['name']}（第{item['revision']}版）" if item['name'] else '依赖指标版本未登记'
+            for item in source['dependencies']]
+        method = ' ÷ '.join(operands) + (' × 100%' if resolved['unit'] == '%' else '')
+        method += '（定义；操作数需查计算明细）'
+    else:
+        method = {'sum': '求和', 'count': '计数', 'count_distinct': '去重计数'}[kind]
+        aggregation = definition['aggregationPolicy']
+        if aggregation['observationKind'] == 'cumulative_snapshot':
+            method += '；累计快照按登记差分规则处理' if aggregation['timeAggregation'] == 'difference' else '；累计快照不跨期汇总'
+    period = resolved['period']
+    result = format(Decimal(str(resolved['value'])), 'f')
+    times = '、'.join(source['extractedAt']) or '未登记'
+    parts = [f"{definition['name']}（第{definition['revision']}版）：{method}",
+        f"采用{source['policyName']}（第{source['policyRevision']}版）",
+        f"期间 [{period['start']}, {period['end']})（含起日、不含止日）",
+        f"登记结果 {result} {resolved['unit']}", f"取数时间{times}",
+        *(semantic_issue_message(code) for code in resolved['entry'].get('issueCodes', ())),
+        '登记结果不等于业务核验通过']
+    return '；'.join(parts)
 
 
 __all__ = ["reader_formula"]

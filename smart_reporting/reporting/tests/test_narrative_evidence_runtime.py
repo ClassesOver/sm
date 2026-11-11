@@ -71,7 +71,7 @@ async def test_document_context_is_bound_only_after_narrative_freeze(anyio_backe
     runtime = SimpleNamespace(
         _state=lambda context: state,
         _envelope=lambda context: SimpleNamespace(period=SimpleNamespace(start=date(2025, 1, 1), end=date(2025, 12, 31))),
-        _profile=lambda context: SimpleNamespace(document_branding=SimpleNamespace(
+        delivery_settings=SimpleNamespace(branding=SimpleNamespace(
             organization_name="医院", generated_by_label="运营管理部", watermark_text="内部资料",
         )),
         _tool_context=lambda context: context, report_tools=SimpleNamespace(bind_document_context=bind),

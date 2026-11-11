@@ -1015,12 +1015,13 @@ async def test_analysis_executor_does_not_rerun_after_finalize_checkpoint(
 ) -> None:
     checkpoint = SimpleNamespace(revision=2, phase="finalize")
     durable = SimpleNamespace(
-        phase=ReportingPhase.FINALIZE,
+        phase=ReportingPhase.FINALIZE, revision=2,
         payload={"workflowCheckpoint": {"phase": "finalize", "revision": 2}},
     )
 
     class Runtime:
-        state_repository = SimpleNamespace(get_or_create=AsyncMock(return_value=durable))
+        state_repository = SimpleNamespace(get=AsyncMock(return_value=durable),
+            get_or_create=AsyncMock(return_value=durable))
         report_tools = SimpleNamespace(
             bind_document_context=AsyncMock(
                 side_effect=AssertionError("FINALIZE 重入不得重新执行分析准备")

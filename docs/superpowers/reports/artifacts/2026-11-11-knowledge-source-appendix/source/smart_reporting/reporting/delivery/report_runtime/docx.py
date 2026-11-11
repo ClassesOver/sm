@@ -1,0 +1,1126 @@
+"""Reporting DOCX 渲染、后处理和结构验收能力。"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import uuid
+import zipfile
+from copy import deepcopy
+from datetime import UTC, datetime
+from pathlib import Path
+from string import Formatter
+from typing import Any
+from urllib.parse import urlsplit
+from xml.etree import ElementTree
+
+from loguru import logger
+
+from .design import (
+    add_word_cover,
+    add_word_watermark,
+    apply_word_style,
+    presentation_context,
+    visible_cover_text,
+    watermark_text,
+)
+from .markdown import _WORD_MARKERS, REPORT_VISUAL_THEME, format_heading_label
+from .pdf import MAX_PDF_PAGES, _formatted_page_text, _page_number_context
+from .report_design import ReportDesign
+from .validation import MAX_DOCX_BYTES, ReportFailure
+
+DOCX_RENDER_TIMEOUT_SECONDS = 540
+DOCX_VALIDATION_TIMEOUT_SECONDS = 540
+_DOCX_FORBIDDEN_PARTS = ("word/vbaProject.bin", "word/embeddings/", "word/activeX/")
+_WORD_PAGE_FIELDS = {"page": "PAGE"}
+
+
+def _usable_width(section: Any) -> int:
+    """正文可用宽度；模板分节缺少 pgSz/pgMar 时 python-docx 返回 None，按 A4 与 Word 默认页边距回退。"""
+
+    from docx.shared import Emu, Mm
+
+    page_width = section.page_width if section.page_width is not None else Mm(210)
+    left = section.left_margin if section.left_margin is not None else Mm(31.8)
+    right = section.right_margin if section.right_margin is not None else Mm(31.8)
+    return Emu(int(page_width - left - right))
+
+
+_HEADER_UNIT = re.compile(r"^(?P<name>[^\n]{2,}?)(?P<unit>（[^（）\n]{1,12}）)$")
+
+
+def _break_before_header_unit(cell: Any) -> None:
+    """表头“实际人次（人次）”在窄列里按字折行成“实际人次（人 / 次）”；Word 没有不换行片段，
+    在单位括号前换行，与 PDF 表头的整体单位换行一致。"""
+    for paragraph in cell.paragraphs:
+        match = _HEADER_UNIT.match(paragraph.text)
+        if match is None or not paragraph.runs:
+            continue
+        first = paragraph.runs[0]
+        for run in paragraph.runs[1:]:
+            run._r.getparent().remove(run._r)
+        first.text = match["name"]
+        first.add_break()
+        first.add_text(match["unit"])
+
+
+_TABLE_EDGE_ROWS = 2
+
+
+def _keep_table_together_at_edges(table: Any) -> None:
+    """与 PDF 分页一致：行不在单元格中间跨页，表名不孤悬页底，首尾各两行不单独落页。
+
+    Word 以段落“与下段同页”把整行与下一行绑定：表头与前两行数据、倒数第二行与末行。
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    rows = list(table.rows)
+    for row in rows:
+        row_properties = row._tr.get_or_add_trPr()
+        if row_properties.find(qn("w:cantSplit")) is None:
+            row_properties.append(OxmlElement("w:cantSplit"))
+    data_rows = len(rows) - 1
+    keep = set(range(min(_TABLE_EDGE_ROWS, data_rows)))  # 表头及首行数据随后续行同页
+    if data_rows > _TABLE_EDGE_ROWS:
+        keep.add(len(rows) - _TABLE_EDGE_ROWS)  # 倒数第二行随末行同页
+    for index in keep:
+        for cell in rows[index].cells:
+            for paragraph in cell.paragraphs:
+                paragraph.paragraph_format.keep_with_next = True
+    previous = table._tbl.getprevious()
+    if previous is not None and previous.tag == qn("w:p"):
+        Paragraph(previous, table._parent).paragraph_format.keep_with_next = True
+
+
+def _fit_image_dimensions(
+    width: int, height: int, maximum_width: int, maximum_height: int
+) -> tuple[int, int]:
+    scale = min(1, maximum_width / width, maximum_height / height)
+    return int(width * scale), int(height * scale)
+
+
+# Word 样式与 PDF 版式同一层级：正文 10.5pt；章节（H2→Heading 1）16pt 主题色、小标题
+# （H3→Heading 2）12.5pt、四级（H4→Heading 3）11pt，标题均加粗。此前三级标题同为 14pt，
+# 章节与小标题在 Word 中无法区分。值为（字号, 主题色, 加粗, 段前磅值）。
+_WORD_STYLE_HIERARCHY: dict[str, tuple[float, str, bool | None, float | None]] = {
+    "Normal": (10.5, "ink", None, None),
+    "Title": (22, "primary", True, None),
+    "Heading 1": (16, "primary", True, 14),
+    "Heading 2": (12.5, "ink", True, 10),
+    "Heading 3": (11, "ink", True, 8),
+}
+
+
+def _render_docx(
+    html_document: str,
+    *,
+    source_parent: Path,
+    output: Path,
+    context: dict[str, Any],
+    layout: dict[str, str],
+    include_cover: bool = True,
+    include_toc: bool = True,
+    design: ReportDesign | None = None,
+) -> dict[str, Any]:
+    pandoc = shutil.which("pandoc")
+    conversion_root: Path | None = None
+    html_path = output.with_suffix(".html")
+    converted_output = output
+    if pandoc is None:
+        # LibreOffice 在当前运行环境不能把 docx 直接写入宿主 Workspace；
+        # 使用私有临时目录转换，再以受控 copy 写入目标文件。
+        conversion_root = Path(tempfile.mkdtemp(prefix="reporting-docx-"))
+        html_path = conversion_root / output.with_suffix(".html").name
+        converted_output = conversion_root / output.name
+    html_path.write_text(html_document, encoding="utf-8")
+    try:
+        if pandoc is not None:
+            command = [
+                pandoc,
+                "--from=html",
+                "--to=docx",
+                f"--resource-path={source_parent}",
+                "--output",
+                str(output),
+                str(html_path),
+            ]
+        else:
+            libreoffice = shutil.which("libreoffice") or shutil.which("soffice")
+            if libreoffice is None:
+                raise ReportFailure("Word 渲染需要 Pandoc 或 LibreOffice")
+            command = [
+                libreoffice,
+                f"-env:UserInstallation=file://{output.parent / ('.libreoffice-profile-' + uuid.uuid4().hex)}",
+                "--headless",
+                "--convert-to",
+                "docx:MS Word 2007 XML",
+                "--outdir",
+                str(conversion_root),
+                str(html_path),
+            ]
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=DOCX_RENDER_TIMEOUT_SECONDS,
+            check=False,
+            cwd=source_parent,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReportFailure("Word 渲染失败或超时") from error
+    else:
+        if (
+            conversion_root is not None
+            and process.returncode == 0
+            and converted_output.is_file()
+        ):
+            shutil.copyfile(converted_output, output)
+    finally:
+        if conversion_root is not None:
+            shutil.rmtree(conversion_root, ignore_errors=True)
+    if process.returncode != 0 or not output.is_file():
+        logger.warning(
+            "report_docx_render_failed returncode={} output_exists={} stderr={} stdout={}",
+            process.returncode,
+            output.is_file(),
+            (process.stderr or b"").decode(errors="replace")[-1000:],
+            (process.stdout or b"").decode(errors="replace")[-500:],
+        )
+        stderr = (process.stderr or b"").decode(errors="replace").strip()
+        raise ReportFailure(f"Word 渲染失败：{stderr[-500:]}")
+    from lxml import html as lxml_html
+
+    caption_texts = {"".join(node.itertext()) for node in lxml_html.fromstring(html_document).xpath('//*[@class="report-figure-caption"]')}
+    _postprocess_docx(
+        output,
+        context=context,
+        layout=layout,
+        include_cover=include_cover,
+        include_toc=include_toc,
+        design=design,
+        caption_texts=caption_texts,
+    )
+    if include_toc:
+        _cache_toc_page_numbers(output, context=context, include_cover=include_cover)
+    return _validate_docx_structure(
+        output,
+        expected_sections=context["sections"],
+        expected_headings=context["headingNumbers"],
+        expected_image_count=None,
+    )
+
+
+def _heading_body_pages(
+    reader: Any, headings: list[dict[str, Any]], *, first_numbered_page: int
+) -> list[int] | None:
+    """仅使用 PDF 书签目标定位标题，正文交叉引用不能充当标题。"""
+    destinations = reader.named_destinations
+    outlines: dict[str, list[Any]] = {}
+
+    def collect(items: list[Any]) -> None:
+        for item in items:
+            if isinstance(item, list):
+                collect(item)
+            else:
+                title = "".join(str(item.title).split())
+                outlines.setdefault(title, []).append(item)
+
+    collect(reader.outline)
+    found: list[int] = []
+    for item in headings:
+        anchor = item["anchor"]
+        destination = destinations.get(anchor)
+        if destination is None:
+            destination = destinations.get(anchor.replace("-", "_"))
+        if destination is None:
+            label = format_heading_label(level=item["level"], number=item["number"], title=item["title"])
+            matches = outlines.get("".join(label.split()), [])
+            if len(matches) != 1:
+                return None
+            destination = matches[0]
+        page = reader.get_destination_page_number(destination)
+        if page is None:
+            return None
+        physical = int(page) + 1
+        if physical < first_numbered_page or physical > len(reader.pages) or (found and physical < found[-1]):
+            return None
+        found.append(physical)
+    return found
+
+
+def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cover: bool) -> None:
+    """把目录 PAGEREF 的缓存结果写成实际页码。
+
+    字段仍标记为待更新，Word 打开时会重算；不刷新字段的查看器（受保护视图、WPS 预览）
+    此前会显示固定的缓存值“1”。按 LibreOffice 对同一文件的分页计算，失败时保留原缓存，不阻断导出。
+    """
+    libreoffice = shutil.which("libreoffice") or shutil.which("soffice")
+    if libreoffice is None:
+        return
+    root = Path(tempfile.mkdtemp(prefix="reporting-toc-"))
+    try:
+        import pypdf
+        from docx import Document
+        from docx.oxml.ns import qn
+
+        process = subprocess.run(
+            [
+                libreoffice,
+                "--headless",
+                f"-env:UserInstallation={(root / 'profile').resolve().as_uri()}",
+                "--convert-to",
+                'pdf:writer_pdf_Export:{"ExportBookmarksToPDFDestination":{"type":"boolean","value":"true"}}',
+                "--outdir",
+                str(root),
+                str(path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DOCX_VALIDATION_TIMEOUT_SECONDS,
+            check=False,
+        )
+        converted = root / f"{path.stem}.pdf"
+        if process.returncode != 0 or not converted.is_file():
+            logger.warning("report_docx_toc_pages_skipped reason=convert_failed")
+            return
+        reader = pypdf.PdfReader(str(converted))
+        headings = context["headingNumbers"]
+        first_numbered_page = 2 if include_cover else 1
+        physical = _heading_body_pages(reader, headings, first_numbered_page=first_numbered_page)
+        if not physical:
+            logger.warning("report_docx_toc_pages_skipped reason=heading_not_located")
+            return
+        body_destination = reader.named_destinations.get("/ReportBodyStart")
+        if body_destination is None:
+            body_destination = reader.named_destinations.get("ReportBodyStart")
+        body_page = reader.get_destination_page_number(body_destination) if body_destination is not None else None
+        if body_page is None or not first_numbered_page <= body_page + 1 <= physical[0]:
+            logger.warning("report_docx_toc_pages_skipped reason=body_start_not_located")
+            return
+        body_start = body_page + 1
+        numbers = {
+            item["anchor"].replace("-", "_"): str(
+                _page_number_context(
+                    page,
+                    body_start_page=body_start,
+                    physical_page_count=len(reader.pages),
+                    first_numbered_page=first_numbered_page,
+                )[0]
+            )
+            for item, page in zip(headings, physical, strict=True)
+        }
+        document = Document(str(path))
+        updated = 0
+        for paragraph in document.paragraphs:
+            runs = list(paragraph._p.iter(qn("w:r")))
+            for index, run in enumerate(runs):
+                instruction = run.find(qn("w:instrText"))
+                if instruction is None or not (instruction.text or "").strip().startswith("PAGEREF"):
+                    continue
+                bookmark = (instruction.text or "").split()[1]
+                result = next(
+                    (item.find(qn("w:t")) for item in runs[index + 1:] if item.find(qn("w:t")) is not None),
+                    None,
+                )
+                if bookmark in numbers and result is not None:
+                    result.text = numbers[bookmark]
+                    updated += 1
+        # 缓存更新失败不得破坏已生成的原文件；替换文件与原文件在同一文件系统。
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".reporting-toc-", suffix=".docx", dir=path.parent)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            document.save(str(temporary))
+            with zipfile.ZipFile(temporary) as archive:
+                if archive.testzip() is not None:
+                    raise ValueError("Word 缓存文件校验失败")
+            Document(str(temporary))
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        logger.info("report_docx_toc_pages_cached headings={} updated={}", len(numbers), updated)
+    except Exception as error:  # 缓存页码只改善离线显示，任何失败都保留原文件。
+        logger.warning("report_docx_toc_pages_skipped reason={}", type(error).__name__)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _postprocess_docx(
+    path: Path,
+    *,
+    context: dict[str, Any],
+    layout: dict[str, str],
+    include_cover: bool = True,
+    include_toc: bool = True,
+    design: ReportDesign | None = None,
+    caption_texts: set[str] | None = None,
+) -> None:
+    try:
+        from docx import Document
+        from docx.enum.style import WD_STYLE_TYPE
+        from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Mm, Pt, RGBColor
+    except ImportError as error:
+        raise ReportFailure("Word 后处理依赖 python-docx 不可用") from error
+
+    design = design or ReportDesign()
+    raw_context = context
+    context = presentation_context(design, context)
+    document = Document(str(path))
+    theme_colors = {
+        name: RGBColor.from_string(str(value).removeprefix("#"))
+        for name, value in REPORT_VISUAL_THEME.items()
+        if isinstance(value, str) and value.startswith("#")
+    }
+    markers: dict[str, Any] = {}
+    for paragraph in document.paragraphs:
+        for name, marker in _WORD_MARKERS.items():
+            if paragraph.text.strip() == marker:
+                if name in markers:
+                    raise ReportFailure("Word 版式标记重复")
+                markers[name] = paragraph
+    if set(markers) != set(_WORD_MARKERS):
+        raise ReportFailure("Word 版式标记缺失")
+
+    def clear_paragraph(paragraph: Any) -> None:
+        for child in list(paragraph._p):
+            if child.tag != qn("w:pPr"):
+                paragraph._p.remove(child)
+
+    def field_run(
+        paragraph: Any,
+        instruction: str,
+        *,
+        result: str = "1",
+        close: bool = True,
+    ) -> None:
+        begin_run = OxmlElement("w:r")
+        begin = OxmlElement("w:fldChar")
+        begin.set(qn("w:fldCharType"), "begin")
+        begin.set(qn("w:dirty"), "true")
+        begin_run.append(begin)
+        instruction_run = OxmlElement("w:r")
+        instruction_text = OxmlElement("w:instrText")
+        instruction_text.set(qn("xml:space"), "preserve")
+        instruction_text.text = f" {instruction} "
+        instruction_run.append(instruction_text)
+        separate_run = OxmlElement("w:r")
+        separate = OxmlElement("w:fldChar")
+        separate.set(qn("w:fldCharType"), "separate")
+        separate_run.append(separate)
+        result_run = OxmlElement("w:r")
+        result_text = OxmlElement("w:t")
+        result_text.text = result
+        result_run.append(result_text)
+        for item in (begin_run, instruction_run, separate_run, result_run):
+            paragraph._p.append(item)
+        if close:
+            end_run = OxmlElement("w:r")
+            end = OxmlElement("w:fldChar")
+            end.set(qn("w:fldCharType"), "end")
+            end_run.append(end)
+            paragraph._p.append(end_run)
+
+    def field_end(paragraph: Any) -> None:
+        end_run = OxmlElement("w:r")
+        end = OxmlElement("w:fldChar")
+        end.set(qn("w:fldCharType"), "end")
+        end_run.append(end)
+        paragraph._p.append(end_run)
+
+    base_sect_pr = deepcopy(document._element.body.sectPr)
+
+    def section_properties(*, page_format: str | None) -> Any:
+        value = deepcopy(base_sect_pr)
+        for child in list(value):
+            if child.tag in {
+                qn("w:headerReference"),
+                qn("w:footerReference"),
+                qn("w:type"),
+                qn("w:pgNumType"),
+                qn("w:titlePg"),
+            }:
+                value.remove(child)
+        section_type = OxmlElement("w:type")
+        section_type.set(qn("w:val"), "nextPage")
+        value.insert(0, section_type)
+        if page_format is not None:
+            page_number = OxmlElement("w:pgNumType")
+            page_number.set(qn("w:start"), "1")
+            page_number.set(qn("w:fmt"), page_format)
+            value.append(page_number)
+        return value
+
+    # 仅对启用的封面/目录形成分节；关闭的部分只清空标记，保存前整体移除。
+    for marker_name, page_format, enabled in (
+        ("cover_end", None, include_cover),
+        ("toc_end", "lowerRoman", include_toc),
+    ):
+        paragraph = markers[marker_name]
+        clear_paragraph(paragraph)
+        if enabled:
+            paragraph._p.get_or_add_pPr().append(section_properties(page_format=page_format))
+    final_sect_pr = document._element.body.sectPr
+    for child in list(final_sect_pr):
+        if child.tag in {qn("w:headerReference"), qn("w:footerReference"), qn("w:pgNumType")}:
+            final_sect_pr.remove(child)
+    body_page_number = OxmlElement("w:pgNumType")
+    body_page_number.set(qn("w:start"), "1")
+    body_page_number.set(qn("w:fmt"), "decimal")
+    final_sect_pr.append(body_page_number)
+
+    sections = document.sections
+    if len(sections) != 1 + int(include_cover) + int(include_toc):
+        raise ReportFailure("Word 分节数与封面、目录导出设置不一致")
+    for section in sections:
+        section.page_width = Mm(210)
+        section.page_height = Mm(297)
+        section.top_margin = Mm(20)
+        section.bottom_margin = Mm(22)
+        section.left_margin = Mm(18)
+        section.right_margin = Mm(18)
+        section.header_distance = Mm(8)
+        section.footer_distance = Mm(8)
+
+    for style_name, (size, color, bold, space_before) in _WORD_STYLE_HIERARCHY.items():
+        style = (
+            document.styles[style_name]
+            if style_name in document.styles
+            else document.styles.add_style(style_name, WD_STYLE_TYPE.PARAGRAPH)
+        )
+        style.font.name = "Noto Sans CJK SC"
+        style.font.size = Pt(size)
+        style.font.color.rgb = theme_colors[color]
+        style._element.get_or_add_rPr().get_or_add_rFonts().set(
+            qn("w:eastAsia"), "Noto Sans CJK SC"
+        )
+        if bold is not None:
+            style.font.bold = bold
+        if space_before is not None:
+            # 标题前留白并与下文同页，紧接表格的小标题不再贴住表格下框线。
+            style.paragraph_format.space_before = Pt(space_before)
+            style.paragraph_format.space_after = Pt(space_before / 2)
+            style.paragraph_format.keep_with_next = True
+    for names, value in (
+        (("Normal", "Body Text", "First Paragraph", "Compact"), design.typography.body),
+        (("Heading 1",), design.typography.h1), (("Heading 2",), design.typography.h2),
+        (("Heading 3",), design.typography.h3), (("Caption", "Image Caption"), design.typography.caption),
+    ):
+        for name in names:
+            if name not in document.styles:
+                document.styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            apply_word_style(document.styles[name], value)
+    if "Report Signature" not in document.styles:
+        signature_style = document.styles.add_style("Report Signature", WD_STYLE_TYPE.PARAGRAPH)
+        signature_style.font.name = "Noto Sans CJK SC"
+        signature_style._element.get_or_add_rPr().get_or_add_rFonts().set(
+            qn("w:eastAsia"), "Noto Sans CJK SC"
+        )
+    # 落款与正文同字号（此前继承文档默认字号，明显大于正文）。
+    apply_word_style(document.styles["Report Signature"], design.typography.body)
+    # 来源附录的条目（pandoc 定义列表）与 PDF 一致：条目名主题色加粗，各字段缩进、行距紧凑；
+    # 此前字段不缩进且段后留白不一，首个字段紧贴条目名。
+    if "Definition Term" in document.styles:
+        term_style = document.styles["Definition Term"]
+        term_style.font.bold = True
+        term_style.font.color.rgb = theme_colors["primary"]
+        term_style.paragraph_format.space_before = Pt(8)
+        term_style.paragraph_format.space_after = Pt(2)
+    if "Definition" in document.styles:
+        definition_format = document.styles["Definition"].paragraph_format
+        definition_format.left_indent = Mm(6)
+        definition_format.space_before = Pt(0)
+        definition_format.space_after = Pt(2)
+    if "Report Source Appendix" not in document.styles:
+        source_style = document.styles.add_style(
+            "Report Source Appendix", WD_STYLE_TYPE.PARAGRAPH
+        )
+        source_style.font.name = "Noto Sans CJK SC"
+        source_style.font.size = Pt(16)
+        source_style.font.bold = True
+        source_style.font.color.rgb = theme_colors["primary"]
+        source_style._element.get_or_add_rPr().get_or_add_rFonts().set(
+            qn("w:eastAsia"), "Noto Sans CJK SC"
+        )
+
+    apply_word_style(document.styles["Report Source Appendix"], design.typography.h1)
+
+    if "Block Text" in document.styles:
+        # 引用块（注、说明）与 PDF 一致：左侧主题色竖线与浅色底纹，不再只是缩进文字。
+        block_properties = document.styles["Block Text"]._element.get_or_add_pPr()
+        for tag in ("w:pBdr", "w:shd"):
+            for existing in block_properties.findall(qn(tag)):
+                block_properties.remove(existing)
+        block_border = OxmlElement("w:pBdr")
+        left_border = OxmlElement("w:left")
+        left_border.set(qn("w:val"), "single")
+        left_border.set(qn("w:sz"), "18")
+        left_border.set(qn("w:space"), "6")
+        left_border.set(qn("w:color"), str(REPORT_VISUAL_THEME["accent"]).removeprefix("#"))
+        block_border.append(left_border)
+        block_shading = OxmlElement("w:shd")
+        block_shading.set(qn("w:val"), "clear")
+        block_shading.set(qn("w:fill"), str(REPORT_VISUAL_THEME["surface"]).removeprefix("#"))
+        successors = ("w:tabs", "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap", "w:overflowPunct",
+                      "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", "w:adjustRightInd",
+                      "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing", "w:mirrorIndents",
+                      "w:suppressOverlap", "w:jc", "w:textDirection", "w:textAlignment",
+                      "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr",
+                      "w:sectPr", "w:pPrChange")
+        block_properties.insert_element_before(block_shading, *successors)
+        block_properties.insert_element_before(block_border, "w:shd", *successors)
+
+    paragraphs = document.paragraphs
+    for source_appendix_title in (
+        item for item in paragraphs if item.text.strip() in ("实际引用附录", "数据来源附录", "业务知识来源")
+    ):
+        source_appendix_title.style = document.styles["Report Source Appendix"]
+        source_appendix_title.paragraph_format.page_break_before = True
+    # 服务端附表标题（PDF 中另起一页、章标题样式）：pandoc 只产出加粗段落，夹在正文末尾。
+    for appendix_tables_title in (
+        item for item in paragraphs
+        if item.text.strip() == "附表" and item.runs and all(run.bold for run in item.runs if run.text.strip())
+    ):
+        appendix_tables_title.style = document.styles["Report Source Appendix"]
+        appendix_tables_title.paragraph_format.page_break_before = True
+        appendix_tables_title.paragraph_format.keep_with_next = True
+
+    def marker_index(name: str) -> int:
+        return next(
+            index for index, paragraph in enumerate(paragraphs) if paragraph._p is markers[name]._p
+        )
+
+    cover_end_index = marker_index("cover_end")
+    toc_start_index = marker_index("toc_field_start")
+    toc_end_index = marker_index("toc_field_end")
+    body_start_index = marker_index("body_start")
+    for paragraph in paragraphs[body_start_index + 1:]:
+        if paragraph.text.strip() == "核心结论" and any(run.bold for run in paragraph.runs):
+            paragraph.style = document.styles["Heading 1"]
+            for run in paragraph.runs:
+                apply_word_style(run, design.typography.h1)
+        if paragraph.text in (caption_texts or set()):
+            paragraph.style = document.styles["Caption"]
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in paragraph.runs:
+                apply_word_style(run, design.typography.caption)
+    if include_cover:
+        for paragraph in paragraphs[:cover_end_index]:
+            clear_paragraph(paragraph)
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+        anchor = paragraphs[0] if cover_end_index else document.add_paragraph()
+        add_word_cover(anchor, design, raw_context)
+    else:
+        # 无封面导出时标题随正文起始，仅按标题文本套用 Title 样式（若存在）。
+        title_paragraph = next(
+            (item for item in paragraphs[body_start_index:] if item.text == context["title"]), None
+        )
+        if title_paragraph is not None:
+            title_paragraph.style = document.styles["Title"]
+    if include_toc:
+        toc_title = next(
+            (item for item in paragraphs[cover_end_index:toc_start_index] if item.text == "目录"),
+            None,
+        )
+        if toc_title is None:
+            raise ReportFailure("Word 缺少目录标题")
+        toc_title.style = document.styles["Title"]
+
+    body_headings: list[Any] = []
+    search_index = body_start_index + 1
+    for heading_index, item in enumerate(context["headingNumbers"], start=1):
+        expected_text = format_heading_label(
+            level=item["level"], number=item["number"], title=item["title"]
+        )
+        found = next(
+            (
+                (index, paragraph)
+                for index, paragraph in enumerate(paragraphs[search_index:], start=search_index)
+                if paragraph.text.strip() == expected_text
+            ),
+            None,
+        )
+        if found is None:
+            raise ReportFailure("Word 正文标题与服务端编号映射不一致")
+        search_index, heading = found
+        search_index += 1
+        heading.style = document.styles[f"Heading {item['level'] - 1}"]
+        bookmark_name = item["anchor"].replace("-", "_")
+        start = OxmlElement("w:bookmarkStart")
+        start.set(qn("w:id"), str(1000 + heading_index))
+        start.set(qn("w:name"), bookmark_name)
+        end = OxmlElement("w:bookmarkEnd")
+        end.set(qn("w:id"), str(1000 + heading_index))
+        insert_at = 1 if heading._p.pPr is not None else 0
+        heading._p.insert(insert_at, start)
+        heading._p.append(end)
+        body_headings.append(heading)
+
+    toc_entries = [
+        paragraph
+        for paragraph in paragraphs[toc_start_index + 1 : toc_end_index]
+        if paragraph.text.strip()
+    ]
+    if len(toc_entries) != (len(context["headingNumbers"]) if include_toc else 0):
+        raise ReportFailure("Word 缓存目录与正式标题不一致")
+    for paragraph, item in zip(
+        toc_entries, context["headingNumbers"] if include_toc else (), strict=True
+    ):
+        clear_paragraph(paragraph)
+        toc_style = f"TOC {item['level'] - 1}"
+        if toc_style in document.styles:
+            paragraph.style = document.styles[toc_style]
+        usable_width = _usable_width(sections[-1])
+        paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
+        hyperlink = OxmlElement("w:hyperlink")
+        bookmark_name = item["anchor"].replace("-", "_")
+        hyperlink.set(qn("w:anchor"), bookmark_name)
+        hyperlink.set(qn("w:history"), "1")
+        run = OxmlElement("w:r")
+        run_properties = OxmlElement("w:rPr")
+        run_style = OxmlElement("w:rStyle")
+        run_style.set(qn("w:val"), "Hyperlink")
+        run_properties.append(run_style)
+        run.append(run_properties)
+        text = OxmlElement("w:t")
+        text.text = format_heading_label(
+            level=item["level"], number=item["number"], title=item["title"]
+        )
+        run.append(text)
+        hyperlink.append(run)
+        paragraph._p.append(hyperlink)
+        paragraph.add_run("\t")
+        field_run(
+            paragraph,
+            f"PAGEREF {bookmark_name} \\h",
+        )
+
+    clear_paragraph(markers["toc_field_start"])
+    clear_paragraph(markers["toc_field_end"])
+    if include_toc:
+        field_run(
+            markers["toc_field_start"],
+            'TOC \\o "1-3" \\h \\z \\u',
+            result="",
+            close=False,
+        )
+        field_end(markers["toc_field_end"])
+    clear_paragraph(markers["body_start"])
+    body_bookmark = OxmlElement("w:bookmarkStart")
+    body_bookmark.set(qn("w:id"), "999")
+    body_bookmark.set(qn("w:name"), "ReportBodyStart")
+    markers["body_start"]._p.append(body_bookmark)
+    body_bookmark_end = OxmlElement("w:bookmarkEnd")
+    body_bookmark_end.set(qn("w:id"), "999")
+    markers["body_start"]._p.append(body_bookmark_end)
+
+    def clear_story(story: Any) -> Any:
+        for table in list(story.tables):
+            story._element.remove(table._element)
+        paragraph = story.paragraphs[0]
+        clear_paragraph(paragraph)
+        for extra in list(story.paragraphs[1:]):
+            story._element.remove(extra._element)
+        return paragraph
+
+    def add_template(paragraph: Any, left: str, right: str, *, end_bookmark: str) -> None:
+        usable_width = _usable_width(sections[-1])
+        paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
+
+        def append(value: str) -> None:
+            for literal, field_name, _format_spec, _conversion in Formatter().parse(value):
+                if literal:
+                    paragraph.add_run(literal)
+                if field_name == "title":
+                    paragraph.add_run(context["title"])
+                elif field_name == "organization":
+                    paragraph.add_run(context["organizationName"])
+                elif field_name in _WORD_PAGE_FIELDS:
+                    field_run(paragraph, _WORD_PAGE_FIELDS[field_name])
+                elif field_name == "pages":
+                    field_run(paragraph, f"PAGEREF {end_bookmark} \\* Arabic")
+
+        append(left)
+        paragraph.add_run("\t")
+        append(right)
+        for run in paragraph.runs:
+            run.font.name = "Noto Sans CJK SC"
+            run.font.size = Pt(8)
+            run.font.color.rgb = theme_colors["muted"]
+            run._element.get_or_add_rPr().get_or_add_rFonts().set(
+                qn("w:eastAsia"), "Noto Sans CJK SC"
+            )
+
+    for index, section in enumerate(sections):
+        if include_cover and index == 0:
+            section.header.is_linked_to_previous = False
+            section.footer.is_linked_to_previous = False
+            clear_story(section.header)
+            clear_story(section.footer)
+            add_word_watermark(section.header, design, raw_context, section=index, cover=True)
+            continue
+        # SECTIONPAGES 在 LibreOffice 不会可靠刷新；分节页码从 1 起，
+        # 因此该节末尾书签的页码就是总页数，且仍可随 Word 重新排版更新。
+        end_bookmark = f"report_section_end_{index}"
+        end_paragraph = markers["toc_end"] if include_toc and index == int(include_cover) else paragraphs[-1]
+        start = OxmlElement("w:bookmarkStart")
+        start.set(qn("w:id"), str(2000 + index))
+        start.set(qn("w:name"), end_bookmark)
+        end = OxmlElement("w:bookmarkEnd")
+        end.set(qn("w:id"), str(2000 + index))
+        end_paragraph._p.append(start)
+        end_paragraph._p.append(end)
+        section.header.is_linked_to_previous = False
+        section.footer.is_linked_to_previous = False
+        header_paragraph = clear_story(section.header)
+        footer_paragraph = clear_story(section.footer)
+        add_template(
+            header_paragraph,
+            layout["headerLeft"],
+            layout["headerRight"],
+            end_bookmark=end_bookmark,
+        )
+        add_template(
+            footer_paragraph,
+            layout["footerLeft"],
+            layout["footerRight"],
+            end_bookmark=end_bookmark,
+        )
+        add_word_watermark(section.header, design, raw_context, section=index, cover=False)
+
+    for table in document.tables:
+        if "Table Grid" in document.styles:
+            table.style = "Table Grid"
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    apply_word_style(paragraph, design.typography.table)
+                    for run in paragraph.runs:
+                        apply_word_style(run, design.typography.table)
+        table_properties = table._tbl.tblPr
+        # 与 PDF 一致铺满正文宽度：pandoc 产出 auto 宽度与等宽列，表格只占约八成版心。
+        for existing in table_properties.findall(qn("w:tblW")):
+            table_properties.remove(existing)
+        table_width = OxmlElement("w:tblW")
+        table_width.set(qn("w:type"), "pct")
+        table_width.set(qn("w:w"), "5000")
+        # OOXML 要求 tblPr 子元素按架构顺序排列；Word 比 LibreOffice 更严格。
+        table_properties.insert_element_before(
+            table_width, "w:jc", "w:tblCellSpacing", "w:tblInd", "w:tblBorders", "w:shd",
+            "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+        )
+        for existing in table_properties.findall(qn("w:tblBorders")):
+            table_properties.remove(existing)
+        borders = OxmlElement("w:tblBorders")
+        for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+            border = OxmlElement(f"w:{edge}")
+            border.set(qn("w:val"), "single")
+            border.set(qn("w:sz"), "4")
+            border.set(qn("w:color"), str(REPORT_VISUAL_THEME["grid"]).removeprefix("#"))
+            borders.append(border)
+        table_properties.insert_element_before(
+            borders, "w:shd", "w:tblLayout", "w:tblCellMar", "w:tblLook", "w:tblCaption", "w:tblDescription",
+        )
+        if table.rows:
+            row_properties = table.rows[0]._tr.get_or_add_trPr()
+            table_header = OxmlElement("w:tblHeader")
+            table_header.set(qn("w:val"), "true")
+            row_properties.append(table_header)
+            for cell in table.rows[0].cells:
+                _break_before_header_unit(cell)
+                shading = OxmlElement("w:shd")
+                shading.set(qn("w:fill"), str(REPORT_VISUAL_THEME["surface"]).removeprefix("#"))
+                cell._tc.get_or_add_tcPr().append(shading)
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.color.rgb = RGBColor.from_string(design.typography.table.color[1:])
+            _keep_table_together_at_edges(table)
+    available_width = _usable_width(sections[-1])
+    maximum_height = Mm(180)
+    for shape in document.inline_shapes:
+        new_width, new_height = _fit_image_dimensions(
+            shape.width, shape.height, available_width, maximum_height
+        )
+        if (new_width, new_height) != (shape.width, shape.height):
+            shape.width = new_width
+            shape.height = new_height
+
+    signature_started = False
+    previous = None
+    for paragraph in paragraphs[body_start_index + 1 :]:
+        if paragraph.text.strip() in {context["organizationName"], context["generatedDate"]}:
+            paragraph.style = document.styles["Report Signature"]
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            if not signature_started:
+                paragraph.paragraph_format.keep_with_next = True
+                # 与 PDF 落款一致：与上文隔开 12mm；末段随落款换页，落款不单独占一页。
+                paragraph.paragraph_format.space_before = Mm(12)
+                if previous is not None:
+                    previous.paragraph_format.keep_with_next = True
+                signature_started = True
+        previous = paragraph
+
+    settings = document.settings._element
+    for existing in settings.findall(qn("w:updateFields")):
+        settings.remove(existing)
+    update_fields = OxmlElement("w:updateFields")
+    update_fields.set(qn("w:val"), "true")
+    settings.append(update_fields)
+    document.core_properties.title = context["title"]
+    document.core_properties.subject = context["periodLabel"]
+    document.core_properties.author = context["organizationName"]
+    document.core_properties.last_modified_by = context["generatedByLabel"]
+    document.core_properties.keywords = context["generatedByLabel"]
+    document.core_properties.modified = datetime.now(UTC)
+
+    removed_markers = (() if include_cover else ("cover_end",)) + (
+        () if include_toc else ("toc_field_start", "toc_field_end", "toc_end")
+    )
+    for marker_name in removed_markers:
+        element = markers[marker_name]._p
+        element.getparent().remove(element)
+
+    postprocessed = path.with_name("render.postprocessed.docx")
+    document.save(str(postprocessed))
+    if postprocessed.stat().st_size > MAX_DOCX_BYTES:
+        raise ReportFailure("Word 文件不能超过 200 MiB")
+    os.replace(postprocessed, path)
+
+
+def _validate_docx_structure(
+    path: Path,
+    *,
+    expected_sections: list[dict[str, str]],
+    expected_headings: list[dict[str, Any]],
+    expected_image_count: int | None,
+) -> dict[str, Any]:
+    if not path.is_file() or not 1 <= path.stat().st_size <= MAX_DOCX_BYTES:
+        raise ReportFailure("Word 文件不存在或超过 200 MiB")
+    external_relationship_count = 0
+    try:
+        with zipfile.ZipFile(path) as package:
+            names = set(package.namelist())
+            if any(
+                name == forbidden or name.startswith(forbidden)
+                for name in names
+                for forbidden in _DOCX_FORBIDDEN_PARTS
+            ):
+                raise ReportFailure("Word 包含宏、OLE 或 ActiveX 内容")
+            for relationship_name in (name for name in names if name.endswith(".rels")):
+                relationships = ElementTree.fromstring(package.read(relationship_name))
+                for item in relationships:
+                    # 附录在线定位（citation / B8 数据来源）需要真实超链接；
+                    # 文档由服务端模板生成且 URL 经过 subject 绑定校验，这里
+                    # 只放行无凭据的 http(s) 外链，其余外部关系仍然拒绝。
+                    if item.attrib.get("TargetMode") != "External":
+                        continue
+                    target = item.attrib.get("Target", "")
+                    parsed = urlsplit(target)
+                    if (
+                        parsed.scheme not in {"http", "https"}
+                        or not parsed.netloc
+                        or parsed.username
+                        or parsed.password
+                    ):
+                        raise ReportFailure("Word 包含外部关系")
+                    external_relationship_count += 1
+            required = {"word/document.xml", "word/settings.xml", "[Content_Types].xml"}
+            if not required.issubset(names):
+                raise ReportFailure("Word OOXML 结构不完整")
+            document_content = package.read("word/document.xml")
+            document_root = ElementTree.fromstring(document_content)
+            document_xml = document_content.decode("utf-8")
+            image_names = [name for name in names if name.startswith("word/media/")]
+    except (OSError, KeyError, UnicodeError, zipfile.BadZipFile, ElementTree.ParseError) as error:
+        raise ReportFailure("Word OOXML 无法解析") from error
+    bookmark_names = {item["anchor"].replace("-", "_") for item in expected_headings}
+    native_toc_present = (
+        'TOC \\o "1-3"' in document_xml
+        and "PAGEREF report_" in document_xml
+        and all(name in document_xml for name in bookmark_names)
+    )
+    toc_entry_count = sum(name in document_xml for name in bookmark_names)
+    word_namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    section_properties = document_root.findall(f".//{word_namespace}sectPr")
+    if expected_image_count is not None and len(image_names) < expected_image_count:
+        raise ReportFailure("Word 未完整嵌入图表")
+    return {
+        "nativeTocPresent": native_toc_present,
+        "sectionCount": len(section_properties),
+        "tocEntryCount": toc_entry_count,
+        "embeddedImageCount": len(image_names),
+        "externalRelationshipCount": external_relationship_count,
+    }
+
+
+def _validate_docx_rendering(
+    path: Path,
+    directory: Path,
+    *,
+    context: dict[str, Any],
+    layout: dict[str, str],
+    include_cover: bool = True,
+    design: ReportDesign | None = None,
+) -> dict[str, Any]:
+    design = design or ReportDesign()
+    raw_context = context
+    context = presentation_context(design, context)
+    try:
+        import pypdf
+        from PIL import Image
+    except ImportError as error:
+        raise ReportFailure("Word 可渲染性验收依赖不可用") from error
+    first_numbered_page = 2 if include_cover else 1
+    libreoffice = shutil.which("libreoffice") or shutil.which("soffice")
+    if libreoffice is None:
+        raise ReportFailure("Word 验收命令 LibreOffice 不可用")
+    directory.mkdir(mode=0o700)
+    output = directory / "output"
+    profile = directory / "profile"
+    raster = directory / "raster"
+    output.mkdir()
+    profile.mkdir()
+    raster.mkdir()
+    try:
+        process = subprocess.run(
+            [
+                libreoffice,
+                "--headless",
+                f"-env:UserInstallation={profile.resolve().as_uri()}",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(output),
+                str(path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DOCX_VALIDATION_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReportFailure("Word 经 LibreOffice 转换失败或超时") from error
+    converted = output / f"{path.stem}.pdf"
+    if process.returncode != 0 or not converted.is_file():
+        raise ReportFailure("Word 经 LibreOffice 转换失败")
+    try:
+        reader = pypdf.PdfReader(str(converted))
+    except pypdf.errors.PdfReadError as error:
+        raise ReportFailure("LibreOffice 转换结果无法打开") from error
+    if not 1 <= len(reader.pages) <= MAX_PDF_PAGES:
+        raise ReportFailure("Word 转换页数超出边界")
+    prefix = raster / "page"
+    # 空白页与图片判定只依赖文本层和 page.images，不读像素；栅格化仅确认转换结果
+    # 可被渲染，因此只抽首页低分辨率栅格化，避免对最多 200 页逐页出图。
+    try:
+        rendered = subprocess.run(
+            [
+                "pdftoppm",
+                "-gray",
+                "-r",
+                "36",
+                "-f",
+                "1",
+                "-l",
+                "1",
+                "-png",
+                str(converted),
+                str(prefix),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DOCX_VALIDATION_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReportFailure("Word 转换结果栅格化失败") from error
+    rendered_pages = list(raster.glob("page-*.png"))
+    if rendered.returncode != 0 or len(rendered_pages) != 1:
+        raise ReportFailure("Word 转换结果栅格化失败")
+    try:
+        with Image.open(rendered_pages[0]) as image:
+            image.verify()
+    except (OSError, SyntaxError) as error:
+        raise ReportFailure("Word 转换结果栅格化失败") from error
+    extracted_pages: list[str] = []
+    page_image_counts: list[int] = []
+    image_count = 0
+    for page in reader.pages:
+        page_text = page.extract_text() or ""
+        extracted_pages.append(page_text)
+        current_image_count = len(page.images)
+        page_image_counts.append(current_image_count)
+        image_count += current_image_count
+    first_section_title = "".join(context["sections"][0]["title"].split())
+    report_title = "".join(context["title"].split())
+    first_section_pages = [
+        index
+        for index, page_text in enumerate(extracted_pages, start=1)
+        if index >= first_numbered_page
+        and first_section_title in "".join(page_text.split()).replace(report_title, "", 1)
+    ]
+    # LibreOffice 会在转换后的 PDF 文本层为中文标题插入布局空格。该位置只用于
+    # 识别页码装饰，不再把目录缓存方式和正文分页形态作为发布门禁。
+    body_start_page = first_section_pages[-1] if first_section_pages else first_numbered_page
+    blank_pages: list[int] = []
+    for index, (page_text, current_image_count) in enumerate(
+        zip(extracted_pages, page_image_counts, strict=True), start=1
+    ):
+        substantive_text = "".join(page_text.split())
+        if index >= first_numbered_page:
+            page_value, pages_value = _page_number_context(
+                index,
+                body_start_page=body_start_page,
+                physical_page_count=len(reader.pages),
+                first_numbered_page=first_numbered_page,
+            )
+            decorations = [
+                watermark_text(design, raw_context) if design.watermark.enabled else "",
+                *(
+                    _formatted_page_text(
+                        value,
+                        title=context["title"],
+                        organization=context["organizationName"],
+                        page=page_value,
+                        pages=pages_value,
+                    )
+                    for value in layout.values()
+                    if value
+                ),
+            ]
+            # Writer 转换后的页眉、页脚和 VML 水印也会进入 PDF 文本层；只含这些
+            # 服务端装饰的页面仍是空白正文页，不能借装饰绕过发布门禁。
+            for decoration in decorations:
+                if decoration:
+                    substantive_text = substantive_text.replace("".join(decoration.split()), "")
+        intentional_empty_cover = include_cover and index == 1 and not visible_cover_text(design, raw_context)
+        if not substantive_text and current_image_count == 0 and not intentional_empty_cover:
+            blank_pages.append(index)
+    extracted_text = "\n".join(extracted_pages)
+    compact_extracted_text = "".join(extracted_text.split())
+    # 分析期间与生成标识只出现在封面；无封面导出不再要求它们。
+    cover_only_text = visible_cover_text(design, raw_context) if include_cover else (context["title"],)
+    required_text = (
+        *cover_only_text,
+        context["organizationName"],
+        context["generatedDate"],
+        *(item["title"] for item in context["sections"]),
+    )
+    if blank_pages or any(
+        "".join(item.split()) not in compact_extracted_text for item in required_text
+    ):
+        raise ReportFailure("Word 转换结果缺少正式内容或包含空白页")
+    if any(marker in extracted_text for marker in _WORD_MARKERS.values()):
+        raise ReportFailure("Word 显示了内部版式标记")
+    return {
+        "convertedPageCount": len(reader.pages),
+        "blankPages": blank_pages,
+        "renderedImageCount": image_count,
+    }

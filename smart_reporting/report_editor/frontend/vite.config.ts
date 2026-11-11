@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { cp, mkdir } from 'node:fs/promises'
 import { slidesReact } from './vite.slides-react'
 
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { precomputedCjkModule } from './scripts/precomputed-cjk'
 
 export default defineConfig({
@@ -41,6 +41,8 @@ export default defineConfig({
   },
   resolve: {
     alias: [
+      { find: /^@sheets-web\/xlsx-engine$/, replacement: fileURLToPath(new URL('../../reporting/workbook_engine/packages/xlsx-engine/src/index.ts', import.meta.url)) },
+      { find: /^@sheets-web\/xlsx-engine\/(.+)$/, replacement: fileURLToPath(new URL('../../reporting/workbook_engine/packages/xlsx-engine/src/', import.meta.url)) + '$1.ts' },
       { find: '@genoffice/docx-engine', replacement: fileURLToPath(new URL('../../reporting/doc_engine/packages/docx-engine/src/index.ts', import.meta.url)) },
       { find: /^@genoffice\/pptx-engine\/(.+)$/, replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-engine/src/', import.meta.url)) + '$1.ts' },
       { find: '@genoffice/pptx-render/preset-geometry', replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-render/src/preset-geometry.ts', import.meta.url)) },
@@ -177,5 +179,6 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['src/test-env-polyfills.ts'],
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
 })

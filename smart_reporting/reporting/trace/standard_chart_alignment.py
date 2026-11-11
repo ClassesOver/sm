@@ -64,6 +64,36 @@ def evaluate_standard_chart_alignment(index, chart, document):
             if any(not isinstance(metadata.get(field), Mapping)
                                           or not metadata[field].get('unit') for field in selected_fields):
                 raise ValueError('chart_axis_unit_unregistered')
+            if tokens[0] == 'metricContext':
+                from ..semantics.chart_projection import (
+                    registered_chart_results,
+                    registered_chart_table,
+                )
+
+                context, definition, results = registered_chart_results(source_document, tokens)
+                if context.basis_id != index.report_basis_id:
+                    raise ValueError('chart_fact_basis_mismatch')
+                _, _, expected_metadata = registered_chart_table(source_document, tokens, plot['columns'])
+                if set(selected_fields) != {'value'} or metadata != expected_metadata:
+                    raise ValueError('chart_axis_unit_mismatch')
+                known_datasets = {dataset.dataset_id for dataset in index.datasets}
+                for _, result in results:
+                    if (not result.dataset_ids or not set(result.dataset_ids).issubset(known_datasets)
+                            or not set(result.dataset_ids).issubset(chart.dataset_ids)):
+                        raise ValueError('chart_fact_dataset_mismatch')
+                    fact_ids.add(result.fact_id)
+                # 正式计算自身携带组织和精确版本；不伪造旧Profile的scope。
+                native_scope = {'basisId': context.basis_id, 'organization': context.request.organization}
+                for key, value in native_scope.items():
+                    if key in scopes and scopes[key] != value:
+                        raise ValueError('chart_scope_mismatch')
+                    scopes[key] = value
+                version_key = f'metricVersion:{definition.id}'
+                if version_key in scopes and scopes[version_key] != definition.revision:
+                    raise ValueError('chart_metric_ownership_mismatch')
+                scopes[version_key] = definition.revision
+                codes.add(definition.id)
+                continue
             if tokens[0] == 'findings':
                 ownership = _standard_finding_parents(index, origin, tokens, all_metrics)
                 entries = []

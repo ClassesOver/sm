@@ -648,6 +648,23 @@ def apply(
             effects.append(ReportingEffect("run_completed", dict(arguments)))
     elif name in {"reserve_quality_attempt", "settle_quality_attempt"}:
         _apply_quality_budget(payload, name, arguments, effects)
+    elif name == 'freeze_registered_answer_plan':
+        from ..semantics.question_coverage import RegisteredAnswerPlan
+        from .questions import QuestionSet
+
+        try:
+            questions = QuestionSet.model_validate(payload.get('questionSpecs'))
+            plan = RegisteredAnswerPlan.model_validate(arguments.get('plan'))
+            # basisId由Runtime读取PG登记依据后传入；此内部command不接收公开请求。
+            plan.validate_questions(questions, arguments.get('basisId'))
+            frozen = plan.model_dump(mode='json', by_alias=True)
+            previous = payload.get('registeredAnswerPlan')
+            if previous is not None and previous != frozen:
+                raise ValueError('已冻结的正式问题完成映射不可改写')
+            payload['registeredAnswerPlan'] = frozen
+            effects.append(ReportingEffect('registered_answer_plan_frozen', {'basisId': plan.report_basis_id}))
+        except (ValueError, TypeError) as error:
+            raise ReportingStateError('report_registered_answer_plan_invalid', '正式问题完成映射无效或发生冲突。') from error
     elif name in {"freeze_answer_review_plan", "record_answer_review"}:
         from ..trace.contracts_v1 import canonical_sha256
         from .answer_review import AnswerReviewPlan, AnswerReviewResult, questions_sha256
@@ -733,10 +750,39 @@ def apply(
         frozen = payload.setdefault("deliveryFormat", delivery_format)
         if frozen != delivery_format:
             raise ReportingStateError("report_context_restart_required", "交付格式已冻结，必须重新发起。")
+    elif name == 'freeze_report_outline':
+        from ..hospital_operation.outline import ReportOutline
+
+        try:
+            outline = ReportOutline.model_validate(arguments.get('outline'))
+        except ValueError as error:
+            raise ReportingStateError('report_outline_invalid', '批准大纲无效。') from error
+        if {key for section in outline.sections for key in section.analysis_ids} != set(payload.get('analysisIds', ())):
+            raise ReportingStateError('report_outline_invalid', '批准大纲必须精确覆盖登记分析。')
+        frozen_outline = outline.model_dump(mode='json', by_alias=True)
+        if payload.get('approvedOutline') is not None and payload['approvedOutline'] != frozen_outline:
+            raise ReportingStateError('report_outline_conflict', '批准大纲已冻结，不能改绑。')
+        payload['approvedOutline'] = frozen_outline
     elif name == "set_analysis_plan":
         analysis_ids = _tuple_unique(arguments.get("analysisIds"))
         if not analysis_ids:
             raise ReportingStateError("report_analysis_plan_invalid", "分析计划不能为空。")
+        raw_detailed_plan = arguments.get('detailedAnalysisPlan')
+        if raw_detailed_plan is not None:
+            from ..hospital_operation.detailed_analysis import DetailedAnalysisPlan
+
+            try:
+                detailed_plan = DetailedAnalysisPlan.model_validate(raw_detailed_plan)
+            except ValueError as error:
+                raise ReportingStateError('report_analysis_plan_invalid', '完整分析计划无效。') from error
+            if (tuple(item.analysis_id for item in detailed_plan.analyses) != tuple(analysis_ids)
+                    or detailed_plan.dataset_ids != tuple(_tuple_unique(arguments.get('datasetIds')))):
+                raise ReportingStateError('report_analysis_plan_invalid', '完整分析计划与分析或数据集身份不一致。')
+            frozen_plan = detailed_plan.model_dump(mode='json', by_alias=True)
+            previous_plan = payload.get('detailedAnalysisPlan')
+            if previous_plan is not None and previous_plan != frozen_plan:
+                raise ReportingStateError('report_analysis_plan_conflict', '已批准的完整分析计划不能改绑。')
+            payload['detailedAnalysisPlan'] = frozen_plan
         payload["analysisIds"] = analysis_ids
         raw_plans = arguments.get("analysisPlans")
         if raw_plans is not None:
@@ -1039,6 +1085,44 @@ def apply(
         ):
             raise ReportingStateError("report_warning_invalid", "Reporting 告警必须是对象列表。")
         payload["warnings"] = _tuple_unique([*payload.get("warnings", []), *warnings])
+    elif name == "record_report_editor_recalculation":
+        from ...report_editor.recalculation import (
+            PolicyAdoptionDeliveryResult,
+            RecalculationTask,
+            request_hash,
+            task_identity,
+        )
+        from ...report_editor.service import ReportEditorContext
+
+        try:
+            task = RecalculationTask.model_validate(arguments.get("task"))
+            context = ReportEditorContext.model_validate(
+                payload.get("reportEditorContexts", {}).get(str(task.request.parent_revision)))
+            if (context.workflow_run_id != state.report_run_id or context.report_id != task.report_id
+                    or context.digest() != task.context_sha256 or task.task_id != task_identity(context, task.request.request_id)
+                    or task.input_hash != request_hash(context, task.request)):
+                raise ValueError("复核身份不一致")
+            if isinstance(task.result, PolicyAdoptionDeliveryResult) and (
+                    task.result.execution.source_scope.run_id != context.workflow_run_id
+                    or task.result.execution.source_scope.as_state() != context.scope):
+                raise ValueError("新口径交付不能绑定其他报告或组织的执行")
+            tasks = payload.setdefault("reportEditorRecalculations", {})
+            existing = tasks.get(task.task_id)
+            serialized = task.model_dump(mode="json", by_alias=True)
+            if existing is None:
+                if task.status != "pending":
+                    raise ValueError("任务必须先登记待复核状态")
+            else:
+                previous = RecalculationTask.model_validate(existing)
+                if previous.status != "pending":
+                    if existing != serialized:
+                        raise ValueError("复核终态不可覆盖")
+                elif previous.model_copy(update={"status": task.status, "result": task.result,
+                        "error_code": task.error_code, "checked_at": task.checked_at}) != task:
+                    raise ValueError("复核任务输入不可改变")
+            tasks[task.task_id] = serialized
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ReportingStateError("report_editor_recalculation_invalid", "复核任务身份、输入或状态变更无效。") from error
     elif name == "record_report_data_revision":
         from ...report_editor.data_revision_contract import ReportDataRevision
         from ...report_editor.service import ReportEditorContext
@@ -1104,7 +1188,22 @@ def apply(
         if not isinstance(contexts, dict) or type(counter) is not int or counter < 0:
             raise ReportingStateError("report_state_invalid", "报告修订编号状态损坏。")
         known = [int(key) for key in contexts if str(key).isdigit()]
-        payload["reportEditorRevisionCounter"] = max([minimum, counter, *known]) + 1
+        reservation_key = arguments.get("reservationKey")
+        if reservation_key is None:
+            payload["reportEditorRevisionCounter"] = max([minimum, counter, *known]) + 1
+        else:
+            reservations = payload.setdefault("reportEditorRevisionReservations", {})
+            if (not isinstance(reservation_key, str) or not 1 <= len(reservation_key) <= 128
+                    or not isinstance(reservations, dict)):
+                raise ReportingStateError("report_editor_revision_invalid", "修订预留身份无效。")
+            reserved = reservations.get(reservation_key)
+            if reserved is not None:
+                if type(reserved) is not int or not minimum < reserved <= counter:
+                    raise ReportingStateError("report_editor_revision_invalid", "修订预留登记损坏。")
+            else:
+                reserved = max([minimum, counter, *known]) + 1
+                payload["reportEditorRevisionCounter"] = reserved
+                reservations[reservation_key] = reserved
     elif name == "set_report_editor_context":
         from ...report_editor.service import ReportEditorContext
 

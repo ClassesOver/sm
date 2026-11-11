@@ -38,7 +38,9 @@ async def chart_case(tmp_path):
     plot = {
         "schema": "chart-input/v1",
         "chartId": chart.chart_id,
+        "role": "registered metric value",
         "source": {
+            "path": files[origin.file_resource_id].path,
             "analysisId": origin.analysis_id,
             "sha256": files[origin.file_resource_id].sha256,
             "dataPath": "metrics[0]",
@@ -112,7 +114,6 @@ async def test_publication_persists_registered_chart_check_with_source_failure_i
         workspace_service=workspace,
         _scope=lambda _run: context.scope,
         _state=lambda _run: state,
-        _profile=lambda _run: SimpleNamespace(effective_profile_hash=index.profile_hash),
         _build_drilldown_metrics=AsyncMock(return_value=()),
         state_repository=SimpleNamespace(get=AsyncMock(return_value=None)),
     )
@@ -129,7 +130,7 @@ async def test_publication_persists_registered_chart_check_with_source_failure_i
     identity = await RuntimePublicationMixin._write_trace_index(
         runtime,
         "reports/revision-1/artifact-manifest.json",
-        handles=(_handle("dataset-url-abc0001"),),
+        report_basis_id="basis-test", handles=(_handle("dataset-url-abc0001"),),
         lineage=(_lineage("dataset-url-abc0001"),),
         markdown_artifact=ArtifactFile(
             path=markdown_file.path,

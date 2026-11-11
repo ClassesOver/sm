@@ -23,6 +23,7 @@ from pydantic import Field, model_validator
 from statsmodels.tools.sm_exceptions import SingularMatrixWarning
 from statsmodels.tsa.stattools import acf, adfuller, pacf
 
+from ..semantics.dataset_bindings import MetricDatasetBinding
 from .schema import HospitalOperationSchema
 
 MAX_PROFILE_MODEL_VIEW_BYTES = 12 * 1024
@@ -134,6 +135,9 @@ class DatasetAnalysisContext(AnalysisModel):
     organization_grain: tuple[str, ...] = Field(
         alias="organizationGrain", default=(), max_length=30
     )
+    metric_bindings: tuple[MetricDatasetBinding, ...] = Field(
+        alias="metricBindings", default=(), max_length=200
+    )
     metric_semantics: tuple[dict[str, Any], ...] = Field(
         alias="metricSemantics", default=(), max_length=200
     )
@@ -146,6 +150,17 @@ class DatasetAnalysisContext(AnalysisModel):
     time_series_fields: tuple[str, ...] = Field(
         default=(), alias="timeSeriesFields", max_length=100
     )
+
+    @model_validator(mode="after")
+    def validate_metric_bindings(self) -> DatasetAnalysisContext:
+        versions = [binding.metric_version for binding in self.metric_bindings]
+        if len(versions) != len(set(versions)):
+            raise ValueError("数据集不能重复绑定同一指标版本")
+        fields = set(self.fields)
+        if any(item.dataset_field not in fields for binding in self.metric_bindings
+            for item in (binding.measure, binding.time, *binding.grain)):
+            raise ValueError("指标绑定引用了数据集之外的输出列")
+        return self
 
 
 class DetailedAnalysisItem(AnalysisModel):
@@ -238,6 +253,7 @@ def profile_csv_dataset(
     schema: dict[str, Any] | None = None,
     organization_grain: tuple[str, ...] = (),
     metric_semantics: tuple[dict[str, Any], ...] = (),
+    metric_bindings: tuple[MetricDatasetBinding, ...] = (),
     source_warnings: tuple[str, ...] = (),
     enable_time_series_diagnostics: bool = False,
 ) -> ProfiledDataset:
@@ -522,6 +538,7 @@ def profile_csv_dataset(
         schema=schema or {},
         organizationGrain=organization_grain,
         metricSemantics=metric_semantics,
+        metricBindings=metric_bindings,
         numericFields=tuple(numeric),
         periodValues=tuple(sorted(periods)),
         periodCoverage=tuple(sorted(periods)),

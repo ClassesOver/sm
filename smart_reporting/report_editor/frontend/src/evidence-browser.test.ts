@@ -177,6 +177,26 @@ describe('evidence browser shell', () => {
     root.remove()
   })
 
+  it('shows unavailable registered results with their reasons and exact period', async () => {
+    const client = makeClient()
+    vi.spyOn(client, 'sources').mockResolvedValue({ available: true, facts: [{
+      analysisId: 'analysis_001', factId: 'registered', factKind: 'metric',
+      label: '预算额', name: '预算额', datasetIds: [], displayValue: null, unit: '元',
+      period: { start: '2026-01-01', end: '2027-01-01' }, periodBoundary: 'half_open',
+      status: 'unavailable', issueCodes: ['missing_data'], metricVersion: { metricId: 'budget', revision: 3 },
+    }] })
+    const { browser, shell, root } = setup(client)
+    await browser.openAnalysis('analysis_001')
+    const button = shell.querySelector<HTMLButtonElement>('[data-fact-id="registered"]')!
+    expect(button.textContent).toContain('[2026-01-01, 2027-01-01)（含起日、不含止日）')
+    expect(button.textContent).toContain('暂不可计算：missing_data')
+    expect(button.textContent).toContain('指标版本 3')
+    expect(button.textContent).not.toContain('登记值 0')
+    browser.reset()
+    await flush()
+    root.remove()
+  })
+
   it('does not record the analysis overview scroll into the hidden active task', async () => {
     const client = makeClient()
     vi.spyOn(client, 'sources').mockResolvedValue({
@@ -969,4 +989,100 @@ describe('trace list download', () => {
     await flush()
     expect(download).toHaveBeenCalledTimes(2)
   })
+})
+
+it.each([false, true])('原快照复核：响应丢失=%s时读回原任务，不自动重提', async (lost) => {
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+    if (String(input).endsWith('/api/recalculations') && init?.method === 'POST' && lost) throw new TypeError('network unavailable')
+    if ((String(input).includes('/api/recalculations') || String(input).includes('/api/recalculation-requests/'))) return new Response(JSON.stringify({
+      status: 'completed', checkedAt: '2026-11-10T00:00:00Z', result: {
+        sourceIssueCount: 0, invalidSubjectIds: [], issueCodes: [], knowledgeStatus: 'unavailable',
+      },
+    }))
+    return new Response(JSON.stringify({ ...PAYLOADS['/api/sources'] as object,
+      snapshotVerification: { available: true, parentRevision: 12 } }))
+  })
+  const options = { client: new ReportEditorClient('/reports/v1/editor/report-1/12', fetcher),
+    revisionLabel: '修订12', storageKey: 'verify-test', onReturnToReport: vi.fn(), locateSubject: vi.fn(),
+    getDraft: () => ({ markdown: '# 报告', sha256: 'old-saved-sha' }) }
+  const root = document.createElement('div')
+  document.body.append(root)
+  createEvidenceBrowser(root, options).open()
+  await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>('.evidence-verify')?.hidden).toBe(false))
+  root.querySelector<HTMLButtonElement>('.evidence-verify')!.click()
+  let active = root
+  if (lost) {
+    await vi.waitFor(() => expect(root.querySelector('.evidence-verify')?.textContent).toBe('读取复核结果'))
+    root.remove()
+    active = document.createElement('div')
+    document.body.append(active)
+    createEvidenceBrowser(active, options).open()
+    await vi.waitFor(() => expect(active.querySelector<HTMLButtonElement>('.evidence-verify')?.hidden).toBe(false))
+    expect(active.querySelector('.evidence-verify')?.textContent).toBe('读取复核结果')
+    active.querySelector<HTMLButtonElement>('.evidence-verify')!.click()
+  }
+  await vi.waitFor(() => expect(active.querySelector('.evidence-notice')?.textContent).toContain('未刷新业务数据，也未进行业务批准'))
+  expect(active.querySelector('.evidence-notice')?.textContent).toContain('知识不可用')
+  const posts = fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')
+  expect(posts).toHaveLength(1)
+  const body = JSON.parse(String(posts[0][1]!.body))
+  expect(body).toMatchObject({ operation: 'verify_snapshot', parentRevision: 12 })
+  expect(body.expectedSha256).toMatch(/^[a-f0-9]{64}$/)
+  expect(body.expectedSha256).not.toBe('old-saved-sha')
+  if (lost) expect(fetcher.mock.calls.some(([input]) => String(input).endsWith('/api/recalculation-requests/' + body.requestId))).toBe(true)
+})
+
+it.each(['pending', 'conflict'])('原快照复核的%s状态需要显式操作', async (state) => {
+  const submissions: unknown[] = []
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input, init) => {
+    if (String(input).endsWith('/api/recalculations')) {
+      submissions.push(JSON.parse(String(init!.body)))
+      if (state === 'conflict') return new Response(JSON.stringify({ detail: { code: 'report_editor_conflict' } }), { status: 409 })
+      return new Response(JSON.stringify({ status: 'pending' }))
+    }
+    return new Response(JSON.stringify({ ...PAYLOADS['/api/sources'] as object,
+      snapshotVerification: { available: true, parentRevision: 12 } }))
+  })
+  const root = document.createElement('div')
+  document.body.append(root)
+  createEvidenceBrowser(root, { client: new ReportEditorClient('/reports/v1/editor/report-1/12', fetcher),
+    revisionLabel: '修订12', storageKey: 'verify-explicit', onReturnToReport: vi.fn(), locateSubject: vi.fn(),
+    getDraft: () => ({ markdown: '# 报告', sha256: 'old' }) }).open()
+  const button = root.querySelector<HTMLButtonElement>('.evidence-verify')!
+  await vi.waitFor(() => expect(button.hidden).toBe(false))
+  button.click()
+  await vi.waitFor(() => expect(root.querySelector('.evidence-notice')?.textContent).toContain(state === 'pending' ? '原任务尚未完成' : '请先保存当前正文'))
+  expect(submissions).toHaveLength(1)
+  if (state === 'pending') {
+    expect(button.textContent).toBe('继续原复核')
+    button.click()
+    await vi.waitFor(() => expect(submissions).toHaveLength(2))
+    expect(submissions[0]).toEqual(submissions[1])
+  } else {
+    expect(button.textContent).toBe('复核原快照')
+    expect(sessionStorage.getItem('verify-explicit:snapshot-verification')).toBeNull()
+  }
+})
+
+it('来源目录接入数据刷新入口，确认前不提交，后台等待时只读进度', async () => {
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+    if (String(input).includes('/api/recalculation')) return Response.json({ taskId: 'task', status: 'pending',
+      result: null, execution: { runId: 'run', status: 'running', issueCodes: [] } })
+    return Response.json({ ...PAYLOADS['/api/sources'] as object,
+      dataRefresh: { available: true, parentRevision: 12 } })
+  })
+  const root = document.createElement('div'); document.body.append(root)
+  createEvidenceBrowser(root, { client: new ReportEditorClient('/reports/v1/editor/report-1/12', fetcher),
+    revisionLabel: '修订12', storageKey: 'refresh-integration', onReturnToReport: vi.fn(), locateSubject: vi.fn(),
+    getDraft: () => ({ markdown: '# 报告', sha256: 'saved' }) }).open()
+  await vi.waitFor(() => expect(root.querySelector<HTMLElement>('.evidence-refresh')?.hidden).toBe(false))
+  const button = root.querySelector<HTMLButtonElement>('.evidence-refresh button')!
+  button.click()
+  expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  button.click()
+  await vi.waitFor(() => expect(root.querySelector('.evidence-refresh')?.textContent).toContain('正在刷新'))
+  expect(button.textContent).toBe('读取刷新进度')
+  button.click()
+  await vi.waitFor(() => expect(fetcher.mock.calls.some(([input]) => String(input).includes('/api/recalculation-requests/'))).toBe(true))
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
 })

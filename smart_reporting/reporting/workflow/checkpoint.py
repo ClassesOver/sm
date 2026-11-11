@@ -612,6 +612,8 @@ class SectionClaimSubmission(StrictModel):
 
 
 class SectionArtifact(StrictModel):
+    knowledge_receipt_ids: tuple[str, ...] = Field(default=(), alias="knowledgeReceiptIds", max_length=2)
+    knowledge_status: Literal["unverified", "partial", "unavailable"] = Field(default="unverified", alias="knowledgeStatus")
     version: Literal["1"] = "1"
     section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
     blocks: tuple[ReportDraftBlock, ...] = Field(min_length=1, max_length=200)
@@ -621,6 +623,20 @@ class SectionArtifact(StrictModel):
     @model_validator(mode="after")
     def validate_claim_references(self) -> SectionArtifact:
         known = {claim.claim_id for claim in self.claims}
+        withdrawn = [block for block in self.blocks if block.knowledge_withdrawn]
+        if any(block.claim_ids or block.number_references or block.narrative_references or block.chart_ids or block.citation_ids
+               for block in withdrawn):
+            raise ValueError('撤回正文块不能保留旧声明、图表或引用')
+        if self.knowledge_status == 'partial' and (not withdrawn or len(withdrawn) == len(self.blocks)):
+            raise ValueError('部分撤回须同时有保留和撤回的正文块')
+        if withdrawn and self.knowledge_status == 'unverified':
+            raise ValueError('撤回正文块必须披露章节缺项状态')
+        if self.knowledge_status == "unavailable":
+            if self.claims or any(block.claim_ids for block in self.blocks):
+                raise ValueError("撤回知识解释的章节不能保留原声明")
+            return self
+        if len(self.knowledge_receipt_ids) != len(set(self.knowledge_receipt_ids)):
+            raise ValueError("章节知识回执不能重复")
         if not self.claims:
             # 工具层会把结构无效的模型 claim 清理掉并留下稳定 warning；此时允许
             # 先冻结正文降级产物，供上层按 warning 触发重试。正常章节仍必须有 claims。
@@ -639,7 +655,7 @@ class SectionArtifact(StrictModel):
             raise ValueError("正文 block 引用了未声明的 claim")
         if known - referenced:
             raise ValueError("章节 claim 必须由正文 block 引用")
-        if any(not block.claim_ids for block in self.blocks):
+        if any(not block.claim_ids and not block.knowledge_withdrawn for block in self.blocks):
             raise ValueError("章节的每个正文 block 必须引用至少一个 claim")
         return self
 
@@ -794,6 +810,7 @@ class ReportingCheckpoint(StrictModel):
     )
     slide_outline_file: FileIdentity | None = Field(default=None, alias="slideOutlineFile")
     completed_sections: tuple[CompletedSection, ...] = Field(default=(), alias="completedSections")
+    workbook_summary_files: tuple[FileIdentity, ...] = Field(default=(), alias='workbookSummaryFiles', max_length=200)
     pending_sections: tuple[str, ...] = Field(default=(), alias="pendingSections")
     warnings: tuple[dict[str, Any], ...] = Field(default=(), max_length=500)
     last_error: CheckpointError | None = Field(default=None, alias="lastError")

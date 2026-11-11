@@ -5889,3 +5889,36 @@ button.ai-review-summary-item { padding-block: 3px; }
 .ask-ai-refine-chip:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 
 @media print { .asset-ai-actions, .ask-ai-panel, .ask-ai-launcher, .ask-ai-notifications { display: none !important; } }
+
+.evidence-knowledge { display: grid; gap: 10px; }
+.evidence-knowledge > p { margin: 0; color: var(--color-text-muted); }
+.evidence-knowledge-card { border: 1px solid var(--color-border); border-radius: 8px; padding: 12px; min-width: 0; }
+.evidence-knowledge-card h3 { margin: 0 0 6px; font-size: var(--font-size-md); }
+.evidence-knowledge-card p { margin: 6px 0; }
+.evidence-knowledge-content { margin-top: 10px; overflow-wrap: anywhere; }
+.evidence-knowledge-content blockquote { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--color-border); white-space: pre-wrap; }
+.evidence-knowledge-content summary { cursor: pointer; }
+
+.evidence-verify { margin: 8px 12px; flex-shrink: 0; }
+.evidence-refresh:not([hidden]) { display: grid; gap: 8px; margin: 8px 12px; flex-shrink: 0; }
+.evidence-refresh p { margin: 0; color: var(--text-secondary, #526176); font-size: 14px; line-height: 1.6; }
+.evidence-refresh > div { display: grid; gap: 6px; }
+
+.evidence-policy-adoption:not([hidden]) { margin: 8px 12px; flex-shrink: 0; font-size: 14px; }
+.evidence-policy-adoption [hidden] { display: none !important; }
+.evidence-policy-adoption details { border: 1px solid var(--border-color, #dce3ec); border-radius: 8px; padding: 10px; background: var(--surface, #fff); }
+.evidence-policy-adoption summary { cursor: pointer; font-weight: 600; line-height: 1.6; }
+.evidence-policy-adoption details > :not(summary) { margin-top: 10px; }
+.evidence-policy-adoption p { margin-bottom: 0; color: var(--text-secondary, #526176); line-height: 1.6; overflow-wrap: anywhere; }
+.evidence-policy-adoption label, .evidence-policy-adoption fieldset, .evidence-policy-adoption details > div { display: grid; gap: 8px; min-width: 0; }
+.evidence-policy-adoption fieldset { margin: 12px 0; padding: 10px; border: 1px solid var(--border-color, #dce3ec); border-radius: 6px; }
+.evidence-policy-adoption legend { padding: 0 4px; overflow-wrap: anywhere; }
+.evidence-policy-adoption select, .evidence-policy-adoption textarea { width: 100%; box-sizing: border-box; min-height: 32px; padding: 6px 8px; color: inherit; font: inherit; background: var(--surface, #fff); border: 1px solid var(--border-color, #cbd5e1); border-radius: 4px; }
+.evidence-policy-adoption textarea { resize: vertical; }
+.evidence-policy-adoption .ui-button { white-space: normal; text-align: center; }
+.evidence-policy-adoption :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.evidence-policy-preparation:not([hidden]), .evidence-policy-preparation > div { display: grid; gap: 8px; min-width: 0; }
+.evidence-policy-preparation { padding-top: 10px; border-top: 1px solid var(--border-color, #dce3ec); }
+.evidence-policy-preparation p { margin-top: 0; }
+.evidence-report-issues article { padding: 10px 0; border-top: 1px solid var(--border-color, #dce3ec); }
+.evidence-report-issues h3 { margin: 0; font-size: 14px; overflow-wrap: anywhere; }

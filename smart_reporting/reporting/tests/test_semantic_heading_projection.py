@@ -175,13 +175,12 @@ async def test_publisher_persists_quality_with_authoritative_heading_projection(
     runtime.workspace_service = editor.trace._workspace
     runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
     runtime._scope = lambda _context: context.scope
-    runtime._profile = lambda _context: SimpleNamespace(effective_profile_hash=index.profile_hash)
     state = {}
     runtime._state = lambda _context: state
     runtime._build_drilldown_metrics = AsyncMock(return_value=())
     monkeypatch.setattr(publication, "build_csv_trace_index", lambda **_kwargs: index)
     identity = await runtime._write_trace_index(
-        "reports/revision-1/report.manifest.json", handles=(), lineage=(), markdown_artifact=manifest.markdown,
+        "reports/revision-1/report.manifest.json", report_basis_id="basis-test", handles=(), lineage=(), markdown_artifact=manifest.markdown,
         revision=1, run_context=SimpleNamespace(run_id=index.report_id), markdown=markdown,
         heading_numbers=manifest.heading_numbers,
     )

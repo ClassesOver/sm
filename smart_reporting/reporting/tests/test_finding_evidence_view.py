@@ -155,3 +155,21 @@ def test_legacy_evidence_remains_complete():
     assert files == (source,)
     assert fact_ids is None
     assert not warnings
+
+
+def test_registered_result_value_pointer_preserves_complete_atomic_identity():
+    from smart_reporting.reporting.semantics.analysis_facts import build_registered_analysis_bundle
+    from smart_reporting.reporting.tests.test_registered_analysis_facts import analysis_inputs
+    from smart_reporting.reporting.workflow.runtime.finding_evidence import finding_evidence_view
+
+    analysis, context, result = analysis_inputs()
+    source = SectionEvidenceFile(identity=_file().identity,
+        content=build_registered_analysis_bundle(analysis, context, ()).model_dump_json(by_alias=True))
+    pointer = '/metricContext/calculations/0/results/0'
+    files, fact_ids, warnings = finding_evidence_view((source,), _item([_ref(pointer=pointer + '/value')]))
+    assert not warnings
+    assert fact_ids == {result.fact_id}
+    assert json.loads(files[0].content)['selected'] == [{
+        'pointer': pointer, 'value': result.model_dump(mode='json', by_alias=True),
+    }]
+    assert 'selections' not in files[0].content

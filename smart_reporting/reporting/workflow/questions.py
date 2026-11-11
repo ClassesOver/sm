@@ -10,11 +10,12 @@ from loguru import logger
 from pydantic import Field, model_validator
 
 from ..contract import SHA256_PATTERN, StrictModel
+from ..semantics.request_types import Identity, ReportQuestion
 from ..trace.contracts_v1 import canonical_sha256
 
 
 class QuestionSpec(StrictModel):
-    question_id: str = Field(alias="questionId", pattern=r"^question-[0-9a-f]{64}$")
+    question_id: Identity = Field(alias="questionId")
     kind: Literal["request", "analysis"]
     text: str = Field(min_length=1, max_length=8000)
     analysis_ids: tuple[str, ...] = Field(default=(), alias="analysisIds", max_length=200)
@@ -33,6 +34,7 @@ class QuestionSpec(StrictModel):
 
 class QuestionSet(StrictModel):
     version: Literal["1"] = "1"
+    request_origin: Literal["goal", "explicit"] = Field(default="goal", alias="requestOrigin")
     stage: Literal["request", "analysis"]
     request_sha256: str = Field(alias="requestSha256", pattern=SHA256_PATTERN)
     questions: tuple[QuestionSpec, ...] = Field(min_length=1, max_length=1000)
@@ -69,9 +71,16 @@ class QuestionSet(StrictModel):
         return self
 
 
-def request_questions(goal: str, feedback: Sequence[str] = ()) -> QuestionSet:
+def request_questions(
+    goal: str, feedback: Sequence[str] = (), *, questions: Sequence[ReportQuestion] = (),
+) -> QuestionSet:
     request_hash = hashlib.sha256(goal.encode()).hexdigest()
-    questions = tuple(
+    if questions:
+        request_hash = canonical_sha256({"goal": goal, "questions": [
+            item.model_dump(mode="json", by_alias=True) for item in questions]})
+    explicit = tuple(QuestionSpec(questionId=item.id, kind="request", text=item.text,
+        completionConditions=(item.text,)) for item in questions)
+    generated = tuple(
         QuestionSpec(
             questionId="question-"
             + canonical_sha256({"request": request_hash, "kind": "request", "text": text}),
@@ -79,13 +88,16 @@ def request_questions(goal: str, feedback: Sequence[str] = ()) -> QuestionSet:
             text=text,
             completionConditions=(text,),
         )
-        for text in dict.fromkeys(value.strip() for value in (goal, *feedback) if value.strip())
+        for text in dict.fromkeys(value.strip() for value in
+            ((*feedback,) if questions else (goal, *feedback)) if value.strip())
     )
+    specs = explicit + generated
     return QuestionSet(
         stage="request",
+        requestOrigin="explicit" if explicit else "goal",
         requestSha256=request_hash,
-        questions=questions,
-        requiredQuestionIds=tuple(item.question_id for item in questions),
+        questions=specs,
+        requiredQuestionIds=tuple(item.question_id for item in specs),
     )
 
 
@@ -126,6 +138,7 @@ def freeze_analysis_questions(
         mapping.update(dict.fromkeys(analysis_ids, question_id))
     result = QuestionSet(
         stage="analysis",
+        requestOrigin=current.request_origin,
         requestSha256=current.request_sha256,
         questions=tuple(questions),
         requiredQuestionIds=current.required_question_ids,
@@ -148,6 +161,11 @@ def freeze_plan_questions(
         if current.stage != "analysis":
             raise
     logger.warning("report_question_specs_refrozen analyses={}", len(analyses))
+    if current.request_origin == "explicit":
+        original = tuple(item for item in current.questions if item.kind == "request")
+        reset = QuestionSet(stage="request", requestOrigin="explicit", requestSha256=current.request_sha256,
+            questions=original, requiredQuestionIds=current.required_question_ids)
+        return freeze_analysis_questions(reset, analyses)
     return freeze_analysis_questions(request_questions(goal, feedback), analyses)
 
 class AnswerEvaluation(StrictModel):

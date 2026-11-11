@@ -71,7 +71,12 @@ def table_value_matches(
         if scale is None:
             return False
         converted = Decimal(str(value)) * scale
-        return value_matches(numeric_text[: primary.end()], converted)
+        # 完整精确文本先按十进制核对；浮点显示候选无法保留循环小数的全部位数。
+        return Decimal(primary[0].replace(',', '')) == converted or value_matches(
+            numeric_text[: primary.end()], converted
+        )
+    if explicit is None and Decimal(primary[0].replace(",", "")) == Decimal(str(value)):
+        return True
     primary_text = numeric_text[: explicit.end() if explicit is not None else primary.end()]
     return formatted_value_matches(primary_text, value, unit) or (
         value_matches(primary_text, value)
@@ -158,6 +163,8 @@ def _selected(entry: Mapping[str, Any], selector: str) -> tuple[Any, str | None]
     from .numeric_text import PERCENT_POINT, percent_point_field
 
     unit = entry.get("unit")
+    if selector == "value":
+        return entry.get("value"), unit
     if selector == "total":
         return entry.get("total"), unit
     if selector.startswith("period:") or re.fullmatch(r"periodValues\.\d+", selector):
@@ -181,6 +188,11 @@ def _selected(entry: Mapping[str, Any], selector: str) -> tuple[Any, str | None]
 
 def table_selector_matches(entry: Mapping[str, Any], row_key: str, selector: str) -> bool:
     """Reserved row roles cannot be redirected to another equal-valued field."""
+    if selector == "value" or row_key.startswith("result:"):
+        from ..semantics.tables import result_row_key
+
+        fact_id = entry.get("factId")
+        return selector == "value" and isinstance(fact_id, str) and row_key == result_row_key(fact_id)
     if row_key == "total":
         return selector == "total"
     if row_key.startswith("comparison:"):
@@ -282,6 +294,8 @@ def evaluate_table_quality(
                         document.get("analysisId") != ref.analysis_id
                         or kind != ref.fact_kind
                         or entry.get("factId") != ref.fact_key
+                        or (entry.get("metricVersion") is not None
+                            and entry.get("basisId") != index.report_basis_id)
                     ):
                         reasons.append("cell_fact_binding_mismatch")
                         continue

@@ -41,6 +41,7 @@ def build_csv_trace_index(
     revision: int,
     workflow_run_id: str,
     markdown_file: ArtifactFile,
+    report_basis_id: str,
     profile_hash: str | None = None,
     fact_files: Mapping[str, ArtifactFile] | None = None,
     server_table_traces: Sequence[Any] = (),
@@ -50,6 +51,8 @@ def build_csv_trace_index(
     computations: Sequence[Any] = (),
     table_source_files: Sequence[Any] = (),
     subject_bindings: Sequence[Any] = (),
+    knowledge_dependencies: Sequence[Any] = (),
+    knowledge_registration_status: str = "unavailable",
     review_notices: Sequence[Any] | None = None,
     drilldown_metrics: Sequence[Any] = (),
 ) -> RevisionTraceIndexV1:
@@ -338,10 +341,13 @@ def build_csv_trace_index(
         if cell.source_cell is None or cell.source_cell.file_resource_id not in invalid_source_ids
     )}) for table in server_table_traces)
     index = RevisionTraceIndexV1(
+        knowledgeDependencies=tuple(knowledge_dependencies),
+        knowledgeRegistrationStatus=knowledge_registration_status,
         reportId=report_id,
         revision=revision,
         workflowRunId=workflow_run_id,
         markdownFileResourceId=markdown_ref.resource_id,
+        reportBasisId=report_basis_id,
         profileHash=profile_hash,
         files=tuple(files),
         datasets=tuple(datasets),

@@ -104,6 +104,8 @@ async def snapshot_revision_lineage(
     their frozen identities. Subject fingerprints remain generation-time facts.
     The caller owns rollback of the target directory until its durable commit.
     """
+    if index is not None and index.report_basis_id != manifest.report_basis_id:
+        raise ReportingError("snapshot_integrity_failed", "修订来源与报告计算依据不匹配。")
     identities = _lineage_identities(manifest, index)
     from ..reporting.trace.table_sources import derivation_resource_ids
 

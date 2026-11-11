@@ -622,7 +622,7 @@ def test_document_context_and_manifest_share_heading_number_contract() -> None:
         revision=1,
         codingTaskKey="task-1",
         datasetSnapshotHash="a" * 64,
-        effectiveProfileHash="b" * 64,
+        reportBasisId="b" * 64,
         markdown=ArtifactFile(
             path="reports/report.md", mediaType="text/markdown", size=1, sha256="c" * 64
         ),
@@ -670,7 +670,7 @@ def test_manifest_rejects_non_contiguous_nested_heading_numbers() -> None:
             revision=1,
             codingTaskKey="task-1",
             datasetSnapshotHash="a" * 64,
-            effectiveProfileHash="b" * 64,
+            reportBasisId="b" * 64,
             markdown=ArtifactFile(
                 path="reports/report.md",
                 mediaType="text/markdown",
@@ -731,7 +731,7 @@ def _docx_manifest_with_heading_count(
     return DocxArtifactManifest(
         reportId="report-1",
         revision=1,
-        effectiveProfileHash="a" * 64,
+        reportBasisId="a" * 64,
         sourceMarkdownSha256="b" * 64,
         docx=ArtifactFile(
             path="reports/report.docx",
@@ -782,7 +782,7 @@ def test_dynamic_report_contracts_accept_more_than_one_hundred_sections() -> Non
     common = dict(
         reportId="report-1",
         revision=1,
-        effectiveProfileHash="a" * 64,
+        reportBasisId="a" * 64,
         sourceMarkdownSha256="b" * 64,
         sections=tuple(f"section_{index:03d}" for index in range(1, 102)),
         sectionNumbers=tuple(str(index) for index in range(1, 102)),

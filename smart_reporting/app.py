@@ -16,6 +16,7 @@ from .http.identity import (
 from .http.request_limits import (
     RequestBodyLimitError,
     agentos_run_request_limit,
+    business_document_upload_request_limit,
     install_streaming_body_limit,
     is_agentos_run_create,
     native_import_request_limit,
@@ -29,13 +30,24 @@ from .integrations.agno_function_arguments import install_agno_function_argument
 from .integrations.dingyi_process import DingyiProcessAdapter, mount_process_routes
 from .management.api import create_management_router
 from .management.auth import AdminAuthService
+from .management.business_documents import BusinessDocumentService
+from .management.business_documents_api import create_business_documents_router
+from .management.business_evidence import BusinessEvidenceService
+from .management.business_evidence_api import create_business_evidence_router
+from .management.business_ingestion_worker import BusinessIngestionWorker
 from .management.catalog_api import create_catalog_router
 from .management.data_sources.api import create_source_router
 from .management.data_sources.secrets import CredentialVault
 from .management.import_api import create_import_router
+from .management.metrics import MetricService
+from .management.metrics_api import create_metrics_router
 from .management.profile_api import create_profile_router
 from .management.repository import AdminRepository
 from .management.settings import ManagementSettings
+from .management.statistical_policies import StatisticalPolicyService
+from .management.statistical_policy_api import create_statistical_policy_router
+from .management.table_access_api import create_table_access_router
+from .management.version_options import create_version_options_router
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
@@ -79,6 +91,7 @@ from .report_editor.native_repository import NativeDocumentRepository
 from .report_editor.slides_chart_ai import ReportSlidesChartAIService
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
+from .reporting.business_knowledge.originals import BusinessOriginalStore
 from .reporting.code_agent.lsp_process import ReportingLspProcessManager
 from .reporting.code_mode import create_reporting_code_mode_runtime
 from .reporting.data_source.starrocks import StarRocksSourceConfig
@@ -200,6 +213,9 @@ def _request_thread(request: Request) -> str:
 
 
 def _request_limit(path: str, method: str) -> int | None:
+    if business_document_upload_request_limit(path, method):
+        # 仅此上传入口在认证/CSRF后自行安装流式限制，不经过64KiB JSON缓冲。
+        return None
     if path.startswith("/management/api/v1/") and method.upper() in {"POST", "PUT", "PATCH"}:
         return 64 * 1024
     return agentos_run_request_limit(path, method) or report_editor_write_request_limit(
@@ -316,6 +332,11 @@ report_editor = ReportEditorService(
     editor_grants=report_editor_grants,
     public_base_url=settings.report_public_base_url,
     export_timeout_seconds=settings.report_editor_export_timeout_seconds,
+    report_basis_service=report_runtime.report_basis_service,
+    business_evidence_service=report_runtime.business_evidence_service,
+    recalculation_runtime=report_runtime,
+    recalculation_database=agent_database.async_db,
+    recalculation_durable=True,
     lineage_panel_enabled=settings.report_lineage_panel_enabled,
     lineage_download_enabled=settings.report_lineage_download_enabled,
     lineage_drilldown_enabled=settings.report_lineage_drilldown_enabled,
@@ -448,19 +469,38 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.state.management_auth = management_auth
     management_settings = ManagementSettings.from_environment()
     application.state.management_settings = management_settings
-    application.include_router(create_management_router(management_auth, management_settings))
+    application.include_router(create_management_router(management_auth, management_settings, report_runtime=report_runtime))
     try:
         source_vault = CredentialVault()
     except Exception:
         source_vault = None
     from .management.scopes import ScopeService
     management_scopes = ScopeService(management_auth)
+    business_documents = BusinessDocumentService(management_scopes, BusinessOriginalStore(
+        reporting_workspace_registry.root / "business-knowledge",
+    ))
+    business_ingestion_worker = BusinessIngestionWorker(business_documents)
+    application.state.business_ingestion_worker = business_ingestion_worker
+    application.include_router(create_business_documents_router(
+        business_documents, management_settings, notify=business_ingestion_worker.notify,
+    ))
+    business_evidence = BusinessEvidenceService(business_documents, None)
+    application.state.business_evidence = business_evidence
+    report_runtime.business_evidence_service = business_evidence
+    report_editor.trace.business_evidence_service = business_evidence
+    application.include_router(create_business_evidence_router(business_evidence, management_settings))
+    application.include_router(create_metrics_router(MetricService(management_scopes), management_settings))
+    application.include_router(create_statistical_policy_router(
+        StatisticalPolicyService(management_scopes, business_evidence), management_settings,
+    ))
+    application.include_router(create_version_options_router(management_scopes))
     application.include_router(create_profile_router(management_scopes))
     application.include_router(create_catalog_router(
         management_scopes, source_vault, report_runtime.metadata_client,
     ))
     if source_vault is not None:
         application.include_router(create_source_router(management_scopes, source_vault))
+        application.include_router(create_table_access_router(management_scopes, source_vault, report_runtime.metadata_client))
         application.include_router(create_import_router(
             management_scopes, source_vault, report_runtime.metadata_client,
         ))
@@ -540,6 +580,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.include_router(create_quality_warning_router())
     mount_process_routes(application, dingyi_process)
     application.router.add_event_handler("startup", _refresh_file_logging)
+    application.router.add_event_handler("startup", business_ingestion_worker.start)
     application.router.add_event_handler("startup", _log_reporting_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
@@ -548,6 +589,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", report_design_templates.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
     application.router.add_event_handler("shutdown", report_editor.aclose)
+    application.router.add_event_handler("shutdown", business_ingestion_worker.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
     application.router.add_event_handler("shutdown", native_slides_ai.aclose)
@@ -566,6 +608,7 @@ application_context = ApplicationContext(
     report_agent,
     report_workflow,
     database=agent_database,
+    recalculation_editor=report_editor,
     quality_warning_service=quality_warning_service,
     mcp_config=MCPConfig(
         tools=[

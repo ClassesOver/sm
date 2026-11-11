@@ -18,6 +18,7 @@ from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workflow.state import ReportingCommand
 from ._file_identity import read_verified_file
+from .revision_notice import add_workbook_revision_notice
 from .revisions import apply_editor_command, next_manual_revision, revision_file_path
 from .service import ReportEditorContext, ReportEditorSession
 
@@ -123,16 +124,23 @@ class ReportWorkbookEditorService:
         embedded_sources = None
         try:
             embedded_sources = self._source_mapping(source)
-            if operations and embedded_sources is not None:
+            if embedded_sources is not None:
                 revised = self._mark_sources_unverified(revised, embedded_sources, context.xlsx_sha256)
         except Exception:
             lineage_issues.append({"code": "workbook_source_mapping_failed", "message": "工作簿来源映射读取或更新失败，追溯信息待核验。"})
             try:
-                revised = self._mark_sources_unverified(revised, {"sources": {}}, context.xlsx_sha256)
+                revised = self._drop_source_mapping(revised)
             except Exception:
-                pass
+                lineage_issues.append({"code": "workbook_source_mapping_unavailable",
+                    "message": "新文件中的旧来源标记无法移除，不代表当前支持结论；文件仍可下载，请勿据此认定已核验。"})
         revision, revision_issues = await next_manual_revision(self.state_repository, context)
         lineage_issues.extend(revision_issues)
+        try:
+            revised = await run_office_engine(add_workbook_revision_notice, revised,
+                revision=revision, parent_revision=context.revision)
+        except Exception:
+            lineage_issues.append({"code": "workbook_revision_notice_unavailable",
+                "message": "XLSX 已保存，但文件内修订核验说明未能更新；本修订仍待核验，文件可下载。"})
         revised_path = revision_file_path(context.xlsx_path or "report.xlsx", revision, suffix=".xlsx")
         await self.workspace.awrite_bytes(context.scope["threadId"], revised_path, revised, overwrite=False)
         actual = await self.workspace.ahash_file(context.scope["threadId"], revised_path)
@@ -190,6 +198,7 @@ class ReportWorkbookEditorService:
         job["validation"] = {"ok": not issues, "issues": list(issues)}
         next_context = ReportEditorContext(
             reportId=context.report_id, revision=revision, jobId=context.job_id,
+            analysisContextFile=context.analysis_context_file,
             workflowRunId=context.workflow_run_id, markdownPath=context.markdown_path,
             job=job, scope=context.scope, source="manual", createdAt=datetime.now(UTC),
             note="工作簿编辑", deliveryFormat="xlsx", xlsxPath=revised_path,
@@ -242,15 +251,31 @@ class ReportWorkbookEditorService:
         # Original evidence values remain intact, distinct from revised cell values.
         sources = updated.get("sources")
         if isinstance(sources, dict):
+            sources["verificationStatus"] = "needs_verification"
             for cell in sources.get("cells", []):
                 if isinstance(cell, dict):
                     cell["verificationStatus"] = "needs_verification"
+            for claim in sources.get("claims", []):
+                if isinstance(claim, dict) and isinstance(claim.get("support"), dict):
+                    claim["support"].update({
+                        "supportStatus": "unverified", "evidenceRefs": [],
+                        "reason": "manual_revision_requires_verification",
+                    })
         result = BytesIO()
         with ZipFile(BytesIO(content)) as original, ZipFile(result, "w") as target:
             for info in original.infolist():
                 if info.filename != "smart-reporting/source-mapping.json":
                     target.writestr(info, original.read(info.filename))
             target.writestr("smart-reporting/source-mapping.json", json.dumps(updated, ensure_ascii=False, allow_nan=False))
+        return result.getvalue()
+
+    @staticmethod
+    def _drop_source_mapping(content: bytes) -> bytes:
+        result = BytesIO()
+        with ZipFile(BytesIO(content)) as original, ZipFile(result, "w") as target:
+            for info in original.infolist():
+                if info.filename != "smart-reporting/source-mapping.json":
+                    target.writestr(info, original.read(info.filename))
         return result.getvalue()
 
     @staticmethod

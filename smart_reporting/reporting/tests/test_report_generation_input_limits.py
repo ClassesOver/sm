@@ -74,7 +74,7 @@ async def test_large_section_starts_with_small_contract_and_complete_frozen_cons
     }
     runtime._profile = lambda ctx: SimpleNamespace(effective_profile_hash="a" * 64)
     runtime.state_repository = SimpleNamespace(get=AsyncMock(return_value=None))
-    runtime._envelope = lambda ctx: SimpleNamespace(report_goal="分析经营变化")
+    runtime._envelope = lambda ctx: SimpleNamespace(report_goal="分析经营变化", delivery_format="document")
     runtime._durable_completed_section = AsyncMock(return_value=None)
     runtime._apply_durable_command = AsyncMock()
     runtime._write_artifact_validation_context = write
@@ -91,6 +91,8 @@ async def test_large_section_starts_with_small_contract_and_complete_frozen_cons
             work_item=item, analysis_rework_constraints=constraints,
             analysis_rework_allowed=True, degraded_rework=None,
         )
+    assert instructions[0]['businessKnowledge']['status'] == 'unavailable'
+    assert instructions[0]['businessKnowledge']['issueCodes'] == ['knowledge_service_unavailable']
     contract = captured["requirements"][0]["parameters"]["phaseContract"]
     assert "analysisReworkConstraints" not in contract
     identity = contract["analysisReworkConstraintsFile"]

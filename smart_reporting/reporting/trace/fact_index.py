@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -39,6 +40,10 @@ def bundle_fact_arrays(bundle: DeterministicAnalysisBundle):
     """按 FACT_ARRAYS 顺序给出 (factKind, 数组名, 条目)。"""
     for kind, array in FACT_ARRAYS:
         yield kind, array, getattr(bundle, _BUNDLE_ATTRIBUTES[array])
+    context = getattr(bundle, "metric_context", None)
+    if context is not None:
+        for index, calculation in enumerate(context.calculations):
+            yield "metric", f"metricContext/calculations/{index}/results", calculation.results
 
 
 def breakdown_partitions(bundle: DeterministicAnalysisBundle) -> dict[tuple[str, str], list[Any]]:
@@ -482,6 +487,14 @@ def fact_entry_from_pointer(
 ) -> tuple[str, Mapping[str, Any]]:
     """pointer → (factKind, fact 记录)；指针必须落在已知事实数组内。"""
 
+    if re.fullmatch(r"/metricContext/calculations/[0-9]+/results/[0-9]+", pointer):
+        try:
+            entry = resolve_pointer_value(document, pointer)
+        except (ValueError, TypeError, IndexError) as error:
+            raise KeyError(pointer) from error
+        if not isinstance(entry, Mapping):
+            raise KeyError(pointer)
+        return "metric", entry
     for kind, array_name in FACT_ARRAYS:
         prefix = f"/{array_name}/"
         if pointer.startswith(prefix) and pointer[len(prefix) :].isdigit():

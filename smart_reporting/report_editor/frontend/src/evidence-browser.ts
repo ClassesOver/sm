@@ -1,4 +1,4 @@
-import { ReportEditorApiError, type ReportEditorClient, type TraceSources } from './api'
+import { ReportEditorApiError, type ReportEditorClient, type TraceSources, type SnapshotVerificationRequest, type SnapshotVerificationTask } from './api'
 import {
   createEvidenceState,
   evidenceRefId,
@@ -11,6 +11,10 @@ import {
 } from './evidence-state'
 import { appendHighlighted, groupDigits, renderEvidencePage } from './evidence-pages'
 import { analysisLabel, citationLabel, datasetLabel, factLabel, factPeriodLabel, EVIDENCE_KIND_COLORS, EVIDENCE_KIND_ICONS, subjectBusinessLabel } from './evidence-relations'
+import { markdownSha256 } from './source-validation'
+import { mountDataRefresh } from './evidence-refresh'
+import { mountPolicyAdoption } from './evidence-policy-adoption'
+import { mountReportIssues } from './evidence-issues'
 import { createEvidenceGraph, type EvidenceGraph } from './evidence-graph'
 import { ArrowLeft, ArrowRight, createElement, ChevronDown, FileText, MoreHorizontal, RotateCcw, X } from 'lucide'
 
@@ -190,6 +194,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
           <p class="evidence-directory-match" role="status" hidden></p>
         </div>
         <div class="evidence-directory-items"></div>
+        <button type="button" class="ui-button evidence-verify" title="复核已保存正文与原计算快照；不重新取数或批准业务结论" hidden>复核原快照</button>
+        <div class="evidence-refresh" hidden></div>
+        <div class="evidence-policy-adoption" hidden></div>
+        <div class="evidence-report-issues"></div>
         <button type="button" class="ui-button evidence-trace-list-download" hidden>下载溯源清单（CSV）</button>
         <p class="evidence-directory-note">目录与搜索会开启独立核对任务，不覆盖当前任务的导航历史。</p>
       </aside>
@@ -601,7 +609,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     if (!sourcesPromise) {
       sourcesController = new AbortController()
       const request = options.client.sources(sourcesController.signal).then(sources => {
-        if (sourcesPromise === request) registeredSources = sources
+        if (sourcesPromise === request) {
+          registeredSources = sources
+          updateVerification()
+        }
         return sources
       }).catch((error) => {
         if (sourcesPromise === request) sourcesPromise = null
@@ -1094,6 +1105,100 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
     notice.hidden = false
   }
 
+  const verifyButton = shell.querySelector<HTMLButtonElement>('.evidence-verify')!
+  const refreshPanel = mountDataRefresh(shell.querySelector<HTMLElement>('.evidence-refresh')!, {
+    client: options.client, storageKey, getDraft: options.getDraft,
+  })
+  mountPolicyAdoption(shell.querySelector<HTMLElement>('.evidence-policy-adoption')!, {
+    client: options.client, storageKey, getDraft: options.getDraft,
+  })
+  mountReportIssues(shell.querySelector<HTMLElement>('.evidence-report-issues')!, {
+    client: options.client, storageKey,
+    loadObjects: async () => {
+      const sources = await loadSources()
+      return (sources.subjects ?? []).map(subject => ({ id: subject.subjectId,
+        label: sourceSubjectLabel(subject, sources) }))
+    },
+  })
+  const verificationKey = storageKey + ':snapshot-verification'
+  let verificationRequest: SnapshotVerificationRequest | null = null
+  let verificationMode: 'new' | 'read' | 'resume' = 'new'
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(verificationKey) ?? 'null')
+    if (stored?.operation === 'verify_snapshot' && /^[A-Za-z0-9_-]{1,128}$/.test(stored.requestId)
+      && Number.isInteger(stored.parentRevision) && stored.parentRevision > 0 && /^[a-f0-9]{64}$/.test(stored.expectedSha256)) {
+      verificationRequest = { requestId: stored.requestId, parentRevision: stored.parentRevision,
+        expectedSha256: stored.expectedSha256, operation: 'verify_snapshot' }
+      verificationMode = 'read'
+    }
+  } catch { /* 无原文缓存；存储不可用不影响当前复核。 */ }
+  const clearVerification = () => {
+    verificationRequest = null
+    verificationMode = 'new'
+    try { sessionStorage.removeItem(verificationKey) } catch { /* ignore storage failures */ }
+  }
+  const updateVerification = () => {
+    refreshPanel.update(registeredSources?.dataRefresh ?? null)
+    verifyButton.hidden = !options.getDraft || !(verificationRequest || registeredSources?.snapshotVerification?.available)
+    verifyButton.textContent = { new: '复核原快照', read: '读取复核结果', resume: '继续原复核' }[verificationMode]
+  }
+  const showVerification = (task: SnapshotVerificationTask) => {
+    if (task.status === 'pending') {
+      verificationMode = 'resume'
+      showNotice('原任务尚未完成；核对已保存正文后，可显式继续原复核。')
+    } else {
+      clearVerification()
+      if (task.status === 'failed' || !task.result) showNotice('原快照复核未能完成，来源核验服务暂不可用；未修改原报告，可重新发起复核。')
+      else {
+        const result = task.result
+        const issueLabels: Record<string, string> = {
+          snapshot_integrity_failed: '来源文件完整性校验失败', snapshot_expired: '来源已超过保留期',
+          knowledge_unavailable: '业务知识当前不可用', quality_evaluation_unavailable: '质量核验未完成',
+          revision_impact_unavailable: '修改影响范围未能核验',
+        }
+        const reasons = [...new Set(result.issueCodes.map(code => issueLabels[code] ?? '部分声明需在来源目录逐项复核'))]
+        const checkedAt = task.checkedAt ? new Date(task.checkedAt).toLocaleString('zh-CN') : '时间未登记'
+        showNotice(`原快照复核结束（${checkedAt}）：来源异常 ${result.sourceIssueCount} 项，失效引用 ${result.invalidSubjectIds.length} 项，告警 ${result.issueCodes.length} 项，知识${result.knowledgeStatus === 'available' ? '可用' : '不可用'}。未刷新业务数据，也未进行业务批准；仅对应提交时的已保存正文。${result.issueCodes.length ? '原因：' + reasons.join('、') : ''}`)
+      }
+    }
+  }
+  verifyButton.addEventListener('click', async () => {
+    verifyButton.disabled = true
+    verifyButton.setAttribute('aria-busy', 'true')
+    try {
+      if (verificationMode === 'read' && verificationRequest) {
+        showVerification(await options.client.snapshotVerification(verificationRequest.requestId))
+      } else {
+        if (!verificationRequest) {
+          const draft = options.getDraft?.()
+          const capability = registeredSources?.snapshotVerification
+          if (!draft || !capability?.available) return
+          verificationRequest = { requestId: crypto.randomUUID(), parentRevision: capability.parentRevision,
+            expectedSha256: await markdownSha256(draft.markdown), operation: 'verify_snapshot' }
+          try { sessionStorage.setItem(verificationKey, JSON.stringify(verificationRequest)) } catch { /* ignore storage failures */ }
+        }
+        verificationMode = 'read'
+        showVerification(await options.client.verifySnapshot(verificationRequest))
+      }
+    } catch (error) {
+      if (error instanceof ReportEditorApiError && error.status === 409) {
+        clearVerification()
+        showNotice('正文或修订已变化，请先保存当前正文，再发起新的复核。')
+      } else if (error instanceof ReportEditorApiError && error.status === 404 && error.code === 'source_missing' && verificationRequest) {
+        verificationMode = 'resume'
+        showNotice('服务端未找到原任务；核对输入后可显式重新提交原复核。')
+      } else {
+        verificationMode = 'read'
+        showNotice('复核结果暂时未知，请先读取原任务结果；不会自动重新提交。')
+      }
+    } finally {
+      verifyButton.disabled = false
+      verifyButton.removeAttribute('aria-busy')
+      updateVerification()
+    }
+  })
+  updateVerification()
+
   const renderAll = () => {
     notice.hidden = true
     navigationIntent += 1
@@ -1252,7 +1357,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
             name.textContent = fact.name || fact.label
             const meta = document.createElement('span')
             meta.className = 'evidence-fact-period'
-            meta.textContent = factPeriodLabel(fact)
+            meta.textContent = [factPeriodLabel(fact), fact.metricVersion ? `指标版本 ${fact.metricVersion.revision}` : ''].filter(Boolean).join(' · ')
             const description = document.createElement('span')
             description.className = 'evidence-fact-description'
             description.append(name, meta)
@@ -1261,7 +1366,9 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
               const value = document.createElement('span')
               value.className = 'evidence-fact-list-value'
               const valueLabel = fact.factKind === 'comparison' ? '变化额' : fact.factKind === 'reconciliation' ? '核对差额' : '登记值'
-              value.textContent = `${valueLabel} ${groupDigits(fact.displayValue)}${fact.unit ? ` ${fact.unit}` : ''}`
+              value.textContent = fact.status === 'unavailable'
+                ? `暂不可计算：${fact.issueCodes?.join('、') || '原因未登记'}`
+                : `${valueLabel} ${groupDigits(fact.displayValue)}${fact.unit ? ` ${fact.unit}` : ''}`
               button.append(value)
             }
             button.title = `${fact.label} · ${fact.factId}`
@@ -1319,6 +1426,7 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
       pageController = null
       sourcesPromise = null
       registeredSources = undefined
+      updateVerification()
       directoryRefs = []
       directoryFacts.clear()
       directoryNotes = []

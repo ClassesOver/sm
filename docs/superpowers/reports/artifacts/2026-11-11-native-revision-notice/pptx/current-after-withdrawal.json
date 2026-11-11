@@ -1,0 +1,559 @@
+{
+  "businessKnowledge": {
+    "status": "unavailable",
+    "interpretationStatus": "unverified",
+    "sections": [
+      {
+        "sectionCode": "section_001",
+        "reportRevision": "initial",
+        "receiptIds": [
+          "knowledge-9a561f973a6e251b80978444e986fbd52c7bfb105055d522aa7ef1118402cc58",
+          "knowledge-0d54aa62f50a1b958f94a3f5cfb0ad4d01b4016bc7ea779ce4dcb91902ea19a0"
+        ],
+        "status": "unavailable",
+        "issueCodes": [
+          "evidence_inapplicable",
+          "evidence_revoked",
+          "knowledge_dependency_changed"
+        ]
+      }
+    ],
+    "issueCodes": []
+  },
+  "draftSha256": "366e974a437248bdae9b780c78ea64c2c5a9ae355bf34dd75c94117306ca1156",
+  "quality": {
+    "status": "evaluated",
+    "inputSha256": "a5cceccb5b02a389e0da81438ad718a0f20767c989432e60e8b9b4994810dd4a",
+    "reportBasisId": "0ee4e45d-550e-5b0f-a8a2-c143a380115e",
+    "claimSupport": [
+      {
+        "subjectId": "sub-30945d3477633925",
+        "kind": "fact",
+        "factRefs": [
+          "fact-020d13f56bbe1f06"
+        ],
+        "evidenceRefs": [],
+        "supportStatus": "unverified"
+      },
+      {
+        "subjectId": "sub-ab426250d1909d08",
+        "kind": "fact",
+        "factRefs": [
+          "fact-9f1fa1e19c668a91"
+        ],
+        "evidenceRefs": [],
+        "supportStatus": "unverified"
+      },
+      {
+        "subjectId": "sub-d3a600a9ef16319c",
+        "kind": "fact",
+        "factRefs": [
+          "fact-f7729ed368d38b3c"
+        ],
+        "evidenceRefs": [],
+        "supportStatus": "unverified"
+      },
+      {
+        "subjectId": "sub-37895dee42af949f",
+        "kind": "recommendation",
+        "factRefs": [],
+        "evidenceRefs": [],
+        "supportStatus": "unverified"
+      }
+    ],
+    "registeredQuestionCoverage": [
+      {
+        "questionId": "q-rate",
+        "status": "partial",
+        "findingIds": [],
+        "subjectIds": [
+          "sub-d3a600a9ef16319c"
+        ],
+        "issueCodes": [
+          "data_readiness_unknown",
+          "question_support_unverified",
+          "question_completion_mapping_unavailable"
+        ]
+      }
+    ],
+    "allKeyFactsEvaluated": false,
+    "questionCoverage": {
+      "required": 1,
+      "evaluated": 0,
+      "answered": 0,
+      "effectiveAnswerRate": null,
+      "evaluationStatus": "not_fully_evaluated"
+    },
+    "answerReview": null,
+    "registeredManagementOverview": {
+      "reportBasisId": "0ee4e45d-550e-5b0f-a8a2-c143a380115e",
+      "inputSha256": "a5cceccb5b02a389e0da81438ad718a0f20767c989432e60e8b9b4994810dd4a",
+      "markdownSha256": "366e974a437248bdae9b780c78ea64c2c5a9ae355bf34dd75c94117306ca1156",
+      "status": "evaluated",
+      "rows": [
+        {
+          "questionId": "q-rate",
+          "question": "执行率及当期背景是什么？",
+          "status": "partial",
+          "facts": [],
+          "issueCodes": [
+            "data_readiness_unknown",
+            "question_support_unverified",
+            "question_completion_mapping_unavailable"
+          ]
+        }
+      ],
+      "issueCodes": []
+    },
+    "managementOverview": null,
+    "issues": [
+      {
+        "code": "registered_claim_support_unknown",
+        "subjectId": "sub-30945d3477633925",
+        "severity": "warning",
+        "checker": "deterministic",
+        "reasons": [
+          "data_readiness_unknown"
+        ],
+        "statementReview": {
+          "numericStatus": "valid",
+          "warnings": []
+        }
+      },
+      {
+        "code": "registered_claim_support_unknown",
+        "subjectId": "sub-ab426250d1909d08",
+        "severity": "warning",
+        "checker": "deterministic",
+        "reasons": [
+          "data_readiness_unknown"
+        ],
+        "statementReview": {
+          "numericStatus": "valid",
+          "warnings": []
+        }
+      },
+      {
+        "code": "registered_claim_support_unknown",
+        "subjectId": "sub-d3a600a9ef16319c",
+        "severity": "warning",
+        "checker": "deterministic",
+        "reasons": [
+          "data_readiness_unknown"
+        ],
+        "statementReview": {
+          "numericStatus": "valid",
+          "warnings": []
+        }
+      },
+      {
+        "code": "registered_claim_support_unknown",
+        "subjectId": "sub-37895dee42af949f",
+        "severity": "warning",
+        "checker": "deterministic",
+        "reasons": [
+          "business_evidence_unavailable",
+          "business_explanation_unverified"
+        ],
+        "statementReview": null
+      }
+    ],
+    "tableChecks": {},
+    "semanticChecks": {},
+    "chartChecks": {},
+    "warningLedger": {
+      "version": "warning-ledger/1",
+      "groupingVersion": "fact-reference/2",
+      "qualityInputSha256": "a5cceccb5b02a389e0da81438ad718a0f20767c989432e60e8b9b4994810dd4a",
+      "originalIssueCount": 4,
+      "groupCount": 4,
+      "groups": [
+        {
+          "groupId": "wg-97bc963c438c792dfa78",
+          "targetKind": "registered_claim_support_unknown",
+          "subjectIds": [
+            "sub-30945d3477633925"
+          ],
+          "factIds": [],
+          "factRefs": [],
+          "issueIndices": [
+            0
+          ],
+          "issueCodes": [
+            "registered_claim_support_unknown"
+          ],
+          "reasons": [
+            "data_readiness_unknown"
+          ],
+          "assessments": [
+            "unclassified"
+          ],
+          "reviewIds": [],
+          "requiredActions": [
+            "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+          ],
+          "repairStages": [
+            "review"
+          ],
+          "adjudication": "not_adjudicated"
+        },
+        {
+          "groupId": "wg-3cc3eeb4c44b6120bde0",
+          "targetKind": "registered_claim_support_unknown",
+          "subjectIds": [
+            "sub-ab426250d1909d08"
+          ],
+          "factIds": [],
+          "factRefs": [],
+          "issueIndices": [
+            1
+          ],
+          "issueCodes": [
+            "registered_claim_support_unknown"
+          ],
+          "reasons": [
+            "data_readiness_unknown"
+          ],
+          "assessments": [
+            "unclassified"
+          ],
+          "reviewIds": [],
+          "requiredActions": [
+            "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+          ],
+          "repairStages": [
+            "review"
+          ],
+          "adjudication": "not_adjudicated"
+        },
+        {
+          "groupId": "wg-2bcba0056c8078027f33",
+          "targetKind": "registered_claim_support_unknown",
+          "subjectIds": [
+            "sub-d3a600a9ef16319c"
+          ],
+          "factIds": [],
+          "factRefs": [],
+          "issueIndices": [
+            2
+          ],
+          "issueCodes": [
+            "registered_claim_support_unknown"
+          ],
+          "reasons": [
+            "data_readiness_unknown"
+          ],
+          "assessments": [
+            "unclassified"
+          ],
+          "reviewIds": [],
+          "requiredActions": [
+            "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+          ],
+          "repairStages": [
+            "review"
+          ],
+          "adjudication": "not_adjudicated"
+        },
+        {
+          "groupId": "wg-c200527579309be5edb2",
+          "targetKind": "registered_claim_support_unknown",
+          "subjectIds": [
+            "sub-37895dee42af949f"
+          ],
+          "factIds": [],
+          "factRefs": [],
+          "issueIndices": [
+            3
+          ],
+          "issueCodes": [
+            "registered_claim_support_unknown"
+          ],
+          "reasons": [
+            "business_evidence_unavailable",
+            "business_explanation_unverified"
+          ],
+          "assessments": [
+            "unclassified"
+          ],
+          "reviewIds": [],
+          "requiredActions": [
+            "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+          ],
+          "repairStages": [
+            "review"
+          ],
+          "adjudication": "not_adjudicated"
+        }
+      ],
+      "businessAcceptanceEvaluated": false
+    }
+  },
+  "revisionImpactIssues": [],
+  "revisionImpacts": [],
+  "sourceIssues": [],
+  "warnings": [],
+  "subjects": [
+    {
+      "subjectId": "sub-30945d3477633925",
+      "claimId": "number-8f53b48cea961392b0ed",
+      "sectionId": "section_001",
+      "status": "valid",
+      "sourceStatus": "available",
+      "bindingStatus": "bound",
+      "supportStatus": "unknown",
+      "checkStatus": "completed",
+      "sourceIssues": [],
+      "factValue": "1.40000000",
+      "computation": "registered",
+      "restoreText": "1.40项目",
+      "warnings": [],
+      "semanticCheck": {
+        "method": "registered_result_projection_v1",
+        "status": "interpreted",
+        "interpretation": {
+          "claimId": "number-8f53b48cea961392b0ed",
+          "scope": [],
+          "period": {
+            "start": "2026-11-01",
+            "end": "2026-12-01"
+          },
+          "claimKind": "fact",
+          "kindEvidence": [
+            "项目完成当量合计"
+          ],
+          "metricVersion": {
+            "metricId": "completion_equivalents",
+            "revision": 1
+          },
+          "metricEvidence": [
+            "项目完成当量"
+          ],
+          "periods": [],
+          "periodEvidence": [
+            "2026年11月1日",
+            "2026年12月1日"
+          ],
+          "statistic": "period_total",
+          "statisticEvidence": [
+            "合计"
+          ],
+          "quantity": null,
+          "knowledgeRelations": []
+        }
+      },
+      "draftValue": null,
+      "draftUnit": null,
+      "draftPeriods": null,
+      "draftDirection": null,
+      "comparable": false,
+      "unit": "项目",
+      "periods": [],
+      "formula": null,
+      "formulaText": null,
+      "scope": {},
+      "datasetIds": [
+        "dataset-900dcaa86135f53b4c48e6bef137f90f"
+      ],
+      "editStatus": null
+    },
+    {
+      "subjectId": "sub-ab426250d1909d08",
+      "claimId": "number-83c89055a8c5874987af",
+      "sectionId": "section_001",
+      "status": "valid",
+      "sourceStatus": "available",
+      "bindingStatus": "bound",
+      "supportStatus": "unknown",
+      "checkStatus": "completed",
+      "sourceIssues": [],
+      "factValue": "2",
+      "computation": "registered",
+      "restoreText": "2项目",
+      "warnings": [],
+      "semanticCheck": {
+        "method": "registered_result_projection_v1",
+        "status": "interpreted",
+        "interpretation": {
+          "claimId": "number-83c89055a8c5874987af",
+          "scope": [],
+          "period": {
+            "start": "2026-11-01",
+            "end": "2026-12-01"
+          },
+          "claimKind": "fact",
+          "kindEvidence": [
+            "项目数合计"
+          ],
+          "metricVersion": {
+            "metricId": "project_count",
+            "revision": 1
+          },
+          "metricEvidence": [
+            "项目数"
+          ],
+          "periods": [],
+          "periodEvidence": [
+            "2026年11月1日",
+            "2026年12月1日"
+          ],
+          "statistic": "period_total",
+          "statisticEvidence": [
+            "合计"
+          ],
+          "quantity": null,
+          "knowledgeRelations": []
+        }
+      },
+      "draftValue": null,
+      "draftUnit": null,
+      "draftPeriods": null,
+      "draftDirection": null,
+      "comparable": false,
+      "unit": "项目",
+      "periods": [],
+      "formula": null,
+      "formulaText": null,
+      "scope": {},
+      "datasetIds": [
+        "dataset-dc0d4a6663fb6963f8872d7c47b3d68c"
+      ],
+      "editStatus": null
+    },
+    {
+      "subjectId": "sub-d3a600a9ef16319c",
+      "claimId": "number-d3ac73194827de9d4d63",
+      "sectionId": "section_001",
+      "status": "valid",
+      "sourceStatus": "available",
+      "bindingStatus": "bound",
+      "supportStatus": "unknown",
+      "checkStatus": "completed",
+      "sourceIssues": [],
+      "factValue": "70.00000000",
+      "computation": "registered",
+      "restoreText": "70.00%",
+      "warnings": [],
+      "semanticCheck": {
+        "method": "registered_result_projection_v1",
+        "status": "interpreted",
+        "interpretation": {
+          "claimId": "number-d3ac73194827de9d4d63",
+          "scope": [],
+          "period": {
+            "start": "2026-11-01",
+            "end": "2026-12-01"
+          },
+          "claimKind": "fact",
+          "kindEvidence": [
+            "预算执行率（原项目均值）比率"
+          ],
+          "metricVersion": {
+            "metricId": "rate",
+            "revision": 1
+          },
+          "metricEvidence": [
+            "预算执行率（原项目均值）"
+          ],
+          "periods": [],
+          "periodEvidence": [
+            "2026年11月1日",
+            "2026年12月1日"
+          ],
+          "statistic": "other",
+          "statisticEvidence": [
+            "比率"
+          ],
+          "quantity": null,
+          "knowledgeRelations": []
+        }
+      },
+      "draftValue": null,
+      "draftUnit": null,
+      "draftPeriods": null,
+      "draftDirection": null,
+      "comparable": false,
+      "unit": "%",
+      "periods": [],
+      "formula": null,
+      "formulaText": null,
+      "scope": {},
+      "datasetIds": [
+        "dataset-900dcaa86135f53b4c48e6bef137f90f",
+        "dataset-dc0d4a6663fb6963f8872d7c47b3d68c"
+      ],
+      "editStatus": null
+    },
+    {
+      "subjectId": "sub-37895dee42af949f",
+      "claimId": "narr-c2e8609554afc8ba5d0e9058",
+      "sectionId": "section_001",
+      "status": "valid",
+      "sourceStatus": "unknown",
+      "bindingStatus": "bound",
+      "supportStatus": "unknown",
+      "checkStatus": "completed",
+      "sourceIssues": [],
+      "factValue": null,
+      "computation": null,
+      "restoreText": null,
+      "warnings": [],
+      "semanticCheck": {
+        "method": "model_context_interpretation_v1",
+        "status": "interpreted",
+        "interpretation": {
+          "claimId": "narr-c2e8609554afc8ba5d0e9058",
+          "scope": [],
+          "period": null,
+          "claimKind": "recommendation",
+          "kindEvidence": [
+            "建议"
+          ],
+          "metricVersion": {
+            "metricId": "rate",
+            "revision": 1
+          },
+          "metricEvidence": [],
+          "periods": [],
+          "periodEvidence": [],
+          "statistic": "unknown",
+          "statisticEvidence": [],
+          "quantity": null,
+          "knowledgeRelations": [
+            {
+              "evidenceId": "evidence-b06435f44cfd274bb0b178c5fed0479316c133a23a7962186be8d79435533500",
+              "relationship": "supports",
+              "explanationType": "recommendation",
+              "claimEvidence": [
+                "建议核对采购付款安排，解释本期预算执行率时区分支付时点与计算公式"
+              ],
+              "sourceEvidence": [],
+              "sourceSpans": [
+                {
+                  "start": 0,
+                  "end": 33,
+                  "sha256": "8c8eee8bfe4363c671736d634ebfdfc630f35eb5fc8ecafd21e1bc12389b93c0"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "editStatus": null
+    }
+  ],
+  "summary": {
+    "valid": 4,
+    "stale": 0,
+    "unbound": 0
+  },
+  "tables": [],
+  "tableSummary": {
+    "valid": 0,
+    "stale": 0,
+    "unbound": 0,
+    "insertedRows": 0,
+    "copiedCells": 0
+  },
+  "charts": []
+}

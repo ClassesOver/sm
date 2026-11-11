@@ -2074,6 +2074,21 @@ def _dataset_ids_for_bindings(
     dataset_ids: list[str] = []
     for binding in bindings:
         document = fact_documents.get(binding.fact_path)
+        if binding.data_path.startswith("metricContext"):
+            from smart_reporting.reporting.semantics.chart_projection import (
+                registered_chart_results,
+            )
+            from smart_reporting.reporting.workflow.runtime.chart_inputs import parse_data_path
+
+            try:
+                _, _, results = registered_chart_results(document, parse_data_path(binding.data_path))
+            except (ValueError, KeyError, IndexError, TypeError):
+                return ()
+            for _, result in results:
+                if not result.dataset_ids or not set(result.dataset_ids).issubset(known_dataset_ids):
+                    return ()
+                dataset_ids.extend(result.dataset_ids)
+            continue
         if isinstance(document, Mapping) and binding.data_path == "breakdowns":
             partitions = breakdown_partition_rows(document)
             rows = document.get("breakdowns")

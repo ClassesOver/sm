@@ -83,7 +83,6 @@ async def test_source_api_creates_and_saves_using_public_aliases(release_context
         "database": "WAREHOUSE",
         "dsn": "starrocks://r:s@localhost:9030/warehouse",
         "type": "starrocks",
-        "reportingProfileVersionId": "base:1",
         "metadataVersionId": "another:1",
     }
     async with httpx.AsyncClient(
@@ -94,7 +93,7 @@ async def test_source_api_creates_and_saves_using_public_aliases(release_context
             "/management/api/v1/sources", json={**payload, "sourceId": "another"}, headers=headers
         )
         assert created.status_code == 201, created.text
-        assert created.json()["profile_version_id"] == "base:1"
+        assert "profile_version_id" not in created.json()
         assert created.json()["name"] == "数仓"
         saved = await client.put(
             "/management/api/v1/sources/another/draft",
@@ -103,7 +102,7 @@ async def test_source_api_creates_and_saves_using_public_aliases(release_context
         )
         assert saved.status_code == 200, saved.text
         assert saved.json()["version"] == 2
-        assert saved.json()["metadata_version_id"] == "another:1"
+        assert saved.json()["metadata_version_id"] is None  # 新连接须重新发现并确认范围
         assert "r:s@" not in saved.text
         forbidden = await client.put(
             "/management/api/v1/sources/another/draft",

@@ -14,6 +14,7 @@ from pydantic import Field, field_validator, model_validator
 from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
 from ..hospital_operation.delivery import SourcePolicy, SourceWarning
 from ..models import ReportingError
+from ..semantics.request_types import Identity
 from ..workflow.query_pipeline import DatasetLineage
 from .draft_v1 import HeadingNumber
 
@@ -86,7 +87,7 @@ class ReportArtifactManifest(StrictModel):
     revision: int = Field(ge=1)
     task_key: str = Field(alias="codingTaskKey", min_length=1, max_length=128)
     dataset_snapshot_hash: str = Field(alias="datasetSnapshotHash", pattern=SHA256_PATTERN)
-    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
+    report_basis_id: Identity = Field(alias="reportBasisId")
     markdown: ArtifactFile
     tables: tuple[TableArtifact, ...] = Field(default=(), max_length=2_000)
     charts: tuple[ChartArtifact, ...] = ()
@@ -201,7 +202,7 @@ def build_authoritative_manifest(
     report_id: str,
     revision: int,
     task_key: str,
-    effective_profile_hash: str,
+    report_basis_id: str,
     markdown_path: str,
     markdown: str,
     accepted_artifacts: list[dict[str, Any]],
@@ -270,7 +271,7 @@ def build_authoritative_manifest(
         revision=revision,
         codingTaskKey=task_key,
         datasetSnapshotHash=dataset_snapshot_hash(lineage),
-        effectiveProfileHash=effective_profile_hash,
+        reportBasisId=report_basis_id,
         markdown=ArtifactFile(
             path=markdown_path,
             mediaType="text/markdown",
@@ -408,7 +409,7 @@ def _markdown_image_bindings(
 class PdfArtifactManifest(StrictModel):
     report_id: str = Field(alias="reportId", min_length=1, max_length=128)
     revision: int = Field(ge=1)
-    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
+    report_basis_id: Identity = Field(alias="reportBasisId")
     source_markdown_sha256: str = Field(alias="sourceMarkdownSha256", pattern=SHA256_PATTERN)
     source_chart_sha256s: tuple[str, ...] = Field(default=(), alias="sourceChartSha256s")
     pdf: ArtifactFile
@@ -435,7 +436,7 @@ class PdfArtifactManifest(StrictModel):
 class DocxArtifactManifest(StrictModel):
     report_id: str = Field(alias="reportId", min_length=1, max_length=128)
     revision: int = Field(ge=1)
-    effective_profile_hash: str = Field(alias="effectiveProfileHash", pattern=SHA256_PATTERN)
+    report_basis_id: Identity = Field(alias="reportBasisId")
     source_markdown_sha256: str = Field(alias="sourceMarkdownSha256", pattern=SHA256_PATTERN)
     source_chart_sha256s: tuple[str, ...] = Field(default=(), alias="sourceChartSha256s")
     docx: ArtifactFile
@@ -497,13 +498,13 @@ def validate_rendered_artifacts(
     expected_chart_sha256s = tuple(item.sha256 for item in draft.charts)
     for rendered in (pdf, word):
         if (
-            rendered.effective_profile_hash != draft.effective_profile_hash
+            rendered.report_basis_id != draft.report_basis_id
             or rendered.source_markdown_sha256 != draft.markdown.sha256
             or rendered.source_chart_sha256s != expected_chart_sha256s
         ):
             raise ReportingError(
                 "report_artifact_source_mismatch",
-                "PDF/Word 未绑定当前 Profile、Markdown 或图表身份。",
+                "PDF/Word 未绑定当前报告计算依据、Markdown 或图表身份。",
             )
 
     lineage_by_key = {(item.dataset_id, item.requirement_id): item for item in lineage}

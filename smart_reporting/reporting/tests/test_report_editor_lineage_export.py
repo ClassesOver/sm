@@ -231,7 +231,9 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
             assert export_settings["sources"] is (failure is not None)
             assert all(isinstance(value, bool) for value in export_settings.values())
             assert isinstance(render_job.pop("_reportDesign"), dict)
-            assert render_job == job
+            assert {key: value for key, value in render_job.items() if key != '_claimSupportProjection'} == job
+            assert render_job['_claimSupportProjection'] == {
+                'version': 'claim-support-render/1', 'sourceSha256': expected_sha, 'claims': []}
             # B8：数据来源附录载荷与渲染同一次快照装配——claim 摘要来自冻结事实，
             # 状态来自草稿校验（3800 改值 → stale），在线定位指向 N+1 revision。
             subject_id = "sub-" + "0" * 16
@@ -495,7 +497,7 @@ async def test_export_revision_rebinds_registered_lineage_and_preserves_transact
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-@pytest.mark.parametrize("fault", ["missing_source", "snapshot", "appendix", "appendix_disabled", "overview"])
+@pytest.mark.parametrize("fault", ["missing_source", "snapshot", "appendix", "appendix_disabled", "overview", "knowledge", "revision_impact"])
 async def test_export_revision_drops_lineage_but_still_issues_links_when_source_file_missing(
     tmp_path: Path, fault: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -546,6 +548,17 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
         monkeypatch.setattr(editor.trace, "validate", validate_with_overview)
         monkeypatch.setattr(service_module.ManagementOverview, "model_validate", staticmethod(lambda value: value))
         monkeypatch.setattr(service_module, "management_overview_projection", broken_projection)
+    elif fault == "revision_impact":
+        validate = editor.trace.validate
+
+        async def validate_with_impact_failure(*args, **kwargs):
+            result = await validate(*args, **kwargs)
+            result['revisionImpactIssues'] = ['revision_impact_unavailable']
+            return result
+
+        monkeypatch.setattr(editor.trace, 'validate', validate_with_impact_failure)
+    elif fault == "knowledge":
+        pass
     else:
         from smart_reporting.report_editor import service as service_module
 
@@ -555,7 +568,7 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
 
         monkeypatch.setattr(service_module, "_build_export_trace_sources", oversized_appendix)
 
-    if fault in {"appendix", "appendix_disabled", "overview"}:
+    if fault in {"appendix", "appendix_disabled", "overview", "knowledge", "revision_impact"}:
         # 本用例的冻结正文就是当前文本，避免夹具原文身份变更干扰附录故障。
         index = index.model_copy(update={"files": tuple(
             item.model_copy(update={"size": len(edited_markdown.encode()), "sha256": _sha(edited_markdown.encode())})
@@ -564,6 +577,13 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
         from smart_reporting.reporting.trace.contracts_v1 import canonical_json_bytes
         await workspace.awrite_bytes(thread_id, "reports/revision-1/trace-index-v1.json",
                                      canonical_json_bytes(index.model_dump(mode="json", by_alias=True)), overwrite=True)
+    if fault == "knowledge":
+        from smart_reporting.reporting.trace.contracts_v1 import SectionKnowledgeDependencyV1
+
+        index = index.model_copy(update={'knowledge_registration_status': 'registered', 'knowledge_dependencies': (
+            SectionKnowledgeDependencyV1(sectionCode='section_002', reportRevision='1', receiptIds=('knowledge-rules',)),)})
+        await workspace.awrite_bytes(thread_id, "reports/revision-1/trace-index-v1.json",
+            encode_trace_index(index), overwrite=True)
     await workspace.adelete_file(thread_id, original.artifact_manifest.path)
     manifest_identity = await register_trace_manifest(workspace, thread_id, index)
     for suffix, content in (("pdf", b"old-pdf"), ("docx", b"old-word")):
@@ -597,7 +617,7 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
             rendered_manifests.append(artifact_manifest)
             rendered_overviews.append(management_overview)
             render_job = run_context.session_state[REPORT_JOBS_STATE_KEY][actual_job_id]
-            assert ("_traceSourcePresentations" in render_job) is (fault in {"snapshot", "overview"})
+            assert ("_traceSourcePresentations" in render_job) is (fault in {"snapshot", "overview", "knowledge", "revision_impact"})
             snapshot, _ = await workspace.afile_bytes(thread_id, markdown_path)
             await workspace.awrite_bytes(thread_id, output_path, b"new-pdf")
             await workspace.awrite_bytes(thread_id, "reports/revision-2/report.docx", b"new-word")
@@ -639,10 +659,18 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
         assert rendered_manifests[0] is not None
     assert result["revision"] == 2
     assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
-    if fault in {"appendix", "appendix_disabled", "overview"}:
+    if fault in {"appendix", "appendix_disabled", "overview", "knowledge", "revision_impact"}:
         assert result["validation"]["ok"] is (fault == "appendix_disabled")
         if fault == "appendix":
             assert result["validation"]["issues"][0]["code"] == "report_editor_source_appendix_unavailable"
+        if fault == "revision_impact":
+            for path, content in (("reports/revision-2/report.pdf", b"new-pdf"),
+                                  ("reports/revision-2/report.docx", b"new-word")):
+                actual, _ = await workspace.afile_bytes(thread_id, path)
+                assert actual == content
+            assert [issue["code"] for issue in result["validation"]["issues"]] == ["report_editor_revision_impact_unavailable"]
+        if fault == "knowledge":
+            assert [issue["code"] for issue in result["validation"]["issues"]] == ["report_editor_knowledge_unavailable"]
         if fault == "overview":
             assert rendered_overviews[0]["status"] == "unavailable"
             assert [issue["code"] for issue in result["validation"]["issues"]] == [
@@ -652,7 +680,11 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
             repository.durable.payload["reportEditorContexts"]["2"]
         )
         assert committed.artifact_manifest is not None
-        assert await editor.trace.load_index(committed) is not None
+        saved_index = await editor.trace.load_index(committed)
+        assert saved_index is not None
+        if fault == "knowledge":
+            assert saved_index.knowledge_dependencies == index.knowledge_dependencies
+
         return
     assert result["validation"]["ok"] is False
     assert [issue["code"] for issue in result["validation"]["issues"]] == [

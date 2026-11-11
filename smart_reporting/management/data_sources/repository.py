@@ -21,13 +21,13 @@ class SourceRepository:
     def draft_model(row) -> SourceDraft:
         return SourceDraft(row['source_id'], row['scope_id'], row['version'], row['name'],
                            row['source_type'], row['database'], row['credential_ref'],
-                           row['profile_version_id'], row['metadata_version_id'])
+                           row['metadata_version_id'])
 
     @staticmethod
     def version_model(row) -> SourceVersion:
         return SourceVersion(row['source_id'], row['revision'], row['content_hash'],
                              row['published_at'], row['name'], row['source_type'],
-                             row['database'], row['profile_version_id'],
+                             row['database'],
                              row['metadata_version_id'], row['credential_revision'])
 
     async def get_draft(self, connection, scope_id: str, source_id: str):

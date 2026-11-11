@@ -174,6 +174,13 @@ def _table_for_binding(
     """返回 (columns, rows, columnMeta)；形状以 dataPath 指向的值为准，不猜测。"""
 
     tokens = parse_data_path(binding.data_path)
+    if tokens[0] == 'metricContext':
+        from ...semantics.chart_projection import registered_chart_table
+
+        try:
+            return registered_chart_table(document, tokens, binding.fields)
+        except (ValueError, KeyError, IndexError, OverflowError) as error:
+            raise ChartInputError('正式指标投影与登记事实不一致或超出绘图数值范围。') from error
     value = _navigate(document, tokens)
     fields = list(binding.fields)
     if tokens[-1] == "rows" and isinstance(value, list):

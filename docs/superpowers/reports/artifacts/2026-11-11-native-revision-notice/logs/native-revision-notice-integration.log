@@ -1,0 +1,99 @@
+INFO    Processing batch starting at index 0, size: 1
+INFO    Upserted batch of 1 documents.
+INFO    Processing batch starting at index 0, size: 2
+INFO    Upserted batch of 2 documents.
+2026-11-11 20:19:12.807 | INFO     | smart_reporting.management.report_adoption_calculations:calculate_adoption_metrics:108 - report_adoption_calculation_recorded run_id=policy-adoption-f031a2cd684e9876167a96230692440f15d12c401ad4fe4558b19f9b2583af13 receipt_id=initial-7a99c306bdc2974aec9e5b9dc930c1b20e3d8d9f55cbc9f44995c31dc3ab3301
+2026-11-11 20:19:13.998 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_data_scope_tokenizer_fallback
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 52428.80it/s]
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 61082.10it/s]
+2026-11-11 20:19:17.609 | INFO     | smart_reporting.model_routing.observability:log_model_selection:13 - report_model_selected task_kind=analysis_item complexity=standard tier=standard model_id=deepseek-v4-flash-0731 attempt=0 reason=complexity_route policy_version=v1
+2026-11-11 20:19:17.647 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=read-facts analysis_id=analysis_001
+2026-11-11 20:19:17.656 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=read-facts analysis_id=analysis_001 status=completed duration_ms=8
+2026-11-11 20:19:17.656 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=plan-evidence analysis_id=analysis_001
+2026-11-11 20:19:17.656 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_decide_evidence:1353 - report_analysis_standard_candidates_prepared analysis_id=analysis_001 candidates=0 grouping_sources=0
+2026-11-11 20:19:17.657 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_evidence_tokenizer_fallback
+2026-11-11 20:19:17.728 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=plan-evidence analysis_id=analysis_001 status=completed duration_ms=73
+2026-11-11 20:19:17.729 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=complete-analysis analysis_id=analysis_001
+2026-11-11 20:19:17.731 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_summary_tokenizer_fallback
+2026-11-11 20:19:17.837 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=complete-analysis analysis_id=analysis_001 status=completed duration_ms=108
+2026-11-11 20:19:17.849 | DEBUG    | smart_reporting.reporting.workflow.execution:settle:331 - report_worker_model_metrics_settled task_id=report-coding-ab737e61247b6ce524c5bcbbe2ff17d1ea3e7254 phase_attempt=0 agno_run_id=04e71940c7e5c02ab7218ffe55baa79f outcome=completed request_count=0 total_tokens=0 reasoning_tokens=0 time_to_first_token_seconds=None stage_metrics={}
+2026-11-11 20:19:18.368 | INFO     | smart_reporting.reporting.workflow.runtime.analysis:_plan_narrative_outline:2643 - report_narrative_batch_completed batch=1 total=1 findings=3
+INFO    Found 1 documents
+2026-11-11 20:19:19.268 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3463 - report_claim_semantics_batch_started section=section_001 batch=1 processed=0 total=1 batch_size=1
+2026-11-11 20:19:19.268 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3467 - report_claim_semantics_batch_prepared section=section_001 batch=1 input_tokens=None payload_bytes=1473 preparation_ms=1
+2026-11-11 20:19:19.268 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3506 - report_claim_semantics_batch_model_elapsed section=section_001 batch=1 model_ms=0
+2026-11-11 20:19:19.268 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3510 - report_claim_semantics_batch_completed section=section_001 batch=1 processed=1 total=1 status=completed elapsed_ms=1
+2026-11-11 20:19:19.269 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3635 - report_claim_semantics_completed section=section_001 references=1 interpreted=1 elapsed_ms=2
+2026-11-11 20:19:19.675 | INFO     | smart_reporting.reporting.workflow.runtime.publication:_write_trace_index:2674 - revision 追溯索引已写入: revision=2 datasets=2 path=报表/智能分析/policy-adoption-f031a2cd684e9876167a96230692440f15d12c401ad4fe4558b19f9b2583af13/workbook/revision-2/trace-index-v1.json
+2026-11-11 20:19:22.948 | INFO     | smart_reporting.reporting.workflow.runtime.planning:_release_workspace:441 - report_host_workspace_released workspace_key=reporting-run-d0821a3328cb92a255bec4e22369a10adb3506eb291a9cb3ef483501ad6c087f
+2026-11-11 20:19:23.301 | INFO     | smart_reporting.report_editor.trace_sources:validate:1759 - report_source_validation_completed report_id=policy-adoption-f031a2cd684e9876167a96230692440f15d12c401ad4fe4558b19f9b2583af13 revision=2 subjects=1 tables=3 duration_ms=217
+.INFO    Table 'semantic_probe.evidence_a60efdecf0184188bd82d73f1b47de50' dropped successfully.
+INFO    Processing batch starting at index 0, size: 1
+INFO    Upserted batch of 1 documents.
+INFO    Processing batch starting at index 0, size: 2
+INFO    Upserted batch of 2 documents.
+2026-11-11 20:19:27.146 | INFO     | smart_reporting.management.report_adoption_calculations:calculate_adoption_metrics:108 - report_adoption_calculation_recorded run_id=policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3 receipt_id=initial-ca1721a2a0964bf71c9304dd37ac5a91bae96e9b1a2a0bdba2d0460b2cbb30c2
+2026-11-11 20:19:27.963 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_data_scope_tokenizer_fallback
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 54708.31it/s]
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 56425.61it/s]
+2026-11-11 20:19:31.553 | INFO     | smart_reporting.model_routing.observability:log_model_selection:13 - report_model_selected task_kind=analysis_item complexity=standard tier=standard model_id=deepseek-v4-flash-0731 attempt=0 reason=complexity_route policy_version=v1
+2026-11-11 20:19:31.595 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=read-facts analysis_id=analysis_001
+2026-11-11 20:19:31.605 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=read-facts analysis_id=analysis_001 status=completed duration_ms=10
+2026-11-11 20:19:31.605 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=plan-evidence analysis_id=analysis_001
+2026-11-11 20:19:31.605 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_decide_evidence:1353 - report_analysis_standard_candidates_prepared analysis_id=analysis_001 candidates=0 grouping_sources=0
+2026-11-11 20:19:31.607 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_evidence_tokenizer_fallback
+2026-11-11 20:19:31.680 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=plan-evidence analysis_id=analysis_001 status=completed duration_ms=75
+2026-11-11 20:19:31.680 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=complete-analysis analysis_id=analysis_001
+2026-11-11 20:19:31.682 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_summary_tokenizer_fallback
+2026-11-11 20:19:31.794 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=complete-analysis analysis_id=analysis_001 status=completed duration_ms=113
+2026-11-11 20:19:31.806 | DEBUG    | smart_reporting.reporting.workflow.execution:settle:331 - report_worker_model_metrics_settled task_id=report-coding-adff2fa9fc18ef620afc517fd1973ffea3ac26e9 phase_attempt=0 agno_run_id=be5207bc6e48ccbcfd4597771c148bd0 outcome=completed request_count=0 total_tokens=0 reasoning_tokens=0 time_to_first_token_seconds=None stage_metrics={}
+2026-11-11 20:19:32.322 | INFO     | smart_reporting.reporting.workflow.runtime.analysis:_plan_narrative_outline:2643 - report_narrative_batch_completed batch=1 total=1 findings=3
+INFO    Found 1 documents
+2026-11-11 20:19:33.236 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3463 - report_claim_semantics_batch_started section=section_001 batch=1 processed=0 total=1 batch_size=1
+2026-11-11 20:19:33.236 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3467 - report_claim_semantics_batch_prepared section=section_001 batch=1 input_tokens=None payload_bytes=1473 preparation_ms=1
+2026-11-11 20:19:33.237 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3506 - report_claim_semantics_batch_model_elapsed section=section_001 batch=1 model_ms=0
+2026-11-11 20:19:33.237 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3510 - report_claim_semantics_batch_completed section=section_001 batch=1 processed=1 total=1 status=completed elapsed_ms=1
+2026-11-11 20:19:33.237 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3635 - report_claim_semantics_completed section=section_001 references=1 interpreted=1 elapsed_ms=1
+2026-11-11 20:19:33.598 | INFO     | smart_reporting.reporting.workflow.runtime.publication:_write_trace_index:2674 - revision 追溯索引已写入: revision=3 datasets=2 path=报表/智能分析/policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3/workbook/revision-3/trace-index-v1.json
+2026-11-11 20:19:36.793 | INFO     | smart_reporting.reporting.workflow.runtime.planning:_release_workspace:441 - report_host_workspace_released workspace_key=reporting-run-782201f1b6adafa436320e0e9ba4b22f65d63ca2d72f0c8f3d9d4055c4f71cb7
+2026-11-11 20:19:37.075 | INFO     | smart_reporting.report_editor.trace_sources:validate:1759 - report_source_validation_completed report_id=policy-adoption-a24f223b3d6faa7d80d3f268b3935d1831498d941cabdeab9e76ef7ed5b798f3 revision=3 subjects=1 tables=3 duration_ms=169
+.INFO    Table 'semantic_probe.evidence_efe4e16c9ab142dab1a435c8763e71ae' dropped successfully.
+INFO    Processing batch starting at index 0, size: 1
+INFO    Upserted batch of 1 documents.
+INFO    Processing batch starting at index 0, size: 2
+INFO    Upserted batch of 2 documents.
+2026-11-11 20:19:40.851 | INFO     | smart_reporting.management.report_adoption_calculations:calculate_adoption_metrics:108 - report_adoption_calculation_recorded run_id=policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c receipt_id=initial-b2fb77c00100a848cc4ceb994f963e7e3a75570c73b4cf23515611ac889e69b2
+2026-11-11 20:19:41.687 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_data_scope_tokenizer_fallback
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 75346.78it/s]
+  0%|          | 0/3 [00:00<?, ?it/s]100%|██████████| 3/3 [00:00<00:00, 37338.02it/s]
+2026-11-11 20:19:45.266 | INFO     | smart_reporting.model_routing.observability:log_model_selection:13 - report_model_selected task_kind=analysis_item complexity=standard tier=standard model_id=deepseek-v4-flash-0731 attempt=0 reason=complexity_route policy_version=v1
+2026-11-11 20:19:45.310 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=read-facts analysis_id=analysis_001
+2026-11-11 20:19:45.319 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=read-facts analysis_id=analysis_001 status=completed duration_ms=9
+2026-11-11 20:19:45.319 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=plan-evidence analysis_id=analysis_001
+2026-11-11 20:19:45.319 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_decide_evidence:1353 - report_analysis_standard_candidates_prepared analysis_id=analysis_001 candidates=0 grouping_sources=0
+2026-11-11 20:19:45.320 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_evidence_tokenizer_fallback
+2026-11-11 20:19:45.390 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=plan-evidence analysis_id=analysis_001 status=completed duration_ms=71
+2026-11-11 20:19:45.391 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1204 - report_analysis_item_stage_started stage_name=complete-analysis analysis_id=analysis_001
+2026-11-11 20:19:45.392 | WARNING  | smart_reporting.reporting.workflow.runtime.base:count_tokens:708 - report_analysis_summary_tokenizer_fallback
+2026-11-11 20:19:45.501 | INFO     | smart_reporting.reporting.workflow.runtime.analysis_item_workflow:_timed_stage:1221 - report_analysis_item_stage_completed stage_name=complete-analysis analysis_id=analysis_001 status=completed duration_ms=110
+2026-11-11 20:19:45.512 | DEBUG    | smart_reporting.reporting.workflow.execution:settle:331 - report_worker_model_metrics_settled task_id=report-coding-574baa490150b663048bc4d1c9b2d4cd20fa5dd1 phase_attempt=0 agno_run_id=2cd9629b396d8f2887c48530bba996ad outcome=completed request_count=0 total_tokens=0 reasoning_tokens=0 time_to_first_token_seconds=None stage_metrics={}
+2026-11-11 20:19:46.034 | INFO     | smart_reporting.reporting.workflow.runtime.analysis:_plan_narrative_outline:2643 - report_narrative_batch_completed batch=1 total=1 findings=3
+INFO    Found 1 documents
+2026-11-11 20:19:46.930 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3463 - report_claim_semantics_batch_started section=section_001 batch=1 processed=0 total=1 batch_size=1
+2026-11-11 20:19:46.930 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3467 - report_claim_semantics_batch_prepared section=section_001 batch=1 input_tokens=None payload_bytes=1473 preparation_ms=1
+2026-11-11 20:19:46.931 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3506 - report_claim_semantics_batch_model_elapsed section=section_001 batch=1 model_ms=0
+2026-11-11 20:19:46.931 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3510 - report_claim_semantics_batch_completed section=section_001 batch=1 processed=1 total=1 status=completed elapsed_ms=1
+2026-11-11 20:19:46.931 | INFO     | smart_reporting.reporting.workflow.runtime.sections:_interpret_section_claims_scoped:3635 - report_claim_semantics_completed section=section_001 references=1 interpreted=1 elapsed_ms=1
+2026-11-11 20:19:47.279 | INFO     | smart_reporting.reporting.workflow.runtime.publication:_write_trace_index:2674 - revision 追溯索引已写入: revision=4 datasets=2 path=报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/trace-index-v1.json
+2026-11-11 20:19:49.098 | INFO     | smart_reporting.reporting.workflow.runtime.planning:_release_workspace:441 - report_host_workspace_released workspace_key=reporting-run-5a0010ba84687cd85a56e16f5a8ccc6a1354fe6b06a251255996f71ebcad2a33
+2026-11-11 20:19:50.072 | INFO     | smart_reporting.report_editor.trace_sources:validate:1759 - report_source_validation_completed report_id=policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c revision=4 subjects=4 tables=0 duration_ms=172
+.INFO    Table 'semantic_probe.evidence_4c335d3f964642beb2e1e1b7207104b7' dropped successfully.
+
+=============================== warnings summary ===============================
+../../../../pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2
+  /home/junge/pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2: DeprecationWarning: 'imghdr' is deprecated and slated for removal in Python 3.13
+    from imghdr import tests
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 1 deselected, 1 warning in 52.18s
+isolated_vector_database_cleanup=True

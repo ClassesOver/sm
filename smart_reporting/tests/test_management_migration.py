@@ -95,6 +95,12 @@ async def test_management_migration_is_repeatable_and_preserves_account():
                     published_at=datetime.now(UTC),
                 )
             )
+        async with engine.begin() as connection:
+            await connection.execute(text("""INSERT INTO reporting_management.source_drafts
+                (scope_id, source_id, version, name, source_type, database, credential_ref,
+                 credential_revision, content_hash)
+                VALUES ('old-scope', 'old-source', 1, '旧源', 'starrocks', 'migration',
+                        'old-credential', 1, :digest)"""), {"digest": "b" * 64})
         await upgrade("0006_runtime_snapshots")
         references = {"runId": "old-run", "sources": [{"sourceId": "old-source", "revision": 1}]}
         async with engine.begin() as connection:
@@ -120,8 +126,14 @@ async def test_management_migration_is_repeatable_and_preserves_account():
                 await connection.scalar(
                     text("SELECT version_num FROM reporting_management.alembic_version")
                 )
-                == "0007_source_execution"
+                == "0009_semantic_assets"
             )
+            from smart_reporting.management.repository import source_drafts, table_discoveries
+
+            old_draft = (await connection.execute(select(source_drafts))).mappings().one()
+            assert old_draft["requires_table_discovery"] == 0
+            assert old_draft["content_hash"] == "b" * 64
+            assert (await connection.execute(select(table_discoveries))).mappings().all() == []
             assert await connection.scalar(select(catalog_versions.c.source_id)) == "old-source"
             old_source = (await connection.execute(select(source_versions))).mappings().one()
             assert old_source["execution_parameters"] is None
@@ -129,6 +141,16 @@ async def test_management_migration_is_repeatable_and_preserves_account():
             old_run = (await connection.execute(select(runtime_snapshots))).mappings().one()
             assert old_run["references"] == references
             assert old_run["reference_hash"] == "c" * 64
+
+            semantic_names = set((await connection.execute(text(
+                "SELECT tablename FROM pg_tables WHERE schemaname='reporting_management'"
+            ))).scalars())
+            assert {"metric_versions", "statistical_policy_versions", "business_document_revisions",
+                    "business_ingestion_jobs", "business_evidence_releases", "report_bases",
+                    "report_basis_receipts", "report_issue_reviews"}.issubset(semantic_names)
+            assert await connection.scalar(text(
+                "SELECT count(*) FROM pg_trigger WHERE tgname='immutable_metric_versions'"
+            )) == 1
 
     finally:
         await engine.dispose()

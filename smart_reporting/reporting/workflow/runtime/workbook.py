@@ -9,10 +9,59 @@ import sys
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from ...models import ReportingError
+from ...semantics.chart_projection import _registered_chart_results
+from ...semantics.planning_contracts import MetricPlanningContext
+from ...semantics.presentation import semantic_issue_message
 from ...trace.fact_index import FACT_ARRAYS
 from ...trace.fact_service import fact_display_unit, fact_display_value
+from ...trace.native_claims import present_native_summary
 
 _PERIOD_ROLES = {"current": "本期", "yoy": "同比基期", "mom": "环比基期"}
+
+
+def _workbook_fact_rows(document, evidence, datasets):
+    """正式上下文使用精确登记结果；不混入同文件的旧数组。"""
+    if 'metricContext' not in document:
+        for _, array in FACT_ARRAYS:
+            for fact in document.get(array) or ():
+                if isinstance(fact, dict):
+                    yield array, fact
+        return
+    try:
+        context = MetricPlanningContext.model_validate(document['metricContext'])
+        seen = set()
+        for index, calculation in enumerate(context.calculations):
+            for position in range(len(calculation.results)):
+                _, definition, selected = _registered_chart_results(context,
+                    ('metricContext', 'calculations', index, 'results', position))
+                result = selected[0][1]
+                if (result.fact_id in seen or not set(result.dataset_ids) <= set(evidence.dataset_ids)
+                        or not set(result.dataset_ids) <= set(datasets)):
+                    raise ValueError('registered workbook ownership mismatch')
+                seen.add(result.fact_id)
+                value, issues = result.value, list(result.issue_codes)
+                if value is not None:
+                    floating = float(value)
+                    if (not math.isfinite(floating) or value != 0 and abs(floating) < sys.float_info.min
+                            or Decimal(format(floating, '.15g')) != value):
+                        value = str(value)
+                        issues.append('xlsx_numeric_precision_preserved')
+                    else:
+                        value = int(value) if value == value.to_integral_value() and abs(floating) <= 2**53 - 1 else floating
+                array = f'metricContext/calculations/{index}/results'
+                yield array, {'factId': result.fact_id, 'metricName': definition.name,
+                    'value': value, 'unit': result.unit, 'datasetIds': list(result.dataset_ids),
+                    'scope': {item.dimension_id: '（空值）' if item.value is None else item.value for item in result.dimensions},
+                    'registeredPeriod': f'[{result.period.start.isoformat()}, {result.period.end.isoformat()})',
+                    'periodStart': result.period.start.isoformat(), 'periodEnd': result.period.end.isoformat(),
+                    'basisId': result.basis_id, 'metricVersion': result.metric_version.model_dump(by_alias=True),
+                    'calculationId': result.calculation_id, 'status': result.status, 'issueCodes': issues,
+                    'exactValue': None if result.value is None else str(result.value),
+                    'jsonPointer': f'/{array}/{position}'}
+    except (ValueError, KeyError, IndexError) as error:
+        raise ReportingError('report_workbook_registered_result_invalid',
+            '工作簿正式结果与登记指标、依据或数据集不一致。') from error
 
 
 def workbook_dataset_rows(
@@ -75,6 +124,8 @@ def workbook_dataset_rows(
 
 
 def _fact_period_label(fact: dict[str, Any], report_period: str) -> str:
+    if 'registeredPeriod' in fact:
+        return fact['registeredPeriod']
     def window(start: Any, end: Any, fallback: str) -> str:
         if start and end:
             return str(start) if start == end else f"{start} 至 {end}"
@@ -125,7 +176,7 @@ def _fact_metric_label(
 
 def build_workbook_sheets(
     *, manifest: Any, outline: Any, fact_documents: dict[str, dict[str, Any]],
-    datasets: dict[str, dict[str, Any]], period: str,
+    datasets: dict[str, dict[str, Any]], period: str, claim_presentations=None,
 ) -> tuple[tuple[dict[str, Any], ...], dict[str, Any]]:
     used_names = {"汇总"}
 
@@ -138,7 +189,7 @@ def build_workbook_sheets(
         used_names.add(name)
         return name
 
-    sources: dict[str, Any] = {"version": "1", "period": period, "datasets": datasets, "cells": []}
+    sources: dict[str, Any] = {"version": "1", "period": period, "datasets": datasets, "cells": [], 'claims': []}
     # 明细只保留身份和工作表定位，避免在来源映射中重复整批数据。
     sources["datasets"] = {key: {k: v for k, v in value.items() if k not in {"rows", "columns"}}
                            for key, value in datasets.items()}
@@ -156,41 +207,61 @@ def build_workbook_sheets(
     for section in sections:
         name = sheet_name(section.title)
         rows: list[list[Any]] = [["分析编号", "指标", "数值", "单位", "期间", "数据集", "事实编号"]]
+        formal = any('metricContext' in fact_documents.get(key, {}) for key in section.analysis_ids)
+        if formal:
+            rows[0].extend(['状态', '说明'])
         for analysis_id in section.analysis_ids:
             evidence = evidence_by_id.get(analysis_id)
             if evidence is None:
                 continue
             document = fact_documents.get(analysis_id, {})
+            conclusion = present_native_summary(evidence.summary, claim_presentations or {},
+                section_ids=(section.code,), analysis_ids=(analysis_id,))
             field_names = {item["fieldRef"]: item["displayName"]
                            for item in [*document.get("metrics", ()), *document.get("breakdowns", ())]
                            if item.get("fieldRef") and item.get("displayName")}
             fact_count = 0
-            for _, array_name in FACT_ARRAYS:
-                for fact in document.get(array_name) or ():
-                    if not isinstance(fact, dict):
-                        continue
-                    fact_count += 1
-                    metric = _fact_metric_label(fact, array_name, metric_names, field_names)
-                    value = fact_display_value(fact)
-                    unit = fact_display_unit(fact)
-                    fact_period = _fact_period_label(fact, period)
-                    dataset_ids = fact.get("datasetIds") or ([fact["datasetId"]] if fact.get("datasetId") else
-                        [fact[key] for key in ("currentDatasetId", "baselineDatasetId") if fact.get(key)] or list(evidence.dataset_ids))
-                    rows.append([analysis_id, metric, value, unit, fact_period, ", ".join(dataset_ids), fact.get("factId")])
-                    row_number = len(rows)
-                    quoted_name = name.replace("'", "''")
-                    summary["rows"].append([section.title, analysis_id, metric,
-                        {"value": value, "formula": f"='{quoted_name}'!C{row_number}"} if value is not None else None,
-                        unit, fact_period, evidence.summary])
-                    sources["cells"].append({"sheet": name, "cell": f"C{row_number}",
-                        "sectionId": section.code, "analysisId": analysis_id, "factId": fact.get("factId"),
-                        "datasetIds": dataset_ids, "factArray": array_name,
-                        **{key: fact[key] for key in ("code", "metricCodes", "scope", "periodRole", "periodRoles",
-                            "periodStart", "periodEnd", "baselinePeriodStart", "baselinePeriodEnd", "comparisonType",
-                            "breakdownField", "breakdownLabel", "breakdownValue") if key in fact}})
+            for array_name, fact in _workbook_fact_rows(document, evidence, datasets):
+                fact_count += 1
+                metric = _fact_metric_label(fact, array_name, metric_names, field_names)
+                value = fact_display_value(fact)
+                unit = fact_display_unit(fact)
+                fact_period = _fact_period_label(fact, period)
+                dataset_ids = fact['datasetIds'] if 'jsonPointer' in fact else (
+                    fact.get("datasetIds") or ([fact["datasetId"]] if fact.get("datasetId") else
+                    [fact[key] for key in ("currentDatasetId", "baselineDatasetId") if fact.get(key)] or list(evidence.dataset_ids)))
+                rows.append([analysis_id, metric, value, unit, fact_period, ", ".join(dataset_ids), fact.get("factId")])
+                notes = []
+                if 'xlsx_numeric_precision_preserved' in fact.get('issueCodes', ()):
+                    notes.append('超出Excel数值精度或范围，保留精确文本，不作数值汇总。')
+                if fact.get('status') == 'unavailable':
+                    notes.append('不可计算，未补零。')
+                if any(code != 'xlsx_numeric_precision_preserved' for code in fact.get('issueCodes', ())):
+                    notes.append('核对信息：' + '；'.join(semantic_issue_message(code) for code in fact['issueCodes']
+                        if code != 'xlsx_numeric_precision_preserved'))
+                if formal:
+                    rows[-1].extend([{'computed': '已计算', 'unavailable': '不可计算'}.get(fact.get('status'), '待核对'),
+                        ' '.join(notes)])
+                row_number = len(rows)
+                quoted_name = name.replace("'", "''")
+                summary["rows"].append([section.title, analysis_id, metric,
+                    {"value": value, "formula": f"='{quoted_name}'!C{row_number}"}
+                    if value is not None and not isinstance(value, str) else value,
+                    unit, fact_period, ' '.join((conclusion['text'], *notes)).strip()])
+                sources['claims'].append({'sheet': '汇总', 'cell': f'G{len(summary["rows"])}',
+                    'analysisId': analysis_id, 'support': conclusion['support']})
+                sources["cells"].append({"sheet": name, "cell": f"C{row_number}",
+                    "sectionId": section.code, "analysisId": analysis_id, "factId": fact.get("factId"),
+                    "datasetIds": dataset_ids, "factArray": array_name,
+                    **{key: fact[key] for key in ("code", "metricCodes", "scope", "periodRole", "periodRoles",
+                        "periodStart", "periodEnd", "baselinePeriodStart", "baselinePeriodEnd", "comparisonType",
+                        "breakdownField", "breakdownLabel", "breakdownValue", "basisId", "metricVersion",
+                        "calculationId", "status", "issueCodes", "exactValue", "jsonPointer") if key in fact}})
             if not fact_count:
                 rows.append([analysis_id, "结论", None, None, period, ", ".join(evidence.dataset_ids), None])
-                summary["rows"].append([section.title, analysis_id, "结论", None, None, period, evidence.summary])
+                summary["rows"].append([section.title, analysis_id, "结论", None, None, period, conclusion['text']])
+                sources['claims'].append({'sheet': '汇总', 'cell': f'G{len(summary["rows"])}',
+                    'analysisId': analysis_id, 'support': conclusion['support']})
         sheets.append({"name": name, "rows": rows, "headerRow": 0,
             "sectionId": section.code, "analysisIds": list(section.analysis_ids)})
     for index, (dataset_id, data) in enumerate(datasets.items(), 1):

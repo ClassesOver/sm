@@ -195,6 +195,8 @@ def _receipt_status(context: str | None, claim_id: str, receipt: ClaimSemanticRe
 def freeze_interpretation(
     markdown: str, claim_id: str, interpretation, *, reviewed_markdown: str | None = None,
     include_previous: bool = False, include_section: bool = False,
+    reference: Mapping | None = None,
+    knowledge_candidates: Mapping | None = None,
 ) -> ClaimSemanticReceiptV1 | None:
     try:
         item = ClaimInterpretationV1.model_validate(interpretation)
@@ -205,8 +207,39 @@ def freeze_interpretation(
         return None
     reviewed = claim_context(reviewed_markdown, claim_id, include_previous=include_previous,
                              include_section=include_section) if reviewed_markdown is not None else None
+    candidates = knowledge_candidates or {}
+    from ..business_knowledge.claim_models import KnowledgeSourceSpan
+
+    relations = []
+    for relation in item.knowledge_relations:
+        candidate = candidates.get(relation.evidence_id)
+        spans = []
+        if candidate is not None and relation.source_evidence:
+            for text in relation.source_evidence:
+                start = candidate.hit.quote.find(text)
+                if not text.strip() or len(text) > 512 or start < 0:
+                    spans = []
+                    break
+                spans.append(KnowledgeSourceSpan(start=start, end=start + len(text), sha256=hashlib.sha256(text.encode()).hexdigest()))
+        relations.append(relation.model_copy(update={'source_evidence': (), 'source_spans': tuple(spans)}))
+    item = item.model_copy(update={'knowledge_relations': tuple(relations)})
+    knowledge_refs = tuple(dict.fromkeys(relation.evidence_id for relation in item.knowledge_relations))
+    knowledge_refs = tuple(candidates[key].reference for key in knowledge_refs if key in candidates
+        and reference is not None and candidates[key].reference.basis_id == reference['entry'].get('basisId'))
     return ClaimSemanticReceiptV1(contextSha256=_fingerprint(context), interpretation=item,
-                                  reviewedContext=reviewed, includesPrevious=include_previous, includesSection=include_section)
+                                  knowledgeReferences=knowledge_refs,
+                                  reviewedContext=reviewed, includesPrevious=include_previous, includesSection=include_section,
+                                  resultBindingSha256=_result_binding_fingerprint(reference)
+                                  if reference and reference.get('period_boundary') == 'half_open' else None)
+
+
+def _result_binding_fingerprint(reference: Mapping) -> str:
+    """语义解释绑定原始计算结果；金额相同不代表同一指标或计算依据。"""
+    from .contracts_v1 import canonical_sha256
+
+    return canonical_sha256({'entry': reference['entry'], 'selector': reference['selector'],
+        'period': reference['period'], 'periodBoundary': reference['period_boundary'],
+        'scope': reference['scope'], 'unit': reference['unit']})
 
 
 def semantic_period_token(markdown, claim_id, token, selected, interpretation, contents, *, include_previous=False, include_section=False) -> str | None:
@@ -278,8 +311,9 @@ def semantic_warnings(
     expected_scope: Mapping[str, str], expected_periods: tuple[str, ...], warnings: list[str],
     *, reference: Mapping | None = None,
 ) -> list[str]:
+    native_period = reference is not None and reference.get('period_boundary') == 'half_open'
     if receipt is None:
-        return warnings
+        return [*warnings, '语义期间需复核：正式指标的半开期间尚无正文语义判断。'] if native_period else warnings
     context = claim_context(markdown, claim_id, include_previous=receipt.includes_previous,
                             include_section=receipt.includes_section)
     if context is None or _receipt_status(context, claim_id, receipt) != 'interpreted':
@@ -295,6 +329,8 @@ def semantic_warnings(
     for field, expected in expected_scope.items():
         matches = [scope for scope in item.scope if scope.field == field]
         if len(matches) != 1:
+            if native_period:
+                result.append(f'语义范围需复核：无法唯一确定当前数值的 {field} 归属。')
             continue
         scope = matches[0]
         grounded = bool(scope.evidence) and all(text.strip() and text in evidence_context for text in scope.evidence)
@@ -307,6 +343,17 @@ def semantic_warnings(
             result.append(f'语义范围需复核：无法确定当前数值的 {field} 归属。')
         elif not grounded:
             result.append(f'语义范围需复核：{field} 的判断缺少可核对的原文依据。')
+    if native_period:
+        # 正式结果的窗口不可转换成旧月份桶，也不能根据模型解释重算数值。
+        if receipt.result_binding_sha256 != _result_binding_fingerprint(reference):
+            result.append('语义结果身份需复核：当前指标版本、计算依据或原始结果与语义判断绑定不一致。')
+        if item.period is None:
+            result.append('语义期间需复核：无法确定当前数值的半开起止期间。')
+        elif not item.period_evidence or not all(text in evidence_context for text in item.period_evidence):
+            result.append('语义期间需复核：期间判断缺少可核对的原文依据。')
+        elif item.period.model_dump(mode='json', by_alias=True) != reference['period']:
+            result.append('语义期间需复核：正文所述半开期间与正式指标计算期间不一致。')
+        return list(dict.fromkeys(result))
     if item.periods and item.period_evidence and all(text.strip() and text in evidence_context for text in item.period_evidence):
         allowed_periods = [tuple(expected_periods)]
         if reference and reference.get('selector') in {'monthlyMinimum', 'monthlyMaximum'}:

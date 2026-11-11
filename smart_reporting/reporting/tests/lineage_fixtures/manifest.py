@@ -24,7 +24,7 @@ async def register_trace_manifest(workspace, thread_id: str, index: RevisionTrac
         revision=index.revision,
         codingTaskKey="trace-test-task",
         datasetSnapshotHash="a" * 64,
-        effectiveProfileHash="b" * 64,
+        reportBasisId=index.report_basis_id,
         markdown=ArtifactFile(path=markdown.path, mediaType="text/markdown", size=markdown.size, sha256=markdown.sha256),
         citations=tuple(
             Citation(citationId=f"citation_{position:03d}", datasetId=dataset.dataset_id,

@@ -1,0 +1,268 @@
+{
+  "kind": "metric_calculation",
+  "receiptId": "initial-4e7f78e48680a3be3d31a01fd5d61839a86a7900dae8f568c5f43106e23662d2",
+  "basisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+  "reportRevision": "initial",
+  "request": {
+    "metricVersion": {
+      "metricId": "rate",
+      "revision": 1
+    },
+    "basisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+    "period": {
+      "start": "2026-11-01",
+      "end": "2026-12-01"
+    },
+    "dimensions": [],
+    "filterValues": []
+  },
+  "results": [
+    {
+      "metricVersion": {
+        "metricId": "completion_equivalents",
+        "revision": 1
+      },
+      "basisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+      "calculationId": "initial-4e7f78e48680a3be3d31a01fd5d61839a86a7900dae8f568c5f43106e23662d2",
+      "factId": "fact-88973e5d720dd959",
+      "period": {
+        "start": "2026-11-01",
+        "end": "2026-12-01"
+      },
+      "value": "1.40000000",
+      "unit": "项目",
+      "dimensions": [],
+      "status": "computed",
+      "issueCodes": [
+        "data_readiness_unknown"
+      ],
+      "datasetIds": [
+        "dataset-81b8514515d2321444deee653ebab574"
+      ]
+    },
+    {
+      "metricVersion": {
+        "metricId": "project_count",
+        "revision": 1
+      },
+      "basisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+      "calculationId": "initial-4e7f78e48680a3be3d31a01fd5d61839a86a7900dae8f568c5f43106e23662d2",
+      "factId": "fact-bb0cf0aed594a9f7",
+      "period": {
+        "start": "2026-11-01",
+        "end": "2026-12-01"
+      },
+      "value": "2",
+      "unit": "项目",
+      "dimensions": [],
+      "status": "computed",
+      "issueCodes": [
+        "data_readiness_unknown"
+      ],
+      "datasetIds": [
+        "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+      ]
+    },
+    {
+      "metricVersion": {
+        "metricId": "rate",
+        "revision": 1
+      },
+      "basisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+      "calculationId": "initial-4e7f78e48680a3be3d31a01fd5d61839a86a7900dae8f568c5f43106e23662d2",
+      "factId": "fact-e945d96ba9c1bd55",
+      "period": {
+        "start": "2026-11-01",
+        "end": "2026-12-01"
+      },
+      "value": "70.00000000",
+      "unit": "%",
+      "dimensions": [],
+      "status": "computed",
+      "issueCodes": [
+        "data_readiness_unknown"
+      ],
+      "datasetIds": [
+        "dataset-81b8514515d2321444deee653ebab574",
+        "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+      ]
+    }
+  ],
+  "readiness": [
+    {
+      "metricVersion": {
+        "metricId": "completion_equivalents",
+        "revision": 1
+      },
+      "requestedPeriod": {
+        "start": "2026-11-01",
+        "end": "2026-12-01"
+      },
+      "observedPeriod": null,
+      "extractedAt": "2026-11-11T13:50:45Z",
+      "sourceWatermark": null,
+      "checks": [
+        {
+          "name": "period_coverage",
+          "status": "unknown",
+          "factRefs": [
+            "fact-88973e5d720dd959"
+          ]
+        },
+        {
+          "name": "group_coverage",
+          "status": "unknown",
+          "factRefs": [
+            "fact-88973e5d720dd959"
+          ]
+        },
+        {
+          "name": "source_freshness",
+          "status": "unknown",
+          "factRefs": [
+            "fact-88973e5d720dd959"
+          ]
+        }
+      ],
+      "unmatchedGroups": [],
+      "issueCodes": [
+        "data_readiness_unknown"
+      ]
+    },
+    {
+      "metricVersion": {
+        "metricId": "project_count",
+        "revision": 1
+      },
+      "requestedPeriod": {
+        "start": "2026-11-01",
+        "end": "2026-12-01"
+      },
+      "observedPeriod": null,
+      "extractedAt": "2026-11-11T13:50:45Z",
+      "sourceWatermark": null,
+      "checks": [
+        {
+          "name": "period_coverage",
+          "status": "unknown",
+          "factRefs": [
+            "fact-bb0cf0aed594a9f7"
+          ]
+        },
+        {
+          "name": "group_coverage",
+          "status": "unknown",
+          "factRefs": [
+            "fact-bb0cf0aed594a9f7"
+          ]
+        },
+        {
+          "name": "source_freshness",
+          "status": "unknown",
+          "factRefs": [
+            "fact-bb0cf0aed594a9f7"
+          ]
+        }
+      ],
+      "unmatchedGroups": [],
+      "issueCodes": [
+        "data_readiness_unknown"
+      ]
+    },
+    {
+      "metricVersion": {
+        "metricId": "rate",
+        "revision": 1
+      },
+      "requestedPeriod": {
+        "start": "2026-11-01",
+        "end": "2026-12-01"
+      },
+      "observedPeriod": null,
+      "extractedAt": "2026-11-11T13:50:45Z",
+      "sourceWatermark": null,
+      "checks": [
+        {
+          "name": "input_readiness",
+          "status": "unknown",
+          "factRefs": [
+            "fact-88973e5d720dd959",
+            "fact-bb0cf0aed594a9f7"
+          ]
+        },
+        {
+          "name": "group_alignment",
+          "status": "pass",
+          "factRefs": [
+            "fact-88973e5d720dd959",
+            "fact-bb0cf0aed594a9f7"
+          ]
+        }
+      ],
+      "unmatchedGroups": [],
+      "issueCodes": [
+        "data_readiness_unknown"
+      ]
+    }
+  ],
+  "datasets": [
+    {
+      "sourceId": "warehouse",
+      "dataset": {
+        "datasetId": "dataset-81b8514515d2321444deee653ebab574",
+        "fileResourceId": "trf-ca8b2c9ae8645f459e05",
+        "sourceType": "starrocks_materialized",
+        "requirementId": "metric-848ff9013267c0ce68f8fe4ba5a2bbdd932296fd2e3d88b37affe52bede07feb",
+        "sqlHash": "96d83c16ef30af0459fd66ea2cac5e348a07243200a14c171337345323578bd9",
+        "periodRoles": [
+          "current"
+        ],
+        "queryWindowId": "current",
+        "rowCount": 1,
+        "materializedAt": "2026-11-11T13:50:45Z",
+        "filename": null,
+        "businessLabel": null,
+        "querySql": "SELECT SUM(`f`.`fraction`) AS `value`, COUNT(*) AS `observed_count`, COUNT(`f`.`fraction`) AS `nonnull_count` FROM `test`.`project_rates` AS f WHERE `f`.`period` >= :p0 AND `f`.`period` < :p1"
+      },
+      "file": {
+        "resourceId": "trf-ca8b2c9ae8645f459e05",
+        "path": "报表/数据集/120740d90bc8415c92d41b56/batch-3c0af583b40781e926f3cbf6df13e6ad/dataset-81b8514515d2321444deee653ebab574.csv",
+        "mediaType": "text/csv",
+        "size": 52,
+        "sha256": "77100ab70e9b772de439f1b666628ba20319f323fdfa7bab399897f3a22ffc2c"
+      }
+    },
+    {
+      "sourceId": "warehouse",
+      "dataset": {
+        "datasetId": "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69",
+        "fileResourceId": "trf-f5566486665b93f47420",
+        "sourceType": "starrocks_materialized",
+        "requirementId": "metric-8b63c73cc924273827aa08717317b1b1ea00dafd36f69e0307b641f2112e76a0",
+        "sqlHash": "d6cc38cfd3125e8ccef4b54deec4462c35bf762913e0a87960e3ee41e8b212df",
+        "periodRoles": [
+          "current"
+        ],
+        "queryWindowId": "current",
+        "rowCount": 1,
+        "materializedAt": "2026-11-11T13:50:45Z",
+        "filename": null,
+        "businessLabel": null,
+        "querySql": "SELECT COUNT(`f`.`project_id`) AS `value`, COUNT(*) AS `observed_count`, COUNT(`f`.`project_id`) AS `nonnull_count` FROM `test`.`project_rates` AS f WHERE `f`.`period` >= :p0 AND `f`.`period` < :p1"
+      },
+      "file": {
+        "resourceId": "trf-f5566486665b93f47420",
+        "path": "报表/数据集/120740d90bc8415c92d41b56/batch-3c0af583b40781e926f3cbf6df13e6ad/dataset-d056dfb4ed2fa218a9885a9e7c4d9a69.csv",
+        "mediaType": "text/csv",
+        "size": 43,
+        "sha256": "d4591264c8b30c0e153447039f35a6b4edbcd669976a694c594ec7aa23b2f4a3"
+      }
+    }
+  ],
+  "workspace": {
+    "workspaceKey": "reporting-run-7bb29fce49a106687f8a63ecce08151e618adcbfa125182d954775a2696817ec",
+    "sessionId": "policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26",
+    "scopeFingerprint": "99874a91bcdf34c11bf5c4f497447df37ffd6b486da177aa1d2ac9707db683e7"
+  },
+  "createdAt": "2026-11-06T00:00:00Z"
+}

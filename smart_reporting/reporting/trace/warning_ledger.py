@@ -151,7 +151,8 @@ def build_warning_ledger(quality: QualityBundle, index: RevisionTraceIndexV1) ->
     Input matching here is consistency only, not file or authorization validation.
     Every issue belongs to exactly one group and remains in quality.issues.
     """
-    if quality.report_id != index.report_id or quality.revision != index.revision:
+    if (quality.report_id != index.report_id or quality.revision != index.revision
+            or quality.report_basis_id != index.report_basis_id):
         raise ValueError("Quality and index identities differ")
     subjects = {item.subject_id: item for item in index.subject_bindings}
     files = {file.resource_id: file for file in index.files}

@@ -1,0 +1,149 @@
+{
+  "businessKnowledge": {
+    "status": "unavailable",
+    "interpretationStatus": "unverified",
+    "sections": [],
+    "issueCodes": [
+      "knowledge_registration_unavailable"
+    ]
+  },
+  "draftSha256": "ae9540c6fb2516fe52f2850f4876d7c231893304377ded52be83ddc45e3e4d3e",
+  "quality": {
+    "status": "evaluated",
+    "inputSha256": "9ec11bd3b289830bde3ac8491ca0c815f2329adbe12fbb21956002b68239aa93",
+    "reportBasisId": "basis-selection",
+    "claimSupport": [],
+    "registeredQuestionCoverage": [
+      {
+        "questionId": "q-budget",
+        "status": "partial",
+        "findingIds": [],
+        "subjectIds": [],
+        "issueCodes": [
+          "data_readiness_unknown",
+          "question_support_unverified",
+          "question_completion_mapping_unavailable"
+        ]
+      }
+    ],
+    "allKeyFactsEvaluated": false,
+    "questionCoverage": {
+      "required": 1,
+      "evaluated": 0,
+      "answered": 0,
+      "effectiveAnswerRate": null,
+      "evaluationStatus": "not_fully_evaluated"
+    },
+    "answerReview": null,
+    "registeredManagementOverview": {
+      "reportBasisId": "basis-selection",
+      "inputSha256": "9ec11bd3b289830bde3ac8491ca0c815f2329adbe12fbb21956002b68239aa93",
+      "markdownSha256": "ae9540c6fb2516fe52f2850f4876d7c231893304377ded52be83ddc45e3e4d3e",
+      "status": "evaluated",
+      "rows": [
+        {
+          "questionId": "q-budget",
+          "question": "预算是多少？",
+          "status": "partial",
+          "facts": [],
+          "issueCodes": [
+            "data_readiness_unknown",
+            "question_support_unverified",
+            "question_completion_mapping_unavailable"
+          ]
+        }
+      ],
+      "issueCodes": []
+    },
+    "managementOverview": null,
+    "issues": [],
+    "tableChecks": {
+      "table-analysis_001-registered-0-0-0": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      }
+    },
+    "semanticChecks": {},
+    "chartChecks": {},
+    "warningLedger": {
+      "version": "warning-ledger/1",
+      "groupingVersion": "fact-reference/2",
+      "qualityInputSha256": "9ec11bd3b289830bde3ac8491ca0c815f2329adbe12fbb21956002b68239aa93",
+      "originalIssueCount": 0,
+      "groupCount": 0,
+      "groups": [],
+      "businessAcceptanceEvaluated": false
+    }
+  },
+  "revisionImpactIssues": [],
+  "revisionImpacts": [],
+  "sourceIssues": [],
+  "warnings": [],
+  "subjects": [],
+  "summary": {
+    "valid": 0,
+    "stale": 0,
+    "unbound": 0
+  },
+  "tables": [
+    {
+      "tableId": "table-analysis_001-registered-0-0-0",
+      "cells": {
+        "valid": 1,
+        "stale": 0,
+        "unbound": 0
+      },
+      "copiedCells": [],
+      "insertedRows": 0,
+      "locations": [
+        {
+          "rowKey": "result:26d75adc15a9b7c8910490d013c0ad0975131572f964cf30b0638bf586df471e",
+          "columnKey": "计算结果（CNY）",
+          "rowIndex": 0,
+          "columnIndex": 1,
+          "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+          "text": "300.123456789123456789",
+          "status": "valid",
+          "factValue": "300.123456789123456789",
+          "unit": "CNY",
+          "periods": [
+            "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+          ],
+          "computation": "registered",
+          "periodBoundary": "half_open",
+          "formula": null,
+          "formulaText": "预算额（第1版）：求和；采用合成预算执行（第1版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 300.123456789123456789 CNY；取数时间未登记；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+          "scope": {},
+          "datasetIds": [
+            "dataset-url-abc0001"
+          ]
+        }
+      ],
+      "datasetIds": [
+        "dataset-url-abc0001"
+      ],
+      "methods": [
+        "预算额（第1版）：求和；采用合成预算执行（第1版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 300.123456789123456789 CNY；取数时间未登记；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+      ],
+      "periods": [
+        "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+      ],
+      "dataCheck": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      }
+    }
+  ],
+  "tableSummary": {
+    "valid": 1,
+    "stale": 0,
+    "unbound": 0,
+    "insertedRows": 0,
+    "copiedCells": 0
+  },
+  "charts": []
+}

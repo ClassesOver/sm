@@ -1,0 +1,205 @@
+{
+  "status": "rendered",
+  "renderIssues": [],
+  "jobId": "job-full-render-smoke",
+  "markdownPath": "report.md",
+  "pdfPath": "reports/formal.pdf",
+  "size": 656875,
+  "wordPath": "reports/formal.docx",
+  "wordSize": 14120,
+  "pageCount": 2,
+  "imageCount": 0,
+  "render": {
+    "markdown": {
+      "path": "report.md",
+      "size": 435,
+      "sha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b"
+    },
+    "pdf": {
+      "path": "reports/formal.pdf",
+      "size": 656875,
+      "sha256": "28a22f16d43fb53435c01a9b19e7ce57c7b2af3a2661660c0f81b03c5d3e9f78"
+    },
+    "word": {
+      "path": "reports/formal.docx",
+      "size": 14120,
+      "sha256": "775fb9789f13e95ac89acfb04497ba81c14319ceedd3895c53726f265b7d56d0"
+    },
+    "renderIssues": [],
+    "projection": {
+      "version": "report-markdown/6",
+      "scope": "render_markdown",
+      "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+      "sourceSize": 435,
+      "normalizedSourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+      "contextSha256": "4b77579df94a945074a158c70caa64d003cb156f918b68a51354a45959e40a0c",
+      "markdownSha256": "2d8fc609f49103b1812b99f181f58a65babcd7b92dc4c51e7554550fe78663e3",
+      "presentationSha256": "5fe85774aeeb6f2757442c5d028586455394163d3fabc79bedd29117b816d163",
+      "stages": [
+        {
+          "name": "relocate_server_tables/3",
+          "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+          "markdownSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b"
+        },
+        {
+          "name": "compact_single_column_tables/1",
+          "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+          "markdownSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b"
+        },
+        {
+          "name": "insert_executive_summary/2",
+          "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+          "markdownSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b"
+        },
+        {
+          "name": "collapse_repeated_values/2",
+          "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+          "markdownSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b"
+        },
+        {
+          "name": "readable_large_amounts/1",
+          "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+          "markdownSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b"
+        },
+        {
+          "name": "align_numeric_table_columns/3",
+          "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+          "markdownSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b"
+        },
+        {
+          "name": "source_presentations/1",
+          "sourceSha256": "0e7b5a219006ba43afe9b36f245030de0ff81208e44318e8a5a9e11b8210f03b",
+          "markdownSha256": "2d8fc609f49103b1812b99f181f58a65babcd7b92dc4c51e7554550fe78663e3"
+        },
+        {
+          "name": "normalize_cjk_strong_markers/1",
+          "sourceSha256": "2d8fc609f49103b1812b99f181f58a65babcd7b92dc4c51e7554550fe78663e3",
+          "markdownSha256": "2d8fc609f49103b1812b99f181f58a65babcd7b92dc4c51e7554550fe78663e3"
+        }
+      ],
+      "semanticSupportReused": false,
+      "overviewCheck": null,
+      "claimSupportCheck": null,
+      "projectionSha256": "0fb19df2aeeee63131317b02e5c7f47a8e2c6a5f2287a181e3f1c00897b6cd84"
+    },
+    "images": [],
+    "pageCount": 2,
+    "imageCount": 0,
+    "pageLayout": {
+      "headerLeft": "{organization}",
+      "headerRight": "{title}",
+      "footerLeft": "企业智能运营报表",
+      "footerRight": "第 {page} / {pages} 页"
+    },
+    "exportSettings": {
+      "cover": false,
+      "toc": false,
+      "headerFooter": true,
+      "pageNumbers": true,
+      "sources": true
+    },
+    "reportTitle": "正式指标计算说明验收",
+    "documentContext": {
+      "title": "正式指标计算说明验收",
+      "periodLabel": "2026年11月",
+      "organizationName": "智能运营验证机构",
+      "generatedByLabel": "Reporting Agent",
+      "watermarkText": "内部资料",
+      "generatedDate": "2026-09-30",
+      "sectionNumbers": [
+        "1"
+      ],
+      "sections": [
+        {
+          "code": "overview",
+          "sectionNumber": "1",
+          "title": "经营概览"
+        }
+      ],
+      "headingNumbers": [
+        {
+          "level": 2,
+          "number": "1",
+          "title": "经营概览",
+          "sectionCode": "overview",
+          "anchor": "report-section-overview"
+        }
+      ]
+    },
+    "reportDesign": {
+      "options": {
+        "cover": false,
+        "toc": false,
+        "sources": true
+      }
+    },
+    "visualTheme": {
+      "name": "enterprise-tech-blue",
+      "primary": "#0B4F8A",
+      "accent": "#007EA7",
+      "highlight": "#F2B134",
+      "ink": "#1B2A41",
+      "muted": "#5B6B7A",
+      "grid": "#C7D7E5",
+      "gridline": "#E1E9EF",
+      "surface": "#EDF5FC",
+      "chartPalette": [
+        "#0B4F8A",
+        "#007EA7",
+        "#2F80ED",
+        "#56B4E9",
+        "#F2B134",
+        "#2E9F6B",
+        "#7A5AF8",
+        "#D66B3D"
+      ]
+    },
+    "wordStructure": {
+      "nativeTocPresent": false,
+      "sectionCount": 1,
+      "tocEntryCount": 1,
+      "embeddedImageCount": 0,
+      "externalRelationshipCount": 2
+    },
+    "citationPresentations": [],
+    "citationAppendixPresent": false,
+    "traceSourcePresentations": {
+      "datasets": {
+        "dataset-url-abc0001": {
+          "businessLabel": null,
+          "filename": "input.csv",
+          "periodRoles": [
+            "current"
+          ]
+        }
+      },
+      "entries": [
+        {
+          "alias": "[数据来源 001]",
+          "datasetIds": [
+            "dataset-url-abc0001"
+          ],
+          "kind": "table",
+          "links": [
+            {
+              "subjectId": "sub-7837d5781a746fb6",
+              "url": "https://reports.example.com/reports/v1/editor/report-1/3?subject=sub-7837d5781a746fb6"
+            }
+          ],
+          "methods": [
+            "预算额（第1版）：求和；采用合成预算执行（第1版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 300.123456789123456789 CNY；取数时间未登记；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+          ],
+          "periods": [
+            "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+          ],
+          "status": "valid",
+          "subjectIds": [
+            "sub-7837d5781a746fb6"
+          ],
+          "tableId": "table-analysis_001-registered-0-0-0"
+        }
+      ]
+    },
+    "traceSourceAppendixPresent": true
+  }
+}

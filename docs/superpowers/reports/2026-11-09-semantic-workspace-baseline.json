@@ -1,0 +1,334 @@
+{
+  "base": "7ef25eb1",
+  "source": "/home/junge/pros/smart_reporting",
+  "files": [
+    {
+      "path": ".env.example",
+      "sha256": "a046ab3b8c9b289af1b8db4baa35978bbd4b43c799639f65726505d2d8b15ac5"
+    },
+    {
+      "path": "Dockerfile",
+      "sha256": "b5b6ddd33510c1b5030bb726f2644d00dc0744a12d461074e217e25fdebb95f4"
+    },
+    {
+      "path": "README.md",
+      "sha256": "0ba4636fe98d430ae02b9e2e3c343d159f022ff4714e304a25bb8a6a6474b94a"
+    },
+    {
+      "path": "scripts/management/isolated_server.py",
+      "sha256": "b82583a363c90d53e22962d196409bbe293c302f8b826fd2523f64a83221d1cc"
+    },
+    {
+      "path": "scripts/management/upgrade_server.py",
+      "sha256": "33fbbc9b6920f5dd53eacd9a443b1dc5009747871e3d470bc132fcc52c72d20f"
+    },
+    {
+      "path": "scripts/management/verify_delivery.py",
+      "sha256": "ed2c254540aed84dcec972618b6352898a1158144705ea5916c2370b4bb426f2"
+    },
+    {
+      "path": "scripts/management/verify_sql.py",
+      "sha256": "d04e9bbbc95cd6bfdd1e458b099feb90e449fc3fb56dd12a36bd611ecdb70a1c"
+    },
+    {
+      "path": "scripts/management/verify_starrocks_access.py",
+      "sha256": "bca48a8700c9131e0be50000dec49fbd1c0eab2ecd995d6673f57e797c4c6973"
+    },
+    {
+      "path": "smart_reporting/app.py",
+      "sha256": "d1d751f1d9df1dda785f8aa9825755321ff5296b4f5cec7db778e35e78a772a1"
+    },
+    {
+      "path": "smart_reporting/management/README.md",
+      "sha256": "a38e3be3a1ebff511bb7dc954cefbfd1b35a87976f0898ab73dd0ea43e06ff0c"
+    },
+    {
+      "path": "smart_reporting/management/api.py",
+      "sha256": "ac0f90ca38b7b0135dd229d03bb48424f5f7b519637020b881beda52fa8c60eb"
+    },
+    {
+      "path": "smart_reporting/management/data_sources/api.py",
+      "sha256": "85bcb73033131ebad29a5bd9a8d9b3b057b23b0064a74a80bcecd841f160cc20"
+    },
+    {
+      "path": "smart_reporting/management/data_sources/models.py",
+      "sha256": "34cbe6c3b389eee75d6de9cca344e183e5e445ec03962472f640caee097641ce"
+    },
+    {
+      "path": "smart_reporting/management/data_sources/releases.py",
+      "sha256": "ef2a794eb4e36b8f65fb6158f981e525ec905ddd7fad1f750ca4eb172cb9baf7"
+    },
+    {
+      "path": "smart_reporting/management/data_sources/service.py",
+      "sha256": "e96380006bef8c9b3cd78d394abeab54b7b0fdb39d119d604fa64c1e6f477005"
+    },
+    {
+      "path": "smart_reporting/management/importer.py",
+      "sha256": "79010b9ca9a30e4260ed3a15ef60a1b752d8bf8085290e22044f6aec1a0b3c21"
+    },
+    {
+      "path": "smart_reporting/management/migrations/versions/0008_table_discoveries.py",
+      "sha256": "ffa55a74c4e60dfbbe1ad64cd7386cd764fe77084b1cfc31882fefab5b07f004"
+    },
+    {
+      "path": "smart_reporting/management/repository.py",
+      "sha256": "998fb87bf182c0102590e8d0681a91b64a039fa11c7055f3adb7c7a3464d0cca"
+    },
+    {
+      "path": "smart_reporting/management/settings.py",
+      "sha256": "855287495ae3a7847f2614245527e7dae731b3bf66bfeea76fc677aa0b59f8a8"
+    },
+    {
+      "path": "smart_reporting/management/table_access.py",
+      "sha256": "47ef463c9464abdc0493276851db21f7e290a9683470bf1dd1ff425ba0950431"
+    },
+    {
+      "path": "smart_reporting/management/table_access_api.py",
+      "sha256": "c03da9faee1ac23c2d14ee20a614592cc128a7f6a496861c7b080a6302536ba7"
+    },
+    {
+      "path": "smart_reporting/management/version_options.py",
+      "sha256": "838863fb3b89ec5512aaff7c5a2a864c838b22bc911a49e9fee0550dd09cfb16"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/e2e/management/upgrade.spec.ts",
+      "sha256": "3578e7469895caffcdb34447791a693a677932fabe08bcadfaa399eeef4ac54e"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/e2e/management/workbench.spec.ts",
+      "sha256": "a473ee7922f8a5e478a17e8a7cde3186ecbc6c780610b32126449a6c609dd3f9"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/management.html",
+      "sha256": "8beff132e1ce2e4955d5c9fec9fb286ef590d96559dccf12200b55c18437adcd"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/package-lock.json",
+      "sha256": "375d072245442c6e7d517305801de022280fab0c7627ec9e4223db62968c6fb7"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/package.json",
+      "sha256": "e049f39b63b5704312fb53820c214dceff559ebbc6af2ba1542df75f194da495"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/playwright.management.config.ts",
+      "sha256": "b2b8180023b22ede1739b2427b02dd632ce29e1674300ed582b85aff9bd43b0b"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/scripts/check-management-budget.mjs",
+      "sha256": "ed63b1199ff03ac26f37c01cadf04878a114cff0b6c82ed11b37bae264316330"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/scripts/measure-management.mjs",
+      "sha256": "bce5e0bf723bbb97995b35cde8aa50bcf2cf648b0b1e2a02e41f5af8cf44ee30"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/api/contracts.ts",
+      "sha256": "e394b3aec139eb5ac76678d37151779db54c8d9d317258c48a433babe8355609"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/api/http.test.ts",
+      "sha256": "edc5bed70c4f068ca9fc1595703968be83ae166a09a5fd5e048e35c6a77c13f8"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/api/http.ts",
+      "sha256": "8df4dbf414151881ab24f25d99d1f38e69d9b2c40cc1fb595732ff4e40d1ca92"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/api/query-keys.ts",
+      "sha256": "afd3ab18bd35be264f3834abfbfff106fda81f495813e73da201d8f3e4c1114a"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/app.test.tsx",
+      "sha256": "ed1b6f44e4445935a4ff4d222adeb2b2ced303aa4c5d85cf3c7cea6781765093"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/app.tsx",
+      "sha256": "699dfac15ed1f6c9c2c059a647a4694c4bc41feb48e39c029c556bdc510bb1e6"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/app/providers.tsx",
+      "sha256": "805b8c6e598c80ad4485099ee1ca8ad0069a8dafcda09de4063dfbeba328c1c5"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/app/router.tsx",
+      "sha256": "cc5947e0c2344e58e1a374b35d382da126380bd130691f6250747433283e1f89"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/app/session.tsx",
+      "sha256": "ffa87354f4ec61de0db078527facfa8368409e6c60d895af3fc4f7179ffdd611"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/app/shell.tsx",
+      "sha256": "e3fe34ac89801d2dd1fe6c0e860c7d15f03f08b242aaf74b80b698d6c9c54e8c"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/components/UnsavedChangesGuard.tsx",
+      "sha256": "f95cb0697de461eaea2e8fcef529036a82856490a8aa53613df782d5c9fec259"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/components/common.tsx",
+      "sha256": "472afa68f586dbdacfced444894a1c023868a651c4ef9c14d4f54053fc7831d8"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/auth/login.test.ts",
+      "sha256": "6e8f6f8735851f252fee146ef8ed9e065822aeccbe8b11fedcf10320815dff7f"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/auth/login.tsx",
+      "sha256": "aef7799a24eb62e1db0c7e4882ad1b84296aa47a8384536c88bde5604e2c6309"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/auth/password.tsx",
+      "sha256": "b45ab80d96ba0391f44edef97f6bac6e0537d544154d42c2a961bc72e92830e2"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/scopes/context.ts",
+      "sha256": "8a88e15f6508a04716c5c231ac3d0b760112651c4ab078e7daf51b844aa18e69"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/scopes/page.tsx",
+      "sha256": "ab4f43310759c917d3eafb7246e09e33a08074286436b5bce0e154a9f2693b8e"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/scopes/queries.ts",
+      "sha256": "e6c93301063c23de81c8e80d1bd5da82b571406c8b39316dd795c91eed60c067"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/conflict.test.ts",
+      "sha256": "9386d547f434259d93370b2baada2918294462c72283101823d7dfa08a0638dd"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/conflict.ts",
+      "sha256": "c3704766b804cf0017353102de0d424a030cec6695cb74d0c33a342fcf19009a"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/detail.tsx",
+      "sha256": "1cf8ad61f958bb94c159fdcdfd3117ae2eeb4b2d83c4f859cb36f88a39a1a29f"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/editor.tsx",
+      "sha256": "eabd5fe33bad43a8182d5e45cfb822d5185afd183b65689fac10514d6a817050"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/list.tsx",
+      "sha256": "3cc79994bde5314a7c59a9ecec709475b969f0f84f22b2e5aa448e7c6371a01a"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/paths.ts",
+      "sha256": "0158c0357daf3962240d878de043c5c071d123d3d005f306863a7939e79eafad"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/queries.ts",
+      "sha256": "ad03abd2762d8ad12d3255830f3c2b4fb406ef7de0e41092008db68fce4427b7"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/release.test.tsx",
+      "sha256": "4ea467f9bec1da8f8a85852a3d9c5487a2cd661cf7d31e86a3bfc50ba9ff7fed"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/release.tsx",
+      "sha256": "5fa0877b861039d482c07d520c3d97ece20c308c494c713c09f11e59fd45486e"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/table-access.tsx",
+      "sha256": "fec706ebeefdc84af3fb181e44063f000f788a9a38258dbd6d9c3cecdfe2fcc2"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/table-selection.test.ts",
+      "sha256": "4c93d5ec64234f8b40e4c76dacbfe0187b0d4ce379fddd0c91cfab835d1e5ddb"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/features/sources/table-selection.ts",
+      "sha256": "0123cc8e8239d211a772b9932edf15d4bf3c423297e9e2f13755572876ac8d06"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/main.tsx",
+      "sha256": "e7f9fad98bc7a58264a06deec7d4b85e01db22c4a59e1d1c5e7713548b968596"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/styles/layout.css",
+      "sha256": "38e27912b867e125e5715bc4328e0a468e63641f44f0ef9dc0e17b3eb7be5946"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/src/management/styles/tokens.ts",
+      "sha256": "d3710531f0bbf2820964cb45f196e976dffa6b66fbd67f7813eed73493c4045c"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/tsconfig.management.json",
+      "sha256": "1a7bc4c8a56dd6ef33c6c6eb7938bca1a13b65e65d5453170e3fbfa9d522e7e5"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/vite.config.ts",
+      "sha256": "12fc0db2b9c41d610d92d711e96e8a7e494c6152403e187d0493c1806d29fd67"
+    },
+    {
+      "path": "smart_reporting/report_editor/frontend/vite.management.config.ts",
+      "sha256": "1cf935e34306a98f3a8c519315588f419981339f770b3a5f61c4a80a43855822"
+    },
+    {
+      "path": "smart_reporting/reporting/tests/test_frozen_table_scope.py",
+      "sha256": "341826e7fa309e6971f12ac7346023807e90b28b5bb8c97ae464c17031453b63"
+    },
+    {
+      "path": "smart_reporting/tests/management_fixtures.py",
+      "sha256": "78da10abdfa62141109833a85521122630cf4b5b0c4cf344de3f134fc5a86308"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_access.py",
+      "sha256": "a437ad7a14c55b72eeead1c5e827fb1d432daeabc08c6fc5088856eb1c50f937"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_frontend.py",
+      "sha256": "862ac7f5abe6243d0494cd5d3d32baa09ade7239ceab8da5a4e144cad5c7849d"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_frontend_contracts.py",
+      "sha256": "e638466bae0be520ae3f0215074524cc20cf61925bbba0520838d8f96c919c9b"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_migration.py",
+      "sha256": "0ea94b49a5f9db3a71911ba9ffb19b3a44ad4441f0aee5dbee6eff858e11b01b"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_resource_access.py",
+      "sha256": "156aa90ee37a4c1080ed95937c8a8b921a751cbd7aa9c29f421c8e1966df2b7d"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_runtime_persistence.py",
+      "sha256": "52bd5f603cad81a50b12f10733a54f09102e1d17ec9358ae83287f04f82854c4"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_source_import.py",
+      "sha256": "204624d4848aa6d21c877d2fc057505f135cb993ae32db2cb0e9184b8eb60e9e"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_source_list.py",
+      "sha256": "5980b3ee470761184b1f86e2a050224a73138e1fd84a3c7278acfbfac9387bf8"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_sources.py",
+      "sha256": "88395fb1a818814aa1f9c048df85efbd93edf15ab26404e739381c54eb9efd6d"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_starrocks_integration.py",
+      "sha256": "0ea8c3105961ebdd5d2ae8361d5fca1d7f8fba5e97987b3480867360e0298f24"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_table_access.py",
+      "sha256": "1869f3757ad155bb8bf3bf606cd9469af7b32fa8f52f29b04b32016b146df909"
+    },
+    {
+      "path": "smart_reporting/tests/test_management_table_discovery_unit.py",
+      "sha256": "e2c23ab9e316f4aae483e4d7ce78a48b673da2cb65843a521424e2f26f8b3839"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-09-report-semantic-evidence-implementation.md",
+      "sha256": "773ef1fabbc7606a18222a8c539811d91e699cd410e0dffab948e157d50c7e5a"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-11-09-report-semantic-evidence-design.md",
+      "sha256": "9d3d2c156ec17c26603a150430a583059d3988fe74e22af857e7c549c643bcb3"
+    }
+  ]
+}

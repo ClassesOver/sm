@@ -1,0 +1,63 @@
+{
+  "reportId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+  "revision": 5,
+  "jobId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+  "job": {
+    "jobId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "sources": [],
+    "render": {
+      "markdown": {
+        "path": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/slides.md",
+        "mediaType": "text/markdown",
+        "size": 1027,
+        "sha256": "366e974a437248bdae9b780c78ea64c2c5a9ae355bf34dd75c94117306ca1156"
+      }
+    },
+    "revision": 5,
+    "pptxPath": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/report-r5-8d28fe59b23f.pptx",
+    "pptxSize": 21524,
+    "pptxSha256": "33777fe5331930454a85b95fda75a3d98e2e713cda9b60125476058d1285f707",
+    "validation": {
+      "ok": false,
+      "issues": [
+        {
+          "code": "pptx_semantic_verification_pending",
+          "message": "新修订尚未重新进行业务语义验收，不继承旧版本验收结论。"
+        }
+      ]
+    }
+  },
+  "workflowRunId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+  "markdownPath": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/slides.md",
+  "artifactManifest": {
+    "path": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/slides.manifest.json",
+    "mediaType": "application/json",
+    "size": 1857,
+    "sha256": "596718d3848d8cfb91b1df7bdfbc614109c824bfa2e9b5470dce1da627a6d205"
+  },
+  "analysisContextFile": {
+    "path": "报表/分析计划/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/detailed-analysis-context.json",
+    "size": 22586,
+    "sha256": "cf63742a9e2a1c12a3e32c498276116ba9f4af806691ce539703937c39d3dc7c"
+  },
+  "scope": {
+    "externalRunId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "sessionId": "policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c",
+    "threadId": "reporting-run-5a0010ba84687cd85a56e16f5a8ccc6a1354fe6b06a251255996f71ebcad2a33",
+    "callerThreadId": "thread-basis",
+    "userId": "7",
+    "database": "warehouse",
+    "companyId": "a",
+    "threadLeaseKey": "reporting-thread-76a785b6792921c516f66466655c49727268946b0df509b4225fa6cffdb9f8ac"
+  },
+  "source": "manual",
+  "createdAt": "2026-11-11T12:19:52.739669Z",
+  "note": "幻灯片编辑",
+  "deliveryFormat": "pptx",
+  "pptxPath": "报表/智能分析/policy-adoption-2d1a7e12d6e3eeaf932b72fa98b751279807cf4698e0535e08fbd28e3951a89c/slides/revision-4/report-r5-8d28fe59b23f.pptx",
+  "pptxSize": 21524,
+  "pptxSha256": "33777fe5331930454a85b95fda75a3d98e2e713cda9b60125476058d1285f707",
+  "xlsxPath": null,
+  "xlsxSize": null,
+  "xlsxSha256": null
+}

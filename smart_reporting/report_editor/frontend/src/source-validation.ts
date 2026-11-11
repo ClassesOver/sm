@@ -138,6 +138,8 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
   const hasQuestions = coverage?.required != null && coverage.required > 0
   const answerPending = Boolean(hasQuestions && coverage?.effectiveAnswerRate == null)
   const answerIncomplete = Boolean(hasQuestions && coverage && coverage.answered < coverage.required!)
+  const knowledge = result.businessKnowledge
+  const knowledgePending = knowledge?.sections.filter(section => section.status === 'unavailable').length ?? 0
   const text = [
     total ? `可溯源 ${traceable}/${total}${computed ? `（服务端计算 ${computed}）` : ''}` : '当前内容无精确来源绑定',
     issues ? `待复核 ${issues}` : '',
@@ -146,12 +148,16 @@ export function sourceCoverageSummary(result: TraceValidation, visibleText: stri
     contentWarnings ? `内容提示 ${contentWarnings}` : '',
     sourceFailures ? `来源异常 ${sourceFailures}` : '',
     qualityFailed ? '语义检查暂不可用' : '',
+    knowledgePending ? `知识依据待复核 ${knowledgePending} 节`
+      : knowledge?.status === 'available' ? '知识材料可引用，解释支持待核验'
+        : knowledge ? '知识依据暂不可核验' : '',
+
     semanticGroups ? `语义待确认 ${semanticGroups}组` : '',
     notEvaluated.scope ? `范围待确认 ${notEvaluated.scope}` : '',
     notEvaluated.other ? `未自动核对 ${notEvaluated.other}` : '',
     hasQuestions && coverage ? answerPending ? '回答覆盖待核验' : `已核验回答 ${coverage.answered}/${coverage.required}` : '',
   ].filter(Boolean).join(' · ')
-  return { text, state: issues || unverified || reviewTexts || contentWarnings || sourceFailures || qualityFailed || semanticGroups || answerPending || answerIncomplete ? 'stale' : total ? 'valid' : 'unknown' }
+  return { text, state: issues || unverified || reviewTexts || contentWarnings || sourceFailures || qualityFailed || knowledge?.status === 'unavailable' || semanticGroups || answerPending || answerIncomplete ? 'stale' : total ? 'valid' : 'unknown' }
 }
 
 /**

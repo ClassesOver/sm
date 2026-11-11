@@ -1,0 +1,48 @@
+{
+  "pilot": "budget_execution",
+  "legacy_files_are_discovery_clues_only": true,
+  "profiles": [
+    {
+      "path": "deploy/agentos/reporting/reporting_profiles/base.json",
+      "id": "base",
+      "purposes": [],
+      "new_contract_verified": false
+    },
+    {
+      "path": "deploy/agentos/reporting/reporting_profiles/hospitals/ruijin-north.json",
+      "id": "ruijin-north",
+      "purposes": [],
+      "new_contract_verified": false
+    },
+    {
+      "path": "deploy/agentos/reporting/reporting_profiles/hospitals/ruijin.json",
+      "id": "ruijin",
+      "purposes": [
+        "工作量分析",
+        "成本多维分析",
+        "收入多维分析",
+        "项目预算分析",
+        "预算或预实对比"
+      ],
+      "new_contract_verified": false
+    },
+    {
+      "path": "deploy/agentos/reporting/reporting_profiles/organizations/finance.json",
+      "id": "finance",
+      "purposes": [],
+      "new_contract_verified": false
+    },
+    {
+      "path": "deploy/agentos/reporting/reporting_profiles/templates/budget-execution.json",
+      "id": "budget-execution",
+      "purposes": [],
+      "new_contract_verified": false
+    },
+    {
+      "path": "deploy/agentos/reporting/reporting_profiles/templates/monthly-operation.json",
+      "id": "monthly-operation",
+      "purposes": [],
+      "new_contract_verified": false
+    }
+  ]
+}

@@ -1,0 +1,215 @@
+{
+  "labels": [
+    {
+      "query_id": "Q01",
+      "query": "总体执行率如何计算？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q02",
+      "query": "预算和执行额怎么算比例？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q03",
+      "query": "项目执行率能直接平均吗？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q04",
+      "query": "A和B合并后的执行率是多少？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q05",
+      "query": "退款应当加回还是扣减？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q06",
+      "query": "付款冲销是否保留负数？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q07",
+      "query": "预算额按什么对象汇总？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q08",
+      "query": "实际支出用什么单据计算？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q09",
+      "query": "执行率百分数保留几位？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q10",
+      "query": "预算执行口径何时生效？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q11",
+      "query": "预算执行口径何时结束？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q12",
+      "query": "A项目的预算和执行额是多少？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q13",
+      "query": "B项目的预算和执行额是多少？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q14",
+      "query": "为什么总执行率不是70%？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "development",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q15",
+      "query": "实际金额合计与预算合计如何求比值？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q16",
+      "query": "两个项目总体预算执行比例的定义是什么？",
+      "expected_documents": [
+        "synthetic-budget-policy"
+      ],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q17",
+      "query": "B项目延期发生在哪一天？",
+      "expected_documents": [
+        "synthetic-project-background"
+      ],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q18",
+      "query": "项目延期材料何时登记？",
+      "expected_documents": [
+        "synthetic-project-background"
+      ],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q19",
+      "query": "B项目付款延期材料已经核实了吗？",
+      "expected_documents": [
+        "synthetic-project-background"
+      ],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q20",
+      "query": "背景说明能不能修改正式公式？",
+      "expected_documents": [
+        "synthetic-project-background"
+      ],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q21",
+      "query": "B项目执行率低是否一定由采购延期导致？",
+      "expected_documents": [],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q22",
+      "query": "2027年的正式预算制度是什么？",
+      "expected_documents": [],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q23",
+      "query": "其他组织的预算执行额是多少？",
+      "expected_documents": [],
+      "split": "heldout",
+      "business_approved": false
+    },
+    {
+      "query_id": "Q24",
+      "query": "预算项目负责人的姓名是什么？",
+      "expected_documents": [],
+      "split": "heldout",
+      "business_approved": false
+    }
+  ],
+  "status": "not_run",
+  "positive_queries": 20,
+  "no_answer_queries": 4
+}

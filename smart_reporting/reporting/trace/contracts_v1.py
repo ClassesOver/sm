@@ -23,7 +23,9 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from ..business_knowledge.claim_models import KnowledgeReference, KnowledgeRelation
 from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
+from ..semantics.models import Identity, MetricVersionRef, Period
 
 TRACE_CONTRACT_VERSION = "1"
 
@@ -463,7 +465,7 @@ class TableCellBindingV1(StrictModel):
     row_key: str = Field(alias="rowKey", pattern=TRACE_STRUCTURE_KEY_PATTERN)
     column_key: str = Field(alias="columnKey", pattern=TRACE_STRUCTURE_KEY_PATTERN)
     value_selector: str | None = Field(default=None, alias="valueSelector", max_length=128,
-                                       pattern=r"^(?:total|periodValues\.\d+|currentTotal|baselineTotal|change|changeRate)$")
+                                       pattern=r"^(?:value|total|periodValues\.\d+|currentTotal|baselineTotal|change|changeRate)$")
     fact_refs: tuple[FactRefV1, ...] = Field(
         default=(), alias="factRefs", max_length=50
     )
@@ -604,26 +606,46 @@ class ClaimInterpretationV1(StrictModel):
     """模型对当前断言的解释，不是冻结事实或业务验收证明。"""
     claim_id: str = Field(alias='claimId', min_length=1, max_length=128)
     scope: tuple[ClaimScopeInterpretationV1, ...] = Field(default=(), max_length=20)
+    period: Period | None = None
+    claim_kind: Literal['fact', 'inference', 'recommendation', 'unknown'] = Field(default='unknown', alias='claimKind')
+    kind_evidence: tuple[str, ...] = Field(default=(), alias='kindEvidence', max_length=8)
+    metric_version: MetricVersionRef | None = Field(default=None, alias='metricVersion')
+    metric_evidence: tuple[str, ...] = Field(default=(), alias='metricEvidence', max_length=8)
     periods: tuple[str, ...] = Field(default=(), max_length=1200)
     period_evidence: tuple[str, ...] = Field(default=(), alias='periodEvidence', max_length=8)
     statistic: Literal['single_period', 'period_total', 'period_average', 'other', 'unknown'] = 'unknown'
     statistic_evidence: tuple[str, ...] = Field(default=(), alias='statisticEvidence', max_length=8)
     quantity: ClaimQuantityV1 | None = None
+    knowledge_relations: tuple[KnowledgeRelation, ...] = Field(default=(), alias='knowledgeRelations', max_length=10)
 
-    @field_validator('period_evidence', 'statistic_evidence')
+    @field_validator('period_evidence', 'statistic_evidence', 'kind_evidence', 'metric_evidence')
     @classmethod
     def validate_evidence(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return ClaimScopeInterpretationV1.validate_evidence(value)
 
 
 class ClaimSemanticReceiptV1(StrictModel):
-    method: Literal['model_context_interpretation_v1'] = 'model_context_interpretation_v1'
+    # 服务端只可对正式结果的固定投影登记后者，不用于模型自由叙述或业务签认。
+    method: Literal['model_context_interpretation_v1', 'registered_result_projection_v1'] = 'model_context_interpretation_v1'
     context_sha256: str = Field(alias='contextSha256', pattern=SHA256_PATTERN)
     interpretation: ClaimInterpretationV1
     includes_previous: bool = Field(default=False, alias='includesPrevious')
     includes_section: bool = Field(default=False, alias='includesSection')
     reviewed_context: str | None = Field(default=None, alias='reviewedContext', max_length=64000)
     quantity_binding_sha256: str | None = Field(default=None, alias='quantityBindingSha256', pattern=SHA256_PATTERN)
+    result_binding_sha256: str | None = Field(default=None, alias='resultBindingSha256', pattern=SHA256_PATTERN)
+    knowledge_references: tuple[KnowledgeReference, ...] = Field(default=(), alias='knowledgeReferences', max_length=10)
+
+
+class NarrativeReferenceV1(StrictModel):
+    """无数值锚点的正文声明；位置仅供首次装配使用。"""
+    offset: int = Field(ge=0)
+    claim_id: str = Field(alias='claimId', min_length=1, max_length=128)
+    basis_id: Identity = Field(alias='basisId')
+    analysis_id: str | None = Field(default=None, alias='analysisId', pattern=r'^analysis_[0-9]{3,6}$')
+    period: Period
+    statement_sha256: str = Field(alias='statementSha256', pattern=SHA256_PATTERN)
+    semantic_receipt: ClaimSemanticReceiptV1 | None = Field(default=None, alias='semanticReceipt')
 
 
 class NumberReferenceV1(StrictModel):
@@ -670,6 +692,7 @@ class SubjectBindingV1(StrictModel):
     )
     source_cell: TableOperandV1 | None = Field(default=None, alias="sourceCell")
     number_reference: NumberReferenceV1 | None = Field(default=None, alias="numberReference")
+    narrative_reference: NarrativeReferenceV1 | None = Field(default=None, alias='narrativeReference')
     #: 证据性质：数值事实与解释性推断分开（计划 3.3/F05）。
     evidence_kind: EvidenceKindV1 = Field(alias="evidenceKind", default="computed")
 
@@ -695,13 +718,18 @@ class SubjectBindingV1(StrictModel):
             self.subject_kind != "text_claim" or self.number_reference.claim_id != self.claim_id
         ):
             raise ValueError("具体数值引用必须属于同一个正文 claim")
+        if self.narrative_reference is not None and (
+            self.subject_kind != 'text_claim' or self.narrative_reference.claim_id != self.claim_id
+            or self.number_reference is not None or self.fact_refs or self.computation_id is not None
+        ):
+            raise ValueError('纯文字声明必须独立定位，不能冒充数值或计算事实')
         if self.source_cell is not None and (self.subject_kind != "table_cell" or self.source_cell.coefficient != "1"):
             raise ValueError("sourceCell 只能绑定原样表格单元格")
         if not self.fact_refs and self.computation_id is None and self.source_cell is None:
             if not (
                 self.subject_kind == "text_claim"
-                and self.number_reference is not None
-                and self.number_reference.table_derivation is not None
+                and (self.narrative_reference is not None or (self.number_reference is not None
+                and self.number_reference.table_derivation is not None))
             ):
                 raise ValueError("subject 必须至少绑定 fact 或计算记录")
         return self
@@ -715,6 +743,20 @@ class FactFileEntryV1(StrictModel):
         alias="fileResourceId", pattern=TRACE_RESOURCE_ID_PATTERN
     )
     content_kind: FactFileContentKindV1 = Field(alias="contentKind")
+
+
+class SectionKnowledgeDependencyV1(StrictModel):
+    """仅登记知识回执身份；历史检索片段不授予当前引用或结论支持权限。"""
+
+    section_code: str = Field(alias="sectionCode", min_length=1, max_length=128)
+    report_revision: str = Field(alias="reportRevision", min_length=1, max_length=128)
+    receipt_ids: tuple[str, ...] = Field(alias="receiptIds", min_length=1, max_length=2)
+
+    @model_validator(mode="after")
+    def unique_receipts(self):
+        if any(not item or len(item) > 128 for item in self.receipt_ids) or len(set(self.receipt_ids)) != len(self.receipt_ids):
+            raise ValueError("知识回执身份不能为空或重复")
+        return self
 
 
 class RevisionTraceIndexV1(StrictModel):
@@ -733,6 +775,7 @@ class RevisionTraceIndexV1(StrictModel):
     markdown_file_resource_id: str = Field(
         alias="markdownFileResourceId", pattern=TRACE_RESOURCE_ID_PATTERN
     )
+    report_basis_id: str = Field(alias="reportBasisId", min_length=1, max_length=128)
     profile_hash: str | None = Field(
         default=None, alias="profileHash", pattern=SHA256_PATTERN
     )
@@ -751,6 +794,10 @@ class RevisionTraceIndexV1(StrictModel):
     subject_bindings: tuple[SubjectBindingV1, ...] = Field(
         default=(), alias="subjectBindings", max_length=TRACE_INDEX_MAX_SUBJECT_BINDINGS
     )
+    knowledge_dependencies: tuple[SectionKnowledgeDependencyV1, ...] = Field(
+        default=(), alias="knowledgeDependencies", max_length=100)
+    knowledge_registration_status: Literal["registered", "unavailable"] = Field(
+        default="unavailable", alias="knowledgeRegistrationStatus")
     review_notices: tuple[ReviewNoticeV1, ...] | None = Field(default=None, alias="reviewNotices", max_length=2000)
     drilldown_metrics: tuple[DrilldownMetricV1, ...] = Field(
         default=(), alias="drilldownMetrics", max_length=1000
@@ -758,6 +805,12 @@ class RevisionTraceIndexV1(StrictModel):
 
     @model_validator(mode="after")
     def validate_index(self) -> RevisionTraceIndexV1:
+        sections = [(item.section_code, item.report_revision) for item in self.knowledge_dependencies]
+        receipts = [receipt for item in self.knowledge_dependencies for receipt in item.receipt_ids]
+        if len(set(sections)) != len(sections) or len(set(receipts)) != len(receipts):
+            raise ValueError("章节知识依赖或回执不能重复登记")
+        if self.knowledge_dependencies and self.knowledge_registration_status != "registered":
+            raise ValueError("知识依赖尚未登记，不能绑定回执")
         resource_ids = [f.resource_id for f in self.files]
         paths = [f.path for f in self.files]
         if len(resource_ids) != len(set(resource_ids)):
@@ -893,6 +946,8 @@ class RevisionTraceIndexV1(StrictModel):
                 source = files_by_id.get(subject.source_cell.file_resource_id)
                 if source is None or source.media_type != "application/json":
                     raise ValueError("sourceCell 必须引用已登记 JSON 文件")
+            if subject.narrative_reference is not None and subject.narrative_reference.basis_id != self.report_basis_id:
+                raise ValueError('纯文字声明必须绑定本报告依据')
             number = subject.number_reference
             if number is not None and number.table_derivation is not None:
                 if number.table_derivation.denominator_fact is not None:

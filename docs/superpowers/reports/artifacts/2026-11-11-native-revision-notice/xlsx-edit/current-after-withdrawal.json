@@ -1,0 +1,359 @@
+{
+  "businessKnowledge": {
+    "status": "unavailable",
+    "interpretationStatus": "unverified",
+    "sections": [
+      {
+        "sectionCode": "section_001",
+        "reportRevision": "initial",
+        "receiptIds": [
+          "knowledge-9a561f973a6e251b80978444e986fbd52c7bfb105055d522aa7ef1118402cc58",
+          "knowledge-0d54aa62f50a1b958f94a3f5cfb0ad4d01b4016bc7ea779ce4dcb91902ea19a0"
+        ],
+        "status": "unavailable",
+        "issueCodes": [
+          "evidence_inapplicable",
+          "evidence_revoked",
+          "knowledge_dependency_changed"
+        ]
+      }
+    ],
+    "issueCodes": []
+  },
+  "draftSha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e",
+  "quality": {
+    "status": "evaluated",
+    "inputSha256": "cf2c43517aa6f5e08cc9d14fc9c1a7a18b0874851b6f3903133609dc5eb71c0b",
+    "reportBasisId": "a61d17c2-4187-58af-b3d5-ed4ad9c0601c",
+    "claimSupport": [
+      {
+        "subjectId": "sub-37895dee42af949f",
+        "kind": "recommendation",
+        "factRefs": [],
+        "evidenceRefs": [],
+        "supportStatus": "unverified"
+      }
+    ],
+    "registeredQuestionCoverage": [
+      {
+        "questionId": "q-rate",
+        "status": "partial",
+        "findingIds": [],
+        "subjectIds": [],
+        "issueCodes": [
+          "data_readiness_unknown",
+          "question_support_unverified",
+          "question_completion_mapping_unavailable"
+        ]
+      }
+    ],
+    "allKeyFactsEvaluated": false,
+    "questionCoverage": {
+      "required": 1,
+      "evaluated": 0,
+      "answered": 0,
+      "effectiveAnswerRate": null,
+      "evaluationStatus": "not_fully_evaluated"
+    },
+    "answerReview": null,
+    "registeredManagementOverview": {
+      "reportBasisId": "a61d17c2-4187-58af-b3d5-ed4ad9c0601c",
+      "inputSha256": "cf2c43517aa6f5e08cc9d14fc9c1a7a18b0874851b6f3903133609dc5eb71c0b",
+      "markdownSha256": "0f14d579c89b9c7fcf66433d9ce7a9c41d2c679248c63f6f5a0b918991110a5e",
+      "status": "evaluated",
+      "rows": [
+        {
+          "questionId": "q-rate",
+          "question": "执行率及当期背景是什么？",
+          "status": "partial",
+          "facts": [],
+          "issueCodes": [
+            "data_readiness_unknown",
+            "question_support_unverified",
+            "question_completion_mapping_unavailable"
+          ]
+        }
+      ],
+      "issueCodes": []
+    },
+    "managementOverview": null,
+    "issues": [
+      {
+        "code": "registered_claim_support_unknown",
+        "subjectId": "sub-37895dee42af949f",
+        "severity": "warning",
+        "checker": "deterministic",
+        "reasons": [
+          "business_evidence_unavailable",
+          "business_explanation_unverified"
+        ],
+        "statementReview": null
+      }
+    ],
+    "tableChecks": {
+      "table-analysis_001-registered-0-0-0": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      },
+      "table-analysis_001-registered-0-1-0": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      },
+      "table-analysis_001-registered-0-2-0": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      }
+    },
+    "semanticChecks": {},
+    "chartChecks": {},
+    "warningLedger": {
+      "version": "warning-ledger/1",
+      "groupingVersion": "fact-reference/2",
+      "qualityInputSha256": "cf2c43517aa6f5e08cc9d14fc9c1a7a18b0874851b6f3903133609dc5eb71c0b",
+      "originalIssueCount": 1,
+      "groupCount": 1,
+      "groups": [
+        {
+          "groupId": "wg-6724b62f2818056c5561",
+          "targetKind": "registered_claim_support_unknown",
+          "subjectIds": [
+            "sub-37895dee42af949f"
+          ],
+          "factIds": [],
+          "factRefs": [],
+          "issueIndices": [
+            0
+          ],
+          "issueCodes": [
+            "registered_claim_support_unknown"
+          ],
+          "reasons": [
+            "business_evidence_unavailable",
+            "business_explanation_unverified"
+          ],
+          "assessments": [
+            "unclassified"
+          ],
+          "reviewIds": [],
+          "requiredActions": [
+            "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+          ],
+          "repairStages": [
+            "review"
+          ],
+          "adjudication": "not_adjudicated"
+        }
+      ],
+      "businessAcceptanceEvaluated": false
+    }
+  },
+  "revisionImpactIssues": [],
+  "revisionImpacts": [],
+  "sourceIssues": [],
+  "warnings": [],
+  "subjects": [
+    {
+      "subjectId": "sub-37895dee42af949f",
+      "claimId": "narr-c2e8609554afc8ba5d0e9058",
+      "sectionId": "section_001",
+      "status": "valid",
+      "sourceStatus": "unknown",
+      "bindingStatus": "bound",
+      "supportStatus": "unknown",
+      "checkStatus": "completed",
+      "sourceIssues": [],
+      "factValue": null,
+      "computation": null,
+      "restoreText": null,
+      "warnings": [],
+      "semanticCheck": {
+        "method": "model_context_interpretation_v1",
+        "status": "interpreted",
+        "interpretation": {
+          "claimId": "narr-c2e8609554afc8ba5d0e9058",
+          "scope": [],
+          "period": null,
+          "claimKind": "recommendation",
+          "kindEvidence": [
+            "建议"
+          ],
+          "metricVersion": {
+            "metricId": "rate",
+            "revision": 1
+          },
+          "metricEvidence": [],
+          "periods": [],
+          "periodEvidence": [],
+          "statistic": "unknown",
+          "statisticEvidence": [],
+          "quantity": null,
+          "knowledgeRelations": [
+            {
+              "evidenceId": "evidence-5f95b4c588083e69a78f74cd39f0303fe71fdd54c88869c01729cca7e4263014",
+              "relationship": "supports",
+              "explanationType": "recommendation",
+              "claimEvidence": [
+                "建议核对采购付款安排，解释本期预算执行率时区分支付时点与计算公式"
+              ],
+              "sourceEvidence": [],
+              "sourceSpans": [
+                {
+                  "start": 0,
+                  "end": 33,
+                  "sha256": "8c8eee8bfe4363c671736d634ebfdfc630f35eb5fc8ecafd21e1bc12389b93c0"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "editStatus": null
+    }
+  ],
+  "summary": {
+    "valid": 1,
+    "stale": 0,
+    "unbound": 0
+  },
+  "tables": [
+    {
+      "tableId": "table-analysis_001-registered-0-0-0",
+      "cells": {
+        "valid": 1,
+        "stale": 0,
+        "unbound": 0
+      },
+      "copiedCells": [],
+      "insertedRows": 0,
+      "locations": [
+        {
+          "rowKey": "result:3df44b1cb1c97d9468a5d2a1d317f19b0644994fa0126c850120302a50b12ffd",
+          "columnKey": "计算结果（项目）",
+          "rowIndex": 0,
+          "columnIndex": 1,
+          "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+          "text": "1.40000000",
+          "status": "valid",
+          "factValue": "1.40000000",
+          "unit": "项目",
+          "periods": [],
+          "computation": "registered",
+          "formula": null,
+          "formulaText": null,
+          "scope": {},
+          "datasetIds": [
+            "dataset-fa8812aed54d025c2fac40b8e4110d55"
+          ]
+        }
+      ],
+      "datasetIds": [
+        "dataset-fa8812aed54d025c2fac40b8e4110d55"
+      ],
+      "methods": [],
+      "dataCheck": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      }
+    },
+    {
+      "tableId": "table-analysis_001-registered-0-1-0",
+      "cells": {
+        "valid": 1,
+        "stale": 0,
+        "unbound": 0
+      },
+      "copiedCells": [],
+      "insertedRows": 0,
+      "locations": [
+        {
+          "rowKey": "result:ebb3d302197b069a8b9a05a83edc277a4867257f3fb286b69be16938dcfcfccd",
+          "columnKey": "计算结果（项目）",
+          "rowIndex": 0,
+          "columnIndex": 1,
+          "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+          "text": "2",
+          "status": "valid",
+          "factValue": "2",
+          "unit": "项目",
+          "periods": [],
+          "computation": "registered",
+          "formula": null,
+          "formulaText": null,
+          "scope": {},
+          "datasetIds": [
+            "dataset-da6cbd49ec5e61e3d5596e41b695e4c1"
+          ]
+        }
+      ],
+      "datasetIds": [
+        "dataset-da6cbd49ec5e61e3d5596e41b695e4c1"
+      ],
+      "methods": [],
+      "dataCheck": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      }
+    },
+    {
+      "tableId": "table-analysis_001-registered-0-2-0",
+      "cells": {
+        "valid": 1,
+        "stale": 0,
+        "unbound": 0
+      },
+      "copiedCells": [],
+      "insertedRows": 0,
+      "locations": [
+        {
+          "rowKey": "result:895bc24dc578f457591cdc78bb36470f5178d39579f7f65c123cf302ff6063ca",
+          "columnKey": "计算结果（%）",
+          "rowIndex": 0,
+          "columnIndex": 1,
+          "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+          "text": "70.00000000",
+          "status": "valid",
+          "factValue": "70.00000000",
+          "unit": "%",
+          "periods": [],
+          "computation": "registered",
+          "formula": null,
+          "formulaText": null,
+          "scope": {},
+          "datasetIds": [
+            "dataset-fa8812aed54d025c2fac40b8e4110d55",
+            "dataset-da6cbd49ec5e61e3d5596e41b695e4c1"
+          ]
+        }
+      ],
+      "datasetIds": [
+        "dataset-fa8812aed54d025c2fac40b8e4110d55",
+        "dataset-da6cbd49ec5e61e3d5596e41b695e4c1"
+      ],
+      "methods": [],
+      "dataCheck": {
+        "status": "verified",
+        "scope": "frozen_cells",
+        "reasons": [],
+        "checkedCells": 1
+      }
+    }
+  ],
+  "tableSummary": {
+    "valid": 3,
+    "stale": 0,
+    "unbound": 0,
+    "insertedRows": 0,
+    "copiedCells": 0
+  },
+  "charts": []
+}

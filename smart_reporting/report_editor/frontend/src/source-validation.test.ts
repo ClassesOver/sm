@@ -450,3 +450,20 @@ describe('unevaluated data checks', () => {
     expect(checkNeedsReview({ status: 'conflicting', reasons: ['chart_semantics_unregistered'] })).toBe(true)
   })
 })
+
+describe('business knowledge authorization summary', () => {
+  it('keeps numerical traceability separate from knowledge availability and explanation support', () => {
+    const result = validation('draft')
+    result.summary.valid = 1
+    result.businessKnowledge = { status: 'available', interpretationStatus: 'unverified', issueCodes: [],
+      sections: [{ sectionCode: 'section_001', reportRevision: '1', receiptIds: ['knowledge-rules'], status: 'available', issueCodes: [] }] }
+    expect(sourceCoverageSummary(result, '').text).toContain('知识材料可引用，解释支持待核验')
+    result.businessKnowledge.sections[0]!.status = 'unavailable'
+    result.businessKnowledge.sections[0]!.issueCodes = ['evidence_revoked']
+    result.businessKnowledge.status = 'unavailable'
+    const current = sourceCoverageSummary(result, '')
+    expect(current.text).toContain('可溯源 1/1')
+    expect(current.text).toContain('知识依据待复核 1 节')
+    expect(current.state).toBe('stale')
+  })
+})

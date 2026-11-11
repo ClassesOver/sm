@@ -26,7 +26,7 @@ from .markdown import (
 from .overview import insert_management_overview
 from .pdf import _pdf_markdown
 
-PROJECTION_VERSION = "report-markdown/5"
+PROJECTION_VERSION = "report-markdown/6"
 
 
 def _sha256(raw: bytes) -> str:
@@ -64,6 +64,11 @@ class RenderProjection:
     context_sha256: str
     stages: tuple[ProjectionStage, ...]
     _overview_check_json: bytes = b"null"
+    _claim_support_check_json: bytes = b"null"
+
+    @property
+    def claim_support_check(self):
+        return json.loads(self._claim_support_check_json)
 
     @property
     def overview_check(self):
@@ -100,6 +105,7 @@ class RenderProjection:
             # Source assertion support cannot be inherited by a changed sentence.
             "semanticSupportReused": False,
             "overviewCheck": self.overview_check,
+            "claimSupportCheck": self.claim_support_check,
         }
         return {**value, "projectionSha256": _sha256(_json(value))}
 
@@ -112,6 +118,7 @@ def build_render_projection(
     include_sources: bool = False,
     trace_sources: Any = None,
     management_overview: Any = None,
+    claim_support: Any = None,
 ) -> RenderProjection:
     """Run the complete text pipeline once, for both output formats.
 
@@ -129,6 +136,10 @@ def build_render_projection(
         overview_context = json.loads(_json(management_overview))
     except Exception:
         overview_context = {"invalid": "overview_payload_invalid"}
+    try:
+        claim_context = json.loads(_json(claim_support))
+    except Exception:
+        claim_context = {'invalid': 'claim_support_payload_invalid'}
     context_raw = _json(
         {
             "sections": sections,
@@ -136,6 +147,7 @@ def build_render_projection(
             "includeSources": include_sources,
             "traceSources": trace_sources,
             "managementOverview": overview_context,
+            "claimSupport": claim_context,
         }
     )
     context = json.loads(context_raw)
@@ -149,6 +161,16 @@ def build_render_projection(
 
     apply("relocate_server_tables/3", relocate_server_tables)
     apply("compact_single_column_tables/1", compact_single_column_tables)
+    claim_support_check = None
+    if claim_support is not None:
+        from .claim_support import insert_claim_support
+
+        def explanation_labels(text):
+            nonlocal claim_support_check
+            rendered, claim_support_check = insert_claim_support(text, context['claimSupport'], _sha256(raw))
+            return rendered
+
+        apply('claim_support/1', explanation_labels)
     overview_check = None
     if management_overview is None:
         apply("insert_executive_summary/2", lambda text: insert_executive_summary(text, context["sections"]))
@@ -184,6 +206,7 @@ def build_render_projection(
         context_sha256=_sha256(context_raw),
         stages=tuple(stages),
         _overview_check_json=_json(overview_check),
+        _claim_support_check_json=_json(claim_support_check),
     )
 
 
@@ -196,6 +219,7 @@ def verify_render_projection(
     include_sources: bool = False,
     trace_sources: Any = None,
     management_overview: Any = None,
+    claim_support: Any = None,
 ) -> dict[str, str]:
     """Return a soft, bounded result; missing/legacy/invalid receipts never pass."""
     if not isinstance(receipt, Mapping):
@@ -214,6 +238,7 @@ def verify_render_projection(
             include_sources=include_sources,
             trace_sources=trace_sources,
             management_overview=management_overview,
+            claim_support=claim_support,
         ).receipt
         if receipt == current:
             return {

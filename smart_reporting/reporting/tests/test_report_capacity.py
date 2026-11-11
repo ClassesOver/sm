@@ -207,7 +207,7 @@ class _CheckpointRuntime(RuntimeAnalysisMixin, RuntimeSectionsMixin):
         return self.state
 
     def _envelope(self, context):
-        return SimpleNamespace(report_goal="经营分析")
+        return SimpleNamespace(report_goal="经营分析", delivery_format="document")
 
     async def _get(self, run_id):
         return self.durable
