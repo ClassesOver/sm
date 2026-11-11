@@ -1,8 +1,8 @@
 [
   {
     "path": "README.md",
-    "size": 1960,
-    "sha256": "31bb464c5136f90351d43c65f2ef39289f64f4154a626a80537ff633cf5d2953"
+    "size": 2108,
+    "sha256": "a54b457684ba5acc65c044c58f124f8a0fc6ab20e18c73b8ad3ee3240f817292"
   },
   {
     "path": "environment.json",
@@ -10,64 +10,64 @@
     "sha256": "8fa5a53912b77cc94c0dbf1470285005aaae12ee697b0729bfa3dbca270eb80b"
   },
   {
-    "path": "logs/formal-source-basis-green.log",
-    "size": 605,
-    "sha256": "b117ab1fa6f8f60527558819b22e4b20417900cff004f4759084f9689ec65d6a"
+    "path": "logs/formal-source-basis-green.log.gz",
+    "size": 287,
+    "sha256": "237b3ecaf2014ecbac3b6140d6a3e802293d828dd20b52c09170b2c64692623e"
   },
   {
-    "path": "logs/formal-source-basis-red.log",
-    "size": 4334,
-    "sha256": "b9ead311c8d46170c4b6dcf038b91181dca524da7b5f65fe065c1ee3b376e6b0"
+    "path": "logs/formal-source-basis-red.log.gz",
+    "size": 1769,
+    "sha256": "071a32e03b8e3856fdaf1e666debbb589e8be1d71cb839c5314242648408b627"
   },
   {
-    "path": "logs/formal-source-explanations-red-2.log",
-    "size": 4680,
-    "sha256": "260ceb7b786f38d92c2c4cd21552be4673a2fc3f6916e4f96ec5c5ab4313fb8b"
+    "path": "logs/formal-source-explanations-red-2.log.gz",
+    "size": 1669,
+    "sha256": "3b50dd5ee37f01f61e6336aee15a59d3a78958975005f2541e6e4d295dc19181"
   },
   {
-    "path": "logs/formal-source-final-focused.log",
-    "size": 620,
-    "sha256": "8a1fac0c8e9d6a477f0112ac1093bb0d34e0b7643bca1b88c0a950c3abe9d48c"
+    "path": "logs/formal-source-final-focused.log.gz",
+    "size": 298,
+    "sha256": "144b94f24c915100e4f06a1daa870fc9143d2651e49ed6b5dda9abb7dea23849"
   },
   {
-    "path": "logs/formal-source-http-and-render.log",
-    "size": 62676,
-    "sha256": "f1eb229f1597e611ad000379d8caf3225ec547999107b3524c7f37c2befd58e0"
+    "path": "logs/formal-source-http-and-render.log.gz",
+    "size": 7162,
+    "sha256": "82a20077315f18393a75585e24e8d615ddc79b0988282720a1fbb374a8477dad"
   },
   {
-    "path": "logs/formal-source-http-fault-3.log",
-    "size": 62952,
-    "sha256": "db7f3d473f4a5a718fc60f624f7fa80c673622286b20a1d416bb06efa27d6a7c"
+    "path": "logs/formal-source-http-fault-3.log.gz",
+    "size": 7727,
+    "sha256": "1ef4440ec9dcd1318c2f7d974ab62514e4856b068a1c165e25fb2c1651e6418a"
   },
   {
-    "path": "logs/formal-source-http-fault-4.log",
-    "size": 605,
-    "sha256": "b180cd5e7cd7f28f6268194256ef37c6f5b67193f78c4f6a703ecce921eb21cb"
+    "path": "logs/formal-source-http-fault-4.log.gz",
+    "size": 288,
+    "sha256": "cd9dd2740e99749a0c24fe361e5f9ab7b709df5c0cee59d2efa6febc6f353951"
   },
   {
-    "path": "logs/formal-source-long-green.log",
-    "size": 604,
-    "sha256": "6e3d8770a42fab7c305a6a736bd292a7c1313509652376e5db375d6bba7dcc68"
+    "path": "logs/formal-source-long-green.log.gz",
+    "size": 289,
+    "sha256": "0b5b451ee654cc624bb09c13f680024356493ac2ef0942f3ffdf89f079a6026d"
   },
   {
-    "path": "logs/formal-source-long-red-2.log",
-    "size": 10790,
-    "sha256": "ea0b45ec01688e9d29253d1c16737b5a7f3b6498fcf66eeac0eaa4811cbdd2b6"
+    "path": "logs/formal-source-long-red-2.log.gz",
+    "size": 2649,
+    "sha256": "450c4b0096a11525be80fc3bee90d11646fdd46e31eb462487e6affc6afc30da"
   },
   {
-    "path": "logs/formal-source-nonblocking.log",
-    "size": 2190,
-    "sha256": "e02932d3477e8197b450e3b1f8fae0a8725c31a254834fe5b16dc114cf38d2b9"
+    "path": "logs/formal-source-nonblocking.log.gz",
+    "size": 679,
+    "sha256": "c5126e6a027324b85424c879cf33a0b6743bc63bb926577e13c68cf62415f18e"
   },
   {
-    "path": "logs/formal-source-related.log",
-    "size": 686,
-    "sha256": "29dfe3dfae28888bb800364164f59777111764f36a53ea3dfa937eba8c463666"
+    "path": "logs/formal-source-related.log.gz",
+    "size": 298,
+    "sha256": "6902822b7b670d343720428ab46636143653d2e11ffac61ec130c6077906e306"
   },
   {
-    "path": "logs/formal-source-static.log",
-    "size": 19,
-    "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    "path": "logs/formal-source-static.log.gz",
+    "size": 39,
+    "sha256": "47f394a1497b1873bc6e6d6f9bb92aa51b990821f1ddd7770a933ffd29c456cd"
   },
   {
     "path": "rendered/contact.png",
@@ -216,8 +216,8 @@
   },
   {
     "path": "verify.py",
-    "size": 2406,
-    "sha256": "88cd18fde1d182dbdb08acbd55374ac8fca7db01cc956fc5e1ceedc82ee641eb"
+    "size": 2446,
+    "sha256": "73802103fb737b8fc928ded43bd56014777069d31f691d41335453d2b7fe751b"
   },
   {
     "path": "visual-review.json",

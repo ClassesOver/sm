@@ -1,5 +1,6 @@
 """离线检查归档字节身份与正式来源附录，不调用数据库或模型。"""
 
+import gzip
 import hashlib
 import json
 import re
@@ -52,6 +53,6 @@ for name, expected in [('formal-source-http-fault-4.log', '1 passed'),
     ('formal-source-related.log', '80 passed'),
     ('formal-source-nonblocking.log', '76 passed, 1 skipped'),
     ('formal-source-long-green.log', '5 passed')]:
-    assert expected in (root / 'logs' / name).read_text(encoding='utf-8')
+    assert expected in gzip.decompress((root / 'logs' / (name + '.gz')).read_bytes()).decode('utf-8')
 assert read(root / 'environment.json')['businessAcceptance'] == 'not_performed'
 print(f'归档 {len(manifest)} 文件、登记源与渲染身份、两格式附录及故障日志核对通过；业务验收未执行。')
