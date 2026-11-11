@@ -1,0 +1,9 @@
+.workbook-queries-dialog{width:min(620px,calc(100vw - 48px));max-height:80vh;overflow:auto}
+.workbook-queries-dialog h2{font-size:18px;margin:0 0 16px}
+.workbook-queries-dialog ul{list-style:none;padding:0;margin:12px 0}
+.workbook-queries-dialog li+li{margin-top:8px}
+.workbook-queries-dialog li button{display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;padding:12px;border:1px solid var(--color-border,#d1d5db);border-radius:6px;background:var(--color-bg,#fff);color:inherit;white-space:normal;overflow-wrap:anywhere}
+.workbook-queries-dialog li button:disabled{opacity:.72;cursor:default}
+.workbook-queries-dialog li span,.workbook-queries-dialog [data-query-note]{font-size:12px;color:var(--color-text-muted,#64748b)}
+.workbook-queries-dialog [role=alert]{color:var(--color-danger,#b42318)}
+.workbook-queries-dialog footer{display:flex;justify-content:flex-end}

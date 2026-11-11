@@ -1,0 +1,4 @@
+/* 固定源的原生 formula-bar row selector；保留节点/编辑器实例，由 flex workbench 重排网格。 */
+.workbook-formula-bar-hidden [data-u-comp='formula-bar'] {
+  display: none;
+}

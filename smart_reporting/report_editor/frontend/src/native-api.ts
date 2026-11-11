@@ -96,3 +96,8 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     aiCancel: async (id: string): Promise<NativeAIJob> => (await request(`ai/${encodeURIComponent(id)}/cancel`, {})).json(),
   }
 }
+
+export interface NativeOfficeReadContext {
+  operations: NativeOperation[];
+  selection: null | { sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number } | { slideIndex: number; elementId: string }[];
+}

@@ -7,19 +7,16 @@
 ///
 /// Also supports the layout-edit (relayout) path: regenerating the
 /// pivotTableDefinition and pivotCacheDefinition from a full PivotAddition
-/// layout while keeping the original name, cacheId, and records rel id (the
-/// emptied records part is rebuilt by Excel via refreshOnLoad).
+/// layout while keeping the original name, cacheId, and records rel id.
+/// The existing rebuild path updates records and visible cells immediately.
 
 import { columnIndex, columnLabel } from './cell-address'
 import {
-  buildCacheDefinitionXml,
-  buildPivotTableXml,
   pivotHostSheet,
   readPivotState,
   rebuildPivotOutput,
   type PivotAddition,
 } from './pivot-add'
-import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { assertSafePivotPackage } from './pivot-source'
 import { assemblePackage, createBufferEntrySource } from './zip'
 
@@ -29,6 +26,7 @@ export class PivotExpandError extends Error {}
 export interface PivotRefreshUpdate {
   /// xl/pivotCache/pivotCacheDefinitionN.xml
   readonly cachePath: string
+  readonly tablePath?: string | undefined
   /// xl/worksheets/sheetN.xml — the sheet hosting the pivot output; required
   /// whenever the update grows the output area (the conflict check reads it).
   readonly worksheetPath?: string | undefined
@@ -37,8 +35,8 @@ export interface PivotRefreshUpdate {
   readonly newOutputRef: string
   /// Layout edit: the full edited layout in the pivot-addition shape. The
   /// definitions are regenerated from it — the original name, cacheId, and
-  /// records rel id stay; the emptied records part is rebuilt by Excel via
-  /// refreshOnLoad. name/location are taken from this update, not the payload,
+  /// records rel id stay; records and visible output are rebuilt immediately.
+  /// name/location are taken from this update, not the payload,
   /// and the host worksheet's name is resolved automatically.
   readonly relayout?: Omit<PivotAddition, 'worksheetSheetName' | 'name' | 'location'> | undefined
 }
@@ -99,6 +97,7 @@ function unescapeAttribute(input: string): string {
 
 /// Minimal relative-path resolver: walk ".." segments from the base directory.
 function resolveRelativePath(baseDir: string, target: string): string {
+  if (target.startsWith('/')) return target.slice(1)
   const segments = baseDir.split('/')
   for (const part of target.split('/')) {
     if (part === '..') segments.pop()
@@ -236,8 +235,9 @@ export async function applyPivotLayoutExpansions(
     readonly requested?: PivotAddition
   }> = []
   for (const update of updates) {
-    let pivotTablePath = await findPivotTablePathForCache(source, update.cachePath)
+    let pivotTablePath = update.tablePath ?? await findPivotTablePathForCache(source, update.cachePath)
     if (!pivotTablePath) {
+      if (update.relayout !== undefined) throw new PivotExpandError('Pivot layout refresh needs a resolvable pivot table/cache relationship.')
       // Cache not yet linked to a table (bare cache from an old save) — skip.
       continue
     }
@@ -293,8 +293,9 @@ export async function applyPivotLayoutExpansions(
     }
 
     const persisted = readPivotState(pivotTableXml)
-    if (persisted) {
+    if (persisted || update.relayout !== undefined) {
       if (update.relayout === undefined) {
+        if (!persisted) continue
         rebuilds.push({
           tablePath: pivotTablePath,
           cachePath: update.cachePath,
@@ -321,7 +322,6 @@ export async function applyPivotLayoutExpansions(
       replaced.set(pivotTablePath, pivotTableXml)
       continue
     }
-    await applyPivotRelayout(source, replaced, update, pivotTablePath, pivotTableXml)
   }
   if (replaced.size === 0 && rebuilds.length === 0) return sourceBytes
   let result = replaced.size === 0 ? sourceBytes : (await assemblePackage(sourceBytes, {
@@ -393,94 +393,4 @@ export async function expandPivotOutputs(
     })
   }
   return applyPivotLayoutExpansions(sourceBytes, updates)
-}
-
-/// Layout edit: regenerate the pivotTableDefinition and pivotCacheDefinition
-/// from the edited layout, keeping the original name, cacheId, and records
-/// rel id. The records part empties (recordCount 0) — Excel rebuilds it from
-/// the source on open via refreshOnLoad.
-async function applyPivotRelayout(
-  source: Awaited<ReturnType<typeof createBufferEntrySource>>,
-  replaced: Map<string, string>,
-  update: PivotRefreshUpdate,
-  pivotTablePath: string,
-  pivotTableXml: string,
-): Promise<void> {
-  const relayout = update.relayout
-  if (relayout === undefined) return
-  const name = unescapeAttribute(
-    pivotTableXml.match(/<pivotTableDefinition\b[^>]*?\bname="([^"]*)"/)?.[1] ?? '',
-  )
-  const cacheId = Number(pivotTableXml.match(/\bcacheId="(\d+)"/)?.[1])
-  if (!name || !Number.isInteger(cacheId)) {
-    throw new PivotExpandError('The pivot table definition is missing its name or cacheId.')
-  }
-  // Resolve the host worksheet's name from workbook.xml so the regenerated
-  // definitions keep the right sheet anchors.
-  let worksheetSheetName: string | undefined
-  for (const relsPath of await source.paths()) {
-    if (!/^xl\/worksheets\/_rels\/[^/]+\.rels$/.test(relsPath)) continue
-    const relsXml = await source.readText(relsPath)
-    const target =
-      relsXml.match(/Target="([^"]+)"[^>]*Type="[^"]*pivotTable[^"]*"/)?.[1] ??
-      relsXml.match(/Type="[^"]*pivotTable[^"]*"[^>]*Target="([^"]+)"/)?.[1]
-    if (!target) continue
-    if (resolveRelativePath('xl/worksheets', target) !== pivotTablePath) continue
-    const sheetPart = relsPath.replace('/_rels/', '/').replace(/\.rels$/, '')
-    const workbookXml = await source.readText('xl/workbook.xml')
-    for (const element of parseSheetElements(workbookXml)) {
-      if (element.relationshipId === undefined) continue
-      try {
-        if ((await resolveWorksheetPath(source, element.relationshipId)) === sheetPart) {
-          worksheetSheetName = element.name
-          break
-        }
-      } catch {
-        // broken rel on some other sheet: keep scanning
-      }
-    }
-    break
-  }
-  const addition: PivotAddition = {
-    ...relayout,
-    name,
-    ...(worksheetSheetName !== undefined
-      ? { worksheetSheetName }
-      : { worksheetSheetName: relayout.sourceSheetName ?? '' }),
-    location: refToArea(update.newOutputRef),
-  }
-  replaced.set(pivotTablePath, buildPivotTableXml(cacheId, addition))
-
-  const cacheXml = await source.readText(update.cachePath)
-  const recordsRelId = cacheXml.match(/<pivotCacheDefinition\b[^>]*?\br:id="([^"]+)"/)?.[1]
-  if (!recordsRelId) {
-    throw new PivotExpandError('The pivot cache definition is missing its records relationship.')
-  }
-  const rebuiltCache = buildCacheDefinitionXml(recordsRelId, addition, 0)
-    .replace('<pivotCacheDefinition', '<pivotCacheDefinition refreshOnLoad="1"')
-  replaced.set(update.cachePath, rebuiltCache)
-
-  // Empty the records part (found through the cache's rels); Excel rebuilds
-  // it from the source on open.
-  const cacheRelsPath = update.cachePath.replace(/\/([^/]+)$/, '/_rels/$1.rels')
-  if (await source.has(cacheRelsPath)) {
-    const relsXml = await source.readText(cacheRelsPath)
-    const target =
-      relsXml.match(/Target="([^"]+)"[^>]*Type="[^"]*pivotCacheRecords[^"]*"/)?.[1] ??
-      relsXml.match(/Type="[^"]*pivotCacheRecords[^"]*"[^>]*Target="([^"]+)"/)?.[1]
-    if (target) {
-      const recordsPath = resolveRelativePath(
-        update.cachePath.replace(/\/[^/]+$/, ''),
-        target,
-      )
-      replaced.set(
-        recordsPath,
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
-          '<pivotCacheRecords ' +
-          'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
-          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
-          'count="0"/>',
-      )
-    }
-  }
 }

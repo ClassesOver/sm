@@ -1,0 +1,66 @@
+{
+  "sourceCommit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": {
+    "NotoSansCJKsc-Regular-subset.woff2": {
+      "source": "apps/docs/src/renderer/fonts/NotoSansCJKsc-Regular-subset.woff2",
+      "sha256": "c3ed44a467b3a42ad06bd1d95147f169753b6675d244a63c1f1101899de48c42"
+    },
+    "NotoSerifCJKsc-Regular-subset.woff2": {
+      "source": "apps/docs/src/renderer/fonts/NotoSerifCJKsc-Regular-subset.woff2",
+      "sha256": "8805e730c330fd4940eefa8618b57abc196a0bd1dfe393b7492b88aad0130f37"
+    },
+    "LICENSE-OFL.txt": {
+      "source": "apps/docs/src/renderer/fonts/LICENSE-OFL.txt",
+      "sha256": "992656df2b40e317ea54b4d3b7ca47a48eec11c2eaaf46bd74effd600714841a"
+    },
+    "fonts.css": {
+      "source": "apps/docs/src/renderer/fonts/fonts.css",
+      "extraction": "four unchanged source SC/GO rules, plus three local OFL webfont rules",
+      "sha256": "ae1b7bf01f069fb5050a14cd89d652547571365991344bed744d39c3d5f1e8c5"
+    },
+    "metrics.json": {
+      "source": "OS/2, hhea and head tables of the five bundled WOFF2 files",
+      "extraction": "fontTools.ttLib.TTFont; values copied without normalization; per-face source SHA256 retained in metrics.json",
+      "sha256": "896e2340289ffcb278fbfe4d6f45789c02c1406e6841e29fb39c1258c6712bfc"
+    },
+    "LXGWWenKai-Regular-subset.woff2": {
+      "source": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/8afc526476c2811e2e90e765444e7a6e4a7ecf77/fonts/TTF/LXGWWenKai-Regular.ttf",
+      "sourceCommit": "8afc526476c2811e2e90e765444e7a6e4a7ecf77",
+      "originalSha256": "2d73eea94ad808999d90c0000c239a84a33b09d4bc6ab6c5b8bbf1eda8a7fc8b",
+      "sha256": "f2f1da1a1807a3128b6fcbfe9b7aa0e6a93bd64f17f3b89e32d4ae893dc6a299",
+      "extraction": "fontTools subset; GB2312 and U+0020-00FF; WOFF2; original family names retained",
+      "codepoints": 7619,
+      "license": "LXGWWenKai-Regular-OFL.txt"
+    },
+    "LXGWWenKai-Regular-OFL.txt": {
+      "source": "https://raw.githubusercontent.com/lxgw/LxgwWenKai/8afc526476c2811e2e90e765444e7a6e4a7ecf77/OFL.txt",
+      "sha256": "1a25e35da1031c6c3436fde545bb9cb5aca954e9873afe510c834b8b79bd21a0"
+    },
+    "MaShanZheng-Regular-subset.woff2": {
+      "source": "https://raw.githubusercontent.com/google/fonts/5bb28733cec313b63fbd415b574b5ae35c8aa8b8/ofl/mashanzheng/MaShanZheng-Regular.ttf",
+      "sourceCommit": "5bb28733cec313b63fbd415b574b5ae35c8aa8b8",
+      "originalSha256": "6d2546bb189c732a8ca29af9e22457b152387d158aa459e4ac2ce1e51788b7fb",
+      "sha256": "ff506082db01d93392fa1066529cfd50a07e31dcff1da076557fa9e395885da0",
+      "extraction": "fontTools subset; GB2312 and U+0020-00FF; WOFF2; original family names retained",
+      "codepoints": 6995,
+      "license": "MaShanZheng-Regular-OFL.txt"
+    },
+    "MaShanZheng-Regular-OFL.txt": {
+      "source": "https://raw.githubusercontent.com/google/fonts/5bb28733cec313b63fbd415b574b5ae35c8aa8b8/ofl/mashanzheng/OFL.txt",
+      "sha256": "d7bdb1cee215b689e23c2f95672a6084c790542170648267a55114103d756a08"
+    },
+    "ZCOOLXiaoWei-Regular-subset.woff2": {
+      "source": "https://raw.githubusercontent.com/google/fonts/5bb28733cec313b63fbd415b574b5ae35c8aa8b8/ofl/zcoolxiaowei/ZCOOLXiaoWei-Regular.ttf",
+      "sourceCommit": "5bb28733cec313b63fbd415b574b5ae35c8aa8b8",
+      "originalSha256": "a42b620140f493db42f741351dfbf343c0936d58588ee8004b8b2a218d997ff1",
+      "sha256": "dadcaefb4c7107dacd47c81dfd8f18dcb152a567eac5219b3315a4840d848534",
+      "extraction": "fontTools subset; GB2312 and U+0020-00FF; WOFF2; original family names retained",
+      "codepoints": 6995,
+      "license": "ZCOOLXiaoWei-Regular-OFL.txt"
+    },
+    "ZCOOLXiaoWei-Regular-OFL.txt": {
+      "source": "https://raw.githubusercontent.com/google/fonts/5bb28733cec313b63fbd415b574b5ae35c8aa8b8/ofl/zcoolxiaowei/OFL.txt",
+      "sha256": "a094514ca57cf8f9c5e8d8d1adab5d8cd3a377297ff016f9df2c05b3ecd77f0a"
+    }
+  }
+}

@@ -4,13 +4,16 @@ import type { WorkbookModel } from '@sheets-web/xlsx-engine'
  *  showGridLines → showGridlines（BooleanNumber）。保存差分以 getZoom()/
  *  hasHiddenGridLines() 对比文件值；未灌入时网格停在默认 100%/显示网格线，
  *  保存无关修改会把文件中的非默认缩放与隐藏网格线覆盖为默认值。 */
-export function withWorkbookView<T extends { sheets: Record<string, { id: string; name: string }> }>(data: T, model: WorkbookModel): T {
+export function withWorkbookView<T extends { sheets: Record<string, { id: string; name: string; rowHeader?: object; columnHeader?: object }> }>(data: T, model: WorkbookModel): T {
   for (const sheet of Object.values(data.sheets)) {
     const source = model.sheets.find(item => item.name === sheet.name)
     if (!source) continue
     Object.assign(sheet, {
       zoomRatio: (source.zoomScale ?? 100) / 100,
       showGridlines: source.showGridlines === false ? 0 : 1,
+      rightToLeft: source.rightToLeft === true ? 1 : 0,
+      rowHeader: { width: 46, ...sheet.rowHeader, hidden: source.showHeadings === false ? 1 : 0 },
+      columnHeader: { height: 20, ...sheet.columnHeader, hidden: source.showHeadings === false ? 1 : 0 },
     })
   }
   return data

@@ -1,0 +1,3 @@
+@media print {
+  .workbook-page-break-preview { display: none !important; }
+}

@@ -234,3 +234,52 @@ export function withFutureFunctionMarkers(formula: string): string {
   }
   return segments.join('"')
 }
+
+
+/// 来源：f8c17004 gateway/future-functions 的函数token扫描，以及renderer
+/// formula-functions 的quoted/bracket跳过。只解码调用标识符，不改变公式字面串。
+export function withoutFutureFunctionMarkers(formula: string): string {
+  const nameCharacter = (character: string) => /[\p{L}\p{N}_.\\$]/u.test(character)
+  let cursor = 0, copied = 0, out = ''
+  while (cursor < formula.length) {
+    const character = formula[cursor]!
+    if (character === '"' || character === "'") {
+      const quote = character
+      cursor++
+      while (cursor < formula.length) {
+        if (formula[cursor++] !== quote) continue
+        if (formula[cursor] === quote) { cursor++; continue }
+        break
+      }
+      continue
+    }
+    if (character === '[') {
+      let depth = 1
+      cursor++
+      while (cursor < formula.length && depth) {
+        const next = formula[cursor++]
+        // 结构化列名中的单引号转义下一个字符，转义的括号不改变层级。
+        if (next === "'" && cursor < formula.length) { cursor++; continue }
+        if (next === '[') depth++
+        else if (next === ']') depth--
+      }
+      continue
+    }
+    const symbol = String.fromCodePoint(formula.codePointAt(cursor)!)
+    if (!nameCharacter(symbol)) { cursor += symbol.length; continue }
+    const start = cursor
+    while (cursor < formula.length) {
+      const next = String.fromCodePoint(formula.codePointAt(cursor)!)
+      if (!nameCharacter(next)) break
+      cursor += next.length
+    }
+    let after = cursor
+    while (after < formula.length && /\s/.test(formula[after]!)) after++
+    if (formula[after] !== '(') continue
+    const token = formula.slice(start, cursor), plain = token.replace(/^(?:_xlfn\.|_xlws\.)+/i, '')
+    if (plain === token || !plain) continue
+    out += formula.slice(copied, start) + plain
+    copied = cursor
+  }
+  return out + formula.slice(copied)
+}

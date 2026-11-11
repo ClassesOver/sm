@@ -7,6 +7,7 @@ import { applyCellEdits, createBlankWorkbook, readWorkbook } from '@sheets-web/x
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { workbookFilterOperations, type FilterCriteriaData, type FilterSheet, type FilterWorkbook } from './workbook-filters'
 import { independentPython } from './test-independent-python'
+import { NativeDraft, type NativeOperation } from './native-draft'
 
 /** Mimics the documented facade: getFilter/getCriteria from the pinned FFilter. */
 function facade(
@@ -53,6 +54,20 @@ const modelWithFilter = async (
 }
 
 afterEach(() => document.body.replaceChildren())
+
+it.each([undefined, false, 0])('keeps OR and single custom filters JSON-safe for NativeDraft (and=%s)', async and => {
+  const model = await modelWithFilter({})
+  const operations = workbookFilterOperations(model, facade({ range: [0, 0, 3, 1], columns: {
+    0: { customs: { and, customFilters: [{ val: '甲' }, { val: '乙', operator: 'notEqual' }] } },
+  } }))
+  const storage = { getItem: () => null, setItem() {}, removeItem() {} }
+  const draft = new NativeDraft({ documentId: 'filter', revision: 1, sourceSha256: 'a'.repeat(64),
+    scope: { database: 'test', companyId: 'c', userId: 'u', threadId: 't' } }, storage)
+  draft.setOperations(operations as NativeOperation[])
+  expect(draft.operations).toEqual(operations)
+  const customs = (draft.operations[0] as any).filter.columns[0].customs
+  expect(Object.hasOwn(customs, 'and')).toBe(false)
+})
 
 it('emits nothing when the live filter matches the source snapshot', async () => {
   const model = await modelWithFilter({ 0: { values: ['甲'] } })

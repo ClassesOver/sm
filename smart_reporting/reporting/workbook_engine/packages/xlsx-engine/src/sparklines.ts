@@ -5,7 +5,8 @@
 
 import { parseRange, rangeCellCount } from './cell-address'
 import { createBufferEntrySource } from './zip'
-import { decodeXmlText, escapeXmlText } from './xml'
+import { escapeXmlText } from './xml'
+import { SaxesParser } from 'saxes'
 
 export class SparklineError extends Error {}
 
@@ -15,10 +16,13 @@ export interface SparklineSpec {
   readonly kind: SparklineKind
   /// single rectangular source range, e.g. "B2:F2"
   readonly source: string
+  /// 限定来源表的真实名称；缺省才表示宿主表。
+  readonly sourceSheet?: string | undefined
   /// single target cell that hosts the sparkline, e.g. "G2"
   readonly target: string
   /// series stroke/fill color, default #376092 (Excel default blue)
   readonly color?: string | undefined
+  readonly negativeColor?: string | undefined
   /// line sparklines: draw point markers
   readonly markers?: boolean | undefined
   /// winLoss/column: draw the axis for zero
@@ -31,40 +35,80 @@ const EXT_PATTERN =
 
 const VALID_COLOR = /^#[0-9A-Fa-f]{6}$/
 
-/// Parse this sheet's sparklines out of its worksheet XML.
+const X14_NS = 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main'
+const XM_NS = 'http://schemas.microsoft.com/office/excel/2006/main'
+
+/** 严格识别单个引用；不能把无法定位的来源降级为当前工作表。 */
+export function parseSparklineSourceReference(reference: string): { source: string; sourceSheet?: string } | undefined {
+  const match = reference.trim().match(/^(?:(?:'((?:[^']|'')+)'|([\p{L}_][\p{L}\p{N}_.]*))!)?(\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}(?::\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6})?)$/u)
+  if (!match) return undefined
+  const sourceSheet = match[1]?.replaceAll("''", "'") ?? match[2]
+  if (sourceSheet !== undefined && (!sourceSheet.length || sourceSheet.length > 31 || /[\[\]:\\/?*]/.test(sourceSheet))) return undefined
+  const source = match[3]!, bounds = parseRange(source)
+  if (bounds.endRow >= 1048576 || bounds.endColumn >= 16384) return undefined
+  return { source, ...(sourceSheet !== undefined ? { sourceSheet } : {}) }
+}
+
+/// 只读解析按 namespace 身份识别扩展，写入器仍保留各自原有语义。
 export function readSparklines(worksheetXml: string): SparklineSpec[] {
-  const ext = worksheetXml.match(EXT_PATTERN)
-  if (!ext) return []
-  const specs: SparklineSpec[] = []
-  for (const group of (ext[1] ?? '').matchAll(
-    /<x14:sparklineGroup\b[^>]*>([\s\S]*?)<\/x14:sparklineGroup>/g,
-  )) {
-    const head = group[0] ?? ''
-    const body = group[1] ?? ''
-    const type = head.match(/\btype="([\w-]+)"/)?.[1]
-    const markers = /\bmarkers="1"/.test(head)
-    const showAxis = /\bdisplayAxis="1"/.test(head)
-    const color = head
-      .match(/<x14:colorSeries\b[^>]*\brgb="([0-9A-Fa-f]{8})"/)?.[1]
-      ?.slice(2)
-    for (const sparkline of body.matchAll(
-      /<x14:sparkline\b[^>]*>([\s\S]*?)<\/x14:sparkline>/g,
-    )) {
-      const inner = sparkline[1] ?? ''
-      const source = inner.match(/<xm:f>([\s\S]*?)<\/xm:f>/)?.[1]
-      const target = inner.match(/<xm:sqref>([\s\S]*?)<\/xm:sqref>/)?.[1]
-      if (source === undefined || target === undefined) continue
-      const reference = source.replace(/^[^!]*!/, '')
-      specs.push({
-        kind: type === 'column' ? 'column' : type === 'stacked' ? 'winLoss' : 'line',
-        source: decodeXmlText(reference),
-        target: decodeXmlText(target.trim()),
-        ...(color !== undefined ? { color: `#${color.toUpperCase()}` } : {}),
-        ...(markers ? { markers: true } : {}),
-        ...(showAxis ? { showAxis: true } : {}),
-      })
+  const specs: SparklineSpec[] = [], parser = new SaxesParser({ xmlns: true })
+  const stack: { local: string; uri: string }[] = []
+  let extensionDepth = -1, groupDepth = -1, entryDepth = -1
+  let group: { kind: SparklineKind; color?: string; negativeColor?: string; markers?: boolean; showAxis?: boolean } | undefined
+  let entry: { source?: string; target?: string; invalid?: boolean } | undefined
+  let capture: 'source' | 'target' | undefined
+  parser.on('doctype', () => { throw new Error('迷你图来源不支持 DOCTYPE') })
+  parser.on('opentag', tag => {
+    const attribute = (name: string) => Object.values(tag.attributes).find(attr => !attr.uri && attr.local === name)?.value
+    const parent = stack.at(-1), depth = stack.length
+    stack.push({ local: tag.local, uri: tag.uri })
+    if (tag.uri === 'http://schemas.openxmlformats.org/spreadsheetml/2006/main' && tag.local === 'ext' && depth === 2 && parent?.local === 'extLst' && parent.uri === tag.uri && attribute('uri')?.toUpperCase() === X14_URI.toUpperCase()) extensionDepth = depth
+    if (extensionDepth < 0) return
+    if (tag.uri === X14_NS && tag.local === 'sparklineGroup' && depth === extensionDepth + 2 && parent?.uri === X14_NS && parent.local === 'sparklineGroups') {
+      const type = attribute('type')
+      group = type === undefined || type === 'line' || type === 'column' || type === 'stacked'
+        ? { kind: type === 'stacked' ? 'winLoss' : type === 'column' ? 'column' : 'line',
+            ...(['1', 'true'].includes(attribute('markers') ?? '') ? { markers: true } : {}),
+            ...(['1', 'true'].includes(attribute('displayAxis') ?? '') ? { showAxis: true } : {}) } : undefined
+      groupDepth = depth
     }
-  }
+    if (!group) return
+    if (tag.uri === X14_NS && tag.local === 'colorSeries' && depth === groupDepth + 1) {
+      const rgb = attribute('rgb')
+      if (rgb && /^[0-9A-Fa-f]{8}$/.test(rgb)) group.color = `#${rgb.slice(2).toUpperCase()}`
+    }
+    if (tag.uri === X14_NS && tag.local === 'colorNegative' && depth === groupDepth + 1) {
+      const rgb = attribute('rgb')
+      if (rgb && /^[0-9A-Fa-f]{8}$/.test(rgb)) group.negativeColor = `#${rgb.slice(2).toUpperCase()}`
+    }
+    if (tag.uri === X14_NS && tag.local === 'sparkline' && depth === groupDepth + 2 && parent?.uri === X14_NS && parent.local === 'sparklines') { entry = {}; entryDepth = depth }
+    if (entry && depth > entryDepth + 1) entry.invalid = true
+    if (entry && depth === entryDepth + 1 && tag.uri === XM_NS && ['f', 'sqref'].includes(tag.local)) {
+      capture = tag.local === 'f' ? 'source' : 'target'
+      // 重复的来源或宿主不属于可可靠读取的单个迷你图。
+      if (entry[capture] !== undefined) entry.invalid = true
+      entry[capture] = ''
+    }
+  })
+  const text = (value: string) => { if (entry && capture && stack.length === entryDepth + 2) entry[capture] = (entry[capture] ?? '') + value }
+  parser.on('text', text); parser.on('cdata', text)
+  parser.on('closetag', tag => {
+    const depth = stack.length - 1
+    if (entry && depth === entryDepth + 1) capture = undefined
+    if (entry && group && depth === entryDepth) {
+      const source = parseSparklineSourceReference(entry.source ?? ''), target = entry.target?.trim()
+      if (!entry.invalid && source && target && /^\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}$/.test(target)) {
+        const bounds = parseRange(target)
+        if (bounds.endRow < 1048576 && bounds.endColumn < 16384) specs.push({ ...group, ...source, target })
+      }
+      entry = undefined; entryDepth = -1; capture = undefined
+    }
+    if (depth === groupDepth && tag.uri === X14_NS) { group = undefined; groupDepth = -1 }
+    if (depth === extensionDepth) extensionDepth = -1
+    stack.pop()
+  })
+  // 损坏的 XML 不能留下前半段的可渲染对象。
+  try { parser.write(worksheetXml).close() } catch { return [] }
   return specs
 }
 
@@ -91,30 +135,40 @@ function validateSpecs(specs: readonly SparklineSpec[]): void {
 }
 
 function buildExt(specs: readonly SparklineSpec[]): string {
-  const byKind = (kind: SparklineKind) => specs.filter((spec) => spec.kind === kind)
   const groups: string[] = []
   const groupType = { line: 'line', column: 'column', winLoss: 'stacked' } as const
   for (const kind of ['line', 'column', 'winLoss'] as const) {
-    const group = byKind(kind)
-    if (group.length === 0) continue
-    const color = (group[0]!.color ?? '#376092').replace('#', '').toUpperCase()
-    const entries = group
-      .map(
-        (spec) =>
-          `<x14:sparkline><xm:f>${escapeXmlText(spec.source)}</xm:f>` +
-          `<xm:sqref>${escapeXmlText(spec.target)}</xm:sqref></x14:sparkline>`,
+    const matching = new Map<string, SparklineSpec[]>()
+    for (const spec of specs.filter((entry) => entry.kind === kind)) {
+      const key = JSON.stringify([
+        (spec.color ?? '#376092').toUpperCase(),
+        kind === 'line' && spec.markers === true,
+        spec.showAxis === true,
+      ])
+      const group = matching.get(key) ?? []
+      group.push(spec)
+      matching.set(key, group)
+    }
+    for (const group of matching.values()) {
+      const color = (group[0]!.color ?? '#376092').replace('#', '').toUpperCase()
+      const entries = group
+        .map(
+          (spec) =>
+            `<x14:sparkline><xm:f>${escapeXmlText(spec.source)}</xm:f>` +
+            `<xm:sqref>${escapeXmlText(spec.target)}</xm:sqref></x14:sparkline>`,
+        )
+        .join('')
+      groups.push(
+        `<x14:sparklineGroup type="${groupType[kind]}" ` +
+          (kind === 'line' && group[0]!.markers ? 'markers="1" ' : '') +
+          (group[0]!.showAxis ? 'displayAxis="1" ' : '') +
+          'displayEmptyCellsAs="gap">' +
+          `<x14:colorSeries rgb="FF${color}"/>` +
+          '<x14:colorNegative rgb="FFD00000"/>' +
+          `<x14:sparklines>${entries}</x14:sparklines>` +
+          '</x14:sparklineGroup>',
       )
-      .join('')
-    groups.push(
-      `<x14:sparklineGroup type="${groupType[kind]}" ` +
-        (kind === 'line' && group[0]!.markers ? 'markers="1" ' : '') +
-        (spec_axis(group) ? 'displayAxis="1" ' : '') +
-        'displayEmptyCellsAs="gap">' +
-        `<x14:colorSeries rgb="FF${color}"/>` +
-        '<x14:colorNegative rgb="FFD00000"/>' +
-        `<x14:sparklines>${entries}</x14:sparklines>` +
-        '</x14:sparklineGroup>',
-    )
+    }
   }
   return (
     `<ext uri="${X14_URI}" ` +
@@ -125,9 +179,6 @@ function buildExt(specs: readonly SparklineSpec[]): string {
     '</x14:sparklineGroups></ext>'
   )
 }
-
-const spec_axis = (group: readonly SparklineSpec[]): boolean =>
-  group.some((spec) => spec.showAxis === true)
 
 /// Replace this sheet's sparkline set in the worksheet's root extLst.
 export async function applySparklines(
@@ -154,10 +205,16 @@ export async function applySparklines(
     // replace only the sparkline ext; other extensions stay byte-identical
     xml = xml.replace(EXT_PATTERN, newExt)
   } else {
-    const existing = xml.match(/<extLst\b[^>]*>[\s\S]*?<\/extLst>/)
-    if (existing && existing.index !== undefined) {
-      const at = existing.index + existing[0].length
+    // Cell extensions can also contain extLst; only the root tail qualifies.
+    const existing = /<extLst\b[^>]*>[\s\S]*?<\/extLst>\s*<\/worksheet>/.exec(xml)
+    const empty = /<extLst\b[^>]*\/>\s*<\/worksheet>/.exec(xml)
+    if (existing) {
+      const at = xml.lastIndexOf('</extLst>')
       xml = xml.slice(0, at) + newExt + xml.slice(at)
+    } else if (empty) {
+      const at = empty.index
+      const tag = empty[0].slice(0, empty[0].indexOf('/>') + 2)
+      xml = xml.slice(0, at) + tag.replace(/\/>$/, `>${newExt}</extLst>`) + xml.slice(at + tag.length)
     } else {
       // extLst is last in the worksheet schema; anchor on the closing tag
       xml = xml.replace(/<\/worksheet>/, `<extLst>${newExt}</extLst></worksheet>`)

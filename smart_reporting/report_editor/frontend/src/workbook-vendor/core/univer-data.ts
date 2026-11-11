@@ -32,6 +32,7 @@ export interface UniverCellData {
 export interface UniverSheetData {
   id: string
   name: string
+  custom?: Record<string, unknown>
   rowCount: number
   columnCount: number
   cellData: Record<number, Record<number, UniverCellData>>
@@ -51,8 +52,8 @@ export interface UniverSheetData {
 /// this file was migrated from wrote `width`/`height`/`hidden`, which Univer
 /// ignores — file geometry was not shown and grid resizes/hides never reached
 /// the save diff. GenOffice f8c17004 univer-sync.ts uses these real keys.
-export interface UniverColumnData { w?: number | undefined; hd?: number | undefined }
-export interface UniverRowData { h?: number | undefined; ia?: number | undefined; ah?: number | undefined; hd?: number | undefined }
+export interface UniverColumnData { custom?: Record<string, unknown>; w?: number | undefined; hd?: number | undefined }
+export interface UniverRowData { custom?: Record<string, unknown>; h?: number | undefined; ia?: number | undefined; ah?: number | undefined; hd?: number | undefined }
 export const isHiddenAxisEntry = (entry: { hd?: number | undefined } | null | undefined): boolean => entry?.hd === 1
 
 export interface UniverWorkbookData {
@@ -65,7 +66,7 @@ export interface UniverWorkbookData {
   freeze?: Record<string, { frozenRows: number; frozenColumns: number }>
   /// workbook-level defined names; the loader registers them with the formula
   /// engine so grid formulas can reference them
-  definedNames?: ReadonlyArray<{ name: string; refersTo: string }>
+  definedNames?: ReadonlyArray<{ name: string; refersTo: string; scopeSheetId?: string | undefined }>
 }
 /// OOXML column width (chars) → pixels, the MDW approximation the desktop
 /// app also uses for display (7px per width unit + padding).
@@ -132,22 +133,26 @@ export function buildWorkbookData(
       .filter((merge) => merge.endRow >= merge.startRow && merge.endColumn >= merge.startColumn)
     const columnData: UniverSheetData['columnData'] = {}
     for (const column of sheet.columns) {
-      if (column.width === undefined && !column.hidden) continue
-      for (let index = column.start - 1; index < column.end && index < 200; index += 1) {
+      if (column.width === undefined && !column.hidden && !column.outlineLevel && !column.collapsed) continue
+      if (column.outlineLevel || column.collapsed || column.hidden) maximumColumn = Math.max(maximumColumn, column.end - 1)
+      for (let index = column.start - 1; index < column.end && index < 16384; index += 1) {
         columnData[index] = {
           ...(column.width !== undefined ? { w: columnWidthToPixels(column.width) } : {}),
           ...(column.hidden ? { hd: 1 } : {}),
+          custom: { genofficeOutline: {level: column.outlineLevel ?? 0, collapsed: column.collapsed ?? false} },
         }
       }
     }
     const rowData: UniverSheetData['rowData'] = {}
     for (const row of sheet.rows) {
-      if (row.height === undefined && !row.hidden) continue
+      if (row.height === undefined && !row.hidden && !row.outlineLevel && !row.collapsed) continue
+      if (row.outlineLevel || row.collapsed || row.hidden) maximumRow = Math.max(maximumRow, row.row - 1)
       rowData[row.row - 1] = {
         // file heights are explicit (Excel customHeight): ia 0, as setRowHeightsForced writes,
         // so AutoFit Row Height (ia 1) is distinguishable from an untouched row
         ...(row.height !== undefined ? { h: rowHeightToPixels(row.height), ia: 0 } : {}),
         ...(row.hidden ? { hd: 1 } : {}),
+        custom: { genofficeOutline: {level: row.outlineLevel ?? 0, collapsed: row.collapsed ?? false} },
       }
     }
     if (sheet.freeze && (sheet.freeze.frozenRows > 0 || sheet.freeze.frozenColumns > 0)) {
@@ -156,8 +161,9 @@ export function buildWorkbookData(
     sheets[id] = {
       id,
       name: sheet.name,
-      rowCount: Math.max(MINIMUM_SHEET_ROW_COUNT, maximumRow + 100),
-      columnCount: Math.max(MINIMUM_SHEET_COLUMN_COUNT, maximumColumn + 10),
+      custom: {genofficeOutline: {summaryBelow: sheet.outlineSummaryBelow ?? true, summaryRight: sheet.outlineSummaryRight ?? true}},
+      rowCount: Math.min(1048576, Math.max(MINIMUM_SHEET_ROW_COUNT, maximumRow + 100)),
+      columnCount: Math.min(16384, Math.max(MINIMUM_SHEET_COLUMN_COUNT, maximumColumn + 10)),
       cellData,
       ...(merges.length > 0 ? { mergeData: merges } : {}),
       ...(Object.keys(columnData).length > 0 ? { columnData } : {}),
@@ -182,7 +188,7 @@ export function buildWorkbookData(
     styles,
     ...(freeze !== undefined && Object.keys(freeze).length > 0 ? { freeze } : {}),
     ...(model.definedNames !== undefined && model.definedNames.length > 0
-      ? { definedNames: model.definedNames }
+      ? { definedNames: model.definedNames.map(entry => ({ name: entry.name, refersTo: entry.refersTo, ...(entry.scopeSheetName !== undefined ? { scopeSheetId: sheetOrder[model.sheets.findIndex(sheet => sheet.name === entry.scopeSheetName)] } : {}) })) }
       : {}),
   }
 }

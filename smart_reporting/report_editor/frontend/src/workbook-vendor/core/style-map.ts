@@ -30,6 +30,7 @@ export interface LogicalStyle {
   fontFamily?: string | undefined
   /// resolved #RRGGBB
   fontColor?: string | undefined
+  vertAlign?: 'baseline' | 'subscript' | 'superscript' | undefined
   fillColor?: string | undefined
   hAlign?: 'left' | 'center' | 'right' | 'justify' | undefined
   vAlign?: 'top' | 'middle' | 'bottom' | undefined
@@ -100,6 +101,7 @@ export function logicalStyleOf(
   if (font?.size !== undefined) style.fontSize = font.size
   if (font?.family) style.fontFamily = font.family
   if (font?.color !== undefined) style.fontColor = resolveStyleColor(font.color, palette)
+  if (font?.vertAlign !== undefined) style.vertAlign = font.vertAlign
   if (fill) {
     const display = fillDisplayColor(fill as FillSpec)
     if (display !== undefined) style.fillColor = resolveStyleColor(display, palette)
@@ -150,6 +152,7 @@ export interface UniverStyleData {
   ul?: { s?: number | undefined; t?: number | undefined } | undefined
   st?: { s?: number | undefined } | undefined
   cl?: { rgb?: string | undefined } | undefined
+  va?: 1 | 2 | 3 | undefined
   bg?: { rgb?: string | undefined } | undefined
   ht?: number | undefined
   vt?: number | undefined
@@ -199,6 +202,7 @@ export function toUniverStyle(style: LogicalStyle): UniverStyleData {
   if (style.fontSize !== undefined) out.fs = style.fontSize
   if (style.fontFamily !== undefined) out.ff = style.fontFamily
   if (style.fontColor !== undefined) out.cl = { rgb: style.fontColor }
+  if (style.vertAlign !== undefined) out.va = style.vertAlign === 'subscript' ? 2 : style.vertAlign === 'superscript' ? 3 : 1
   if (style.fillColor !== undefined) out.bg = { rgb: style.fillColor }
   if (style.hAlign !== undefined) {
     out.ht =
@@ -247,6 +251,7 @@ export function fromUniverStyle(data: UniverStyleData): LogicalStyle {
   if (data.fs !== undefined) style.fontSize = data.fs
   if (data.ff !== undefined) style.fontFamily = data.ff
   if (data.cl?.rgb !== undefined) style.fontColor = data.cl.rgb
+  if (data.va !== undefined) style.vertAlign = data.va === 2 ? 'subscript' : data.va === 3 ? 'superscript' : 'baseline'
   if (data.bg?.rgb !== undefined) style.fillColor = data.bg.rgb
   if (data.ht !== undefined && HORIZ_FROM_UNIVER[data.ht] !== undefined) {
     style.hAlign = HORIZ_FROM_UNIVER[data.ht]
@@ -318,6 +323,7 @@ export function styleDelta(
     'fontSize',
     'fontFamily',
     'fontColor',
+    'vertAlign',
     'fillColor',
     'hAlign',
     'vAlign',
@@ -356,6 +362,7 @@ const KEY_MAP: Record<string, string> = {
   fontSize: 'fontSize',
   fontFamily: 'fontFamily',
   fontColor: 'fontColor',
+  vertAlign: 'vertAlign',
   fillColor: 'fillColor',
   hAlign: 'horizontalAlignment',
   vAlign: 'verticalAlignment',

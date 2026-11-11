@@ -3,13 +3,232 @@ import { applyWorkbookRibbonCommand, mountWorkbookRibbon, type WorkbookPageSetup
 
 afterEach(() => { document.body.replaceChildren() })
 
+it('opens pivot filters and editable-range management only on editable unprotected sheets', () => {
+  const command = vi.fn(); let protectedSheet = false, editable = true
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }) })
+  for (const [tab, ids] of [['Insert', ['slicer-open', 'timeline-open']], ['Review', ['allow-edit-ranges-open']]] as const) {
+    document.querySelector<HTMLButtonElement>(`[data-ribbon-tab="${tab}"]`)!.click()
+    for (const id of ids) {
+      const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
+      expect(button.disabled, id).toBe(false)
+      button.click(); expect(command).toHaveBeenLastCalledWith(id)
+      protectedSheet = true; ribbon.refreshState(); expect(button.disabled, id).toBe(true)
+      protectedSheet = false; editable = false; ribbon.refreshState(); expect(button.disabled, id).toBe(true)
+      editable = true; ribbon.refreshState()
+    }
+  }
+  ribbon.dispose()
+})
+
+it('toggles cell superscript and subscript through Univer style patches', () => {
+  let current = 1
+  const setValues = vi.fn((values: Array<Array<{ s: { va: number } }>>) => { current = values[0]![0]!.s.va })
+  const range: any = { getHeight: () => 1, getWidth: () => 1, getCellStyleData: () => ({ va: current }), setValues }
+  const workbook: any = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => range }) }) }
+  expect(applyWorkbookRibbonCommand('superscript', workbook)).toBe(true)
+  expect(current).toBe(3)
+  expect(applyWorkbookRibbonCommand('superscript', workbook)).toBe(true)
+  expect(current).toBe(1)
+  expect(applyWorkbookRibbonCommand('subscript', workbook)).toBe(true)
+  expect(current).toBe(2)
+  expect(setValues).toHaveBeenCalledTimes(3)
+})
+
+it('opens header/footer editing and disables it on protected sheets', () => {
+  const command = vi.fn(); let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }) })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="header-footer-open"]')!
+  expect(button).not.toBeNull(); expect(button.disabled).toBe(false)
+  button.click(); expect(command).toHaveBeenCalledWith('header-footer-open')
+  protectedSheet = true; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('opens the read-only queries panel on protected or saved sheets and disables it while unavailable', () => {
+  const command = vi.fn(); let available = true
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => false, rotation: () => 0,
+    queries: () => ({ available }), protection: () => ({ sheet: { protected: true }, workbook: { locked: false } }) })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="queries-open"]')!
+  expect(button).not.toBeNull(); expect(button.disabled).toBe(false)
+  expect(button.querySelector('svg')).not.toBeNull()
+  button.click(); expect(command).toHaveBeenCalledWith('queries-open')
+  available = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  button.click(); expect(command).toHaveBeenCalledTimes(1)
+  ribbon.dispose()
+})
+
+it('opens CSV import with a source icon and disables it for read-only or protected sheets', () => {
+  const command = vi.fn()
+  let editable = true, protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }) })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="import-csv"]')!
+  expect(button.disabled).toBe(false)
+  expect(button.textContent).toContain('导入 CSV')
+  expect(button.querySelector('svg')).not.toBeNull()
+  button.click(); expect(command).toHaveBeenCalledWith('import-csv')
+  editable = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  editable = true; protectedSheet = true; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  button.click(); expect(command).toHaveBeenCalledTimes(1)
+  ribbon.dispose()
+})
+
+it('opens the native conditional formatting manager and prevents protected edits', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="cf-open"]')!
+  expect(button.disabled).toBe(false)
+  button.click(); expect(command).toHaveBeenLastCalledWith('cf-open')
+  protectedSheet = true; ribbon.refreshState()
+  expect(button.disabled).toBe(true)
+  button.click(); expect(command).toHaveBeenCalledTimes(1)
+  ribbon.dispose()
+})
+
+it('exposes the native right-to-left view action with current direction', () => {
+  const command = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => true, rotation: () => 0,
+    rightToLeft: () => ({ active: true, available: true }) })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-right-to-left"]')!
+  expect(button.disabled).toBe(false)
+  expect(button.getAttribute('aria-pressed')).toBe('true')
+  button.click(); expect(command).toHaveBeenCalledWith('toggle-right-to-left')
+  ribbon.dispose()
+})
+
+it('toggles headings as a view action and reflects the current state', () => {
+  const command = vi.fn()
+  let visible = true
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => false, rotation: () => 0,
+    headings: () => ({ visible, available: true }) })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-headings"]')!
+  expect(button.disabled).toBe(false)
+  expect(button.getAttribute('aria-pressed')).toBe('true')
+  button.click(); expect(command).toHaveBeenCalledWith('toggle-headings')
+  visible = false; ribbon.refreshState()
+  expect(button.getAttribute('aria-pressed')).toBe('false')
+  ribbon.dispose()
+})
+
+it('dispatches source cell style presets and prevents edits on a protected sheet', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="cell-style"]')
+  expect(select).not.toBeNull()
+  expect(select!.options).toHaveLength(15)
+  select!.value = 'input'; select!.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledWith('cell-style:input')
+  expect(select!.value).toBe('')
+  protectedSheet = true; ribbon.refreshState()
+  expect(select!.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('opens the data table command from Data and respects read-only state', () => {
+  const command = vi.fn()
+  let editable = true
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0 })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="data-table-open"]')!
+  expect(button).not.toBeNull()
+  button.click()
+  expect(command).toHaveBeenCalledWith('data-table-open')
+  editable = false; ribbon.refreshState()
+  expect(button.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('dispatches outline grouping and detail commands and disables them in read-only mode', () => {
+  const command = vi.fn()
+  let editable = true
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0 })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
+  const ids = ['outline-group:rows', 'outline-group:cols', 'outline-ungroup:rows', 'outline-ungroup:cols', 'outline-hide-detail', 'outline-show-detail']
+  for (const id of ids) {
+    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
+    expect(button.disabled).toBe(false)
+    button.click()
+    expect(command).toHaveBeenLastCalledWith(id)
+  }
+  editable = false; ribbon.refreshState()
+  for (const id of ids) expect(document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('dispatches explicit outline detail, clear and summary controls with current summary state', () => {
+  const command = vi.fn()
+  let below = true, right = false
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => true, rotation: () => 0,
+    outlineSummary: () => ({ below, right }) })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
+  for (const id of ['outline-hide-detail:rows', 'outline-hide-detail:cols', 'outline-show-detail:rows', 'outline-show-detail:cols', 'outline-clear', 'outline-summary-below', 'outline-summary-right']) {
+    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
+    expect(button, id).not.toBeNull()
+    expect(button!.disabled).toBe(false); button!.click()
+    expect(command).toHaveBeenLastCalledWith(id)
+  }
+  const summary = (axis: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="outline-summary-${axis}"]`)!
+  expect(summary('below').getAttribute('aria-pressed')).toBe('true')
+  expect(summary('right').getAttribute('aria-pressed')).toBe('false')
+  below = false; right = true; ribbon.refreshState()
+  expect(summary('below').getAttribute('aria-pressed')).toBe('false')
+  expect(summary('right').getAttribute('aria-pressed')).toBe('true')
+  ribbon.dispose()
+})
+
+it('shows contextual table properties and commits the captured table identity without losing an in-progress name', () => {
+  document.body.innerHTML = '<main></main>'
+  let table: { id: string; name: string; range: string; reason?: string } | undefined
+  const renameTable = vi.fn(), resizeTable = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => 0, editable: () => true, table: () => table, renameTable, resizeTable,
+  })
+  expect(document.querySelector('[data-ribbon-tab="Table Design"]')).toBeNull()
+  table = { id: 'file-table-sheet-1', name: 'Staff', range: 'A1:B3' }
+  ribbon.refreshState()
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Table Design"]')!.click()
+  const input = document.querySelector<HTMLInputElement>('[aria-label="表格名称"]')!
+  expect(input.value).toBe('Staff')
+  expect(document.querySelector('[data-ribbon-control="table-range"]')!.textContent).toBe('A1:B3')
+  document.querySelector<HTMLButtonElement>('[data-ribbon-control="table-resize"]')!.click()
+  expect(resizeTable).toHaveBeenCalledWith('file-table-sheet-1', 'A1:B3')
+  input.focus(); input.value = 'Employees'; ribbon.refreshState()
+  expect(input.value).toBe('Employees')
+  input.dispatchEvent(new Event('change', { bubbles: true }))
+  expect(renameTable).toHaveBeenCalledWith('file-table-sheet-1', 'Employees')
+  table = { ...table, name: 'Employees', reason: '工作表受保护' }
+  ribbon.refreshState()
+  expect(input.disabled).toBe(true)
+  expect(input.title).toBe('工作表受保护')
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-control="table-resize"]')!.disabled).toBe(true)
+  table = undefined; ribbon.refreshState()
+  expect(document.querySelector('[data-ribbon-tab="Table Design"]')).toBeNull()
+  expect(document.querySelector('[data-ribbon-tab="Home"]')!.getAttribute('aria-selected')).toBe('true')
+  ribbon.dispose()
+})
+
 it('renders the GenOffice ribbon tabs and dispatches supported workbook commands', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand)
 
   expect([...document.querySelectorAll('[role=tab]')].map(tab => tab.textContent)).toEqual([
-    '文件', '开始', '插入', '页面布局', '公式', '数据', '审阅', '视图',
+    '文件', '开始', '插入', '页面布局', '公式', '数据', '审阅', '视图', '图表设计',
   ])
   document.querySelector<HTMLButtonElement>('[data-ribbon-command="bold"]')!.click()
   const font = document.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!
@@ -34,6 +253,75 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
   expect(rotation.disabled).toBe(false)
   expect(rotation.title).not.toContain('does not capture text rotation')
+  ribbon.dispose()
+})
+
+it('dispatches table totals and style changes with the current table identity and reflects protection', () => {
+  document.body.innerHTML = '<main></main>'
+  let table = { id: 'staff', name: 'Staff', range: 'A1:B3', totals: false, style: 'TableStyleMedium4', reason: undefined as string | undefined }
+  const setTableTotals = vi.fn(), setTableStyle = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => 0, editable: () => true, table: () => table, setTableTotals, setTableStyle,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Table Design"]')!.click()
+  const totals = document.querySelector<HTMLInputElement>('[aria-label="汇总行"]')!
+  totals.click()
+  expect(setTableTotals).toHaveBeenCalledWith('staff', true)
+  const style = document.querySelector<HTMLSelectElement>('[aria-label="表格样式"]')!
+  expect(style.value).toBe('TableStyleMedium4')
+  expect(style.options).toHaveLength(61)
+  style.value = 'TableStyleDark3'; style.dispatchEvent(new Event('change'))
+  expect(setTableStyle).toHaveBeenCalledWith('staff', 'TableStyleDark3')
+  table = { ...table, id: 'other', totals: true, style: '', reason: '工作表受保护' }; ribbon.refreshState()
+  expect(totals.checked).toBe(true); expect(totals.disabled).toBe(true)
+  expect(style.value).toBe(''); expect(style.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('reflects and changes the header row of the current table and respects read-only state', () => {
+  document.body.innerHTML = '<main></main>'
+  let table = { id: 'staff', name: 'Staff', range: 'A1:B3', header: true, reason: undefined as string | undefined }
+  const setTableHeaderRow = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => 0, editable: () => true, table: () => table, setTableHeaderRow,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Table Design"]')!.click()
+  const header = document.querySelector<HTMLInputElement>('[aria-label="标题行"]')!
+  expect(header.checked).toBe(true)
+  header.click()
+  expect(setTableHeaderRow).toHaveBeenCalledWith('staff', false)
+  table = { ...table, id: 'other', header: false }; ribbon.refreshState()
+  expect(header.checked).toBe(false)
+  header.click()
+  expect(setTableHeaderRow).toHaveBeenLastCalledWith('other', true)
+  table = { ...table, reason: '工作表受保护' }; ribbon.refreshState()
+  expect(header.disabled).toBe(true)
+  expect(header.title).toBe('工作表受保护')
+  ribbon.dispose()
+})
+
+it('reflects filter buttons for the selected table and disables them without headers or edit permission', () => {
+  document.body.innerHTML = '<main></main>'
+  let table = { id: 'staff', name: 'Staff', range: 'A1:B3', header: true, filterButton: true, reason: undefined as string | undefined }
+  const setTableFilterButton = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => 0, editable: () => true, table: () => table, setTableFilterButton,
+  } as any)
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Table Design"]')!.click()
+  const filter = document.querySelector<HTMLInputElement>('[aria-label="筛选按钮"]')!
+  expect(filter).not.toBeNull()
+  expect(filter.checked).toBe(true)
+  filter.click()
+  expect(setTableFilterButton).toHaveBeenCalledWith('staff', false)
+  table = { ...table, id: 'other', filterButton: false }; ribbon.refreshState()
+  expect(filter.checked).toBe(false)
+  filter.click()
+  expect(setTableFilterButton).toHaveBeenLastCalledWith('other', true)
+  table = { ...table, header: false }; ribbon.refreshState()
+  expect(filter.disabled).toBe(true)
+  table = { ...table, header: true, reason: '工作表受保护' }; ribbon.refreshState()
+  expect(filter.disabled).toBe(true)
+  expect(filter.title).toBe('工作表受保护')
   ribbon.dispose()
 })
 
@@ -156,24 +444,16 @@ it('renders source-localized sort actions and dispatches their upstream command 
   expect(onCommand.mock.calls).toEqual([['sort:asc'], ['sort:desc']])
 })
 
-it('keeps sort and filter source actions visible with an operation-specific unavailable reason', () => {
+it('dispatches the source sort and filter actions including advanced filter', () => {
   document.body.innerHTML = '<main></main>'
-  mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
+  const command = vi.fn()
+  mountWorkbookRibbon(document.querySelector('main')!, command)
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  // filter-toggle/clear/reapply 走官方 pinned 筛选命令（workbook-main 接线），保持可用；
-  // 其余排序/筛选入口仍受不可用原因约束。
-  for (const id of ['filter-toggle', 'filter-clear', 'filter-reapply', 'sort-custom-open']) {
+  for (const id of ['filter-toggle', 'filter-clear', 'filter-reapply', 'sort-custom-open', 'filter-advanced']) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
     expect(button?.disabled, id).toBe(false)
-  }
-  for (const [id, label, reason] of [
-    ['filter-advanced', '高级筛选', '高级筛选条件对话框'],
-  ]) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button?.textContent, id).toBe(label)
-    expect(button?.disabled, id).toBe(true)
-    expect(button?.title, id).toContain(reason)
-    expect(button?.getAttribute('aria-description'), id).toContain(reason)
+    button!.click()
+    expect(command).toHaveBeenLastCalledWith(id)
   }
 })
 
@@ -216,32 +496,25 @@ it('renders GenOffice Data Tools in source order with explicit native writeback 
     'text-to-columns:2', 'text-to-columns:4', 'text-to-columns:8', 'text-to-columns:1',
     'flash-fill', 'remove-duplicates-open', 'dv-open', 'consolidate-open',
   ])
-  const expected = [
-    ['text-to-columns:2', '按逗号拆分', '文本分列操作'],
-    ['text-to-columns:4', '按分号拆分', '文本分列操作'],
-    ['text-to-columns:8', '按空格拆分', '文本分列操作'],
-    ['text-to-columns:1', '按制表符拆分', '文本分列操作'],
-    ['flash-fill', '快速填充', '快速填充生成的修改'],
-    ['remove-duplicates-open', '删除重复值', '重复值对话框'],
-    ['dv-open', '数据验证', '数据验证对话框'],
-    ['consolidate-open', '合并计算', '合并计算对话框'],
-  ]
-  for (const [id, label, reason] of expected) {
-    const button = dataTools.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button?.textContent, id).toBe(label)
-    expect(button?.disabled, id).toBe(true)
-    expect(button?.title, id).toContain(reason)
-    expect(button?.getAttribute('aria-description'), id).toContain(reason)
-  }
+  const flash = dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="flash-fill"]')!
+  for (const id of [1, 2, 4, 8]) expect(dataTools.querySelector<HTMLButtonElement>(`[data-ribbon-command="text-to-columns:${id}"]`)!.disabled).toBe(false)
+  expect(dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="remove-duplicates-open"]')!.disabled).toBe(false)
+  expect(flash.disabled).toBe(false)
+  const validation = dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="dv-open"]')!
+  expect(validation.disabled).toBe(false)
+  expect(flash.textContent).toBe('快速填充')
+  const consolidate = dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="consolidate-open"]')!
+  expect(consolidate.textContent).toBe('合并计算')
+  expect(consolidate.disabled).toBe(false)
+  expect(consolidate.dataset.unavailableReason).toBeUndefined()
   const outline = groupFor('分级显示')!
   const outlineIds = [...outline.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => button.dataset.ribbonCommand)
   expect(outlineIds.at(-1)).toBe('subtotal-open')
   const subtotal = outline.querySelector<HTMLButtonElement>('[data-ribbon-command="subtotal-open"]')
   expect(subtotal?.textContent).toBe('分类汇总')
-  expect(subtotal?.disabled).toBe(true)
-  expect(subtotal?.title).toContain('分组汇总行')
-  expect(subtotal?.getAttribute('aria-description')).toContain('分组汇总行')
+  expect(subtotal?.disabled).toBe(false)
+  expect(subtotal?.dataset.unavailableReason).toBeUndefined()
 })
 
 it('dispatches the official sort-range command with absolute bounds for asc and desc', () => {
@@ -338,14 +611,15 @@ it('renders the GenOffice Formulas Function Library with localized categories an
   for (const [id, label] of expected) {
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.textContent, id).toBe(label)
+    expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
   }
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="autofn:SUM"]')?.disabled).toBe(false)
   for (const id of [...expected.keys()].filter(id => id.startsWith('insert-function-open'))) {
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.disabled, id).toBe(true)
-    expect(button?.getAttribute('aria-description'), id).toContain('函数目录对话框')
+    expect(button?.disabled, id).toBe(false)
+    button?.click()
+    expect(onCommand).toHaveBeenLastCalledWith(id)
   }
 })
 
@@ -369,7 +643,7 @@ it('renders the GenOffice Review Comments and Notes commands with note-specific 
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   for (const [id, label, reason] of expected) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.textContent, id).toBe(label)
+    expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
     expect(button?.disabled, id).toBe(true)
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
@@ -395,14 +669,12 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
   expect(labels.get('workbook-statistics')).toBe('工作簿统计信息')
-  expect(labels.get('translate')).toBe('翻译')
+  expect(document.querySelector('[data-ribbon-command=translate] > span:not(.workbook-ribbon-icon)')?.textContent).toBe('翻译')
   expect(labels.get('sheet-protect')).toBe('保护工作表')
   expect(labels.get('workbook-protect')).toBe('保护工作簿')
   expect(labels.get('allow-edit-ranges-open')).toBe('允许编辑区域')
   for (const [id, reason] of [
-    ['workbook-statistics', '工作簿统计视图'],
     ['translate', '翻译操作'],
-    ['allow-edit-ranges-open', '受保护区域'],
   ]) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
     expect(button?.disabled, id).toBe(true)
@@ -412,6 +684,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   expect(document.querySelector('[data-ribbon-command="spell-check"]')).toBeNull()
   expect(document.querySelector('[data-ribbon-command="spellcheck-toggle"]')).toBeNull()
   expect(document.querySelector('[data-ribbon-command="workbook-change-password"]')).toBeNull()
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="workbook-statistics"]')!.disabled).toBe(false)
 })
 
 it('renders GenOffice View controls with a live gridline toggle and explicit unavailable states', () => {
@@ -430,13 +703,10 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   ])
   for (const [id, label] of expected) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.textContent, id).toBe(label)
+    expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
   }
   expect(buttons.find(button => button.dataset.ribbonCommand === 'toggle-gridlines')?.disabled).toBe(false)
   for (const [id, reason] of [
-    ['toggle-page-break-preview', '分页预览渲染'], ['toggle-formula-bar', '编辑栏'],
-    ['toggle-headings', '表头尺寸'], ['toggle-right-to-left', '从右到左视图'],
-    ['toggle-cross-highlight', '活动行列突出显示'], ['zoom-to-selection', '选区尺寸'],
     ['new-window', '桌面工作簿窗口'], ['arrange-all', '桌面工作簿窗口'],
  ['split-window', '拆分视口'],
     ['hide-window', '桌面工作簿窗口'], ['switch-window', '桌面工作簿窗口'],
@@ -446,6 +716,54 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
   }
+  const fit = buttons.find(button => button.dataset.ribbonCommand === 'zoom-to-selection')!
+  expect(fit.disabled).toBe(false)
+})
+
+it('keeps selection zoom available on protected and read-only sheets', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let ready = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    editable: () => false, rotation: () => 0,
+    zoomSelectionAvailable: () => ready,
+    protection: () => ({ sheet: { protected: true }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="zoom-to-selection"]')!
+  expect(button.disabled).toBe(false)
+  button.click()
+  expect(command).toHaveBeenCalledWith('zoom-to-selection')
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
+  const statistics = document.querySelector<HTMLButtonElement>('[data-ribbon-command="workbook-statistics"]')!
+  expect(statistics.disabled).toBe(false)
+  statistics.click()
+  expect(command).toHaveBeenCalledWith('workbook-statistics')
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  ready = false; ribbon.refreshState()
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="zoom-to-selection"]')!.disabled).toBe(true)
+})
+
+it('offers all source zoom presets and the full dialog while respecting view readiness', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let ready = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    editable: () => false, rotation: () => 0, zoomSelectionAvailable: () => ready,
+    protection: () => ({ sheet: { protected: true }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const dialog = document.querySelector<HTMLButtonElement>('[data-ribbon-command="zoom-open"]')!
+  expect(dialog.disabled).toBe(false)
+  dialog.click(); expect(command).toHaveBeenLastCalledWith('zoom-open')
+  const presets = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')!
+  expect([...presets.options].map(option => option.value)).toEqual(['', '50', '75', '100', '125', '150', '200'])
+  expect(presets.disabled).toBe(false)
+  presets.value = '125'; presets.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenLastCalledWith('zoom:125')
+  expect(presets.value).toBe('')
+  ready = false; ribbon.refreshState()
+  expect(dialog.disabled).toBe(true); expect(presets.disabled).toBe(true)
 })
 
 it('toggles the active Univer worksheet gridlines without changing cell data', () => {
@@ -470,7 +788,7 @@ it('renders Page Layout dropdowns with the source option sets and dispatches the
     fitToWidth: 2, fitToHeight: 0, printGridlines: true, printHeadings: false, printArea: 'A1:B4',
   }
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
-    rotation: () => undefined, editable: () => true, unavailableReason: () => undefined, pageSetup: () => state,
+    rotation: () => undefined, editable: () => true, hasSelection: () => true, unavailableReason: () => undefined, pageSetup: () => state,
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Page Layout"]')!.click()
   const margins = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-margins"]')!
@@ -497,9 +815,10 @@ it('renders Page Layout dropdowns with the source option sets and dispatches the
   expect(onCommand.mock.calls).toEqual([
     ['page-breaks:reset'], ['page-orientation:landscape'], ['page-fit:width:3'], ['print-headings'],
   ])
-  const scale = document.querySelector<HTMLButtonElement>('[data-ribbon-command="scale"]')!
-  expect(scale.disabled).toBe(true)
-  expect(scale.title).toContain('打印对话框')
+  const scale = document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-scale-open"]')!
+  expect(scale.disabled).toBe(false)
+  scale.click()
+  expect(onCommand).toHaveBeenLastCalledWith('print-scale-open')
   ribbon.dispose()
 })
 
@@ -561,4 +880,241 @@ it('wires Formulas ▸ Show Formulas, Calculate Now/Sheet and the Calculation Op
   expect(mode.value).toBe('manual')
   expect(button('toggle-show-formulas').getAttribute('aria-pressed')).toBe('false')
   expect(document.querySelector('[data-ribbon-command="calculation-options"]')).toBeNull()
+})
+
+it('reflects and dispatches the four style options for the currently selected table', () => {
+  document.body.innerHTML = '<main></main>'
+  let table = { id: 'staff', name: 'Staff', range: 'A1:B3', reason: undefined as string | undefined,
+    styleOptions: { showFirstColumn: true, showLastColumn: false, showRowStripes: true, showColumnStripes: false } }
+  const setTableStyleOption = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => 0, editable: () => true, table: () => table, setTableStyleOption,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Table Design"]')!.click()
+  for (const [label, option] of [['首列', 'showFirstColumn'], ['末列', 'showLastColumn'], ['行条纹', 'showRowStripes'], ['列条纹', 'showColumnStripes']] as const) {
+    const control = document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
+    expect(control.checked).toBe(table.styleOptions[option])
+    control.click()
+    expect(setTableStyleOption).toHaveBeenLastCalledWith('staff', option, !table.styleOptions[option])
+  }
+  table = { ...table, id: 'other', reason: '工作表受保护', styleOptions: { showFirstColumn: false, showLastColumn: true, showRowStripes: false, showColumnStripes: true } }
+  ribbon.refreshState()
+  for (const [label, option] of [['首列', 'showFirstColumn'], ['末列', 'showLastColumn'], ['行条纹', 'showRowStripes'], ['列条纹', 'showColumnStripes']] as const) {
+    const control = document.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
+    expect(control.checked).toBe(table.styleOptions[option]); expect(control.disabled).toBe(true)
+    expect(control.title).toBe('工作表受保护')
+  }
+  ribbon.dispose()
+})
+
+it('converts the selected table through its captured identity and disables conversion for protection', () => {
+  document.body.innerHTML = '<main></main>'
+  let table = { id: 'staff', name: 'Staff', range: 'A1:B3', reason: undefined as string | undefined }
+  const convertTable = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => 0, editable: () => true, table: () => table, convertTable,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Table Design"]')!.click()
+  const control = document.querySelector<HTMLButtonElement>('[aria-label="转换为区域"]')!
+  control.click()
+  expect(convertTable).toHaveBeenCalledWith('staff')
+  table = { ...table, reason: '工作表受保护' }; ribbon.refreshState()
+  expect(control.disabled).toBe(true); expect(control.title).toBe('工作表受保护')
+  ribbon.dispose()
+})
+
+it('opens native table creation from Home and Insert and respects protected selections', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => 0, editable: () => true,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const control = () => document.querySelector<HTMLButtonElement>('[data-ribbon-command="format-as-table"]')!
+  expect(control().disabled).toBe(false)
+  control().click(); expect(onCommand).toHaveBeenLastCalledWith('format-as-table')
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
+  expect(control().disabled).toBe(false); control().click()
+  expect(onCommand).toHaveBeenCalledTimes(2)
+  protectedSheet = true; ribbon.refreshState(); expect(control().disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('exposes the source checkbox action only for an editable unprotected sheet', () => {
+  document.body.innerHTML = '<main></main>'
+  let editable = true, protection = false
+  const onCommand = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => 0, editable: () => editable, protection: () => ({ sheet: { protected: protection }, workbook: { locked: false } }),
+  } as any)
+  try {
+    document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
+    const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-checkbox"]')!
+    expect(button.disabled).toBe(false)
+    expect(button.dataset.unavailableReason).toBeUndefined()
+    button.click()
+    expect(onCommand).toHaveBeenLastCalledWith('insert-checkbox')
+    protection = true; ribbon.refreshState()
+    expect(button.disabled).toBe(true)
+    protection = false; editable = false; ribbon.refreshState()
+    expect(button.disabled).toBe(true)
+  } finally { ribbon.dispose() }
+})
+
+it('toggles the session formula bar on readonly and protected sheets while reflecting availability and pressed state', () => {
+  document.body.innerHTML = '<main></main>'
+  let visible = true, available = true
+  const onCommand = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => undefined, editable: () => false, hasSelection: () => false,
+    protection: () => ({ sheet: { protected: true }, workbook: { locked: true } }),
+    formulaBar: () => ({ visible, available }),
+  } as any)
+  try {
+    document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+    const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-formula-bar"]')!
+    expect(button.disabled).toBe(false); expect(button.getAttribute('aria-pressed')).toBe('true')
+    button.click(); expect(onCommand).toHaveBeenLastCalledWith('toggle-formula-bar')
+    visible = false; ribbon.refreshState()
+    expect(button.getAttribute('aria-pressed')).toBe('false')
+    available = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
+    button.click(); expect(onCommand).toHaveBeenCalledTimes(1)
+  } finally { ribbon.dispose() }
+})
+
+it('offers built-in CJK families separately from system fonts and dispatches actual font names', () => {
+  const onCommand = vi.fn(), ribbon = mountWorkbookRibbon(document.body, onCommand)
+  try {
+    const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!
+    const options = new Map([...select.options].map(option => [option.value, option.textContent]))
+    for (const [family, label] of [
+      ['Noto Sans CJK SC', '思源黑体（内置）'], ['Noto Serif CJK SC', '思源宋体（内置）'],
+      ['LXGW WenKai', '霞鹜文楷（内置）'], ['Ma Shan Zheng', '马善政毛笔楷书（内置）'], ['ZCOOL XiaoWei', '站酷小薇（内置）'],
+      ['SimSun', '宋体（系统字体）'], ['SimHei', '黑体（系统字体）'], ['Microsoft YaHei', '微软雅黑（系统字体）'], ['KaiTi', '楷体（系统字体）'], ['FangSong', '仿宋（系统字体）'],
+    ]) {
+      expect(options.get(family!)).toBe(label)
+      select.value = family!;select.dispatchEvent(new Event('change'))
+      expect(onCommand).toHaveBeenLastCalledWith(`font-family:${family}`)
+    }
+    expect(options.get('Calibri')).toBe('Calibri')
+  } finally { ribbon.dispose() }
+})
+
+it('persists actual CJK font-family menu values through a real Univer range and XLSX save', async () => {
+  const { Univer, LocaleType, IUniverInstanceService } = await import('@univerjs/core')
+  const { UniverSheetsPlugin } = await import('@univerjs/sheets')
+  const { FUniver } = await import('@univerjs/core/lib/facade')
+  await import('@univerjs/sheets/facade')
+  const { createBlankWorkbook, readWorkbook, applyCellEdits } = await import('@sheets-web/xlsx-engine')
+  const { buildWorkbookData } = await import('./workbook-vendor/core/univer-data')
+  const { loadWorkbookData, readBackSnapshot } = await import('./workbook-vendor/grid/sync')
+  const source = await createBlankWorkbook(), model = await readWorkbook(source)
+  const univer = new Univer({ locale: LocaleType.EN_US, locales: { [LocaleType.EN_US]: {} } })
+  let ribbon: ReturnType<typeof mountWorkbookRibbon> | undefined
+  try {
+    univer.registerPlugin(UniverSheetsPlugin)
+    const api = FUniver.newAPI(univer)
+    loadWorkbookData({ univer, univerAPI: api } as any, buildWorkbookData(model, 'cjk-menu', 'cjk-menu'))
+    univer.__getInjector().get(IUniverInstanceService).focusUnit('cjk-menu')
+    const book = api.getActiveWorkbook()!, sheet = book.getSheets()[0]!
+    const families = ['Noto Sans CJK SC', 'Noto Serif CJK SC', 'LXGW WenKai', 'Ma Shan Zheng', 'ZCOOL XiaoWei', 'SimSun', 'SimHei', 'Microsoft YaHei', 'KaiTi', 'FangSong']
+    let row = 0
+    ribbon = mountWorkbookRibbon(document.body, command => applyWorkbookRibbonCommand(command, { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => sheet.getRange(row, 0) }) }) } as any))
+    const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!
+    families.forEach((family, index) => { row = index;sheet.getRange(row, 0).setValue('中文字体');select.value = family;select.dispatchEvent(new Event('change')) })
+    const cells = readBackSnapshot(book.getSnapshot()).sheets[0]!.cells
+    const edits = families.map((family, index) => {
+      const cell = cells[`A${index + 1}`]!
+      expect(cell.style?.fontFamily).toBe(family)
+      return { sheetName: model.sheets[0]!.name, row: index, column: 0, writeValue: true, cell: { value: cell.value }, style: { fontFamily: cell.style!.fontFamily! } }
+    })
+    const saved = await readWorkbook(await applyCellEdits(source, edits))
+    families.forEach((family, index) => {
+      const styleIndex = saved.sheets[0]!.cells[`A${index + 1}`]!.styleIndex!
+      expect(saved.styles.fonts[saved.styles.cellXfs[styleIndex]!.fontId]?.family).toBe(family)
+    })
+  } finally { ribbon?.dispose();univer.dispose() }
+})
+
+it('reflects cross-highlight reading preference and allows it on protected readonly sheets',()=>{
+ document.body.innerHTML='<main></main>';let active=false,available=true
+ const run=vi.fn(()=>{active=!active;controller.refreshState()})
+ const controller=mountWorkbookRibbon(document.querySelector('main')!,run,{rotation:()=>undefined,editable:()=>false,crossHighlight:()=>({active,available}),protection:()=>({sheet:{protected:true},workbook:{locked:true}})})
+ document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+ const button=document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-cross-highlight"]')!
+ expect(button.disabled).toBe(false);expect(button.getAttribute('aria-pressed')).toBe('false')
+ button.click();expect(run).toHaveBeenCalledWith('toggle-cross-highlight');expect(button.getAttribute('aria-pressed')).toBe('true')
+ available=false;controller.refreshState();expect(button.disabled).toBe(true)
+ controller.dispose()
+})
+
+it('keeps normal and page-break preview mutually exclusive and readable on protected sheets', () => {
+  document.body.innerHTML = '<main></main>'
+  let active = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    editable: () => false, rotation: () => 0,
+    protection: () => ({ sheet: { protected: true }, workbook: { locked: false } }),
+    pageBreakPreview: () => ({ active, available: true }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const normal = document.querySelector<HTMLButtonElement>('[data-ribbon-command="normal-view"]')!
+  const preview = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-page-break-preview"]')!
+  expect(normal.disabled).toBe(false); expect(preview.disabled).toBe(false)
+  expect(normal.getAttribute('aria-pressed')).toBe('true'); expect(preview.getAttribute('aria-pressed')).toBe('false')
+  active = true; ribbon.refreshState()
+  expect(normal.getAttribute('aria-pressed')).toBe('false'); expect(preview.getAttribute('aria-pressed')).toBe('true')
+})
+
+it('enables formula trace controls for protected readonly worksheets and exposes remove state', () => {
+  document.body.innerHTML = '<main></main>'
+  let active = false
+  const command = vi.fn(), ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    editable: () => false, rotation: () => 0, protection: () => ({ sheet: { protected: true }, workbook: { locked: false } }),
+    formulaTrace: () => ({ available: true, active }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Formulas"]')!.click()
+  for (const id of ['trace-precedents', 'trace-dependents']) {
+    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
+    expect(button.disabled).toBe(false); button.click(); expect(command).toHaveBeenCalledWith(id)
+  }
+  const remove = document.querySelector<HTMLButtonElement>('[data-ribbon-command="remove-arrows"]')!
+  expect(remove.disabled).toBe(true); active = true; ribbon.refreshState(); expect(remove.disabled).toBe(false)
+})
+
+it('uses decorative command icons with visible labels for Home actions', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const ribbon = mountWorkbookRibbon(host, vi.fn())
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
+  expect(buttons.filter(button => !button.querySelector('svg')).map(button => button.dataset.ribbonCommand)).toEqual([])
+  for (const button of buttons) {
+    expect(button.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
+    expect(button.textContent?.trim()).not.toBe('')
+  }
+  ribbon.dispose()
+})
+it('audits icon coverage across workbook command tabs', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const ribbon = mountWorkbookRibbon(host, vi.fn())
+  const missing = new Set<string>()
+  const tabs = [...host.querySelectorAll<HTMLElement>('[data-ribbon-tab]')].map(tab => tab.dataset.ribbonTab!)
+  for (const tab of tabs) {
+    host.querySelectorAll<HTMLButtonElement>('[data-ribbon-tab]').forEach(button => { if (button.dataset.ribbonTab === tab) button.click() })
+    host.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]').forEach(button => { if (!button.querySelector('svg')) missing.add(button.dataset.ribbonCommand!) })
+  }
+  expect([...missing]).toEqual([])
+  ribbon.dispose()
+})
+
+it('retains protection icons and updates accessible labels when state refreshes', () => {
+  const host = document.body.appendChild(document.createElement('div'));let protectedSheet=false
+  const ribbon=mountWorkbookRibbon(host,vi.fn(),{editable:()=>true,rotation:()=>0,protection:()=>({sheet:{protected:protectedSheet},workbook:{locked:false}})})
+  host.querySelector<HTMLButtonElement>('[data-ribbon-tab=Review]')!.click()
+  const button=host.querySelector<HTMLButtonElement>('[data-ribbon-command=sheet-protect]')!
+  expect(button.querySelectorAll('svg')).toHaveLength(1)
+  protectedSheet=true;ribbon.refreshState()
+  expect(button.querySelectorAll('svg')).toHaveLength(1)
+  expect(button.getAttribute('aria-label')).toBe('撤销工作表保护')
+  expect(button.getAttribute('aria-pressed')).toBe('true')
+  ribbon.dispose()
 })

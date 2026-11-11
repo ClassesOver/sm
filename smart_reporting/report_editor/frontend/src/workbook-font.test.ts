@@ -103,6 +103,43 @@ it('maps double underline without spurious edits and distinguishes single/double
   ribbon.dispose()
 })
 
+it('maps cell superscript and subscript through Univer style data and clears to baseline', () => {
+  const source = { vertAlign: 'superscript' as const, bold: true }
+  expect(toUniverStyle(source)).toMatchObject({ va: 3, bl: 1 })
+  expect(fromUniverStyle(toUniverStyle(source))).toMatchObject(source)
+  expect(styleDelta(source, { vertAlign: 'baseline', bold: true })).toEqual({ vertAlign: 'baseline' })
+})
+
+it('routes cell superscript and subscript through Univer history and XLSX save readback', async () => {
+  const original = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'H2O' }, style: { bold: true, vertAlign: 'superscript' } },
+  ])
+  const model = await readWorkbook(original)
+  const univer = new Univer({ locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: {} } })
+  try {
+    univer.registerPlugin(UniverSheetsPlugin)
+    const api = FUniver.newAPI(univer)
+    univer.createUnit(UniverInstanceType.UNIVER_SHEET, buildWorkbookData(model, 'baseline-book', '上下标'))
+    const workbook = api.getActiveWorkbook()!, sheet = workbook.getActiveSheet()!
+    univer.__getInjector().get(IUniverInstanceService).focusUnit(workbook.getId())
+    sheet.setActiveSelection(sheet.getRange('A1'))
+    const range = sheet.getRange(0, 0)
+    expect(range.getCellStyleData()?.va).toBe(3)
+    expect(applyWorkbookRibbonCommand('subscript', workbook as unknown as RibbonWorkbook)).toBe(true)
+    expect(range.getCellStyleData()?.va).toBe(2)
+    const edits = diffToEdits(model, readBackSnapshot(workbook.save()))
+    expect(edits.map(edit => edit.style)).toEqual([{ vertAlign: 'subscript' }])
+    const reread = await readWorkbook(await applyWorkbookOperations(original, [{ kind: 'applyCellEdits', edits }]))
+    const cell = reread.sheets[0]!.cells.A1!
+    const font = reread.styles.fonts[reread.styles.cellXfs[cell.styleIndex!]!.fontId]!
+    expect(font).toMatchObject({ vertAlign: 'subscript', bold: true })
+    expect(applyWorkbookRibbonCommand('subscript', workbook as unknown as RibbonWorkbook)).toBe(true)
+    expect(range.getCellStyleData()?.va).toBe(1)
+    const cleared = diffToEdits(model, readBackSnapshot(workbook.save()))
+    expect(cleared.map(edit => edit.style)).toEqual([{ vertAlign: 'baseline' }])
+  } finally { univer.dispose() }
+})
+
 it('double underline uses actual Univer Undo/Redo, preserves strike, and survives draft and independent openpyxl readback', async () => {
   const original = await applyCellEdits(await createBlankWorkbook(), [
     { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 1234.567 }, style: { strikethrough: true, bold: true, fontColor: '#123456', numberFormat: '0.000' } },

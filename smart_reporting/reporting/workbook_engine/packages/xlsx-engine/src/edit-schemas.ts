@@ -96,6 +96,7 @@ export const workbookStyleEditSchema = z
     fontSize: z.number().positive().max(409).optional(),
     /// null removes the explicit font color (back to the theme default).
     fontColor: z.union([styleColorSchema, z.null()]).optional(),
+    vertAlign: z.enum(['baseline', 'subscript', 'superscript']).optional(),
     /// null clears the fill back to the default "none" pattern.
     fillColor: z.union([styleColorSchema, z.null()]).optional(),
     /// pattern or gradient fill; wins over fillColor when both are present

@@ -1,0 +1,99 @@
+/* 只读助手共用智能报告 token；固定标题、清晰操作区，不挤出文档画布。 */
+:is(.editor-surface, .native-pdf-editor, .pdf-ai-dock) > .native-ai.native-ai-panel {
+  flex: none;
+  box-sizing: border-box;
+  min-width: 0;
+  max-height: min(38dvh, 320px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--office-border-strong) transparent;
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--office-border);
+  background: var(--office-chrome);
+  color: var(--office-ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.native-ai-panel .office-assistant-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--office-border-soft);
+  background: var(--office-chrome);
+}
+.native-ai-panel .office-assistant-header h3 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 600; }
+.native-ai-panel .office-assistant-icon { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px; background: var(--office-accent-soft); color: var(--office-accent); }
+.native-ai-panel .office-assistant-details { margin-bottom: 8px; color: var(--office-muted); }
+.native-ai-panel .office-assistant-details summary { width: fit-content; cursor: pointer; padding: 3px 0; }
+.native-ai-panel .office-assistant-details summary:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
+.native-ai-panel .office-assistant-details[open] summary { margin-bottom: 4px; }
+.native-ai-panel .office-assistant-help { margin: 0 0 10px; color: var(--office-muted); font-size: 11px; overflow-wrap: anywhere; }
+.native-ai-panel :is(.office-assistant-toolbar, .office-assistant-presets, .office-assistant-actions) { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.native-ai-panel .office-assistant-toolbar { justify-content: space-between; margin-bottom: 8px; }
+.native-ai-panel .office-assistant-scope { display: inline-flex; align-items: center; gap: 8px; color: var(--office-muted); }
+.native-ai-panel :is(button, select) { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; max-width: 100%; margin: 0; padding: 4px 9px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); color: var(--office-ink-2); font: inherit; cursor: pointer; }
+.native-ai-panel button > svg { flex: none; }
+.native-ai-panel button:hover:not(:disabled) { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
+.native-ai-panel button[aria-pressed=true] { background: var(--office-accent-soft); color: var(--office-accent); border-color: var(--office-accent); }
+.native-ai-panel .office-assistant-actions > button:first-child { background: var(--office-accent); border-color: var(--office-accent); color: white; }
+.native-ai-panel .office-assistant-actions > button:first-child:hover:not(:disabled) { background: var(--office-accent-hover); }
+.native-ai-panel button.office-assistant-close { width: 30px; height: 30px; padding: 4px; border-color: transparent; }
+.native-ai-panel textarea { display: block; box-sizing: border-box; width: 100%; min-height: 68px; max-height: 160px; margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); color: var(--office-ink); font: inherit; line-height: 1.5; resize: vertical; }
+.native-ai-panel :is(button, select, textarea):focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
+.native-ai-panel :disabled { opacity: var(--office-disabled-opacity); cursor: default; }
+.native-ai-panel [role=status]:empty { display: none; }
+.native-ai-panel .native-ai-evidence { overflow-wrap: anywhere; color: var(--office-muted); }
+@media (max-width: 768px) {
+  :is(.editor-surface, .native-pdf-editor, .pdf-ai-dock) > .native-ai.native-ai-panel { max-height: 42dvh; padding-inline: 8px; }
+  .native-ai-panel :is(button, select) { min-height: 36px; }
+  .native-ai-panel button.office-assistant-close { width: 36px; height: 36px; }
+}
+
+.pdf-ai-dock > .native-ai.native-ai-panel { max-height: none; border-top: 0; overflow: visible; }
+.pdf-ai-dock .office-assistant-header { position: static; }
+@media (max-width: 768px) {
+  .pdf-ai-dock > .native-ai.native-ai-panel.native-pdf-assistant { padding-inline: 8px; }
+}
+
+/* 固定源 AiPanel：顶栏 / 中间 ai-chat / 底部 ai-composer；只沿用本地主题色。 */
+.native-ai.native-ai-panel.office-assistant-layout:not([hidden]) {display:flex!important;flex-direction:column;align-items:stretch;gap:0;min-height:0;overflow:hidden;box-sizing:border-box;padding:0;}
+.native-ai.native-ai-panel.office-assistant-layout[hidden] {display:none!important}
+.office-assistant-layout>.office-assistant-header {position:static;flex:none;min-height:54px;margin:0;padding:0 16px;border-bottom:1px solid var(--office-border-soft);}
+.office-assistant-layout>.office-assistant-toolbar {display:block;flex:none;margin:0;padding:12px 16px 0;background:var(--office-chrome);}
+.office-assistant-layout .office-assistant-presets {display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;}
+.office-assistant-layout .office-assistant-presets button {border-radius:16px;font-size:11px;padding:5px 11px;border-color:var(--office-border-soft);}
+.office-assistant-layout .office-assistant-scope {display:flex;justify-content:space-between;margin-bottom:8px;font-size:11px;}
+.office-assistant-layout .office-assistant-details {margin:0 0 8px;font-size:11px;}
+.office-assistant-layout>.office-assistant-body {flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:16px;overflow-wrap:anywhere;background:color-mix(in srgb,var(--office-chrome) 96%,var(--office-accent) 4%);line-height:1.7;}
+.office-assistant-layout>.office-assistant-body>form {margin:0;}
+.office-assistant-layout>.office-assistant-composer {flex:none;margin:12px 14px 14px;padding:12px;border:1px solid var(--office-border-strong);border-radius:16px;background:var(--office-chrome);box-shadow:0 3px 12px rgb(0 0 0 / 5%);transition:border-color .15s,box-shadow .15s;}
+.office-assistant-layout .office-assistant-composer>label {display:block;font-size:11px;color:var(--office-muted);}
+.office-assistant-layout .office-assistant-composer textarea {min-height:76px;max-height:160px;margin:0;padding:6px 0;border:0;border-radius:0;box-shadow:none;outline:none;background:transparent;resize:vertical;font-size:12px;line-height:1.7;}
+.office-assistant-layout .office-assistant-composer textarea::placeholder {color:var(--office-muted);opacity:.8;}
+.office-assistant-layout .office-assistant-composer:focus-within {border-color:var(--office-accent);box-shadow:0 0 0 3px var(--office-accent-soft);}
+.office-assistant-layout .office-assistant-actions {justify-content:flex-end;min-height:34px;margin-top:6px;}
+.office-assistant-layout .office-assistant-actions button {border-radius:10px;font-size:11px;padding:6px 12px;}
+.office-assistant-layout :is(button,select) {transition:background-color .15s,border-color .15s;}
+.office-assistant-layout .office-assistant-scope select {min-width:110px;border-color:var(--office-border-soft);border-radius:8px;}
+.office-assistant-layout .office-assistant-details[open] {padding:8px 10px;border:1px solid var(--office-border-soft);border-radius:10px;}
+.office-assistant-layout .native-ai-context {font-size:11px;color:var(--office-muted);}
+.office-assistant-layout :is(.native-ai-preview,.native-ai-evidence):not(:empty) {margin:12px 0;padding:14px;border:1px solid var(--office-border-soft);border-radius:12px;background:var(--office-chrome);box-shadow:0 2px 5px rgb(0 0 0 / 2%);}
+.office-assistant-layout .native-ai-preview strong {display:block;margin-bottom:8px;font-size:13px;}
+.office-assistant-layout .native-ai-preview ul {padding-left:20px;}
+.office-assistant-layout .native-ai-preview li+li {margin-top:6px;}
+.office-assistant-layout .native-ai-preview button {margin:4px 6px 0 0;border-radius:8px;}
+.office-assistant-layout .native-ai-status:not(:empty) {padding:10px 12px;border-left:3px solid var(--office-accent);border-radius:0 8px 8px 0;background:var(--office-chrome);}
+.office-assistant-layout .office-assistant-body>p {color:var(--office-muted);font-size:11px;}
+.office-assistant-layout .office-assistant-body :is(pre,code) {font-size:11px;line-height:1.6;}
+@media(prefers-reduced-motion:reduce){.office-assistant-layout :is(button,select,.office-assistant-composer){transition:none;}}
+:is(.office-task-dock,.pdf-ai-dock):has(>.office-assistant-layout:not([hidden])) {display:flex;flex-direction:column;overflow:hidden;}
+:is(.office-task-dock,.pdf-ai-dock)>:is(header,nav) {flex:none;}
+:is(.office-task-dock,.pdf-ai-dock)>.native-ai.office-assistant-layout {flex:1;min-height:0;height:0;max-height:none;padding:0;overflow:hidden;}
+/* 工具栏 display 规则不得让控制器隐藏的取消/接受按钮重新出现。 */
+.native-ai-panel [hidden]{display:none!important}

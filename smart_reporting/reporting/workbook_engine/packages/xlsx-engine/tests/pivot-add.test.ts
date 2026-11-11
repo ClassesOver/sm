@@ -265,7 +265,7 @@ describe('pivot filters', () => {
     expect(table).not.toContain('subtotal="sum"')
   })
 
-  it('rejects out-of-range hidden items and column fields with multiple values', async () => {
+  it('rejects out-of-range hidden items and writes column fields with multiple values', async () => {
     const bytes = await buildSourceWorkbook()
     await expect(
       addPivotTable(bytes, {
@@ -273,8 +273,7 @@ describe('pivot filters', () => {
         rowHiddenItems: [[5]],
       }),
     ).rejects.toThrow(/out-of-range hidden item/)
-    await expect(
-      addPivotTable(bytes, {
+    const matrix=await addPivotTable(bytes, {
         ...singleLevelPivot(),
         name: 'Matrix',
         columnFieldIndices: [1],
@@ -287,7 +286,7 @@ describe('pivot filters', () => {
           { fieldIndex: 2, agg: 'sum' },
           { fieldIndex: 1, agg: 'count' },
         ],
-      }),
-    ).rejects.toThrow(/exactly one values entry/)
+      })
+    expect(await partOf(matrix,'xl/pivotTables/pivotTable1.xml')).toContain('<field x="-2"/>')
   })
 })

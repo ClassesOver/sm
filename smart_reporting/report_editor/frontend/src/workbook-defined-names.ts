@@ -10,12 +10,8 @@
 /// - apps/sheets/src/renderer/ExcelShell.tsx：use-in-formula:<name> 仅在活动
 ///   单元格为空时写入 =<name>，拒绝覆盖已有内容。
 ///
-/// 本地差异（诚实标注）：写盘协议 applyDefinedNames 只支持工作簿级全局名
-/// （xlsx-engine defined-names.ts 明确把 localSheetId 条目留给 page-setup），
-/// 读模型 readDefinedNames 也只读全局名，因此对话框省略固定源的工作表 scope
-/// 下拉，仅提供工作簿 scope；工作表级名称不读取也不改写，保持原样落盘。
-
 import { isValidDefinedName } from '@sheets-web/xlsx-engine'
+import { applyScopedDefinedNameAction } from './workbook-defined-name-scope'
 import { createModal } from './modal'
 
 /// Univer FWorkbook.getDefinedNames() 对工作簿 scope 返回的字面量
@@ -26,12 +22,14 @@ export interface DefinedNameRow {
   readonly name: string
   /// 引用或公式文本，按 workbook.xml 存储形式（无前导 "="）。
   readonly refersTo: string
+  readonly scopeSheetId?: string | undefined
+  readonly scopeSheetName?: string | undefined
 }
 
 export type DefinedNameAction =
-  | { kind: 'add'; name: string; ref: string }
-  | { kind: 'update'; originalName: string; name: string; ref: string }
-  | { kind: 'remove'; name: string }
+  | { kind: 'add'; name: string; ref: string; scopeSheetId?: string | undefined }
+  | { kind: 'update'; originalName: string; name: string; ref: string; scopeSheetId?: string | undefined }
+  | { kind: 'remove'; name: string; scopeSheetId?: string | undefined }
 
 export interface DefinedNameFacadeEntry {
   getName(): string
@@ -44,19 +42,18 @@ export interface DefinedNameFacadeEntry {
 
 export interface DefinedNameWorkbook {
   getDefinedNames(): DefinedNameFacadeEntry[]
-  newDefinedNameBuilder(): { setName(name: string): { setRef(ref: string): { build(): unknown } } }
+  newDefinedNameBuilder(): any
+  getSheetBySheetId?(id: string): unknown
   insertDefinedNameBuilder(param: unknown): unknown
 }
 
-const isWorkbookScope = (entry: { getLocalSheetId?(): string | undefined }): boolean => {
-  const scope = entry.getLocalSheetId?.()
-  return scope === undefined || scope === WORKBOOK_SCOPE
-}
+const scopeOf = (entry: DefinedNameFacadeEntry) => { const id = entry.getLocalSheetId?.(); return id && id !== WORKBOOK_SCOPE ? id : undefined }
+export const definedNameKey = (row: { name: string; scopeSheetId?: string | undefined; scopeSheetName?: string | undefined }) => JSON.stringify([row.scopeSheetId ?? row.scopeSheetName ?? null, row.name.toLowerCase()])
+export interface DefinedNameSheet { id: string; name: string }
 
 export const normalizeRefersTo = (ref: string): string => ref.replace(/^=/, '').trim()
 
-/// 实时读取工作簿级 defined names（FUniver getDefinedNames facade；
-/// 工作表级与 _xlnm. 保留名条目排除——它们由 page-setup 维护，不可经此改写）。
+/// 实时读取全局与工作表级用户名称；_xlnm. 保留名仍由页面设置维护。
 /// facade 缺少 getDefinedNames（版本方差/测试桩）时返回 undefined：调用方
 /// 必须跳过差分，绝不能把"读不到"当成"已全部删除"。
 export function liveDefinedNames(workbook: DefinedNameWorkbook | null | undefined): DefinedNameRow[] | undefined {
@@ -65,50 +62,49 @@ export function liveDefinedNames(workbook: DefinedNameWorkbook | null | undefine
   return entries.flatMap(entry => {
     const name = entry.getName?.()
     const refersTo = entry.getFormulaOrRefString?.()
-    if (!name || refersTo === undefined || !isWorkbookScope(entry) || name.startsWith('_xlnm.')) return []
-    return [{ name, refersTo: normalizeRefersTo(refersTo) }]
+    if (!name || refersTo === undefined || name.toLowerCase().startsWith('_xlnm.')) return []
+    const scopeSheetId = scopeOf(entry)
+    if (scopeSheetId && workbook.getSheetBySheetId && !workbook.getSheetBySheetId(scopeSheetId)) return []
+    return [{ name, refersTo: normalizeRefersTo(refersTo), ...(scopeSheetId ? { scopeSheetId } : {}) }]
   })
 }
 
 export interface DefinedNamesPlan {
-  sets?: readonly { name: string; refersTo: string }[]
-  removes?: readonly string[]
+  sets?: readonly { name: string; refersTo: string; scopeSheetName?: string | undefined }[]
+  removes?: readonly (string | { name: string; scopeSheetName: string })[]
 }
 
-/// baseline（workbook.xml 全局名，currentModel.definedNames）与实时状态的差分。
+/// baseline 与实时名称按工作表作用域及大小写不敏感名称比对。
 /// 名字按大小写不敏感判重（Excel 语义）；同名换引用时按 baseline 原名原地替换，
 /// 避免引擎精确大小写 replace 在 workbook.xml 留下旧条目；纯大小写改名不产生
 /// 操作（引擎无法在同一次 plan 中既删又设同名）。baseline 中引擎无法校验的
 /// 非法名（含 _xlnm.）保持不动。
-export function definedNamesPlan(baseline: readonly DefinedNameRow[], live: readonly DefinedNameRow[]): DefinedNamesPlan {
-  const baselineMap = new Map(baseline.map(row => [row.name.toLowerCase(), row]))
-  const liveKeys = new Set<string>()
-  const sets: { name: string; refersTo: string }[] = []
-  for (const row of live) {
-    const key = row.name.toLowerCase()
+export function definedNamesPlan(baseline: readonly DefinedNameRow[], live: readonly DefinedNameRow[], sheets: readonly DefinedNameSheet[] = []): DefinedNamesPlan {
+  const toFile = (row: DefinedNameRow) => {
+    const scopeSheetName = row.scopeSheetId === undefined ? row.scopeSheetName : sheets.find(sheet => sheet.id === row.scopeSheetId)?.name
+    if (row.scopeSheetId !== undefined && scopeSheetName === undefined) throw new Error('名称的工作表作用域不存在，请重新打开工作簿')
+    return { name: row.name, refersTo: row.refersTo, ...(scopeSheetName !== undefined ? { scopeSheetName } : {}) }
+  }
+  const beforeRows = baseline.filter(row => row.scopeSheetName === undefined || !sheets.length || sheets.some(sheet => sheet.name === row.scopeSheetName)).map(toFile)
+  const baselineMap = new Map(beforeRows.map(row => [definedNameKey(row), row]))
+  const liveKeys = new Set<string>(), sets: NonNullable<DefinedNamesPlan['sets']>[number][] = []
+  for (const current of live) {
+    const row = toFile(current), key = definedNameKey(row)
     if (liveKeys.has(key)) continue
     liveKeys.add(key)
     if (!isValidDefinedName(row.name)) continue
     const before = baselineMap.get(key)
-    if (!before) sets.push({ name: row.name, refersTo: row.refersTo })
-    else if (before.refersTo !== row.refersTo) sets.push({ name: before.name, refersTo: row.refersTo })
+    if (!before) sets.push(row)
+    else if (before.refersTo !== row.refersTo) sets.push({ ...row, name: before.name })
   }
-  const removes = baseline.flatMap(row =>
-    liveKeys.has(row.name.toLowerCase()) || !isValidDefinedName(row.name) ? [] : [row.name])
-  return {
-    ...(sets.length ? { sets } : {}),
-    ...(removes.length ? { removes } : {}),
-  }
+  const removes = beforeRows.flatMap(row => liveKeys.has(definedNameKey(row)) || !isValidDefinedName(row.name) ? []
+    : [row.scopeSheetName === undefined ? row.name : { name: row.name, scopeSheetName: row.scopeSheetName }])
+  return { ...(sets.length ? { sets } : {}), ...(removes.length ? { removes } : {}) }
 }
 
-export function definedNamesPlanOperation(
-  baseline: readonly DefinedNameRow[],
-  live: readonly DefinedNameRow[],
-): { kind: 'applyDefinedNames'; plan: DefinedNamesPlan } | undefined {
-  const plan = definedNamesPlan(baseline, live)
-  return (plan.sets?.length ?? 0) + (plan.removes?.length ?? 0) > 0
-    ? { kind: 'applyDefinedNames', plan }
-    : undefined
+export function definedNamesPlanOperation(baseline: readonly DefinedNameRow[], live: readonly DefinedNameRow[], sheets: readonly DefinedNameSheet[] = []): { kind: 'applyDefinedNames'; plan: DefinedNamesPlan } | undefined {
+  const plan = definedNamesPlan(baseline, live, sheets)
+  return (plan.sets?.length ?? 0) + (plan.removes?.length ?? 0) > 0 ? { kind: 'applyDefinedNames', plan } : undefined
 }
 
 /// Excel 引用转义：含非 [A-Za-z0-9_] 的工作表名用单引号包裹，内部引号翻倍。
@@ -155,15 +151,22 @@ export function applyDefinedNameAction(
   }
   const lower = name.toLowerCase()
   const kept = action.kind === 'update' ? action.originalName : name
-  const collision = live.find(row => row.name !== kept && row.name.toLowerCase() === lower)
+  const collision = action.kind === 'remove' ? undefined : live.find(row => row.scopeSheetId === action.scopeSheetId && !(action.kind === 'update' && row.name === kept) && row.name.toLowerCase() === lower)
   if (collision) return `名称 "${name}" 与已有名称 "${collision.name}" 冲突（名称大小写不敏感）。`
   if (!workbook) return '工作簿尚未就绪。'
   try {
-    if (action.kind === 'add') {
-      workbook.insertDefinedNameBuilder(workbook.newDefinedNameBuilder().setName(name).setRef(ref).build())
+    if (applyScopedDefinedNameAction(workbook, action)) { /* 已经官方命令完成，下面独立回读核验。 */ }
+    else if (action.kind === 'add') {
+      const builder = workbook.newDefinedNameBuilder().setName(name).setRef(ref)
+      if (action.scopeSheetId) {
+        const sheet = workbook.getSheetBySheetId?.(action.scopeSheetId)
+        if (!sheet || typeof builder.setScopeToWorksheet !== 'function') return '工作表作用域不存在。'
+        builder.setScopeToWorksheet(sheet)
+      }
+      workbook.insertDefinedNameBuilder(builder.build())
     } else {
       const originalName = action.kind === 'update' ? action.originalName : action.name
-      const target = workbook.getDefinedNames().find(entry => entry.getName() === originalName && isWorkbookScope(entry))
+      const target = workbook.getDefinedNames().find(entry => entry.getName() === originalName && scopeOf(entry) === action.scopeSheetId)
       if (!target) return '该名称已不存在，请刷新列表后重试。'
       if (action.kind === 'remove') target.delete()
       else {
@@ -176,17 +179,17 @@ export function applyDefinedNameAction(
   }
   const after = liveDefinedNames(workbook) ?? []
   const applied = action.kind === 'remove'
-    ? !after.some(row => row.name.toLowerCase() === lower)
-    : after.some(row => row.name.toLowerCase() === lower && row.refersTo === ref)
+    ? !after.some(row => row.name.toLowerCase() === lower && row.scopeSheetId === action.scopeSheetId)
+    : after.some(row => row.name.toLowerCase() === lower && row.refersTo === ref && row.scopeSheetId === action.scopeSheetId)
   return applied ? null : '定义名称未应用（名称或引用状态未变化）。'
 }
 
 /// 名称管理器对话框（createModal 款，复用既有 token/类，不新增 CSS）：
-/// 列表 + 新建/更新/删除（编辑限制与固定源一致：scope 创建后不可改，本地仅
-/// 工作簿 scope）。列表显示 "名称 → 引用"。
+/// 列表 + 新建/更新/删除；作用域创建后不可改，复合键区分同名名称。
 export function createNameManagerDialog(
   root: HTMLElement,
   options: {
+    sheets?(): DefinedNameSheet[]
     rows(): DefinedNameRow[]
     apply(action: DefinedNameAction): string | null
   },
@@ -199,7 +202,7 @@ export function createNameManagerDialog(
     content: `
       <h2>名称管理器</h2><form class="workbook-ribbon-note-form">
         <label>已定义名称<select class="workbook-ribbon-select workbook-defined-name-list" size="6" style="width:100%" aria-label="已定义名称"></select></label>
-        <p class="workbook-ribbon-note-author">范围：工作簿（工作表级名称由页面设置维护，此处不显示、不可改）</p>
+        <label>范围<select class="workbook-defined-name-scope" aria-label="名称作用域"></select></label>
         <label>名称<input class="workbook-ribbon-format-code workbook-defined-name-name" maxlength="255" autocomplete="off" spellcheck="false" placeholder="MyRange"></label>
         <label>引用<input class="workbook-ribbon-format-code workbook-defined-name-ref" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Sheet1!$A$1:$B$9"></label>
         <p class="workbook-defined-name-error" role="alert"></p>
@@ -211,6 +214,7 @@ export function createNameManagerDialog(
       </form>`,
   })
   const list = modal.card.querySelector<HTMLSelectElement>('.workbook-defined-name-list')!
+  const scopeInput = modal.card.querySelector<HTMLSelectElement>('.workbook-defined-name-scope')!
   const nameInput = modal.card.querySelector<HTMLInputElement>('.workbook-defined-name-name')!
   const refInput = modal.card.querySelector<HTMLInputElement>('.workbook-defined-name-ref')!
   const error = modal.card.querySelector<HTMLElement>('[role="alert"]')!
@@ -221,16 +225,18 @@ export function createNameManagerDialog(
 
   const rows = (): DefinedNameRow[] => options.rows()
   const syncButtons = () => {
+    scopeInput.disabled = selected !== null
     updateButton.disabled = selected === null
     deleteButton.disabled = selected === null
   }
   const renderRows = () => {
     const current = rows()
+    scopeInput.replaceChildren(...[{ id: '', name: '工作簿' }, ...(options.sheets?.() ?? [])].map(sheet => Object.assign(document.createElement('option'), { value: sheet.id, textContent: sheet.name })))
     list.replaceChildren(...(current.length
       ? current.map(row => {
           const option = document.createElement('option')
-          option.value = row.name
-          option.textContent = `${row.name} → ${row.refersTo}`
+          option.value = row.scopeSheetId ? definedNameKey(row) : row.name
+          option.textContent = `${row.name}${row.scopeSheetId ? ` [${options.sheets?.().find(sheet => sheet.id === row.scopeSheetId)?.name ?? row.scopeSheetId}]` : ''} → ${row.refersTo}`
           return option
         })
       : [Object.assign(document.createElement('option'), { value: '', textContent: '（暂无定义名称）', disabled: true })]))
@@ -248,8 +254,9 @@ export function createNameManagerDialog(
   }
 
   list.addEventListener('change', () => {
-    const row = rows().find(item => item.name === list.value) ?? null
-    selected = row?.name ?? null
+    const row = rows().find(item => (item.scopeSheetId ? definedNameKey(item) : item.name) === list.value) ?? null
+    selected = row ? definedNameKey(row) : null
+    scopeInput.value = row?.scopeSheetId ?? ''
     nameInput.value = row?.name ?? ''
     refInput.value = row?.refersTo ?? ''
     error.textContent = ''
@@ -260,15 +267,17 @@ export function createNameManagerDialog(
       error.textContent = '请填写名称和引用。'
       return
     }
-    run({ kind: 'add', name: nameInput.value.trim(), ref: refInput.value.trim() })
+    run({ kind: 'add', name: nameInput.value.trim(), ref: refInput.value.trim(), ...(scopeInput.value ? { scopeSheetId: scopeInput.value } : {}) })
   })
   updateButton.addEventListener('click', () => {
     if (selected === null) return
-    run({ kind: 'update', originalName: selected, name: nameInput.value.trim(), ref: refInput.value.trim() })
+    const row = rows().find(item => definedNameKey(item) === selected)!
+    run({ kind: 'update', originalName: row.name, name: nameInput.value.trim(), ref: refInput.value.trim(), ...(row.scopeSheetId ? { scopeSheetId: row.scopeSheetId } : {}) })
   })
   deleteButton.addEventListener('click', () => {
     if (selected === null) return
-    run({ kind: 'remove', name: selected })
+    const row = rows().find(item => definedNameKey(item) === selected)!
+    run({ kind: 'remove', name: row.name, ...(row.scopeSheetId ? { scopeSheetId: row.scopeSheetId } : {}) })
   })
   return {
     open(initial?: { ref?: string }) {
