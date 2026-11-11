@@ -9,6 +9,7 @@ import {inspectClassicComments,validateClassicCommentEdits,applyClassicCommentEd
 import { inspectPictureImages, validatePictureInsertions, validatePictureReplacements, applyPictureReplacements, type PictureInsertion, type PictureReplacement } from './pptx-images.ts'
 import { inspectChartEdit, validateChartEdits, applyChartEdits, type NativeChartEdit } from './pptx-chart-edit.ts'
 import { inspectPictureCrop, validatePictureCrops, applyPictureCrops, type PictureCrop } from './pptx-picture-crop.ts'
+import { inspectBackgroundImage, validateBackgroundImages, applyBackgroundImages, type BackgroundImage } from './pptx-background-image.ts'
 import { inspectPictureOpacity, validatePictureOpacities, applyPictureOpacities, type PictureOpacity } from './pptx-picture-opacity.ts'
 import { findReplaceEditable } from './pptx-find-replace.ts'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
@@ -131,6 +132,8 @@ type Input = {
   animationSequences?: { slideIndex: number; items: AnimationSequenceItem[] }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]
   backgrounds?: { slideIndex: number; color: string }[]
+  /** 固定源背景面板图片填充：一张图片应用到 slideIndices（来源页序号），拉伸或平铺。 */
+  backgroundImages?: BackgroundImage[]
   textBoxes?: TextBox[]
   deletions?: { slideIndex: number; elementId: string }[]
   paragraphFormatting?: {
@@ -333,6 +336,7 @@ if (request.action === 'inspect') {
       comments:comments[slideIndex],
       ...inspectSlideNotes(opened,slideIndex),
       background: slide.background?.type === 'solid' ? slide.background.color : null,
+      ...inspectBackgroundImage(opened, slideIndex),
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
       ...transitionApplyAllState(slide),
@@ -700,6 +704,7 @@ if (request.action === 'inspect') {
     (request.paragraphFormatting ?? []).some((item) => touchesDeleted(item.slideIndex, item.elementId))) {
     throw new Error('delete_target_has_pending_edits')
   }
+  const backgroundImages = validateBackgroundImages(opened, request.backgroundImages, { removedSlides, colorSlides: new Set((request.backgrounds ?? []).map(item => item.slideIndex)) })
   for (const background of request.backgrounds ?? []) {
     if (!validSlideIndex(background.slideIndex, slideCount)) throw new Error('background_slide_index_invalid')
     if (typeof background.color !== 'string' || !colorPattern.test(background.color)) throw new Error('background_color_invalid')
@@ -942,6 +947,7 @@ if (request.action === 'inspect') {
   for (const background of request.backgrounds ?? []) {
     setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
   }
+  applyBackgroundImages(opened, originalSlides, backgroundImages)
   for (const shape of request.shapes ?? []) {
     const { x, y, width, height } = shape.geometry
     const line = shapePresets.lines.includes(shape.kind)

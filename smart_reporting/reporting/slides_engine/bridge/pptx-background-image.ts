@@ -1,0 +1,44 @@
+/**
+ * 固定源 FormatBackgroundPane 的图片填充（stretch / tile）与“应用到全部”：
+ * 由未改动的 setSlideBackgroundImage 写入；同一张图片应用到多页时只落一个媒体部件，其余页复用。
+ */
+import { setSlideBackgroundImage, type OpenedPptx } from '@genoffice/pptx-engine'
+import { assetBytes, type PictureAsset } from './pptx-images.ts'
+
+export type BackgroundImage = PictureAsset & { slideIndices: number[]; tile: boolean }
+
+export function inspectBackgroundImage(opened: OpenedPptx, slideIndex: number): { backgroundImage: { mode: 'stretch' | 'tile' } | null } {
+  const background = opened.deck.slides[slideIndex]?.background
+  return { backgroundImage: background?.type === 'image' ? { mode: background.mode === 'tile' ? 'tile' : 'stretch' } : null }
+}
+
+export function validateBackgroundImages(opened: OpenedPptx, input: unknown, conflicts: { removedSlides?: ReadonlySet<number>; colorSlides?: ReadonlySet<number> } = {}): BackgroundImage[] {
+  if (input === undefined) return []
+  if (!Array.isArray(input) || input.length > 10) throw Error('background_image_request_invalid')
+  const used = new Set<number>()
+  let total = 0
+  for (const item of input) {
+    if (!item || typeof item !== 'object' || Object.keys(item).sort().join() !== 'bytesBase64,extension,slideIndices,tile' || typeof item.tile !== 'boolean'
+      || !Array.isArray(item.slideIndices) || !item.slideIndices.length || item.slideIndices.length > opened.deck.slides.length) throw Error('background_image_invalid')
+    for (const index of item.slideIndices) {
+      if (!Number.isInteger(index) || index < 0 || index >= opened.deck.slides.length || used.has(index)) throw Error('background_image_target_invalid')
+      if (conflicts.removedSlides?.has(index) || conflicts.colorSlides?.has(index)) throw Error('background_image_target_conflict')
+      used.add(index)
+    }
+    total += assetBytes(item).length
+    if (total > 8 * 1024 * 1024) throw Error('picture_budget_exceeded')
+  }
+  return input as BackgroundImage[]
+}
+
+export function applyBackgroundImages(opened: OpenedPptx, slides: readonly OpenedPptx['deck']['slides'][number][], items: BackgroundImage[]): void {
+  for (const item of items) {
+    const bytes = assetBytes(item)
+    let mediaPath: string | null = null
+    for (const index of item.slideIndices) {
+      const slide = slides[index]!
+      mediaPath = setSlideBackgroundImage(opened, slide, mediaPath ? { mediaPath } : { bytes, ext: item.extension }, item.tile)
+      if (!mediaPath) throw Error('background_image_apply_failed')
+    }
+  }
+}

@@ -18,7 +18,7 @@ export function inspectPictureImages(opened: OpenedPptx): PictureImageIdentity[]
   return [{slideIndex,elementId:element.id,sha256:bytes?.length?digest(bytes):null,size:bytes?.length??null,replaceable,readOnlyReason:replaceable?null:'图片来源媒体或嵌入身份无法核验'}]
  }))
 }
-function assetBytes(item: PictureAsset): Buffer {
+export function assetBytes(item: PictureAsset): Buffer {
  if(!item || typeof item.bytesBase64!=='string' || item.bytesBase64.length>Math.ceil(MAX_IMAGE_BYTES/3)*4)throw Error('picture_asset_invalid')
  const bytes=Buffer.from(item.bytesBase64,'base64')
  if(!bytes.length||bytes.length>MAX_IMAGE_BYTES||bytes.toString('base64')!==item.bytesBase64)throw Error('picture_asset_invalid')

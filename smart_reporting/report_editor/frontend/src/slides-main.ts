@@ -44,7 +44,7 @@ type DeckElement = { id: string; type: string; name: string; text: string; edita
 type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
-type DeckSlide = { notesText?:string;notesEditable?:boolean;notesReason?:string|null; slideIndex: number; comments?: SlideComments; hidden?: boolean; headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto?: boolean }; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
+type DeckSlide = { backgroundImage?: { mode: 'stretch' | 'tile' } | null; notesText?:string;notesEditable?:boolean;notesReason?:string|null; slideIndex: number; comments?: SlideComments; hidden?: boolean; headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto?: boolean }; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
 type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; sections?: { name: string; slideIndices: number[] }[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
 type Edit = {
   slideIndex: number
@@ -90,6 +90,8 @@ type SlideChanges = {
   pictureCrops?: { slideIndex:number; elementId:string; expectedSha256:string; expectedSize:number; srcRect:CropRect|null; geometry:{x:number;y:number;width:number;height:number} }[]
   /** 固定源 Picture Format ▸ Transparency：整图不透明度（0–1，整数百分比），按媒体身份绑定。 */
   pictureOpacities?: { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number; opacity: number }[]
+  /** 固定源 FormatBackgroundPane 图片填充：一张图片应用到若干来源页，拉伸或平铺。 */
+  backgroundImages?: { slideIndices: number[]; bytesBase64: string; extension: 'png' | 'jpg'; tile: boolean }[]
   chartEdits?: ({ slideIndex: number; elementId: string } & NativeChartPatch)[]
   hiddenSlides?: { slideIndex: number; hidden: boolean }[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]; animationSequences?: { slideIndex: number; items: SequenceItem[] }[]
@@ -281,6 +283,44 @@ function openHeaderFooterDialog() {
   })
   dialog.showModal()
 }
+/** 同一页只保留最新一种背景：设图片时移除这些页的待保存纯色，设纯色时把这些页从待保存图片中移除。 */
+function dropBackgroundImages(slideIndices: number[]) {
+  for (let index = backgroundImageEdits.length - 1; index >= 0; index--) {
+    const item = backgroundImageEdits[index]!
+    item.slideIndices = item.slideIndices.filter(slideIndex => !slideIndices.includes(slideIndex))
+    if (!item.slideIndices.length) backgroundImageEdits.splice(index, 1)
+  }
+}
+/** 固定源 FormatBackgroundPane ▸ 图片填充：选择 PNG/JPEG，拉伸或平铺，可应用到全部页面。 */
+function openBackgroundImageDialog() {
+  if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; return }
+  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-bg-image-dialog'; dialog.setAttribute('aria-label', '背景图片')
+  dialog.innerHTML = '<h3>背景图片</h3><label>填充方式 <select name="mode" aria-label="背景图片填充方式"><option value="stretch">拉伸</option><option value="tile">平铺</option></select></label><label class="slides-bg-image-all"><input name="all" type="checkbox"> 应用到全部页面</label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">选择图片…</button></div>'
+  const current = backgroundImageEdits.find(item => item.slideIndices.includes(selectedSlide))
+  dialog.querySelector<HTMLSelectElement>('select[name=mode]')!.value = (current?.tile ?? slideAt(selectedSlide).backgroundImage?.mode === 'tile') ? 'tile' : 'stretch'
+  host.append(dialog)
+  dialog.addEventListener('close', () => dialog.remove())
+  dialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => dialog.close())
+  dialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', async () => {
+    const alert = dialog.querySelector('[role=alert]')!, slideIndex = selectedSlide, snapshot = JSON.stringify(slideChanges())
+    const tile = dialog.querySelector<HTMLSelectElement>('select[name=mode]')!.value === 'tile'
+    const all = dialog.querySelector<HTMLInputElement>('input[name=all]')!.checked
+    const slideIndices = all ? deck.slides.map((_, index) => index).filter(index => !deletedSlides.has(index)) : [slideIndex]
+    try {
+      const file = await pickSlideImage()
+      if (!file) return
+      const image = await prepareSlideImage(file, deck.size)
+      if (disposed || locked() || selectedSlide !== slideIndex || JSON.stringify(slideChanges()) !== snapshot) throw new Error('页面或草稿已变化，请重新选择背景图片')
+      if (backgroundImageEdits.length >= 10 && !backgroundImageEdits.every(item => item.slideIndices.every(index => slideIndices.includes(index)))) throw new Error('待保存的背景图片已达 10 张，请先保存')
+      dropBackgroundImages(slideIndices)
+      for (const index of slideIndices) backgroundEdits.delete(index)
+      backgroundImageEdits.push({ slideIndices, bytesBase64: image.bytesBase64, extension: image.extension, tile })
+      dialog.close(); renderStructurePending(); renderInspector(); markDirty(); refreshCanvasPreview()
+      canvasStatus.textContent = all ? '背景图片已暂存到全部页面' : '背景图片已暂存到当前页'
+    } catch (error) { alert.textContent = error instanceof Error ? error.message : '背景图片处理失败，原文件保留' }
+  })
+  dialog.showModal()
+}
 function openSectionDialog() {
   const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog'; dialog.setAttribute('aria-label', '新增节')
   dialog.innerHTML = '<h3>新增节</h3><label>节名称 <input name="name" type="text" maxlength="100" value="无标题节"></label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div>'
@@ -397,7 +437,7 @@ function opacityReason(): string | null {
   return null
 }
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
-  return pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
+  return backgroundImageEdits.some(item => item.slideIndices.includes(slideIndex)) || pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
     || commentPane.hasDraft(slideIndex) || commentEdits.some(edit => edit.slideIndex === slideIndex) || hiddenSlideEdits.has(slideIndex) || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...tableStyleEdits.values(), ...tableStructureEdits.values(), ...chartEdits, ...smartArtEdits, ...nativeImages, ...pictureReplacements, ...pictureCrops, ...nativeChartEdits].some(item => item.slideIndex === slideIndex)
     || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
     || (!ignoreNewSlideSources && newSlides.some(item => newSlideSource(item) === slideIndex))
@@ -489,6 +529,7 @@ function removeNewSlide(slideIndex: number) {
   renderSlides(); renderInspector(); markDirty()
 }
 const backgroundEdits = new Map<number, string>()
+const backgroundImageEdits: NonNullable<SlideChanges['backgroundImages']> = []
 const textBoxEdits: TextBoxEdit[] = []
 const textFormattingEdits = new Map<string, TextFormatting>()
 const paragraphFormattingEdits: ParagraphFormatting[] = []
@@ -1093,6 +1134,7 @@ function slideChanges(): SlideChanges {
     ...(animationSequences.size ? { animationSequences: [...animationSequences].map(([slideIndex, items]) => ({ slideIndex, items: items.map(item => ({ ...item })) })) } : {}),
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
+    ...(backgroundImageEdits.length ? { backgroundImages: backgroundImageEdits.map(item => ({ ...item, slideIndices: [...item.slideIndices] })) } : {}),
     textBoxes: textBoxEdits.map(({ watermark: _watermark, ...box }) => box),
     deletions: [...deletions.values()].map(({ slideIndex, elementId }) => ({ slideIndex, elementId })) }
 }
@@ -1100,7 +1142,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false) {
   if (!nativeDraft) return
   const operations = candidate ?? nativeDraft.operations
-  const supported = new Set(['notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -1112,6 +1154,14 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredPastes = validateSlidesClipboardDraft(changes, deck.slides)
   const transitions = restoredTransitions(changes.transitions, deck.slides.length)
   if (native && transitions.some(item => !transitionEditingAllowed(deck.slides[item.slideIndex]))) throw new Error('来源含尚不能安全修改的转场兼容性内容；原草稿已保留')
+  const restoredBackgroundImages = changes.backgroundImages ?? []
+  {
+    const used = new Set<number>(), colors = new Set((changes.backgrounds ?? []).map(item => item.slideIndex)), removed = new Set(changes.deletedSlides ?? [])
+    if (!Array.isArray(restoredBackgroundImages) || restoredBackgroundImages.length > 10 || restoredBackgroundImages.some(item => !item || Object.keys(item).sort().join() !== 'bytesBase64,extension,slideIndices,tile'
+      || typeof item.tile !== 'boolean' || !['png', 'jpg'].includes(item.extension) || typeof item.bytesBase64 !== 'string' || !Array.isArray(item.slideIndices) || !item.slideIndices.length
+      || item.slideIndices.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length || used.has(index) || colors.has(index) || removed.has(index) || !used.add(index))))
+      throw new Error('背景图片草稿无效；原草稿已保留')
+  }
   const restoredOpacities = changes.pictureOpacities ?? []
   if (!Array.isArray(restoredOpacities) || restoredOpacities.length > 50 || new Set(restoredOpacities.map(item => `${item?.slideIndex}:${item?.elementId}`)).size !== restoredOpacities.length || restoredOpacities.some(item => {
     const element = deck.slides[item?.slideIndex]?.elements.find(candidate => candidate.id === item.elementId)
@@ -1226,6 +1276,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   for (const transition of transitions) transitionEdits.set(transition.slideIndex, transition.kind)
   for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
   for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
+  backgroundImageEdits.splice(0, backgroundImageEdits.length, ...restoredBackgroundImages.map(item => ({ ...item, slideIndices: [...item.slideIndices] })))
   for (const deletion of changes.deletions ?? []) {
     const element = deck.slides[deletion.slideIndex]?.elements.find(item => item.id === deletion.elementId)
     deletions.set(editKey(deletion.slideIndex, deletion.elementId), { ...deletion, label: element?.name || element?.text || deletion.elementId })
@@ -1927,9 +1978,10 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         markDirty()
         break
       }
+      case 'backgroundImage': openBackgroundImageDialog(); return
       case 'background':
         if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) {
-          backgroundEdits.set(selectedSlide, value.toUpperCase()); renderStructurePending(); markDirty()
+          backgroundEdits.set(selectedSlide, value.toUpperCase()); dropBackgroundImages([selectedSlide]); renderStructurePending(); markDirty()
         }
         break
       case 'bold':
@@ -2307,6 +2359,10 @@ function renderStructurePending() {
   for (const [slideIndex, color] of backgroundEdits) {
     row(`第 ${order.indexOf(slideIndex) + 1} 页 · 背景 ${color}`, () => backgroundEdits.delete(slideIndex))
   }
+  for (const [index, item] of backgroundImageEdits.entries()) {
+    const pages = item.slideIndices.length === deck.slides.length ? '全部页面' : item.slideIndices.map(slideIndex => `第 ${order.indexOf(slideIndex) + 1} 页`).join('、')
+    row(`${pages} · 背景图片（${item.tile ? '平铺' : '拉伸'}）`, () => backgroundImageEdits.splice(index, 1))
+  }
   for (const box of textBoxEdits) {
     const text = document.createElement('input')
     text.type = 'text'
@@ -2341,6 +2397,7 @@ watermarkAdd.addEventListener('click', () => { if (isNewSlide(selectedSlide)) { 
 backgroundColor.addEventListener('change', () => {
   if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; renderInspector(); return }
   backgroundEdits.set(selectedSlide, backgroundColor.value.toUpperCase())
+  dropBackgroundImages([selectedSlide])
   canvasStatus.textContent = '背景修改将在保存并打开新修订后更新画布。'
   renderStructurePending()
   renderInspector()
@@ -2598,6 +2655,7 @@ const save = async () => {
     groupEdits.splice(0)
     notesEdits.clear();linkEdits.splice(0);clipboardPastes.splice(0);nativeClipboard=undefined;stopBrush()
     backgroundEdits.clear()
+    backgroundImageEdits.splice(0)
     textBoxEdits.splice(0, textBoxEdits.length)
     textFormattingEdits.clear()
     paragraphFormattingEdits.splice(0)

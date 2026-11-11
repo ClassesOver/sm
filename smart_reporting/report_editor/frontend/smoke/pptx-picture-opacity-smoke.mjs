@@ -149,8 +149,20 @@ try {
   await setTransparency(0)
   await waitDraft(operation => !operation.pictureOpacities)
   await setTransparency(35)
-  const completeDraft = await waitDraft(operation => operation.pictureOpacities?.[0]?.opacity === 0.65)
+  await waitDraft(operation => operation.pictureOpacities?.[0]?.opacity === 0.65)
+  // 设计 ▸ 背景图片：平铺 + 应用到全部页面（固定源 FormatBackgroundPane 图片填充）
+  const backgroundPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAGUlEQVR4nGN8cdSdgRTARJLqUQ2jGoaUBgAsYwIUY/XmyAAAAABJRU5ErkJggg==', 'base64')  // Pillow 生成的 16×16 PNG
+  await page.locator('[data-ribbon-tab="design"]').click()
+  await page.locator('[data-command="backgroundImage"]').click()
+  await page.locator('.slides-bg-image-dialog').waitFor({ state: 'visible' })
+  await page.getByLabel('背景图片填充方式').selectOption('tile')
+  await page.locator('.slides-bg-image-dialog input[name=all]').check()
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.locator('.slides-bg-image-dialog button[value=ok]').click()])
+  await chooser.setFiles({ name: 'bg.png', mimeType: 'image/png', buffer: backgroundPng })
+  const completeDraft = await waitDraft(operation => operation.backgroundImages?.length === 1)
   assert.deepEqual(completeDraft[0].pictureOpacities, [{ ...identity, opacity: 0.65 }])
+  assert.deepEqual(completeDraft[0].backgroundImages, [{ slideIndices: [0, 1], bytesBase64: backgroundPng.toString('base64'), extension: 'png', tile: true }])
+  assert.match(await page.locator('.structure-pending').textContent(), /全部页面 · 背景图片（平铺）/)
   // 有待保存透明度时不能替换图片
   assert.equal(await page.locator('[data-command="replacePicture"]').isEnabled(), true)
   // 刷新后草稿恢复，控件回显 35
@@ -181,16 +193,22 @@ try {
   assert.equal(independent.slides[0].pictures[0].sha256, sourceIndependent.slides[0].pictures[0].sha256)
   assert.deepEqual(independent.slides[0].pictures[0].geometry, sourceIndependent.slides[0].pictures[0].geometry)
   assert.match(independent.slideXml, /<a:alphaModFix amt="65000"\/>/)
+  assert.match(independent.slideXml, /<p:bg><p:bgPr><a:blipFill[^>]*><a:blip r:embed="rId\d+"\/><a:tile /)
   assert.doesNotMatch(sourceIndependent.slideXml, /alphaModFix/)
   assert.deepEqual(independent.slides[1], sourceIndependent.slides[1])
-  for (const [path, digest] of Object.entries(sourceIndependent.zip)) {
-    if (path !== 'ppt/slides/slide1.xml') assert.equal(independent.zip[path], digest, `untouched part ${path}`)
-  }
+  // 第 2 页内容不变，只多了背景；新增唯一一个背景媒体部件，供两页共用
+  const changed = new Set(['ppt/slides/slide1.xml', 'ppt/slides/slide2.xml', 'ppt/slides/_rels/slide1.xml.rels', 'ppt/slides/_rels/slide2.xml.rels', '[Content_Types].xml'])
+  for (const [path, digest] of Object.entries(sourceIndependent.zip)) if (!changed.has(path)) assert.equal(independent.zip[path], digest, `untouched part ${path}`)
+  const addedMedia = Object.keys(independent.zip).filter(path => !(path in sourceIndependent.zip) && path.startsWith('ppt/media/') && !path.endsWith('/'))
+  assert.equal(addedMedia.length, 1)
+  assert.equal(independent.zip[addedMedia[0]], sha(backgroundPng))
   activeBytes = downloaded; activeSha = sha(downloaded); activeRevision = 2
   stage('Independent download readback passed; opening revision 2')
   await open(2)
   const reopenedPicture = python({ mode: 'inspect', bytes: downloaded.toString('base64') }).model.slides[0].elements.find(element => element.type === 'picture')
   assert.equal(reopenedPicture.pictureOpacity, 0.65)
+  const reopenedModel = python({ mode: 'inspect', bytes: downloaded.toString('base64') }).model
+  assert.deepEqual(reopenedModel.slides.map(slide => slide.backgroundImage), [{ mode: 'tile' }, { mode: 'tile' }])
   await page.locator('#object-select').selectOption(reopenedPicture.id)
   await page.locator('[data-ribbon-tab="pictureFormat"]').click()
   assert.equal(await transparency.inputValue(), '35')

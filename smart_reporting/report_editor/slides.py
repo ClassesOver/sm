@@ -583,6 +583,7 @@ class ReportSlidesEditorService:
         animations: list[dict[str, Any]] | None = None,
         slide_layouts: list[dict[str, Any]] | None = None,
         backgrounds: list[dict[str, Any]] | None = None,
+        background_images: list[dict[str, Any]] | None = None,
         text_boxes: list[dict[str, Any]] | None = None,
         deletions: list[dict[str, Any]] | None = None,
         paragraph_formatting: list[dict[str, Any]] | None = None,
@@ -677,6 +678,8 @@ class ReportSlidesEditorService:
                     request["slideLayouts"] = slide_layouts
                 if backgrounds:
                     request["backgrounds"] = backgrounds
+                if background_images:
+                    request["backgroundImages"] = background_images
                 if text_boxes:
                     request["textBoxes"] = text_boxes
                 if deletions:
