@@ -1,0 +1,83 @@
+{
+  "jobId": "job-full-render-smoke",
+  "sources": [
+    {
+      "path": "data/overview.csv",
+      "size": 121,
+      "sha256": "0302769af2070f9c6d8ce6d1cbd710683c7ff11f12addc184c5205ed033d8529"
+    }
+  ],
+  "_documentContext": {
+    "title": "业务知识附录验证",
+    "periodLabel": "2026 年",
+    "organizationName": "智能运营验证机构",
+    "generatedByLabel": "Reporting Agent",
+    "watermarkText": "内部资料",
+    "generatedDate": "2026-11-11",
+    "sectionNumbers": [
+      "1"
+    ],
+    "sections": [
+      {
+        "code": "overview",
+        "sectionNumber": "1",
+        "title": "经营概览"
+      }
+    ],
+    "headingNumbers": [
+      {
+        "level": 2,
+        "number": "1",
+        "title": "经营概览",
+        "sectionCode": "overview",
+        "anchor": "report-section-overview"
+      }
+    ]
+  },
+  "_editorExportSettings": {
+    "cover": false,
+    "toc": false,
+    "sources": true
+  },
+  "_citationPresentations": [
+    {
+      "citationId": "citation_001",
+      "label": "集团医院营业收入按月汇总冻结数据长中文业务名称",
+      "coverageItems": [
+        {
+          "label": "营业收入明细",
+          "periods": [
+            "2026-01",
+            "2026-12"
+          ]
+        }
+      ]
+    }
+  ],
+  "_traceSourcePresentations": {
+    "claims": [],
+    "tables": [],
+    "charts": [],
+    "datasets": {},
+    "knowledge": [
+      {
+        "subjectId": "sub-aaaaaaaaaaaaaaaa",
+        "summary": [
+          "登记引用：预算制度（第1版）",
+          "用途：规则依据",
+          "原文定位：原件第1–1行",
+          "原文摘录：预算按原始金额累计，不取期间平均。",
+          "请求期间：[2026-11-01, 2026-12-01)（含起日、不含止日）",
+          "登记时间：2026-10-01T00:00:00+00:00；事件时间：未登记",
+          "解释支持状态：待核实；原文可访问不等于解释已获支持。"
+        ],
+        "links": [
+          {
+            "subjectId": "sub-aaaaaaaaaaaaaaaa",
+            "url": "https://reports.example.com/reports/v1/editor/report-1/3?subject=sub-aaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    ]
+  }
+}

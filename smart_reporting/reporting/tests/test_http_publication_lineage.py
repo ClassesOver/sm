@@ -86,6 +86,13 @@ async def test_http_editor_export_keeps_files_when_formal_source_explanation_fai
 
 
 @pytest.mark.anyio
+async def test_http_editor_export_keeps_files_when_knowledge_source_projection_fails(tmp_path, monkeypatch):
+    from .test_formal_source_explanations import exercise_formal_source_export_fault
+
+    await exercise_formal_source_export_fault(tmp_path, monkeypatch, stage='knowledge')
+
+
+@pytest.mark.anyio
 @pytest.mark.integration
 async def test_http_initial_workbook_retains_download_on_publication_fact_read_failure(
     basis_context, document_context, receipt_snapshot, monkeypatch,

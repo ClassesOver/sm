@@ -259,12 +259,13 @@ async def test_table_only_formal_result_reaches_pdf_word_source_appendix(tmp_pat
         await editor.aclose()
 
 
-async def exercise_formal_source_export_fault(tmp_path, monkeypatch):
+async def exercise_formal_source_export_fault(tmp_path, monkeypatch, *, stage='formal'):
     """从真实来源校验失败走原生导出与HTTP下载；持久库使用隔离内存端口。"""
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
     from smart_reporting.report_editor import ReportEditorContext, ReportEditorService
+    from smart_reporting.reporting.business_knowledge import claims
     from smart_reporting.reporting.delivery.publishing import (
         ReportDownloadHttpService,
         create_report_download_router,
@@ -313,18 +314,23 @@ async def exercise_formal_source_export_fault(tmp_path, monkeypatch):
         trace_cursor_secret=b'trace-cursor-secret-32-bytes-ok!')
     calls = []
 
-    def unavailable(_resolved):
-        calls.append('formal_source_failure')
-        raise OSError('injected formal source explanation failure')
+    def unavailable(*args):
+        calls.append(stage + '_source_failure')
+        raise OSError('injected ' + stage + ' source explanation failure')
 
-    monkeypatch.setattr(reader_formulas, '_formal_metric_formula', unavailable)
+    if stage == 'formal':
+        monkeypatch.setattr(reader_formulas, '_formal_metric_formula', unavailable)
+    else:
+        monkeypatch.setattr(claims, 'knowledge_source_presentations', unavailable)
     try:
         document = await editor.read_document(context)
         result = await editor.export_revision(context, expected_sha256=document.sha256,
             settings={'sources': True, 'cover': False, 'toc': False})
-        assert calls == ['formal_source_failure']
+        assert calls == [stage + '_source_failure']
         assert result['validation']['ok'] is False
-        assert any(item['code'] == 'report_editor_lineage_unavailable'
+        expected_code = ('report_editor_lineage_unavailable' if stage == 'formal'
+            else 'report_editor_knowledge_source_unavailable')
+        assert any(item['code'] == expected_code
             for item in result['validation']['issues'])
         app = FastAPI()
         app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))

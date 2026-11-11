@@ -92,3 +92,62 @@ def knowledge_support(subject, interpretation, receipt, context, current, refere
     elif 'supports' not in relationships:
         issues.append('business_explanation_unverified')
     return tuple(dict.fromkeys(refs)), tuple(dict.fromkeys(issues)), conflicted
+
+
+def knowledge_source_presentations(index, supports, current):
+    """复用本次授权候选，逐声明核对完整引用；可访问不自动获得语义支持。"""
+    from ..semantics.models import ClaimSupport
+    from .claim_models import KnowledgeSourcePresentation
+
+    supported = {item.subject_id: item for item in map(ClaimSupport.model_validate, supports)}
+    entries = []
+    for subject in index.subject_bindings:
+        binding = subject.narrative_reference or subject.number_reference
+        receipt = binding.semantic_receipt if binding else None
+        if receipt is None:
+            continue
+        for ref in receipt.knowledge_references:
+            candidate = current.get(ref.evidence_id)
+            valid = (candidate is not None and candidate.reference == ref
+                and ref.basis_id == index.report_basis_id and ref.section_code == subject.locator.section_id)
+            if valid:
+                actual = candidate_for_hit(basis_id=ref.basis_id, section_code=ref.section_code,
+                    receipt_id=ref.receipt_id, release_id=ref.release_id, period=candidate.period, hit=candidate.hit)
+                valid = actual.reference == ref
+            values = dict(subject_id=subject.subject_id, evidence_id=ref.evidence_id,
+                available=bool(valid), support_status='unverified')
+            if valid:
+                hit = candidate.hit
+                support = supported.get(subject.subject_id)
+                values.update(title=hit.title, document_revision=hit.revision, role=hit.role,
+                    locator=hit.locator, quote=hit.quote, period=candidate.period,
+                    recorded_at=hit.recorded_at, event_time=hit.event_time,
+                    support_status=support.support_status if support and ref.evidence_id in support.evidence_refs else 'unverified')
+            else:
+                values['issue_codes'] = ('business_evidence_unavailable',)
+            entries.append(KnowledgeSourcePresentation(**values).model_dump(mode='json', by_alias=True))
+    return entries
+
+
+def knowledge_source_summary(raw):
+    """只把已核验展示模型转成人读文字，原件坐标不得当作报告页码。"""
+    from .claim_models import KnowledgeSourcePresentation
+
+    item = KnowledgeSourcePresentation.model_validate(raw)
+    status = {'supported': '已获支持', 'unverified': '待核实', 'conflicted': '存在反证'}[item.support_status]
+    if not item.available:
+        return ['原文未能按当前权限核验（材料撤销、身份变化或核验不可用），未附旧摘录。',
+            '解释支持状态：待核实']
+    locator = item.locator
+    location = {
+        'text_lines': f'原件第{locator.line_start}–{locator.line_end}行',
+        'pdf_page': f'原件第{locator.page}页',
+        'docx_paragraph': f'原件第{locator.paragraph}段',
+        'docx_table_cell': f'原件第{locator.table}表，第{locator.row}行第{locator.column}列',
+    }[locator.kind]
+    return [f'登记引用：{item.title}（第{item.document_revision}版）',
+        '用途：' + {'rule_evidence': '规则依据', 'background': '背景资料'}[item.role],
+        f'原文定位：{location}', f'原文摘录：{item.quote}',
+        f'请求期间：[{item.period.start}, {item.period.end})（含起日、不含止日）',
+        f'登记时间：{item.recorded_at.isoformat()}；事件时间：{item.event_time or "未登记"}',
+        f'解释支持状态：{status}；原文可访问不等于解释已获支持。']

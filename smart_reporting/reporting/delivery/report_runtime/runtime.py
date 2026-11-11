@@ -541,6 +541,8 @@ class ReportRuntime:
                 "traceSourcePresentations": trace_source_render,
                 "traceSourceAppendixPresent": include_sources
                 and bool(trace_source_render["entries"]),
+                "knowledgeSourceAppendixPresent": include_sources
+                and bool(trace_source_render.get('knowledge')),
             }
             result = {
                 "status": "rendered" if len(artifacts) == 2 else "partial_rendered",
@@ -945,6 +947,18 @@ class ReportRuntime:
                 raise ReportFailure("PDF 关闭来源展示后仍出现数据来源内容")
         if "[[claim:" in extracted_text or "[[table:" in extracted_text:
             raise ReportFailure("PDF 不应显示数据来源协议标记")
+        knowledge = trace.get('knowledge', []) if isinstance(trace, dict) else []
+        knowledge_present = render.get('knowledgeSourceAppendixPresent', False)
+        compact = re.sub(r'\s+', '', extracted_text)
+        if sources_enabled:
+            if knowledge_present is not bool(knowledge) or (knowledge and '业务知识来源' not in compact):
+                raise ReportFailure('PDF 业务知识来源附录不完整')
+            for number, item in enumerate(knowledge, 1):
+                expected = [f'[知识来源{number:03d}]', *item['summary']]
+                if any(re.sub(r'\s+', '', text) not in compact for text in expected):
+                    raise ReportFailure('PDF 业务知识来源编号或原文摘要不完整')
+        elif knowledge_present is not False or '业务知识来源' in compact or '[知识来源' in compact:
+            raise ReportFailure('PDF 关闭来源展示后仍出现业务知识来源')
 
     def _validate_manifest_markers(
         self,

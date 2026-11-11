@@ -167,7 +167,7 @@ _SIGNING_CHAIN = {
     "smart_reporting/reporting/trace/revision_impact.py": ("assess_revision_impact",),
     "smart_reporting/reporting/trace/narrative_claims.py": ("narrative_paragraphs",),
     "smart_reporting/reporting/trace/registered_claims.py": ("registered_claim_support", "registered_narrative_support"),
-    "smart_reporting/reporting/business_knowledge/claims.py": ("knowledge_support",),
+    "smart_reporting/reporting/business_knowledge/claims.py": ("knowledge_support", "knowledge_source_presentations", "knowledge_source_summary"),
     "smart_reporting/reporting/workflow/runtime/business_evidence.py": ("register_section_knowledge", "resolve_runtime_knowledge", "revalidate_section_knowledge", "withdraw_knowledge_blocks"),
     "smart_reporting/reporting/business_knowledge/dependencies.py": ("read_knowledge_dependencies", "resolve_knowledge_dependencies"),
     "smart_reporting/report_editor/render_preparation.py": ("prepare_editor_render",),

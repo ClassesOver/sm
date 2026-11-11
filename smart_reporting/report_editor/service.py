@@ -397,13 +397,19 @@ def _build_export_trace_sources(
         "charts": [summarize(item) for item in charts_payload],
         "datasets": datasets_payload,
     }
+    if validation.get('knowledgeSources'):
+        from ..reporting.business_knowledge.claims import knowledge_source_summary
+
+        payload['knowledge'] = [{'subjectId': item['subjectId'],
+            'summary': knowledge_source_summary(item), 'links': [link_of(item['subjectId'])]}
+            for item in validation['knowledgeSources']]
     encoded_size = len(
         json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     )
     if encoded_size > _MAX_EXPORT_TRACE_SOURCE_BYTES:
         raise ReportingError(
             "report_editor_trace_sources_too_large",
-            "数据来源附录超出渲染状态边界，请减少正文事实、表格或图表数量后重试。",
+            "数据来源附录超出渲染状态边界，请减少正文事实、表格、图表或知识引用数量后重试。",
         )
     logger.info(
         "report_editor_trace_sources_built claims={} tables={} charts={} "

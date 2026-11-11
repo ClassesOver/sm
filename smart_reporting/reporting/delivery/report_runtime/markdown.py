@@ -1301,9 +1301,22 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
     """
     if not trace_sources:
         return ""
+    knowledge_html = ''
+    knowledge = trace_sources.get('knowledge') or []
+    if knowledge:
+        entries_html = []
+        for number, item in enumerate(knowledge, 1):
+            rows = ''.join(f'<dd>{html.escape(text)}</dd>' for text in item['summary'])
+            links = '、'.join(f'<a href="{html.escape(link["url"], quote=True)}">来源对象</a>' for link in item['links'])
+            entries_html.append('<dl class="report-source-entry">'
+                f'<dt>[知识来源 {number:03d}] 登记引用</dt>{rows}<dd>在线定位：{links}</dd></dl>')
+        knowledge_html = ('<section class="report-source-appendix">'
+            '<p class="report-source-title">业务知识来源</p>'
+            '<p>以下为本次按当前权限核验的登记原文摘录；原件坐标不是本报告页码。'
+            '原文可访问不等于解释已获支持。</p>' + ''.join(entries_html) + '</section>')
     entries = trace_sources.get("entries") or []
     if not entries:
-        return ""
+        return knowledge_html
     datasets = trace_sources.get("datasets") or {}
     status_labels = {
         "valid": "有效",
@@ -1396,7 +1409,7 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
         '<p class="report-source-title">数据来源附录</p>'
         '<p>以下编号由服务端按正文首次出现顺序生成，相同来源复用同一编号；'
         "失效说明为软语义提示，不隐藏任何待复核或未绑定来源。</p>"
-        f'{"".join(html_entries)}</section>'
+        f'{"".join(html_entries)}</section>' + knowledge_html
     )
 
 

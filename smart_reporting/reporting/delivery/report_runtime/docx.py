@@ -578,7 +578,7 @@ def _postprocess_docx(
 
     paragraphs = document.paragraphs
     for source_appendix_title in (
-        item for item in paragraphs if item.text.strip() in ("实际引用附录", "数据来源附录")
+        item for item in paragraphs if item.text.strip() in ("实际引用附录", "数据来源附录", "业务知识来源")
     ):
         source_appendix_title.style = document.styles["Report Source Appendix"]
         source_appendix_title.paragraph_format.page_break_before = True

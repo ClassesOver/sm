@@ -130,6 +130,9 @@ async def prepare_editor_render(editor, *, context, source_context, document, sn
                     "message": "修订影响范围暂无法核验，请复核修改；原计算快照保留，文件仍可下载。",
                 })
             knowledge = validation.get("businessKnowledge", {})
+            if validation.get('knowledgeSourceIssues'):
+                lineage_issues.append({'code': 'report_editor_knowledge_source_unavailable',
+                    'message': '业务知识原文附录未能生成，相关解释待核实；文件仍可下载。'})
             if trace_index.knowledge_dependencies and knowledge.get("status") != "available":
                 lineage_issues.append({
                     "code": "report_editor_knowledge_unavailable",

@@ -1782,9 +1782,21 @@ class ReportEditorTraceService:
             context.report_id, context.revision, len(subjects), len(tables_payload),
             round((perf_counter() - started) * 1000),
         )
+        from ..reporting.business_knowledge.claims import knowledge_source_presentations
+
+        knowledge_source_issues = []
+        try:
+            knowledge_sources = knowledge_source_presentations(
+                index, quality_payload.get('claimSupport', ()), knowledge_evidence)
+        except Exception as error:
+            logger.warning('editor_knowledge_source_projection_unavailable reason={}', type(error).__name__)
+            knowledge_sources = []
+            knowledge_source_issues = ['knowledge_source_projection_unavailable']
         # 正式计算的 Decimal 按 Pydantic JSON 契约保留为精确字符串，不转浮点。
         return to_jsonable_python({
             "businessKnowledge": knowledge_status,
+            "knowledgeSources": knowledge_sources,
+            "knowledgeSourceIssues": knowledge_source_issues,
             "draftSha256": draft_sha256,
             "quality": quality_payload,
             "revisionImpactIssues": revision_impact_issues,

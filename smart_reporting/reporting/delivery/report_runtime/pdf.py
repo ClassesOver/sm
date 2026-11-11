@@ -134,7 +134,7 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
         return {"claims": {}, "tables": {}, "charts": [], "datasets": {}}
     if (
         not isinstance(value, dict)
-        or set(value) != {"claims", "tables", "charts", "datasets"}
+        or set(value) - {'knowledge'} != {"claims", "tables", "charts", "datasets"}
         or not isinstance(value["claims"], list)
         or not isinstance(value["tables"], list)
         or not isinstance(value["charts"], list)
@@ -281,7 +281,21 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
             entry["transformNotes"], field="转换说明", max_items=10, max_length=200
         )
         charts.append(entry)
-    return {"claims": claims, "tables": tables, "charts": charts, "datasets": datasets}
+    knowledge = value.get('knowledge', [])
+    if not isinstance(knowledge, list) or len(knowledge) > 400:
+        raise ReportFailure('PDF 业务知识来源数量无效')
+    normalized_knowledge = []
+    for item in knowledge:
+        if (not isinstance(item, dict) or set(item) != {'subjectId', 'summary', 'links'}
+                or not isinstance(item['subjectId'], str) or not 1 <= len(item['subjectId']) <= 256):
+            raise ReportFailure('PDF 业务知识来源展示信息无效')
+        normalized_knowledge.append({'subjectId': item['subjectId'],
+            'summary': _trace_str_list(item['summary'], field='知识摘录', max_items=10, max_length=1500),
+            'links': _trace_links(item['links'])})
+    result = {"claims": claims, "tables": tables, "charts": charts, "datasets": datasets}
+    if normalized_knowledge:
+        result['knowledge'] = normalized_knowledge
+    return result
 
 
 def _trace_claim_at(trace: dict[str, Any], markdown: str, position: int, claim_id: str) -> dict[str, Any] | None:
@@ -546,7 +560,10 @@ def _pdf_markdown(
         for entry in (*trace["claims"].values(), *trace["tables"].values(), *trace["charts"])
     }
     entries = [entries_by_alias[alias] for alias in sorted(entries_by_alias)]
-    return visible_markdown, normalized, {"entries": entries, "datasets": trace["datasets"]}
+    rendered = {"entries": entries, "datasets": trace["datasets"]}
+    if trace.get('knowledge'):
+        rendered['knowledge'] = trace['knowledge']
+    return visible_markdown, normalized, rendered
 
 
 def _valid_source_url(value: Any, subject_id: str | None) -> bool:
