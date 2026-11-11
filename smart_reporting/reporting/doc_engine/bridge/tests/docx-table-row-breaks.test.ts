@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict'
+import {test} from 'node:test'
+import JSZip from 'jszip'
+import {parseDocx,saveDocx} from '../../packages/docx-engine/src/index.ts'
+import {buildDocx} from '../../packages/docx-engine/tests/helpers/build-docx.ts'
+import {tableRowBreakAvailability,editTableRowBreaks,verifyTableRowBreakResult} from '../docx-table-row-breaks.ts'
+const cell=(text:string,pr='')=>`<w:tc><w:tcPr><w:tcW w:w="2001" w:type="dxa"/>${pr}</w:tcPr><w:p w:rsidR="AABBCCDD"><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`
+const xml='<w:tbl><w:tblPr><w:bidiVisual/></w:tblPr><w:tblGrid><w:gridCol w:w="2001"/><w:gridCol w:w="1999"/></w:tblGrid><w:tr w:rsidR="11223344"><w:trPr><w:cantSplit></w:cantSplit><w:trHeight w:val="337" w:hRule="exact"/><w:tblHeader/><w:custom w:value=\'opaque &gt; value\'/></w:trPr>'+cell('owner','<w:vMerge w:val="restart"/>')+cell('other')+'</w:tr><w:tr><w:trPr><w:cantSplit w:val="0"/><w:trHeight w:val="375"/></w:trPr>'+cell('hidden','<w:vMerge/>')+cell('bottom')+'</w:tr></w:tbl>'
+const open=async(value=xml)=>{const bytes=await buildDocx({bodyXml:value}),parsed=await parseDocx(bytes);return{bytes,parsed,block:parsed.blocks.find(b=>b.type==='table')!}}
+const mask=(s:string)=>s.replace(/<w:cantSplit(?:\s[^>]*)?\/>|<w:cantSplit(?:\s[^>]*)?>\s*<\/w:cantSplit>/g,'')
+test('paired/false source flags are signed separately and only target subtree changes on real save',async()=>{const{bytes,parsed,block}=await open(),cap=tableRowBreakAvailability(block);assert.equal(cap.rowBreakEditable,true);assert.deepEqual(cap.rowBreakSource!.rows,[{cantSplit:true,raw:'<w:cantSplit></w:cantSplit>'},{cantSplit:false,raw:'<w:cantSplit w:val="0"/>'}]);const r=editTableRowBreaks(block,[{top:0,bottom:2,allowBreak:false},{top:0,bottom:1,allowBreak:true}]);assert.equal(mask(r.xml),mask(block.originalXml!));assert.ok(r.xml.includes('hidden'));const output=await saveDocx(parsed,[{kind:'xml',docxIndex:block.docxIndex!,xml:r.xml}]),reopened=(await parseDocx(output)).blocks.find(b=>b.type==='table')!;verifyTableRowBreakResult(reopened,r);assert.deepEqual(reopened.table!.rowCantSplit,[false,true]);const a=await JSZip.loadAsync(bytes),b=await JSZip.loadAsync(output);for(const n of Object.keys(a.files))if(!a.files[n].dir&&n!=='word/document.xml')assert.deepEqual(await a.file(n)!.async('uint8array'),await b.file(n)!.async('uint8array'))})
+test('missing/selfclosing trPr inserts cantSplit before height/header without rewriting unknown siblings',async()=>{for(const value of [xml.replace(/<w:trPr>[\s\S]*?<\/w:trPr>/,''),xml.replace(/<w:trPr>[\s\S]*?<\/w:trPr>/,'<w:trPr/>'),xml.replace('<w:cantSplit></w:cantSplit>','')]){const{block}=await open(value),r=editTableRowBreaks(block,[{top:0,bottom:1,allowBreak:false}]);verifyTableRowBreakResult((await open(r.xml)).block,r);assert.ok(r.xml.includes('<w:cantSplit/>'));if(r.xml.includes('<w:trHeight'))assert.ok(r.xml.indexOf('<w:cantSplit/>')<r.xml.indexOf('<w:trHeight'))}})
+test('rejects duplicate/foreign/invalid/revision controls, forged models and steps',async()=>{for(const bad of ['<w:cantSplit/><w:cantSplit/>','<w:cantSplit w:val="maybe"/>','<w:cantSplit w:x="1"/>','<w:cantSplit><w:x/></w:cantSplit>'])assert.equal(tableRowBreakAvailability((await open(xml.replace('<w:cantSplit></w:cantSplit>',bad))).block).rowBreakEditable,false);for(const bad of [xml.replace('</w:trPr>','<w:trPrChange/></w:trPr>'),xml.replace('<w:tblPr>','<w:tblPr xmlns:x="urn:foreign">')])assert.equal(tableRowBreakAvailability((await open(bad)).block).rowBreakEditable,false);const{block}=await open();assert.equal(tableRowBreakAvailability({...block,table:{...block.table!,rowCantSplit:[false,false]}}).rowBreakEditable,false);assert.throws(()=>editTableRowBreaks(block,[{top:0,bottom:1,allowBreak:'true'}] as any));assert.throws(()=>verifyTableRowBreakResult(block,editTableRowBreaks(block,[{top:0,bottom:1,allowBreak:true}])))})
+test('missing trPr follows tblPrEx and keeps exception bytes with nested/unknown content intact',async()=>{
+ const ex='<w:tblPrEx><w:tblCellMar><w:left w:w="17"/></w:tblCellMar></w:tblPrEx>',value=xml.replace(/<w:trPr>[\s\S]*?<\/w:trPr>/,ex)
+ const{block}=await open(value),r=editTableRowBreaks(block,[{top:0,bottom:1,allowBreak:false}])
+ assert.ok(r.xml.indexOf(ex)<r.xml.indexOf('<w:trPr>'))
+ assert.equal(r.xml.replace('<w:trPr><w:cantSplit/></w:trPr>',''),block.originalXml)
+ verifyTableRowBreakResult((await open(r.xml)).block,r)
+})
+test('known boolean declarations roundtrip and untouched false representation stays byte-identical',async()=>{
+ for(const [raw,effective] of [['false',false],['0',false],['off',false],['on',true],['true',true],['1',true]] as const){const{block}=await open(xml.replace('<w:cantSplit></w:cantSplit>',`<w:cantSplit w:val="${raw}"></w:cantSplit>`)),cap=tableRowBreakAvailability(block);assert.equal(cap.rowBreakEditable,true);assert.equal(cap.rowBreakSource!.rows[0].cantSplit,effective)
+ const other=editTableRowBreaks(block,[{top:1,bottom:2,allowBreak:false}]);assert.ok(other.xml.includes(`<w:cantSplit w:val="${raw}"></w:cantSplit>`));verifyTableRowBreakResult((await open(other.xml)).block,other)
+ const changed=editTableRowBreaks(block,[{top:0,bottom:1,allowBreak:effective}]);verifyTableRowBreakResult((await open(changed.xml)).block,changed);assert.equal(changed.cantSplit[0],!effective)
+ }
+})
+test('rejects forged grid/merges and duplicate properties while preserving opaque row siblings',async()=>{
+ for(const bad of [xml.replace('<w:gridCol w:w="1999"/>',''),xml.replace('<w:vMerge/>','<w:vMerge/><w:gridSpan w:val="2"/>'),xml.replace('</w:trPr>','<w:cantSplit/></w:trPr>'),xml.replace('</w:trPr>','</w:trPr><w:trPr/>'),xml.replace('<w:trPr>','<w:trPr w:extra="1">')])assert.equal(tableRowBreakAvailability((await open(bad)).block).rowBreakEditable,false)
+ const{block}=await open(),r=editTableRowBreaks(block,[{top:0,bottom:1,allowBreak:true}]);assert.ok(r.xml.includes("<w:custom w:value='opaque &gt; value'/>") );assert.ok(r.xml.includes('w:rsidR="11223344"'))
+})

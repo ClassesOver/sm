@@ -27,10 +27,13 @@ export function paragraphShading(node: { attrs?: Record<string, unknown> | null 
   return undefined
 }
 
-/** Same target rules as paragraph highlight: one uniquely anchored editable body paragraph. */
+/** 来源独立能力可允许notes引用；不提升普通正文editable，重复锚点和未知inline仍由target拒绝。 */
+export function paragraphShadingTarget(editor: Editor, anchors: Parameters<typeof highlightTarget>[1]) {
+  return highlightTarget(editor, anchors.map(anchor => ({ ...anchor, editable: anchor.paragraphShadingEditable ?? anchor.editable })), true)
+}
 export function applyParagraphShading(editor: Editor, anchors: Parameters<typeof highlightTarget>[1], value: unknown) {
   const shading = safeDocxShading(value)
-  const target = highlightTarget(editor, anchors)
+  const target = paragraphShadingTarget(editor, anchors)
   if (!editor.isEditable || !target) return false
   const attrs = target.node.attrs
   const next = { ...attrs, shadingFill: shading.fill, shadingClear: shading.clear ? true : null }

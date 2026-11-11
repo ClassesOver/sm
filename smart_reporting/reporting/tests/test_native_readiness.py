@@ -40,7 +40,7 @@ def engines(tmp_path, monkeypatch):
         (pdf / "wasm" / name).write_bytes(content)
         manifest[name] = hashlib.sha256(content).hexdigest()
     (pdf / "WASM-SHA256.json").write_text(json.dumps(manifest))
-    monkeypatch.setenv("AGENT_REPORTING_SLIDES_ENGINE_DIR", str(slides))
+    monkeypatch.setenv("AGENT_REPORTING_DOC_ENGINE_DIR", str(slides))
     monkeypatch.setenv("AGENT_REPORTING_PDF_ENGINE_DIR", str(pdf))
     monkeypatch.delenv("AGENT_REPORTING_PDF_WASM_DIR", raising=False)
     from smart_reporting.report_editor import native_readiness as module

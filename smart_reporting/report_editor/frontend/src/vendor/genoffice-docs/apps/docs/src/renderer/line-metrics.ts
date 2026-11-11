@@ -47,6 +47,7 @@ import {
 
 import {
   recordResolveDiff,
+  browserFontFace,
   resolveDeclaredFace,
   setResolverEmbeddedFaces,
   setResolverFontTable,
@@ -1260,8 +1261,14 @@ export function cssFontFamily(font: string): string {
       : 'GenOffice Cordia'
     return `${cssChain(font, face, 'Thonburi')},sans-serif`
   }
-  const byFace = standInFontFamily(font) ?? substituteFontFamily(font)
+  // An actual browser asset draws the selected face; Word's resolver still owns line spacing.
+  const browserFace = browserFontFace(font)
+  const byFace = browserFace ? null : standInFontFamily(font) ?? substituteFontFamily(font)
   if (byFace) return byFace
+  // The selected CJK asset draws its own script, while Word's substituted Latin slot stays Latin.
+  const latinSlot = browserFace ? latinSlotTarget(font) : null
+  const browserChain = (chain: string) =>
+    latinSlot ? `${cssChain(...latinSlotHead(latinSlot))},${chain}` : chain
   const named = namedFaceChain({
     font,
     available: isFontAvailable(font),
@@ -1270,7 +1277,7 @@ export function cssFontFamily(font: string): string {
     arabicAlt: (nfkc) => arabicAltNameFace(nfkc) ?? arabicCodePageFace(nfkc),
     recurse: cssFontFamily,
   })
-  if (named) return named.css
+  if (named) return browserChain(named.css)
   const nfkc = font.normalize('NFKC')
   const chain = cssChain
   // unknown font family: fontTable PANOSE decides serif-ness when the font is
@@ -1292,7 +1299,7 @@ export function cssFontFamily(font: string): string {
   // the GO aliases exclude PUA, so the blank face keeps those codepoints
   // invisible (the full subsets' blank .notdef used to catch them)
   const pua = latinNamed ? ['GenOffice PUA Blank'] : []
-  return `${chain(font, tail, ...pua)},${serifLike ? 'serif' : 'sans-serif'}`
+  return browserChain(`${chain(font, tail, ...pua)},${serifLike ? 'serif' : 'sans-serif'}`)
 }
 
 /**

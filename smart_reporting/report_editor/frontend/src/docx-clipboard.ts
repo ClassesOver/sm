@@ -22,7 +22,7 @@
 import type { Editor } from '@tiptap/core'
 import type { Node as PmNode } from '@tiptap/pm/model'
 import { Fragment, Slice } from '@tiptap/pm/model'
-import { DOCX_PASTE_IMAGE_MIMES, DOCX_PASTE_IMAGE_MAX_BYTES } from './docx-operations'
+import { DOCX_PASTE_IMAGE_MIMES, DOCX_PASTE_IMAGE_MAX_BYTES, DOCX_PASTE_IMAGE_MAX_EDGE_PX } from './docx-operations'
 
 export type DocxPasteMode = 'source' | 'merge' | 'text' | 'picture'
 
@@ -333,6 +333,7 @@ function insertDocxPastedImage(editor: Editor, payload: { dataUrl: string; base6
     const tr = state.tr.replaceSelectionWith(imageNode)
     if (!tr.docChanged) throw new Error('文档结构不支持图片粘贴')
     editor.view.dispatch(tr.scrollIntoView())
+    if (!editor.state.doc.eq(tr.doc)) throw new Error('图片插入未被接受，请检查当前位置的保存限制')
     return
   }
   const tr = state.tr
@@ -359,6 +360,46 @@ function insertDocxPastedImage(editor: Editor, payload: { dataUrl: string; base6
   }
   if (!tr.docChanged) throw new Error('文档结构不支持图片粘贴')
   editor.view.dispatch(tr.scrollIntoView())
+  if (!editor.state.doc.eq(tr.doc)) throw new Error('图片插入未被接受，请检查当前位置的保存限制')
+}
+
+export function docxPictureUnavailable(editor: Editor, editable: boolean): string | undefined {
+  if (!editable || !editor.isEditable || editor.isDestroyed) return '当前文档不可编辑或正在保存'
+  const { $from, empty } = editor.state.selection
+  if ($from.depth !== 1 || !$from.parent.isTextblock || !empty) return '请将光标放在正文段落中插入图片'
+  return undefined
+}
+
+/** 文件选择与剪贴板共用图片解码和写回；读取期间的编辑/选区变化不得改变插入目标。 */
+export async function insertDocxImageFile(editor: Editor, image: Blob, target = { doc: editor.state.doc, selection: editor.state.selection }): Promise<void> {
+  let changed = false
+  const validate = () => {
+    if (editor.isDestroyed || !editor.isEditable) throw new Error('当前文档不可编辑或正在保存')
+    if (changed || editor.state.doc !== target.doc || !editor.state.selection.eq(target.selection)) throw new Error('图片读取期间文档、光标或编辑状态已变化，请重新选择图片')
+    const { $from } = editor.state.selection
+    for (let depth = $from.depth; depth > 0; depth--) {
+      const name = $from.node(depth).type.name
+      if (name === 'docTableCell' || name === 'docTableHeader') throw new Error('表格单元格内暂不支持粘贴图片；请把光标放到正文段落')
+    }
+  }
+  validate()
+  if (!(DOCX_PASTE_IMAGE_MIMES as readonly string[]).includes(image.type)) throw new Error('仅支持粘贴 PNG 或 JPEG 图片')
+  if (image.size > DOCX_PASTE_IMAGE_MAX_BYTES) throw new Error('粘贴图片超过 8MB 大小上限')
+  const observe = () => { changed ||= editor.isDestroyed || !editor.isEditable || editor.state.doc !== target.doc || !editor.state.selection.eq(target.selection) }
+  editor.on('transaction', observe); editor.on('update', observe); editor.on('destroy', observe)
+  let dataUrl: string, natural: { width: number; height: number }
+  try {
+    dataUrl = await blobToDataUrl(image)
+    natural = await imageSizeOf(dataUrl)
+  } finally {
+    editor.off('transaction', observe); editor.off('update', observe); editor.off('destroy', observe)
+  }
+  validate()
+  if (!Number.isFinite(natural.width) || !Number.isFinite(natural.height) || natural.width < 1 || natural.height < 1) throw new Error('粘贴图片无法解码')
+  const scale = Math.min(1, MAX_IMAGE_WIDTH_PX / natural.width)
+  const widthPx = Math.max(1, Math.round(natural.width * scale)), heightPx = Math.max(1, Math.round(natural.height * scale))
+  if (heightPx > DOCX_PASTE_IMAGE_MAX_EDGE_PX) throw new Error('图片的显示尺寸超出可保存范围')
+  insertDocxPastedImage(editor, { dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1), mime: image.type, widthPx, heightPx })
 }
 
 /**
@@ -370,6 +411,7 @@ function insertDocxPastedImage(editor: Editor, payload: { dataUrl: string; base6
  */
 export async function docxClipboardPaste(editor: Editor, mode?: DocxPasteMode): Promise<void> {
   if (!editor.isEditable) throw new Error('当前文档不可编辑')
+  const target = { doc: editor.state.doc, selection: editor.state.selection }
   const { text, html, image } = await readClipboardPayload()
   if (html && mode !== 'text' && mode !== 'picture') throw new Error('剪贴板是富文本（HTML）内容，无法精确映射到 DOCX 保存协议（仅支持整段统一格式）；请使用"仅保留文本"粘贴')
   const plain = text || (html ? htmlToText(html) : '')
@@ -378,25 +420,7 @@ export async function docxClipboardPaste(editor: Editor, mode?: DocxPasteMode): 
   // 只在无 html 且无有效文本时兜底（OS 剪贴板常在 image/png 旁带空 text/plain）。
   if (mode === 'picture' || (mode !== 'text' && image && !html && !plain.trim())) {
     if (!image) throw new Error('剪贴板中没有图片')
-    // 单元格内容模型不含 docProtected（extensions.ts:3342）：图片只能贴在正文段落间
-    const { $from } = editor.state.selection
-    for (let depth = $from.depth; depth > 0; depth--) {
-      const name = $from.node(depth).type.name
-      if (name === 'docTableCell' || name === 'docTableHeader') throw new Error('表格单元格内暂不支持粘贴图片；请把光标放到正文段落')
-    }
-    if (!(DOCX_PASTE_IMAGE_MIMES as readonly string[]).includes(image.type)) throw new Error('仅支持粘贴 PNG 或 JPEG 图片')
-    if (image.size > DOCX_PASTE_IMAGE_MAX_BYTES) throw new Error('粘贴图片超过 8MB 大小上限')
-    const dataUrl = await blobToDataUrl(image)
-    const natural = await imageSizeOf(dataUrl)
-    if (natural.width < 1 || natural.height < 1) throw new Error('粘贴图片无法解码')
-    const scale = Math.min(1, MAX_IMAGE_WIDTH_PX / natural.width)
-    insertDocxPastedImage(editor, {
-      dataUrl,
-      base64: dataUrl.slice(dataUrl.indexOf(',') + 1),
-      mime: image.type,
-      widthPx: Math.max(1, Math.round(natural.width * scale)),
-      heightPx: Math.max(1, Math.round(natural.height * scale)),
-    })
+    await insertDocxImageFile(editor, image, target)
     return
   }
   if (!normalized.trim()) throw new Error('剪贴板为空或没有可粘贴的文本')

@@ -41,7 +41,7 @@ export default defineConfig({
   },
   resolve: {
     alias: [
-      { find: '@genoffice/docx-engine', replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/docx-engine/src/index.ts', import.meta.url)) },
+      { find: '@genoffice/docx-engine', replacement: fileURLToPath(new URL('../../reporting/doc_engine/packages/docx-engine/src/index.ts', import.meta.url)) },
       { find: /^@genoffice\/pptx-engine\/(.+)$/, replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-engine/src/', import.meta.url)) + '$1.ts' },
       { find: '@genoffice/pptx-render/preset-geometry', replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/pptx-render/src/preset-geometry.ts', import.meta.url)) },
       { find: /^@genoffice\/agent-core\/(redact-range|redact-core)$/, replacement: fileURLToPath(new URL('../../reporting/slides_engine/packages/agent-core/src/', import.meta.url)) + '$1.ts' },
@@ -77,6 +77,21 @@ export default defineConfig({
         onlyExplicitManualChunks: true,
         chunkFileNames: 'assets/lazy-[name]-[hash].js',
         manualChunks(id) {
+          if (id.endsWith('/src/office-ai-entry.tsx')) return 'office-ai-entry'
+          if (/\/src\/docx-ruler\.tsx$/.test(id) || id.endsWith('/docx-ruler-indent.ts') || id.endsWith('/docx-tab-stops.ts') || /\/vendor\/genoffice-docs\/apps\/docs\/src\/renderer\/(?:components\/Ruler\.tsx|use-measurement\.ts|units\.ts)$/.test(id)) return 'docx-ruler'
+          if (id.endsWith('/src/docx-line-spacing.ts')) return 'docx-line-spacing'
+          if (id.endsWith('/src/docx-special-indent.ts')) return 'docx-special-indent'
+          if (/\/src\/docx-navigation(?:-search|-pages)?\.ts$/.test(id)) return 'docx-navigation'
+          if (id.endsWith('/renderer/ai/table-ops.ts')) return 'native-docx-table-ops'
+          if (/\/vendor\/genoffice-docs\/apps\/docs\/src\/renderer\/(?:pagination-sections|page-margins)\.ts$/.test(id)) return 'native-docx-section-layout'
+          if (/\/vendor\/genoffice-docs\/apps\/docs\/src\/renderer\/editor\/(?:column-layout(?:-recovery)?|top-level-pos)\.ts$/.test(id)) return 'native-docx-column-layout'
+          if (id.endsWith('/src/docx-footnote-pagination.ts')) return 'docx-footnote-pagination'
+          if (/\/vendor\/genoffice-docs\/apps\/docs\/src\/renderer\/(?:editor\/note-dom|note-format)\.ts$/.test(id)) return 'native-docx-note-dom'
+          if (id.endsWith('/renderer/editor/table-input-paragraphs.ts')) return 'native-docx-table-input'
+          if (id.endsWith('/renderer/editor/table-cell-shape-source.ts')) return 'native-docx-table-cell-shape'
+          if (id.endsWith('/renderer/editor/table-column-width-source.ts')) return 'native-docx-table-column-width'
+          if (id.endsWith('/renderer/ai/lengths.ts')) return 'native-docx-lengths'
+          if (id.endsWith('/vendor/genoffice-docs/apps/docs/src/renderer/components/icons.tsx')) return 'native-docx-ribbon-icons'
           if (id.endsWith('/src/workbook-ribbon.ts')) return 'workbook-ribbon'
           if (/\/workbook_engine\/packages\/xlsx-engine\/src\/pivot-(?:add|refresh|standard-grouping|layout|formula|grouping|filters)\.ts$/.test(id)) return 'workbook-pivot-calculation'
           if (id.endsWith('/workbook_engine/packages/xlsx-engine/src/chart-edit.ts')) return 'workbook-chart-edit'
@@ -122,8 +137,9 @@ export default defineConfig({
           if (id.includes('/node_modules/pdfjs-dist/')) return 'native-pdfjs'
           if (/\/vendor\/genoffice-docs\/.*\/i18n\/.*\.(json|ts)$/.test(id) && !id.endsWith('/index.ts')) return `native-docx-locale-${id.split('/i18n/').at(-1)!.replace(/[^a-zA-Z0-9]/g, '-')}`
           if (id.endsWith('/font-metrics/word-faces.json')) return 'native-docx-font-metrics'
+          if (id.includes('/vendor/genoffice-docs/apps/docs/src/') && ['renderer/html-export.ts','renderer/export-markdown.ts','renderer/word-count.ts','renderer/ai/protocol.ts','renderer/ai/revision-ops.ts','renderer/ai/redact-view.ts','renderer/ai/page-setup.ts','renderer/ai/revision-author.ts','renderer/ai/inherit-formatting.ts','renderer/ai/ops.ts','renderer/ai/style-ops.ts','renderer/ai/field-ops.ts','renderer/ai/tab-stops.ts','renderer/ai/after-text.ts','shared/ipc.ts'].some(path=>id.endsWith('/'+path))) return 'native-pdf-text-serializer'
           if (id.includes('/vendor/genoffice-docs/')) return 'native-docx-render'
-          if (id.includes('/slides_engine/packages/docx-engine/')) return 'native-docx-engine'
+          if (id.includes('/doc_engine/packages/docx-engine/')) return 'native-docx-engine'
           if (/node_modules\/(@tiptap|prosemirror-)/.test(id)) return 'native-tiptap'
           const univer = id.match(/node_modules\/@univerjs\/([^/]+)/)?.[1]
           if (univer) {

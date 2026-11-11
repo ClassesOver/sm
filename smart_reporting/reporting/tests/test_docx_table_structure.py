@@ -236,7 +236,7 @@ def test_structure_silent_write_failure_cannot_emit_output(source, tmp_path):
     import subprocess
     from pathlib import Path
 
-    engine = Path(__file__).parents[1] / 'slides_engine'
+    engine = Path(__file__).parents[1] / 'doc_engine'
     isolated = tmp_path / 'isolated'
     (isolated / 'bridge').mkdir(parents=True)
     for name in ('node_modules', 'packages', 'package.json'):
