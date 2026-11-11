@@ -1,0 +1,7 @@
+{
+  "http": [],
+  "errors": [
+    "Failed to fetch dynamically imported module: http://127.0.0.1:5211/reports/v1/editor/assets/src/main.ts"
+  ],
+  "body": ""
+}

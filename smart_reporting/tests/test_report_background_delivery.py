@@ -41,7 +41,7 @@ def anyio_backend():
 
 async def exercise_background_report(
     basis_context, document_context, receipt_snapshot, monkeypatch, case, expected, *, projection_failure=False,
-    delivery_format='document', after_native_report=None, initial_pipeline=False,
+    delivery_format='document', after_native_report=None, initial_pipeline=False, knowledge_projection_failure=False,
 ):
     projection_calls = []
     if projection_failure:
@@ -51,7 +51,16 @@ async def exercise_background_report(
             projection_calls.append('injected')
             raise OSError('injected claim support presentation failure')
 
-        monkeypatch.setattr(claim_presentation, 'registered_claim_support_projection', unavailable)
+        monkeypatch.setattr(claim_presentation, 'registered_document_presentations', unavailable)
+    knowledge_calls = []
+    if knowledge_projection_failure:
+        from smart_reporting.reporting.business_knowledge import claims
+
+        def knowledge_unavailable(*args):
+            knowledge_calls.append('injected')
+            raise OSError('injected knowledge source presentation failure')
+
+        monkeypatch.setattr(claims, 'knowledge_source_presentations', knowledge_unavailable)
     ctx = basis_context
     await publish_c02_definitions(ctx)
     documents, token, scope = document_context[:3]
@@ -157,13 +166,27 @@ async def exercise_background_report(
                 *([{'blockId': 'analysis_001', 'markdown': statement + '。'}] if initial_pipeline else [])]})
 
         async def inspect_report(report):
-            output = Path('/tmp') / f'smart-reporting-c33-delivery-{os.getpid()}-{case}'
+            if knowledge_projection_failure:
+                assert knowledge_calls == ['injected']
+            variant = ('initial' if initial_pipeline else 'recalculation') + (
+                '-knowledge-fault' if knowledge_projection_failure else '-support-fault' if projection_failure else '')
+            output = Path('/tmp') / f'smart-reporting-c33-delivery-{os.getpid()}-{case}-{variant}'
             output.mkdir(exist_ok=True)
             document = await report.editor.read_document(report.context)
             index = await report.editor.trace.require_index(report.context)
             narrative, = [item for item in index.subject_bindings if item.narrative_reference is not None]
             knowledge_ref, = narrative.narrative_reference.semantic_receipt.knowledge_references
             assert knowledge_ref.document_id == 'known-context'
+            originals = {}
+            for document_id, quote in [('known-context', early_quote), ('later-context', late_quote)]:
+                raw = await documents.read_original(token, scope, document_id, 1)
+                assert raw == quote.encode()
+                digest = hashlib.sha256(raw).hexdigest()
+                if document_id == 'known-context':
+                    assert digest == knowledge_ref.source_hash
+                (output / (document_id + '.txt')).write_bytes(raw)
+                originals[document_id] = {'sha256': digest, 'size': len(raw),
+                    'registration': await documents.get_document(token, scope, document_id)}
             assert late_quote not in document.markdown
             detail = await report.editor.trace.knowledge_detail(report.context, narrative.subject_id, knowledge_ref.evidence_id)
             assert detail['available'] and detail['quote'] == early_quote
@@ -195,13 +218,26 @@ async def exercise_background_report(
             else:
                 assert statement + '。' + explanation_label in re.sub(r'\s+', '', pdf_text)
                 assert statement + '。' + explanation_label in re.sub(r'\s+', '', word_text)
+                for text in (() if knowledge_projection_failure else (pdf_text, word_text)):
+                    compact = re.sub(r'\s+', '', text)
+                    assert '业务知识来源' in compact
+                    assert '登记引用：known-context（第1版）' in compact
+                    assert '原文定位：原件第1–1行' in compact
+                    assert early_quote in compact
+                    assert late_quote not in compact
+            if knowledge_projection_failure:
+                assert report.content['validation']['ok'] is False
+                assert any(item['code'] == 'knowledge_source_projection_unavailable'
+                    for item in report.content['validation']['issues'])
+                assert all('业务知识来源' not in text for text in (pdf_text, word_text))
             assert explanation_label not in document.markdown
             (output / 'pdf-text.txt').write_text(pdf_text)
             (output / 'word-text.txt').write_text(word_text)
             evidence = {'caseId': 'C33', 'case': case, 'expectedSupport': expected, 'modelInputs': model_inputs,
-                'projectionFailure': projection_failure,
+                'projectionFailure': projection_failure, 'knowledgeProjectionFailure': knowledge_projection_failure,
                 'deliveryValidation': report.content['validation'],
                 'basis': adopted.model_dump(mode='json', by_alias=True), 'knowledgeDetail': detail,
+                'registeredOriginals': originals, 'initialPipeline': initial_pipeline,
                 'subjectId': narrative.subject_id, 'validation': validation, 'queries': queries,
                 'markdownSha256': hashlib.sha256(document.markdown.encode()).hexdigest(),
                 'knowledgeRefs': [knowledge_ref.model_dump(mode='json', by_alias=True)]}
@@ -249,3 +285,11 @@ async def test_c33_historical_background_reaches_report_and_editor_without_later
     basis_context, document_context, receipt_snapshot, monkeypatch, case, expected,
 ):
     await exercise_background_report(basis_context, document_context, receipt_snapshot, monkeypatch, case, expected)
+
+
+@pytest.mark.parametrize('initial_pipeline', [True, False], ids=['initial', 'recalculation'])
+async def test_document_knowledge_original_reaches_both_delivery_paths(
+    basis_context, document_context, receipt_snapshot, monkeypatch, initial_pipeline,
+):
+    await exercise_background_report(basis_context, document_context, receipt_snapshot, monkeypatch,
+        'known', 'supported', initial_pipeline=initial_pipeline)

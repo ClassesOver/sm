@@ -151,3 +151,14 @@ def knowledge_source_summary(raw):
         f'请求期间：[{item.period.start}, {item.period.end})（含起日、不含止日）',
         f'登记时间：{item.recorded_at.isoformat()}；事件时间：{item.event_time or "未登记"}',
         f'解释支持状态：{status}；原文可访问不等于解释已获支持。']
+
+
+def knowledge_source_entries(sources, *, public_base_url, report_id, revision):
+    """文档入口共用精确修订链接；未配置公开地址时只附核验文字。"""
+    from urllib.parse import quote, urlencode
+
+    base_path = f'/reports/v1/editor/{quote(report_id, safe="")}/{revision}'
+    return [{'subjectId': item['subjectId'], 'summary': knowledge_source_summary(item),
+        'links': [{'subjectId': item['subjectId'], 'url':
+            f'{public_base_url.rstrip("/")}{base_path}?{urlencode({"subject": item["subjectId"]})}'}]
+            if public_base_url else []} for item in sources]

@@ -64,7 +64,14 @@ try {
     return route.fulfill({ response })
   })
   await page.goto(origin + path + (config.knowledge ? '?subject=' + encodeURIComponent(config.subjectId) : ''))
-  await page.locator('.ProseMirror').waitFor()
+  try {
+    await page.locator('.ProseMirror').waitFor()
+  } catch (error) {
+    await writeFile(config.output + '/startup-failure.json', JSON.stringify({ http, errors,
+      body: await page.locator('body').innerText() }, null, 2))
+    await page.screenshot({ path: config.output + '/startup-failure.png', fullPage: true })
+    throw error
+  }
   assert.match(await page.locator('.ProseMirror').innerText(), /70/)
   if (!config.knowledge) await page.locator('[data-action="sources"]').click()
   await page.locator('.evidence-shell:not([hidden])').waitFor()

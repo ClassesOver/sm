@@ -398,11 +398,10 @@ def _build_export_trace_sources(
         "datasets": datasets_payload,
     }
     if validation.get('knowledgeSources'):
-        from ..reporting.business_knowledge.claims import knowledge_source_summary
+        from ..reporting.business_knowledge.claims import knowledge_source_entries
 
-        payload['knowledge'] = [{'subjectId': item['subjectId'],
-            'summary': knowledge_source_summary(item), 'links': [link_of(item['subjectId'])]}
-            for item in validation['knowledgeSources']]
+        payload['knowledge'] = knowledge_source_entries(validation['knowledgeSources'],
+            public_base_url=public_base_url, report_id=report_id, revision=revision)
     encoded_size = len(
         json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     )

@@ -342,12 +342,6 @@ class RuntimePublicationMixin:
             return await self._render_xlsx(run_context, result, outline)
         if state.get("report_request_context", {}).get("deliveryFormat") == "pptx":
             return await self._render_pptx(run_context, result, outline)
-        pdf_path = _report_pdf_path(
-            str(run_context.run_id),
-            int(result.get("revision", 0)) + 1,
-            outline.title,
-            self._envelope(run_context).period,
-        )
         context = self._tool_context(run_context)
         try:
             draft = ReportArtifactManifest.model_validate(
@@ -361,6 +355,9 @@ class RuntimePublicationMixin:
             raise ReportingError(
                 "report_artifact_manifest_invalid", "报告产物清单状态无效。"
             ) from error
+        pdf_path = _report_pdf_path(
+            str(run_context.run_id), draft.revision, outline.title, self._envelope(run_context).period,
+        )
         requirements = tuple(
             QueryRequirement.model_validate(item)
             for item in state[REPORT_DATA_REQUIREMENTS_STATE_KEY]
@@ -427,18 +424,28 @@ class RuntimePublicationMixin:
             issues = state.setdefault("report_quality_issues", [])
             if issue not in issues:
                 issues.append(issue)
+        document_issues = []
         try:
-            from ..claim_presentation import registered_claim_support_projection
+            from ..claim_presentation import registered_document_presentations
 
             job = self.report_tools._load_job(str(result['jobId']), context)
             job['_claimSupportProjection'] = {'invalid': 'claim_support_unavailable'}
+            job.pop('_traceSourcePresentations', None)
             self.report_tools._store_job(job, context)
-            job['_claimSupportProjection'] = await registered_claim_support_projection(self, run_context, draft)
+            presentations = await registered_document_presentations(self, run_context, draft)
+            job['_claimSupportProjection'] = presentations['claimSupport']
+            job['_traceSourcePresentations'] = presentations['traceSources']
+            if presentations['traceSources'] is not None:
+                options = job.get('_reportDesign', {}).get('options', {})
+                job.setdefault('_editorExportSettings', {}).setdefault('sources', options.get('sources', True))
+            if presentations.get('sourceIssue'):
+                document_issues.append(presentations['sourceIssue'])
             self.report_tools._store_job(job, context)
         except Exception as error:
             logger.warning('report_claim_support_projection_unavailable reason={}', type(error).__name__)
-            state.setdefault('report_quality_issues', []).append({'code': 'claim_support_projection_unavailable',
+            document_issues.append({'code': 'claim_support_projection_unavailable',
                 'revision': draft.revision, 'status': 'unknown', 'message': '解释支持状态无法核验，已保留提示和下载。'})
+        state.setdefault('report_quality_issues', []).extend(document_issues)
         rendered_result = await self.report_tools._render_report_pair(
             str(result["jobId"]),
             str(result["markdownPath"]),
@@ -451,13 +458,15 @@ class RuntimePublicationMixin:
         word_path = str(PurePosixPath(pdf_path).with_suffix(".docx"))
         validation = rendered_result.get("validation") if isinstance(rendered_result, dict) else None
         if source_link_issue is not None:
+            document_issues.append(source_link_issue)
+        if document_issues:
             validation = validation if isinstance(validation, dict) else {"ok": False, "issues": []}
             validation = {
                 **validation,
                 "ok": False,
                 "issues": [
                     *(validation.get("issues") if isinstance(validation.get("issues"), list) else []),
-                    source_link_issue,
+                    *document_issues,
                 ],
             }
         if not isinstance(validation, dict) or validation.get("ok") is not True:
@@ -798,12 +807,20 @@ class RuntimePublicationMixin:
             issues.append({'code': 'management_overview_evidence_unavailable',
                 'message': '经营总览证据不可用，已保留缺项说明并继续生成文档。'})
         try:
-            from ..claim_presentation import registered_claim_support_projection
+            from ..claim_presentation import registered_document_presentations
 
             job = self.report_tools._load_job(job_id, context)
             job['_claimSupportProjection'] = {'invalid': 'claim_support_unavailable'}
+            job.pop('_traceSourcePresentations', None)
             self.report_tools._store_job(job, context)
-            job['_claimSupportProjection'] = await registered_claim_support_projection(self, run_context, draft)
+            presentations = await registered_document_presentations(self, run_context, draft)
+            job['_claimSupportProjection'] = presentations['claimSupport']
+            job['_traceSourcePresentations'] = presentations['traceSources']
+            if presentations['traceSources'] is not None:
+                options = job.get('_reportDesign', {}).get('options', {})
+                job.setdefault('_editorExportSettings', {}).setdefault('sources', options.get('sources', True))
+            if presentations.get('sourceIssue'):
+                issues.append(presentations['sourceIssue'])
             self.report_tools._store_job(job, context)
         except Exception as error:
             logger.warning('revision_claim_support_projection_unavailable reason={}', type(error).__name__)
@@ -2044,6 +2061,7 @@ class RuntimePublicationMixin:
                 "reportTitle": _frozen_outline(state).title,
                 "deliveryFormat": state.get("report_request_context", {}).get("deliveryFormat", "document"),
                 "revision": (
+                    manifest.revision if manifest is not None else
                     int(result.get("revision", 1))
                     if state.get("report_request_context", {}).get("deliveryFormat") in {"pptx", "xlsx"}
                     else int(result.get("revision", 0)) + 1

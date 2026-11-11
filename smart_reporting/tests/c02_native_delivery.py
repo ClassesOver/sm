@@ -53,6 +53,7 @@ async def exercise_c02_native_delivery(ctx, bases, store, source, adoption, calc
     runtime.state_repository = ReportingStateRepository(database.async_db)
     runtime._durable_command_lock, runtime._checkpoint_persist_lock = asyncio.Lock(), asyncio.Lock()
     runtime.delivery_settings = ReportDeliverySettings()
+    runtime.report_public_base_url = 'https://reports.test'
     runtime.report_tools = WorkspaceReportService(store.service, data_sources=store)
     runtime.business_evidence_service = ctx['policy_service'].evidence
     runtime._data_understanding_agent = SimpleNamespace(id='c02-scope')
@@ -169,7 +170,9 @@ async def exercise_c02_native_delivery(ctx, bases, store, source, adoption, calc
                 # 仅借用既有 fixture 准备已登记分析；装配、渲染、发布实际走 execution=None。
                 await run_policy_adoption_evidence(runtime, context, execution)
                 initial_context = await prepare_policy_adoption_narrative(runtime, context, execution)
-                initial_context.session_state['report_request_context']['deliveryFormat'] = 'xlsx'
+                initial_format = ('document' if set(execution.requested_outputs) == {'pdf', 'docx'}
+                    else execution.requested_outputs[0])
+                initial_context.session_state['report_request_context']['deliveryFormat'] = initial_format
                 result = initial_context.session_state['report_workflow_result']
                 prepared = await runtime.report_tools.report_prepare_dataset(
                     [item['datasetId'] for item in result['datasets']], run_context=runtime._tool_context(initial_context))
@@ -186,15 +189,16 @@ async def exercise_c02_native_delivery(ctx, bases, store, source, adoption, calc
                     return VisualizationPlanDraft(charts=(), warnings=('本例只验工作簿声明，不验图表。',))
 
                 patch.setattr(ReportingStructuredOutputExecutor, 'run', no_chart_plan)
-                await runtime.run_report_draft(StepInput(input='首次工作簿成稿'), initial_context)
-                await runtime.assemble_report(StepInput(input='装配首次工作簿'), initial_context)
+                await runtime.run_report_draft(StepInput(input='首次报告成稿'), initial_context)
+                await runtime.assemble_report(StepInput(input='装配首次报告'), initial_context)
                 await runtime._render_and_validate(initial_context)
-                published = await runtime.publish_report(StepInput(input='发布首次工作簿'), initial_context)
+                published = await runtime.publish_report(StepInput(input='发布首次报告'), initial_context)
             else:
                 published = await continue_policy_adoption_delivery(runtime, context, execution)
         content = published.content
         if initial_pipeline:
-            assert content['deliveryFormat'] == 'xlsx' and content['xlsxPath']
+            assert content['deliveryFormat'] == initial_format
+            assert all(content.get(('word' if fmt == 'docx' else fmt) + 'Path') for fmt in execution.requested_outputs)
             assert content['revision'] == execution.output_revision
         from smart_reporting.reporting.delivery.artifacts_v1 import ReportArtifactManifest
         from smart_reporting.reporting.trace.contracts_v1 import RevisionTraceIndexV1
@@ -245,7 +249,6 @@ async def exercise_c02_native_delivery(ctx, bases, store, source, adoption, calc
         runtime.artifact_persistence = ReportArtifactPersistenceService(artifacts, store.service)
         runtime.download_grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
         runtime.editor_grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='s' * 32)
-        runtime.report_public_base_url = 'https://reports.test'
         scope = execution.scope.as_state()
         delivery = await runtime.issue_http_publication(thread_id=scope['threadId'],
             caller_thread_id=scope['callerThreadId'], user_id=scope['userId'], workflow_session_id=scope['sessionId'],

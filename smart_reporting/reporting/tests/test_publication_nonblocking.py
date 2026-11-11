@@ -9,7 +9,8 @@ from smart_reporting.reporting.workflow.runtime import publication
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("failure", ["failed_receipt", "invalid_counts", "changed_hash", "overview_prepare"])
+@pytest.mark.parametrize("failure", ["failed_receipt", "invalid_counts", "changed_hash", "overview_prepare",
+    "knowledge_projection", "document_projection", "knowledge_enabled", "knowledge_disabled", "knowledge_design_disabled"])
 async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, failure):
     manifest = {
         "reportId": "report-1", "revision": 1, "codingTaskKey": "task-1",
@@ -33,6 +34,8 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
         "report_data_requirements": [], "report_analysis_plan": [],
         "report_workflow_result": {"jobId": "job-1", "revision": 0, "markdownPath": "reports/report.md"},
     }
+    if failure == 'knowledge_enabled':
+        state['report_workflow_result']['revision'] = 1
     runtime = object.__new__(publication.RuntimePublicationMixin)
     runtime._state = lambda _context: state
     runtime._scope = lambda _context: {"threadId": "thread", "externalRunId": "external-1", "userId": "user"}
@@ -47,13 +50,39 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
         _render_report_pair=AsyncMock(return_value={"wordPath": "reports/report.docx", "validation": validation}),
         discard_report_revision=AsyncMock(),
     )
+    if failure in {'knowledge_projection', 'document_projection', 'knowledge_enabled', 'knowledge_disabled', 'knowledge_design_disabled'}:
+        from smart_reporting.reporting.workflow import claim_presentation
+
+        job = {'_traceSourcePresentations': {'knowledge': [{'summary': ['旧原文不得泄漏']}]}}
+        if failure == 'knowledge_disabled':
+            job['_editorExportSettings'] = {'sources': False}
+        if failure == 'knowledge_design_disabled':
+            job['_reportDesign'] = {'options': {'sources': False}}
+        runtime.report_tools._load_job = lambda *_: job
+        runtime.report_tools._store_job = lambda *_: None
+
+        async def document_presentations(*args):
+            assert '_traceSourcePresentations' not in job
+            if failure == 'document_projection':
+                raise OSError('document inputs unavailable')
+            if failure in {'knowledge_enabled', 'knowledge_disabled', 'knowledge_design_disabled'}:
+                return {'claimSupport': {'sourceSha256': 'c' * 64, 'claims': []},
+                    'traceSources': {'knowledge': [{'summary': ['本次核验的原文']}]}}
+            return {'claimSupport': {'sourceSha256': 'c' * 64, 'claims': []}, 'traceSources': None,
+                'sourceIssue': {'code': 'knowledge_source_projection_unavailable'}}
+
+        monkeypatch.setattr(claim_presentation, 'registered_document_presentations', document_presentations)
 
     async def hash_file(_thread, path):
         return {"path": path, "size": 3, "sha256": ("a" if path.endswith("pdf") else "b") * 64}
 
     runtime.workspace_service = SimpleNamespace(ahash_file=hash_file)
     monkeypatch.setattr(publication, "_frozen_outline", lambda _state: SimpleNamespace(title="运营分析"))
-    monkeypatch.setattr(publication, "_report_pdf_path", lambda *_args: "reports/report.pdf")
+    def report_path(_run_id, revision, *_args):
+        assert revision == 1, '文档输出目录须使用清单修订号，不重复递增已装配修订'
+        return 'reports/report.pdf'
+
+    monkeypatch.setattr(publication, "_report_pdf_path", report_path)
     monkeypatch.setattr(publication, "_citation_presentations", lambda **_kwargs: [])
     monkeypatch.setattr(publication, "_reporting_observed_data_facts", lambda *_args: [])
     monkeypatch.setattr(publication, "_source_warnings_from_state", lambda _state: [])
@@ -85,6 +114,16 @@ async def test_render_validation_failure_retains_actual_artifacts(monkeypatch, f
     assert result["wordSha256"] == "b" * 64
     assert result["pdfPath"] == "reports/report.pdf"
     assert result["wordPath"] == "reports/report.docx"
+    if failure in {'knowledge_projection', 'document_projection'}:
+        assert job.get('_traceSourcePresentations') is None
+        code = ('knowledge_source_projection_unavailable' if failure == 'knowledge_projection'
+            else 'claim_support_projection_unavailable')
+        assert any(item['code'] == code for item in result['validation']['issues'])
+        if failure == 'knowledge_projection':
+            assert job['_claimSupportProjection'] == {'sourceSha256': 'c' * 64, 'claims': []}
+    if failure in {'knowledge_enabled', 'knowledge_disabled', 'knowledge_design_disabled'}:
+        assert job['_editorExportSettings']['sources'] is (failure == 'knowledge_enabled')
+        assert job['_traceSourcePresentations'] == {'knowledge': [{'summary': ['本次核验的原文']}]}
     runtime.report_tools.discard_report_revision.assert_not_awaited()
     assert state["report_workflow_result"] is result
 
@@ -157,7 +196,7 @@ def test_agents_nonblocking_contract_registry_points_at_existing_tests():
 # validation.issues / publicationGate.issues 后继续。新增此类 raise 未兜底即失败。
 _SIGNING_CHAIN = {
     "smart_reporting/reporting/trace/reader_formulas.py": ("reader_formula", "_formal_metric_formula"),
-    "smart_reporting/reporting/workflow/claim_presentation.py": ("_registered_claim_support", "registered_claim_support_projection", "registered_native_claim_presentations"),
+    "smart_reporting/reporting/workflow/claim_presentation.py": ("_registered_claim_support", "registered_claim_support_projection", "registered_native_claim_presentations", "registered_document_presentations"),
     "smart_reporting/reporting/trace/native_claims.py": ("native_claim_presentations", "present_native_summary"),
     "smart_reporting/reporting/trace/claim_presentation.py": ("claim_support_projection",),
     "smart_reporting/reporting/delivery/report_runtime/claim_support.py": ("insert_claim_support",),
@@ -167,7 +206,7 @@ _SIGNING_CHAIN = {
     "smart_reporting/reporting/trace/revision_impact.py": ("assess_revision_impact",),
     "smart_reporting/reporting/trace/narrative_claims.py": ("narrative_paragraphs",),
     "smart_reporting/reporting/trace/registered_claims.py": ("registered_claim_support", "registered_narrative_support"),
-    "smart_reporting/reporting/business_knowledge/claims.py": ("knowledge_support", "knowledge_source_presentations", "knowledge_source_summary"),
+    "smart_reporting/reporting/business_knowledge/claims.py": ("knowledge_support", "knowledge_source_presentations", "knowledge_source_summary", "knowledge_source_entries"),
     "smart_reporting/reporting/workflow/runtime/business_evidence.py": ("register_section_knowledge", "resolve_runtime_knowledge", "revalidate_section_knowledge", "withdraw_knowledge_blocks"),
     "smart_reporting/reporting/business_knowledge/dependencies.py": ("read_knowledge_dependencies", "resolve_knowledge_dependencies"),
     "smart_reporting/report_editor/render_preparation.py": ("prepare_editor_render",),
@@ -194,8 +233,8 @@ _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 _CALLER_GUARDED = {
     "smart_reporting/reporting/workflow/runtime/publication.py": (
         ("publish_report", "_dataset_publication_gate"),
-        ("_render_and_validate", "registered_claim_support_projection"),
-        ("_render_revision_document", "registered_claim_support_projection"),
+        ("_render_and_validate", "registered_document_presentations"),
+        ("_render_revision_document", "registered_document_presentations"),
         ("_render_pptx", "_native_claim_presentations"),
         ("_render_xlsx", "_native_claim_presentations"),
     ),

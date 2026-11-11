@@ -139,6 +139,16 @@ async def test_http_publication_keeps_pdf_word_links_when_claim_support_projecti
 
 @pytest.mark.anyio
 @pytest.mark.integration
+@pytest.mark.parametrize('initial_pipeline', [True, False], ids=['initial', 'recalculation'])
+async def test_http_document_publication_keeps_links_when_knowledge_source_projection_fails(
+    basis_context, document_context, receipt_snapshot, monkeypatch, initial_pipeline,
+):
+    await exercise_background_report(basis_context, document_context, receipt_snapshot, monkeypatch,
+        'known', 'supported', knowledge_projection_failure=True, initial_pipeline=initial_pipeline)
+
+
+@pytest.mark.anyio
+@pytest.mark.integration
 @pytest.mark.parametrize('outputs', [['pptx'], ['xlsx']], ids=['pptx', 'xlsx'])
 @pytest.mark.parametrize('support_failure', [False, True], ids=['current', 'support-failure'])
 async def test_http_native_summary_support_is_visible_and_failure_keeps_downloads(

@@ -1,0 +1,1140 @@
+{
+  "scope": "完整Editor真实入口、原会话授权、真实隔离HTTP/PG；受控模型和DuckDB原始行，不是StarRocks或业务签认",
+  "oldValue": "70",
+  "metricRevision": 1,
+  "basisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+  "writes": 0,
+  "viewports": [
+    {
+      "width": 1440,
+      "seriousOrCritical": [],
+      "overflow": false
+    },
+    {
+      "width": 1280,
+      "seriousOrCritical": [],
+      "overflow": false
+    },
+    {
+      "width": 768,
+      "seriousOrCritical": [],
+      "overflow": false
+    },
+    {
+      "width": 390,
+      "seriousOrCritical": [],
+      "overflow": false
+    }
+  ],
+  "downloads": [
+    {
+      "format": "pdf",
+      "size": 706110,
+      "sha256": "23d945a58ee0749a6713a206ed556dc5021bfdacaafddf1617cf6599478b7832",
+      "status": 200
+    },
+    {
+      "format": "docx",
+      "size": 17761,
+      "sha256": "325254b8b21935837910aa74d578049d74442c82dff7eeb3497833c2b9b8ca08",
+      "status": 200
+    }
+  ],
+  "http": [
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/document",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/events",
+      "method": "POST",
+      "status": 204
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/computations",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/charts",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/sources",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/sources",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/sources/validate",
+      "method": "POST",
+      "status": 200,
+      "request": {
+        "markdown": "# C02项目均值原报告\n\n[[section:section_001]]\n## 1. 总体执行率与计算依据[[analysis:analysis_001]]\n\n本报告执行率为70.00%[[citation:sub-97e6ae2a699b75bc]][[claim:number-9f3e09eff50985f56c78]]。\n\n采购付款安排延后，影响本期预算执行进度。[[citation:sub-ebdfd136a136be26]][[claim:narr-0c560af3e860a19bb139f0d5]][[citation:citation_001]]\n\n项目完成当量（指标版本 1；期间含起日、不含止日）\n\n[[table:table-analysis_001-registered-0-0-0]]\n| 期间与范围 | 计算结果（项目） |\n| --- | ---: |\n| \\[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化 | 1.40000000 |\n\n[[/table:table-analysis_001-registered-0-0-0]]\n\n项目数（指标版本 1；期间含起日、不含止日）\n\n[[table:table-analysis_001-registered-0-1-0]]\n| 期间与范围 | 计算结果（项目） |\n| --- | ---: |\n| \\[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化 | 2 |\n\n[[/table:table-analysis_001-registered-0-1-0]]\n\n预算执行率（原项目均值）（指标版本 1；期间含起日、不含止日）\n\n[[table:table-analysis_001-registered-0-2-0]]\n| 期间与范围 | 计算结果（%） |\n| --- | ---: |\n| \\[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化 | 70.00000000 |\n\n[[/table:table-analysis_001-registered-0-2-0]]\n",
+        "draftSha256": "413a95f3987da0bf79b14bec63f3129f3cc14bf949da6301b4422ab75e79fdac"
+      },
+      "response": {
+        "businessKnowledge": {
+          "status": "available",
+          "interpretationStatus": "unverified",
+          "sections": [
+            {
+              "sectionCode": "section_001",
+              "reportRevision": "6",
+              "receiptIds": [
+                "knowledge-f968a5aa41f72034da82ca8222c3c23fb16ea144890a577e24f34107c7b19fa2",
+                "knowledge-0a31528365340989f569dbd467cd0a5dac72d26eb8690d666759364cb2dd0251"
+              ],
+              "status": "available",
+              "issueCodes": [
+                "evidence_inapplicable"
+              ]
+            }
+          ],
+          "issueCodes": []
+        },
+        "knowledgeSources": [
+          {
+            "subjectId": "sub-ebdfd136a136be26",
+            "evidenceId": "evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e",
+            "available": true,
+            "supportStatus": "unverified",
+            "title": "known-context",
+            "documentRevision": 1,
+            "role": "background",
+            "locator": {
+              "kind": "text_lines",
+              "page": null,
+              "lineStart": 1,
+              "lineEnd": 1,
+              "paragraph": null,
+              "table": null,
+              "row": null,
+              "column": null
+            },
+            "quote": "采购付款安排延后，影响本期预算执行进度。",
+            "period": {
+              "start": "2026-11-01",
+              "end": "2026-12-01"
+            },
+            "recordedAt": "2026-11-05T23:58:00Z",
+            "eventTime": "2026-11-03",
+            "issueCodes": []
+          }
+        ],
+        "knowledgeSourceIssues": [],
+        "draftSha256": "413a95f3987da0bf79b14bec63f3129f3cc14bf949da6301b4422ab75e79fdac",
+        "quality": {
+          "status": "evaluated",
+          "inputSha256": "c41274abb45304ed112b4667549f804672569c1d4c28af9e9864381e3a9c5170",
+          "reportBasisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+          "claimSupport": [
+            {
+              "subjectId": "sub-ebdfd136a136be26",
+              "kind": "inference",
+              "factRefs": [],
+              "evidenceRefs": [
+                "evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e"
+              ],
+              "supportStatus": "unverified"
+            },
+            {
+              "subjectId": "sub-97e6ae2a699b75bc",
+              "kind": "fact",
+              "factRefs": [
+                "fact-e945d96ba9c1bd55"
+              ],
+              "evidenceRefs": [],
+              "supportStatus": "unverified"
+            }
+          ],
+          "registeredQuestionCoverage": [
+            {
+              "questionId": "q-rate",
+              "status": "partial",
+              "findingIds": [],
+              "subjectIds": [
+                "sub-97e6ae2a699b75bc"
+              ],
+              "issueCodes": [
+                "data_readiness_unknown",
+                "question_support_unverified",
+                "question_completion_mapping_unavailable"
+              ]
+            }
+          ],
+          "allKeyFactsEvaluated": false,
+          "questionCoverage": {
+            "required": 1,
+            "evaluated": 0,
+            "answered": 0,
+            "effectiveAnswerRate": null,
+            "evaluationStatus": "not_fully_evaluated"
+          },
+          "answerReview": null,
+          "registeredManagementOverview": {
+            "reportBasisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+            "inputSha256": "c41274abb45304ed112b4667549f804672569c1d4c28af9e9864381e3a9c5170",
+            "markdownSha256": "413a95f3987da0bf79b14bec63f3129f3cc14bf949da6301b4422ab75e79fdac",
+            "status": "evaluated",
+            "rows": [
+              {
+                "questionId": "q-rate",
+                "question": "执行率及当期背景是什么？",
+                "status": "partial",
+                "facts": [],
+                "issueCodes": [
+                  "data_readiness_unknown",
+                  "question_support_unverified",
+                  "question_completion_mapping_unavailable"
+                ]
+              }
+            ],
+            "issueCodes": []
+          },
+          "managementOverview": null,
+          "issues": [
+            {
+              "code": "registered_claim_support_unknown",
+              "subjectId": "sub-ebdfd136a136be26",
+              "severity": "warning",
+              "checker": "deterministic",
+              "reasons": [
+                "registered_observation_unavailable"
+              ],
+              "statementReview": null
+            },
+            {
+              "code": "registered_claim_support_unknown",
+              "subjectId": "sub-97e6ae2a699b75bc",
+              "severity": "warning",
+              "checker": "deterministic",
+              "reasons": [
+                "data_readiness_unknown",
+                "statement_not_supported",
+                "claim_interpretation_unavailable"
+              ],
+              "statementReview": {
+                "numericStatus": "valid",
+                "warnings": [
+                  "语义期间需复核：正式指标的半开期间尚无正文语义判断。"
+                ]
+              }
+            }
+          ],
+          "tableChecks": {
+            "table-analysis_001-registered-0-0-0": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            },
+            "table-analysis_001-registered-0-1-0": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            },
+            "table-analysis_001-registered-0-2-0": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          },
+          "semanticChecks": {},
+          "chartChecks": {},
+          "warningLedger": {
+            "version": "warning-ledger/1",
+            "groupingVersion": "fact-reference/2",
+            "qualityInputSha256": "c41274abb45304ed112b4667549f804672569c1d4c28af9e9864381e3a9c5170",
+            "originalIssueCount": 2,
+            "groupCount": 2,
+            "groups": [
+              {
+                "groupId": "wg-f0e0bd52ffccdaaeacd1",
+                "targetKind": "registered_claim_support_unknown",
+                "subjectIds": [
+                  "sub-ebdfd136a136be26"
+                ],
+                "factIds": [],
+                "factRefs": [],
+                "issueIndices": [
+                  0
+                ],
+                "issueCodes": [
+                  "registered_claim_support_unknown"
+                ],
+                "reasons": [
+                  "registered_observation_unavailable"
+                ],
+                "assessments": [
+                  "unclassified"
+                ],
+                "reviewIds": [],
+                "requiredActions": [
+                  "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+                ],
+                "repairStages": [
+                  "review"
+                ],
+                "adjudication": "not_adjudicated"
+              },
+              {
+                "groupId": "wg-950f06e86fa2b544cd5c",
+                "targetKind": "registered_claim_support_unknown",
+                "subjectIds": [
+                  "sub-97e6ae2a699b75bc"
+                ],
+                "factIds": [],
+                "factRefs": [],
+                "issueIndices": [
+                  1
+                ],
+                "issueCodes": [
+                  "registered_claim_support_unknown"
+                ],
+                "reasons": [
+                  "data_readiness_unknown",
+                  "statement_not_supported",
+                  "claim_interpretation_unavailable"
+                ],
+                "assessments": [
+                  "unresolved",
+                  "unclassified"
+                ],
+                "reviewIds": [
+                  "R004",
+                  "R005",
+                  "R011",
+                  "R032"
+                ],
+                "requiredActions": [
+                  "对照当前句子与所选事实复核范围、期间、单位及结论",
+                  "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+                ],
+                "repairStages": [
+                  "draft",
+                  "review"
+                ],
+                "adjudication": "not_adjudicated"
+              }
+            ],
+            "businessAcceptanceEvaluated": false
+          }
+        },
+        "revisionImpactIssues": [],
+        "revisionImpacts": [],
+        "sourceIssues": [],
+        "warnings": [],
+        "subjects": [
+          {
+            "subjectId": "sub-ebdfd136a136be26",
+            "claimId": "narr-0c560af3e860a19bb139f0d5",
+            "sectionId": "section_001",
+            "status": "valid",
+            "sourceStatus": "unknown",
+            "bindingStatus": "bound",
+            "supportStatus": "unknown",
+            "checkStatus": "completed",
+            "sourceIssues": [],
+            "factValue": null,
+            "computation": null,
+            "restoreText": null,
+            "warnings": [],
+            "semanticCheck": {
+              "method": "model_context_interpretation_v1",
+              "status": "interpreted",
+              "interpretation": {
+                "claimId": "narr-0c560af3e860a19bb139f0d5",
+                "scope": [],
+                "period": null,
+                "claimKind": "inference",
+                "kindEvidence": [
+                  "影响"
+                ],
+                "metricVersion": {
+                  "metricId": "rate",
+                  "revision": 1
+                },
+                "metricEvidence": [],
+                "periods": [],
+                "periodEvidence": [],
+                "statistic": "unknown",
+                "statisticEvidence": [],
+                "quantity": null,
+                "knowledgeRelations": [
+                  {
+                    "evidenceId": "evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e",
+                    "relationship": "supports",
+                    "explanationType": "causal",
+                    "claimEvidence": [
+                      "采购付款安排延后，影响本期预算执行进度"
+                    ],
+                    "sourceEvidence": [],
+                    "sourceSpans": [
+                      {
+                        "start": 0,
+                        "end": 20,
+                        "sha256": "a7c10243f9fb214b6bbf305d052b97c1762e762072a03d280a22dd83c9eda6de"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "editStatus": null
+          },
+          {
+            "subjectId": "sub-97e6ae2a699b75bc",
+            "claimId": "number-9f3e09eff50985f56c78",
+            "sectionId": "section_001",
+            "status": "valid",
+            "sourceStatus": "available",
+            "bindingStatus": "bound",
+            "supportStatus": "unknown",
+            "checkStatus": "completed",
+            "sourceIssues": [],
+            "factValue": "70.00000000",
+            "computation": "registered",
+            "restoreText": "70.00%",
+            "warnings": [
+              "语义期间需复核：正式指标的半开期间尚无正文语义判断。"
+            ],
+            "semanticCheck": null,
+            "draftValue": null,
+            "draftUnit": null,
+            "draftPeriods": null,
+            "draftDirection": null,
+            "comparable": false,
+            "unit": "%",
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "periodBoundary": "half_open",
+            "formula": null,
+            "formulaText": "预算执行率（原项目均值）（第1版）：项目完成当量（第1版） ÷ 项目数（第1版） × 100%（定义；操作数需查计算明细）；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 70.00000000 %；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+            "scope": {},
+            "datasetIds": [
+              "dataset-81b8514515d2321444deee653ebab574",
+              "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+            ],
+            "editStatus": null
+          }
+        ],
+        "summary": {
+          "valid": 2,
+          "stale": 0,
+          "unbound": 0
+        },
+        "tables": [
+          {
+            "tableId": "table-analysis_001-registered-0-0-0",
+            "cells": {
+              "valid": 1,
+              "stale": 0,
+              "unbound": 0
+            },
+            "copiedCells": [],
+            "insertedRows": 0,
+            "locations": [
+              {
+                "rowKey": "result:4a72725493fc9feddde1652c98a841db0fe154b8233f7c14eea607e2b4f498c8",
+                "columnKey": "计算结果（项目）",
+                "rowIndex": 0,
+                "columnIndex": 1,
+                "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+                "text": "1.40000000",
+                "status": "valid",
+                "factValue": "1.40000000",
+                "unit": "项目",
+                "periods": [
+                  "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+                ],
+                "computation": "registered",
+                "periodBoundary": "half_open",
+                "formula": null,
+                "formulaText": "项目完成当量（第1版）：求和；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 1.40000000 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+                "scope": {},
+                "datasetIds": [
+                  "dataset-81b8514515d2321444deee653ebab574"
+                ]
+              }
+            ],
+            "datasetIds": [
+              "dataset-81b8514515d2321444deee653ebab574"
+            ],
+            "methods": [
+              "项目完成当量（第1版）：求和；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 1.40000000 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+            ],
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "dataCheck": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          },
+          {
+            "tableId": "table-analysis_001-registered-0-1-0",
+            "cells": {
+              "valid": 1,
+              "stale": 0,
+              "unbound": 0
+            },
+            "copiedCells": [],
+            "insertedRows": 0,
+            "locations": [
+              {
+                "rowKey": "result:d03046c0e1b2a63dc1ebf1a5117b0242f5e9f2626fffa6af07faad38bf4c4c65",
+                "columnKey": "计算结果（项目）",
+                "rowIndex": 0,
+                "columnIndex": 1,
+                "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+                "text": "2",
+                "status": "valid",
+                "factValue": "2",
+                "unit": "项目",
+                "periods": [
+                  "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+                ],
+                "computation": "registered",
+                "periodBoundary": "half_open",
+                "formula": null,
+                "formulaText": "项目数（第1版）：计数；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 2 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+                "scope": {},
+                "datasetIds": [
+                  "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+                ]
+              }
+            ],
+            "datasetIds": [
+              "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+            ],
+            "methods": [
+              "项目数（第1版）：计数；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 2 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+            ],
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "dataCheck": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          },
+          {
+            "tableId": "table-analysis_001-registered-0-2-0",
+            "cells": {
+              "valid": 1,
+              "stale": 0,
+              "unbound": 0
+            },
+            "copiedCells": [],
+            "insertedRows": 0,
+            "locations": [
+              {
+                "rowKey": "result:e26b81c173fc61d54d185c4b2592fe4e1963537a51d8de3a960b69be61521685",
+                "columnKey": "计算结果（%）",
+                "rowIndex": 0,
+                "columnIndex": 1,
+                "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+                "text": "70.00000000",
+                "status": "valid",
+                "factValue": "70.00000000",
+                "unit": "%",
+                "periods": [
+                  "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+                ],
+                "computation": "registered",
+                "periodBoundary": "half_open",
+                "formula": null,
+                "formulaText": "预算执行率（原项目均值）（第1版）：项目完成当量（第1版） ÷ 项目数（第1版） × 100%（定义；操作数需查计算明细）；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 70.00000000 %；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+                "scope": {},
+                "datasetIds": [
+                  "dataset-81b8514515d2321444deee653ebab574",
+                  "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+                ]
+              }
+            ],
+            "datasetIds": [
+              "dataset-81b8514515d2321444deee653ebab574",
+              "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+            ],
+            "methods": [
+              "预算执行率（原项目均值）（第1版）：项目完成当量（第1版） ÷ 项目数（第1版） × 100%（定义；操作数需查计算明细）；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 70.00000000 %；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+            ],
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "dataCheck": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          }
+        ],
+        "tableSummary": {
+          "valid": 3,
+          "stale": 0,
+          "unbound": 0,
+          "insertedRows": 0,
+          "copiedCells": 0
+        },
+        "charts": [],
+        "reviewNotices": []
+      }
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/sources/validate",
+      "method": "POST",
+      "status": 200,
+      "request": {
+        "markdown": "# C02项目均值原报告\n\n[[section:section_001]]\n## 1. 总体执行率与计算依据[[analysis:analysis_001]]\n\n本报告执行率为70.00%[[citation:sub-97e6ae2a699b75bc]][[claim:number-9f3e09eff50985f56c78]]。\n\n采购付款安排延后，影响本期预算执行进度。[[citation:sub-ebdfd136a136be26]][[claim:narr-0c560af3e860a19bb139f0d5]][[citation:citation_001]]\n\n项目完成当量（指标版本 1；期间含起日、不含止日）\n\n[[table:table-analysis_001-registered-0-0-0]]\n| 期间与范围 | 计算结果（项目） |\n| --- | ---: |\n| \\[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化 | 1.40000000 |\n\n[[/table:table-analysis_001-registered-0-0-0]]\n\n项目数（指标版本 1；期间含起日、不含止日）\n\n[[table:table-analysis_001-registered-0-1-0]]\n| 期间与范围 | 计算结果（项目） |\n| --- | ---: |\n| \\[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化 | 2 |\n\n[[/table:table-analysis_001-registered-0-1-0]]\n\n预算执行率（原项目均值）（指标版本 1；期间含起日、不含止日）\n\n[[table:table-analysis_001-registered-0-2-0]]\n| 期间与范围 | 计算结果（%） |\n| --- | ---: |\n| \\[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化 | 70.00000000 |\n\n[[/table:table-analysis_001-registered-0-2-0]]\n",
+        "draftSha256": "413a95f3987da0bf79b14bec63f3129f3cc14bf949da6301b4422ab75e79fdac"
+      },
+      "response": {
+        "businessKnowledge": {
+          "status": "available",
+          "interpretationStatus": "unverified",
+          "sections": [
+            {
+              "sectionCode": "section_001",
+              "reportRevision": "6",
+              "receiptIds": [
+                "knowledge-f968a5aa41f72034da82ca8222c3c23fb16ea144890a577e24f34107c7b19fa2",
+                "knowledge-0a31528365340989f569dbd467cd0a5dac72d26eb8690d666759364cb2dd0251"
+              ],
+              "status": "available",
+              "issueCodes": [
+                "evidence_inapplicable"
+              ]
+            }
+          ],
+          "issueCodes": []
+        },
+        "knowledgeSources": [
+          {
+            "subjectId": "sub-ebdfd136a136be26",
+            "evidenceId": "evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e",
+            "available": true,
+            "supportStatus": "unverified",
+            "title": "known-context",
+            "documentRevision": 1,
+            "role": "background",
+            "locator": {
+              "kind": "text_lines",
+              "page": null,
+              "lineStart": 1,
+              "lineEnd": 1,
+              "paragraph": null,
+              "table": null,
+              "row": null,
+              "column": null
+            },
+            "quote": "采购付款安排延后，影响本期预算执行进度。",
+            "period": {
+              "start": "2026-11-01",
+              "end": "2026-12-01"
+            },
+            "recordedAt": "2026-11-05T23:58:00Z",
+            "eventTime": "2026-11-03",
+            "issueCodes": []
+          }
+        ],
+        "knowledgeSourceIssues": [],
+        "draftSha256": "413a95f3987da0bf79b14bec63f3129f3cc14bf949da6301b4422ab75e79fdac",
+        "quality": {
+          "status": "evaluated",
+          "inputSha256": "c41274abb45304ed112b4667549f804672569c1d4c28af9e9864381e3a9c5170",
+          "reportBasisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+          "claimSupport": [
+            {
+              "subjectId": "sub-ebdfd136a136be26",
+              "kind": "inference",
+              "factRefs": [],
+              "evidenceRefs": [
+                "evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e"
+              ],
+              "supportStatus": "unverified"
+            },
+            {
+              "subjectId": "sub-97e6ae2a699b75bc",
+              "kind": "fact",
+              "factRefs": [
+                "fact-e945d96ba9c1bd55"
+              ],
+              "evidenceRefs": [],
+              "supportStatus": "unverified"
+            }
+          ],
+          "registeredQuestionCoverage": [
+            {
+              "questionId": "q-rate",
+              "status": "partial",
+              "findingIds": [],
+              "subjectIds": [
+                "sub-97e6ae2a699b75bc"
+              ],
+              "issueCodes": [
+                "data_readiness_unknown",
+                "question_support_unverified",
+                "question_completion_mapping_unavailable"
+              ]
+            }
+          ],
+          "allKeyFactsEvaluated": false,
+          "questionCoverage": {
+            "required": 1,
+            "evaluated": 0,
+            "answered": 0,
+            "effectiveAnswerRate": null,
+            "evaluationStatus": "not_fully_evaluated"
+          },
+          "answerReview": null,
+          "registeredManagementOverview": {
+            "reportBasisId": "9cf2fa8b-ee4a-5077-bb56-caab33f819dd",
+            "inputSha256": "c41274abb45304ed112b4667549f804672569c1d4c28af9e9864381e3a9c5170",
+            "markdownSha256": "413a95f3987da0bf79b14bec63f3129f3cc14bf949da6301b4422ab75e79fdac",
+            "status": "evaluated",
+            "rows": [
+              {
+                "questionId": "q-rate",
+                "question": "执行率及当期背景是什么？",
+                "status": "partial",
+                "facts": [],
+                "issueCodes": [
+                  "data_readiness_unknown",
+                  "question_support_unverified",
+                  "question_completion_mapping_unavailable"
+                ]
+              }
+            ],
+            "issueCodes": []
+          },
+          "managementOverview": null,
+          "issues": [
+            {
+              "code": "registered_claim_support_unknown",
+              "subjectId": "sub-ebdfd136a136be26",
+              "severity": "warning",
+              "checker": "deterministic",
+              "reasons": [
+                "registered_observation_unavailable"
+              ],
+              "statementReview": null
+            },
+            {
+              "code": "registered_claim_support_unknown",
+              "subjectId": "sub-97e6ae2a699b75bc",
+              "severity": "warning",
+              "checker": "deterministic",
+              "reasons": [
+                "data_readiness_unknown",
+                "statement_not_supported",
+                "claim_interpretation_unavailable"
+              ],
+              "statementReview": {
+                "numericStatus": "valid",
+                "warnings": [
+                  "语义期间需复核：正式指标的半开期间尚无正文语义判断。"
+                ]
+              }
+            }
+          ],
+          "tableChecks": {
+            "table-analysis_001-registered-0-0-0": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            },
+            "table-analysis_001-registered-0-1-0": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            },
+            "table-analysis_001-registered-0-2-0": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          },
+          "semanticChecks": {},
+          "chartChecks": {},
+          "warningLedger": {
+            "version": "warning-ledger/1",
+            "groupingVersion": "fact-reference/2",
+            "qualityInputSha256": "c41274abb45304ed112b4667549f804672569c1d4c28af9e9864381e3a9c5170",
+            "originalIssueCount": 2,
+            "groupCount": 2,
+            "groups": [
+              {
+                "groupId": "wg-f0e0bd52ffccdaaeacd1",
+                "targetKind": "registered_claim_support_unknown",
+                "subjectIds": [
+                  "sub-ebdfd136a136be26"
+                ],
+                "factIds": [],
+                "factRefs": [],
+                "issueIndices": [
+                  0
+                ],
+                "issueCodes": [
+                  "registered_claim_support_unknown"
+                ],
+                "reasons": [
+                  "registered_observation_unavailable"
+                ],
+                "assessments": [
+                  "unclassified"
+                ],
+                "reviewIds": [],
+                "requiredActions": [
+                  "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+                ],
+                "repairStages": [
+                  "review"
+                ],
+                "adjudication": "not_adjudicated"
+              },
+              {
+                "groupId": "wg-950f06e86fa2b544cd5c",
+                "targetKind": "registered_claim_support_unknown",
+                "subjectIds": [
+                  "sub-97e6ae2a699b75bc"
+                ],
+                "factIds": [],
+                "factRefs": [],
+                "issueIndices": [
+                  1
+                ],
+                "issueCodes": [
+                  "registered_claim_support_unknown"
+                ],
+                "reasons": [
+                  "data_readiness_unknown",
+                  "statement_not_supported",
+                  "claim_interpretation_unavailable"
+                ],
+                "assessments": [
+                  "unresolved",
+                  "unclassified"
+                ],
+                "reviewIds": [
+                  "R004",
+                  "R005",
+                  "R011",
+                  "R032"
+                ],
+                "requiredActions": [
+                  "对照当前句子与所选事实复核范围、期间、单位及结论",
+                  "保留原始诊断并逐项裁定，不能自动判为金额错误或通过"
+                ],
+                "repairStages": [
+                  "draft",
+                  "review"
+                ],
+                "adjudication": "not_adjudicated"
+              }
+            ],
+            "businessAcceptanceEvaluated": false
+          }
+        },
+        "revisionImpactIssues": [],
+        "revisionImpacts": [],
+        "sourceIssues": [],
+        "warnings": [],
+        "subjects": [
+          {
+            "subjectId": "sub-ebdfd136a136be26",
+            "claimId": "narr-0c560af3e860a19bb139f0d5",
+            "sectionId": "section_001",
+            "status": "valid",
+            "sourceStatus": "unknown",
+            "bindingStatus": "bound",
+            "supportStatus": "unknown",
+            "checkStatus": "completed",
+            "sourceIssues": [],
+            "factValue": null,
+            "computation": null,
+            "restoreText": null,
+            "warnings": [],
+            "semanticCheck": {
+              "method": "model_context_interpretation_v1",
+              "status": "interpreted",
+              "interpretation": {
+                "claimId": "narr-0c560af3e860a19bb139f0d5",
+                "scope": [],
+                "period": null,
+                "claimKind": "inference",
+                "kindEvidence": [
+                  "影响"
+                ],
+                "metricVersion": {
+                  "metricId": "rate",
+                  "revision": 1
+                },
+                "metricEvidence": [],
+                "periods": [],
+                "periodEvidence": [],
+                "statistic": "unknown",
+                "statisticEvidence": [],
+                "quantity": null,
+                "knowledgeRelations": [
+                  {
+                    "evidenceId": "evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e",
+                    "relationship": "supports",
+                    "explanationType": "causal",
+                    "claimEvidence": [
+                      "采购付款安排延后，影响本期预算执行进度"
+                    ],
+                    "sourceEvidence": [],
+                    "sourceSpans": [
+                      {
+                        "start": 0,
+                        "end": 20,
+                        "sha256": "a7c10243f9fb214b6bbf305d052b97c1762e762072a03d280a22dd83c9eda6de"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "editStatus": null
+          },
+          {
+            "subjectId": "sub-97e6ae2a699b75bc",
+            "claimId": "number-9f3e09eff50985f56c78",
+            "sectionId": "section_001",
+            "status": "valid",
+            "sourceStatus": "available",
+            "bindingStatus": "bound",
+            "supportStatus": "unknown",
+            "checkStatus": "completed",
+            "sourceIssues": [],
+            "factValue": "70.00000000",
+            "computation": "registered",
+            "restoreText": "70.00%",
+            "warnings": [
+              "语义期间需复核：正式指标的半开期间尚无正文语义判断。"
+            ],
+            "semanticCheck": null,
+            "draftValue": null,
+            "draftUnit": null,
+            "draftPeriods": null,
+            "draftDirection": null,
+            "comparable": false,
+            "unit": "%",
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "periodBoundary": "half_open",
+            "formula": null,
+            "formulaText": "预算执行率（原项目均值）（第1版）：项目完成当量（第1版） ÷ 项目数（第1版） × 100%（定义；操作数需查计算明细）；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 70.00000000 %；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+            "scope": {},
+            "datasetIds": [
+              "dataset-81b8514515d2321444deee653ebab574",
+              "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+            ],
+            "editStatus": null
+          }
+        ],
+        "summary": {
+          "valid": 2,
+          "stale": 0,
+          "unbound": 0
+        },
+        "tables": [
+          {
+            "tableId": "table-analysis_001-registered-0-0-0",
+            "cells": {
+              "valid": 1,
+              "stale": 0,
+              "unbound": 0
+            },
+            "copiedCells": [],
+            "insertedRows": 0,
+            "locations": [
+              {
+                "rowKey": "result:4a72725493fc9feddde1652c98a841db0fe154b8233f7c14eea607e2b4f498c8",
+                "columnKey": "计算结果（项目）",
+                "rowIndex": 0,
+                "columnIndex": 1,
+                "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+                "text": "1.40000000",
+                "status": "valid",
+                "factValue": "1.40000000",
+                "unit": "项目",
+                "periods": [
+                  "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+                ],
+                "computation": "registered",
+                "periodBoundary": "half_open",
+                "formula": null,
+                "formulaText": "项目完成当量（第1版）：求和；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 1.40000000 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+                "scope": {},
+                "datasetIds": [
+                  "dataset-81b8514515d2321444deee653ebab574"
+                ]
+              }
+            ],
+            "datasetIds": [
+              "dataset-81b8514515d2321444deee653ebab574"
+            ],
+            "methods": [
+              "项目完成当量（第1版）：求和；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 1.40000000 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+            ],
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "dataCheck": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          },
+          {
+            "tableId": "table-analysis_001-registered-0-1-0",
+            "cells": {
+              "valid": 1,
+              "stale": 0,
+              "unbound": 0
+            },
+            "copiedCells": [],
+            "insertedRows": 0,
+            "locations": [
+              {
+                "rowKey": "result:d03046c0e1b2a63dc1ebf1a5117b0242f5e9f2626fffa6af07faad38bf4c4c65",
+                "columnKey": "计算结果（项目）",
+                "rowIndex": 0,
+                "columnIndex": 1,
+                "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+                "text": "2",
+                "status": "valid",
+                "factValue": "2",
+                "unit": "项目",
+                "periods": [
+                  "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+                ],
+                "computation": "registered",
+                "periodBoundary": "half_open",
+                "formula": null,
+                "formulaText": "项目数（第1版）：计数；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 2 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+                "scope": {},
+                "datasetIds": [
+                  "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+                ]
+              }
+            ],
+            "datasetIds": [
+              "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+            ],
+            "methods": [
+              "项目数（第1版）：计数；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 2 项目；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+            ],
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "dataCheck": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          },
+          {
+            "tableId": "table-analysis_001-registered-0-2-0",
+            "cells": {
+              "valid": 1,
+              "stale": 0,
+              "unbound": 0
+            },
+            "copiedCells": [],
+            "insertedRows": 0,
+            "locations": [
+              {
+                "rowKey": "result:e26b81c173fc61d54d185c4b2592fe4e1963537a51d8de3a960b69be61521685",
+                "columnKey": "计算结果（%）",
+                "rowIndex": 0,
+                "columnIndex": 1,
+                "rowLabel": "[2026-11-01, 2026-12-01) · 限制：数据完整性与更新状态尚未核实，暂不据此判断经营变化",
+                "text": "70.00000000",
+                "status": "valid",
+                "factValue": "70.00000000",
+                "unit": "%",
+                "periods": [
+                  "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+                ],
+                "computation": "registered",
+                "periodBoundary": "half_open",
+                "formula": null,
+                "formulaText": "预算执行率（原项目均值）（第1版）：项目完成当量（第1版） ÷ 项目数（第1版） × 100%（定义；操作数需查计算明细）；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 70.00000000 %；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过",
+                "scope": {},
+                "datasetIds": [
+                  "dataset-81b8514515d2321444deee653ebab574",
+                  "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+                ]
+              }
+            ],
+            "datasetIds": [
+              "dataset-81b8514515d2321444deee653ebab574",
+              "dataset-d056dfb4ed2fa218a9885a9e7c4d9a69"
+            ],
+            "methods": [
+              "预算执行率（原项目均值）（第1版）：项目完成当量（第1版） ÷ 项目数（第1版） × 100%（定义；操作数需查计算明细）；采用C02原项目均值（第2版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 70.00000000 %；取数时间2026-11-11T13:50:45+00:00；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过"
+            ],
+            "periods": [
+              "[2026-11-01, 2026-12-01)（含起日、不含止日）"
+            ],
+            "dataCheck": {
+              "status": "verified",
+              "scope": "frozen_cells",
+              "reasons": [],
+              "checkedCells": 1
+            }
+          }
+        ],
+        "tableSummary": {
+          "valid": 3,
+          "stale": 0,
+          "unbound": 0,
+          "insertedRows": 0,
+          "copiedCells": 0
+        },
+        "charts": [],
+        "reviewNotices": []
+      }
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/sources/sub-ebdfd136a136be26/knowledge/evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e",
+      "method": "GET",
+      "status": 200
+    },
+    {
+      "path": "/reports/v1/editor/policy-adoption-40969f6836bcc7c414c397993ed6bcfb9f2d7e4a99894477261eb020a012ed26/6/api/sources/sub-ebdfd136a136be26/knowledge/evidence-56274681b9ebdf2d423ac2079806e6a5c88ac486de3cd1baaa182b0f1684898e",
+      "method": "GET",
+      "status": 200
+    }
+  ],
+  "errors": [],
+  "knowledge": {
+    "subjectId": "sub-ebdfd136a136be26",
+    "supportText": "当前正文支持关系：待核实",
+    "quote": "采购付款安排延后，影响本期预算执行进度。",
+    "keyboardToggleVerified": true
+  }
+}
