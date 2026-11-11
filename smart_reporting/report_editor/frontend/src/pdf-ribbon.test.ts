@@ -3,6 +3,16 @@ import { createPdfRibbon } from './pdf-ribbon'
 
 afterEach(() => document.body.replaceChildren())
 
+it('shows field design without exposing form filling on a source without fields',()=>{
+ const root=document.createElement('main');document.body.append(root)
+ const ribbon=createPdfRibbon(root)
+ ribbon.setHasForms(false,true)
+ expect(root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab=formDesign]')!.hidden).toBe(false)
+ expect(root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab=fillForm]')!.hidden).toBe(true)
+ root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab=home]')!.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}))
+ expect(root.querySelector('[data-pdf-ribbon-tab=formDesign]')!.getAttribute('aria-selected')).toBe('true')
+})
+
 it('shows GenOffice PDF ribbon tabs and reveals form context only for forms', () => {
   document.body.innerHTML = '<main></main>'
   const ribbon = createPdfRibbon(document.querySelector('main')!, { hasForms: true })
@@ -66,4 +76,13 @@ it('localizes the source ribbon tabs and group titles from the active document l
   ribbon.setLanguage('en-US')
   expect(document.querySelector('[data-pdf-ribbon-tab=home]')?.textContent).toBe('Home')
   expect(group.querySelector('h3')?.textContent).toBe('Organize')
+})
+
+it('places AI first and conversion last in Home keyboard order', () => {
+  const host = document.body.appendChild(document.createElement('main'))
+  const ribbon = createPdfRibbon(host)
+  for (const group of ['AI','Markup','Edit','Convert & Export','Page & Zoom','Search, Print & Properties']) ribbon.group('home',group)
+  expect([...host.querySelectorAll('[data-pdf-ribbon-panel=home] > section')].map(group => (group as HTMLElement).dataset.ribbonGroup))
+    .toEqual(['AI','Markup','Edit','Page & Zoom','Search, Print & Properties','Convert & Export'])
+  ribbon.dispose()
 })

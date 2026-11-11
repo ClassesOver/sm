@@ -1,3 +1,4 @@
+import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { pdfRibbonLabel } from './pdf-ribbon-locales'
 
 const TABS = [
@@ -12,7 +13,7 @@ const TABS = [
 
 export interface PdfRibbon {
   group(tab: string, label: string): HTMLElement
-  setHasForms(hasForms: boolean): void
+  setHasForms(hasForms: boolean,canDesign?:boolean): void
   setLanguage(language: string): void
   dispose(): void
 }
@@ -20,6 +21,7 @@ export interface PdfRibbon {
 export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean } = {}): PdfRibbon {
   const root = document.createElement('div')
   root.className = 'pdf-ribbon'
+  const disposeScroll = bindOfficeRibbonScroll(root)
   root.setAttribute('role', 'region')
   root.setAttribute('aria-label', 'PDF ribbon')
   const tabs = document.createElement('div')
@@ -57,7 +59,7 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
     }
     button.addEventListener('click', () => select(tab.id))
     button.addEventListener('keydown', event => {
-      const visibleTabs = [...buttons].filter(([id]) => !contextual.has(id) || hasForms).map(([id]) => id)
+      const visibleTabs = [...buttons].filter(([,button]) => !button.hidden).map(([id]) => id)
       const index = visibleTabs.indexOf(tab.id)
       const next = event.key === 'ArrowRight' ? visibleTabs[(index + 1) % visibleTabs.length]
         : event.key === 'ArrowLeft' ? visibleTabs[(index + visibleTabs.length - 1) % visibleTabs.length]
@@ -91,20 +93,25 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
       if (!panel) throw new Error(`Unknown PDF ribbon tab: ${tab}`)
       const group = document.createElement('section')
       group.className = 'pdf-ribbon-group'
+      group.dataset.ribbonGroup = label
       group.setAttribute('aria-label', label)
       const title = document.createElement('h3')
       title.textContent = pdfRibbonLabel(label, language)
       group.append(title)
-      panel.append(group)
+      const trailing = tab !== 'home' || label === 'Convert & Export' ? null
+        : label === 'AI' ? panel.firstElementChild
+        : Array.from(panel.children).find(element => (element as HTMLElement).dataset.ribbonGroup === 'Convert & Export') ?? null
+      panel.insertBefore(group, trailing)
       group.setAttribute('aria-label', title.textContent)
       groups.push({ element: group, name: label, title })
       return group
     },
-    setHasForms(value) {
+    setHasForms(value,canDesign=false) {
       hasForms = value
       for (const id of contextual) {
-        buttons.get(id)!.hidden = !value
-        if (!value && active === id) select('home')
+        const shown=value||(id==='formDesign'&&canDesign)
+        buttons.get(id)!.hidden = !shown
+        if (!shown && active === id) select('home')
       }
     },
     setLanguage(value) {
@@ -112,6 +119,6 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
       for (const tab of TABS) buttons.get(tab.id)!.textContent = tabLabel(tab)
       for (const group of groups) { group.title.textContent = pdfRibbonLabel(group.name, language); group.element.setAttribute('aria-label', group.title.textContent) }
     },
-    dispose() { root.remove() },
+    dispose() { disposeScroll(); root.remove() },
   }
 }

@@ -77,6 +77,8 @@ export default defineConfig({
         onlyExplicitManualChunks: true,
         chunkFileNames: 'assets/lazy-[name]-[hash].js',
         manualChunks(id) {
+          if (/\/src\/(?:pdf-replace-text-style|pdf-text-selection|pdf-selection-style-source|pdf-static-text|pdf-text-edit-shortcuts)\.ts$/.test(id)) return 'native-pdf-text-controls'
+          if (/\/src\/pdf-form-(?:create|design|radio-extension|text-properties|canvas)\.ts$/.test(id)) return 'native-pdf-form-controls'
           if (id.endsWith('/src/office-ai-entry.tsx')) return 'office-ai-entry'
           if (/\/src\/docx-ruler\.tsx$/.test(id) || id.endsWith('/docx-ruler-indent.ts') || id.endsWith('/docx-tab-stops.ts') || /\/vendor\/genoffice-docs\/apps\/docs\/src\/renderer\/(?:components\/Ruler\.tsx|use-measurement\.ts|units\.ts)$/.test(id)) return 'docx-ruler'
           if (id.endsWith('/src/docx-line-spacing.ts')) return 'docx-line-spacing'

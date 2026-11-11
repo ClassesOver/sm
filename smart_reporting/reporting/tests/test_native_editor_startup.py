@@ -29,6 +29,9 @@ async def test_application_registers_native_schema_startup(monkeypatch):
     assert "/reports/v1/native/{document_id}/{revision}/api/ai/start" in paths
     assert "/reports/v1/native/{document_id}/{revision}/api/slides-ai/start" in paths
     assert app_module.native_slides_ai.aclose in application.router.on_shutdown
+    assert "/reports/v1/native/{document_id}/{revision}/api/ai/review/start" in paths
+    assert "/reports/v1/native/{document_id}/{revision}/api/ai/review/{edit_id}/accept" in paths
+    assert app_module.native_pdf_review_ai.aclose in application.router.on_shutdown
     assert app_module.native_editor.publication is app_module.native_publication
     assert app_module.native_artifact_persistence.workspace_service is app_module.native_workspace
     assert app_module.native_downloads.workspace_service is app_module.native_workspace

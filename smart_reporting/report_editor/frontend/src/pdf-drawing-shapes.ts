@@ -1,7 +1,8 @@
-/** Fixed GenOffice f8c17004 DrawLayer drawingShape: SVG adapter, no vendored edits. */
+/** Fixed GenOffice f8c17004 drawing gestures; local SVG previews follow saved AP geometry. */
 import type { NativeOperation } from './native-draft'
 import { imageViewBox, type ImageViewport } from './pdf-image-gesture'
 const NS='http://www.w3.org/2000/svg'
+const num=(value:number)=>Math.round(value*100)/100
 export const CANVAS_DRAWING_KINDS=new Set(['image','rect','ellipse','arrow','measure','ink','polygon','caret','link'])
 export function paintDrawing(group: SVGGElement, operation: NativeOperation, viewport: ImageViewport, scale: number) {
   group.replaceChildren()
@@ -35,8 +36,10 @@ export function paintDrawing(group: SVGGElement, operation: NativeOperation, vie
       }
     } else if(shape==='polygon')append('polygon',{points:(operation.vertices as number[][]).map(v=>point(v).join(',')).join(' '),'stroke-linejoin':'round'},true)
     else if(shape==='caret') {
-      const [x,y]=point(operation.point as number[]) as [number,number]
-      append('path',{d:`M${x-8} ${y+6} L${x} ${y} L${x+8} ${y+6}`,'stroke-linecap':'round','stroke-linejoin':'round'},true)
+      const [x,y]=operation.point as number[]
+      const vertices=[[num(x!),num(y!)],[num(x!-8),num(y!-6)],[num(x!+8),num(y!-6)]].map(point)
+      const d=vertices.map((v,i)=>`${i?'L':'M'}${v[0]} ${v[1]}`).join(' ')+' Z'
+      append('path',{d,fill:hit?'none':rgb,stroke:hit?'transparent':'none','stroke-linejoin':'round'},true)
     } else {
       const [fx,fy]=point(operation.from as number[]) as [number,number],[tx,ty]=point(operation.to as number[]) as [number,number]
       append('line',{x1:fx,y1:fy,x2:tx,y2:ty,'stroke-linecap':'round'},true)
@@ -45,9 +48,13 @@ export function paintDrawing(group: SVGGElement, operation: NativeOperation, vie
         for(const offset of [-.45,.45]){const head=append('line',{x1:tx,y1:ty,x2:tx-length*Math.cos(angle+offset),y2:ty-length*Math.sin(angle+offset),'stroke-linecap':'round'});if(!hit)head.dataset.pdfArrowHead=''}
       }
       if(shape==='measure'&&!hit) {
-        let angle=Math.atan2(ty-fy,tx-fx)*180/Math.PI;if(Math.abs(angle)>90)angle+=180
-        const x=(fx+tx)/2,y=(fy+ty)/2-6*scale
-        const label=append('text',{x,y,fill:rgb,stroke:'none','font-size':Math.max(9,9*scale),'text-anchor':'middle',transform:`rotate(${angle} ${x} ${y})`})
+        const from=operation.from as number[],to=operation.to as number[],angle=Math.atan2(to[1]!-from[1]!,to[0]!-from[0]!),tilt=Math.abs(angle)>Math.PI/2?angle+Math.PI:angle
+        const a=num(Math.cos(tilt)),b=num(Math.sin(tilt)),c=num(-Math.sin(tilt)),d=num(Math.cos(tilt)),e=num((from[0]!+to[0]!)/2),f=num((from[1]!+to[1]!)/2+6)
+        // Native Tm → PDF.js viewport → SVG glyph space (whose y points down).
+        const origin=point([e,f]),u=point([e+a,f+b]),down=point([e-c,f-d])
+        const matrix=[u[0]!-origin[0]!,u[1]!-origin[1]!,down[0]!-origin[0]!,down[1]!-origin[1]!,...origin]
+        const label=append('text',{x:0,y:0,fill:rgb,stroke:'none','font-size':9,'font-family':'Helvetica, Arial, sans-serif','dominant-baseline':'alphabetic','text-anchor':'start',transform:`matrix(${matrix.join(' ')})`})
+        label.style.fontKerning='none';label.style.fontVariantLigatures='none'
         label.dataset.pdfMeasureLabel='';label.textContent=String(operation.label)
       }
     }

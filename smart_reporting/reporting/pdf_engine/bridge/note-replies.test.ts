@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { writeFile } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+const artifacts = await mkdtemp(join(tmpdir(), 'pdf-note-replies-'))
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber } from 'pdf-lib'
 import { inspectPdf, patchPdfWithReceipt } from './operations'
 async function fixture() {
@@ -15,7 +18,7 @@ test('exact duplicate-looking parent, repeated flat replies, actual IRT and dete
  const child=annots.lookup(2,PDFDict);assert.equal(String(child.get(PDFName.of('IRT'))),String(annots.get(1)));assert.equal(String(child.get(PDFName.of('RT'))),'/R');assert.equal(child.lookup(PDFName.of('CreationDate')).decodeText(),'D:20261106130000Z')
  const updated=await inspectPdf(result.bytes);assert.equal(updated.pages[0].notes[1].replyable,true);assert.equal(updated.pages[0].notes[1].editable,false);assert.equal(updated.pages[0].notes[2].replyable,false)
  const more=await patchPdfWithReceipt(result.bytes,[op(updated,1)],updated.sourceSha256);assert.equal((await inspectPdf(more.bytes)).pages[0].notes.length,4)
- await writeFile('/workspace/scratch/pr196-replies/source.pdf',source);await writeFile('/workspace/scratch/pr196-replies/output.pdf',result.bytes)
+ await writeFile(join(artifacts, 'source.pdf'),source);await writeFile(join(artifacts, 'output.pdf'),result.bytes)
 })
 test('stale/foreign identity, altered parent, delete/edit and geometry mixtures fail',async()=>{
  const source=await fixture(),model=await inspectPdf(source),reply=op(model)
@@ -45,6 +48,6 @@ test('independent post-write guard refuses upstream orphan fallback and a wrong 
  for(const missing of [true,false]){
  const result=await applySaveRequest(source,{path:'',markups:[],drawings:[{kind:'note',pageIndex:0,at:[30,118],color:[1,.85,0],contents:'orphan guard',createdMs:0,replyToSaved:{objNum:Number(String(annots.get(0)).split(' ')[0]),rect:[30,100,50,118],contents:missing?'not found':'root'}}],formValues:[],stamps:[],rotations:[],deletedPages:[]})
  await assert.rejects(()=>normalizeAddedNoteDates(source,result.bytes,[{pageIndex:0,contents:'orphan guard',rect:[30,100,50,118],createdMs:0,replyToRef:String(annots.get(1))}],[],[0,1]),/pdf_reply_parent_reference_changed/)
- if(missing){const out=await PDFDocument.load(result.bytes);assert.equal(out.getPage(0).node.lookup(PDFName.of('Annots'),PDFArray).lookup(2,PDFDict).has(PDFName.of('IRT')),false);await writeFile('/workspace/scratch/pr196-replies/upstream-orphan-fallback.pdf',result.bytes)}
+ if(missing){const out=await PDFDocument.load(result.bytes);assert.equal(out.getPage(0).node.lookup(PDFName.of('Annots'),PDFArray).lookup(2,PDFDict).has(PDFName.of('IRT')),false);await writeFile(join(artifacts, 'upstream-orphan-fallback.pdf'),result.bytes)}
  }
 })
