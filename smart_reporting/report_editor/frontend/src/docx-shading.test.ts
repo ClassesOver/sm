@@ -79,6 +79,6 @@ it('refuses shading edits mixed with text or foreign ops and validates replay fi
   expect(() => replayDocxOperations(original, [{ ...valid, fill: '#edf5fc' }], anchors)).toThrow('草稿段落底纹字段或来源身份无效')
   expect(() => replayDocxOperations(original, [{ ...valid, clear: 'yes' }], anchors)).toThrow('草稿段落底纹字段或来源身份无效')
   expect(() => replayDocxOperations(original, [{ ...valid, extra: 1 }], anchors)).toThrow('草稿段落底纹字段或来源身份无效')
-  expect(() => replayDocxOperations(original, [valid, { kind: 'setParagraphAlignment', blockId: 'body-0', expectedObjectSha256: 'sha-0', alignment: 'center' }], anchors)).toThrow('草稿段落底纹字段或来源身份无效')
+  expect(() => replayDocxOperations(original, [valid, { kind: 'formatParagraph', blockId: 'body-0', expectedObjectSha256: 'sha-0', style: { bold: true } }], anchors)).toThrow('草稿段落底纹字段或来源身份无效')
   expect(() => replayDocxOperations(original, [valid, { ...valid }], anchors)).toThrow('草稿段落底纹字段或来源身份无效')
 })

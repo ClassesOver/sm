@@ -1,7 +1,12 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import type { DocxPreparedHfEdges } from './docx-hf-source'
+import type { SectionValues } from './docx-operations'
+import { DocxPageNumberDialog } from './docx-page-number-dialog'
+import { hfPageNumberOnly, hfHasPageField, hfWithoutPageMarks } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/hf-dom'
 import type { Editor } from '@tiptap/core'
 import { TextSelection } from '@tiptap/pm/state'
 import type { DocxAnchor } from './docx-operations'
+import { docxPictureUnavailable, insertDocxImageFile } from './docx-clipboard'
 import { COVER_PRESETS, docxCoverUnavailable, docxHasCoverPage, insertDocxCoverPage, removeDocxCoverPage } from './docx-cover-page'
 import { NEW_TABLE_LIMITS, docxTableInsertUnavailable, insertDocxTable, newTableSize } from './docx-new-table'
 import { applyDocxLink, docxLinkSelection, linkSelectionUnavailable, type DocxLinkSelection } from './docx-links'
@@ -144,9 +149,51 @@ export function insertDocxBlankPage(editor: Editor): boolean {
   return true
 }
 /** 从固定上游 InsertTab 提取原分组、按钮和符号面板；结构操作等待写回协议。 */
-export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: Editor; editable: boolean; anchors?: DocxAnchor[] }) {
+export function DocxInsertSource({ editor, editable, anchors = [], headerFooter, pageNumber, onNewComment, onBookmarks, onCrossReference }: {
+  editor: Editor; editable: boolean; anchors?: DocxAnchor[]; onNewComment?: () => void; onBookmarks?: () => void; onCrossReference?: () => void
+  headerFooter?: { prepare(): Promise<DocxPreparedHfEdges>; edit(target: DocxPreparedHfEdges['header'] | DocxPreparedHfEdges['footer']): void }
+  pageNumber?: { format?: string | null; start?: number | null; reason?: string; label?: string; commit(values: SectionValues): void }
+}) {
   const t = (key: keyof typeof insertRibbonZh) => insertRibbonZh[key]
   const [dropdown, setDropdown] = useState<string | null>(null)
+  const [hfEdges, setHfEdges] = useState<DocxPreparedHfEdges | null>(null)
+  const [hfError, setHfError] = useState('')
+  const [hfLoading, setHfLoading] = useState(false)
+  const hfRequest = useRef(0)
+  const [numberDialog, setNumberDialog] = useState<typeof pageNumber>()
+  const openHf = async (id: string) => {
+    if (dropdown === id) { hfRequest.current++; setDropdown(null); return }
+    const request = ++hfRequest.current
+    setDropdown(id); setHfEdges(null); setHfError(''); setHfLoading(true)
+    try {
+      const edges = await headerFooter!.prepare()
+      if (request === hfRequest.current && !editor.isDestroyed) { edges.assertCurrent(); setHfEdges(edges) }
+    } catch (error) { if (request === hfRequest.current) setHfError((error as Error).message) }
+    finally { if (request === hfRequest.current) setHfLoading(false) }
+  }
+  const runHf = (action: (edges: DocxPreparedHfEdges) => void) => {
+    try {
+      if (!editable || !editor.isEditable || !hfEdges) throw new Error('当前页眉页脚目标尚未就绪')
+      hfEdges.assertCurrent(); action(hfEdges); setDropdown(null)
+    } catch (error) { setHfError((error as Error).message) }
+  }
+  const hfMenu = (part: 'header' | 'footer' | 'pagenum') => <div data-rb-panel="" className="layout-menu">
+    {hfLoading ? <span role="status">正在定位当前页面…</span> : null}
+    {hfError ? <span role="alert">{hfError}</span> : null}
+    {part !== 'pagenum' ? <>
+      <button disabled={!hfEdges || hfLoading} onClick={() => runHf(edges => headerFooter!.edit(edges[part]))}>{part === 'header' ? t('ribbonHfEditHeader') : t('ribbonHfEditFooter')}</button>
+      <button disabled={!hfEdges || hfLoading} onClick={() => runHf(edges => { const target = edges[part]; target.controller.onCommit(part, target.variant, { text: '' }) })}>{part === 'header' ? t('ribbonHfRemoveHeader') : t('ribbonHfRemoveFooter')}</button>
+    </> : <>
+      {(['header', 'footer'] as const).flatMap(kind => (['left', 'center', 'right'] as const).map((align, index) => <button key={`${kind}-${align}`} data-source-action={`insert-page-number-${kind}-${align}`} disabled={!hfEdges || hfLoading} onClick={() => runHf(edges => { const target = edges[kind]; target.controller.onCommit(kind, target.variant, hfPageNumberOnly(align)) })}>{kind === 'header' ? [t('ribbonPnTopLeft'), t('ribbonPnTopCenter'), t('ribbonPnTopRight')][index] : [t('ribbonPnBottomLeft'), t('ribbonPnBottomCenter'), t('ribbonPnBottomRight')][index]}</button>))}
+      <button disabled={!pageNumber || !!pageNumber.reason} title={pageNumber?.reason} onClick={() => { setNumberDialog(pageNumber); setDropdown(null) }}>{t('ribbonPnFormat')}</button>
+      <button disabled={!hfEdges || hfLoading} onClick={() => runHf(edges => { for (const kind of ['footer', 'header'] as const) { const target = edges[kind], value = target.controller.valueOf(kind, target.variant)?.value; if (hfHasPageField(value)) target.controller.onCommit(kind, target.variant, hfWithoutPageMarks(value!)) } })}>{t('ribbonPnRemove')}</button>
+    </>}
+  </div>
+  const pictureInput = useRef<HTMLInputElement>(null)
+  const pictureTarget = useRef<{ doc: Editor['state']['doc']; selection: Editor['state']['selection'] } | null>(null)
+  const [pictureError, setPictureError] = useState('')
+  const [pictureLoading, setPictureLoading] = useState(false)
+  const pictureReason = pictureLoading ? '正在读取图片' : docxPictureUnavailable(editor, editable)
   const [linkDialog, setLinkDialog] = useState<DocxLinkSelection | null>(null)
   const [href, setHref] = useState('')
   const [linkError, setLinkError] = useState('')
@@ -249,12 +296,24 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
       <div className="ribbon-sep"/>
       <div className="ribbon-group">
         <div className="ribbon-group-items">
-          <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-picture" aria-label={t("ribbonPictureTip")}>
+          <input ref={pictureInput} type="file" accept="image/png,image/jpeg" hidden aria-label="选择 PNG 或 JPEG 图片" onChange={event => {
+            const file = event.currentTarget.files?.[0], target = pictureTarget.current
+            event.currentTarget.value = ''; pictureTarget.current = null
+            if (!file || !target) return
+            setPictureLoading(true); setPictureError('')
+            void insertDocxImageFile(editor, file, target).catch(error => setPictureError(error instanceof Error ? error.message : String(error))).finally(() => setPictureLoading(false))
+          }} />
+          <button className="rb-big" disabled={!!pictureReason} title={pictureReason ?? '插入 PNG 或 JPEG 图片（最大 8MB）'} aria-description={pictureReason} onMouseDown={event => event.preventDefault()} onClick={() => {
+            if (docxPictureUnavailable(editor, editable) || pictureLoading) return
+            pictureTarget.current = { doc: editor.state.doc, selection: editor.state.selection }
+            setPictureError(''); pictureInput.current?.click()
+          }} data-action="insert-picture" aria-label={t("ribbonPictureTip")}>
             <span className="rb-big-icon">
               <IconPicture size={BIG}/>
             </span>
             <span>{t('ribbonPicture')}</span>
           </button>
+          {pictureError && <p role="alert" className="table-picker-error">{pictureError}</p>}
           <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-chart" aria-label={t("ribbonChartTip")}>
             <span className="rb-big-icon">
               <IconChart size={BIG}/>
@@ -325,15 +384,15 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
               <IconLink size={14}/> {t('ribbonLink')}
             </button>
             <button className="rb-small" disabled={!link?.href} title={!link?.href ? linkUnavailable : undefined} aria-description={!link?.href ? linkUnavailable : undefined} onMouseDown={event => event.preventDefault()} onClick={openLink} data-action="edit-link" aria-label="编辑超链接">
-              {t('ribbonLink')}（编辑）
+              <IconLink size={14} /> {t('ribbonLink')}（编辑）
             </button>
             <button className="rb-small" disabled={!link?.hasLink} title={!link?.hasLink ? linkUnavailable : undefined} aria-description={!link?.hasLink ? linkUnavailable : undefined} onMouseDown={event => event.preventDefault()} onClick={() => { if (link) applyLink(link, null) }} data-action="remove-link" aria-label="移除超链接">
-              移除超链接
+              <IconLink size={14} /> 移除超链接
             </button>
-            <button className="rb-small" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-bookmark" aria-label={t("ribbonBookmarkTip")}>
+            <button className="rb-small" disabled={!onBookmarks} title={onBookmarks ? t("ribbonBookmarkTip") : unavailable} aria-description={onBookmarks ? undefined : unavailable} onMouseDown={event => event.preventDefault()} onClick={onBookmarks} data-action="insert-bookmark" aria-label={t("ribbonBookmarkTip")}>
               <IconBook size={14}/> {t('ribbonBookmark')}
             </button>
-            <button className="rb-small" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-cross-ref" aria-label={t("ribbonCrossRefTip")}>
+            <button className="rb-small" disabled={!editable || !editor.isEditable || !onCrossReference} title={onCrossReference ? t("ribbonCrossRefTip") : unavailable} aria-description={onCrossReference ? undefined : unavailable} onMouseDown={event => event.preventDefault()} onClick={onCrossReference} data-action="insert-cross-ref" data-editable-action="true" aria-label={t("ribbonCrossRefTip")}>
               <IconRefresh size={14}/> {t('ribbonCrossRef')}
             </button>
           </div>
@@ -347,7 +406,7 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
         Deliberately not gated on this tab's hasDoc (= canEdit): under the comments-only
         restriction the body is read-only yet commenting stays allowed, matching the
         Review tab's New Comment. Without a document canComment is false anyway. */}
-          <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-new-comment" aria-label={t("ribbonNewCommentTip")}>
+          <button className="rb-big" disabled={!editable || !editor.isEditable || !onNewComment} title={onNewComment ? t("ribbonNewCommentTip") : unavailable} aria-description={onNewComment ? undefined : unavailable} data-action="insert-new-comment" data-editable-action="true" aria-label={t("ribbonNewCommentTip")} onMouseDown={event => event.preventDefault()} onClick={onNewComment}>
             <span className="rb-big-icon">
               <IconComment size={BIG}/>
             </span>
@@ -360,31 +419,34 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
       <div className="ribbon-group">
         <div className="ribbon-group-items">
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-header" aria-label={t("ribbonHeaderTip")}>
+            <button className="rb-big" disabled={!editable || !editor.isEditable || !headerFooter} onClick={() => void openHf('header')} data-action="insert-header" aria-label={t("ribbonHeaderTip")}>
               <span className="rb-big-icon">
                 <IconHeader size={BIG}/>
                 <IconCaret />
               </span>
               <span>{t('ribbonHeader')}</span>
             </button>
+            {dropdown === 'header' ? hfMenu('header') : null}
           </div>
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-footer" aria-label={t("ribbonFooterTip")}>
+            <button className="rb-big" disabled={!editable || !editor.isEditable || !headerFooter} onClick={() => void openHf('footer')} data-action="insert-footer" aria-label={t("ribbonFooterTip")}>
               <span className="rb-big-icon">
                 <IconFooter size={BIG}/>
                 <IconCaret />
               </span>
               <span>{t('ribbonFooter')}</span>
             </button>
+            {dropdown === 'footer' ? hfMenu('footer') : null}
           </div>
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-page-number" aria-label={t("ribbonPageNumber")}>
+            <button className="rb-big" disabled={!editable || !editor.isEditable || !headerFooter} onClick={() => void openHf('pagenum')} data-action="insert-page-number" aria-label={t("ribbonPageNumber")}>
               <span className="rb-big-icon">
                 <IconPageNumber size={BIG}/>
                 <IconCaret />
               </span>
               <span>{t('ribbonPageNumber')}</span>
             </button>
+            {dropdown === 'pagenum' ? hfMenu('pagenum') : null}
           </div>
         </div>
         <div className="ribbon-group-label">{t('ribbonGroupHeaderFooter')}</div>
@@ -429,6 +491,8 @@ export function DocxInsertSource({ editor, editable, anchors = [] }: { editor: E
           {linkError && <p role="alert">{linkError}</p>}
         </form>
       </div>}
+      {numberDialog ? <DocxPageNumberDialog format={numberDialog.format} start={numberDialog.start} label={numberDialog.label} onChange={values => { try { numberDialog.commit(values) } catch (error) { setHfError((error as Error).message) } }} onClose={() => setNumberDialog(undefined)} /> : null}
+      {!dropdown && hfError ? <p role="alert">{hfError}</p> : null}
       {!linkDialog && linkError && <p role="alert">{linkError}</p>}
     </></div>
 }

@@ -57,7 +57,7 @@ def native_readiness_checks(settings: Any) -> dict[str, bool]:
     if docx or pdf or pdf_text or ai or upload:
         checks["native_node"] = shutil.which("node") is not None
     if docx or upload:
-        checks["native_docx_bridge"] = _nonempty_file(engine_dir("slides") / "dist/edit-docx.mjs")
+        checks["native_docx_bridge"] = _nonempty_file(engine_dir("doc") / "dist/edit-docx.mjs")
     if upload:
         checks["native_workbook_bridge"] = _nonempty_file(engine_dir("workbook") / "dist/cli.mjs")
         checks["native_slides_bridge"] = _nonempty_file(engine_dir("slides") / "dist/edit-pptx.mjs")

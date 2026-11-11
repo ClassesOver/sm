@@ -16,7 +16,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@genoffice/docx-engine": "*",
+    "@genoffice/docx-engine": "file:../../../doc_engine/packages/docx-engine",
     "@genoffice/pptx-engine": "*"
   },
   "devDependencies": {

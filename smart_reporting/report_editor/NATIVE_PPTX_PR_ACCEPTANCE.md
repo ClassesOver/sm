@@ -41,7 +41,7 @@ XLSX 提交保留在基线，不计入本 PR 的功能范围。
 两个独立只读复核覆盖前端提取和 Python 服务接线，取消终态与关闭入口问题修复后均已复核。
 这不是完整测试集通过、真实模型调用或生产鉴权验收的声明。
 
-## 最终独立构建与预算
+## XLSX 基线阶段独立构建与预算
 
 最终前端按分支 package-lock 在 `/dev/shm` 独立 `npm ci --ignore-scripts` 安装；
 Workbook 引擎也按更新后的锁文件重装，slides 引擎使用本分支的独立 bundle。
@@ -67,7 +67,7 @@ PR 以 Draft 提交，后续需处理或独立确认该 Workbook 图标预算问
 - edit-pptx：`f78ceb6e6256b43e27b0067a5d63d98b7b11e66f73325c4ab3a8eb840d05e9b2`
 - render-pptx：`4fd9061aca988f83794ee246227546f8fd46af9fe93a47475be0d9ebb3707592`
 
-## 浏览器与文件回读
+## XLSX 基线阶段浏览器与文件回读
 
 更新基线前的隔离构建已完成图片原始尺寸和形状格式两条真实 Chromium 流程，
 分别有113份运行 JS 身份校验和零错误。两条流程的宽/窄屏截图已目视；
@@ -91,3 +91,39 @@ PR 以 Draft 提交，后续需处理或独立确认该 Workbook 图标预算问
 旋转、复杂填充与轮廓编辑、效果、文本框设置、完整 FormatPane 布局和多选格式编辑
 仍需专项对齐。当前图片替换的新原始尺寸需保存重开，未保存替换沿用受保护的回退语义。
 生产鉴权、数据库、真实模型、PDF 转换和部署不在本次浏览器 fixture 验收范围。
+
+## PR 创建后的 Word 基线同步
+
+PR #216 创建后，`code` 又合入 Word PR #214，推进至
+`302517bfca0fee2bdf6a7e04edfe272db22462ec`，导致 Vite 配置冲突。
+将其合入功能分支，保留 Word 的 PDF serializer 分包和 PPTX 的共享图标分包。
+共享选择类型自动合并后复核语义不变。Word 的 DOCX 引擎目录迁移成为新的基线；
+相应适配 PPTX find-replace 生产代码及其测试的共享 XML 工具引用路径。
+这不是将其他未提交 Word 代码加入 PR 范围；最终差异仍相对于最新 `code`。
+
+按更新后的 slides/doc engine 锁文件分别重新 `npm ci --ignore-scripts`；
+`engine-word-merge.log` bundle 成功，`tsc-word-merge.log` TypeScript 检查退出0。
+查找替换 Vitest 两项通过，图片裁切 node:test 三项通过。
+首次将 node:test 文件交给 Vitest 时报告无 Vitest suite；保留校准失败日志，
+随后用其实际 tsx/node:test 入口通过，未为迎合运行器修改生产代码或测试断言。
+
+`build-word-merge.log` 构建退出0，冻结输出 `/dev/shm/pptx-pr-20261111/static-word-merge`。
+manifest SHA256：`f3a4b9baac90f373e481d98749695fa61216376df1457e742f2232f4ccbcac7d`。
+edit engine SHA256 更新为
+`0814aee61947db84d602e70eb2443ec6a94c085887aa8c66d1fc3e8a1a557b54`；render 身份不变。
+
+365个JS chunk中，PPTX main为255524字节，在250KiB内；三个格式分组大小不变。
+最终预算检查**未通过**，有两项非PPTX包超限：
+
+- `lazy-docx-main-DMsXLABf.js`：257813字节，比250KiB上限多1813字节。
+- `lazy-workbook-icons-5u0fopQy.js`：280818字节，比274KiB上限多242字节。
+
+未放宽预算，也未宣称全站预算通过；继续以 Draft PR 交付。
+最新 `browser-word-merge.log` 退出0，revision=2；118份运行JS与冻结产物逐一核对，
+page/console/route/HTTP四类错误数组均为空，保存前flush和下载重开流程通过。
+下载47032字节，SHA256：
+`ec58dd2c4ff51cdc9094e2c133c2ed6f4d7ff1f678d68746d0ef0148592b9394`。
+`verify-word-merge-download.py`、`verify-word-merge-xml.py` 均通过：
+图片框EMU为 `[914400,1828800,1828800,457200]`，原文本框保持，
+43个其他文件部件逐字节一致。最新修订2截图已目视。
+鉴权、PDF占位和生产部署限制与前述一致。

@@ -23,6 +23,7 @@ const UNKNOWN = Symbol('unknown')
 /** IPC answers; null = not installed, absent = not asked yet */
 const installed = new Map<string, StoredFace | null | typeof UNKNOWN>()
 const inflight = new Map<string, Promise<void>>()
+const browserFaces = new Map<string, StoredFace>()
 let provider: ((family: string) => Promise<FaceVerticalMetrics | null>) | null | undefined
 let hints = new Map<string, FaceHints>()
 let embedded = new Map<string, FaceMetrics>()
@@ -39,6 +40,22 @@ function fromVertical(key: string, m: FaceVerticalMetrics): StoredFace {
     xAvg: m.xAvgCharWidth == null ? null : m.xAvgCharWidth / u,
     eastAsian: ((m.codePageRange1 ?? 0) & EA_CODE_PAGES) !== 0,
   }
+}
+
+/** Browser glyph metrics are separate from Word's installed-font layout index. */
+export function setBrowserFontMetrics(entries: ReadonlyArray<{family: string; metrics: FaceVerticalMetrics; eastAsian?: boolean}>): void {
+  browserFaces.clear()
+  for (const {family, metrics, eastAsian} of entries) {
+    const key = faceKey(family)
+    browserFaces.set(key, {...fromVertical(key, metrics), ...(eastAsian === undefined ? {} : {eastAsian})})
+  }
+  resolved.clear()
+}
+
+/** A successfully loaded render face never supersedes the document's embedded face. */
+export function browserFontFace(name: string): StoredFace | null {
+  if (resolveDeclaredFace(name)?.source === 'embedded') return null
+  return browserFaces.get(faceKey(name)) ?? null
 }
 
 /** test seam: replaces window.desktop.fontMetrics; null disables the index */

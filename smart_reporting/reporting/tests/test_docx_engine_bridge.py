@@ -449,16 +449,86 @@ def test_docx_native_paragraph_spacing_accepts_any_nonnegative_twip_spacing(cont
     assert changed.paragraph_format.space_after.twips == twips
 
 
+@pytest.mark.parametrize('rule,twips', [('exact', 365), ('atLeast', 480), ('exact', 20), ('atLeast', 31680)])
+def test_docx_native_fixed_line_spacing_roundtrip_preserves_other_parts(content, rule, twips):
+    from docx.oxml.ns import qn
+    inspect, patch = api()
+    target = paragraph(inspect(content))
+    result = patch(content, [operation(target, 'setParagraphSpacing', lineRule=rule, lineRawTwips=twips)])
+    original = Document(BytesIO(content))
+    reopened = Document(BytesIO(result))
+    spacing = reopened.paragraphs[1]._p.pPr.find(qn('w:spacing'))
+    assert spacing.get(qn('w:lineRule')) == rule
+    assert spacing.get(qn('w:line')) == str(twips)
+    assert reopened.paragraphs[1].text == original.paragraphs[1].text
+    # 既有 writer 给目标 w:t 规范化 xml:space；除此以外 run 原文与格式必须逐字保留。
+    def normalize(run):
+        return run._r.xml.replace(' xml:space="preserve"', '')
+    assert [normalize(run) for run in reopened.paragraphs[1].runs] == [normalize(run) for run in original.paragraphs[1].runs]
+    assert reopened.paragraphs[2]._p.xml == original.paragraphs[2]._p.xml
+    with ZipFile(BytesIO(content)) as before, ZipFile(BytesIO(result)) as after:
+        for name in before.namelist():
+            if name not in {'word/document.xml', 'docProps/core.xml'}:
+                assert before.read(name) == after.read(name), name
+    reset_target = paragraph(inspect(result))
+    reset = patch(result, [operation(reset_target, 'setParagraphSpacing', lineSpacing=1.5)])
+    reset_spacing = Document(BytesIO(reset)).paragraphs[1]._p.pPr.find(qn('w:spacing'))
+    assert reset_spacing.get(qn('w:lineRule')) == 'auto'
+    assert reset_spacing.get(qn('w:line')) == '360'
+
+
 @pytest.mark.parametrize('values', [
     {'spaceBefore': 14401}, {'spaceBefore': 1.5}, {'spaceBefore': None},
-    {'spaceBefore': True}, {'spaceBefore': '120'}, {'spaceAfter': -1}, {'lineSpacing': 1.2},
-    {'lineSpacing': 4}, {'spaceBeforeAuto': True}, {'lineRule': 'exact'},
+    {'spaceBefore': True}, {'spaceBefore': '120'}, {'spaceAfter': -1}, {'lineSpacing': 0.05},
+    {'lineSpacing': 132.01}, {'lineSpacing': 1.234}, {'lineSpacing': True}, {'lineSpacing': '1.23'},
+    {'spaceBeforeAuto': True}, {'lineRule': 'exact'},
+    {'lineRawTwips': 360}, {'lineRule': 'auto', 'lineRawTwips': 360},
+    {'lineRule': 'exact', 'lineRawTwips': 19}, {'lineRule': 'atLeast', 'lineRawTwips': 31681},
+    {'lineRule': 'exact', 'lineRawTwips': 360.5}, {'lineRule': 'exact', 'lineRawTwips': True},
+    {'lineRule': 'exact', 'lineRawTwips': '360'}, {'lineRule': 'exact', 'lineRawTwips': 360, 'lineSpacing': 2},
 ])
 def test_docx_native_paragraph_spacing_rejects_unmodeled_or_out_of_source_values(content, values):
     inspect, patch = api()
     target = paragraph(inspect(content))
     with pytest.raises(ValueError, match='paragraph_spacing_invalid'):
         patch(content, [operation(target, 'setParagraphSpacing', **values)])
+
+
+@pytest.mark.parametrize('multiple,raw_line', [(0.06, '14'), (1.23, '295'), (4, '960'), (132, '31680')])
+def test_docx_native_custom_line_spacing_uses_native_units_and_preserves_other_content(content, multiple, raw_line):
+    from copy import deepcopy
+    from docx.oxml.ns import qn
+    inspect, patch = api()
+    original = Document(BytesIO(content))
+    original.paragraphs[1].paragraph_format.line_spacing = Pt(18.25)
+    original.paragraphs[1].paragraph_format.space_after = Pt(6)
+    original.paragraphs[1].paragraph_format.keep_with_next = True
+    stream = BytesIO()
+    original.save(stream)
+    source = stream.getvalue()
+    result = patch(source, [operation(paragraph(inspect(source)), 'setParagraphSpacing', lineSpacing=multiple)])
+    reopened = Document(BytesIO(result))
+    spacing = reopened.paragraphs[1]._p.pPr.find(qn('w:spacing'))
+    assert spacing.get(qn('w:lineRule')) == 'auto'
+    assert spacing.get(qn('w:line')) == raw_line
+    assert reopened.paragraphs[1].text == original.paragraphs[1].text
+    assert [n.xml for i, n in enumerate(reopened._element.body) if i != 1] == [n.xml for i, n in enumerate(original._element.body) if i != 1]
+    properties = []
+    for doc in (original, reopened):
+        props = deepcopy(doc.paragraphs[1]._p.pPr)
+        line = props.find(qn('w:spacing'))
+        for key in ('line', 'lineRule'):
+            line.attrib.pop(qn('w:' + key), None)
+        properties.append(props.xml)
+    assert properties[0] == properties[1]
+    def normalize(run):
+        return run._r.xml.replace(' xml:space="preserve"', '')
+    assert [normalize(run) for run in reopened.paragraphs[1].runs] == [normalize(run) for run in original.paragraphs[1].runs]
+    with ZipFile(BytesIO(source)) as before, ZipFile(BytesIO(result)) as after:
+        assert {name for name in before.namelist() if not name.endswith('/')} == {name for name in after.namelist() if not name.endswith('/')}
+        for name in before.namelist():
+            if name not in {'word/document.xml', 'docProps/core.xml'}:
+                assert before.read(name) == after.read(name), name
 
 
 @pytest.mark.parametrize('rule,raw_line', [('exact', 360), ('atLeast', 360), ('atLeast', 0)])
@@ -713,7 +783,7 @@ def test_docx_cli_refuses_overwriting_source(content, tmp_path, alias):
             output.hardlink_to(source)
     request = tmp_path / 'request.json'
     request.write_text(json.dumps({'kind': 'patch', 'input': str(source), 'output': str(output), 'operations': []}))
-    engine = Path(__file__).parents[1] / 'slides_engine'
+    engine = Path(__file__).parents[1] / 'doc_engine'
     result = subprocess.run(['node', str(engine / 'dist/edit-docx.mjs'), str(request)], cwd=engine, capture_output=True, text=True)
     assert result.returncode != 0
     assert 'docx_output_overwrites_source' in result.stderr
@@ -753,7 +823,7 @@ def test_docx_silent_cell_patch_failure_is_not_reported_as_success(content, tmp_
     inspect, _ = api()
     table = next(b for b in inspect(content)['blocks'] if b['type'] == 'table')
     cell = table['cells'][1][1]
-    engine = Path(__file__).parents[1] / 'slides_engine'
+    engine = Path(__file__).parents[1] / 'doc_engine'
     isolated = tmp_path / 'isolated'
     (isolated / 'bridge').mkdir(parents=True)
     for name in ('node_modules', 'packages', 'package.json'):

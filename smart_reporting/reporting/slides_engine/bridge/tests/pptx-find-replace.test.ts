@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createBlankPptx, openPptx, savePptx, type TextElement } from '@genoffice/pptx-engine'
 import { findReplaceEditable } from '../pptx-find-replace.ts'
-import { splitXmlChildren } from '../../packages/docx-engine/src/generate.ts'
+import { splitXmlChildren } from '../../../doc_engine/packages/docx-engine/src/generate.ts'
 
 const slideXml = (sp: string) => `<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Shape"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr/>${sp}</a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`
 const run = (text: string, props = '') => `<a:r>${props ? `<a:rPr>${props}</a:rPr>` : '<a:rPr/>'}<a:t>${text}</a:t></a:r>`

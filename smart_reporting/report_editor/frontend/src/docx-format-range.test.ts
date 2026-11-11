@@ -47,11 +47,37 @@ it('unbolds part of a mixed paragraph and keeps whole-paragraph changes as forma
   expect(ops(g)).toEqual([{ kind: 'formatParagraph', blockId: 'p0', expectedObjectSha256: 'sha-0', style: { italic: true } }])
 })
 
-it('refuses clearing a local color, and local formatting together with a text edit in the same paragraph', () => {
+it('clears local font properties with explicit null and replays their removal', () => {
+  const f = setup([{ type: 'text', text: 'abcd', marks: [{ type: 'docTextStyle', attrs: { color: '112233', font: 'Arial', sizeHalfPoints: 28 } }] }])
+  f.editor.chain().setTextSelection({ from: 2, to: 4 }).unsetMark('docTextStyle').run()
+  expect(f.rejected).toEqual([])
+  const result = ops(f)
+  expect(result).toEqual([{ kind: 'formatRange', blockId: 'p0', expectedObjectSha256: 'sha-0', from: 1, to: 3, style: { color: null, fontSize: null, fontFamily: null } }])
+  const restored = replayDocxOperations(f.baseline, result, anchors, undefined, f.editor.schema)
+  expect(f.editor.schema.nodeFromJSON(restored).eq(f.editor.state.doc)).toBe(true)
+  f.editor.commands.undo(); expect(f.editor.getJSON()).toEqual(f.baseline)
+})
+
+it('refuses local formatting together with a text edit in the same paragraph', () => {
   const colored = { type: 'docParagraph', content: [{ type: 'text', text: 'ab', marks: [{ type: 'docTextStyle', attrs: { color: '#112233' } }] }, { type: 'text', text: 'cd' }] }
-  expect(() => formatRangeChanges(colored, { type: 'docParagraph', content: [{ type: 'text', text: 'abcd' }] })).toThrow(/清除/)
+  expect(formatRangeChanges(colored, { type: 'docParagraph', content: [{ type: 'text', text: 'abcd' }] })).toEqual([{ from: 0, to: 2, style: { color: null } }])
   const f = setup()
   f.editor.chain().setTextSelection(9).insertContent('尾').run()
   f.editor.chain().setTextSelection({ from: 1, to: 3 }).toggleMark('bold').run()
   expect(f.rejected.some(message => /先保存/.test(message))).toBe(true)
+})
+
+it('saves selected highlight and superscript/subscript changes through minimal ranges with replay and history', () => {
+  const f = setup([{ type: 'text', text: 'A😀', marks: [{ type: 'bold' }] }, { type: 'text', text: 'BC尾', marks: [{ type: 'italic' }] }])
+  f.editor.chain().setTextSelection({ from: 2, to: 5 }).setMark('docTextStyle', { highlight: 'cyan', vertAlign: 'superscript' }).run()
+  expect(f.rejected).toEqual([])
+  expect(ops(f)).toEqual([{ kind: 'formatRange', blockId: 'p0', expectedObjectSha256: 'sha-0', from: 1, to: 4, style: { highlight: 'cyan', vertAlign: 'superscript' } }])
+  const restored = replayDocxOperations(f.baseline, ops(f), anchors, undefined, f.editor.schema)
+  expect(f.editor.schema.nodeFromJSON(restored).eq(f.editor.state.doc)).toBe(true)
+  f.editor.commands.undo(); expect(f.editor.getJSON()).toEqual(f.baseline)
+  f.editor.commands.redo(); expect(f.editor.schema.nodeFromJSON(restored).eq(f.editor.state.doc)).toBe(true)
+  f.editor.chain().setTextSelection({ from: 2, to: 5 }).setMark('docTextStyle', { highlight: 'none', vertAlign: 'subscript' }).run()
+  expect(ops(f)[0]?.style).toEqual({ highlight: 'none', vertAlign: 'subscript' })
+  f.editor.chain().setTextSelection({ from: 2, to: 5 }).setMark('docTextStyle', { highlight: 'none', vertAlign: 'baseline' }).run()
+  expect(ops(f)[0]?.style).toEqual({ highlight: 'none' })
 })

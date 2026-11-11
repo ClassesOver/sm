@@ -1,0 +1,14 @@
+/* 源大纲样式沿用 .docx-native .view-outline .doc-page；仅覆盖宿主的分栏显示优先级。 */
+.docx-native .view-outline .editor-scroll .doc-page.native-uniform-columns {
+  column-count: auto;
+}
+
+/* 混排的分栏坐标由 decoration 保留；大纲隐藏正文后须回到普通文档流，退出即恢复。 */
+.docx-native .view-outline .editor-scroll .doc-page:not(.measuring-columns) .doc-col-block {
+  transform: none;
+  width: auto;
+}
+
+.docx-native .view-outline .doc-page .doc-col-split-float {
+  display: none;
+}

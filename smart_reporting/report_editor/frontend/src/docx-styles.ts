@@ -1,4 +1,5 @@
 import type { Editor } from '@tiptap/core'
+import { shedMajorityDirectFormatting } from './docx-style-majority'
 import { closeHistory } from '@tiptap/pm/history'
 import type { DocxAnchor } from './docx-operations'
 
@@ -39,7 +40,11 @@ export function paragraphStyleTargets(editor: Editor, anchors: DocxAnchor[]) {
     const anchor = anchors.find(item => item.docxIndex === node.attrs.docxIndex)
     const count = editor.state.doc.content.content.filter(item => item.attrs.docxIndex === node.attrs.docxIndex).length
     if (node.type.name !== 'docParagraph' || !anchor || !(anchor.paragraphStyleEditable ?? anchor.editable) || count !== 1 || !anchor.blockId || !anchor.expectedObjectSha256) unsupported = true
-    else targets.push({ pos, node, anchor })
+    else {
+      let unsupportedInline = false; node.forEach(child => { if (!child.isText) unsupportedInline = true })
+      if (unsupportedInline) unsupported = true
+      else targets.push({ pos, node, anchor })
+    }
     return false
   })
   return unsupported ? [] : targets
@@ -77,7 +82,7 @@ export function createParagraphStyleControl(editor: Editor, editable: boolean, a
       try { if (sourceId != null) safeParagraphStyle(catalog, sourceId) } catch (error) { reason = (error as Error).message }
     }
     select.disabled = !editable || !editor.isEditable || !!reason || !catalog?.size
-    select.title = reason || '应用来源文档已有样式；保留直接格式。修改样式后请先保存，再修改同段文字或其他格式。'
+    select.title = reason || '应用来源文档已有样式，按来源Ribbon规则移除覆盖超过半段的直接字符格式；保留少数强调。'
   }
   select.addEventListener('focus', () => { captured = { doc: editor.state.doc, targets: paragraphStyleTargets(editor, anchors).map(target => ({ ...target, anchor: { ...target.anchor } })) } })
   select.addEventListener('change', () => {
@@ -92,7 +97,10 @@ export function createParagraphStyleControl(editor: Editor, editable: boolean, a
           && current?.blockId === anchor.blockId && current.expectedObjectSha256 === anchor.expectedObjectSha256
       })) return
       const tr = closeHistory(editor.state.tr)
-      for (const { pos, node } of saved.targets) if (node.attrs.styleId !== styleId) tr.setNodeMarkup(pos, undefined, { ...node.attrs, styleId })
+      for (const { pos, node } of saved.targets) {
+        tr.setNodeMarkup(pos, undefined, { ...node.attrs, styleId, nativeRibbonStyle: true })
+        shedMajorityDirectFormatting(tr, pos)
+      }
       if (tr.docChanged) editor.view.dispatch(tr)
     } catch {
       // A stale/forged option cannot become a draft operation.

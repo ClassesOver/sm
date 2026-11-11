@@ -1,0 +1,31 @@
+{
+  "sourceCommit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": {
+    "Caladea-Regular.ttf": {
+      "source": "apps/docs/src/renderer/fonts/Caladea-Regular.ttf",
+      "sha256": "d2f6cad33f191e65b68bd74e6d4f7708080a41b32db635866109df3090265d91"
+    },
+    "Caladea-Bold.ttf": {
+      "source": "apps/docs/src/renderer/fonts/Caladea-Bold.ttf",
+      "sha256": "74eda4fc5ffba0d8dc4aa76d41499f5ab76168d9ed6141c6417064c6244db9b6"
+    },
+    "Caladea-Italic.ttf": {
+      "source": "apps/docs/src/renderer/fonts/Caladea-Italic.ttf",
+      "sha256": "9c968bf60ba1e851cdfea77c71e3540c57792f77482dd241acc29d1425569c4e"
+    },
+    "Caladea-BoldItalic.ttf": {
+      "source": "apps/docs/src/renderer/fonts/Caladea-BoldItalic.ttf",
+      "sha256": "f47a35ad6cd0efa9914d93f9d03c93e30c55da43674bccfabac73b3c0d522c01"
+    },
+    "LICENSE": {
+      "source": "LICENSE",
+      "sha256": "68e32334df324ef4fc79fad3a26487e5abac36055a484bb6c8d7ecf9d8350885",
+      "extraction": "unchanged"
+    },
+    "fonts.css": {
+      "source": "apps/docs/src/renderer/fonts/fonts.css",
+      "sha256": "831d3bb7842733968e1484c509f10eac5e6650b879e8cfc136326ac84a9154de",
+      "extraction": "four unchanged Caladea @font-face blocks and unchanged KR Theme Latin GO unicode-range alias"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 /** Native transition adapter: change the visual effect, retain source metadata. */
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import type { SlideTransitionKind } from '@genoffice/pptx-engine'
-import { splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate.ts'
+import { splitXmlChildren, xmlSegments } from '../../doc_engine/packages/docx-engine/src/generate.ts'
 
 const effects = new Set(['p:fade', 'p:push', 'p:wipe', 'p:split', 'p:circle', 'p:cover', 'p:pull', 'p:dissolve', 'p:zoom', 'p:random', 'p159:morph'])
 function fail(): never { throw new Error('pptx_transition_source_unsupported') }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { slicePaginationSnapshot, withMeasuredPaginationSnapshot } from '../pagination-snapshot'
 import type {
   CommentInfo,
   HeaderFooter,
@@ -9,24 +10,17 @@ import type {
 } from '@genoffice/docx-engine'
 import { decodeEntities } from '@genoffice/docx-engine'
 import {
-  appendEndnotesBlock,
-  appendFloatSpillBlock,
   pageTextEnds,
-  assignSections,
   effectiveBottomPx,
   effectiveHfRefs,
   effectiveTopPx,
   formatPageNumber,
-  liveSections,
-  measureBlocks,
   noteAreaPlacement,
   type HfSet,
   hfPartWidthPx,
   hfVariantOf,
-  type HfVariant,
   type PageHf,
   pageHfStrips,
-  singleVariantGeomOf,
   pinnedFloatPage,
   anchorBoxLift,
   pageRelHang,
@@ -34,17 +28,14 @@ import {
   sectionBidi,
   sectionColGeom,
   sectionFirstPages,
-  sectionGeoms,
   sectionPageCounts,
   outerTableRows,
   sectionVertical,
   verticalBlockShift,
   sectionPageBox,
   rowSplitCss,
-  sliceWithLineSplit,
   seamWindow,
   seamDecision,
-  buildPageCuts,
   hoistWindow,
   pageCutDiffs,
   type PageCut,
@@ -57,12 +48,10 @@ import {
   type PageSlice,
   type SectionGeom,
   type SectionHfHeights,
-  type SliceOutputs,
   type RowSplitPatch,
 } from '../pagination'
 import type { PlanOf } from '../pagination-plan'
 import type { PageLayout } from '../editor/goto'
-import { hfVariantHeightsPx, sectionHfHeights } from '../hf-heights'
 import { pageMargins } from '../page-margins'
 import { cssFontFamily, FOOTNOTE_SEPARATOR_H } from '../line-metrics'
 import { syncPreviewLineNumbers } from '../editor/line-numbers'
@@ -1075,153 +1064,12 @@ export function PaginationPreview({
     // widgets, which the clones below must not carry
     const pass = layout?.()
     clearPageGaps?.()
-    // Measure at zoom 1: CSS zoom rounds every box to device pixels, so dividing
-    // zoomed rects by the factor drifts from the zoom-1 clones the pages render
-    // (a long table accumulates rows of error — repeated headers overprint the
-    // first data row and page cuts land mid-row). Neutralizing the canvas zoom
-    // for the snapshot makes measurement and clone layout share one geometry.
-    const zoomHost = pm.closest<HTMLElement>('.doc-zoom')
-    const savedZoom = zoomHost?.style.zoom ?? ''
-    if (zoomHost) zoomHost.style.zoom = '1'
-    const factor = 1
-    // switch the columned canvas to the single-flow measuring state (uniform: CSS columns
-    // off, width = column width; mixed: block translates off), matching engine column-flow
-    // coordinates. vAlign documents carry the same visual translates on the canvas
-    // (vAlignShiftSpecs) and the preview applies its own vOffset, so they must be
-    // neutralized here too or the shifted rects double-apply.
-    const measureNeutralize =
-      colMode !== 'none' ||
-      section.vAlign === 'center' ||
-      section.vAlign === 'bottom' ||
-      sections.some(
-        (s) =>
-          s.settings.vAlign === 'center' ||
-          s.settings.vAlign === 'bottom' ||
-          sectionVertical(s.settings),
-      )
-    if (measureNeutralize) pm.classList.add('measuring-columns')
-    try {
-      const origin = pm.getBoundingClientRect().top + canvasTop * factor
-      const { blocks, totalHeight, floats, sectBreaks } = measureBlocks(
-        pm,
-        origin,
-        factor,
-        blockPlans?.(),
-      )
-      const live = liveSections(sections, blocks, sectBreaks, delSectBreaks)
+    withMeasuredPaginationSnapshot({ pm, section, sections, canvasTop, colMode, blockPlans, delSectBreaks, endnoteItems, mirrorMargins }, ({ origin, factor, blocks, floats, live, flowH, endnotesTop }) => {
       setSecs(live)
-      if (live.length > 0) assignSections(blocks, live)
-      const withEndnotes = appendEndnotesBlock(
-        blocks,
-        totalHeight,
-        endnoteItems ?? [],
-        FOOTNOTE_SEPARATOR_H,
-      )
-      // floating boxes below the flow end still need pages to land on; bottom-
-      // margin overhang stays on the page (same allowance as the canvas)
-      const lastSec = live.length > 0 ? live[live.length - 1].settings : section
-      const flowWithFloats = appendFloatSpillBlock(
-        blocks,
-        withEndnotes?.totalHeight ?? totalHeight,
-        floats,
-        lastSec ? twipsToPx(lastSec.marginBottom) : 0,
-      )
-      const flowH = flowWithFloats ?? withEndnotes?.totalHeight ?? totalHeight
-      setEndnotesTop(withEndnotes?.top ?? null)
+      setEndnotesTop(endnotesTop)
       /** the preview's own slicing of this snapshot: the fallback without a
        *  canvas pass, and the dev / e2e shadow of the canvas cuts */
-      const sliceHere = (): {
-        cuts: PageCut[]
-        geoms: SectionGeom[]
-        hfHs: SectionHfHeights[]
-        rowSplits: RowSplitPatch[]
-      } => {
-        const splitOut: SliceOutputs = { rowSplits: [], floatSplits: [] }
-        if (live.length > 0) {
-          // each section's header/footer variant heights → body push-down (matching the canvas)
-          const refs = effectiveHfRefs(live)
-          const partOf = (i: number, kind: 'header' | 'footer', variant: HfVariant) => {
-            const rId = refs[i]?.[kind]?.[variant]
-            return rId ? hfParts[rId] : undefined
-          }
-          const hfHs = sectionHfHeights(
-            live,
-            resolveHf
-              ? (i, kind, variant) => resolveHf(live, i, kind, variant)
-              : (i, kind, variant) => {
-                  const part = partOf(i, kind, variant)
-                  const value = part
-                    ? { text: part.text, pageNumber: part.hasPageNumber, paras: part.paras }
-                    : null
-                  if (variant !== 'default') return { value, images: part?.images }
-                  // the parsed set carries the last section's default strips
-                  const last = i === live.length - 1
-                  return {
-                    value: last ? (kind === 'header' ? hf.header : hf.footer) : value,
-                    images: part?.images?.length
-                      ? part.images
-                      : last
-                        ? hf.images?.[kind]
-                        : undefined,
-                  }
-                },
-            { titlePg: hf.titlePg, evenOddHf: hf.evenOddHf, legacyBands },
-          )
-          const geoms = sectionGeoms(live, hfHs, hf.evenOddHf)
-          // when the canvas column layout is inactive, measure as full-width single flow; the geometry drops column flow to match
-          if (colMode === 'none') for (const g of geoms) if (g.cols) g.cols = undefined
-          const computed = sliceWithLineSplit(blocks, geoms, flowH, factor, blockMetaOf, splitOut)
-          const cuts = buildPageCuts(blocks, computed, geoms, hfHs, {
-            evenOddHf: hf.evenOddHf,
-            titlePgOf:
-              live.length > 1
-                ? (si) => live[Math.min(si, live.length - 1)].titlePg
-                : () => hf.titlePg,
-            pageNumberFmtOf: (si) => live[Math.min(si, live.length - 1)]?.pageNumberFmt,
-            floatSplits: splitOut.floatSplits,
-          })
-          return { cuts, geoms, hfHs, rowSplits: splitOut.rowSplits ?? [] }
-        }
-        const hfPx = hfVariantHeightsPx(
-          (kind, variant) => {
-            const strips = pageHfStrips(variant, undefined, hf)
-            return kind === 'header'
-              ? { value: strips.header, images: strips.headerImages }
-              : { value: strips.footer, images: strips.footerImages }
-          },
-          () => canvasContentW,
-          hfStripGeom(section, legacyBands),
-          hf.titlePg,
-          hf.evenOddHf,
-        )
-        const singleGeom: SectionGeom = {
-          contentHeight:
-            twipsToPx(section.pageHeight) -
-            effectiveTopPx(section, hfPx.headerPx) -
-            effectiveBottomPx(section, hfPx.footerPx),
-          forceBreak: false,
-          ...singleVariantGeomOf(section, hfPx),
-          ...(sections[0]?.pageNumberStart !== undefined
-            ? { pageNumberStart: sections[0].pageNumberStart }
-            : {}),
-          ...(colFlow ? { cols: colFlow.cols } : {}),
-        }
-        const computed = sliceWithLineSplit(
-          blocks,
-          [singleGeom],
-          flowH,
-          factor,
-          blockMetaOf,
-          splitOut,
-        )
-        const cuts = buildPageCuts(blocks, computed, [singleGeom], [hfPx], {
-          evenOddHf: hf.evenOddHf,
-          titlePgOf: () => hf.titlePg,
-          pageNumberFmtOf: () => sections[0]?.pageNumberFmt,
-          floatSplits: splitOut.floatSplits,
-        })
-        return { cuts, geoms: [singleGeom], hfHs: [hfPx], rowSplits: splitOut.rowSplits ?? [] }
-      }
+      const sliceHere = () => slicePaginationSnapshot({ section, sections, live, blocks, flowH, factor, hf, hfParts, colMode, colFlow, legacyBands, blockMetaOf, resolveHf })
       // the sheets print the canvas pass's cuts; the preview measures only for
       // clone geometry. The shadow re-slices this snapshot and counts where it
       // disagrees (previewCutMismatch, asserted 0 by the invariants e2e).
@@ -1518,10 +1366,7 @@ export function PaginationPreview({
         setCloneKids(null)
         setHtml(Array.from(pm.children, (c) => cloneBlockHtml(c as HTMLElement)).join(''))
       }
-    } finally {
-      if (measureNeutralize) pm.classList.remove('measuring-columns')
-      if (zoomHost) zoomHost.style.zoom = savedZoom
-    }
+    })
     // snapshot: measure once on open; deps intentionally empty
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

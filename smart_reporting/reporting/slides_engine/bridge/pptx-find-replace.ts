@@ -1,5 +1,5 @@
 import type { TextElement } from '@genoffice/pptx-engine'
-import { splitXmlChildren } from '../packages/docx-engine/src/generate.ts'
+import { splitXmlChildren } from '../../doc_engine/packages/docx-engine/src/generate.ts'
 
 function unsafe(): never { throw new Error('pptx_find_replace_source_unsupported') }
 function sourceChildren(xml: string, tag: string) {
