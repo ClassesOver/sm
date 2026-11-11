@@ -226,7 +226,8 @@ function hasFontDelta(delta: WorkbookStyleEdit): boolean {
     delta.strikethrough !== undefined ||
     delta.fontFamily !== undefined ||
     delta.fontSize !== undefined ||
-    delta.fontColor !== undefined
+    delta.fontColor !== undefined ||
+    delta.vertAlign !== undefined
   )
 }
 
@@ -259,6 +260,9 @@ function buildFont(baseFontXml: string, delta: WorkbookStyleEdit): string {
       /<color\b[^>]*\/?>/g,
       delta.fontColor === null ? '' : `<color ${colorAttributes(delta.fontColor)}/>`,
     )
+  }
+  if (delta.vertAlign !== undefined) {
+    override(/<vertAlign\b[^>]*\/?>/g, delta.vertAlign === 'baseline' ? '' : `<vertAlign val="${delta.vertAlign}"/>`)
   }
   if (delta.fontFamily !== undefined) {
     override(/<name\b[^>]*\/?>/g, `<name val="${escapeXmlAttribute(delta.fontFamily)}"/>`)

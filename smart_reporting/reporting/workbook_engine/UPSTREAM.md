@@ -156,3 +156,21 @@ vendored 代码统一来源：genoffice @ `f5247d3`（本地路径 `/home/junge/
 | `xlsx-engine/src/table-add.ts` | `gateway/xlsx-table-add.ts` | 逐字移植 | MutablePackage → EntrySource/assemblePackage；worksheetPath 改为按表名解析；`.exec`→`.match`、`[$]` 约定 |
 | `xlsx-engine/src/theme.ts` | `gateway/xlsx-theme.ts` | 逐字移植 | `$1` 串替换改函数替换器（防 `$` 注入替换模式）；新增 setThemePart 字节级编排 + DEFAULT_THEME_COLORS |
 | `apps/web` addTables/setTheme 操作 | —— | 新增 | AI 面，走审批/撤销链路；列名从表头行读取 |
+
+
+## 2026-11-10 隐藏列结构与宽度保存修复
+
+本地 `structural.ts` 按固定 GenOffice f8c17004 的
+`xlsx-structure.ts::transformColDefinitions/moveRange` 迁移整列定义；来源文件
+SHA-256 为 `550d5f6bfa6e5a02ee6900ef601f62ebfee9e651e773bff183f6955bb3583561`。
+`geometry.ts` 仅更新宽度属性并保留隐藏、样式及分组；显式取消隐藏仍由 outline
+操作独立决定。范围整数/边界校验、重叠拒绝和单/双引号及等号空白支持为本地
+适配，未全量替换 gateway，也未改变所有 XML reader 的引号合同。升级时须保持
+列范围插入/删除身份、宽度与隐藏相互独立及 outline→width 顺序合同。固定源码
+37 向量对照通过；窄测试、真实 ZIP 和新 built 验收归属见 SOURCE.md。
+本仓库原来源身份 `SOURCE-SHA256.json` 保持不变；当前文件哈希更新于
+`UPSTREAM-PATCHES-SHA256.json`。
+
+## 2026-11-11 默认页眉页脚编辑与透视全部刷新增量
+
+参照固定 GenOffice f8c17004fb730df11f0f743164ffd8b4281bb38c。page-setup.ts 对 odd header/footer 使用命名空间和直属节点 span 定位，保留 first/even、属性与未编辑半部；复用 escapeCellText 保留 OOXML 转义字面量。pivot-expand.ts 按源 xlsx-pivot-expand.ts 的 resolveRelTarget 语义支持根绝对包路径，relayout 关系未解析时明确失败。此次不新增包依赖或 @sheets-web 引用；旧包名与历史来源保留，未声称替换完整引擎。源码哈希更新于 UPSTREAM-PATCHES-SHA256.json，验收分别见 ../../report_editor/NATIVE_XLSX_HEADER_FOOTER_EDITOR_ACCEPTANCE.md 与 ../../../docs/parity/2026-11-11-workbook-pivot-refresh.md。

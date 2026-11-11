@@ -84,6 +84,9 @@ export interface PivotLayoutDefinition {
   rowFieldIndices: number[]
   columnFieldIndex?: number | undefined
   pageFieldIndices?: number[] | undefined
+  pageFilters?: {fieldIndex:number;selected?:string[]|undefined}[] | undefined
+  pageLevelItems?: string[][] | undefined
+  pageHiddenItems?: number[][] | undefined
   rowItems: string[]
   rowLevelItems: string[][]
   rowLines: PivotLayoutLine[]
@@ -94,6 +97,7 @@ export interface PivotLayoutDefinition {
   groupings?: ({ fieldIndex: number } & PivotFieldGrouping)[] | undefined
   filters?: PivotFilterDef[] | undefined
   rowHiddenItems?: number[][] | undefined
+  manualHiddenMembers?: {fieldIndex:number;members:string[]}[] | undefined
   colHiddenItems?: number[][] | undefined
   values: PivotLayoutValue[]
 }
@@ -112,6 +116,7 @@ export interface PivotLayoutSpec {
   readonly rowFields: string | readonly string[]
   readonly columnField?: string | readonly string[] | undefined
   readonly pageFields?: readonly string[] | undefined
+  readonly pageFilters?: readonly {readonly field:string;readonly selected?:readonly string[]|undefined}[] | undefined
   readonly values: readonly (Omit<PivotLayoutValue, 'fieldIndex' | 'calcName'> & {
     readonly field: string
   })[]
@@ -191,7 +196,10 @@ export function buildPivotLayout(
       : typeof op.columnField === 'string' ? [op.columnField] : op.columnField
   const columnFieldIndices = columnFieldsArray.map(fieldIndex)
   const colLevels = columnFieldIndices.length
-  const pageFieldIndices = (op.pageFields ?? []).map(fieldIndex)
+  const pageFilters=(op.pageFilters??(op.pageFields??[]).map(field=>({field}))).map(filter=>({fieldIndex:fieldIndex(filter.field),...('selected' in filter&&filter.selected?{selected:[...filter.selected]}:{})}))
+  const pageFieldIndices=pageFilters.map(filter=>filter.fieldIndex)
+  const pageLevelItems=pageFieldIndices.map(index=>[...new Set(grid.slice(1).map(row=>String(row[index]??'')))])
+  const pageHiddenItems=pageFilters.map((filter,level)=>pageLevelItems[level]!.flatMap((item,index)=>filter.selected&&!filter.selected.includes(item)?[index]:[]))
   const groupings = (op.groupings ?? []).map(({ field, ...rule }) => ({
     fieldIndex: fieldIndex(field),
     ...rule,
@@ -347,9 +355,12 @@ export function buildPivotLayout(
     const rowLevel = rowFieldIndices.indexOf(fieldIdx)
     if (rowLevel >= 0) return levelItems[rowLevel]!
     const colLevel = columnFieldIndices.indexOf(fieldIdx)
-    return colLevel >= 0 ? colLevelItems[colLevel]! : []
+    if(colLevel>=0)return colLevelItems[colLevel]!
+    const pageLevel=pageFieldIndices.indexOf(fieldIdx)
+    return pageLevel>=0?pageLevelItems[pageLevel]!:[]
   }
   const hiddenByField = new Map<number, Set<string>>()
+  pageFieldIndices.forEach((index,level)=>{hiddenByField.set(index,new Set(pageHiddenItems[level]!.map(item=>pageLevelItems[level]![item]!)))})
   const seedHiddenMembers = (
     fieldNamesForAxis: readonly string[],
     levelItemsForAxis: readonly (readonly string[])[] | undefined,
@@ -482,55 +493,30 @@ export function buildPivotLayout(
         applyShowDataAs(aggregate(bucketRows(prefix, []), spec), spec, prefix, []),
       )
     }
-    const spec = valueSpecs[0]
-    if (!spec) throw new PivotLayoutError('needsValues')
-    return [
-      ...colLinePaths.map((colPrefix) =>
-        applyShowDataAs(aggregate(bucketRows(prefix, colPrefix), spec), spec, prefix, colPrefix),
-      ),
-      applyShowDataAs(aggregate(bucketRows(prefix, []), spec), spec, prefix, []),
-    ]
+    return [...colLinePaths, []].flatMap(colPrefix=>valueSpecs.map(spec=>
+      applyShowDataAs(aggregate(bucketRows(prefix,colPrefix),spec),spec,prefix,colPrefix)))
   }
 
   const matrix: (string | number | null)[][] = []
   if (colLevels === 0) {
     matrix.push([...rowFieldsArray, ...valueSpecs.map((spec) => spec.caption)])
   } else {
-    const totalWidth = levels + colLines.length + 1
-    const headers: (string | number | null)[][] = Array.from({ length: colLevels }, () =>
-      new Array<string | number | null>(totalWidth).fill(null),
-    )
-    rowFieldsArray.forEach((name, level) => {
-      headers[colLevels - 1]![level] = name
+    const measures=valueSpecs.length, headerCount=colLevels+(measures>1?1:0)
+    const totalWidth=levels+(colLines.length+1)*measures
+    const headers:(string|number|null)[][]=Array.from({length:headerCount},()=>new Array<string|number|null>(totalWidth).fill(null))
+    rowFieldsArray.forEach((name,level)=>{headers[headerCount-1]![level]=name})
+    let previousColPath:readonly string[]|null=null
+    colLines.forEach((line,index)=>{
+      const offset=levels+index*measures,path=colLinePaths[index]!
+      path.forEach((member,level)=>{
+        if(line.t==='data'&&previousColPath&&level<path.length-1&&path.slice(0,level+1).every((part,i)=>part===previousColPath![i]))return
+        headers[level]![offset]=member
+      })
+      if(line.t==='default'&&path.length<colLevels)headers[path.length]![offset]=labels.subtotal
+      previousColPath=line.t==='default'?null:path
     })
-    let previousColPath: readonly string[] | null = null
-    colLines.forEach((line, index) => {
-      const colOffset = levels + index
-      const path = colLinePaths[index]!
-      if (line.t === 'default') {
-        path.forEach((member, level) => {
-          headers[level]![colOffset] = member
-        })
-        if (path.length < colLevels) headers[path.length]![colOffset] = labels.subtotal
-        previousColPath = null
-      } else {
-        path.forEach((member, level) => {
-          if (previousColPath !== null && level < path.length - 1) {
-            let samePrefix = true
-            for (let k = 0; k <= level; k += 1) {
-              if (previousColPath[k] !== path[k]) {
-                samePrefix = false
-                break
-              }
-            }
-            if (samePrefix) return
-          }
-          headers[level]![colOffset] = member
-        })
-        previousColPath = path
-      }
-    })
-    headers[0]![levels + colLines.length] = labels.grandTotal
+    headers[0]![levels+colLines.length*measures]=labels.grandTotal
+    if(measures>1)for(let group=0;group<=colLines.length;group++)valueSpecs.forEach((spec,vi)=>{headers[headerCount-1]![levels+group*measures+vi]=spec.caption})
     matrix.push(...headers)
   }
   const rowLines: PivotLayoutLine[] = []
@@ -569,7 +555,7 @@ export function buildPivotLayout(
       ? valueSpecs.flatMap((spec, vi) =>
           spec.numFmt ? [{ columnOffset: levels + vi, format: spec.numFmt }] : [],
         )
-      : []
+      : Array.from({length:colLines.length+1},(_,group)=>valueSpecs.flatMap((spec,vi)=>spec.numFmt?[{columnOffset:levels+group*valueSpecs.length+vi,format:spec.numFmt}]:[])).flat()
 
   return {
     matrix,
@@ -578,18 +564,18 @@ export function buildPivotLayout(
     numberFormats,
     definition: {
       fieldNames,
+      ...(options.hiddenMembers?{manualHiddenMembers:[...rowFieldIndices.map((fieldIndex,level)=>({fieldIndex,members:[...(options.hiddenMembers?.row?.[level]??[])]})),...columnFieldIndices.map((fieldIndex,level)=>({fieldIndex,members:[...(options.hiddenMembers?.column?.[level]??[])]}))]}:{}),
       rowFieldIndices,
       ...(colLevels === 1 ? { columnFieldIndex: columnFieldIndices[0]! } : {}),
-      ...(pageFieldIndices.length > 0 ? { pageFieldIndices } : {}),
+      ...(pageFieldIndices.length > 0 ? { pageFieldIndices,pageFilters,pageLevelItems,pageHiddenItems } : {}),
       rowItems,
       rowLevelItems: levelItems,
       rowLines,
       ...(colLevels === 1 ? { columnItems: colLevelItems[0]! } : {}),
       ...(colLevels > 0 ? { columnFieldIndices, colLevelItems, colLines } : {}),
       ...(groupings.length > 0 ? { groupings } : {}),
-      ...(filterEntries.length > 0
-        ? { filters: filterEntries, rowHiddenItems, colHiddenItems }
-        : {}),
+      ...(filterEntries.length > 0 ? { filters: filterEntries } : {}),
+      ...(filterEntries.length > 0 || options.hiddenMembers ? { rowHiddenItems, colHiddenItems } : {}),
       values: valueSpecs.map((spec) => ({
         fieldIndex: spec.fieldIndex,
         agg: spec.agg,

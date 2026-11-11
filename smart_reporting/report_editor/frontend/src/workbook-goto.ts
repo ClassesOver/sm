@@ -5,6 +5,15 @@
  * navigation: selecting a reference never changes the file.
  */
 import { createModal } from './modal'
+import { ILayoutService } from '@univerjs/ui'
+import type { Univer } from '@univerjs/core'
+
+/** 固定源 data-tools-actions.ts:170 的官方键盘焦点交接；在定位模态框关闭后调用。 */
+export function focusWorkbookGrid(runtime: { univer?: { __getInjector?: Univer['__getInjector'] } }): void {
+  const injector = runtime.univer?.__getInjector?.()
+  if (!injector || !injector.has(ILayoutService)) return
+  injector.get(ILayoutService).focus()
+}
 
 // ── fixed source goto.ts ─────────────────────────────────────────────────
 /// Reference resolution for the Name Box and the Go To dialog, kept pure so
@@ -103,7 +112,7 @@ export function resolveGoToRef(
 
 // ── fixed source GoToDialog.tsx (DOM) ────────────────────────────────────
 /** `go` returns an error to show inline (dialog stays open) or null on success. */
-export function createGoToDialog(root: HTMLElement, go: (reference: string) => string | null) {
+export function createGoToDialog(root: HTMLElement, go: (reference: string) => string | null, onNavigated?: () => void) {
   const modal = createModal({ root, label: '定位', overlayClass: 'workbook-ribbon-format-overlay', cardClass: 'workbook-ribbon-format-dialog workbook-ribbon-goto-dialog', closeLabel: '关闭', content: `
     <h2>定位</h2><form class="workbook-ribbon-format-form">
       <label>引用位置<input type="text" data-goto-reference autocomplete="off" placeholder="如 C5、B2:D5、Sheet2!A1 或名称"></label>
@@ -119,7 +128,11 @@ export function createGoToDialog(root: HTMLElement, go: (reference: string) => s
   const run = (reference: string) => {
     const failure = go(reference)
     error.textContent = failure ?? ''
-    if (failure === null) modal.close()
+    if (failure === null) {
+      modal.close()
+      // modal.close先恢复opener；成功导航最后交给官方grid host，取消/失败保持原焦点契约。
+      onNavigated?.()
+    }
   }
   input.addEventListener('input', () => { submit.disabled = input.value.trim() === '' })
   modal.card.querySelector('.workbook-ribbon-format-cancel')!.addEventListener('click', modal.close)

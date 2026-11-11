@@ -53,13 +53,13 @@ it('emits explicit baseline when clearing a source superscript and preserves all
   expect(paragraphVerticalAlign(restored.content![0])).toBe('baseline')
   expect(withoutVerticalAlign(restored.content![0])).toEqual(withoutVerticalAlign(original.content![0]))
 })
-it('rejects local or mixed-position changes instead of dropping a native text-style attribute', () => {
+it('saves local and mixed-position changes without dropping native text-style attributes', () => {
   const editor = setup(), original = sourceOnly(editor)
   editor.commands.setTextSelection({ from: 1, to: 2 }); editor.commands.setMark('docTextStyle', { vertAlign: 'superscript' })
-  expect(() => operations(original, editor)).toThrow(/局部上下标/)
+  expect(operations(original, editor)).toEqual([{ kind: 'formatRange', blockId: 'body', expectedObjectSha256: 'source-sha', from: 0, to: 1, style: { vertAlign: 'superscript' } }])
   const mixed = sourceOnly(editor), changed = structuredClone(mixed)
   changed.content![0].content![0].marks!.find(mark => mark.type === 'docTextStyle')!.attrs!.vertAlign = 'subscript'
-  expect(() => docxOperations(mixed, changed, anchors)).toThrow(/局部上下标/)
+  expect(docxOperations(mixed, changed, anchors)).toEqual([{ kind: 'formatRange', blockId: 'body', expectedObjectSha256: 'source-sha', from: 0, to: 1, style: { vertAlign: 'subscript' } }])
 })
 it('keeps the source Ribbon toggles disabled for new, cross-paragraph, readonly or saving targets', () => {
   const editor = setup(), ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, anchors)
@@ -93,4 +93,16 @@ it('keeps each quick vertical-align command as a separate undo step', () => {
   expect(paragraphVerticalAlign(editor.getJSON().content![0])).toBe('superscript')
   editor.commands.redo()
   expect(paragraphVerticalAlign(editor.getJSON().content![0])).toBe('subscript')
+})
+
+it('toggles only the selected range and clears a source superscript with explicit baseline', () => {
+  const editor = setup(), original = sourceOnly(editor)
+  editor.commands.setTextSelection({ from: 2, to: 5 })
+  expect(toggleParagraphVerticalAlign(editor, anchors, 'superscript')).toBe(true)
+  expect(operations(original, editor)).toEqual([{ kind: 'formatRange', blockId: 'body', expectedObjectSha256: 'source-sha', from: 1, to: 4, style: { vertAlign: 'superscript' } }])
+  const superscript = sourceOnly(editor)
+  expect(toggleParagraphVerticalAlign(editor, anchors, 'superscript')).toBe(true)
+  expect(operations(superscript, editor)).toEqual([{ kind: 'formatRange', blockId: 'body', expectedObjectSha256: 'source-sha', from: 1, to: 4, style: { vertAlign: 'baseline' } }])
+  editor.commands.setTextSelection({ from: 2, to: 3 })
+  expect(toggleParagraphVerticalAlign(editor, anchors, 'subscript')).toBe(false)
 })

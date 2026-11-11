@@ -59,6 +59,23 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
       file: async () => ({ bytes: await options.api.file(), sha256: options.context.context.sourceFile.sha256 }) })
   }
   const { createSlidesEditorView } = await import('./slides-main')
-  const view = createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: true, request: transport.slides, draft: options.draft })
-  try { await view.ready; return view } catch (error) { view.dispose(); throw error }
+  const { createSlidesNativeAIClient } = await import('./slides-native-ai')
+  let openAssistant = () => {}
+  const view = createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: true, request: transport.slides, draft: options.draft,
+    ...(options.context.aiEnabled ? { onAssistant: () => openAssistant(), nativeAI: createSlidesNativeAIClient(options.context.context.documentId, options.context.context.revision, options.context.csrfToken) } : {}) })
+  try {
+    await view.ready
+    const assistant = view.officeEditAssistant
+    if (!assistant) return view
+    const { mountOfficeTaskDock } = await import('./office-task-dock')
+    const { createOfficeAIEntry } = await import('./office-ai-entry')
+    const main = shell.editor.querySelector<HTMLElement>('.slides-workspace') ?? shell.editor
+    const dock = mountOfficeTaskDock(main, [{ id: 'edit', label: '编辑选区', panel: assistant.panel, open: assistant.open, close: assistant.close }], { label: 'PPTX AI 助手侧栏' })
+    openAssistant = () => dock.open('edit')
+    const entry = createOfficeAIEntry(openAssistant)
+    entry.dataset.action = 'office-edit-ai'; entry.setAttribute('aria-label', 'AI 编辑'); entry.title = 'AI 编辑'
+    const caption = entry.querySelector('span'); if (caption) caption.textContent = 'AI 编辑'
+    ;(shell.editor.closest('#app')?.querySelector('.toolbar-group-output') ?? shell.editor.parentElement ?? shell.editor).append(entry)
+    return { dispose() { dock.dispose(); entry.remove(); view.dispose() } }
+  } catch (error) { view.dispose(); throw error }
 }

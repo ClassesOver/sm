@@ -1,0 +1,5 @@
+.workbook-footer-zoom { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.workbook-footer-zoom button { border:0; background:transparent; color:inherit; cursor:pointer; padding:4px 6px; }
+.workbook-footer-zoom button:disabled { opacity:.45; cursor:default; }
+.workbook-footer-zoom input[type=range] { width:100px; accent-color:var(--color-primary,#2563eb); }
+.workbook-footer-zoom :is(button,input):focus-visible { outline:2px solid var(--color-focus,#2563eb); outline-offset:2px; }

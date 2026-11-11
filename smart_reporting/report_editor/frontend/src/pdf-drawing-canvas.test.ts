@@ -44,9 +44,9 @@ it('renders all ink paths, fixed caret glyph, arrow heads and grouped measuremen
  paintDrawing(group,shapes[4]!,viewport,3);expect(group.querySelectorAll('[data-pdf-drawing="ink"]')).toHaveLength(2);expect(group.querySelectorAll('[data-pdf-shape-hit]')).toHaveLength(2)
  expect(group.querySelector('[data-pdf-shape-hit]')?.getAttribute('stroke-width')).toBe('24')
  expect(group.querySelector('[data-pdf-drawing="ink"]')?.getAttribute('stroke-linecap')).toBe('round')
- paintDrawing(group,shapes[6]!,viewport,3);expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('d')).toBe('M82 376 L90 370 L98 376');expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('stroke-width')).toBe('1.5')
+ paintDrawing(group,shapes[6]!,viewport,3);expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('d')).toBe('M90 370 L82 376 L98 376 Z');expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('fill')).toBe('rgb(255,0,0)');expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('stroke')).toBe('none')
  paintDrawing(group,shapes[2]!,viewport,1);expect(group.querySelectorAll('[data-pdf-arrow-head]')).toHaveLength(2);expect(group.querySelectorAll('[data-pdf-shape-hit]')).toHaveLength(3)
- paintDrawing(group,shapes[3]!,viewport,.5);const label=group.querySelector('[data-pdf-measure-label]')!;expect(label.textContent).toBe('12.00 m');expect(label.getAttribute('font-size')).toBe('9');expect(label.getAttribute('stroke')).toBe('none');expect(label.getAttribute('transform')).toContain('rotate(')
+ paintDrawing(group,shapes[3]!,viewport,.5);const label=group.querySelector('[data-pdf-measure-label]')!;expect(label.textContent).toBe('12.00 m');expect(label.getAttribute('font-size')).toBe('9');expect(label.getAttribute('stroke')).toBe('none');expect(label.getAttribute('text-anchor')).toBe('start');expect(label.getAttribute('transform')).toMatch(/^matrix\(/)
 })
 it('uses unfilled stroke geometry for hit outlines and no rectangular interception overlays',()=>{
  const f=fixture([shapes[0]!,shapes[1]!,shapes[5]!])

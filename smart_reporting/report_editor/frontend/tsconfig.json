@@ -27,7 +27,7 @@
         "../../reporting/slides_engine/packages/pptx-engine/src/*.ts"
       ],
       "@genoffice/docx-engine": [
-        "../../reporting/slides_engine/packages/docx-engine/src/index.ts"
+        "../../reporting/doc_engine/packages/docx-engine/src/index.ts"
       ],
       "@genoffice/agent-core/*": [
         "../../reporting/slides_engine/packages/agent-core/src/*.ts"

@@ -47,6 +47,22 @@ it('keeps one merged layout operation per section and rejects foreign section id
   expect(() => restoredDocxSectionOperations([{ kind: 'setSectionLayout', sectionId: 's0', expectedSectionSha256: 'stale', values: { columns: 2 } }], sections)).toThrow(/节身份/)
 })
 
+it('restores boolean different-first-page changes with their section identity', () => {
+  const op = { kind: 'setSectionLayout', sectionId: 's0', expectedSectionSha256: 'x0', values: { titlePg: true } }
+  expect(restoredDocxSectionOperations([op], [{ ...sections[0]!, titlePg: false }, sections[1]!])).toEqual([op])
+  for (const value of [1, 'true', null]) expect(() => restoredDocxSectionOperations([{ ...op, values: { titlePg: value } }], sections)).toThrow()
+  expect(() => restoredDocxSectionOperations([op], [{ ...sections[0]!, titlePg: null, titlePgReadOnlyReason: 'unknown' }])).toThrow()
+})
+
+it('restores document-wide odd-even headers only through the document anchor and refuses conflicting drafts', () => {
+  const source = [sections[0]!, { ...sections[1]!, evenAndOddHeaders: false }]
+  const op = { kind: 'setSectionLayout', sectionId: 's1', expectedSectionSha256: 'x1', values: { evenAndOddHeaders: true } }
+  expect(restoredDocxSectionOperations([op], source)).toEqual([op])
+  expect(() => restoredDocxSectionOperations([{ ...op, sectionId: 's0', expectedSectionSha256: 'x0' }], source)).toThrow(/文档级/)
+  expect(() => restoredDocxSectionOperations([op], [sections[0]!, { ...source[1]!, evenAndOddHeaders: null }])).toThrow()
+  expect(() => restoredDocxSectionOperations([op, { kind: 'setHeaderFooter', sectionId: 's1', evenAndOddHeaders: false }], source)).toThrow(/奇偶页不同设置冲突/)
+})
+
 it('diffs and replays a section break right after its anchor, then paragraphs typed after it', () => {
   const { editor, baseline, rejected } = setup()
   editor.chain().insertContentAt(editor.state.doc.child(0).nodeSize, sectionBreakNode('continuous') as never).run()
@@ -68,4 +84,16 @@ it('refuses a section break that does not directly follow an original block, and
   const op = { kind: 'insertSectionBreak', blockId: 'p0', expectedObjectSha256: 'sha-0', type: 'nextPage' }
   for (const draft of [{ ...op, type: 'nextColumn' }, { ...op, expectedObjectSha256: 'old' }, { ...op, xml: '<w:sectPr/>' }])
     expect(() => replayDocxOperations(baseline, [draft], anchors, sections, editor.schema)).toThrow()
+})
+
+
+it('restores per-section page numbering, including cleared values, and rejects unsafe/conflicting drafts', () => {
+  const numbered = sections.map(section => ({ ...section, pageNumberFmt: null, pageNumberStart: null }))
+  const operation = (values: object) => ({ kind: 'setSectionLayout', sectionId: 's0', expectedSectionSha256: 'x0', values })
+  expect(restoredDocxSectionOperations([operation({ pageNumberFmt: 'upperRoman', pageNumberStart: 0 })], numbered)[0]?.values).toEqual({ pageNumberFmt: 'upperRoman', pageNumberStart: 0 })
+  expect(restoredDocxSectionOperations([operation({ pageNumberFmt: null, pageNumberStart: null })], numbered)[0]?.values).toEqual({ pageNumberFmt: null, pageNumberStart: null })
+  expect(restoredDocxSectionOperations([operation({ pageNumberStart: 4294967295 })], numbered)[0]?.values).toEqual({ pageNumberStart: 4294967295 })
+  for (const values of [{ pageNumberFmt: 'unknown' }, { pageNumberStart: -1 }, { pageNumberStart: 1.5 }, { pageNumberStart: Number.MAX_SAFE_INTEGER + 1 }]) expect(() => restoredDocxSectionOperations([operation(values)], numbered)).toThrow()
+  expect(() => restoredDocxSectionOperations([operation({ pageNumberFmt: null })], [{ ...numbered[0]!, pageNumberReadOnlyReason: 'unknown' }, numbered[1]!])).toThrow()
+  expect(() => restoredDocxSectionOperations([operation({ pageNumberStart: null }), { kind: 'setHeaderFooter', sectionId: 's0', pageNumberStart: 3 }], numbered)).toThrow('冲突')
 })

@@ -558,6 +558,17 @@ class ReportSlidesEditorService:
         theme: str | None = None,
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
+        native_images: list[dict[str, Any]] | None = None,
+        picture_replacements: list[dict[str, Any]] | None = None,
+        picture_crops: list[dict[str, Any]] | None = None,
+        element_orders: list[dict[str, Any]] | None = None,
+        group_edits: list[dict[str, Any]] | None = None,
+        notes_edits: list[dict[str, Any]] | None = None,
+        link_edits: list[dict[str, Any]] | None = None,
+        clipboard_pastes: list[dict[str, Any]] | None = None,
+        chart_edits: list[dict[str, Any]] | None = None,
+        hidden_slides: list[dict[str, Any]] | None = None,
+        comment_edits: list[dict[str, Any]] | None = None,
         transitions: list[dict[str, Any]] | None = None,
         animations: list[dict[str, Any]] | None = None,
         slide_layouts: list[dict[str, Any]] | None = None,
@@ -622,6 +633,30 @@ class ReportSlidesEditorService:
                         }
                         for image in images
                     ]
+                if native_images:
+                    request["nativeImages"] = native_images
+                if picture_replacements:
+                    request["pictureReplacements"] = picture_replacements
+                if group_edits:
+                    request["groupEdits"] = group_edits
+                if notes_edits:
+                    request["notesEdits"] = notes_edits
+                if link_edits:
+                    request["linkEdits"] = link_edits
+                if clipboard_pastes:
+                    request["clipboardPastes"] = clipboard_pastes
+                if element_orders:
+                    request["elementOrders"] = element_orders
+                if picture_crops:
+                    request["pictureCrops"] = picture_crops
+                if chart_edits:
+                    request["chartEdits"] = chart_edits
+                if hidden_slides:
+                    request["hiddenSlides"] = hidden_slides
+                if comment_edits:
+                    request["commentEdits"] = comment_edits
+                    # 固定宿主标签，不接收客户端作者冒认，也不宣称账号协作身份。
+                    request["commentAuthor"] = "用户"
                 if transitions:
                     request["transitions"] = transitions
                 if animations:

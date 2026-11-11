@@ -1,18 +1,25 @@
+import type { SheetTableSource } from './table-source'
+import { SaxesParser } from 'saxes'
 /// Workbook importer: bytes → editor model (sheets, cells with style
 /// indexes, geometry, styles, theme palette). Values/formulas follow the
 /// genoffice reader; styles and geometry are read here because the web app
 /// has no sidecar to resolve them.
 
+import { withoutFutureFunctionMarkers } from './future-functions'
 import { readSheetProtection, readWorkbookProtection, type SheetProtectionModel, type WorkbookProtectionModel } from './protection-read'
+import { readOutlineSummary, readOutlineLine } from './outline-read'
 import { readSheetNotes, type SheetNotesModel } from './note-read'
 import { readSheetFilter, type SheetFilterModel } from './filter-read'
+import { readDataValidations, type SheetDataValidationModel } from './data-validation-read'
+import { readSheetTables, type SheetTableModel } from './table-read'
 import { parseStylesheet, parseThemePalette, type Stylesheet } from './style-read'
 import { readCfRules, type CfReadableRule } from './cf-read'
-import { readDefinedNames } from './defined-names'
+import { readConditionalFormattingSnapshot, type ConditionalFormattingSnapshot } from './conditional-formatting-read'
+import { readDefinedNames, type DefinedNameEntry } from './defined-names'
 import { readSparklines, type SparklineSpec } from './sparklines'
 import { readCharts, type ChartReadSpec } from './chart-read'
 import { createBufferEntrySource, type EntrySource } from './zip'
-import { decodeCellText, decodeXmlText, escapeRegExp, readXmlAttribute, extractElements, sectionInner } from './xml'
+import { decodeCellText, decodeXmlText, escapeXmlText, escapeRegExp, readXmlAttribute, extractElements, sectionInner } from './xml'
 
 export interface ModelCell {
   value: string | number | boolean | null
@@ -26,12 +33,16 @@ export interface ColumnDef {
   end: number
   width: number | undefined
   hidden: boolean
+  outlineLevel?: number
+  collapsed?: boolean
 }
 
 export interface RowDef {
   row: number
   height: number | undefined
   hidden: boolean
+  outlineLevel?: number
+  collapsed?: boolean
 }
 
 export interface SheetMarginsModel {
@@ -54,6 +65,18 @@ export interface SheetPageSetupModel {
   fitToPage?: boolean | undefined
 }
 
+export interface SheetHeaderFooterModel {
+  oddHeader?: string
+  oddFooter?: string
+  firstHeader?: string
+  firstFooter?: string
+  evenHeader?: string
+  evenFooter?: string
+  differentFirst?: boolean
+  differentOddEven?: boolean
+  scaleWithDoc?: boolean
+}
+
 export interface SheetModel {
   name: string
   /// worksheet part path (xl/worksheets/sheetN.xml)
@@ -63,9 +86,15 @@ export interface SheetModel {
   merges: readonly string[]
   columns: readonly ColumnDef[]
   rows: readonly RowDef[]
+  outlineSummaryBelow?: boolean
+  outlineSummaryRight?: boolean
   freeze: { frozenRows: number; frozenColumns: number } | null
   /// sheetView showGridLines（OOXML 默认 true；写回经 applyPageSetups）。
   showGridlines: boolean
+  /// sheetView showRowColHeaders（缺省 true；旧模型可省略）。
+  showHeadings?: boolean
+  /// sheetView rightToLeft（缺省 false；旧模型可省略）。
+  rightToLeft?: boolean
   /// sheetView showFormulas（公式视图，OOXML 默认 false；仅为真时出现，写回经 applyPageSetups）。
   showFormulas?: boolean
   /// 常规视图缩放百分比（10-400，OOXML 默认 100；写回经 applyPageSetups）。
@@ -74,6 +103,8 @@ export interface SheetModel {
   pageSetup?: SheetPageSetupModel
   /// 页边距（英寸；OOXML 默认 0.7/0.7/0.75/0.75/0.3/0.3；写回经 applyPageSetups 预设）。
   margins?: SheetMarginsModel
+  /// 文件页眉页脚只读投影；保留原生控制串，打印时才展开字段。
+  headerFooter?: SheetHeaderFooterModel
   /// printOptions 打印网格线/标题（OOXML 默认 false；写回经 applyPageSetups）。
   printGridlines?: boolean
   printHeadings?: boolean
@@ -93,6 +124,8 @@ export interface SheetModel {
   /// self-colored conditional formats (dataBar / colorScale) read back for
   /// grid rendering; cellIs/iconSet are write-only boundaries
   conditionalFormats?: ReadonlyArray<CfReadableRule>
+  /// Native full-rule manager projection; old conditionalFormats remains the render-only compatibility view.
+  conditionalFormatting?: Omit<ConditionalFormattingSnapshot, 'sourceXml'>
   /// sparklines (x14) read back for grid rendering
   sparklines?: ReadonlyArray<SparklineSpec>
   /// anchored charts read back for grid rendering (column/bar/line/pie v1)
@@ -102,6 +135,12 @@ export interface SheetModel {
   /// customs/dateGroups); readOnlyReason marks structures (color/icon/top10/
   /// dynamic) the write path refuses
   filter?: SheetFilterModel
+  /// Complete source validation snapshot; partial reads prohibit replacement.
+  dataValidations?: SheetDataValidationModel
+  tables?: readonly SheetTableModel[]
+  tablesReadOnlyReason?: string
+  tableSources?: readonly SheetTableSource[]
+  tableSourcesReadOnlyReason?: string
   /// `<sheetProtection>` state; absent when the sheet carries no element
   protection?: SheetProtectionModel
 }
@@ -112,7 +151,7 @@ export interface WorkbookModel {
   /// theme index order palette for resolving theme colors; undefined → defaults
   themePalette: readonly string[] | undefined
   /// workbook-level defined names (global scope; sheet-scoped excluded)
-  definedNames?: ReadonlyArray<{ name: string; refersTo: string }>
+  definedNames?: ReadonlyArray<DefinedNameEntry>
   /// `<workbookProtection>` state; absent when workbook.xml carries no element
   workbookProtection?: WorkbookProtectionModel
 }
@@ -188,7 +227,7 @@ function parseWorksheetCells(worksheetXml: string, sharedStrings: readonly strin
     const styleIndex = styleRaw === undefined ? undefined : Number(styleRaw)
     const formula = body.match(/<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/)?.[1]
     if (formula !== undefined) {
-      cells[address] = { value: null, formula: `=${decodeXmlText(formula)}`, styleIndex }
+      cells[address] = { value: null, formula: `=${withoutFutureFunctionMarkers(decodeXmlText(formula))}`, styleIndex }
       continue
     }
     const type = readXmlAttribute(attributes, 't')
@@ -263,7 +302,46 @@ export function stripPrintReferenceSheetPrefix(reference: string): string {
   }).join(',')
 }
 
+function readHeaderFooter(worksheetXml: string): SheetHeaderFooterModel | undefined {
+  const main = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  const parser = new SaxesParser({ xmlns: true })
+  const stack: { local: string; uri: string }[] = []
+  const fields = new Set(['oddHeader', 'oddFooter', 'firstHeader', 'firstFooter', 'evenHeader', 'evenFooter'])
+  let result: SheetHeaderFooterModel | undefined
+  let capture: { key: keyof SheetHeaderFooterModel; text: string } | undefined
+  parser.on('doctype', () => { throw new Error('页眉页脚不支持 DOCTYPE') })
+  parser.on('opentag', tag => {
+    const depth = stack.length
+    if (depth === 1 && stack[0]?.local === 'worksheet' && stack[0].uri === main && tag.uri === main && tag.local === 'headerFooter') {
+      if (result) throw new Error('页眉页脚结构不唯一')
+      result = {}
+      for (const key of ['differentFirst', 'differentOddEven', 'scaleWithDoc'] as const) {
+        const raw = Object.values(tag.attributes).find(attr => !attr.uri && attr.local === key)?.value
+        if (raw === '1' || raw === 'true') result[key] = true
+        else if (raw === '0' || raw === 'false') result[key] = false
+      }
+    } else if (depth === 2 && result && stack[1]?.local === 'headerFooter' && stack[1].uri === main && tag.uri === main && fields.has(tag.local)) {
+      capture = { key: tag.local as keyof SheetHeaderFooterModel, text: '' }
+    }
+    stack.push({ local: tag.local, uri: tag.uri })
+  })
+  const text = (value: string) => { if (capture && stack.length === 3) capture.text += value }
+  parser.on('text', text)
+  parser.on('cdata', text)
+  parser.on('closetag', () => {
+    if (capture && stack.length === 3) {
+      // saxes 已解 XML 实体；重新转义再交 decodeCellText，避免二次解码 &amp;。
+      Object.assign(result!, { [capture.key]: decodeCellText(escapeXmlText(capture.text)) })
+      capture = undefined
+    }
+    stack.pop()
+  })
+  try { parser.write(worksheetXml).close() } catch { return undefined }
+  return result
+}
+
 function parseGeometry(worksheetXml: string) {
+  const { outlineSummaryBelow, outlineSummaryRight } = readOutlineSummary(worksheetXml)
   const dimension = worksheetXml.match(/<dimension\b[^>]*\bref="([^"]+)"/)?.[1] ?? null
 
   const merges = [...worksheetXml.matchAll(/<mergeCell\b[^>]*\bref="([^"]+)"/g)].map(
@@ -280,6 +358,7 @@ function parseGeometry(worksheetXml: string) {
           ? undefined
           : Number(readXmlAttribute(attributes, 'width')),
       hidden: readXmlAttribute(attributes, 'hidden') === '1',
+      ...readOutlineLine(attributes),
     }
   })
 
@@ -292,6 +371,7 @@ function parseGeometry(worksheetXml: string) {
           ? undefined
           : Number(readXmlAttribute(attributes, 'ht')),
       hidden: readXmlAttribute(attributes, 'hidden') === '1',
+      ...readOutlineLine(attributes),
     }
   })
 
@@ -342,6 +422,8 @@ function parseGeometry(worksheetXml: string) {
   // OOXML 默认显示网格线；仅显式 showGridLines="0" 才是隐藏。
   const sheetView = worksheetXml.match(/<(?:[\w.-]+:)?sheetView\b[^>]*?(?:\/>|>[\s\S]*?<\/(?:[\w.-]+:)?sheetView>)/)?.[0]
   const showGridlines = sheetView && readXmlAttribute(sheetView, 'showGridLines') === '0' ? false : true
+  const showHeadings = !sheetView || !['0', 'false'].includes(readXmlAttribute(sheetView, 'showRowColHeaders') ?? '')
+  const rightToLeft = !!sheetView && ['1', 'true'].includes(readXmlAttribute(sheetView, 'rightToLeft') ?? '')
   const showFormulas = !!sheetView && ['1', 'true'].includes(readXmlAttribute(sheetView, 'showFormulas') ?? '')
   // 常规视图缩放百分比（OOXML 默认 100）。
   const zoomScaleRaw = sheetView ? readXmlAttribute(sheetView, 'zoomScale') : undefined
@@ -364,7 +446,7 @@ function parseGeometry(worksheetXml: string) {
   }
 
   return {
-    dimension, merges, columns, rows, freeze, showGridlines, zoomScale, ...(showFormulas ? { showFormulas } : {}),
+    dimension, merges, columns, rows, outlineSummaryBelow, outlineSummaryRight, freeze, showGridlines, showHeadings, rightToLeft, zoomScale, ...(showFormulas ? { showFormulas } : {}),
     margins, printGridlines, printHeadings, pageSetup,
     rowBreaks: manualBreaks('rowBreaks'), colBreaks: manualBreaks('colBreaks'),
   }
@@ -374,7 +456,11 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
   const source = await createBufferEntrySource(bytes)
   const workbookXml = await source.readText('xl/workbook.xml')
   const sharedStrings = await readSharedStrings(source)
-  const stylesXml = await source.readText('xl/styles.xml')
+  // Fixed-source Rust read_styles uses one default CellStyle when the optional
+  // part is absent. This read-only projection supplies no invented font/color
+  // and never adds a stylesheet to the original package.
+  const stylesXml = await source.has('xl/styles.xml') ? await source.readText('xl/styles.xml')
+    : '<styleSheet><fonts count="1"><font/></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellXfs></styleSheet>'
   const styles = parseStylesheet(stylesXml)
   const parentStyles = stylesXml.match(/<cellStyleXfs\b[^>]*>([\s\S]*?)<\/cellStyleXfs>/)?.[1] ?? ''
   const rotatedParent = [...parentStyles.matchAll(/<alignment\b[^>]*\btextRotation=["']([^"']+)["']/g)].some(match => Number(match[1]) !== 0)
@@ -387,6 +473,8 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
     ? parseThemePalette(await source.readText('xl/theme/theme1.xml'))
     : undefined
 
+  const { readCustomTableStyles } = await import('./table-style-read')
+  const customTableStyles = readCustomTableStyles(stylesXml, themePalette)
   const sheets: SheetModel[] = []
   const sheetPrintNames = readSheetPrintNames(workbookXml)
   for (const [sheetIndex, element] of parseSheetElements(workbookXml).entries()) {
@@ -394,15 +482,23 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
     const path = await resolveWorksheetPath(source, element.relationshipId)
     const worksheetXml = await source.readText(path)
     const geometry = parseGeometry(worksheetXml)
+    const headerFooter = readHeaderFooter(worksheetXml)
     const printNames = sheetPrintNames.get(sheetIndex)
     const inheritedSheetStyle = [...worksheetXml.matchAll(/<(row|col)\b([^>]*)>/g)].some(match => readXmlAttribute(match[2]!, match[1] === 'row' ? 's' : 'style') !== undefined)
     const rotationReadOnly = inheritedSheetStyle || defaultRotation !== 0 || rotatedParent || disabledAlignment
     const indentReadOnly = inheritedSheetStyle || defaultIndent !== 0 || indentedParent || disabledIndentAlignment
     const conditionalFormats = readCfRules(worksheetXml, element.name)
+    const { sourceXml: _cfSourceXml, ...conditionalFormatting } = readConditionalFormattingSnapshot(worksheetXml, stylesXml, themePalette)
     const sparklines = readSparklines(worksheetXml)
     const charts = await readCharts(bytes, path)
     const { notes, sourceIdentity, readOnlyReason } = await readSheetNotes(source, path)
     const filter = readSheetFilter(worksheetXml)
+    const dataValidations = readDataValidations(worksheetXml)
+    const tables = await readSheetTables(source, path, worksheetXml)
+    for (const table of tables.tables) {
+      const customStyle = table.style?.name ? customTableStyles.get(table.style.name) : undefined
+      if (customStyle) table.customStyle = customStyle
+    }
     const protection = readSheetProtection(worksheetXml)
     sheets.push({
       notes: { notes, sourceIdentity, ...(readOnlyReason ? { readOnlyReason } : {}) },
@@ -410,6 +506,7 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
       path,
       cells: parseWorksheetCells(worksheetXml, sharedStrings),
       ...geometry,
+      ...(headerFooter ? { headerFooter } : {}),
       ...(printNames?.printArea !== undefined
         ? { printArea: stripPrintReferenceSheetPrefix(printNames.printArea) }
         : {}),
@@ -419,9 +516,12 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
       ...(rotationReadOnly ? { rotationReadOnlyReason: 'xlsx_rotation_inherited_style_unsupported' } : {}),
       ...(indentReadOnly ? { indentReadOnlyReason: 'xlsx_indent_inherited_style_unsupported' } : {}),
       ...(conditionalFormats.length > 0 ? { conditionalFormats } : {}),
+      conditionalFormatting,
       ...(sparklines.length > 0 ? { sparklines } : {}),
       ...(charts.length > 0 ? { charts } : {}),
       ...(filter ? { filter } : {}),
+      dataValidations,
+      ...tables,
       ...(protection ? { protection } : {}),
     })
   }

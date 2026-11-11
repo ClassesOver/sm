@@ -4,6 +4,7 @@ import { docxOperations, type DocxAnchor } from './docx-operations'
 import {
   createDocxPainter, docxClipboardCopy, docxClipboardCut, docxClipboardPaste,
   docxPainterApply, docxPainterPickUp,
+  insertDocxImageFile,
 } from './docx-clipboard'
 
 const Doc = Node.create({ name: 'doc', topNode: true, content: 'block+', renderHTML: () => ['div', 0] })
@@ -523,5 +524,28 @@ describe('图片粘贴（paste-actions.ts 图片通道 + insertParagraphImage �
     stubImageClipboard(null)
     await expect(docxClipboardPaste(editor, 'picture')).rejects.toThrow('没有图片')
     editor.destroy()
+  })
+
+  it.each(['selection', 'document', 'readonly', 'destroy', 'selection-return', 'readonly-return'] as const)('图片异步读取期间 %s 改变时不写入', async change => {
+    let loaded: (() => void) | undefined
+    class DeferredImage {
+      naturalWidth = 10; naturalHeight = 10; onload?: () => void
+      set src(_value: string) { loaded = () => this.onload?.() }
+    }
+    ;(globalThis as unknown as Record<string, unknown>).Image = DeferredImage
+    const editor = imageEditor({ type: 'doc', content: [paragraphJson('报告正文')] })
+    const inserting = insertDocxImageFile(editor, makeImageBlob())
+    await vi.waitFor(() => expect(loaded).toBeDefined())
+    if (change === 'selection') editor.commands.setTextSelection(3)
+    if (change === 'document') editor.commands.insertContent('新')
+    if (change === 'readonly') editor.setEditable(false)
+    if (change === 'selection-return') { const position = editor.state.selection.from; editor.commands.setTextSelection(3); editor.commands.setTextSelection(position) }
+    if (change === 'readonly-return') { editor.setEditable(false); editor.setEditable(true) }
+    if (change === 'destroy') editor.destroy()
+    const before = editor.getJSON()
+    loaded!()
+    await expect(inserting).rejects.toThrow(change === 'selection' || change === 'document' || change.endsWith('-return') ? '已变化' : '不可编辑')
+    expect(editor.getJSON()).toEqual(before)
+    if (!editor.isDestroyed) editor.destroy()
   })
 })

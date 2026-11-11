@@ -12,13 +12,13 @@ const Doc = Node.create({ name: 'doc', topNode: true, content: 'block+' })
 const Paragraph = Node.create({ name: 'docParagraph', group: 'block', content: 'text*', addAttributes: () => defaults({ docxIndex: null }), renderHTML: () => ['p', 0] })
 const Text = Node.create({ name: 'text', group: 'inline' })
 const Table = Node.create({ name: 'docTable', group: 'block', content: 'docTableRow+', addAttributes: () => defaults({ docxIndex: null, colWidthsPct: null }), renderHTML: () => ['table', ['tbody', 0]] })
-const Row = Node.create({ name: 'docTableRow', content: '(docTableCell|docTableHeader)+', addAttributes: () => defaults({ heightTwips: null, repeatHeader: false, rawTrPr: null }), renderHTML: () => ['tr', 0] })
+const Row = Node.create({ name: 'docTableRow', content: '(docTableCell|docTableHeader)+', addAttributes: () => defaults({ heightTwips: null, repeatHeader: false, repeatHeaderEdited: false, rawTrPr: null }), renderHTML: () => ['tr', 0] })
 const Cell = Node.create({ name: 'docTableCell', content: 'docParagraph+', addAttributes: () => defaults({ colspan: 1, rowspan: 1, colwidth: null, rawTcPr: null }), renderHTML: () => ['td', 0] })
 const Header = Cell.extend({ name: 'docTableHeader', renderHTML: () => ['th', 0] })
 const Roles = Extension.create({ name: 'testTableRoles', extendNodeSchema: extension => ({ tableRole: ({ docTable: 'table', docTableRow: 'row', docTableCell: 'cell', docTableHeader: 'header_cell' } as Record<string, string>)[extension.name] }) })
 const editors: Editor[] = []
 afterEach(() => { editors.splice(0).forEach(editor => editor.destroy()); document.body.replaceChildren() })
-function setup(followingTable = false) {
+function setup(followingTable = false, merged = false) {
   let baseline: DocxPmNode, ready = false
   const errors: string[] = [], values = new Map<string, string>()
   const draft = new NativeDraft({ documentId: 'table-doc', revision: 1, sourceSha256: 'source', scope: { database: 'd', companyId: 'c', userId: 'u', threadId: 't' } }, { getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value) }, removeItem: key => { values.delete(key) } })
@@ -33,6 +33,7 @@ function setup(followingTable = false) {
     source.content.push(second)
     anchors.push({ ...anchor, docxIndex: 3, blockId: 'second-table' })
   }
+  if(merged){const row=(source.content[1] as DocxPmNode).content![0]!;row.content![0]!.attrs={...row.content![0]!.attrs,colspan:2,colwidth:[160,200]};row.content!.splice(1,1)}
   const Guard = Extension.create({ name: 'testNativeGuard', addProseMirrorPlugins: () => [new Plugin({ filterTransaction(tr) { if (!ready || !tr.docChanged) return true; try { docxOperations(baseline, tr.doc.toJSON(), anchors, undefined, editor.schema); return true } catch (error) { errors.push(String(error)); return false } } })] })
   const editor = new Editor({ extensions: [Doc, Paragraph, Text, Table, Row, Cell, Header, Roles, NativeTableStructure, UndoRedo, Guard], content: source, editorProps: { handleScrollToSelection: () => true }, onUpdate: () => { if (ready) draft.setOperations(docxOperations(baseline, editor.getJSON(), anchors, undefined, editor.schema)) } })
   editors.push(editor); baseline = editor.getJSON(); ready = true
@@ -92,7 +93,7 @@ it('keeps raw upstream structure commands out of the save protocol and carries e
   expect(f.draft.operations).toEqual([restructure([{ kind: 'insertTableRow', index: 0 }], [{ row: 1, column: 0, text: 'textsame' }])])
   expect(replayDocxOperations(f.baseline, f.draft.operations, f.anchors, undefined, f.editor.schema)).toEqual(f.editor.getJSON())
 })
-it('exposes only six supported Ribbon controls and refreshes pending/read-only/selection/lock states', () => {
+it('exposes six structure controls plus repeat headers and refreshes pending/read-only/selection/lock states', () => {
   const f = setup(); f.select()
   const ribbon = createDocxRibbon(f.editor, true, undefined, undefined, undefined, f.anchors, f.commands)
   document.body.append(ribbon)
@@ -100,6 +101,12 @@ it('exposes only six supported Ribbon controls and refreshes pending/read-only/s
   const button = (action: string) => ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
   for (const action of Object.keys(TABLE_ACTIONS)) expect(button(action).disabled).toBe(false)
   expect(button('table-merge-cells').disabled).toBe(true)
+  expect(button('table-repeat-header-rows').disabled).toBe(false)
+  expect(button('table-repeat-header-rows').getAttribute('aria-pressed')).toBe('true')
+  button('table-repeat-header-rows').click()
+  expect(button('table-repeat-header-rows').getAttribute('aria-pressed')).toBe('false')
+  f.editor.commands.undo()
+  expect(button('table-repeat-header-rows').getAttribute('aria-pressed')).toBe('true')
   const stable = button('table-insert-row-before')
   f.editor.commands.setMeta('selection-refresh', true)
   expect(button('table-insert-row-before')).toBe(stable)
@@ -180,4 +187,57 @@ it('requires an actual single cell and checks final dimensions and minimum colum
   const single = structuredClone(f.table); single.content = single.content!.slice(0, 1)
   expect(() => projectDocxTable(single, { ...f.anchor, cells: f.anchor.cells!.slice(0, 1) }, { kind: 'deleteTableRow', index: 0 }, f.editor.schema)).toThrow(/最后一行/)
   expect(() => projectDocxTable(f.table, { ...f.anchor, tableWidthsTwips: [1, 3000, 5999] }, { kind: 'insertTableColumn', index: 0 }, f.editor.schema)).toThrow(/太小/)
+})
+
+it('toggles the exact source leading-row prefix with undo and draft replay', () => {
+  const f=setup();f.select(1,0)
+  expect(f.commands.reason('table-repeat-header-rows')).toContain('首行')
+  const table=f.editor.state.doc.child(1),map=TableMap.get(table),start=f.editor.state.doc.child(0).nodeSize+1
+  f.editor.view.dispatch(f.editor.state.tr.setSelection(CellSelection.create(f.editor.state.doc,start+map.map[0]!,start+map.map[3]!)))
+  expect(f.commands.reason('table-repeat-header-rows')).toBeNull()
+  f.commands.run('table-repeat-header-rows')
+  expect(f.errors).toEqual([])
+  expect(f.draft.operations).toEqual([{kind:'setTableRepeatHeaders',blockId:'table',expectedObjectSha256:'sha',expectedRowCount:3,prefixRowCount:2,headers:[true,true,false]}])
+  const pending=f.editor.getJSON()
+  expect(replayDocxOperations(f.baseline,f.draft.operations,f.anchors,undefined,f.editor.schema)).toEqual(pending)
+  expect(f.editor.commands.undo()).toBe(true)
+  expect(f.draft.operations).toEqual([])
+  expect(f.editor.commands.redo()).toBe(true)
+  expect(f.draft.operations[0]!.headers).toEqual([true,true,false])
+  f.commands.run('table-repeat-header-rows')
+  expect(f.draft.operations[0]!.headers).toEqual([false,false,false])
+})
+it('does not require structural-edit capability for repeat headers and keeps unselected suffix flags',()=>{
+ const f=setup();f.anchor.structureEditable=false
+ f.select(0,0);expect(f.commands.reason('table-repeat-header-rows')).toBeNull()
+ f.commands.run('table-repeat-header-rows')
+ expect(f.draft.operations[0]!.headers).toEqual([false,false,false])
+ expect(()=>replayDocxOperations(f.baseline,[{...f.draft.operations[0]!,expectedRowCount:2}],f.anchors,undefined,f.editor.schema)).toThrow()
+})
+
+it('supports source merged-cell table leading-prefix headers without structural capability',()=>{
+ const f=setup(false,true);f.anchor.structureEditable=false
+ const table=f.editor.state.doc.child(1),map=TableMap.get(table),start=f.editor.state.doc.child(0).nodeSize+1
+ f.editor.view.dispatch(f.editor.state.tr.setSelection(CellSelection.create(f.editor.state.doc,start+map.map[0]!,start+map.map[map.width]!)))
+ expect(f.commands.reason('table-repeat-header-rows')).toBeNull()
+ expect(f.commands.active?.('table-repeat-header-rows')).toBe(false)
+ f.commands.run('table-repeat-header-rows')
+ expect(f.errors).toEqual([])
+ expect(f.commands.active?.('table-repeat-header-rows')).toBe(true)
+ expect(f.draft.operations[0]!.headers).toEqual([true,true,false])
+ const current=f.editor.getJSON()
+ expect(f.editor.state.doc.child(1).child(0).child(0).attrs.colspan).toBe(2)
+ expect(replayDocxOperations(f.baseline,f.draft.operations,f.anchors,undefined,f.editor.schema)).toEqual(current)
+ expect(f.editor.commands.undo()).toBe(true)
+ expect(f.editor.getJSON()).toEqual(f.baseline)
+})
+it('keeps outer structure and repeating headers inactive while a nested input owns focus', () => {
+  const state = setup(); state.select()
+  const commands = createDocxTableCommands(state.editor, state.baseline, state.anchors, error => state.errors.push(String(error)), () => true)
+  const before = state.editor.getJSON()
+  for (const action of ['table-insert-row-below', 'table-repeat-header-rows']) {
+    expect(commands.reason(action)).toContain('嵌套')
+    commands.run(action)
+    expect(state.editor.getJSON()).toEqual(before)
+  }
 })

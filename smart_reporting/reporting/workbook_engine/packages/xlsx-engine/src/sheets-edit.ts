@@ -5,6 +5,7 @@
 /// pivot-cache renames are out of the web scope.
 
 import { decodeXmlText, escapeXmlAttribute, escapeXmlText, readXmlAttribute } from './xml'
+import { SaxesParser } from 'saxes'
 
 /// '>' is legal inside XML attribute values (sheet names can carry it), so
 /// element scans consume quoted runs atomically instead of using [^>]*.
@@ -69,12 +70,13 @@ export const FORMULA_REFERENCE_PATTERN = new RegExp(
     '(?![0-9\\p{L}_(])',
   'gu',
 )
+const SHEET_FORMULA_REFERENCE_PATTERN = new RegExp(FORMULA_REFERENCE_PATTERN.source, 'giu')
 
 export function qualifierMatches(qualifier: string, sheetName: string): boolean {
   const unquoted = qualifier.startsWith("'")
     ? qualifier.slice(1, -1).replaceAll("''", "'")
     : qualifier
-  return unquoted === sheetName
+  return unquoted.toUpperCase() === sheetName.toUpperCase()
 }
 
 /// Rewrites references qualified with oldName to newName inside one formula.
@@ -86,9 +88,11 @@ export function renameSheetInFormula(formula: string, oldName: string, newName: 
       index % 2 === 1
         ? segment
         : segment.replace(
-            FORMULA_REFERENCE_PATTERN,
+            SHEET_FORMULA_REFERENCE_PATTERN,
             (full, lead: string, qualifier: string | undefined, token: string) => {
-              if (qualifier === undefined || !qualifierMatches(qualifier, oldName)) return full
+              // An unquoted external workbook ends immediately before the sheet
+              // qualifier: [book.xlsx]Source!A1 is not this workbook's Source.
+              if (lead === ']' || qualifier === undefined || !qualifierMatches(qualifier, oldName)) return full
               return `${lead}${formatSheetQualifier(newName)}!${token}`
             },
           ),
@@ -102,9 +106,9 @@ export function formulaReferencesSheet(formula: string, sheetName: string): bool
   formula.split('"').forEach((segment, index) => {
     if (index % 2 === 1 || found) return
     segment.replace(
-      FORMULA_REFERENCE_PATTERN,
-      (_full, _lead: string, qualifier: string | undefined) => {
-        if (qualifier !== undefined && qualifierMatches(qualifier, sheetName)) found = true
+      SHEET_FORMULA_REFERENCE_PATTERN,
+      (_full, lead: string, qualifier: string | undefined) => {
+        if (lead !== ']' && qualifier !== undefined && qualifierMatches(qualifier, sheetName)) found = true
         return ''
       },
     )
@@ -127,10 +131,18 @@ export function renameSheetReferencesInWorksheet(
       `<f${attributes ?? ''}>${escapeXmlText(renameSheetInFormula(decodeXmlText(body), oldName, newName))}</f>`,
   )
   xml = xml.replace(
-    /<(formula[12]?)>([\s\S]*?)<\/\1>/g,
+    /<(formula[12]?|xm:f)>([\s\S]*?)<\/\1>/g,
     (_full, tag: string, body: string) =>
       `<${tag}>${escapeXmlText(renameSheetInFormula(decodeXmlText(body), oldName, newName))}</${tag}>`,
   )
+  xml = xml.replace(new RegExp(`<(?:x14:)?cfvo\\b${TAG_ATTRIBUTES}>`, 'g'), node => {
+    if (readXmlAttribute(node, 'type') !== 'formula') return node
+    return node.replace(/(\sval\s*=\s*)(["'])([\s\S]*?)\2/g, (full, prefix: string, quote: string, value: string) => {
+      const formula = decodeXmlText(value), renamed = renameSheetInFormula(formula, oldName, newName)
+      if (renamed === formula) return full
+      return `${prefix}${quote}${escapeXmlAttribute(renamed)}${quote}`
+    })
+  })
   return xml.replace(
     new RegExp(`(<hyperlink\\b${TAG_ATTRIBUTES}\\blocation=")([^"]+)(")`, 'g'),
     (full, prefix: string, location: string, suffix: string) => {
@@ -143,17 +155,39 @@ export function renameSheetReferencesInWorksheet(
   )
 }
 
-/// Rewrites qualified references in chart series (`<c:f>` bodies).
+/** Local compatibility fix: source regex only recognises c:f, not the chart namespace. */
 export function renameSheetReferencesInChart(
   chartXml: string,
   oldName: string,
   newName: string,
 ): string {
-  return chartXml.replace(
-    /(<c:f>)([\s\S]*?)(<\/c:f>)/g,
-    (_full, open: string, body: string, close: string) =>
-      `${open}${escapeXmlText(renameSheetInFormula(decodeXmlText(body), oldName, newName))}${close}`,
-  )
+  const parser = new SaxesParser({ xmlns: true })
+  const replacements: { start: number; end: number; value: string }[] = []
+  let formula: { start: number; text: string } | undefined
+  parser.on('opentag', tag => {
+    if (formula) throw new Error('图表公式不得包含嵌套元素')
+    if (tag.local === 'f' && tag.uri === 'http://schemas.openxmlformats.org/drawingml/2006/chart' && !tag.isSelfClosing)
+      formula = { start: parser.position, text: '' }
+  })
+  const append = (value: string) => { if (formula) formula.text += value }
+  parser.on('text', append)
+  parser.on('cdata', append)
+  parser.on('closetag', tag => {
+    if (!formula || tag.local !== 'f' || tag.uri !== 'http://schemas.openxmlformats.org/drawingml/2006/chart') return
+    const renamed = renameSheetInFormula(formula.text, oldName, newName)
+    if (renamed !== formula.text) replacements.push({
+      start: formula.start,
+      end: chartXml.lastIndexOf('</', parser.position - 1),
+      value: escapeXmlText(renamed),
+    })
+    formula = undefined
+  })
+  // Parse the complete part before applying any edits; invalid XML cannot produce a partial rewrite.
+  parser.write(chartXml).close()
+  let result = chartXml
+  for (const replacement of replacements.reverse())
+    result = result.slice(0, replacement.start) + replacement.value + result.slice(replacement.end)
+  return result
 }
 
 /// Rewrites qualified references in workbook definedName bodies.
@@ -172,20 +206,42 @@ export function renameSheetReferencesInDefinedNames(
 export function worksheetReferencesSheet(worksheetXml: string, sheetName: string): boolean {
   for (const pattern of [
     /<f\b(?:[^>]*[^/>])?>([\s\S]*?)<\/f>/g,
-    /<(?:formula[12]?)>([\s\S]*?)<\/(?:formula[12]?)>/g,
+    /<(?:formula[12]?|xm:f)>([\s\S]*?)<\/(?:formula[12]?|xm:f)>/g,
   ]) {
     for (const match of worksheetXml.matchAll(pattern)) {
       if (formulaReferencesSheet(decodeXmlText(match[1] ?? ''), sheetName)) return true
     }
   }
+  for (const match of worksheetXml.matchAll(new RegExp(`<(?:x14:)?cfvo\\b${TAG_ATTRIBUTES}>`, 'g'))) {
+    if (readXmlAttribute(match[0], 'type') !== 'formula') continue
+    const formula = readXmlAttribute(match[0], 'val')
+    if (formula !== undefined && formulaReferencesSheet(decodeXmlText(formula), sheetName)) return true
+  }
   return false
 }
 
+/** Namespace-scoped chart formulas; malformed XML throws before deletion. */
+export function readChartFormulas(chartXml: string): string[] {
+  const parser = new SaxesParser({ xmlns: true })
+  const formulas: string[] = []
+  let formula: string | undefined
+  parser.on('opentag', tag => {
+    if (tag.local === 'f' && tag.uri === 'http://schemas.openxmlformats.org/drawingml/2006/chart') formula = ''
+  })
+  const append = (value: string) => { if (formula !== undefined) formula += value }
+  parser.on('text', append)
+  parser.on('cdata', append)
+  parser.on('closetag', tag => {
+    if (tag.local !== 'f' || tag.uri !== 'http://schemas.openxmlformats.org/drawingml/2006/chart') return
+    if (formula !== undefined) formulas.push(formula)
+    formula = undefined
+  })
+  parser.write(chartXml).close()
+  return formulas
+}
+
 export function chartReferencesSheet(chartXml: string, sheetName: string): boolean {
-  for (const match of chartXml.matchAll(/<c:f>([\s\S]*?)<\/c:f>/g)) {
-    if (formulaReferencesSheet(decodeXmlText(match[1] ?? ''), sheetName)) return true
-  }
-  return false
+  return readChartFormulas(chartXml).some(formula => formulaReferencesSheet(formula, sheetName))
 }
 
 /// Blank worksheet part for added sheets.
@@ -275,6 +331,7 @@ export function applySheetPlanToWorkbookXml(
   result = result.replace(
     /<definedName\b[^>]*?\blocalSheetId="([0-9]+)"[^>]*>[\s\S]*?<\/definedName>/g,
     (full, localId: string) => {
+      if (originalNames[Number(localId)] === undefined) return full
       const mapped = oldIndexToNew(Number(localId))
       if (mapped === null) return ''
       return full.replace(/\blocalSheetId="[0-9]+"/, () => `localSheetId="${mapped}"`)

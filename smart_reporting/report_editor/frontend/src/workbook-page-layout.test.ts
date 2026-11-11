@@ -11,7 +11,7 @@ vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => (
 vi.mock('@univerjs/preset-sheets-note', () => ({ UniverSheetsNotePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
-vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({}) }))
+vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({ plugins: [] }) }))
 vi.mock('@univerjs/preset-sheets-sort', () => ({ UniverSheetsSortPreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-filter', () => ({ UniverSheetsFilterPreset: () => ({}) }))
 vi.mock('./workbook-ribbon', () => ({

@@ -7,6 +7,7 @@
 /// so the sheet-side methods are declared here instead.
 
 import { parseRange, type CellEdit } from '@sheets-web/xlsx-engine'
+import { CellValueType } from '@univerjs/core'
 import type { UniverStyleData } from '../core/style-map'
 import { fromUniverStyle, univerBorderStyleId } from '../core/style-map'
 import type { ReadbackWorkbook, ReadbackCell } from '../core/session-core'
@@ -98,8 +99,9 @@ export function loadWorkbookData(runtime: UniverRuntime | null, data: UniverWork
     try {
       facade.syncExecuteCommand?.('formula.mutation.set-defined-name', {
         unitId: workbook?.getId(),
-        id: `name-${entry.name}`,
+        id: `name-${JSON.stringify([entry.scopeSheetId ?? null, entry.name])}`,
         name: entry.name,
+        ...(entry.scopeSheetId !== undefined ? { localSheetId: entry.scopeSheetId } : {}),
         formulaOrRefString: entry.refersTo,
       })
     } catch {
@@ -185,7 +187,7 @@ export function readBackSnapshot(data: unknown): ReadbackWorkbook {
   const snapshot = data as {
     sheets?: Record<string, {
       name?: string
-      cellData?: Record<number, Record<number, { v?: unknown; f?: string; s?: string } | undefined>>
+      cellData?: Record<number, Record<number, { v?: unknown; f?: string; s?: string; t?: CellValueType } | undefined>>
       mergeData?: Array<{ startRow: number; startColumn: number; endRow: number; endColumn: number }>
       columnData?: Record<string, UniverColumnData | undefined>
       rowData?: Record<string, UniverRowData | undefined>
@@ -208,6 +210,8 @@ export function readBackSnapshot(data: unknown): ReadbackWorkbook {
         const value =
           rawValue === null || rawValue === undefined
             ? null
+            : cell.t === CellValueType.BOOLEAN && (rawValue === 0 || rawValue === 1)
+              ? rawValue === 1
             : typeof rawValue === 'number' || typeof rawValue === 'boolean'
               ? rawValue
               : String(rawValue)

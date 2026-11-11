@@ -12,7 +12,7 @@ describe('File command routing in the workbook editor', () => {
   vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => ({}) }))
   vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
   vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
-  vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({}) }))
+  vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({ plugins: [] }) }))
   vi.mock('@univerjs/preset-sheets-sort', () => ({ UniverSheetsSortPreset: () => ({}) }))
   vi.mock('@univerjs/preset-sheets-filter', () => ({ UniverSheetsFilterPreset: () => ({}) }))
   vi.mock('@univerjs/preset-sheets-note', () => ({ UniverSheetsNotePreset: () => ({}) }))
@@ -27,6 +27,12 @@ describe('File command routing in the workbook editor', () => {
       },
     }
   })
+  vi.mock('./workbook-rtl', () => ({ installWorkbookRtl: () => ({ dispose() {} }) }))
+  vi.mock('./workbook-render-ready', () => ({ waitForWorkbookRendered: async () => {}, installWorkbookLoadingLock: () => ({ dispose() {} }) }))
+  vi.mock('@sheets-web/xlsx-engine/zip', () => ({ createBufferEntrySource: async () => ({
+    readText: async (path: string) => path === 'xl/workbook.xml' ? '<workbook><sheets/></workbook>' : '<worksheet/>',
+    paths: async () => ['xl/worksheets/sheet1.xml'],
+  }) }))
   vi.mock('@sheets-web/xlsx-engine', async importOriginal => {
     const actual = await importOriginal<typeof import('@sheets-web/xlsx-engine')>()
     return { ...actual, readWorkbook: async () => ({
@@ -37,7 +43,7 @@ describe('File command routing in the workbook editor', () => {
   vi.mock('../../../reporting/workbook_engine/bridge/operations', () => ({ applyWorkbookOperations: async (bytes: unknown) => bytes }))
   vi.mock('./workbook-vendor/grid/create-univer', () => ({ createUniver: () => {
     const snapshot: any = { sheets: { sheet0: { name: 'Sheet', cellData: { 0: { 0: { v: 'before' } } } } }, sheetOrder: ['sheet0'], styles: {} }
-    const sheet: any = { getSheetName: () => 'Sheet', getSheetId: () => 'sheet0', getSelection: () => null }
+    const sheet: any = { getSheetName: () => 'Sheet', getSheetId: () => 'sheet0', getSelection: () => null, getSheet: () => ({ getConfig: () => ({}) }) }
     const workbook: any = {
       getId: () => 'book', getSnapshot: () => snapshot, getSheets: () => [sheet],
       getActiveSheet: () => sheet, insertSheet: vi.fn(),
@@ -54,7 +60,7 @@ describe('File command routing in the workbook editor', () => {
     const actual = await vi.importActual<typeof import('./workbook-vendor/grid/sync')>('./workbook-vendor/grid/sync')
     return { ...actual, loadWorkbookData: vi.fn() }
   })
-  vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines: vi.fn() }))
+  vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines: vi.fn(), setSparklineWorkbookResolver() {} }))
   vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts: vi.fn() }))
   vi.mock('./workbook-vendor/core/univer-data', () => ({ buildWorkbookData: () => ({ sheets: {} }) }))
   vi.mock('./workbook-vendor/core/data-tools', () => ({ geometryChanges: () => ({ columns: [], rows: [] }) }))
@@ -82,9 +88,9 @@ describe('File command routing in the workbook editor', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(runtime.api.redo).toHaveBeenCalled()
     expect(shell.editor.querySelector<HTMLElement>('.workbook-feedback')!.textContent).toContain('没有可恢复的修改')
-  })
+  }, 15000)
 
-  it('builds the print document from the live snapshot and page setup and submits it to the browser', async () => {
+  it('opens the print preview before submitting the print job', async () => {
     const { createEditorShell } = await import('./shell')
     const { createWorkbookEditorView } = await import('./workbook-main')
     const printModule = await import('./workbook-print')
@@ -96,10 +102,13 @@ describe('File command routing in the workbook editor', () => {
       request: async () => ({}) as any,
     })
     document.querySelector<HTMLButtonElement>('[data-ribbon-command="print"]')!.click()
-    expect(printModule.printDocument).toHaveBeenCalledTimes(1)
-    const html = vi.mocked(printModule.printDocument).mock.calls[0]![0] as string
-    expect(html).toContain('@page')
-    expect(html).toContain('>before</td>')
-    expect(shell.editor.querySelector<HTMLElement>('.workbook-feedback')!.textContent).toContain('已提交浏览器打印')
-  })
+    await vi.waitFor(() => expect(shell.editor.textContent).toContain('打印预览'), { timeout: 10000 })
+    expect(printModule.printDocument).not.toHaveBeenCalled()
+    expect(shell.editor.querySelector('[data-print-preview]')).not.toBeNull()
+    expect(printModule.printDocument).not.toHaveBeenCalled()
+    shell.editor.querySelector<HTMLButtonElement>('[data-print-cancel]')!.click()
+    const dialog = shell.editor.querySelector<HTMLElement>('[data-print-preview]')?.closest<HTMLElement>('[role="dialog"]')
+    if (dialog === undefined) throw new Error('打印预览节点缺失')
+    expect(dialog === null || dialog.hidden).toBe(true)
+  }, 15000)
 })

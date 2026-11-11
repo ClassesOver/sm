@@ -1,0 +1,576 @@
+{
+  "sourceCommit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "precedents": [
+    {
+      "formula": "=A1",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "$A$1",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=SUM(B3:A1,A1)",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 2,
+            "startColumn": 0,
+            "endColumn": 1
+          },
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=\"A1\"&B2",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 1,
+            "endRow": 1,
+            "startColumn": 1,
+            "endColumn": 1
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=SUM(A:C)",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 19,
+            "startColumn": 0,
+            "endColumn": 2
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=SUM($2:$4)",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 1,
+            "endRow": 3,
+            "startColumn": 0,
+            "endColumn": 7
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "='Data Set'!A1+Other!B2",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          }
+        ],
+        "offSheet": 1
+      }
+    },
+    {
+      "formula": "='Data Set'!A1+'Data Set'!A1",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=Z2000+A1",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=SUM(Z:Z)",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 19,
+            "startColumn": 25,
+            "endColumn": 25
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=A1&A1",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "=IF(A1=\"B2\",C3,D4)",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [
+          {
+            "startRow": 0,
+            "endRow": 0,
+            "startColumn": 0,
+            "endColumn": 0
+          },
+          {
+            "startRow": 2,
+            "endRow": 2,
+            "startColumn": 2,
+            "endColumn": 2
+          },
+          {
+            "startRow": 3,
+            "endRow": 3,
+            "startColumn": 3,
+            "endColumn": 3
+          }
+        ],
+        "offSheet": 0
+      }
+    },
+    {
+      "formula": "='O''Brien'!A1",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [],
+        "offSheet": 1
+      }
+    },
+    {
+      "formula": "=[Book.xlsx]Sheet1!A1",
+      "sheetName": "Data Set",
+      "bounds": {
+        "lastRow": 19,
+        "lastColumn": 7,
+        "maxRows": 1000,
+        "maxColumns": 26
+      },
+      "expected": {
+        "areas": [],
+        "offSheet": 1
+      }
+    }
+  ],
+  "dependents": [
+    {
+      "source": {
+        "sheets": {
+          "one": {
+            "name": "Data Set",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "=B2"
+                },
+                "1": {
+                  "f": "=A1"
+                },
+                "2": {
+                  "f": "=\"A1\""
+                }
+              },
+              "1": {
+                "1": {
+                  "f": "=SUM(A:A)"
+                },
+                "2": {
+                  "f": "='Data Set'!A1"
+                }
+              },
+              "3": {
+                "2": {
+                  "f": "=Other!A1"
+                }
+              }
+            }
+          },
+          "two": {
+            "name": "Other",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "='Data Set'!A1"
+                },
+                "1": {
+                  "f": "=A1"
+                }
+              },
+              "3": {
+                "0": {
+                  "f": "='Data Set'!$A:$B"
+                }
+              }
+            }
+          }
+        }
+      },
+      "sheetName": "Data Set",
+      "target": {
+        "row": 0,
+        "column": 0
+      },
+      "expected": {
+        "cells": [
+          {
+            "row": 0,
+            "column": 1
+          },
+          {
+            "row": 1,
+            "column": 1
+          },
+          {
+            "row": 1,
+            "column": 2
+          }
+        ],
+        "offSheet": 2
+      }
+    },
+    {
+      "source": {
+        "sheets": {
+          "one": {
+            "name": "Data Set",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "=B2"
+                },
+                "1": {
+                  "f": "=A1"
+                },
+                "2": {
+                  "f": "=\"A1\""
+                }
+              },
+              "1": {
+                "1": {
+                  "f": "=SUM(A:A)"
+                },
+                "2": {
+                  "f": "='Data Set'!A1"
+                }
+              },
+              "3": {
+                "2": {
+                  "f": "=Other!A1"
+                }
+              }
+            }
+          },
+          "two": {
+            "name": "Other",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "='Data Set'!A1"
+                },
+                "1": {
+                  "f": "=A1"
+                }
+              },
+              "3": {
+                "0": {
+                  "f": "='Data Set'!$A:$B"
+                }
+              }
+            }
+          }
+        }
+      },
+      "sheetName": "Data Set",
+      "target": {
+        "row": 1,
+        "column": 1
+      },
+      "expected": {
+        "cells": [
+          {
+            "row": 0,
+            "column": 0
+          }
+        ],
+        "offSheet": 1
+      }
+    },
+    {
+      "source": {
+        "sheets": {
+          "one": {
+            "name": "Data Set",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "=B2"
+                },
+                "1": {
+                  "f": "=A1"
+                },
+                "2": {
+                  "f": "=\"A1\""
+                }
+              },
+              "1": {
+                "1": {
+                  "f": "=SUM(A:A)"
+                },
+                "2": {
+                  "f": "='Data Set'!A1"
+                }
+              },
+              "3": {
+                "2": {
+                  "f": "=Other!A1"
+                }
+              }
+            }
+          },
+          "two": {
+            "name": "Other",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "='Data Set'!A1"
+                },
+                "1": {
+                  "f": "=A1"
+                }
+              },
+              "3": {
+                "0": {
+                  "f": "='Data Set'!$A:$B"
+                }
+              }
+            }
+          }
+        }
+      },
+      "sheetName": "Data Set",
+      "target": {
+        "row": 3,
+        "column": 2
+      },
+      "expected": {
+        "cells": [],
+        "offSheet": 0
+      }
+    },
+    {
+      "source": {
+        "sheets": {
+          "one": {
+            "name": "Data Set",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "=B2"
+                },
+                "1": {
+                  "f": "=A1"
+                },
+                "2": {
+                  "f": "=\"A1\""
+                }
+              },
+              "1": {
+                "1": {
+                  "f": "=SUM(A:A)"
+                },
+                "2": {
+                  "f": "='Data Set'!A1"
+                }
+              },
+              "3": {
+                "2": {
+                  "f": "=Other!A1"
+                }
+              }
+            }
+          },
+          "two": {
+            "name": "Other",
+            "cellData": {
+              "0": {
+                "0": {
+                  "f": "='Data Set'!A1"
+                },
+                "1": {
+                  "f": "=A1"
+                }
+              },
+              "3": {
+                "0": {
+                  "f": "='Data Set'!$A:$B"
+                }
+              }
+            }
+          }
+        }
+      },
+      "sheetName": "Data Set",
+      "target": {
+        "row": 100,
+        "column": 0
+      },
+      "expected": {
+        "cells": [
+          {
+            "row": 1,
+            "column": 1
+          }
+        ],
+        "offSheet": 1
+      }
+    }
+  ]
+}

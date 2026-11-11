@@ -7,6 +7,8 @@ import { NativeDraft } from './native-draft'
 describe('shared PPTX editor', () => {
   beforeEach(() => {
     document.body.innerHTML = '<main id="app"></main>'
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true } })
+    Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event('close')) } })
   })
 
   afterEach(() => {

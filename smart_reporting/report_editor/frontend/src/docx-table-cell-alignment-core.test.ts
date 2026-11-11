@@ -1,0 +1,15 @@
+import {expect,it} from 'vitest'
+import {Schema} from '@tiptap/pm/model'
+import {applyTableCellAlignmentSteps} from './docx-table-cell-alignment-core'
+const attr=(v:Record<string,unknown>)=>Object.fromEntries(Object.entries(v).map(([k,value])=>[k,{default:value}]))
+export const schema=new Schema({nodes:{doc:{content:'docTable+'},text:{group:'inline'},docParagraph:{content:'inline*',attrs:attr({align:null,bidi:false,bidiInherited:false,bidiInferred:false,keepNext:true})},docListItem:{content:'inline*',attrs:attr({align:null,bidi:false,bidiInherited:false,bidiInferred:false})},docHeading:{content:'inline*',attrs:attr({align:'right',bidi:false,bidiInherited:false,bidiInferred:false})},docNestedTable:{atom:true},docTable:{content:'row+',tableRole:'table',attrs:attr({widthPx:123,nativeTableCellAlignment:null})},row:{content:'cell*',tableRole:'row',attrs:attr({heightTwips:300})},cell:{content:'(docParagraph|docListItem|docHeading|docNestedTable)+',tableRole:'cell',attrs:attr({colspan:1,rowspan:1,vAlign:null,tcPrEdited:false,opaque:'keep'})}},marks:{bold:{}}})
+export const fixture=()=>schema.node('docTable',null,[schema.node('row',null,[schema.node('cell',{colspan:2},[schema.node('docParagraph',null,schema.text('LTR',[schema.mark('bold')])),schema.node('docParagraph',{bidi:true},schema.text('RTL')),schema.node('docParagraph',{bidiInferred:true},schema.text('inferred')),schema.node('docListItem',null,schema.text('list')),schema.node('docHeading',null,schema.text('heading')),schema.node('docNestedTable')]),schema.node('cell',null,schema.node('docParagraph',null,schema.text('other')))])])
+it('nine alignments apply source bidi semantics to direct paragraphs/list only, preserving geometry and marks',()=>{
+ const table=fixture()
+ for(const vertical of ['top','center','bottom'] as const)for(const horizontal of ['left','center','right'] as const){const out=applyTableCellAlignmentSteps(table,[{top:0,left:1,bottom:1,right:2,vertical,horizontal}]);expect(out.alignments).toEqual([vertical==='top'?null:vertical,null]);expect(out.paragraphs[0].map(p=>p.align)).toEqual(horizontal==='left'?[null,'left','left',null,'right']:horizontal==='right'?['right',null,null,'right','right']:['center','center','center','center','right']);expect(out.table.attrs).toEqual(table.attrs);expect(out.table.firstChild!.attrs).toEqual(table.firstChild!.attrs);expect(out.table.firstChild!.firstChild!.attrs.tcPrEdited).toBe(false);expect(out.table.firstChild!.firstChild!.firstChild!.content.eq(table.firstChild!.firstChild!.firstChild!.content)).toBe(true)}
+})
+it('ordered resets and malformed input are atomic',()=>{
+ const table=fixture(),s={top:0,left:0,bottom:1,right:2,vertical:'center',horizontal:'center'} as const
+ const out=applyTableCellAlignmentSteps(table,[s,{...s,vertical:'top',horizontal:'left'}]);expect(out.alignments[0]).toBe(null);expect(out.paragraphs[0][0].align).toBe(null)
+ for(const steps of [[],[{...s,vertical:'middle'}],[{...s,right:4}],[{...s,bidi:true}],Array(51).fill(s)])expect(()=>applyTableCellAlignmentSteps(table,steps as any)).toThrow()
+})

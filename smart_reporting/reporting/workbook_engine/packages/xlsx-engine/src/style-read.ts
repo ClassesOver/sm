@@ -14,6 +14,7 @@ export interface FontInfo {
   size: number | undefined
   family: string | undefined
   color: StyleColor | undefined
+  vertAlign?: 'superscript' | 'subscript' | undefined
 }
 
 export interface BorderEdge {
@@ -129,6 +130,10 @@ function parseFont(fontXml: string): FontInfo {
     size: numberAttribute(fontXml, 'sz', 'val'),
     family: decodeXml(readCoreAttribute(fontXml.match(/<name\b[^>]*\/?>/)?.[0] ?? '', 'val') ?? ''),
     color: parseColor(fontXml.match(/<color\b[^>]*\/?>/)?.[0] ?? ''),
+    vertAlign: (() => {
+      const value = readCoreAttribute(fontXml.match(/<vertAlign\b[^>]*\/?>/)?.[0] ?? '', 'val')
+      return value === 'superscript' || value === 'subscript' ? value : undefined
+    })(),
   }
 }
 

@@ -15,7 +15,7 @@ from docx.shared import RGBColor
 from lxml import etree
 
 REPO = Path(__file__).resolve().parents[1]
-ENGINE = REPO / 'smart_reporting/reporting/slides_engine'
+ENGINE = REPO / 'smart_reporting/reporting/doc_engine'
 NS = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
 
 

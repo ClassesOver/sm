@@ -35,18 +35,48 @@ function vendorLicenses(directory) {
 }
 if (existsSync(join(source, 'packages'))) vendorLicenses(join(source, 'packages'))
 
+// 外部依赖保留来源路径的层级，但不允许 .. 将许可写到运行目录外。
+function licenseTarget(path) {
+  const parts = relative(source, path).split(/[\\/]/)
+  return parts.includes('..')
+    ? join('licenses', 'external', ...parts.map(part => part === '..' ? '_parent_' : part))
+    : join('licenses', ...parts)
+}
 const packages = new Set()
+const localAncestors = new Set()
 for (const input of Object.keys(metadata.inputs)) {
-  if (!input.startsWith('node_modules/')) continue
-  const parts = input.split('/')
-  packages.add(parts.slice(0, parts[1].startsWith('@') ? 3 : 2).join('/'))
+  const path = resolve(source, input)
+  const parts = path.split('/')
+  const modules = parts.lastIndexOf('node_modules')
+  if (modules >= 0 && parts[modules + 1]) {
+    packages.add(parts.slice(0, modules + (parts[modules + 1].startsWith('@') ? 3 : 2)).join('/'))
+    continue
+  }
+  // 跨工作区本地源码（如 sibling shared package 或 vendor helper）的许可在祖先目录。
+  // 仅检查到它与当前引擎的公共祖先；不递归复制该来源树。
+  if (!relative(source, path).startsWith('..')) continue
+  let directory = dirname(path)
+  while (directory !== dirname(directory)) {
+    localAncestors.add(directory)
+    const back = relative(directory, source)
+    if (back === '' || !back.startsWith('..')) break
+    directory = dirname(directory)
+  }
 }
 for (const dependency of packages) {
   // 个别 npm 包将完整许可放在 README 中；同时保留 manifest 的身份和 SPDX 信息。
-  for (const entry of readdirSync(join(source, dependency), { withFileTypes: true })) {
+  for (const entry of readdirSync(dependency, { withFileTypes: true })) {
     if (entry.isFile() && (licenseFile(entry.name) || /^readme/i.test(entry.name) || entry.name === 'package.json')) {
-      const path = join(source, dependency, entry.name)
-      copy(path, join('licenses', relative(source, path)))
+      const path = join(dependency, entry.name)
+      copy(path, licenseTarget(path))
+    }
+  }
+}
+for (const directory of localAncestors) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isFile() && licenseFile(entry.name)) {
+      const path = join(directory, entry.name)
+      copy(path, licenseTarget(path))
     }
   }
 }

@@ -12,13 +12,13 @@ vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => (
 vi.mock('@univerjs/preset-sheets-note', () => ({ UniverSheetsNotePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
-vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({}) }))
+vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({ plugins: [] }) }))
 vi.mock('./workbook-ribbon', () => ({
   mountWorkbookRibbon: (_host: unknown, callback: unknown) => { grid.ribbon = callback; return { dispose() {}, refreshState() {} } },
   applyWorkbookRibbonCommand: grid.apply,
 }))
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
-vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {} }))
+vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
 vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { Univer, IUniverInstanceService, LocaleType, mergeLocales } = await import('@univerjs/core')
@@ -30,8 +30,15 @@ vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { UniverSheetsSortPlugin } = await import('@univerjs/sheets-sort')
   const { UniverFormulaEnginePlugin } = await import('@univerjs/engine-formula')
   const { UniverSheetsFormulaPlugin } = await import('@univerjs/sheets-formula')
+  const { UniverSheetsDataValidationPlugin } = await import('@univerjs/sheets-data-validation')
+  const { UniverSheetsTablePlugin } = await import('@univerjs/sheets-table')
+  const { UniverSheetsConditionalFormattingPlugin } = await import('@univerjs/sheets-conditional-formatting')
   await import('@univerjs/sheets/facade')
   await import('@univerjs/sheets-note/facade')
+  await import('@univerjs/sheets-formula/facade')
+  await import('@univerjs/sheets-data-validation/facade')
+  await import('@univerjs/sheets-table/facade')
+  await import('@univerjs/sheets-conditional-formatting/facade')
   return { createUniver: () => {
     const univer = new Univer({ locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, NoteZhCN) } })
     grid.instances.push(univer)
@@ -40,6 +47,9 @@ vi.mock('./workbook-vendor/grid/create-univer', async () => {
     univer.registerPlugin(UniverSheetsSortPlugin)
     univer.registerPlugin(UniverFormulaEnginePlugin)
     univer.registerPlugin(UniverSheetsFormulaPlugin)
+    univer.registerPlugin(UniverSheetsDataValidationPlugin)
+    univer.registerPlugin(UniverSheetsTablePlugin)
+    univer.registerPlugin(UniverSheetsConditionalFormattingPlugin)
     const api = FUniver.newAPI(univer)
     const create = api.createWorkbook.bind(api)
     api.createWorkbook = data => {

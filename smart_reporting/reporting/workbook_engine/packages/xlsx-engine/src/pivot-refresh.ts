@@ -162,6 +162,9 @@ export async function refreshPivotCaches(sourceBytes: Uint8Array): Promise<Uint8
   const replaced = new Map<string, string>()
   for (const cachePath of cachePaths) {
     const cacheXml = await source.readText(cachePath)
+    // Managed pivots regenerate both grouped raw cache and output atomically below.
+    if(managedTables.some(table=>table.cachePath===cachePath))continue
+    if(/<fieldGroup\b/.test(cacheXml))throw new PivotRefreshError('外部标准分组缓存不能由当前刷新入口重建；原文件已保留。')
     const sourceTag = cacheXml.match(/<worksheetSource\b[^>]*\/>/)?.[0] ?? ''
     const ref = sourceTag.match(/\bref="([^"]+)"/)?.[1]
     const sheet = decodeEntities(sourceTag.match(/\bsheet="([^"]+)"/)?.[1] ?? '')

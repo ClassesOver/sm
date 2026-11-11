@@ -14,6 +14,19 @@ import {
 } from '@univerjs/engine-render'
 
 const store = new Map<string, ReadonlyArray<SparklineSpec>>()
+interface SparklineWorksheet {
+  getCell(row: number, column: number): { v?: unknown } | null | undefined
+}
+const sourceResolvers = new Map<string, (sheetName: string) => SparklineWorksheet | undefined>()
+/** Resolver 绑定具体 unit；由宿主按稳定 sheet 身份解析当前真实 worksheet。 */
+export function setSparklineWorkbookResolver(
+  unitId: string,
+  resolver: ((sheetName: string) => SparklineWorksheet | undefined) | undefined,
+): void {
+  if (resolver) sourceResolvers.set(unitId, resolver)
+  else sourceResolvers.delete(unitId)
+}
+
 
 /// diagnostics handle (same spirit as __sheetsWebRuntime): lets browser tests
 /// verify the store contents and whether draw() fires; no secrets involved
@@ -21,6 +34,7 @@ const store = new Map<string, ReadonlyArray<SparklineSpec>>()
   store,
   draws: 0,
   lastSkip: null as string | null,
+  targetBounds: new Map<string, { startX: number; endX: number; startY: number; endY: number }>(),
 }
 
 /// keyed store: the extension instance is created by the render engine, so
@@ -82,17 +96,21 @@ class SparklineExtension extends SheetExtension {
         if (d) d.lastSkip = `${spec.target}: ${reason}`
       }
       try {
+        const source = spec.sourceSheet === undefined ? worksheet : sourceResolvers.get(worksheet.getUnitId())?.(spec.sourceSheet)
+        if (!source) { noteSkip(`找不到来源工作表：${spec.sourceSheet ?? ''}`); continue }
+        const diagnostics = (window as unknown as { __sheetsWebSparklines?: { lastSource?: unknown } }).__sheetsWebSparklines
+        if (diagnostics) diagnostics.lastSource = { unitId: worksheet.getUnitId(), hostSheetId: worksheet.getSheetId(), ...(spec.sourceSheet !== undefined ? { sourceSheet: spec.sourceSheet } : {}) }
         const bounds = parseRange(spec.source)
         const values: number[] = []
         for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
           for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) {
-            const raw = worksheet.getCell(row, column)
+            const raw = source.getCell(row, column)
             const numeric = numberOrSkip(raw?.v)
             if (numeric !== null) values.push(numeric)
           }
         }
         if (values.length < 2) {
-          noteSkip(`values=${JSON.stringify(values)} raw0=${JSON.stringify(worksheet.getCell(bounds.startRow, bounds.startColumn))}`)
+          noteSkip(`values=${JSON.stringify(values)} raw0=${JSON.stringify(source.getCell(bounds.startRow, bounds.startColumn))}`)
           continue
         }
         // only 1-D sources draw (a single row or column of data)
@@ -102,12 +120,15 @@ class SparklineExtension extends SheetExtension {
 
         const target = parseRange(spec.target)
         const cell = skeleton.getCellWithCoordByIndex(target.startRow, target.startColumn, false)
+        const targetBounds = (window as unknown as { __sheetsWebSparklines?: { targetBounds?: Map<string, { startX: number; endX: number; startY: number; endY: number }> } }).__sheetsWebSparklines?.targetBounds
+        targetBounds?.set(`${worksheet.getUnitId()}::${worksheet.getSheetId()}::${spec.target}`, { startX: cell.startX, endX: cell.endX, startY: cell.startY, endY: cell.endY })
         const x0 = cell.startX + 2
         const x1 = cell.endX - 2
         const y0 = cell.startY + 2
         const y1 = cell.endY - 2
-        const width = Math.max(1, x1 - x0)
-        const height = Math.max(1, y1 - y0)
+        const width = x1 - x0
+        const height = y1 - y0
+        if (width <= 0 || height <= 0) continue
         const min = Math.min(...values)
         const max = Math.max(...values)
         ctx.save()
@@ -134,24 +155,21 @@ class SparklineExtension extends SheetExtension {
             })
           }
         } else {
-          // column / winLoss: bars scaled to the cell; winLoss normalizes
-          // around zero (up = positive, down = negative, magnitude by |v|)
+          // 柱形值域包含零；盈亏图仅按符号各占中线一侧的半高。
+          const isWinLoss = spec.kind === 'winLoss'
           const columnWidth = width / values.length
-          const span = spec.kind === 'winLoss' ? 1 : max - min || 1
-          const baseline =
-            spec.kind === 'winLoss'
-              ? y0 + height / 2
-              : y1 - (height * (max - min)) / span + (height * (max - max)) / span // bottom for plain columns
+          const gap = Math.min(1, columnWidth / 2)
+          const minimum = Math.min(0, min), maximum = Math.max(0, max)
+          const span = maximum - minimum || 1
+          const baseline = isWinLoss ? y0 + height / 2 : y1 - height * (0 - minimum) / span
           values.forEach((value, index) => {
-            const normalized =
-              spec.kind === 'winLoss' ? Math.sign(value) * Math.min(1, Math.abs(value)) : value - min
-            const barHeight = Math.max(1, (height * Math.abs(normalized)) / span)
-            const x = x0 + columnWidth * index + 0.5
+            if (value === 0) return
+            const valueY = isWinLoss ? baseline - Math.sign(value) * height / 2 : y1 - height * (value - minimum) / span
             ctx.fillRect(
-              x,
-              normalized >= 0 ? baseline - barHeight : baseline,
-              Math.max(1, columnWidth - 1),
-              barHeight,
+              x0 + columnWidth * index + gap / 2,
+              Math.min(baseline, valueY),
+              columnWidth - gap,
+              Math.abs(valueY - baseline),
             )
           })
           if (spec.showAxis) {

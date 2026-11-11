@@ -31,13 +31,19 @@ function parseColRanges(colsInner: string): ColRange[] {
   const ranges: ColRange[] = []
   for (const match of colsInner.matchAll(/<col\b([^>]*?)\/>/g)) {
     const attrs = match[1] ?? ''
-    const min = Number(attrs.match(/\bmin="([0-9]+)"/)?.[1] ?? 1)
-    const max = Number(attrs.match(/\bmax="([0-9]+)"/)?.[1] ?? min)
+    const min = Number(attrs.match(/(?:^|\s)min\s*=\s*(["'])([0-9]+)\1/)?.[2])
+    const max = Number(attrs.match(/(?:^|\s)max\s*=\s*(["'])([0-9]+)\1/)?.[2])
+    if (!Number.isInteger(min) || !Number.isInteger(max) || min < 1 || max < min || max > 16384)
+      throw new Error('列定义范围无效，无法安全修改列宽。')
     ranges.push({
       min,
       max,
-      attrs: attrs.replace(/\s*(?:min|max)="[0-9]+"/g, '').trim(),
+      attrs: attrs.replace(/(?:^|\s+)(?:min|max)\s*=\s*(?:"[^"]*"|'[^']*')/g, '').trim(),
     })
+  }
+  const ordered = [...ranges].sort((a, b) => a.min - b.min)
+  for (let index = 1; index < ordered.length; index++) {
+    if (ordered[index]!.min <= ordered[index - 1]!.max) throw new Error('列定义范围重叠，无法安全修改列宽。')
   }
   return ranges
 }
@@ -75,7 +81,10 @@ export function setColumnWidthsXml(worksheetXml: string, entries: readonly Colum
     if (cursor <= range.max) next.push({ ...range, min: cursor, max: range.max })
   }
   for (const [column, width] of requested) {
-    next.push({ min: column, max: column, attrs: `width="${width.toFixed(4)}" customWidth="1"` })
+    // 宽度与可见性/样式/分组相互独立，保留该列在当前结构版本中的其他属性。
+    const original = ranges.find(range => column >= range.min && column <= range.max)?.attrs ?? ''
+    const kept = original.replace(/(?:^|\s+)(?:width|customWidth|bestFit)\s*=\s*(?:"[^"]*"|'[^']*')/g, '').trim()
+    next.push({ min: column, max: column, attrs: `${kept ? kept + ' ' : ''}width="${width.toFixed(4)}" customWidth="1"` })
   }
   ranges = next
 

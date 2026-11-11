@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { Editor, Extension } from '@tiptap/core'
 import { Plugin } from '@tiptap/pm/state'
 import { createRoot } from 'react-dom/client'
@@ -15,7 +15,7 @@ const anchors: DocxAnchor[] = [
   { docxIndex: 1, blockId: 'body-1', expectedObjectSha256: 'sha-1', editable: true },
 ]
 const editors: Editor[] = []
-afterEach(() => { editors.splice(0).forEach(editor => editor.destroy()); document.body.replaceChildren() })
+afterEach(() => { editors.splice(0).forEach(editor => editor.destroy()); document.body.replaceChildren(); vi.unstubAllGlobals() })
 function setup(second: string = '第二段') {
   let baseline: DocxPmNode | undefined
   const rejected: string[] = []
@@ -32,6 +32,38 @@ function setup(second: string = '第二段') {
   return { editor, baseline, rejected }
 }
 const kinds = (editor: Editor) => editor.getJSON().content!.map(node => node.type === 'docTable' ? `table${node.content!.length}x${(node.content![0] as { content?: unknown[] }).content!.length}` : `p:${node.attrs!.docxIndex ?? 'new'}:${(node.content?.[0] as { text?: string } | undefined)?.text ?? ''}`)
+
+it('inserts a selected PNG through the ribbon, replays the save operations and undoes once', async () => {
+  const { editor, baseline, rejected } = setup()
+  vi.stubGlobal('Image', class {
+    naturalWidth = 1240; naturalHeight = 960
+    onload?: () => void
+    set src(_value: string) { queueMicrotask(() => this.onload?.()) }
+  })
+  const host = document.createElement('div'); document.body.append(host)
+  const root = createRoot(host)
+  editor.commands.setTextSelection(3)
+  flushSync(() => root.render(<DocxInsertSource editor={editor} editable anchors={anchors} />))
+  const button = host.querySelector<HTMLButtonElement>('[data-action="insert-picture"]')!
+  expect(button.disabled).toBe(false)
+  flushSync(() => button.click())
+  const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+  const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), ch => ch.charCodeAt(0))
+  Object.defineProperty(input, 'files', { configurable: true, value: [new File([bytes], 'photo.png', { type: 'image/png' })] })
+  flushSync(() => input.dispatchEvent(new Event('change', { bubbles: true })))
+  await vi.waitFor(() => expect(editor.getJSON().content![1].type).toBe('docProtected'))
+  expect(rejected).toEqual([])
+  expect(editor.getJSON().content![1].attrs).toMatchObject({ blockType: 'image', imageWidthPx: 620, imageHeightPx: 480 })
+  const operations = docxOperations(baseline, editor.getJSON() as DocxPmNode, anchors, undefined, editor.schema)
+  expect(operations.find(op => op.kind === 'insertParagraphImage')).toMatchObject({ image: { mime: 'image/png', widthPx: 620, heightPx: 480 } })
+  const restored = replayDocxOperations(baseline, operations, anchors, undefined, editor.schema)
+  expect(docxOperations(baseline, restored, anchors, undefined, editor.schema)).toEqual(operations)
+  editor.commands.undo()
+  expect(editor.getJSON()).toEqual(baseline)
+  editor.commands.redo()
+  expect(editor.getJSON().content![1].type).toBe('docProtected')
+  root.unmount()
+})
 
 it('enforces the shared size budget', () => {
   expect(newTableSize({ rows: 100, cols: 10 })).toEqual({ rows: 100, cols: 10 })

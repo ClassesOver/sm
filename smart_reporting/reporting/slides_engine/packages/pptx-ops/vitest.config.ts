@@ -20,7 +20,7 @@ export default defineConfig({
         '../pptx-engine/src/chart-workbook.ts',
       ),
       '@genoffice/pptx-engine': resolve(here, '../pptx-engine/src/index.ts'),
-      '@genoffice/docx-engine/math': resolve(here, '../docx-engine/src/math.ts'),
+      '@genoffice/docx-engine/math': resolve(here, '../../../doc_engine/packages/docx-engine/src/math.ts'),
     },
   },
   test: {

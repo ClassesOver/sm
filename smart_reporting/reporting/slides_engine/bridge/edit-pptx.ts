@@ -1,9 +1,20 @@
+import {inspectSlideNotes,prepareNotesEdits,applyNotesEdits,type NotesEdit} from './pptx-notes.ts'
+import {inspectLinkCapabilities,prepareLinkEdits,applyLinkEdits,type LinkEdit} from './pptx-links.ts'
+import {inspectClipboardCapabilities,prepareClipboardPastes,applyClipboardPastes,type ClipboardPaste} from './pptx-clipboard.ts'
+import {inspectBrushSource} from './pptx-brush-source.ts'
+import { inspectGroupCapabilities, validateGroupEdits, applyGroupEdits, type GroupEdit } from './pptx-groups.ts'
+import { validateElementOrders, applyElementOrders, type ElementOrder } from './pptx-element-order.ts'
 import { patchTransitionPreservingMetadata, transitionEditAvailability } from './pptx-transition.ts'
+import {inspectClassicComments,validateClassicCommentEdits,applyClassicCommentEdits,type ClassicCommentEdit} from './pptx-comments.ts'
+import { inspectPictureImages, validatePictureInsertions, validatePictureReplacements, applyPictureReplacements, type PictureInsertion, type PictureReplacement } from './pptx-images.ts'
+import { inspectChartEdit, validateChartEdits, applyChartEdits, type NativeChartEdit } from './pptx-chart-edit.ts'
+import { inspectPictureCrop, validatePictureCrops, applyPictureCrops, type PictureCrop } from './pptx-picture-crop.ts'
+import { findReplaceEditable } from './pptx-find-replace.ts'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -47,6 +58,9 @@ const validTiming = (value: unknown) => typeof value === 'number' && Number.isIn
 
 type Input = {
   action: 'inspect' | 'edit'
+  commentEdits?: ClassicCommentEdit[]
+  /** 仅由 Python 宿主注入，外部 journal 不接受作者。 */
+  commentAuthor?: '用户'
   input: string
   output?: string
   edits?: TextEdit[]
@@ -87,6 +101,16 @@ type Input = {
     geometry: { x: number; y: number; width: number; height: number }
     descr?: string
   }[]
+  nativeImages?: PictureInsertion[]
+  pictureReplacements?: PictureReplacement[]
+  pictureCrops?: PictureCrop[]
+  elementOrders?: ElementOrder[]
+  notesEdits?: NotesEdit[]
+  linkEdits?: LinkEdit[]
+  clipboardPastes?: ClipboardPaste[]
+  groupEdits?: GroupEdit[]
+  chartEdits?: NativeChartEdit[]
+  hiddenSlides?: { slideIndex: number; hidden: boolean }[]
   transitions?: { slideIndex: number; kind: SlideTransitionKind }[]
   animations?: {
     slideIndex: number
@@ -292,6 +316,8 @@ function cellShadingState(table: TableElement, slidePath: string) {
 const withoutCellProperties = (xml: string) => xml.replace(/<a:tcPr[^>]*\/>|<a:tcPr[^>]*>[\s\S]*?<\/a:tcPr>/g,'')
 
 if (request.action === 'inspect') {
+  const comments=inspectClassicComments(opened)
+  const pictureImages=inspectPictureImages(opened)
   process.stdout.write(JSON.stringify({
     size: opened.deck.size,
     masterParts: listMasterParts(opened.archive),
@@ -299,8 +325,11 @@ if (request.action === 'inspect') {
     // 现有分节（p14:sectionLst）：节名与所含页（来源页序号）
     sections: getSections(opened).map(section => ({ name: section.name, slideIndices: section.slideIndices })),
     slides: opened.deck.slides.map((slide, slideIndex) => ({
+      hidden: getSlideHidden(slide),
       headerFooter: readHeaderFooter(slide),
       slideIndex,
+      comments:comments[slideIndex],
+      ...inspectSlideNotes(opened,slideIndex),
       background: slide.background?.type === 'solid' ? slide.background.color : null,
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
@@ -325,6 +354,16 @@ if (request.action === 'inspect') {
         name: element.name ?? '',
         text: textOf(element),
         ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element), ...cellShadingState(element,slide.path) } : {}),
+        ...(element.type === 'picture' ? (() => { const image=pictureImages.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id); return image ? {pictureReplaceable:image.replaceable,pictureReplaceReason:image.readOnlyReason,pictureSha256:image.sha256,pictureSize:image.size} : {} })() : {}),
+        ...(element.type === 'picture' ? inspectPictureCrop(opened,slideIndex,element.id) : {}),
+        ...inspectGroupCapabilities(opened, slideIndex, element.id),
+        ...inspectLinkCapabilities(opened,slideIndex,element.id),
+        ...inspectClipboardCapabilities(opened,slideIndex,element.id),
+        brushSource:inspectBrushSource(element),
+        orderEditable: ['text','shape','picture'].includes(element.type) && !isConnectorXml(element.anchor.originalXml),
+        arrangeEditable: ['text','shape','picture'].includes(element.type) && !isConnectorXml(element.anchor.originalXml),
+        ...(element.type === 'chart' ? inspectChartEdit(opened,slideIndex,element.id) : {}),
+        ...((element.type === 'text'||element.type === 'shape') ? {findReplaceEditable:findReplaceEditable(element)} : {}),
         // 表格单元格文字（合并单元格为 null），供编辑器单元格网格使用
         ...(element.type === 'table' ? { tableCells: (element as unknown as { rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] }).rows.map(row => row.map(cell => cell.merged ? null : (cell.text?.paragraphs ?? []).map(paragraph => paragraph.runs.map(run => run.text).join('')).join('\n'))) } : {}),
         ...(element.type === 'text' || element.type === 'shape' ? (() => {
@@ -383,6 +422,30 @@ if (request.action === 'inspect') {
   // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
   const originalSlides = [...opened.deck.slides]
   const slideCount = originalSlides.length
+  const commentSourcePaths=originalSlides.map(slide=>slide.path)
+  const notesEdits=prepareNotesEdits(opened,request.notesEdits,{deletedSlides:request.deletedSlides,newSlides:request.newSlides})
+  const linkEdits=prepareLinkEdits(opened,request.linkEdits,{deletedSlides:request.deletedSlides,deletions:request.deletions,groupEdits:request.groupEdits,newSlides:request.newSlides})
+  const clipboardPastes=prepareClipboardPastes(opened,request.clipboardPastes,{deletedSlides:request.deletedSlides,deletions:request.deletions,groupEdits:request.groupEdits,newSlides:request.newSlides,resetLayouts:request.resetLayouts,slideLayouts:request.slideLayouts,slideSize:request.slideSize,theme:request.theme,headerFooter:request.headerFooter})
+  const groupEdits=validateGroupEdits(opened,request.groupEdits,{deletedSlides:request.deletedSlides})
+  const groupedPages=new Set(groupEdits.map(item=>item.slideIndex))
+  const groupPaths=groupEdits.map(item=>originalSlides[item.slideIndex]!.path)
+  if(groupEdits.length){
+    if(groupPaths.some(path=>originalSlides.filter(slide=>slide.path===path).length!==1))throw Error('group_edit_source_ambiguous')
+    if(request.theme!==undefined||request.slideSize!==undefined||request.headerFooter!==undefined)throw Error('group_edit_conflict')
+    for(const [key,records] of Object.entries<unknown>(request)){
+      if(key==='groupEdits'||key==='order'||!Array.isArray(records))continue
+      if((key==='deletedSlides'||key==='resetLayouts')&&records.some(index=>groupedPages.has(index)))throw Error('group_edit_conflict')
+      if(key==='newSlides'&&records.some(item=>item&&typeof item==='object'&&(groupedPages.has(item.duplicateOf)||groupedPages.has(item.layoutFrom))))throw Error('group_edit_conflict')
+      if(records.some(item=>item&&typeof item==='object'&&groupedPages.has(item.slideIndex)))throw Error('group_edit_conflict')
+    }
+  }
+  // 层级按完整来源顺序先写入，随后复制/重置仍沿用正确的 spTree 顺序。
+  const elementOrders=validateElementOrders(opened,request.elementOrders,{deletedSlides:request.deletedSlides})
+  applyElementOrders(opened,elementOrders)
+  const commentEdits=validateClassicCommentEdits(opened,request.commentEdits,request.commentAuthor,request.deletedSlides)
+  // 修改来源图表后再复制页面，避免副本共享部件使同批来源编辑被误拒绝。
+  const chartEdits=validateChartEdits(opened,request.chartEdits,{deletedSlides:request.deletedSlides, deletions:request.deletions})
+  applyChartEdits(opened,chartEdits)
   // 新建页最先创建（副本因此复制已保存内容），逐个追加到末尾：来源页索引与新页编号（来源页数 + k）均不变；
   // 之后所有按索引的步骤只接受来源页，order（长度 = 来源页数 + 新页数）决定最终位置。
   const newSlideSource = (item: unknown) => item && typeof item === 'object' ? ('duplicateOf' in item ? (item as { duplicateOf: unknown }).duplicateOf : (item as { layoutFrom?: unknown }).layoutFrom) : undefined
@@ -407,8 +470,15 @@ if (request.action === 'inspect') {
   const resetLayouts = request.resetLayouts ?? []
   if (!Array.isArray(resetLayouts) || new Set(resetLayouts).size !== resetLayouts.length || resetLayouts.some(index => !validSlideIndex(index, slideCount))) throw new Error('reset_layouts_invalid')
   for (const index of resetLayouts) {
+    const sourceIds = new Map(originalSlides[index]!.elements.map(element => [elementSpid(element), element.id]))
     const reset = resetSlideLayout(opened, index)
     if (!reset) throw new Error('reset_layout_failed')
+    // 固定引擎重建整页时生成新模型 ID；同批操作仍绑定来源 OOXML 对象身份。
+    for (const element of reset.elements) {
+      const spid = elementSpid(element)
+      const sourceId = spid === null ? undefined : sourceIds.get(spid)
+      if (sourceId) element.id = sourceId
+    }
     originalSlides[index] = reset
   }
   const chartKinds = ['bar', 'bar3D', 'barStacked', 'barPercentStacked', 'barH', 'line', 'area', 'pie', 'pie3D', 'doughnut', 'scatter', 'radar', 'comboBarLine']
@@ -468,8 +538,15 @@ if (request.action === 'inspect') {
   const deletedSlides = request.deletedSlides ?? []
   if (!Array.isArray(deletedSlides) || new Set(deletedSlides).size !== deletedSlides.length || deletedSlides.some(index => !validSlideIndex(index, slideCount))) throw new Error('deleted_slides_invalid')
   if (deletedSlides.length && !request.order) throw new Error('deleted_slides_require_order')
+  const hiddenSlides = request.hiddenSlides ?? []
+  const hiddenTargets = new Set<number>()
+  if (!Array.isArray(hiddenSlides) || hiddenSlides.length > 500) throw new Error('hidden_slides_invalid')
+  for (const item of hiddenSlides) {
+    if (!item || Object.keys(item).sort().join() !== 'hidden,slideIndex' || !validSlideIndex(item.slideIndex, slideCount) || typeof item.hidden !== 'boolean' || hiddenTargets.has(item.slideIndex)) throw new Error('hidden_slides_invalid')
+    hiddenTargets.add(item.slideIndex)
+  }
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.edits, request.images, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.pictureReplacements, request.pictureCrops, request.chartEdits, request.hiddenSlides, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -482,6 +559,13 @@ if (request.action === 'inspect') {
     deleted.add(key)
   }
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
+  const pictureReplacements=request.pictureReplacements??[]
+  const pictureCrops=validatePictureCrops(opened,request.pictureCrops,{deletedSlides,deletions,pictureReplacements})
+  validatePictureInsertions(opened,request.nativeImages??[])
+  validatePictureReplacements(opened,pictureReplacements)
+  for(const item of [...pictureReplacements,...chartEdits]) if(touchesDeleted(item.slideIndex,item.elementId)) throw new Error('media_edit_target_deleted')
+  const pictureKeys=new Set(pictureReplacements.map(item=>`${item.slideIndex}:${item.elementId}`))
+  if(chartEdits.some(item=>pictureKeys.has(`${item.slideIndex}:${item.elementId}`))) throw new Error('media_edit_target_conflict')
   const tableStructures=request.tableStructures ?? [], structuralSlides=new Set<number>()
   if (!Array.isArray(tableStructures) || tableStructures.length>100) throw new Error('table_structures_invalid')
   for (const item of tableStructures) {
@@ -633,6 +717,7 @@ if (request.action === 'inspect') {
     if ((box.italic !== undefined && typeof box.italic !== 'boolean') || (box.wordArt !== undefined && typeof box.wordArt !== 'boolean')
       || (box.outline !== undefined && (!box.outline || typeof box.outline !== 'object' || Object.keys(box.outline).sort().join() !== 'color,widthEmu' || typeof box.outline.color !== 'string' || !colorPattern.test(box.outline.color) || !Number.isInteger(box.outline.widthEmu) || box.outline.widthEmu < 1 || box.outline.widthEmu > 254000))) throw new Error('textbox_wordart_invalid')
   }
+  applyPictureCrops(opened,pictureCrops)
   for (const edit of request.edits ?? []) {
     if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
       throw new Error('element_edit_invalid')
@@ -645,8 +730,10 @@ if (request.action === 'inspect') {
       throw new Error('slide_index_invalid')
     }
     const element = opened.deck.slides[edit.slideIndex]!.elements.find((candidate) => candidate.id === edit.elementId)
-    if (!element || (element.type !== 'text' && element.type !== 'shape')) throw new Error('element_not_editable')
+    if (!element || !['text','shape','picture'].includes(element.type)) throw new Error('element_not_editable')
+    if (element.type === 'picture' && Object.keys(edit).some(key => !['slideIndex','elementId','geometry'].includes(key))) throw new Error('element_not_editable')
     if (edit.text !== undefined) {
+      if (element.type !== 'text' && element.type !== 'shape') throw new Error('element_not_editable')
       if (!element.text?.paragraphs.length) throw new Error('element_text_missing')
       element.text.paragraphs = applyEditParagraphs(
         element.text.paragraphs,
@@ -656,6 +743,7 @@ if (request.action === 'inspect') {
     }
     if (edit.geometry) {
       const { x, y, width, height } = edit.geometry
+      if (![x,y,width,height].every(value=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=100000)||width<=0||height<=0) throw new Error('element_geometry_invalid')
       element.transform.offset = {
         x: Math.round(x * 9525),
         y: Math.round(y * 9525),
@@ -663,9 +751,11 @@ if (request.action === 'inspect') {
         cy: Math.round(height * 9525),
       }
       element.dirtyTransform = true
+      updateConnectorsForMoved(opened.deck.slides[edit.slideIndex]!,[element.id])
     }
   }
-  for (const image of request.images ?? []) {
+  applyPictureReplacements(opened,pictureReplacements)
+  for (const image of [...(request.images ?? []), ...(request.nativeImages ?? [])]) {
     if (!Number.isInteger(image.slideIndex) || image.slideIndex < 0 || image.slideIndex >= slideCount) {
       throw new Error('image_slide_index_invalid')
     }
@@ -679,11 +769,12 @@ if (request.action === 'inspect') {
       bytes: new Uint8Array(content),
       ext: image.extension,
       offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
-      name: 'AI 生成配图',
+      name: image.descr === 'AI 生成配图' ? 'AI 生成配图' : '插入的图片',
       descr: image.descr,
     })
     if (!added) throw new Error('image_format_unsupported')
   }
+  for (const item of hiddenSlides) setSlideHidden(originalSlides[item.slideIndex]!, item.hidden)
   for (const transition of request.transitions ?? []) {
     if (!Number.isInteger(transition.slideIndex) || transition.slideIndex < 0 || transition.slideIndex >= slideCount) {
       throw new Error('transition_slide_index_invalid')
@@ -943,6 +1034,17 @@ if (request.action === 'inspect') {
     applyHeaderFooter(opened, { footer: hf.footer?.trim() || null, slideNum: hf.slideNum, date: hf.date?.trim() || null, dateAuto: hf.dateAuto })
   }
   if (!request.output) throw new Error('output_path_required')
+  // 页面可能已重排；组合末尾按来源部件定位，重建ID后不再执行旧对象编辑。
+  const mappedGroupEdits=groupEdits.map((item,index)=>{
+    const matches=opened.deck.slides.flatMap((slide,slideIndex)=>slide.path===groupPaths[index]?[slideIndex]:[])
+    if(matches.length!==1)throw Error('group_edit_source_missing_or_ambiguous')
+    return {...item,slideIndex:matches[0]!}
+  })
+  applyLinkEdits(opened,linkEdits)
+  applyClipboardPastes(opened,clipboardPastes)
+  applyGroupEdits(opened,mappedGroupEdits)
+  applyClassicCommentEdits(opened,commentEdits,commentSourcePaths,request.commentAuthor)
+  applyNotesEdits(opened,notesEdits)
   const bytes = await savePptx(opened)
   await writeFile(request.output, bytes)
   let issues: { page: number; message: string }[]
