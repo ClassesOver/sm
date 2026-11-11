@@ -6,6 +6,7 @@
 
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { assemblePackage, createBufferEntrySource } from './zip'
+import { normalizeEditableRangeRef, readProtectedRanges, readSheetProtection } from './protection-read'
 
 export class SheetProtectionError extends Error {}
 
@@ -110,20 +111,29 @@ export function applyProtectedRanges(
   ranges: readonly ProtectedRangeState[],
 ): string {
   const existing = worksheetXml.match(PROTECTED_RANGES_PATTERN)
+  const skeleton = existing?.[0].replace(/<protectedRange\b[^>]*(?:\/>|>[\s\S]*?<\/protectedRange>)/g, '')
   // securityDescriptor carries per-user permissions (attribute or child
   // element form); rewriting name+sqref only would silently fail open.
-  if (existing && /\b(?:password|hashValue)="|securityDescriptor/.test(existing[0])) {
+  if ((!existing && /<(?:\w+:)protectedRanges\b/.test(worksheetXml)) || existing &&
+      (!/^<protectedRanges\s*(?:\/>|>\s*<\/protectedRanges>)$/.test(skeleton!) || readProtectedRanges(existing[0]).some(range => range.readonlyReason))) {
     throw new SheetProtectionError(
       'This sheet has password- or permission-protected edit ranges — editing them is not supported.',
     )
   }
+  const names = new Set<string>()
+  const normalized = ranges.map(range => {
+    const name = range.name.trim(), key = name.toLowerCase()
+    if (!name || name.length > 255 || /[\u0000-\u001f]/.test(name) || names.has(key)) throw new SheetProtectionError('Allow-edit range names must be non-empty and unique (maximum 255 characters).')
+    names.add(key)
+    return { name, sqref: normalizeEditableRangeRef(range.sqref) }
+  })
   const stripped =
     existing && existing.index !== undefined
       ? worksheetXml.slice(0, existing.index) +
         worksheetXml.slice(existing.index + existing[0].length)
       : worksheetXml
   if (ranges.length === 0) return stripped
-  const body = ranges
+  const body = normalized
     .map(
       (range) =>
         `<protectedRange sqref="${escapeAttr(range.sqref)}" name="${escapeAttr(range.name)}"/>`,
@@ -133,8 +143,8 @@ export function applyProtectedRanges(
   // Schema order: protectedRanges follows sheetProtection (or sheetCalcPr/
   // sheetData when absent) and precedes scenarios/autoFilter.
   const anchor =
-    stripped.match(/<sheetProtection\b[^>]*\/?>/) ??
-    stripped.match(/<sheetCalcPr\b[^>]*\/?>/) ??
+    stripped.match(ELEMENT_PATTERN) ??
+    stripped.match(/<sheetCalcPr\b[^>]*\/>|<sheetCalcPr\b[^>]*>\s*<\/sheetCalcPr>/) ??
     stripped.match(/<\/sheetData>|<sheetData\b[^>]*\/>/)
   if (!anchor || anchor.index === undefined) {
     throw new SheetProtectionError('Worksheet has no sheetData element.')
@@ -155,6 +165,15 @@ async function worksheetPathFor(
     throw new SheetProtectionError(`Sheet "${sheetName}" was not found.`)
   }
   return resolveWorksheetPath(source, element.relationshipId)
+}
+
+/** 定义区域需先撤销保护；不改写表内其他 OOXML 部件。 */
+export async function setSheetEditableRanges(sourceBytes: Uint8Array, sheetName: string, ranges: readonly ProtectedRangeState[]): Promise<Uint8Array> {
+  const source = await createBufferEntrySource(sourceBytes), path = await worksheetPathFor(source, sheetName)
+  const original = await source.readText(path)
+  if (readSheetProtection(original)?.protected) throw new SheetProtectionError('请先撤销工作表保护，再定义允许编辑区域')
+  const xml = applyProtectedRanges(original, ranges)
+  return (await assemblePackage(sourceBytes, { replaced: new Map([[path, xml]]), added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [], touchedEntries: [path] })).buffer
 }
 
 /// Toggles one sheet's protection, addressed by sheet name.

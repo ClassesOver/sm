@@ -55,7 +55,8 @@ export function installCalculation(runtime: CalculationRuntime, formulaView: (sh
       if (!formulaView(location.subUnitId)) return next(cell)
       const formula = (location.rawData as { f?: unknown } | undefined)?.f
       if (typeof formula !== 'string' || formula === '') return next(cell)
-      return { ...(cell ?? {}), v: formula, t: CellValueType.STRING, p: null } as never
+      // 公式文本先于数字格式注入，仍经过主题/条件格式等后续显示拦截器。
+      return next({ ...(cell ?? {}), v: formula, t: CellValueType.STRING, p: null } as never)
     },
   })
   const context = injector.get<IContextService>(IContextService)

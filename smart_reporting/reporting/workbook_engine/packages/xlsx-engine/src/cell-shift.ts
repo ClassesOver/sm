@@ -7,7 +7,7 @@
 /// formulas, other sheets' qualified formulas, defined names, chart series and
 /// notes follow; merges shift when they lie wholly inside the band. Anything
 /// this build cannot move cell-by-cell fails closed when it touches the
-/// shifted region: tables, autoFilter, validations, conditional formats,
+/// shifted region: tables, autoFilter, validations,
 /// hyperlinks, drawings/OLE anchors, shared/array formula groups and merges
 /// straddling the band — Excel refuses most of these too.
 
@@ -25,6 +25,8 @@ import {
   type ShiftSpec,
 } from './structural'
 import { decodeXmlText, escapeXmlText } from './xml'
+import {shiftConditionalFormattingXml,overlayConditionalFormattingXml} from './conditional-formatting-structure-xml'
+import {parseThemePalette} from './style-read'
 import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
 
 export type CellShiftDirection = 'right' | 'down' | 'left' | 'up'
@@ -79,7 +81,7 @@ function assertRangedFeaturesClear(worksheetXml: string, region: Area): void {
     [/<dataValidation\b[^>]*\bsqref="([^"]+)"/g, '数据验证位于移位区域'],
     [/<conditionalFormatting\b[^>]*\bsqref="([^"]+)"/g, '条件格式位于移位区域'],
     [/<hyperlink\b[^>]*\bref="([^"]+)"/g, '超链接位于移位区域'],
-    [/<(?:x14:)?sqref>([^<]+)<\/(?:x14:)?sqref>/g, '扩展条件格式/数据验证位于移位区域'],
+    [/<(?:x14:|xm:)?sqref>([^<]+)<\/(?:x14:|xm:)?sqref>/g, '扩展条件格式/数据验证位于移位区域'],
   ]
   for (const [pattern, reason] of checks) {
     for (const match of worksheetXml.matchAll(pattern)) {
@@ -232,7 +234,19 @@ export async function applyCellShift(sourceBytes: Uint8Array, sheetName: string,
       if (!tableArea || intersects(tableArea, region)) refuse('表格位于移位区域')
     }
   }
-  assertRangedFeaturesClear(targetXml, region)
+  // Verify and derive CF from actual source XML before lifting only its
+  // intersection guard; DV/filter/object and unknown-source protections stay.
+  const cfStyles=await source.has('xl/styles.xml')?await source.readText('xl/styles.xml'):'<styleSheet/>'
+  const cfTheme=await source.has('xl/theme/theme1.xml')?parseThemePalette(await source.readText('xl/theme/theme1.xml')):undefined
+  const cfPlans=new Map<string,string>()
+  for(const part of parts){
+    const original=await source.readText(part.path)
+    if(!/<conditionalFormatting\b/.test(original))continue
+    try{cfPlans.set(part.path,shiftConditionalFormattingXml(original,cfStyles,cfTheme,part.name,sheetName,spec,{geometry:'cells'}))}
+    catch(error){refuse('条件格式无法完整迁移：'+(error as Error).message)}
+  }
+  const featureGuard=cfPlans.has(target.path)?targetXml.replace(/<conditionalFormatting\b[^>]*(?:\/>|>[\s\S]*?<\/conditionalFormatting>)/g,'').replace(/<x14:conditionalFormatting\b[^>]*>[\s\S]*?<\/x14:conditionalFormatting>/g,''):targetXml
+  assertRangedFeaturesClear(featureGuard, region)
   if (/<oleObjects\b|<controls\b/.test(targetXml)) assertAnchorsClear(targetXml, region, '嵌入对象或控件位于移位区域')
   for (const drawingPath of await relatedPaths(source, targetXml, target.path, 'drawing')) {
     assertAnchorsClear(await source.readText(drawingPath), region, '图表、图片或形状锚定在移位区域')
@@ -272,6 +286,12 @@ export async function applyCellShift(sourceBytes: Uint8Array, sheetName: string,
   }
   const nextWorkbookXml = shiftDefinedNames(workbookXml, spec, sheetName)
   if (nextWorkbookXml !== workbookXml) { replaced.set('xl/workbook.xml', nextWorkbookXml); touchedEntries.push('xl/workbook.xml') }
+
+  for(const [path,planned]of cfPlans){
+    const before=replaced.get(path)??await source.readText(path)
+    const next=overlayConditionalFormattingXml(before,planned)
+    if(next!==before){replaced.set(path,next);if(!touchedEntries.includes(path))touchedEntries.push(path)}
+  }
 
   const plan: MutationPlan = { replaced, added: new Map(), addedBinary: new Map(), removedEntries: notePlan.removedEntries, addedEntries: [], touchedEntries }
   return (await assemblePackage(sourceBytes, plan)).buffer

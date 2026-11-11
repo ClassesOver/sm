@@ -17,6 +17,7 @@
   "dependencies": {
     "jszip": "3.10.2",
     "numfmt": "3.2.6",
+    "saxes": "^6.0.0",
     "zod": "4.6.5"
   },
   "devDependencies": {

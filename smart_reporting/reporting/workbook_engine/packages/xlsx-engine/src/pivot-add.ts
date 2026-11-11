@@ -3,12 +3,14 @@
 /// max/min), pre-populated cache records (so LibreOffice/WPS show values
 /// without a refresh), full package wiring. Multi-level axes use tabular
 /// layout with OOXML r-repeat axis items, mirroring genoffice's
-/// buildAxisItemsXml carry rules. Grouping, calculated fields, and filters
-/// stay desktop-only and are refused by the input shape.
+/// buildAxisItemsXml carry rules. Calculated fields and report filters are
+/// persisted in OOXML; grouping metadata additionally uses a private extension.
 
 import { columnLabel, parseRange, parseAddress } from './cell-address'
+import { readSheetTables } from './table-read'
 import { z } from 'zod'
 import { decodeXmlText, readXmlAttribute } from './xml'
+import { standardPivotGrouping, type StandardPivotGrouping, type PivotGroupingPersistence } from './pivot-standard-grouping'
 import { groupLabel, isValidGrouping, type PivotFieldGrouping } from './pivot-grouping'
 import type { PivotFilterDef } from './pivot-filters'
 import { formatPivotFormula, parsePivotFormula } from './pivot-formula'
@@ -74,6 +76,7 @@ export interface PivotAddition {
   readonly worksheetSheetName: string
   /// Name of the source sheet.
   readonly sourceSheetName: string
+  readonly sourceTableName?: string | undefined
   readonly sourceArea: PivotArea
   /// Baked output area, headers and grand totals included.
   readonly location: PivotArea
@@ -84,6 +87,9 @@ export interface PivotAddition {
   readonly rowFieldIndices: readonly number[]
   /// Column dimension field indices, outer level first (0+ levels).
   readonly columnFieldIndices?: readonly number[] | undefined
+  readonly pageFilters?: readonly {readonly fieldIndex:number;readonly selected?:readonly string[]|undefined}[] | undefined
+  readonly pageLevelItems?: readonly (readonly string[])[] | undefined
+  readonly pageHiddenItems?: readonly (readonly number[])[] | undefined
   /// Deduplicated members per row level (level order).
   readonly rowLevelItems: readonly (readonly string[])[]
   /// Row-by-row layout of the data rows (excluding header + grand total).
@@ -97,12 +103,16 @@ export interface PivotAddition {
   /// member table holds group labels and raw source values are grouped by the
   /// same rule before records are written.
   readonly groupings?: readonly PivotAddGrouping[] | undefined
+  readonly standardGroupings?: readonly StandardPivotGrouping[] | undefined
+  readonly groupingPersistence?: readonly PivotGroupingPersistence[] | undefined
   /// Value/label filters: applied to row/column dimension fields; filtered-out
   /// members are marked hidden via rowHiddenItems/colHiddenItems, and layout
   /// lines exclude them.
   readonly filters?: readonly PivotFilterDef[] | undefined
   /// Filter-hidden member indices per row level (rowLevelItems order).
   readonly rowHiddenItems?: readonly (readonly number[])[] | undefined
+  /** Explicit user selection, kept separate from filter-derived hidden indices. */
+  readonly manualHiddenMembers?: readonly {readonly fieldIndex:number;readonly members:readonly string[]}[] | undefined
   /// Filter-hidden member indices per column level (colLevelItems order).
   readonly colHiddenItems?: readonly (readonly number[])[] | undefined
   /// Output matrix dimensions, inferred by buildPivotLayout when absent.
@@ -135,7 +145,7 @@ const AGG_CAPTIONS: Record<PivotValueSpec['agg'], string> = {
 const AGG_SUBTOTALS: Record<PivotValueSpec['agg'], string | null> = {
   sum: null,
   count: 'count',
-  average: 'avg',
+  average: 'average',
   max: 'max',
   min: 'min',
 }
@@ -180,6 +190,7 @@ function additionSpec(addition: PivotAddition): PivotLayoutSpec {
     ...(addition.columnFieldIndices && addition.columnFieldIndices.length > 0
       ? { columnField: addition.columnFieldIndices.map(field) }
       : {}),
+    pageFilters:addition.pageFilters?.map(({fieldIndex,selected})=>({field:field(fieldIndex),selected})),
     values: addition.values.map((value) => ({
       field:
         value.formula === undefined ? field(value.fieldIndex) : (value.calcName ?? ''),
@@ -240,6 +251,8 @@ function normalizedAddition(
     rowLevelItems: definition.rowLevelItems,
     rowLines: definition.rowLines,
     rowHiddenItems: definition.rowHiddenItems,
+    manualHiddenMembers:definition.manualHiddenMembers,
+    pageFilters:definition.pageFilters,pageLevelItems:definition.pageLevelItems,pageHiddenItems:definition.pageHiddenItems,
     values: definition.values,
   }
   if (columnIndices.length > 0) {
@@ -290,12 +303,20 @@ async function computePivot(
   workbookXml: string,
   addition: PivotAddition,
 ): Promise<ComputedPivot> {
+  const date1904=['1','true'].includes(readXmlAttribute(workbookXml.match(/<workbookPr\b[^>]*>/)?.[0]??'','date1904')??'')
+  addition={...addition,groupings:addition.groupings?.map(rule=>rule.kind==='date'?{...rule,date1904}:rule)}
   const element = parseSheetElements(workbookXml).find(
     (entry) => entry.name === addition.sourceSheetName,
   )
   if (!element?.relationshipId) throw new PivotAddError(`Sheet "${addition.sourceSheetName}" was not found.`)
   const worksheetPath = await resolveWorksheetPath(source, element.relationshipId)
   const worksheetXml = await source.readText(worksheetPath)
+  if(addition.sourceTableName){
+    const tables=await readSheetTables(source,worksheetPath,worksheetXml)
+    const tableName=addition.sourceTableName.toLowerCase(),table=tables.tables.find(table=>table.name.toLowerCase()===tableName||table.displayName.toLowerCase()===tableName)
+    if(tables.tablesReadOnlyReason||!table||table.headerRowCount!==1)throw new PivotAddError('Named pivot source table is missing or unsupported.')
+    addition={...addition,sourceTableName:table.name,sourceArea:{...table.range,endRow:table.range.endRow-table.totalsRowCount}}
+  }
   const grid = await readSourceAreaGrid(
     source,
     worksheetXml,
@@ -310,10 +331,12 @@ async function computePivot(
       ...(addition.colLevelItems ? { colLevelItems: addition.colLevelItems } : {}),
     },
     hiddenMembers: {
-      row: hiddenLabels(addition.rowHiddenItems, addition.rowLevelItems),
-      column: hiddenLabels(addition.colHiddenItems, addition.colLevelItems ?? []),
+      row: addition.manualHiddenMembers?addition.rowFieldIndices.map(index=>[...(addition.manualHiddenMembers!.find(entry=>entry.fieldIndex===index)?.members??[])]):hiddenLabels(addition.rowHiddenItems, addition.rowLevelItems),
+      column: addition.manualHiddenMembers?(addition.columnFieldIndices??[]).map(index=>[...(addition.manualHiddenMembers!.find(entry=>entry.fieldIndex===index)?.members??[])]):hiddenLabels(addition.colHiddenItems, addition.colLevelItems ?? []),
     },
   })
+  const grouped=(addition.groupings??[]).map(({fieldIndex,...rule})=>standardPivotGrouping(fieldIndex,rule,grid.slice(1).map(row=>row[fieldIndex])))
+  addition={...addition,standardGroupings:grouped.flatMap(entry=>entry.standard?[entry.standard]:[]),groupingPersistence:grouped.map(entry=>entry.persistence)}
   const normalized = normalizedAddition(addition, layout)
   validateAddition(normalized, true)
   return {
@@ -336,12 +359,14 @@ const pivotAreaSchema = z.object({
 }).refine((area) => area.endRow >= area.startRow && area.endColumn >= area.startColumn)
 const memberTablesSchema = z.array(z.array(z.string()).max(10000)).max(200)
 const pivotStateSchema = z.object({
-  worksheetSheetName: z.string().min(1), sourceSheetName: z.string().min(1),
+  worksheetSheetName: z.string().min(1), sourceSheetName: z.string().min(1), sourceTableName: z.string().min(1).optional(),
   sourceArea: pivotAreaSchema, location: pivotAreaSchema, name: z.string().min(1),
   fieldNames: z.array(z.string().min(1)).min(1).max(200),
   rowFieldIndices: z.array(z.number().int().nonnegative()).min(1).max(200),
   columnFieldIndices: z.array(z.number().int().nonnegative()).max(200).optional(),
   rowLevelItems: memberTablesSchema, colLevelItems: memberTablesSchema.optional(),
+  pageFilters:z.array(z.object({fieldIndex:z.number().int().nonnegative(),selected:z.array(z.string()).optional()})).max(200).optional(),
+  pageLevelItems:memberTablesSchema.optional(),pageHiddenItems:z.array(z.array(z.number().int().nonnegative())).optional(),
   rowLines: z.array(z.object({ t: z.enum(['data', 'default']), members: z.array(z.number().int().nonnegative()) })).max(20000),
   colLines: z.array(z.object({ t: z.enum(['data', 'default']), members: z.array(z.number().int().nonnegative()) })).max(1000).optional(),
   values: z.array(z.object({
@@ -350,8 +375,10 @@ const pivotStateSchema = z.object({
     showDataAs: z.enum(['percentOfTotal', 'percentOfRow', 'percentOfCol']).optional(),
     formula: z.string().optional(), calcName: z.string().optional(),
   })).min(1).max(8),
+  standardGroupings:z.array(z.object({fieldIndex:z.number().int().nonnegative(),groupItems:z.array(z.string()).max(10002),rawItems:z.array(z.object({type:z.enum(['n','d']),value:z.string(),source:z.number()})).max(10000),range:z.object({groupBy:z.enum(['range','months','quarters','years']),startNum:z.number().optional(),endNum:z.number().optional(),startDate:z.string().optional(),endDate:z.string().optional(),groupInterval:z.number().positive()})})).optional(),
+  groupingPersistence:z.array(z.object({fieldIndex:z.number().int().nonnegative(),mode:z.enum(['standard','private']),reason:z.string().optional()})).optional(),
   groupings: z.array(z.union([
-    z.object({ fieldIndex: z.number().int().nonnegative(), kind: z.literal('date'), dateUnit: z.enum(['year', 'quarter', 'month']) }),
+    z.object({ fieldIndex: z.number().int().nonnegative(), kind: z.literal('date'), dateUnit: z.enum(['year', 'quarter', 'month']), date1904:z.boolean().optional() }),
     z.object({ fieldIndex: z.number().int().nonnegative(), kind: z.literal('range'), rangeStep: z.number().positive(), rangeStart: z.number().optional() }),
   ])).optional(),
   filters: z.array(z.union([
@@ -359,6 +386,7 @@ const pivotStateSchema = z.object({
     z.object({ kind: z.literal('value'), field: z.number().int().nonnegative(), dataField: z.number().int().nonnegative(), op: z.enum(['top', 'greaterThan', 'between']), count: z.number().int().positive().optional(), from: z.number().optional(), to: z.number().optional() }),
   ])).optional(),
   rowHiddenItems: z.array(z.array(z.number().int().nonnegative())).optional(),
+  manualHiddenMembers:z.array(z.object({fieldIndex:z.number().int().nonnegative(),members:z.array(z.string()).max(10000)})).max(200).optional(),
   colHiddenItems: z.array(z.array(z.number().int().nonnegative())).optional(),
 })
 
@@ -384,6 +412,9 @@ function validateAddition(addition: PivotAddition, allowEmpty = false): void {
   const inBounds = (index: number): boolean => index >= 0 && index < fieldCount
   const rowIndices = addition.rowFieldIndices
   const colIndices = addition.columnFieldIndices ?? []
+  const pageIndices=(addition.pageFilters??[]).map(filter=>filter.fieldIndex)
+  if(pageIndices.some(index=>!inBounds(index))||new Set([...rowIndices,...colIndices,...pageIndices]).size!==rowIndices.length+colIndices.length+pageIndices.length)throw new PivotAddError('Pivot report filter fields must be unique and separate from axes.')
+  if((addition.pageFilters??[]).some((filter,level)=>filter.selected?.length===0||(filter.selected??[]).some(item=>!addition.pageLevelItems?.[level]?.includes(item))))throw new PivotAddError('Pivot report filter selection is empty or missing from its source.')
   if (rowIndices.length === 0 || rowIndices.some((index) => !inBounds(index))) {
     throw new PivotAddError(`Pivot "${addition.name}" references a row field outside its source.`)
   }
@@ -450,13 +481,6 @@ function validateAddition(addition: PivotAddition, allowEmpty = false): void {
           `${error instanceof Error ? error.message : String(error)}`,
       )
     }
-  }
-  // With a column field the multi-value <colItems x="-2"> form is not
-  // generated, so exactly one value entry is supported (genoffice parity).
-  if (colIndices.length > 0 && addition.values.length !== 1) {
-    throw new PivotAddError(
-      `Pivot "${addition.name}" with a column field supports exactly one values entry.`,
-    )
   }
   const sourceWidth = addition.sourceArea.endColumn - addition.sourceArea.startColumn + 1
   if (sourceWidth !== addition.fieldNames.length) {
@@ -539,6 +563,7 @@ function buildCacheRecordsXml(
       new Map(((addition.colLevelItems ?? [])[level] ?? []).map((item, index) => [String(item), index])),
     )
   })
+  ;(addition.pageFilters??[]).forEach((filter,level)=>{lookups.set(filter.fieldIndex,new Map((addition.pageLevelItems?.[level]??[]).map((item,index)=>[item,index])))})
   // Grouped fields' member tables hold group labels: raw values are grouped by
   // the same rule before records are written.
   const groupingByField = new Map<number, PivotFieldGrouping>()
@@ -548,6 +573,8 @@ function buildCacheRecordsXml(
   const records = sourceRows
     .map((row) => {
       const cells = row.map((value, colOffset) => {
+        const standard=addition.standardGroupings?.find(group=>group.fieldIndex===colOffset)
+        if(standard){const index=standard.rawItems.findIndex(item=>item.source===value);if(index<0)throw new PivotAddError('Grouped cache source item is missing.');return `<x v="${index}"/>`}
         const lookup = lookups.get(colOffset)
         if (lookup !== undefined) {
           const grouping = groupingByField.get(colOffset)
@@ -578,6 +605,7 @@ export function buildCacheDefinitionXml(
   const dimensionFields = new Set<number>([
     ...addition.rowFieldIndices,
     ...(addition.columnFieldIndices ?? []),
+    ...(addition.pageFilters??[]).map(filter=>filter.fieldIndex),
   ])
   const levelItemsByField = new Map<number, readonly string[]>()
   addition.rowFieldIndices.forEach((fieldIndex, level) => {
@@ -586,8 +614,18 @@ export function buildCacheDefinitionXml(
   ;(addition.columnFieldIndices ?? []).forEach((fieldIndex, level) => {
     levelItemsByField.set(fieldIndex, (addition.colLevelItems ?? [])[level] ?? [])
   })
+  ;(addition.pageFilters??[]).forEach((filter,level)=>{levelItemsByField.set(filter.fieldIndex,addition.pageLevelItems?.[level]??[])})
   const fields = addition.fieldNames
     .map((name, index) => {
+      const standard=addition.standardGroupings?.find(group=>group.fieldIndex===index)
+      if(standard){
+        const raw=standard.rawItems.map(item=>`<${item.type} v="${escapeAttribute(item.value)}"/>`).join('')
+        const range=Object.entries(standard.range).map(([key,value])=>`${key}="${escapeAttribute(String(value))}"`).join(' ')
+        const date=standard.range.groupBy!=='range'
+        const shared=`<sharedItems containsSemiMixedTypes="0" containsString="0" containsNumber="${date?'0':'1'}" containsDate="${date?'1':'0'}" containsNonDate="${date?'0':'1'}" count="${standard.rawItems.length}">${raw}</sharedItems>`
+        const groups=`<groupItems count="${standard.groupItems.length}">${standard.groupItems.map(label=>`<s v="${escapeAttribute(label)}"/>`).join('')}</groupItems>`
+        return `<cacheField name="${escapeAttribute(name)}" numFmtId="${date?14:0}">${shared}<fieldGroup base="${index}"><rangePr autoStart="0" autoEnd="0" ${range}/>${groups}</fieldGroup></cacheField>`
+      }
       if (!dimensionFields.has(index)) {
         return `<cacheField name="${escapeAttribute(name)}" numFmtId="0"><sharedItems/></cacheField>`
       }
@@ -619,7 +657,7 @@ export function buildCacheDefinitionXml(
     `refreshedBy="sheets-web" createdVersion="8" refreshedVersion="8" ` +
     `minRefreshableVersion="3" recordCount="${recordCount}">` +
     '<cacheSource type="worksheet">' +
-    `<worksheetSource ref="${areaToRef(addition.sourceArea)}" sheet="${escapeAttribute(addition.sourceSheetName)}"/>` +
+    `<worksheetSource ${addition.sourceTableName?`name="${escapeAttribute(addition.sourceTableName)}"`:`ref="${areaToRef(addition.sourceArea)}"`} sheet="${escapeAttribute(addition.sourceSheetName)}"/>` +
     '</cacheSource>' +
     `<cacheFields count="${cacheFieldCount}">${fields}${calcFields}</cacheFields>` +
     '</pivotCacheDefinition>'
@@ -715,6 +753,7 @@ export function buildPivotTableXml(cacheId: number, addition: PivotAddition): st
           rowItemsOfLevel(rowLevel).length,
           tabular,
           new Set(addition.rowHiddenItems?.[rowLevel] ?? []),
+          addition.standardGroupings?.find(group=>group.fieldIndex===index)?.groupItems, rowItemsOfLevel(rowLevel),
         )
       }
       const colLevel = colIndices.indexOf(index)
@@ -724,8 +763,11 @@ export function buildPivotTableXml(cacheId: number, addition: PivotAddition): st
           colItemsOfLevel(colLevel).length,
           tabular,
           new Set(addition.colHiddenItems?.[colLevel] ?? []),
+          addition.standardGroupings?.find(group=>group.fieldIndex===index)?.groupItems, colItemsOfLevel(colLevel),
         )
       }
+      const pageLevel=(addition.pageFilters??[]).findIndex(filter=>filter.fieldIndex===index)
+      if(pageLevel>=0)return axisPivotField('axisPage',addition.pageLevelItems?.[pageLevel]?.length??0,tabular,new Set(addition.pageHiddenItems?.[pageLevel]??[])).replace('showAll="0"','showAll="0" multipleItemSelectionAllowed="1"')
       if (addition.values.some((value) => value.fieldIndex === index)) {
         return `<pivotField dataField="1" showAll="0"${tabular ? ' compact="0" outline="0"' : ''}/>`
       }
@@ -750,11 +792,16 @@ export function buildPivotTableXml(cacheId: number, addition: PivotAddition): st
 
   let columnPart: string
   if (colIndices.length > 0) {
-    columnPart =
-      `<colFields count="${colIndices.length}">` +
-      colIndices.map((index) => `<field x="${index}"/>`).join('') +
-      '</colFields>' +
-      buildAxisItemsXml(addition.colLines ?? [], colLevels, 'colItems')
+    const multi=addition.values.length>1
+    const fields=colIndices.map(index=>`<field x="${index}"/>`).join('')+(multi?'<field x="-2"/>':'')
+    const items=multi?(()=>{
+      const lines=[...(addition.colLines??[]),{t:'grand',members:[] as number[]}]
+      const entries=lines.flatMap(line=>addition.values.map((_value,vi)=>
+        `<i i="${vi}"${line.t==='data'?'':` t="${line.t}"`}>`+
+        Array.from({length:colLevels},(_,level)=>`<x v="${line.members[level]??0}"/>`).join('')+`<x v="${vi}"/></i>`))
+      return `<colItems count="${entries.length}">${entries.join('')}</colItems>`
+    })():buildAxisItemsXml(addition.colLines??[],colLevels,'colItems')
+    columnPart=`<colFields count="${colIndices.length+(multi?1:0)}">${fields}</colFields>`+items
   } else if (addition.values.length > 1) {
     columnPart =
       '<colFields count="1"><field x="-2"/></colFields>' +
@@ -805,11 +852,12 @@ export function buildPivotTableXml(cacheId: number, addition: PivotAddition): st
       : 'outline="1" outlineData="1" ') +
     'multipleFieldFilters="0">' +
     `<location ref="${areaToRef(addition.location)}" firstHeaderRow="1" ` +
-    `firstDataRow="${Math.max(1, colLevels)}" firstDataCol="${rowLevels}"/>` +
+    `firstDataRow="${Math.max(1, colLevels+(colLevels>0&&addition.values.length>1?1:0))}" firstDataCol="${rowLevels}"/>` +
     `<pivotFields count="${pivotFieldCount}">${pivotFields}${calcPivotFields}</pivotFields>` +
     rowFieldsXml +
     rowItemsXml +
     columnPart +
+    ((addition.pageFilters?.length??0)>0?`<pageFields count="${addition.pageFilters!.length}">`+addition.pageFilters!.map((filter,level)=>`<pageField fld="${filter.fieldIndex}"${filter.selected?.length===1?` item="${addition.pageLevelItems?.[level]?.indexOf(filter.selected[0]!)}"`:''} hier="-1"/>`).join('')+'</pageFields>':'') +
     `<dataFields count="${addition.values.length}">${dataFields}</dataFields>` +
     '<pivotTableStyleInfo name="PivotStyleLight16" showRowHeaders="1" showColHeaders="1" ' +
     'showRowStripes="0" showColStripes="0" showLastColumn="1"/>' +
@@ -823,18 +871,19 @@ export function buildPivotTableXml(cacheId: number, addition: PivotAddition): st
 /// hidden entries (h="1"), which is how an applied filter is persisted in the
 /// file. Ported from genoffice axisPivotField.
 function axisPivotField(
-  axis: 'axisRow' | 'axisCol',
+  axis: 'axisRow' | 'axisCol' | 'axisPage',
   itemCount: number,
   tabular = false,
   hidden?: ReadonlySet<number>,
+  groupedItems?:readonly string[],labels?:readonly string[],
 ): string {
   const items = Array.from(
     { length: itemCount },
-    (_unused, index) => `<item x="${index}"${hidden?.has(index) ? ' h="1"' : ''}/>`,
+    (_unused, index) => `<item x="${groupedItems?groupedItems.indexOf(labels?.[index]??''):index}"${hidden?.has(index) ? ' h="1"' : ''}/>`,
   ).join('')
   return (
-    `<pivotField axis="${axis}" showAll="0"${tabular ? ' compact="0" outline="0"' : ''}>` +
-    `<items count="${itemCount + 1}">${items}<item t="default"/></items>` +
+    `<pivotField axis="${axis}" showAll="0"${axis==='axisPage'?' defaultSubtotal="0"':''}${tabular ? ' compact="0" outline="0"' : ''}>` +
+    `<items count="${itemCount + (axis==='axisPage'?0:1)}">${items}${axis==='axisPage'?'':'<item t="default"/>'}</items>` +
     '</pivotField>'
   )
 }
@@ -1087,6 +1136,9 @@ export async function pivotHostSheet(source: EntrySource, tablePath: string): Pr
 }
 
 function appendWorksheetPivotPart(worksheetXml: string, relId: string): string {
+  if (!/\bxmlns:r\s*=/.test(worksheetXml.match(/<worksheet\b[^>]*>/)?.[0] ?? '')) {
+    worksheetXml = worksheetXml.replace(/<worksheet\b/, () => `<worksheet xmlns:r="${REL_NS}"`)
+  }
   const part = `<pivotTablePart r:id="${relId}"/>`
   const existing = worksheetXml.match(/<pivotTableParts\b([^>]*)>([\s\S]*?)<\/pivotTableParts>/)
   if (existing) {
@@ -1102,6 +1154,37 @@ function appendWorksheetPivotPart(worksheetXml: string, relId: string): string {
   return worksheetXml.replace(anchor, () => `<pivotTableParts count="1">${part}</pivotTableParts>${anchor}`)
 }
 
+/** 重排共享缓存的目标时先独立缓存；兄弟透视表及其缓存保持原字节。 */
+async function isolatePivotCache(sourceBytes:Uint8Array,tablePath:string,cachePath:string):Promise<{bytes:Uint8Array;cachePath:string}>{
+  const source=await createBufferEntrySource(sourceBytes),owners:string[]=[]
+  for(const path of await source.paths()){
+    if(!/^xl\/pivotTables\/[^/]+\.xml$/.test(path))continue
+    const relPath=relsPathFor(path)
+    if(!await source.has(relPath))continue
+    if([...(await source.readText(relPath)).matchAll(/<Relationship\b[^>]*\/>/g)].some(rel=>readXmlAttribute(rel[0],'Type')===PIVOT_CACHE_REL_TYPE&&resolvePivotTarget(path,readXmlAttribute(rel[0],'Target')??'')===cachePath))owners.push(path)
+  }
+  if(!owners.includes(tablePath))throw new PivotAddError('Pivot target does not own the requested cache.')
+  if(owners.length<2)return {bytes:sourceBytes,cachePath}
+  const cacheXml=await source.readText(cachePath),cacheRels=await source.readText(relsPathFor(cachePath))
+  const recordRel=[...cacheRels.matchAll(/<Relationship\b[^>]*\/>/g)].find(rel=>readXmlAttribute(rel[0],'Type')===PIVOT_RECORDS_REL_TYPE)
+  const recordTarget=recordRel&&readXmlAttribute(recordRel[0],'Target')
+  if(!recordTarget)throw new PivotAddError('Shared pivot cache records are missing.')
+  const nextCache=await nextFreePath(source,index=>`xl/pivotCache/pivotCacheDefinition${index}.xml`)
+  const nextRecords=await nextFreePath(source,index=>`xl/pivotCache/pivotCacheRecords${index}.xml`)
+  const added=new Map([[nextCache,cacheXml],[nextRecords,await source.readText(resolvePivotTarget(cachePath,recordTarget))],[relsPathFor(nextCache),cacheRels.replace(recordRel![0],()=>recordRel![0].replace(/\bTarget="[^"]*"/,()=>`Target="${relativeTarget(nextCache,nextRecords)}"`))]])
+  const replaced=new Map<string,string>(),workbookXml=await source.readText('xl/workbook.xml'),cacheId=maxCacheId(workbookXml)+1
+  await registerContentType(source,replaced,nextCache,PIVOT_CACHE_CONTENT_TYPE)
+  await registerContentType(source,replaced,nextRecords,PIVOT_RECORDS_CONTENT_TYPE)
+  const workbookRel=appendRelationship(await source.readText('xl/_rels/workbook.xml.rels'),PIVOT_CACHE_REL_TYPE,relativeTarget('xl/workbook.xml',nextCache))
+  replaced.set('xl/_rels/workbook.xml.rels',workbookRel.relsXml)
+  replaced.set('xl/workbook.xml',addWorkbookPivotCache(workbookXml,cacheId,workbookRel.relId))
+  replaced.set(tablePath,(await source.readText(tablePath)).replace(/\bcacheId="\d+"/,()=>`cacheId="${cacheId}"`))
+  const tableRelsPath=relsPathFor(tablePath)
+  replaced.set(tableRelsPath,(await source.readText(tableRelsPath)).replace(/<Relationship\b[^>]*\/>/g,rel=>readXmlAttribute(rel,'Type')===PIVOT_CACHE_REL_TYPE?rel.replace(/\bTarget="[^"]*"/,()=>`Target="${relativeTarget(tablePath,nextCache)}"`):rel))
+  const bytes=(await assemblePackage(sourceBytes,{replaced,added,addedBinary:new Map(),removedEntries:[],addedEntries:[...added.keys()],touchedEntries:[...replaced.keys()]})).buffer
+  return {bytes,cachePath:nextCache}
+}
+
 export async function rebuildPivotOutput(
   sourceBytes: Uint8Array,
   tablePath: string,
@@ -1110,6 +1193,8 @@ export async function rebuildPivotOutput(
   outputArea?: PivotArea,
 ): Promise<Uint8Array> {
   await assertSafePivotPackage(sourceBytes)
+  const isolated=await isolatePivotCache(sourceBytes,tablePath,cachePath)
+  sourceBytes=isolated.bytes;cachePath=isolated.cachePath
   const source = await createBufferEntrySource(sourceBytes)
   const tableXml = await source.readText(tablePath)
   const state = requested ?? readPivotState(tableXml)
@@ -1130,12 +1215,12 @@ export async function rebuildPivotOutput(
   const sourceTag = cacheXml.match(/<worksheetSource\b[^>]*\/>/)?.[0] ?? ''
   const sourceRef = readXmlAttribute(sourceTag, 'ref')
   const sourceSheetName = decodeXmlText(readXmlAttribute(sourceTag, 'sheet') ?? '')
-  if (!sourceRef || !sourceSheetName) throw new PivotAddError('Pivot cache is missing its worksheet source.')
+  if ((!sourceRef && !state.sourceTableName) || !sourceSheetName) throw new PivotAddError('Pivot cache is missing its worksheet source.')
   const addition: PivotAddition = {
     ...state,
     name,
     worksheetSheetName: host.name,
-    ...(requested ? {} : { sourceArea: parseRange(sourceRef), sourceSheetName }),
+    ...(requested ? {} : { sourceArea: sourceRef?parseRange(sourceRef):state.sourceArea, sourceSheetName }),
     location: requested?.location ?? outputArea ?? previous,
   }
   validateAddition(addition, true)

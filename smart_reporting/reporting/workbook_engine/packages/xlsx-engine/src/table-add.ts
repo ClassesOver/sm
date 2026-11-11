@@ -22,7 +22,7 @@ export interface TableArea {
 export interface TableAddition {
   /// Sheet that hosts the table.
   readonly worksheetSheetName: string
-  /// 0-based, header row included.
+  /// 0-based, includes the header row when enabled.
   readonly area: TableArea
   readonly name: string
   /// One per column, in order; must be non-blank and unique.
@@ -30,6 +30,7 @@ export interface TableAddition {
   /// Built-in style name; undefined = TableStyleMedium2.
   readonly style?: string | undefined
   readonly bandedRows: boolean
+  readonly headerRow?: boolean | undefined
 }
 
 const MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
@@ -43,9 +44,14 @@ type EntrySource = Awaited<ReturnType<typeof createBufferEntrySource>>
 
 function validateAddition(addition: TableAddition): void {
   const { area, columnNames } = addition
-  if (area.endRow <= area.startRow) {
+  if (addition.headerRow !== undefined && typeof addition.headerRow !== 'boolean') {
+    throw new TableAddError('Table headerRow must be a boolean.')
+  }
+  if (area.endRow - area.startRow < (addition.headerRow === false ? 0 : 1)) {
     throw new TableAddError(
-      `Table "${addition.name}" needs a header row plus at least one data row.`,
+      addition.headerRow === false
+        ? `Table "${addition.name}" needs at least one data row.`
+        : `Table "${addition.name}" needs a header row plus at least one data row.`,
     )
   }
   const width = area.endColumn - area.startColumn + 1
@@ -68,7 +74,7 @@ function validateAddition(addition: TableAddition): void {
 }
 
 /// name= and displayName= of every existing table part, lowercased.
-async function collectExistingTableNames(source: EntrySource): Promise<Set<string>> {
+export async function collectExistingTableNames(source: EntrySource): Promise<Set<string>> {
   const names = new Set<string>()
   for (const path of await tablePartPaths(source)) {
     const xml = await source.readText(path)
@@ -95,7 +101,7 @@ async function tablePartPaths(source: EntrySource): Promise<string[]> {
 }
 
 /// Table names share Excel's defined-name namespace.
-async function assertNameNotDefined(source: EntrySource, name: string): Promise<void> {
+export async function assertNameNotDefined(source: EntrySource, name: string): Promise<void> {
   const workbookXml = await source.readText('xl/workbook.xml')
   for (const match of workbookXml.matchAll(/<definedName\b[^>]*\bname="([^"]+)"/g)) {
     if (match[1]?.toLowerCase() === name.toLowerCase()) {
@@ -173,8 +179,8 @@ function buildTableXml(id: number, addition: TableAddition): string {
   return (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' +
     `<table xmlns="${MAIN_NS}" ` +
-    `id="${id}" name="${name}" displayName="${name}" ref="${ref}" totalsRowShown="0">` +
-    `<autoFilter ref="${ref}"/>` +
+    `id="${id}" name="${name}" displayName="${name}" ref="${ref}" totalsRowShown="0"${addition.headerRow === false ? ' headerRowCount="0"' : ''}>` +
+    (addition.headerRow === false ? '' : `<autoFilter ref="${ref}"/>`) +
     `<tableColumns count="${addition.columnNames.length}">${columns}</tableColumns>` +
     `<tableStyleInfo name="${style}" showFirstColumn="0" showLastColumn="0" ` +
     `showRowStripes="${addition.bandedRows ? 1 : 0}" showColumnStripes="0"/>` +
@@ -211,14 +217,14 @@ function appendTablePart(worksheetXml: string, relId: string): string {
   return xml.slice(0, closeAt) + element + xml.slice(closeAt)
 }
 
-function areaToRef(area: TableArea): string {
+export function areaToRef(area: TableArea): string {
   return (
     `${columnLabel(area.startColumn)}${area.startRow + 1}` +
     `:${columnLabel(area.endColumn)}${area.endRow + 1}`
   )
 }
 
-function parseRef(ref: string): TableArea {
+export function parseRef(ref: string): TableArea {
   const match = ref.replace(/[$]/g, '').match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/)
   if (!match?.[1] || !match[2]) {
     throw new TableAddError(`Unsupported range reference "${ref}" in the workbook.`)
@@ -236,7 +242,7 @@ function labelToIndex(label: string): number {
   return index - 1
 }
 
-function areasOverlap(a: TableArea, b: TableArea): boolean {
+export function areasOverlap(a: TableArea, b: TableArea): boolean {
   return (
     a.startRow <= b.endRow &&
     b.startRow <= a.endRow &&
@@ -253,7 +259,7 @@ function escapeAttribute(input: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function relsPathFor(partPath: string): string {
+export function relsPathFor(partPath: string): string {
   const slash = partPath.lastIndexOf('/')
   return `${partPath.slice(0, slash + 1)}_rels/${partPath.slice(slash + 1)}.rels`
 }
@@ -307,7 +313,7 @@ function registerContentTypeOverride(contentTypes: string, tablePath: string): s
   return contentTypes.slice(0, closeAt) + element + contentTypes.slice(closeAt)
 }
 
-async function worksheetPathOf(source: EntrySource, sheetName: string): Promise<string> {
+export async function worksheetPathOf(source: EntrySource, sheetName: string): Promise<string> {
   const workbookXml = await source.readText('xl/workbook.xml')
   const element = parseSheetElements(workbookXml).find((entry) => entry.name === sheetName)
   if (!element?.relationshipId) {

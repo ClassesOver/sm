@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
 import { parseStylesheet } from '../src/style-read'
+import { StylesheetEditor } from '../src/styles-write'
 const styles = (alignment: string) => `<styleSheet><fonts count="1"><font><sz val="17"/></font></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0">${alignment}</xf></cellXfs></styleSheet>`
 it.each([0, 45, 90, 135, 180, 255])('reads direct textRotation=%s attributes rather than searching for nonexistent child tags', textRotation => {
   const result = parseStylesheet(styles(`<alignment textRotation="${textRotation}" indent="3" horizontal="right" wrapText="1"/>`))
@@ -10,6 +11,25 @@ it('keeps absent and nonfinite direct attributes unset while reading valid expli
   expect(parseStylesheet(styles('<alignment/>')).cellXfs[0]!.alignment).toMatchObject({ textRotation: undefined, indent: undefined })
   expect(parseStylesheet(styles('<alignment textRotation="NaN" indent="Infinity"/>')).cellXfs[0]!.alignment).toMatchObject({ textRotation: undefined, indent: undefined })
   expect(parseStylesheet(styles('<alignment textRotation="0" indent="0"/>')).cellXfs[0]!.alignment).toMatchObject({ textRotation: 0, indent: 0 })
+})
+
+it('reads cell font vertical alignment from OOXML', () => {
+  const xml = '<styleSheet><fonts count="3"><font><vertAlign val="superscript"/></font><font><vertAlign val="subscript"/></font><font><vertAlign val="baseline"/></font></fonts><fills count="1"><fill/></fills><borders count="1"><border/></borders><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellXfs></styleSheet>'
+  const result = parseStylesheet(xml)
+  expect(result.fonts.map(font => font.vertAlign)).toEqual(['superscript', 'subscript', undefined])
+})
+
+it.each(['superscript', 'subscript'] as const)('writes %s while preserving sibling font properties', value => {
+  const xml = '<styleSheet><fonts count="1"><font><b/><i/><color rgb="FF123456"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellXfs></styleSheet>'
+  const editor = new StylesheetEditor(xml)
+  const index = editor.resolveStyle(0, { vertAlign: value })
+  const saved = editor.serialize()
+  const parsed = parseStylesheet(saved)
+  expect(parsed.cellXfs[index]!.fontId).toBeGreaterThan(0)
+  expect(parsed.fonts[parsed.cellXfs[index]!.fontId]).toMatchObject({ vertAlign: value, bold: true, italic: true, color: '#123456' })
+  const cleared = new StylesheetEditor(saved)
+  const baseline = cleared.resolveStyle(index, { vertAlign: 'baseline' })
+  expect(parseStylesheet(cleared.serialize()).fonts[parseStylesheet(cleared.serialize()).cellXfs[baseline]!.fontId]!.vertAlign).toBeUndefined()
 })
 
 import JSZip from 'jszip'

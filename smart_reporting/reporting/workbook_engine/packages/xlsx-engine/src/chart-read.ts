@@ -29,6 +29,7 @@ export interface ChartReadSeries {
 }
 
 export interface ChartReadSpec {
+  readonly chartPath: string
   readonly anchor: {
     readonly fromRow: number
     readonly fromColumn: number
@@ -182,6 +183,7 @@ export async function readCharts(
     const series = seriesOf(chartXml)
     if (series.length === 0) continue
     charts.push({
+      chartPath,
       anchor: anchorOf(block),
       kind,
       ...(titleOf(chartXml) !== undefined ? { title: titleOf(chartXml) } : {}),

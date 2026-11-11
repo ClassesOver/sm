@@ -1,0 +1,5 @@
+.workbook-pivot-dialog { width:min(780px,calc(100vw - 32px)); max-height:calc(100vh - 48px); overflow:auto; }
+.workbook-pivot-dialog fieldset { min-width:0; border:1px solid var(--color-border); border-radius:6px; padding:12px; margin:12px 0; }
+.workbook-pivot-dialog [data-axis-item] { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:8px; }
+.workbook-pivot-dialog [data-axis-item] input { width:130px; }
+.workbook-pivot-dialog select { max-width:100%; }

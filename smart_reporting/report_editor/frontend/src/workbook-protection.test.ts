@@ -19,6 +19,18 @@ it('blocks edits on protected sheets, structure on a locked workbook, and the un
   expect(protectionBlockReason('univer.command.undo', true, true)).toBeUndefined()
 })
 
+it('allows native heading dimensions as protected-sheet view commands', () => {
+  for (const id of ['sheet.command.set-row-header-width', 'sheet.command.set-col-header-height'])
+    expect(protectionBlockReason(id, true, true), id).toBeUndefined()
+  expect(protectionBlockReason('sheet.command.set-col-width', true, true)).toBe(PROTECTED_SHEET_REASON)
+  expect(protectionBlockReason('sheet.command.set-row-height', true, true)).toBe(PROTECTED_SHEET_REASON)
+})
+
+it('allows changing worksheet direction without permitting protected cell edits', () => {
+  expect(protectionBlockReason('sheet.command.set-worksheet-right-to-left', true, true)).toBeUndefined()
+  expect(protectionBlockReason('sheet.command.set-range-values', true, true)).toBe(PROTECTED_SHEET_REASON)
+})
+
 it('orders unprotect before and protect after the edits, under original and final names', () => {
   const names: Record<string, string> = { 'sheet-0': 'A', 'sheet-1': 'B2', 'sheet-2': 'C' }
   const plan = planProtection(model([{ name: 'A', protected: true }, { name: 'B' }, { name: 'C', protected: true }], true),
@@ -34,5 +46,6 @@ it('refuses saving edits into a sheet protected throughout or restructuring a lo
   expect(() => assertProtectionRespected([{ kind: 'applyCellEdits', edits: [{ sheetName: 'B' }] }, { kind: 'applyPageSetups', setups: [] }], plan, false)).not.toThrow()
   expect(() => assertProtectionRespected([{ kind: 'applyCellEdits', edits: [{ sheetName: 'A' }] }], plan, false)).toThrow(/撤销工作表保护（A）/)
   expect(() => assertProtectionRespected([{ kind: 'applyRowColumnOps', sheetName: 'A', ops: [] }], plan, false)).toThrow(/受保护/)
+  expect(() => assertProtectionRespected([{ kind: 'applyTableEdits', edits: [{ worksheetSheetName: 'A', tableName: 'Staff', columnNames: ['Employee'] }] }], plan, false)).toThrow(/受保护/)
   expect(() => assertProtectionRespected([{ kind: 'applySheetEdits', plan: {} }], plan, true)).toThrow(LOCKED_STRUCTURE_REASON)
 })

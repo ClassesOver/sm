@@ -106,8 +106,8 @@ it('projects file widths, heights and hidden rows with Univer snapshot keys and 
   const model = await readWorkbook(bytes)
   const data = buildWorkbookData(model, 'geo', 'geo')
   const sheetData = data.sheets[data.sheetOrder[0]!]!
-  expect(sheetData.columnData![1]).toEqual({ w: 30 * 7 + 5 })
-  expect(sheetData.rowData![0]).toEqual({ h: 60, ia: 0 })
+  expect(sheetData.columnData![1]).toMatchObject({ w: 30 * 7 + 5 })
+  expect(sheetData.rowData![0]).toMatchObject({ h: 60, ia: 0 })
   expect(sheetData.rowData![1]).toMatchObject({ hd: 1 })
   const univer = new Univer({ locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: {} } })
   univers.push(univer)

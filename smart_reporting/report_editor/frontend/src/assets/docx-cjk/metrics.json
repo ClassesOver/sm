@@ -1,0 +1,92 @@
+{
+  "Noto Sans CJK SC": {
+    "source": "NotoSansCJKsc-Regular-subset.woff2",
+    "sha256": "c3ed44a467b3a42ad06bd1d95147f169753b6675d244a63c1f1101899de48c42",
+    "metrics": {
+      "unitsPerEm": 1000,
+      "hheaAscender": 1160,
+      "hheaDescender": -288,
+      "hheaLineGap": 0,
+      "typoAscender": 880,
+      "typoDescender": -120,
+      "typoLineGap": 0,
+      "winAscent": 1160,
+      "winDescent": 288,
+      "useTypoMetrics": false,
+      "xAvgCharWidth": 979,
+      "codePageRange1": 537264133
+    }
+  },
+  "Noto Serif CJK SC": {
+    "source": "NotoSerifCJKsc-Regular-subset.woff2",
+    "sha256": "8805e730c330fd4940eefa8618b57abc196a0bd1dfe393b7492b88aad0130f37",
+    "metrics": {
+      "unitsPerEm": 1000,
+      "hheaAscender": 1151,
+      "hheaDescender": -286,
+      "hheaLineGap": 0,
+      "typoAscender": 880,
+      "typoDescender": -120,
+      "typoLineGap": 0,
+      "winAscent": 1151,
+      "winDescent": 286,
+      "useTypoMetrics": false,
+      "xAvgCharWidth": 988,
+      "codePageRange1": 537264133
+    }
+  },
+  "LXGW WenKai": {
+    "source": "LXGWWenKai-Regular-subset.woff2",
+    "sha256": "f2f1da1a1807a3128b6fcbfe9b7aa0e6a93bd64f17f3b89e32d4ae893dc6a299",
+    "metrics": {
+      "unitsPerEm": 1000,
+      "hheaAscender": 928,
+      "hheaDescender": -256,
+      "hheaLineGap": 0,
+      "typoAscender": 880,
+      "typoDescender": -120,
+      "typoLineGap": 0,
+      "winAscent": 1032,
+      "winDescent": 285,
+      "useTypoMetrics": false,
+      "xAvgCharWidth": 982,
+      "codePageRange1": 538181637
+    }
+  },
+  "Ma Shan Zheng": {
+    "source": "MaShanZheng-Regular-subset.woff2",
+    "sha256": "ff506082db01d93392fa1066529cfd50a07e31dcff1da076557fa9e395885da0",
+    "metrics": {
+      "unitsPerEm": 1000,
+      "hheaAscender": 880,
+      "hheaDescender": -120,
+      "hheaLineGap": 0,
+      "typoAscender": 880,
+      "typoDescender": -120,
+      "typoLineGap": 0,
+      "winAscent": 1000,
+      "winDescent": 373,
+      "useTypoMetrics": true,
+      "xAvgCharWidth": 989,
+      "codePageRange1": 1048576
+    }
+  },
+  "ZCOOL XiaoWei": {
+    "source": "ZCOOLXiaoWei-Regular-subset.woff2",
+    "sha256": "dadcaefb4c7107dacd47c81dfd8f18dcb152a567eac5219b3315a4840d848534",
+    "metrics": {
+      "unitsPerEm": 1000,
+      "hheaAscender": 880,
+      "hheaDescender": -120,
+      "hheaLineGap": 0,
+      "typoAscender": 880,
+      "typoDescender": -120,
+      "typoLineGap": 0,
+      "winAscent": 1000,
+      "winDescent": 210,
+      "useTypoMetrics": true,
+      "xAvgCharWidth": 1014,
+      "codePageRange1": 1
+    }
+  }
+}

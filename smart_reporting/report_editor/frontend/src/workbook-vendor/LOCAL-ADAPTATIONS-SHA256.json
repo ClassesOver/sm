@@ -1,8 +1,12 @@
 {
   "core/session-core.ts": "a1e1a687983e9264f1aff50e60be9a5c84f459464e59c519ee66df9bb4f75314",
   "grid/decimal-step.ts": "f97c59a2aa70900c99dc9f8f350a214430878c7f2e0868e8a98fe042c5712a60",
-  "core/style-map.ts": "fbdab632baed3847f734351e04d51c0cee54cf1b42029b1c4b2a121ce92db8f2",
-  "grid/sync.ts": "9c75b700efce704da2c0fdbe250ec18fabb9c502cc6723f18bf4b90cd5c2262f",
-  "core/univer-data.ts": "fe8de9eea95d3ac98c61d50109840eba80dc91b4832d5d62831322ccd1c681ea",
-  "core/data-tools.ts": "b61dbf4364419a187e603d1b7c5e3e412a310681d691c6520852834cddb93014"
+  "core/style-map.ts": "d63983128da55a67d3703eafe7029a93fe58ca62a9c3dc6f26aa61a1e40699cb",
+  "grid/sync.ts": "05f50199a2a63767f55271d1e5ced3bd2385949b526b4db8d521c0d8121b0f9d",
+  "core/univer-data.ts": "27a2ce42e6bdb47fc1005a23a8c2d1a1c6b0f79f120034fc142d60ba558ee3c8",
+  "core/data-tools.ts": "b61dbf4364419a187e603d1b7c5e3e412a310681d691c6520852834cddb93014",
+  "grid/csv-import.ts": "7e6a2a2d39386648e963c07ef2321870dc6b27901d4729c7ac564f1fec935548",
+  "grid/workbook-queries.ts": "a792fc4e4badc405401a97f1abbceea86e2f40f06c668211548f96b93c643a13",
+  "grid/query-parts.ts": "c3bbce1ce38bfb1bf6dc7727028cdf826384f29e2965f4d13dd407549d0f5b52",
+  "grid/sparkline-render.ts": "1274d848a8fa4b705e1005bacb66fab6d104305e8761e50bb446bbd082b5f6e5"
 }

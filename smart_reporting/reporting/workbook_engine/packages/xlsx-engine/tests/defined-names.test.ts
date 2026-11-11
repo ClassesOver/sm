@@ -106,3 +106,53 @@ describe('defined names (名称管理器)', () => {
     expect(xmlAfter).toContain('localSheetId')
   })
 })
+
+it('persists global and per-sheet names by stable sheet name while preserving reserved local names', async () => {
+  const { applySheetEdits } = await import('../src/sheet-ops')
+  const { readWorkbook } = await import('../src/workbook-read')
+  const initial = await applySheetEdits(await createBlankWorkbook(), { additions: [{ name: 'Other' }], renames: [], removals: [], order: ['Sheet1', 'Other'] } as any)
+  const bytes = await applyDefinedNames(initial, { sets: [
+    { name: 'Rate', refersTo: '1' }, { name: 'Rate', refersTo: '2', scopeSheetName: 'Sheet1' },
+    { name: 'Rate', refersTo: '3', scopeSheetName: 'Other' },
+  ] } as any)
+  expect((await readWorkbook(bytes)).definedNames).toEqual(expect.arrayContaining([
+    { name: 'Rate', refersTo: '1' }, { name: 'Rate', refersTo: '2', scopeSheetName: 'Sheet1' },
+    { name: 'Rate', refersTo: '3', scopeSheetName: 'Other' },
+  ]))
+  const removed = await applyDefinedNames(bytes, { removes: [{ name: 'Rate', scopeSheetName: 'Sheet1' }] } as any)
+  expect((await readWorkbook(removed)).definedNames).toHaveLength(2)
+})
+
+it('tracks scope through rename/reorder/add/remove and never removes a same-named global or print area', async () => {
+  const { applySheetEdits } = await import('../src/sheet-ops')
+  const { readWorkbook } = await import('../src/workbook-read')
+  const { applyPageSetups } = await import('../src/page-setup')
+  const two = await applySheetEdits(await createBlankWorkbook(), { additions: [{ name: 'Other' }], renames: [], removals: [], order: ['Sheet1', 'Other'] })
+  const printed = await applyPageSetups(two, [{ sheetName: 'Sheet1', printArea: 'A1:B2' }])
+  const source = await applyDefinedNames(printed, { sets: [{ name: 'Rate', refersTo: '1' },
+    { name: 'Rate', refersTo: '2', scopeSheetName: 'Sheet1' }, { name: 'Rate', refersTo: '3', scopeSheetName: 'Other' }] })
+  const renamed = await applySheetEdits(source, { additions: [{ name: 'Added' }], renames: [{ sheetName: 'Sheet1', newName: 'Renamed' }], removals: [], order: ['Other', 'Added', 'Renamed'] })
+  expect((await readWorkbook(renamed)).definedNames).toEqual(expect.arrayContaining([
+    { name: 'Rate', refersTo: '2', scopeSheetName: 'Renamed' }, { name: 'Rate', refersTo: '3', scopeSheetName: 'Other' },
+  ]))
+  expect(await workbookXmlOf(renamed)).toContain('name="_xlnm.Print_Area" localSheetId="2"')
+  const removed = await applySheetEdits(renamed, { additions: [], renames: [], removals: ['Other'], order: ['Added', 'Renamed'] })
+  expect((await readWorkbook(removed)).definedNames).toEqual(expect.arrayContaining([
+    { name: 'Rate', refersTo: '1' }, { name: 'Rate', refersTo: '2', scopeSheetName: 'Renamed' },
+  ]))
+  expect((await readWorkbook(removed)).definedNames).toHaveLength(2)
+  expect(await workbookXmlOf(removed)).toContain('name="_xlnm.Print_Area" localSheetId="1"')
+  await expect(applyDefinedNames(removed, { sets: [{ name: '_XLNM.Print_Area', refersTo: '1', scopeSheetName: 'Renamed' }] })).rejects.toThrow(DefinedNameError)
+  await expect(applyDefinedNames(removed, { sets: [{ name: 'Rate', refersTo: '1', scopeSheetName: 'Missing' }] })).rejects.toThrow('作用域不存在')
+})
+
+it('leaves opaque malformed local ordinals untouched when replacing or removing a global name', async () => {
+  const { assemblePackage } = await import('../src/zip')
+  const bytes = await createBlankWorkbook(), xml = await workbookXmlOf(bytes)
+  const opaque = '<definedName name="ScopedRate" localSheetId="broken">999</definedName><definedName name="ScopedRate" localSheetId="99">998</definedName>'
+  const source = (await assemblePackage(bytes, { replaced: new Map([['xl/workbook.xml', xml.replace('</sheets>', '</sheets><definedNames>' + opaque + '</definedNames>')]]), added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [], touchedEntries: ['xl/workbook.xml'] })).buffer
+  const set = await applyDefinedNames(source, { sets: [{ name: 'ScopedRate', refersTo: '10' }] })
+  const removed = await applyDefinedNames(set, { removes: ['ScopedRate'] })
+  expect(await workbookXmlOf(removed)).toContain(opaque)
+  expect(readDefinedNames(await workbookXmlOf(removed))).toEqual([])
+})

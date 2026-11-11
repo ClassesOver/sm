@@ -16,12 +16,13 @@
 // breaks, print gridlines/headings and scale/fit-to-page are baked into the
 // page tables. What the browser print dialog then owns (printer, copies,
 // collate, page selection) and what we deliberately do not render
-// (header/footer texts, cell borders, unsupported number formats, merged
+// (header/footer pictures, unsupported number formats, merged
 // cells clipped across a page boundary) is declared in the editor feedback,
 // not silently dropped.
 
 import { fromUniverStyle, type LogicalStyle, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { formatNumericValue } from '@sheets-web/xlsx-engine'
+import { decodeHeaderFooter, expandHeaderFooterCodes } from './workbook-print-header-footer'
 import { isHiddenAxisEntry, type UniverColumnData, type UniverRowData } from './workbook-vendor/core/univer-data'
 
 export interface PrintArea {
@@ -49,17 +50,19 @@ export interface PrintMarginsInches {
   readonly right: number
   readonly top: number
   readonly bottom: number
+  readonly header?: number | undefined
+  readonly footer?: number | undefined
 }
 
 export type PrintMarginPreset = 'normal' | 'wide' | 'narrow' | 'custom'
 
 /// Inches, mirroring the pinned source's MARGIN_PRESETS (print-settings.ts)
-/// and the engine's margin presets (page-setup.ts). Header/footer distances
-/// are not used: the web print document renders no header/footer texts.
+/// and the engine's margin presets (page-setup.ts), including distances
+/// between the paper edges and the file's printed header/footer text.
 export const PRINT_MARGIN_PRESETS: Record<Exclude<PrintMarginPreset, 'custom'>, PrintMarginsInches> = {
-  normal: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75 },
-  wide: { left: 1, right: 1, top: 1, bottom: 1 },
-  narrow: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75 },
+  normal: { left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
+  wide: { left: 1, right: 1, top: 1, bottom: 1, header: 0.5, footer: 0.5 },
+  narrow: { left: 0.25, right: 0.25, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3 },
 }
 
 /// OOXML paper-size code → portrait [widthIn, heightIn]. Subset of the pinned
@@ -95,7 +98,28 @@ export interface SheetPrintSource {
   readonly hiddenRows: ReadonlySet<number>
 }
 
+export interface SheetPrintHeaderFooter {
+  readonly oddHeader?: string | undefined
+  readonly oddFooter?: string | undefined
+  readonly firstHeader?: string | undefined
+  readonly firstFooter?: string | undefined
+  readonly evenHeader?: string | undefined
+  readonly evenFooter?: string | undefined
+  readonly differentFirst?: boolean | undefined
+  readonly differentOddEven?: boolean | undefined
+  readonly scaleWithDoc?: boolean | undefined
+}
+
+export interface SheetPrintContext {
+  readonly pageOffset?: number | undefined
+  readonly totalPages?: number | undefined
+  readonly pageName?: string | undefined
+  readonly fileName?: string | undefined
+  readonly now?: Date | undefined
+}
+
 export interface SheetPrintSetup {
+  readonly headerFooter?: SheetPrintHeaderFooter | undefined
   readonly orientation: 'portrait' | 'landscape'
   readonly paperSize: number
   /// Percent (10-400); used when fitToPage is off.
@@ -406,11 +430,10 @@ const displayValue = (cell: PrintCell | undefined): string => {
 }
 
 /// Visual subset of LogicalStyle → inline CSS (sizes pre-scaled by the print
-/// scale). Number formats use the shared engine formatter; cell
-/// borders are not rendered (only the sheet-level print-gridlines toggle).
-const cellStyleCss = (style: LogicalStyle | undefined, scalePercent: number): string => {
-  if (!style) return ''
-  const rules: string[] = []
+/// scale). Border shadows follow pinned print-html.ts without layout share.
+const cellStyleCss = (style: LogicalStyle | undefined, scalePercent: number, borderCss: string): string => {
+  if (!style) return borderCss ? ` style="${escapeHtml(borderCss)}"` : ''
+  const rules: string[] = borderCss ? [borderCss] : []
   if (style.bold) rules.push('font-weight:700')
   if (style.italic) rules.push('font-style:italic')
   const decorations = [style.underline ? 'underline' : '', style.strikethrough ? 'line-through' : ''].filter(Boolean)
@@ -430,7 +453,7 @@ const cellStyleCss = (style: LogicalStyle | undefined, scalePercent: number): st
 /// sized .page div per planned page, content inset by the margins, title
 /// strips and optional heading edges repeated per page) — the same document
 /// shape the pinned source renders into its hidden Electron print window.
-export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintSetup): string | null {
+export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintSetup, context: SheetPrintContext = {}): string | null {
   const plan = planSheetPrint(source, setup)
   if (!plan) return null
   const { paper, scale, areas, titleRows, titleColumns, pages } = plan
@@ -438,7 +461,8 @@ export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintS
     `width:${Math.max(paper.widthIn - setup.margins.left - setup.margins.right, 0.01)}in;` +
     `height:${Math.max(paper.heightIn - setup.margins.top - setup.margins.bottom, 0.01)}in`
   const scalePercent = scale / 100
-  const pageElements = pages.map(page => {
+  const now = context.now ?? new Date()
+  const pageElements = pages.map((page, pageIndex) => {
     const area = areas[page.area]!
     // Plan capacities are in unscaled content pt; rendering multiplies every
     // size by the scale so the table physically fits the printable area.
@@ -468,13 +492,59 @@ export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintS
     for (let column = page.colStart; column <= page.colEnd; column += 1) {
       if (columnWidthPt(column) > 0) bodyColumnList.push(column)
     }
+    const allColumns = [...titleColumnList, ...bodyColumnList]
+    const allRows: number[] = []
+    if (titleRows !== null) for (let row = titleRows.start; row <= titleRows.end; row += 1) {
+      if (rowHeightPt(row) > 0) allRows.push(row)
+    }
+    for (let row = page.rowStart; row <= page.rowEnd; row += 1) {
+      if (rowHeightPt(row) > 0) allRows.push(row)
+    }
+    const rowPositions = new Map(allRows.map((row, index) => [row, index]))
+    const columnPositions = new Map(allColumns.map((column, index) => [column, index]))
+    const styleAt = (row: number | undefined, column: number | undefined): LogicalStyle | undefined => {
+      if (row === undefined || column === undefined) return undefined
+      const merge = merges.find(item => row >= item.startRow && row <= item.endRow &&
+        column >= item.startColumn && column <= item.endColumn)
+      return source.cells[`${COLUMN_LETTERS(merge?.startColumn ?? column)}${(merge?.startRow ?? row) + 1}`]?.style
+    }
+    // Shared edges have one owner: upper / left wins a conflict, while
+    // a neighbour-only custom edge remains visible (pinned print-html.ts).
+    const borderCss = (row: number, column: number): string => {
+      const style = styleAt(row, column)
+      const merge = merges.find(item => item.startRow === row && item.startColumn === column)
+      const above = allRows[rowPositions.get(row)! - 1]
+      const lastRow = merge ? allRows.filter(index => index >= row && index <= merge.endRow).at(-1)! : row
+      const below = allRows[rowPositions.get(lastRow)! + 1]
+      const left = allColumns[columnPositions.get(column)! - 1]
+      const lastColumn = merge ? allColumns.filter(index => index >= column && index <= merge.endColumn).at(-1)! : column
+      const right = allColumns[columnPositions.get(lastColumn)! + 1]
+      const topEdge = style?.borderTop, bottomEdge = style?.borderBottom
+      const leftEdge = style?.borderLeft, rightEdge = style?.borderRight
+      const shadows: string[] = []
+      const edge = (border: LogicalStyle['borderTop'], draw: boolean, offset: (width: number) => string): void => {
+        if (!draw) return
+        const weight = border?.style === 'thick' ? 2.25
+          : border?.style.startsWith('medium') ? 1.5 : 0.75
+        const color = border?.color ?? '#000000'
+        const safeColor = /^(#[0-9a-fA-F]{3,8}|rgba?\([\d ,.%]+\))$/.test(color) ? color : '#000'
+        shadows.push(`inset ${offset((border ? weight : 0.5) * scalePercent)} 0 ${border ? safeColor : '#b7b7b7'}`)
+      }
+      edge(topEdge, topEdge ? !styleAt(above, column)?.borderBottom
+        : setup.printGridlines && above === undefined && !setup.printHeadings, width => `0 ${width}pt`)
+      edge(bottomEdge, !!bottomEdge || (setup.printGridlines && !styleAt(below, column)?.borderTop), width => `0 -${width}pt`)
+      edge(leftEdge, leftEdge ? !styleAt(row, left)?.borderRight
+        : setup.printGridlines && left === undefined && !setup.printHeadings, width => `${width}pt 0`)
+      edge(rightEdge, !!rightEdge || (setup.printGridlines && !styleAt(row, right)?.borderLeft), width => `-${width}pt 0`)
+      return shadows.length ? `box-shadow:${shadows.join(',')}` : ''
+    }
     const headingCell = (tag: 'th' | 'td', text: string, css: string): string =>
       `<${tag} class="${css}">${escapeHtml(text)}</${tag}>`
     const dataCell = (row: number, column: number): string => {
       const span = spanOf(row, column)
       if (span === 'skip') return ''
       const cell = source.cells[`${COLUMN_LETTERS(column)}${row + 1}`]
-      return `<td${span}${cellStyleCss(cell?.style, scalePercent)}>${escapeHtml(displayValue(cell))}</td>`
+      return `<td${span}${cellStyleCss(cell?.style, scalePercent, borderCss(row, column))}>${escapeHtml(displayValue(cell))}</td>`
     }
     const rowCells = (row: number, includeRowNumber: boolean): string => {
       const cells: string[] = []
@@ -506,21 +576,44 @@ export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintS
     if (setup.printHeadings) colgroup.push(`<col style="width:${HEADING_COLUMN_WIDTH_PT * scalePercent}pt">`)
     for (const column of titleColumnList) colgroup.push(`<col style="width:${columnWidthPt(column)}pt">`)
     for (const column of bodyColumnList) colgroup.push(`<col style="width:${columnWidthPt(column)}pt">`)
-    return `<div class="page" style="width:${paper.widthIn}in;height:${paper.heightIn}in">` +
+    // Pinned pageVariant: first-page selection precedes job parity. An
+    // enabled but absent first/even half stays blank rather than falling back.
+    const hf = setup.headerFooter
+    const jobPage = (context.pageOffset ?? 0) + pageIndex + 1
+    const variant = pageIndex === 0 && hf?.differentFirst ? 'first'
+      : jobPage % 2 === 0 && hf?.differentOddEven ? 'even' : 'odd'
+    const headerFooter = (kind: 'Header' | 'Footer'): string => {
+      const encoded = hf?.[`${variant}${kind}`]
+      const parts = encoded ? decodeHeaderFooter(encoded) : null
+      if (!parts) return ''
+      const fields = { page: jobPage, total: context.totalPages ?? pages.length, date: now,
+        fileName: context.fileName ?? '', sheetName: source.name }
+      const sections = [parts.left ?? '', parts.center ?? '', parts.right ?? '']
+        .map(text => escapeHtml(expandHeaderFooterCodes(text, fields)))
+      const edge = kind === 'Header' ? `top:${setup.margins.header ?? 0.3}in`
+        : `bottom:${setup.margins.footer ?? 0.3}in`
+      const fontSize = 9 * (hf?.scaleWithDoc === false ? 1 : scalePercent)
+      return `<div class="hf hf-${kind.toLowerCase()}" style="left:${setup.margins.left}in;right:${setup.margins.right}in;${edge};font-size:${fontSize}pt">` +
+        `<span>${sections[0]}</span><span style="text-align:center">${sections[1]}</span>` +
+        `<span style="text-align:right">${sections[2]}</span></div>`
+    }
+    return `<div class="page" style="width:${paper.widthIn}in;height:${paper.heightIn}in${context.pageName ? `;page:${context.pageName}` : ''}">` +
+      headerFooter('Header') + headerFooter('Footer') +
       `<div class="content" style="${marginCss}">` +
       `<table class="${setup.printGridlines ? 'gridlines' : ''}" style="font-size:${11 * scalePercent}pt">` +
       `<colgroup>${colgroup.join('')}</colgroup><tbody>${rows.join('')}</tbody></table>` +
       `</div></div>`
   }).join('')
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(source.name || 'Sheet')}</title><style>` +
-    `@page { size: ${paper.widthIn}in ${paper.heightIn}in; margin: 0; }` +
+    `@page${context.pageName ? ` ${context.pageName}` : ''} { size: ${paper.widthIn}in ${paper.heightIn}in; margin: 0; }` +
     `html, body { margin: 0; padding: 0; background: #fff; }` +
     `.page { position: relative; overflow: hidden; break-after: page; page-break-after: always; }` +
     `.page:last-child { break-after: auto; page-break-after: auto; }` +
     `.content { position: absolute; overflow: hidden; }` +
+    `.hf { position: absolute; display: flex; color: #000; font-family: Calibri, Arial, sans-serif; }` +
+    `.hf span { flex: 1; min-width: 0; white-space: pre-wrap; }` +
     `table { border-collapse: collapse; table-layout: fixed; font-family: Calibri, Arial, sans-serif; }` +
     `td, th { padding: 0 2pt; border: 0; overflow: hidden; vertical-align: bottom; word-break: break-all; }` +
-    `table.gridlines td { border: 0.5pt solid #b7b7b7; }` +
     `th.hd { background: #f1f1f1; color: #444; font-size: 8.5pt; font-weight: 400; text-align: center; }` +
     `</style></head><body>${pageElements}</body></html>`
 }

@@ -1,0 +1,156 @@
+/* 固定源函数dialog样式，作用域限定本地功能根；颜色复用Office变量。 */
+.workbook-function-root{--border:var(--office-border,#d0d5dd);--surface:#fff;--surface-subtle:#f2f4f7;--surface-hover:#f2f4f7;--text:var(--office-ink,#172b4d);--text-muted:var(--office-muted,#667085);--accent-soft:#e7efff;--radius-small:4px;--shadow-menu:0 8px 30px #10182830;color:var(--text);font:13px sans-serif}
+.workbook-function-root .dialog-backdrop{position:fixed;inset:0;background:#10182855;z-index:1200;display:flex;align-items:center;justify-content:center}
+.workbook-function-root .format-cells-dialog{display:flex;flex-direction:column;gap:12px;box-sizing:border-box;max-width:calc(100vw - 32px);max-height:calc(100vh - 40px);overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px;box-shadow:var(--shadow-menu)}
+.workbook-function-root header{font-size:16px;font-weight:600}
+.workbook-function-root input,.workbook-function-root select{min-width:0;box-sizing:border-box;border:1px solid var(--border);border-radius:4px;padding:6px;background:white;color:var(--text)}
+.workbook-function-root button{cursor:pointer;color:var(--text)}
+.workbook-function-root button:disabled{opacity:.5;cursor:default}
+.workbook-function-root .dialog-actions{display:flex;gap:8px;justify-content:flex-end}
+.workbook-function-root .dialog-actions button{border:1px solid var(--border);border-radius:4px;padding:6px 14px;background:white}
+.workbook-function-root .dialog-actions .primary-action{background:#175cd3;color:white;border-color:#175cd3}
+.workbook-function-root .dialog-note{font-size:12px;color:var(--text-muted);margin:0}
+.workbook-function-root .input-row{display:flex;gap:4px;min-width:0}
+.workbook-function-root .input-row input{width:100%}
+.workbook-function-root .dialog-floating{z-index:1200}
+/* Insert Function dialog */
+.workbook-function-root .insert-function-dialog {
+  /* 首击显示syntax详情时保持列表坐标，双击第二击不会落到相邻函数。 */
+  height: min(580px, calc(100vh - 40px));
+  width: 460px;
+}
+
+.workbook-function-root .fn-filter-row {
+  display: flex;
+  gap: 8px;
+}
+
+.workbook-function-root .fn-filter-row input {
+  flex: 1;
+}
+
+.workbook-function-root .fn-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.workbook-function-root .fn-row {
+  display: grid;
+  gap: 2px;
+  padding: 5px 8px;
+  border: none;
+  border-bottom: 1px solid var(--surface-subtle);
+  background: var(--surface);
+  text-align: left;
+  font-size: 12px;
+}
+
+.workbook-function-root .fn-row span {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbook-function-root .fn-row:hover {
+  background: var(--surface-hover);
+}
+
+.workbook-function-root .fn-syntax {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workbook-function-root .fn-row.active {
+  background: var(--accent-soft);
+}
+
+.workbook-function-root .fn-syntax code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.workbook-function-root .dialog-floating {
+  position: fixed;
+  top: 120px;
+  right: 24px;
+  z-index: 40;
+}
+
+.workbook-function-root .function-args-dialog {
+  width: 460px;
+  min-width: 0;
+  box-shadow: var(--shadow-menu);
+}
+
+.workbook-function-root .function-args-dialog.collapsed {
+  width: 360px;
+}
+
+.workbook-function-root .fn-args-name {
+  margin: 0;
+  font-weight: 600;
+}
+
+.workbook-function-root .fn-args-rows {
+  display: grid;
+  gap: 6px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.workbook-function-root .fn-args-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 120px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.workbook-function-root .fn-args-row label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.workbook-function-root .fn-args-row label.required {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.workbook-function-root .fn-args-row output {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.workbook-function-root .fn-args-pick {
+  flex: none;
+  padding: 2px 8px;
+}
+
+.workbook-function-root .fn-args-call-result {
+  margin: 0;
+  min-height: 1.2em;
+  text-align: right;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.workbook-function-root .fn-args-result {
+  margin: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+

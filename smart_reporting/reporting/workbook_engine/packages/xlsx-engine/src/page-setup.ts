@@ -4,6 +4,8 @@
 /// sheet-scoped `_xlnm.Print_Area` / `_xlnm.Print_Titles` defined names in
 /// workbook.xml. Untouched attributes and elements stay verbatim.
 
+import { SaxesParser } from 'saxes'
+import { escapeCellText } from './xml'
 import { parseSheetElements, resolveWorksheetPath, type SheetMarginsModel } from './workbook-read'
 import { assemblePackage, createBufferEntrySource } from './zip'
 
@@ -34,6 +36,7 @@ export interface SheetPageSetupState {
   readonly zoomScale?: number | undefined
   readonly showFormulas?: boolean | undefined
   readonly showHeadings?: boolean | undefined
+  readonly rightToLeft?: boolean | undefined
   readonly printArea?: string | null | undefined
   readonly printTitles?: string | null | undefined
   readonly frozenRows?: number | undefined
@@ -272,14 +275,9 @@ export function buildHeaderFooterXml(
   footer: HeaderFooterParts | null | undefined,
 ): string {
   return assembleHeaderFooterXml(
-    header ? escapeXmlText(encodeHeaderFooterSections(header)) : '',
-    footer ? escapeXmlText(encodeHeaderFooterSections(footer)) : '',
+    header ? escapeCellText(encodeHeaderFooterSections(header)) : '',
+    footer ? escapeCellText(encodeHeaderFooterSections(footer)) : '',
   )
-}
-
-/// One `<tag>…</tag>` (or self-closing) child of headerFooter.
-function headerFooterSectionPattern(tag: string): RegExp {
-  return new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>|<${tag}\\b[^>]*/>`)
 }
 
 /// Rewrites the odd header/footer inside the first `<headerFooter>` (or
@@ -291,44 +289,63 @@ function setHeaderFooter(
   header: HeaderFooterParts | null | undefined,
   footer: HeaderFooterParts | null | undefined,
 ): string {
-  const existing = xml.match(/<headerFooter\b([^>]*?)(?:\/>|>([\s\S]*?)<\/headerFooter>)/)
-  const attributes = existing?.[1] ?? ''
-  let body = existing?.[2] ?? ''
-  const setSection = (tag: 'oddHeader' | 'oddFooter', text: string | undefined): void => {
-    if (text === undefined) return
-    const pattern = headerFooterSectionPattern(tag)
-    const element = text === '' ? '' : `<${tag}>${text}</${tag}>`
-    if (pattern.test(body)) {
-      // function replacer: the element carries user text, and "$'000" / "$&"
-      // in a header would otherwise expand as String.replace patterns
-      body = body.replace(pattern, () => element)
-      return
+  const namespace = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+  type Element = { name: string; local: string; uri: string; start: number; openEnd: number; closeStart: number; end: number; selfClosing: boolean; children: Element[] }
+  const parser = new SaxesParser({ xmlns: true }), stack: Element[] = []
+  let root: Element | undefined
+  parser.on('doctype', () => { throw new PageSetupError('Worksheet header/footer does not support DOCTYPE.') })
+  parser.on('opentag', tag => {
+    const node: Element = { name: tag.name, local: tag.local, uri: tag.uri, start: xml.lastIndexOf('<', parser.position - 1), openEnd: parser.position, closeStart: parser.position, end: parser.position, selfClosing: tag.isSelfClosing, children: [] }
+    if (!stack.length) {
+      if (tag.local !== 'worksheet' || tag.uri !== namespace) throw new PageSetupError('Invalid worksheet namespace.')
+      root = node
+    } else if (stack.length === 1 || (stack.length === 2 && stack[1]!.local === 'headerFooter' && stack[1]!.uri === namespace)) {
+      // 只保存定位所需的直属节点，不为整张表的单元格建立 XML 树。
+      stack.at(-1)!.children.push(node)
     }
-    if (element === '') return
-    // CT_HeaderFooter order: oddHeader, oddFooter, even*, first*.
-    const oddHeader = tag === 'oddFooter' ? body.match(headerFooterSectionPattern('oddHeader')) : null
-    const at = oddHeader && oddHeader.index !== undefined ? oddHeader.index + oddHeader[0].length : 0
-    body = body.slice(0, at) + element + body.slice(at)
+    stack.push(node)
+  })
+  parser.on('closetag', () => {
+    const node = stack.pop()!
+    node.closeStart = node.selfClosing ? node.openEnd : xml.lastIndexOf('<', parser.position - 1)
+    node.end = parser.position
+  })
+  parser.write(xml).close()
+  if (!root) throw new PageSetupError('Worksheet has no root element.')
+  const worksheet: Element = root
+  const existing = worksheet.children.filter(node => node.local === 'headerFooter' && node.uri === namespace)
+  if (existing.length > 1) throw new PageSetupError('Worksheet has duplicate header/footer elements.')
+  const hf = existing[0]
+  const name = hf?.name ?? worksheet.name.replace(/worksheet$/, 'headerFooter')
+  const prefix = name.includes(':') ? name.slice(0, name.indexOf(':') + 1) : ''
+  let body = hf ? xml.slice(hf.openEnd, hf.closeStart) : ''
+  const edits: { start: number; end: number; text: string; order: number }[] = []
+  for (const [order, tag, parts] of [[0, 'oddHeader', header], [1, 'oddFooter', footer]] as const) {
+    if (parts === undefined) continue
+    const matches = hf?.children.filter(node => node.local === tag && node.uri === namespace) ?? []
+    if (matches.length > 1) throw new PageSetupError('Worksheet has duplicate header/footer sections.')
+    const old = matches[0]
+    const text = parts === null ? '' : escapeCellText(encodeHeaderFooterSections(parts))
+    const element = text ? `<${prefix}${tag}>${text}</${prefix}${tag}>` : ''
+    const previousHeader = tag === 'oddFooter' ? hf?.children.find(node => node.local === 'oddHeader' && node.uri === namespace) : undefined
+    const at = old ? old.start - hf!.openEnd : previousHeader ? previousHeader.end - hf!.openEnd : 0
+    edits.push({ start: at, end: old ? old.end - hf!.openEnd : at, text: element, order })
   }
-  const encode = (parts: HeaderFooterParts | null | undefined): string | undefined =>
-    parts === undefined
-      ? undefined
-      : parts === null
-        ? ''
-        : escapeXmlText(encodeHeaderFooterSections(parts))
-  setSection('oddHeader', encode(header))
-  setSection('oddFooter', encode(footer))
-  const element =
-    body.trim() === ''
-      ? attributes.trim() === ''
-        ? ''
-        : `<headerFooter${attributes}/>`
-      : `<headerFooter${attributes}>${body}</headerFooter>`
-  if (existing && existing.index !== undefined) {
-    return xml.slice(0, existing.index) + element + xml.slice(existing.index + existing[0].length)
+  for (const edit of edits.sort((a, b) => b.start - a.start || b.order - a.order)) body = body.slice(0, edit.start) + edit.text + body.slice(edit.end)
+  if (hf) {
+    const opening = xml.slice(hf.start, hf.openEnd)
+    const element = body.trim() === ''
+      ? opening.replace(/\/?>(?=$)/, '/>')
+      : opening.replace(/\/>(?=$)/, '>') + body + (hf.selfClosing ? `</${name}>` : xml.slice(hf.closeStart, hf.end))
+    const empty = body.trim() === '' && /^<[^\s>]+\s*\/?>(?=$)/.test(opening)
+    return xml.slice(0, hf.start) + (empty ? '' : element) + xml.slice(hf.end)
   }
-  if (element === '') return xml
-  return insertWorksheetElement(xml, element, AFTER_HEADER_FOOTER)
+  if (!body) return xml
+  const element = `<${name}>${body}</${name}>`
+  const anchor = worksheet.children.find(node => node.uri === namespace && AFTER_HEADER_FOOTER.test(`<${node.local}>`))
+  const at = anchor?.start ?? worksheet.closeStart
+  if (worksheet.selfClosing) return xml.slice(0, worksheet.start) + xml.slice(worksheet.start, worksheet.openEnd).replace(/\/>$/, '>') + element + `</${worksheet.name}>` + xml.slice(worksheet.end)
+  return xml.slice(0, at) + element + xml.slice(at)
 }
 
 /// Replaces the sheet's manual break set: the whole <rowBreaks>/<colBreaks>
@@ -382,6 +399,10 @@ export function applyPageSetupState(worksheetXml: string, state: SheetPageSetupS
   if (state.showHeadings !== undefined) {
     // showRowColHeaders defaults to true; write "0" to hide.
     xml = setSheetViewAttr(xml, 'showRowColHeaders', state.showHeadings ? null : '0')
+  }
+  if (state.rightToLeft !== undefined) {
+    // rightToLeft defaults to false; drop the attribute to restore it.
+    xml = setSheetViewAttr(xml, 'rightToLeft', state.rightToLeft ? '1' : null)
   }
 
   const printOptions: Record<string, string | null> = {}
