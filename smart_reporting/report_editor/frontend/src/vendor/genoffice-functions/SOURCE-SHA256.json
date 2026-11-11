@@ -1,0 +1,20 @@
+{
+  "apps/sheets/src/renderer/function-arguments.ts": "b5b80b89457ef88239a0cf522ebf3f109dbea939715aef98e88d15af7a4c2606",
+  "apps/sheets/src/renderer/function-catalog.ts": "5a258c3a00c7ab513d08027624690b400218448a104e55b2e134e0a920980749",
+  "apps/sheets/src/renderer/function-arguments-runtime.ts": "aa392a0b08f66bfff8c256955235be6d52c08f71442be4e238de80b434dfab87",
+  "apps/sheets/src/renderer/InsertFunctionFlow.tsx": "059811e5009c33035662118a5cfdd9dbac2e3ed9946ec500bb74737da6ea33aa",
+  "apps/sheets/src/renderer/InsertFunctionDialog.tsx": "45f816392ffd7f33dff11d5b79b4e6ca0dc3efcb34d9c768a412c90cc1a9e324",
+  "apps/sheets/src/renderer/FunctionArgumentsDialog.tsx": "c5197ef49c43e977c3ce98f623cde14a5c0af8ff7b80ce88c4475619afc99564",
+  "apps/sheets/src/renderer/modal-dialog.ts": "3bcf16b012a2ff760cfc622f3a4e40897516ae6193bb4ddcc9119df0eb53d37c",
+  "apps/sheets/src/renderer/find-replace-session.ts": "4685f570d82d268c28b306e1f41eb747024e3fe33323d141ccb3fbdeebdedad5",
+  "apps/sheets/src/renderer/styles.css": "e0faabcde838f5ad9bd2af5deb51b48cda35142f9854068cba339a6e86bfb88f",
+  "apps/sheets/src/renderer/i18n/app/zh.ts": "45e1a9a556a9175dcf77d7add93d4cc3befb9db03556771f01d2ae41563b2243",
+  "apps/sheets/src/renderer/i18n/dialogs/zh.ts": "361eff317ca7db4263bbf4e46f8aee2e06afc059568fef83fec7bc3925b41961",
+  "apps/sheets/tests/function-arguments.test.ts": "3991676d9c1faad4abe1ab184df075da7f22d84b1b1ea3ad07e4e370de93ab05",
+  "apps/sheets/tests/function-catalog.test.ts": "1c4f40f64cc62d6dc18bce0625ae941406496a7dc9978b9251c93b585ef77560",
+  "LICENSE": "68e32334df324ef4fc79fad3a26487e5abac36055a484bb6c8d7ecf9d8350885",
+  "NOTICE": "26fa7a458f2463af07f96af3d4b26b3cc3b4de688340838e3c9b3b958d390882",
+  "apps/sheets/src/renderer/cell-function.ts": "26559acfacaaecf9dbf4667ef37d95663218ab1072307246be8a9f9b2d585b8a",
+  "apps/sheets/src/renderer/rate-function.ts": "54c2913024019669633255dc057db9d05d0dd229fe3a0daa6c118430cf8f877b",
+  "apps/sheets/src/renderer/ifs-empty-set.ts": "2cfcc098baca3f4ed4dc19d87fd01b59cd950b8d6d8b7c3c259b019420aa8f03"
+}

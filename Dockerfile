@@ -64,6 +64,7 @@ COPY smart_reporting/reporting/slides_engine/LICENSE \
     smart_reporting/reporting/slides_engine/SOURCE.md ./
 COPY smart_reporting/reporting/slides_engine/packages ./packages
 COPY smart_reporting/reporting/slides_engine/bridge ./bridge
+# pptx-ops 的公式转换复用 DOCX math，保留同级源码关系。
 COPY smart_reporting/reporting/doc_engine/packages /build/smart_reporting/reporting/doc_engine/packages
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \

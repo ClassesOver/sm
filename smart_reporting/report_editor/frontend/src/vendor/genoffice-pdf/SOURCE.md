@@ -16,3 +16,13 @@ engine's `stamps` stage.
 
 `measure.ts` provides the calibrated measure tool's `parseCalibration` / `formatLength`; the native editor keeps
 the scale for the session only (as upstream) and writes the formatted label into the engine's `measure` drawing.
+
+
+## Selection style helpers (2026-11-11)
+
+Local ../../pdf-selection-style-source.ts copies apps/pdf/src/renderer/color-runs.ts at the same pinned ref. The helper body is byte-identical; only an initial provenance comment is added.
+Upstream SHA256: 38139b354fb401b27c00487423eb4b7548f66a1692cbda35f0f1d28d16808bc9.
+Local SHA256: 7ed330f5f5cf5ec0f7c5dcb3419cf5b0cd00728a3fa08a3cf4582da5f69d4382.
+Existing Apache-2.0 LICENSE/NOTICE apply. These are UTF-16 style patch/splice helpers, not a new layout engine.
+
+2026-11-11: local host adapters preserve the fixed App.tsx Ctrl/Cmd+Enter replacement submission through the existing guarded button, and add fixed FormDesignLayer/App single-widget canvas selection and 1/10pt keyboard nudge using the existing identity-bound rect operation. Safe sources remain default UserUnit only; shared fields, drag/resize and arbitrary mixed drafts are not enabled. Local UI helpers and styling are not upstream source files, and fixed upstream hashes remain unchanged.

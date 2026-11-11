@@ -62,6 +62,48 @@ async def test_missing_final_output_cannot_be_faked_from_content_event():
         await run_agent_with_events(IncompleteAgent(), 'input')
 
 
+@pytest.mark.anyio
+async def test_structured_executor_stream_observer_only_changes_requested_native_run(monkeypatch):
+    from agno.run.agent import RunContentEvent
+
+    from smart_reporting.reporting.structured_output import execution
+
+    output = RunOutput(run_id='structured-final', content={'summary': 'ok'})
+    calls = []
+
+    class StructuredAgent:
+        id = 'fixture'
+        model = type('Model', (), {'id': 'fixture-model', 'base_url': None})()
+
+        def arun(self, instruction, **kwargs):
+            calls.append(kwargs)
+            async def events():
+                yield RunContentEvent(content='candidate')
+                yield output
+            return events() if kwargs['stream'] else output
+
+    fake_mode = execution.StructuredOutputMode.JSON_OBJECT
+    contract = type('Contract', (), {'dialect': type('D', (), {'value': 'json_object'})(), 'wire_fingerprint': 'fixture', 'decode': staticmethod(lambda value: value)})()
+    monkeypatch.setattr(execution, '_agent_for_mode', lambda *args: StructuredAgent())
+    monkeypatch.setattr(execution, '_runtime_verified_mode', lambda *args: fake_mode)
+    monkeypatch.setattr(execution, '_runtime_capability_key', lambda *args: 'fixture')
+    monkeypatch.setattr(execution, '_selected_model_route', lambda *args: ('standard', 'fixture-model'))
+    monkeypatch.setattr(execution, '_schema_name', lambda value: 'Proposal')
+    monkeypatch.setattr(execution, '_remember_runtime_verified_mode', lambda *args: None)
+    class Resolver:
+        def resolve(self, *args, **kwargs):
+            return type('Capabilities', (), {'primary': fake_mode, 'fallback': None, 'source': 'verified'})()
+    executor = execution.ReportingStructuredOutputExecutor(StructuredAgent(), capability_resolver=Resolver())
+    executor.wire_schema_resolver.resolve = lambda *args, **kwargs: contract
+    events = []
+    def observe(event):
+        events.append(event)
+    with observe_agent_events(observe):
+        result = await executor.execute('go', routing_context=None, session_id='s', user_id='u',
+                                        call_budget=execution.StructuredOutputCallBudget(max_model_calls=1))
+    assert result.run_output is output
+    assert calls[0]['stream'] is True and calls[0]['stream_events'] is True and calls[0]['yield_run_output'] is True
+    assert [event.content for event in events] == ['candidate']
 
 
 @pytest.mark.anyio

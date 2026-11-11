@@ -72,16 +72,23 @@ from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
 from .report_editor.native import NativeEditorService
 from .report_editor.native_ai import create_native_ai_service
 from .report_editor.native_ai_api import create_native_ai_router
-from .report_editor.slides_native_ai import create_native_slides_ai_service
-from .report_editor.slides_native_ai_api import create_native_slides_ai_router
 from .report_editor.native_pdf_ai import create_native_pdf_read_planner
 from .report_editor.native_pdf_ai_tasks import NativePDFReadService
+from .report_editor.native_office_read_tasks import NativeOfficeReadService
+from .report_editor.native_slides_read_ai import AgnoNativeSlidesReadPlanner
+from .report_editor.native_workbook_read_ai import AgnoNativeWorkbookReadPlanner
+from .report_editor.native_word_read_ai import AgnoNativeWordReadPlanner
+from .report_editor.native_word_read_tasks import NativeWordReadService
 from .report_editor.native_pdf_review_ai import create_native_pdf_review_planner
 from .report_editor.native_pdf_review_ai_tasks import NativePDFReviewService
 from .report_editor.native_pdf_review_ai_api import create_native_pdf_review_ai_router
 from .report_editor.native_pdf_form_ai import AgnoNativePDFFormPlanner
 from .report_editor.native_pdf_form_ai_tasks import NativePDFFormService
 from .report_editor.native_pdf_form_ai_api import create_native_pdf_form_ai_router
+from .report_editor.slides_native_ai import create_native_slides_ai_service
+from .report_editor.slides_native_ai_api import create_native_slides_ai_router
+from .report_editor.workbook_native_ai import create_native_workbook_ai_service
+from .report_editor.workbook_native_ai_api import create_native_workbook_ai_router
 from .report_editor.native_api import create_native_editor_router
 from .report_editor.native_import import NativeImportService
 from .report_editor.native_import_api import create_native_import_router
@@ -360,9 +367,22 @@ native_ai = create_native_ai_service(
 native_slides_ai = create_native_slides_ai_service(
     reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
 )
+native_workbook_ai = create_native_workbook_ai_service(
+    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+)
 native_pdf_read_ai = NativePDFReadService(
     native_editor, planner=create_native_pdf_read_planner(reporting_agent_template.model),
     enabled=settings.native_ai_enabled,
+)
+native_word_read_ai = NativeWordReadService(
+    native_editor, planner=AgnoNativeWordReadPlanner(reporting_agent_template.model),
+    enabled=settings.native_ai_enabled,
+)
+native_office_read_ai = NativeOfficeReadService(
+    native_editor, planners={
+        "xlsx": AgnoNativeWorkbookReadPlanner(reporting_agent_template.model),
+        "pptx": AgnoNativeSlidesReadPlanner(reporting_agent_template.model),
+    }, enabled=settings.native_ai_enabled,
 )
 native_pdf_review_ai = NativePDFReviewService(
     native_editor, planner=create_native_pdf_review_planner(reporting_agent_template.model),
@@ -536,6 +556,8 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     ))
     application.include_router(create_native_ai_router(
         report_editor_grants, editor=native_editor, ai=native_ai, pdf_read=native_pdf_read_ai,
+        word_read=native_word_read_ai,
+        office_read=native_office_read_ai,
         allowed_origin=settings.report_public_base_url,
     ))
     application.include_router(create_native_pdf_review_ai_router(
@@ -548,6 +570,10 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     ))
     application.include_router(create_native_slides_ai_router(
         report_editor_grants, editor=native_editor, ai=native_slides_ai,
+        allowed_origin=settings.report_public_base_url,
+    ))
+    application.include_router(create_native_workbook_ai_router(
+        report_editor_grants, editor=native_editor, ai=native_workbook_ai,
         allowed_origin=settings.report_public_base_url,
     ))
     application.include_router(create_native_import_router(native_import, enabled=settings.native_upload_enabled))
@@ -592,10 +618,13 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("shutdown", business_ingestion_worker.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
-    application.router.add_event_handler("shutdown", native_slides_ai.aclose)
     application.router.add_event_handler("shutdown", native_pdf_read_ai.aclose)
+    application.router.add_event_handler("shutdown", native_word_read_ai.aclose)
+    application.router.add_event_handler("shutdown", native_office_read_ai.aclose)
     application.router.add_event_handler("shutdown", native_pdf_review_ai.aclose)
     application.router.add_event_handler("shutdown", native_pdf_form_ai.aclose)
+    application.router.add_event_handler("shutdown", native_slides_ai.aclose)
+    application.router.add_event_handler("shutdown", native_workbook_ai.aclose)
     if report_editor_chart_ai is not None:
         application.router.add_event_handler("shutdown", report_editor_chart_ai.aclose)
     if report_editor_table_ai is not None:

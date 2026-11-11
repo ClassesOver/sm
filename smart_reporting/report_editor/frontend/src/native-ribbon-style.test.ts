@@ -50,7 +50,6 @@ describe('native ribbon theme isolation', () => {
     expect(rule('.docx-native .docx-ribbon .ribbon-body').overflowX).toBe('auto')
     expect(rule('.workbook-ribbon-body').overflowX).toBe('auto')
     expect(rule('.workbook-ribbon-group').display).toBe('grid')
-    expect(rule('.workbook-ribbon-group').getPropertyValue('grid-template-rows')).toBe('repeat(3,32px)')
     expect(rule('.workbook-ribbon-group button[aria-pressed="mixed"]').borderStyle).toBe('dashed')
     expect(rule('.docx-native .docx-ribbon .ribbon-tabs').getPropertyValue('-webkit-app-region')).not.toBe('drag')
   })

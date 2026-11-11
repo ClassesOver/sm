@@ -1,0 +1,113 @@
+// Frozen production assets and real grants/CSRF/PDF writer/publication; shared fixture repositories only.
+import assert from 'node:assert/strict'
+import {spawn,spawnSync} from 'node:child_process'
+import {createHash} from 'node:crypto'
+import {mkdir,readFile,writeFile} from 'node:fs/promises'
+import {join} from 'node:path'
+import {fileURLToPath} from 'node:url'
+import {setTimeout as delay} from 'node:timers/promises'
+import {chromium} from 'playwright'
+const frontend=fileURLToPath(new URL('../',import.meta.url)),repo=fileURLToPath(new URL('../../../../',import.meta.url))
+const directory=process.env.PDF_TEXT_VECTOR_MIXED_SMOKE_DIRECTORY??'/tmp/pdf-text-vector-mixed-browser-20261111',port=Number(process.env.PDF_TEXT_VECTOR_MIXED_SMOKE_PORT??4338),origin='http://127.0.0.1:'+port
+const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../static')
+const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
+await mkdir(directory,{recursive:true});const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'));await writeFile(join(directory,'build-manifest.json'),manifest)
+const server=spawn(join(repo,'.venv/bin/python'),[join(frontend,'smoke/pdf-static-text-server.py'),'--directory',directory,'--port',String(port)],{cwd:repo,env:{...process.env,PYTHONPATH:repo},stdio:'pipe'})
+let serverLog='',browser,page,stage='server';server.stdout.on('data',data=>{serverLog+=data;void writeFile(join(directory,'server-live.log'),serverLog)});server.stderr.on('data',data=>{serverLog+=data;void writeFile(join(directory,'server-live.log'),serverLog)})
+const pageErrors=[],consoleErrors=[],httpErrors=[],assetErrors=[],checks=[],assets=new Map(),records=[]
+try{
+ for(let attempt=0;;attempt++){assert.equal(server.exitCode,null,serverLog);try{if((await fetch(origin+'/__smoke__/state',{signal:AbortSignal.timeout(1500)})).ok)break}catch{}assert(attempt<240,serverLog);await delay(250)}
+ const info=JSON.parse(await readFile(join(directory,'server-info.json'),'utf8'))
+ browser=await chromium.launch({headless:true,...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE?{executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE}:{})});page=await browser.newPage({viewport:{width:1500,height:1100}})
+ page.on('pageerror',error=>pageErrors.push(error.message));page.on('console',message=>{if(message.type()==='error')consoleErrors.push(message.text())})
+ page.on('response',response=>{const path=new URL(response.url()).pathname;if(response.status()>=400)httpErrors.push({path,status:response.status()});if(response.status()!==200||!path.startsWith('/reports/v1/editor/assets/')||!(/\.m?js$/).test(path))return;checks.push((async()=>{const bytes=await response.body(),disk=await readFile(join(staticDirectory,path.slice('/reports/v1/editor/assets/'.length)));assert.equal(sha(bytes),sha(disk));assets.set(path,sha(bytes))})().catch(error=>{assetErrors.push({path,error:String(error)})}))})
+ const ready=()=>page.waitForFunction(()=>document.querySelector('#report-editor')?.getAttribute('aria-busy')==='false',null,{timeout:60000})
+ const operations=source=>page.evaluate(sourceSha=>Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:')).map(([,value])=>JSON.parse(value)).find(value=>value.identity?.sourceSha256===sourceSha)?.operations??[],source)
+ const waitOperations=(source,count)=>page.waitForFunction(({sourceSha,count})=>(Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:')).map(([,value])=>JSON.parse(value)).find(value=>value.identity?.sourceSha256===sourceSha)?.operations??[]).length===count,{sourceSha:source,count})
+ async function previewSave(name,sourceSha,parentRevision){
+  const staged=await operations(sourceSha);assert.equal(staged.length,5)
+  await page.locator('[data-pdf-ribbon-tab="edit"]').click()
+  const previewing=page.waitForResponse(response=>response.url().endsWith('/api/preview')&&response.request().method()==='POST'&&response.request().postDataJSON().operations?.length===5)
+  await page.getByRole('button',{name:'校验当前修改',exact:true}).click();const preview=await(await previewing).json()
+  assert.deepEqual(preview.appliedOperationIndices,[0,1,2,3,4],JSON.stringify(preview));assert.deepEqual(preview.skippedOperations,[])
+  await page.locator('.pdf-preview-review input[type="checkbox"]').waitFor({state:'visible'});await page.locator('.pdf-preview-review input[type="checkbox"]').check();await page.screenshot({path:join(directory,name+'-preview.png'),fullPage:true})
+  stage=name+'-save';const saving=page.waitForResponse(response=>response.url().endsWith('/api/save')&&response.request().method()==='POST');await page.locator('[data-action="save"]').click();const saved=await saving,payload=await saved.json()
+  assert.equal(saved.status(),200,JSON.stringify(payload));assert.equal(payload.revisionRegistered,true);assert.equal(payload.parentRevision,parentRevision);assert.equal(payload.revision,parentRevision+1);assert.deepEqual(saved.request().postDataJSON().operations,staged);assert.equal(saved.request().postDataJSON().confirmedPreviewDigest,preview.previewDigest)
+  const link=page.locator('.native-delivery a').filter({hasText:'下载 PDF'});await link.waitFor();assert.equal(await link.getAttribute('href'),payload.artifacts.pdf.downloadUrl)
+  const download=await page.request.get(payload.artifacts.pdf.downloadUrl);assert.equal(download.status(),200);const bytes=await download.body();assert.equal(sha(bytes),payload.artifacts.pdf.sha256);assert.equal(bytes.length,payload.artifacts.pdf.size);await writeFile(join(directory,name+'.pdf'),bytes)
+  records.push({name,staged,preview,payload});await page.goto(payload.editor.openUrl);await ready();const reopened=await page.evaluate(async()=>(await fetch(location.pathname+'/api/context')).json());assert.equal(reopened.context.revision,parentRevision+1);assert.equal(reopened.context.sourceFile.sha256,payload.artifacts.pdf.sha256);records.at(-1).reopened=reopened
+  return payload
+ }
+ stage='open-source';await page.goto(origin+info.openPath);await ready()
+ const mark=type=>page.locator('[data-source-command-id="genoffice.pdf.home.markup.'+type+'"]')
+ async function selectSource(){await page.waitForFunction(()=>[...document.querySelectorAll('.textLayer span')].some(span=>span.textContent==='source page one'));await page.evaluate(()=>{const span=[...document.querySelectorAll('.textLayer span')].find(span=>span.textContent==='source page one'),range=document.createRange();range.selectNodeContents(span);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'))})}
+ async function draw(shape,count){
+  await page.locator('[data-pdf-ribbon-tab="annotate"]').click();await page.locator('[data-pdf-draw-shape="'+shape+'"]').click();const content=page.locator('.pdf-page').first().locator('.pdf-page-content');await content.scrollIntoViewIfNeeded();const b=await content.boundingBox();assert(b);const at=(x,y)=>[b.x+b.width*x,b.y+b.height*y]
+  if(shape==='polygon'){for(const point of [[.45,.35],[.65,.38],[.6,.52],[.42,.48]])await page.mouse.click(...at(...point));await page.keyboard.press('Enter')}
+  else {const points=shape==='arrow'?[[.15,.35],[.35,.5]]:[[.2,.62],[.24,.57],[.29,.68],[.34,.6]];await page.mouse.move(...at(...points[0]));await page.mouse.down();for(const point of points.slice(1))await page.mouse.move(...at(...point),{steps:5});await page.mouse.up()}
+  await waitOperations(info.sourceSha256,count);await page.locator('[data-pdf-ribbon-tab="home"]').click()
+ }
+ stage='drawing-before-styling';await draw('arrow',1);assert.equal((await operations(info.sourceSha256))[0].shape,'arrow')
+ const edit=page.locator('[data-source-command-id="genoffice.pdf.home.edit.editText"]');await edit.click();const objects=page.getByLabel('待修改文字对象',{exact:true});await objects.waitFor();await objects.selectOption({label:'source page one'})
+ const panel=page.locator('.pdf-text-editor'),textarea=panel.getByLabel('替换后的文字',{exact:true});await textarea.fill('AABBCC');await panel.getByLabel('替换文字字体',{exact:true}).selectOption('courier');await panel.getByLabel('替换文字字号',{exact:true}).fill('12');await panel.getByLabel('替换文字对齐',{exact:true}).selectOption('left')
+ await textarea.focus();await textarea.press('Home');await textarea.press('ArrowRight');await textarea.press('ArrowRight');await textarea.press('Shift+ArrowRight');await textarea.press('Shift+ArrowRight');await panel.getByLabel('选区字体',{exact:true}).selectOption('times');await panel.getByLabel('选区字号',{exact:true}).fill('18');await panel.getByLabel('选区粗体',{exact:true}).selectOption('true');await panel.getByLabel('选区斜体',{exact:true}).selectOption('true');await panel.getByLabel('选区指定颜色',{exact:true}).check();await panel.getByLabel('选区颜色',{exact:true}).fill('#ff0000');await panel.locator('[data-pdf-selection-style-apply]').click();await panel.getByRole('button',{name:'加入文字修改',exact:true}).click();await waitOperations(info.sourceSha256,2)
+ stage='markup-after-styling';await page.locator('[data-pdf-ribbon-tab="home"]').click();await selectSource();await mark('underline').click();await waitOperations(info.sourceSha256,3);stage='drawing-after-styling';await draw('polygon',4);await draw('ink',5)
+ const staged=await operations(info.sourceSha256);assert.deepEqual(staged.map(op=>op.kind),['addDrawing','replaceText','addMarkup','addDrawing','addDrawing']);assert.deepEqual(staged.filter(op=>op.kind==='addMarkup').map(op=>op.markupType),['underline']);assert.equal(staged[1].font,'courier');assert.deepEqual(staged[1].styleRuns,[{start:2,end:4,color:[1,0,0],font:'times',size:18,bold:true,italic:true}]);await page.screenshot({path:join(directory,'interleaved-draft.png'),fullPage:true})
+ await page.locator('[data-source-command-id="genoffice.pdf.home.edit.undo"]').click();await waitOperations(info.sourceSha256,4);await page.locator('[data-source-command-id="genoffice.pdf.home.edit.redo"]').click();await waitOperations(info.sourceSha256,5);assert.deepEqual(await operations(info.sourceSha256),staged)
+ const saved=await previewSave('mixed',info.sourceSha256,4);await writeFile(join(directory,'staged.json'),JSON.stringify(staged,null,2));await page.locator('.pdf-page .textLayer').filter({hasText:'AA'}).first().waitFor();await page.screenshot({path:join(directory,'reopened-final.png'),fullPage:true})
+ stage='independent-pypdf';const python=String.raw`import sys,json,hashlib,math
+from pathlib import Path
+from pypdf import PdfReader
+from pypdf.generic import ContentStream,IndirectObject
+root=Path(sys.argv[1]);source=PdfReader(root/'source.pdf');output=PdfReader(root/'mixed.pdf')
+assert len(source.pages)==len(output.pages)==3
+for index in range(3):
+ if index: assert source.pages[index].extract_text().strip() in output.pages[index].extract_text()
+ assert list(source.pages[index].mediabox)==list(output.pages[index].mediabox)
+ assert list(source.pages[index].cropbox)==list(output.pages[index].cropbox)
+assert 'source page one' not in output.pages[0].extract_text()
+found=[];output.pages[0].extract_text(visitor_text=lambda text,cm,tm,font,size:found.append((text,cm,tm,font,size)));rows=[]
+for segment,family,size,expected_x in [('AA','LiberationMono',12,24),('BB','LiberationSerif-BoldItalic',18,38.4),('CC','LiberationMono',12,62.412)]:
+ text,cm,tm,font,pt=next(value for value in found if value[0].strip()==segment)
+ assert family in str(font['/BaseFont']) and abs(pt-size)<.002
+ x=tm[4]*cm[0]+tm[5]*cm[2]+cm[4];y=tm[4]*cm[1]+tm[5]*cm[3]+cm[5]
+ assert abs(x-expected_x)<.05 and abs(y-350)<.002,(segment,x,y,expected_x)
+ descriptor=font['/DescendantFonts'][0].get_object()['/FontDescriptor'].get_object();assert len(descriptor['/FontFile2'].get_object().get_data())>100
+ rows.append({'text':segment,'font':str(font['/BaseFont']),'size':pt,'baseline':[x,y]})
+colors=[args for args,operator in ContentStream(output.pages[0].get_contents(),output).operations if operator==b'rg'];assert any(list(map(float,color))==[1,0,0] for color in colors)
+staged=json.loads((root/'staged.json').read_text());annots=[ref.get_object() for ref in output.pages[0]['/Annots']]
+assert len(annots)==4 and [str(annot['/Subtype']) for annot in annots]==['/Underline','/Line','/Polygon','/Ink']
+for annot,op in zip(annots[:1],[item for item in staged if item['kind']=='addMarkup']):
+ assert list(map(float,annot['/QuadPoints']))==[value for quad in op['quads'] for value in quad]
+ assert list(map(float,annot['/C']))==op['color'] and annot['/AP']['/N'].get_object().get_data()
+def near(actual,want):
+ assert len(actual)==len(want)
+ assert all(abs(float(a)-float(b))<.0051 for a,b in zip(actual,want)),(actual,want)
+for annot,op in zip(annots[1:],[item for item in staged if item['kind']=='addDrawing'],strict=True):
+ shape=op['shape'];near(annot['/C'],op['color']);assert abs(float(annot['/BS']['/W'])-op['width'])<.002
+ page_ref=annot.raw_get('/P');assert isinstance(page_ref,IndirectObject) and page_ref==output.pages[0].indirect_reference
+ ap=annot['/AP']['/N'].get_object();assert ap['/Type']=='/XObject' and ap['/Subtype']=='/Form';near(ap['/BBox'],annot['/Rect']);path=ContentStream(ap,output).operations;near(next(v for v,k in path if k==b'RG'),op['color']);near(next(v for v,k in path if k==b'w'),[op['width']])
+ if shape=='arrow':
+  start,end=op['from'],op['to'];near(annot['/L'],start+end);angle=math.atan2(end[1]-start[1],end[0]-start[0]);length=max(9,op['width']*4.5);heads=[[end[0]-length*math.cos(angle+off),end[1]-length*math.sin(angle+off)] for off in [-.45,.45]];points=[start,end]+heads
+  expected=[start,end,end,heads[0],end,heads[1]];actual=[v for v,k in path if k in [b'm',b'l']];assert len(actual)==len(expected)
+  for a,b in zip(actual,expected):near(a,b)
+  assert sum(k==b'S' for _,k in path)==3
+ elif shape=='polygon':
+  points=op['vertices'];near(annot['/Vertices'],sum(points,[]));actual=[v for v,k in path if k in [b'm',b'l']];assert len(actual)==len(points)
+  for a,b in zip(actual,points):near(a,b)
+  assert [k for _,k in path[-2:]]==[b'h',b'S']
+ elif shape=='ink':
+  assert len(annot['/InkList'])==len(op['paths'])
+  for a,b in zip(annot['/InkList'],op['paths']):near(a,b)
+  points=[stroke[i:i+2] for stroke in op['paths'] for i in range(0,len(stroke),2)];actual=[v for v,k in path if k in [b'm',b'l']];assert len(actual)==len(points)
+  for a,b in zip(actual,points):near(a,b)
+  assert sum(k==b'm' for _,k in path)==sum(k==b'S' for _,k in path)==len(op['paths'])
+ else:raise AssertionError(shape)
+ xs,ys=zip(*points);pad=0 if shape=='polygon' else op['width']+2;near(annot['/Rect'],[min(xs)-pad,min(ys)-pad,max(xs)+pad,max(ys)+pad])
+assert not output.get_fields()
+print(json.dumps({'ok':True,'rows':rows,'selectionColor':[1,0,0],'otherPagesPreserved':True,'sourceSpaceMarkupsRetained':True,'markupTypes':['Underline'],'vectorAPs':['Line','Polygon','Ink'],'sourceSha256':hashlib.sha256((root/'source.pdf').read_bytes()).hexdigest(),'outputSha256':hashlib.sha256((root/'mixed.pdf').read_bytes()).hexdigest()}))`
+ const verification=spawnSync(join(repo,'.venv/bin/python'),['-c',python,directory],{cwd:repo,encoding:'utf8'});assert.equal(verification.status,0,verification.stderr);const independent=JSON.parse(verification.stdout);assert.equal(independent.sourceSha256,info.sourceSha256);assert.equal(independent.outputSha256,saved.artifacts.pdf.sha256);await writeFile(join(directory,'independent.json'),JSON.stringify(independent,null,2))
+ await Promise.all(checks);assert(assets.size>0);assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(httpErrors,[]);assert.deepEqual(assetErrors,[]);assert.deepEqual(await readFile(join(staticDirectory,'.vite/manifest.json')),manifest)
+ const state=await(await fetch(origin+'/__smoke__/state',{signal:AbortSignal.timeout(1500)})).json();assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,1)
+ const summary={ok:true,directory,feature:'interleaved source-space arrow/polygon/ink, markup and styled text with preview/save/download/reopen',scope:'real production assets/PDF.js/grants/cookies/CSRF/packed engine/publication/download/reopen; fixture persistence only',browserVersion:browser.version(),manifestSha256:sha(manifest),sourceSha256:info.sourceSha256,records,independent,sourceUnchanged:true,assets:Object.fromEntries(assets),pageErrors,consoleErrors,httpErrors,assetErrors,requests:state.requests};await writeFile(join(directory,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok:true,directory}))
+}catch(error){await page?.screenshot({path:join(directory,'failure.png'),fullPage:true}).catch(()=>{});if(page)await page.content().then(html=>writeFile(join(directory,'failure.html'),html)).catch(()=>{});await writeFile(join(directory,'failure.json'),JSON.stringify({stage,error:String(error),pageErrors,consoleErrors,httpErrors,assetErrors},null,2));throw error}finally{await browser?.close();server.kill();await writeFile(join(directory,'server.log'),serverLog);if(server.exitCode===null)await Promise.race([new Promise(resolve=>server.once('exit',resolve)),delay(5000)]);if(server.exitCode===null)server.kill('SIGKILL')}

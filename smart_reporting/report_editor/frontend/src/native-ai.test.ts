@@ -4,7 +4,7 @@ import { NativeDraft } from './native-draft'
 
 it('采纳时提交当前完整草稿，冲突保留修改且候选文字不作为HTML执行', async () => {
   const draft = new NativeDraft({ documentId: 'doc', revision: 1, sourceSha256: 'a'.repeat(64), scope: { database:'db', companyId:'c', userId:'u', threadId:'t' } }, localStorage)
-  const api = { aiStart: vi.fn().mockResolvedValue({editId:'id',status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'<img src=x>',operations:[]}}), aiAccept:vi.fn().mockRejectedValue(new Error('草稿已变化')), aiCancel:vi.fn() }
+  const api = { aiStart: vi.fn().mockResolvedValue({editId:'id',status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'<img src=x>',operations:[]}}), aiAccept:vi.fn().mockRejectedValue(new Error('草稿已变化')), aiCancel:vi.fn().mockResolvedValue({}) }
   const root = document.createElement('div')
   const binding = bindNativeAI(root, {api:api as never,draft,view:{refresh:vi.fn()},onDraftChange:vi.fn()})
   binding.setSelection([{blockId:'p1'}])
@@ -24,7 +24,7 @@ it('采纳请求期间继续编辑时，响应不能覆盖新草稿', async () =
   localStorage.clear()
   const draft = new NativeDraft({documentId:'race',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},localStorage)
   let finish!: (value: {operations:{kind:string}[]})=>void
-  const api = {aiStart:vi.fn().mockResolvedValue({editId:'id',status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'候选',operations:[]}}),aiAccept:vi.fn().mockImplementation(()=>new Promise(resolve=>{finish=resolve})),aiCancel:vi.fn()}
+  const api = {aiStart:vi.fn().mockResolvedValue({editId:'id',status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'候选',operations:[]}}),aiAccept:vi.fn().mockImplementation(()=>new Promise(resolve=>{finish=resolve})),aiCancel:vi.fn().mockResolvedValue({})}
   const root=document.createElement('div'), refresh=vi.fn()
   const binding=bindNativeAI(root,{api:api as never,draft,view:{refresh},onDraftChange:vi.fn()})
   binding.setSelection([{blockId:'p'}]);root.querySelector('textarea')!.value='修改'
@@ -62,4 +62,65 @@ it('显示 PDF 替换内容和跳过原因，切页后不可采纳旧建议', as
   expect(api.aiAccept).not.toHaveBeenCalled()
   expect(draft.operations).toEqual([])
   binding.dispose()
+})
+
+it('显式审阅目标复用候选链，普通选择不扩大授权，返回正文可恢复选择',async()=>{
+ localStorage.clear()
+ const draft=new NativeDraft({documentId:'review-ai',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},localStorage)
+ const op={kind:'replyComment',text:'回复意见'}
+ const api={aiStart:vi.fn().mockResolvedValue({editId:'review',status:'succeeded',snapshotSha256:'s',proposal:{summary:'根批注建议',operations:[op]}}),aiAccept:vi.fn().mockResolvedValue({operations:[op]}),aiCancel:vi.fn().mockResolvedValue({})}
+ const root=document.createElement('div'),flush=vi.fn(),refresh=vi.fn()
+ const binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh,flushPendingEdits:flush},onDraftChange:vi.fn()})
+ binding.setSelection([{blockId:'ordinary'}]);binding.openReview({sourceId:'source',targetId:'root'})
+ expect(api.aiStart).not.toHaveBeenCalled();expect(root.querySelector('textarea')!.value).toBe('')
+ binding.setSelection([{blockId:'later'}]);root.querySelector('textarea')!.value='请回复此根批注'
+ root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+ await vi.waitFor(()=>expect(api.aiStart).toHaveBeenCalled())
+ expect(flush).toHaveBeenCalled();expect(api.aiStart.mock.calls[0][0].selection).toEqual([{sourceId:'source',targetId:'root'}])
+ await vi.waitFor(()=>expect(root.textContent).toContain('回复批注'))
+ expect(draft.operations).toEqual([])
+ root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click()
+ await vi.waitFor(()=>expect(draft.operations).toEqual([op]))
+ root.querySelector<HTMLButtonElement>('[data-ai=body-selection]')!.click()
+ root.querySelector('textarea')!.value='普通正文编辑';root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+ await vi.waitFor(()=>expect(api.aiStart).toHaveBeenCalledTimes(2))
+ expect(api.aiStart.mock.calls[1][0].selection).toEqual([{blockId:'later'}]);binding.dispose()
+})
+it('切换审阅目标时丢弃迟到建议，不自动执行线程或修订决策',async()=>{
+ localStorage.clear()
+ const draft=new NativeDraft({documentId:'late-review',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},localStorage)
+ let finish!:(v:object)=>void
+ const api={aiStart:vi.fn().mockImplementation(()=>new Promise(resolve=>{finish=resolve})),aiCancel:vi.fn().mockResolvedValue({})}
+ const root=document.createElement('div'),binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+ binding.openReview({blockId:'p',revisionId:'first'},'接受此修订');root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+ binding.openReview({blockId:'p',revisionId:'second'})
+ finish({editId:'late',status:'succeeded',proposal:{summary:'迟到建议',operations:[]}})
+ await Promise.resolve();await Promise.resolve();expect(root.textContent).not.toContain('迟到建议')
+ expect(root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.disabled).toBe(true);expect(draft.operations).toEqual([]);binding.dispose()
+})
+it.each([
+ [{kind:'resolveComment',done:false},'重新打开线程'],
+ [{kind:'resolveTextRevision',action:'reject'},'拒绝此修订'],
+] as const)('审阅候选预览明确实际决策%j',async(operation,label)=>{
+ const draft=new NativeDraft({documentId:'decision-'+label,revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
+ const api={aiStart:vi.fn().mockResolvedValue({editId:'decision',status:'succeeded',snapshotSha256:'s',proposal:{summary:'待核对',operations:[operation]}}),aiCancel:vi.fn().mockResolvedValue({})}
+ const root=document.createElement('div'),binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+ binding.openReview({sourceId:'s',targetId:'t'},'按要求处理');root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+ await vi.waitFor(()=>expect(root.querySelector('pre')?.textContent).toContain(label))
+ expect(draft.operations).toEqual([]);binding.dispose()
+})
+
+it('注释使用显式身份授权、显示前后差异，普通正文选区不能扩大权限',async()=>{
+ localStorage.clear()
+ const draft=new NativeDraft({documentId:'notes-ai',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},localStorage)
+ const op={kind:'updateNote',noteKind:'footnote',noteId:'1',expectedNoteSha256:'n',text:'新的引用说明'}
+ const api={aiStart:vi.fn().mockResolvedValue({editId:'notes',status:'succeeded',snapshotSha256:'s',proposal:{summary:'注释建议',operations:[op]}}),aiAccept:vi.fn().mockResolvedValue({operations:[op]}),aiCancel:vi.fn().mockResolvedValue({})}
+ const root=document.createElement('div'),refresh=vi.fn()
+ const binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh},onDraftChange:vi.fn()})
+ binding.openNotes({selectionKind:'note',noteKind:'footnote',noteId:'1'},'修订引用说明','原引用说明<img>')
+ binding.setSelection([{blockId:'unrelated'}]);root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+ await vi.waitFor(()=>expect(root.textContent).toContain('原文：原引用说明<img>'))
+ expect(api.aiStart.mock.calls[0][0].selection).toEqual([{selectionKind:'note',noteKind:'footnote',noteId:'1'}])
+ expect(root.textContent).toContain('候选：新的引用说明');expect(root.querySelector('img')).toBeNull();expect(draft.operations).toEqual([])
+ root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click();await vi.waitFor(()=>expect(draft.operations).toEqual([op]));binding.dispose()
 })

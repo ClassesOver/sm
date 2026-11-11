@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from cryptography.fernet import Fernet
 
 
 @pytest.mark.anyio
@@ -14,6 +15,7 @@ async def test_application_registers_native_schema_startup(monkeypatch):
     monkeypatch.setattr(
         "smart_reporting.integrations.dingyi_process.mount_process_routes", lambda *args: None
     )
+    monkeypatch.setenv("AGENT_MANAGEMENT_CREDENTIAL_KEYS", f"test:{Fernet.generate_key().decode()}")
     import smart_reporting.app as app_module
 
     create_schema = AsyncMock()
@@ -29,6 +31,9 @@ async def test_application_registers_native_schema_startup(monkeypatch):
     assert "/reports/v1/native/{document_id}/{revision}/api/ai/start" in paths
     assert "/reports/v1/native/{document_id}/{revision}/api/slides-ai/start" in paths
     assert app_module.native_slides_ai.aclose in application.router.on_shutdown
+    assert "/reports/v1/native/{document_id}/{revision}/api/workbook-ai/start" in paths
+    assert "/reports/v1/native/{document_id}/{revision}/api/workbook-ai/cancel-request" in paths
+    assert app_module.native_workbook_ai.aclose in application.router.on_shutdown
     assert "/reports/v1/native/{document_id}/{revision}/api/ai/review/start" in paths
     assert "/reports/v1/native/{document_id}/{revision}/api/ai/review/{edit_id}/accept" in paths
     assert app_module.native_pdf_review_ai.aclose in application.router.on_shutdown

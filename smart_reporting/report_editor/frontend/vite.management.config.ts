@@ -11,7 +11,7 @@ export default defineConfig({
           item.type === 'chunk' ? Object.keys(item.modules) : [],
         )
         const forbidden = modules.filter((id) =>
-          /milkdown|univerjs|slides_engine|workbook_engine|pdfjs-dist|plotly|react-konva/.test(
+          /milkdown|univerjs|slides_engine|doc_engine|workbook_engine|pdfjs-dist|plotly|react-konva/.test(
             id,
           ),
         )

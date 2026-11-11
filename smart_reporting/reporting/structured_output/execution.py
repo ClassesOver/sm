@@ -141,6 +141,7 @@ class ReportingStructuredOutputExecutor:
         agent_run_context: RunContext | None = None,
         call_budget: StructuredOutputCallBudget | None = None,
         thinking_request: ThinkingRequest | None = None,
+        event_observer: Callable[[Any], None] | None = None,
     ) -> StructuredOutputResult:
         try:
             return await self._execute(
@@ -151,6 +152,7 @@ class ReportingStructuredOutputExecutor:
                 agent_run_context=agent_run_context,
                 call_budget=call_budget,
                 thinking_request=thinking_request,
+                event_observer=event_observer,
             )
         except TimeoutError as error:
             # 全部纠错调用共享的总时限耗尽。转成稳定错误码：裸 TimeoutError 没有
@@ -175,6 +177,7 @@ class ReportingStructuredOutputExecutor:
         agent_run_context: RunContext | None = None,
         call_budget: StructuredOutputCallBudget | None = None,
         thinking_request: ThinkingRequest | None = None,
+        event_observer: Callable[[Any], None] | None = None,
     ) -> StructuredOutputResult:
         schema = getattr(self.agent, "output_schema", None)
         schema_name = _schema_name(schema)
@@ -251,6 +254,7 @@ class ReportingStructuredOutputExecutor:
                             call_number=total_call_number,
                             protocol_attempt_number=protocol_attempt_number,
                             wire_contract=wire_contract,
+                            event_observer=event_observer,
                         )
                     output_metrics = getattr(output, "metrics", None)
                     if isinstance(output_metrics, RunMetrics):
@@ -411,7 +415,12 @@ class ReportingStructuredOutputExecutor:
         call_number: int,
         protocol_attempt_number: int,
         wire_contract: StructuredOutputWireContract,
+        event_observer: Callable[[Any], None] | None = None,
     ) -> tuple[Agent, Any]:
+        if event_observer is None:
+            from ..agent_events import current_agent_event_observer
+
+            event_observer = current_agent_event_observer()
         execution_agent = _agent_for_mode(self.agent, schema, mode, wire_contract)
         logger.bind(
             model_id=model_id,
@@ -429,14 +438,29 @@ class ReportingStructuredOutputExecutor:
             call_number=call_number,
             protocol_attempt_number=protocol_attempt_number,
         ).debug("report_structured_output_attempt")
-        result = execution_agent.arun(
-            instruction,
-            stream=False,
-            session_id=session_id,
-            user_id=user_id,
-            run_context=agent_run_context,
-        )
-        output = await result if isawaitable(result) else result
+        if event_observer is None:
+            result = execution_agent.arun(
+                instruction, stream=False, session_id=session_id, user_id=user_id,
+                run_context=agent_run_context,
+            )
+        else:
+            result = execution_agent.arun(
+                instruction, stream=True, stream_events=True, yield_run_output=True,
+                session_id=session_id, user_id=user_id, run_context=agent_run_context,
+            )
+        if event_observer is None:
+            output = await result if isawaitable(result) else result
+            return execution_agent, output
+        stream = await result if isawaitable(result) else result
+        from agno.run.agent import RunOutput
+        output = None
+        async for event in stream:
+            if isinstance(event, RunOutput):
+                output = event
+            else:
+                event_observer(event)
+        if output is None:
+            raise ValueError('agent_stream_output_missing')
         return execution_agent, output
 
 

@@ -103,7 +103,7 @@ def create_report_workbook_editor_router(
         session = await require_session(request, report_id, revision, verify_context=False)
         try:
             context, content = await workbooks.file_for_session(session)
-            return Response(content, media_type=_XLSX_TYPE, headers={"Cache-Control": "no-store", "X-Workbook-Sha256": context.xlsx_sha256 or ""})
+            return Response(content, media_type=_XLSX_TYPE, headers={"Cache-Control": "no-store", "X-Workbook-Sha256": context.xlsx_sha256 or "", "X-Workbook-Path": quote(context.xlsx_path or "", safe="")})
         except ReportingError as error:
             raise fail(error) from None
 

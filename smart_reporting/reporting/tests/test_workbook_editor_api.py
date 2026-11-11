@@ -104,3 +104,26 @@ async def test_workbook_download_keeps_chinese_filename_in_rfc5987_header(tmp_pa
         'attachment; filename="report.xlsx"; filename*=UTF-8\'\''
         '%E5%8C%BB%E9%99%A2%E8%BF%90%E8%90%A5%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A_2025.xlsx'
     )
+
+
+@pytest.mark.anyio
+async def test_workbook_file_supplies_trusted_unicode_source_path_for_filename_formulas(tmp_path):
+    from urllib.parse import unquote
+
+    context = _context(_bytes()).model_copy(update={"xlsx_path": "报表/智能分析/运营 %.xlsx"})
+    grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='s' * 32)
+    raw, _ = await grants.issue(context, capabilities={'xlsx_editor': True})
+
+    class Files(Workbooks):
+        async def file_for_session(self, _session):
+            return context, b'xlsx-bytes'
+
+    app = FastAPI()
+    app.include_router(create_report_workbook_editor_router(grants, workbooks=Files(), static_dir=tmp_path, cookie_secure=False))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://report.test') as client:
+        opened = await client.get(f'/reports/v1/workbooks/open/{raw}')
+        response = await client.get(opened.headers['location'] + '/api/file')
+    assert response.status_code == 200
+    assert unquote(response.headers['X-Workbook-Path']) == context.xlsx_path
+    assert response.headers['X-Workbook-Sha256'] == context.xlsx_sha256
+    assert response.content == b'xlsx-bytes'
