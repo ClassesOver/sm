@@ -209,6 +209,8 @@ _SIGNING_CHAIN = {
     "smart_reporting/reporting/business_knowledge/claims.py": ("knowledge_support", "knowledge_source_presentations", "knowledge_source_summary", "knowledge_source_entries"),
     "smart_reporting/reporting/workflow/runtime/business_evidence.py": ("register_section_knowledge", "resolve_runtime_knowledge", "revalidate_section_knowledge", "withdraw_knowledge_blocks"),
     "smart_reporting/reporting/business_knowledge/dependencies.py": ("read_knowledge_dependencies", "resolve_knowledge_dependencies"),
+    "smart_reporting/report_editor/data_revisions.py": ("export",),
+    "smart_reporting/report_editor/data_revision_exports.py": ("render_data_revision_formats",),
     "smart_reporting/report_editor/render_preparation.py": ("prepare_editor_render",),
     "smart_reporting/reporting/workflow/runtime/publication.py": ("_native_claim_presentations", "_verify_claim_fact_bindings", "_render_and_validate", "_render_revision_document", "_render_pptx", "_render_xlsx", "publish_report", "_publish_revision_report", "_write_trace_index"),
     "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication", "_issue_http_pptx_publication", "_issue_http_xlsx_publication", "_issue_http_office_publication"),
@@ -227,6 +229,10 @@ _SIGNING_CHAIN = {
     "smart_reporting/report_editor/native_publication.py": (
         "save_revision", "_save_reserved", "_publish_artifacts", "_issue_links",
     ),
+    "smart_reporting/report_editor/native_pdf_extract.py": ("extract_pages",),
+    "smart_reporting/report_editor/native_pdf_protection.py": ("protect_pdf",),
+    "smart_reporting/report_editor/native_pdf_convert.py": ("convert_office",),
+    "smart_reporting/report_editor/native_pdf_contract.py": ("pdf_review_issues",),
 }
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。

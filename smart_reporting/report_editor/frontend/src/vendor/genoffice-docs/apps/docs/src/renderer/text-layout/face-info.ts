@@ -9,7 +9,7 @@
 
 /** CJK vendor and system family names (zh / ja / ko faces, Noto/Source Han, metric aliases) */
 const CJK_FAMILY_RE =
-  /宋|黑|楷|仿|明|雅黑|等线|simsun|nsimsun|simhei|simkai|simfang|kaiti|fangsong|songti|heiti|stsong|st(zhongsong|kai|fangsong|xihei|hupo|liti|caiyun)|xingkai|lisu|youyuan|yahei|dengxian|pingfang|mingliu|jhenghei|biaukai|dfkai|kaiu|mincho|ms (ui )?p?gothic|yu gothic|yugoth|yu mincho|ゴシック|meiryo|メイリオ|hiragino|ヒラギノ|osaka|kozuka|biz ud|游|教科書体|行書体|創英|arial unicode|apple (sd )?gothic|applemyungjo|wenquanyi|source han|noto (sans|serif)( mono)? (cjk|sc|cn|jp|tc|tw|hk|kr)\b|^misans(?: (?:thin|extralight|light|normal|regular|medium|demibold|semibold|bold|heavy|black))?$|^lxgw wenkai(?: |$)|^ar pl u(?:kai|ming)(?: |$)|^droid sans fallback(?: |$)/i
+  /宋|黑|楷|仿|明|雅黑|等线|simsun|nsimsun|simhei|simkai|simfang|kaiti|fangsong|songti|heiti|stsong|st(zhongsong|kai|fangsong|xihei|hupo|liti|caiyun)|xingkai|lisu|youyuan|yahei|dengxian|pingfang|mingliu|jhenghei|biaukai|dfkai|kaiu|mincho|ms (ui )?p?gothic|yu gothic|yugoth|yu mincho|ゴシック|meiryo|メイリオ|hiragino|ヒラギノ|osaka|kozuka|biz ud|游|教科書体|行書体|創英|arial unicode|apple (sd )?gothic|applemyungjo|wenquanyi|source han|noto (sans|serif)( mono)? (cjk|sc|cn|jp|tc|tw|hk|kr)\b|^misans(?: (?:thin|extralight|light|normal|regular|medium|demibold|semibold|bold|heavy|black))?$|^ma shan zheng$|^zcool xiaowei$|^lxgw wenkai(?: |$)|^ar pl u(?:kai|ming)(?: |$)|^droid sans fallback(?: |$)/i
 
 /** Korean faces by name (vendor names, hangul spellings, the KR bundles) */
 export const KO_FACE_RE =

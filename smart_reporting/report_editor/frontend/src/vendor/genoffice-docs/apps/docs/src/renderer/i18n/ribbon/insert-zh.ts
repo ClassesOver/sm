@@ -1,5 +1,17 @@
 // 提取固定上游 ribbon/zh.ts 与 common-ribbon.ts 的实际使用词条。
 export const insertRibbonZh = {
+  "ribbonPnTopLeft": "顶端左侧",
+  "ribbonPnTopCenter": "顶端居中",
+  "ribbonPnTopRight": "顶端右侧",
+  "ribbonPnBottomLeft": "底端左侧",
+  "ribbonPnBottomCenter": "底端居中",
+  "ribbonPnBottomRight": "底端右侧",
+  "ribbonPnFormat": "设置页码格式…",
+  "ribbonPnRemove": "移除页码",
+  "ribbonHfEditHeader": "编辑页眉",
+  "ribbonHfEditFooter": "编辑页脚",
+  "ribbonHfRemoveHeader": "删除页眉",
+  "ribbonHfRemoveFooter": "删除页脚",
   "ribbonCoverPageTip": "插入封面(内置样式库)",
   "ribbonCoverPage": "封面",
   "ribbonBlankPageTip": "插入空白页",

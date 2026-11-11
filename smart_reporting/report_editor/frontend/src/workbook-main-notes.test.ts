@@ -11,13 +11,13 @@ vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => (
 vi.mock('@univerjs/preset-sheets-note', () => ({ UniverSheetsNotePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
-vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({}) }))
+vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({ plugins: [] }) }))
 vi.mock('./workbook-ribbon', () => ({
   mountWorkbookRibbon: (_host: unknown, callback: unknown) => { grid.ribbon = callback; return { dispose() {}, refreshState() {} } },
   applyWorkbookRibbonCommand: grid.apply,
 }))
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
-vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {} }))
+vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
 vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { Univer, IUniverInstanceService, LocaleType, mergeLocales } = await import('@univerjs/core')

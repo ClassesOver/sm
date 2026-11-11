@@ -1,0 +1,32 @@
+{
+  "columnMeta": {
+    "base": {
+      "unit": "人次"
+    },
+    "value": {
+      "unit": "元"
+    }
+  },
+  "columns": [
+    "label",
+    "value",
+    "base"
+  ],
+  "rows": [
+    [
+      "一月",
+      1,
+      8
+    ],
+    [
+      "二月",
+      2,
+      0
+    ],
+    [
+      "三月",
+      null,
+      4
+    ]
+  ]
+}

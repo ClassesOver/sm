@@ -6,7 +6,7 @@ import asyncio
 import json
 import secrets
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Any, Literal, Protocol
@@ -21,6 +21,7 @@ from ..reporting.structured_output.execution import (
     ReportingStructuredOutputExecutor,
     StructuredOutputCallBudget,
 )
+from .agent_event_streams import AgentEventLog
 from .native_models import NativeEditorContext, native_digest
 from .service import ReportEditorSession
 
@@ -83,6 +84,7 @@ class _NativeAIJob:
     proposal: dict[str, Any] | None = None
     error: dict[str, str] | None = None
     accepted: bool = False
+    event_log: AgentEventLog = field(default_factory=AgentEventLog)
 
 
 def _invalid(code: str, message: str) -> ReportingError:
@@ -420,6 +422,8 @@ class NativeAIService:
                 self.planner(prompt, session_id=f"native-ai:{job.edit_id}", user_id=job.user_id),
                 timeout=self.timeout_seconds,
             )
+            if job.status != "running":
+                return
             if planned is None:
                 raise _invalid("native_ai_output_empty", "AI 未返回候选，人工草稿已保留。")
             planned = NativeAIProposal.model_validate(planned)
@@ -448,6 +452,8 @@ class NativeAIService:
             preview = await self.editor.preview(
                 context, expected_sha256=context.source_file.sha256, operations=combined
             )
+            if job.status != "running":
+                return
             job.proposal = {
                 "summary": planned.summary,
                 "operations": candidate,
@@ -459,6 +465,8 @@ class NativeAIService:
             job.status = "cancelled"
             raise
         except Exception as error:
+            if job.status != "running":
+                return
             if isinstance(error, TimeoutError):
                 code, message = "native_ai_timeout", "AI 候选生成超时，人工草稿已保留。"
             elif isinstance(error, ValidationError):
@@ -556,11 +564,12 @@ class NativeAIService:
 
     async def cancel_edit(self, session: ReportEditorSession, edit_id: str) -> dict[str, Any]:
         job, _ = await self._job(session, edit_id)
+        # 依赖可能吞回 CancelledError，先登记终态，禁止迟到结果重新发布候选。
+        job.status = "cancelled"
+        job.proposal = None
         if job.task and not job.task.done():
             job.task.cancel()
             await asyncio.gather(job.task, return_exceptions=True)
-        job.status = "cancelled"
-        job.proposal = None
         return self._serialize(job)
 
     @staticmethod
@@ -575,9 +584,12 @@ class NativeAIService:
         }
 
     async def aclose(self) -> None:
-        tasks = [job.task for job in self._jobs.values() if job.task and not job.task.done()]
-        for task in tasks:
-            task.cancel()
+        jobs = [job for job in self._jobs.values() if job.task and not job.task.done()]
+        for job in jobs:
+            job.status = "cancelled"
+            job.proposal = None
+            job.task.cancel()
+        tasks = [job.task for job in jobs]
         await asyncio.gather(*tasks, return_exceptions=True)
 
 

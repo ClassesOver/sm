@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { auditOfficeDesktopLayout } from './office-desktop-layout.mjs'
 import { createHash } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { spawn, spawnSync } from 'node:child_process'
@@ -143,6 +144,7 @@ try {
   try { await page.locator('.workbook-ribbon').waitFor({ timeout: 60000 }) }
   catch { throw new Error(JSON.stringify({ url: page.url(), body: (await page.locator('body').innerText()).slice(0, 1000), pageErrors, failedResponses })) }
   await page.waitForFunction(() => document.querySelectorAll('.workbook-grid canvas').length >= 1, null, { timeout: 60000 })
+  await auditOfficeDesktopLayout(page, 'xlsx')
   const geometry = await page.evaluate(() => Object.fromEntries(['#app', '.report-workspace', '.editor-surface', '#report-editor', '.workbook-grid', '.workbook-grid canvas']
     .map(selector => { const element = document.querySelector(selector); const rect = element?.getBoundingClientRect(); return [selector, rect ? { width: rect.width, height: rect.height, display: getComputedStyle(element).display } : null] })))
   if (!geometry['.workbook-grid']?.width || !geometry['.workbook-grid']?.height) throw new Error(JSON.stringify({ geometry, pageErrors, failedResponses }))
@@ -199,15 +201,17 @@ try {
     const feedback = await page.locator('.workbook-feedback').innerText()
     if (!feedback.includes('Selection updated')) throw new Error(`Row/column command was not applied: ${feedback}`)
   } else {
-    await page.locator('.workbook-grid').click({ position: { x: 120, y: 36 } })
+    const nameBox = page.locator('[data-u-comp="defined-name"] input')
+    await nameBox.fill('A1')
+    await nameBox.press('Enter')
     await page.locator('[data-ribbon-command="bold"]').click()
     await page.locator('[data-ribbon-control="font-family"]').selectOption('Calibri')
     await page.locator('[data-ribbon-control="font-size"]').selectOption('14')
     await page.locator('[data-ribbon-control="font-color"]').fill('#cc0000')
     await page.locator('[data-ribbon-command="format:0.00"]').click()
     await page.locator('[data-ribbon-command="decimal-inc"]').click()
-    await page.locator('.workbook-grid').click({ position: { x: 120, y: 36 } })
-    await page.keyboard.press('Shift+ArrowDown')
+    await nameBox.fill('A1:A2')
+    await nameBox.press('Enter')
     await page.locator('[data-ribbon-command="autofn:SUM"]').click()
     await page.locator('[data-ribbon-command="rotate:45"]').evaluate(button => {
       if (button.disabled) throw new Error('persistable text rotation command must be available')

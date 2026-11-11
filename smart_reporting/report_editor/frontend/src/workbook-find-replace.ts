@@ -2,6 +2,7 @@ import { diffToEdits } from './workbook-vendor/core/session-core'
 import { readBackSnapshot } from './workbook-vendor/grid/sync'
 import type { WorkbookModel } from '@sheets-web/xlsx-engine'
 import type { WorkbookOperation } from './workbook-draft'
+import { WORKBOOK_MAX_CELL_EDITS } from './workbook-edit-budget'
 
 const REPLACE_COMMANDS = new Set([
   'ui.operation.open-replace-dialog', 'ui.command.replace-current-match',
@@ -51,7 +52,7 @@ export function validateWorkbookReplacement(
     }
   }
   const edits = diffToEdits(model, readBackSnapshot(data))
-  if (edits.length > 1_000_000) throw new Error('替换超出单元格操作预算，请缩小查找范围')
+  if (edits.length > WORKBOOK_MAX_CELL_EDITS) throw new Error('替换超出单元格操作预算，请缩小查找范围')
   // Include prior operations and reserve a conservative allowance for geometry and
   // sheet/row/column edits not present in this value-only projection.
   const operations = [...staged, { kind: 'applyCellEdits', edits }]

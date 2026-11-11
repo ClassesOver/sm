@@ -70,3 +70,19 @@ it('source filter, zoom and gridlines are hydrated so an unrelated save emits no
   const [operation] = workbookFilterOperations(model, workbook as unknown as FilterWorkbook)
   expect(operation).toMatchObject({ kind: 'applySheetFilter', filter: { range: { startColumn: 1, endColumn: 1 }, columns: [{ colId: 0, values: ['甲'] }] } })
 })
+
+it('hydrates hidden headings in the real worksheet and preserves them on an unrelated cell save', async () => {
+  const source = await applyPageSetups(await createBlankWorkbook(), [{ sheetName: 'Sheet1', showHeadings: false }])
+  const model = await readWorkbook(source)
+  const workbook = mount(model, true), sheet = workbook.getActiveSheet()
+  expect(sheet.getSheet().getConfig().rowHeader.hidden).toBe(1)
+  expect(sheet.getSheet().getConfig().columnHeader.hidden).toBe(1)
+  expect(sheet.getSheet().getConfig().rowHeader.width).toBe(46)
+  expect(sheet.getSheet().getConfig().columnHeader.height).toBe(20)
+  const changed = await applyWorkbookOperations(source, [{ kind: 'applyCellEdits', edits: [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'updated' } },
+  ] }])
+  const saved = await readWorkbook(changed)
+  expect(saved.sheets[0]!.showHeadings).toBe(false)
+  expect(saved.sheets[0]!.cells.A1?.value).toBe('updated')
+})

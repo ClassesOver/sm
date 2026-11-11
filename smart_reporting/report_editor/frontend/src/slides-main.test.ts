@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
+import { NativeDraft } from './native-draft'
 
 describe('shared PPTX editor', () => {
   beforeEach(() => {
     document.body.innerHTML = '<main id="app"></main>'
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true } })
+    Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event('close')) } })
   })
 
   afterEach(() => {
@@ -13,11 +16,12 @@ describe('shared PPTX editor', () => {
     document.body.replaceChildren()
   })
 
-  async function openEditor() {
+  async function openEditor(headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto?: boolean }) {
     const deck = {
       revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 },
       slides: [0, 1].map(slideIndex => ({
         slideIndex,
+        ...(headerFooter ? { headerFooter } : {}),
         animations: [],
         elements: ['title', 'body'].map(id => ({
           id, type: 'text', name: id, text: `${id} ${slideIndex}`, editable: true, deletable: true,
@@ -31,10 +35,63 @@ describe('shared PPTX editor', () => {
     vi.stubGlobal('fetch', fetcher)
     const root = document.querySelector<HTMLElement>('#app')!
     const shell = createEditorShell(root, 'full', 'pptx')
-    createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx })
+    createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: !!headerFooter })
     await vi.waitFor(() => expect(root.querySelectorAll('.slide-open')).toHaveLength(2))
     return { root, shell, fetcher }
   }
+
+  it('preserves a fixed date when changing the footer', async () => {
+    const { root, shell, fetcher } = await openEditor({ footer: 'old', slideNum: false, date: '2026-10-01', dateAuto: false })
+    root.querySelector<HTMLButtonElement>('[data-command="headerFooter"]')!.click()
+    const dialog = document.querySelector<HTMLDialogElement>('.slides-hf-dialog')!
+    expect(dialog.querySelector<HTMLInputElement>('[name="dateAuto"]')!.checked).toBe(false)
+    dialog.querySelector<HTMLInputElement>('[name="footer"]')!.value = 'new footer'
+    dialog.querySelector<HTMLButtonElement>('[value="ok"]')!.click()
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, revisionRegistered: true, validation: { issues: [] } })))
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
+    const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
+    expect(payload.headerFooter).toMatchObject({ date: '2026-10-01', dateAuto: false, footer: 'new footer' })
+  })
+
+  it('defaults a legacy fixed date to non-automatic mode', async () => {
+    const { root } = await openEditor({ footer: null, slideNum: false, date: '2026-10-01' })
+    root.querySelector<HTMLButtonElement>('[data-command="headerFooter"]')!.click()
+    const dialog = document.querySelector<HTMLDialogElement>('.slides-hf-dialog')!
+    expect(dialog.querySelector<HTMLInputElement>('[name="dateAuto"]')!.checked).toBe(false)
+    dialog.querySelector<HTMLButtonElement>('[value="cancel"]')!.click()
+  })
+
+  it('keeps an explicitly automatic date automatic', async () => {
+    const { root } = await openEditor({ footer: null, slideNum: false, date: '2026-10-01', dateAuto: true })
+    root.querySelector<HTMLButtonElement>('[data-command="headerFooter"]')!.click()
+    const dialog = document.querySelector<HTMLDialogElement>('.slides-hf-dialog')!
+    expect(dialog.querySelector<HTMLInputElement>('[name="dateAuto"]')!.checked).toBe(true)
+    dialog.querySelector<HTMLButtonElement>('[value="cancel"]')!.click()
+  })
+
+  it('remaps restored section references after removing a pending slide', async () => {
+    const root = document.querySelector<HTMLElement>('#app')!
+    const shell = createEditorShell(root, 'full', 'pptx')
+    const deck = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 },
+      slides: [0, 1].map(slideIndex => ({ slideIndex, animations: [], elements: [] })) }
+    const storage = new Map<string, string>()
+    const draft = new NativeDraft({ documentId: 'slides-test', revision: 1, sourceSha256: 'a'.repeat(64),
+      scope: { database: 'test', companyId: '1', userId: '1', threadId: '1' } }, {
+      getItem: key => storage.get(key) ?? null,
+      setItem: (key, value) => { storage.set(key, value) },
+      removeItem: key => { storage.delete(key) },
+    }, () => 'test-request')
+    draft.setOperations([{ kind: 'editSlides', order: [0, 2, 3, 1],
+      newSlides: [{ layoutFrom: 0 }, { layoutFrom: 0 }],
+      sections: [{ slideIndex: 3, name: 'Retained section' }] }])
+    createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx,
+      native: true, draft, request: async () => deck })
+    await vi.waitFor(() => expect(root.querySelectorAll('[data-new-slide="true"]')).toHaveLength(2))
+    root.querySelector<HTMLElement>('[data-new-slide="true"]')!.querySelector<HTMLButtonElement>('[aria-label="移除新建的幻灯片"]')!.click()
+    expect(draft.operations[0]).toMatchObject({ order: [0, 2, 1], newSlides: [{ layoutFrom: 0 }],
+      sections: [{ slideIndex: 2, name: 'Retained section' }] })
+  })
 
   it('retains pending geometry when switching objects before saving', async () => {
     const { root, shell, fetcher } = await openEditor()

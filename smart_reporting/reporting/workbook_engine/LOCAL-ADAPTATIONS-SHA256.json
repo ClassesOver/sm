@@ -1,3 +1,4 @@
 {
+  "packages/xlsx-engine/src/chart-add.ts": "c4ba4a20276931c4a0d55d3157af483bb8a6967e34f47d811bf480c70cad64c2",
   "packages/xlsx-engine/package.json": "f1c2d5c99bcb978810465e9825957c63962d9cf8c51ba1ab772ccb9f4a0ed77f"
 }

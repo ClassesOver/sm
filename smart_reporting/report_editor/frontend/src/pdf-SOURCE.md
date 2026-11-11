@@ -22,7 +22,7 @@ The Pages tab preserves the source control order in four groups: rotation;
 delete/extract/insert/replace; crop/page size; reverse/split/merge. Its semantic
 IDs use the local `genoffice.pdf.page.*` namespace because the source has no
 stable DOM command IDs. Left/right rotation, delete, extract, import, replace,
-crop, sizing, reverse, split and merge actions are individually mapped. Left/right rotation, clockwise rotate-all, delete, and reverse have verified
+crop, sizing, reverse, split and merge actions are individually mapped. Left/right rotation, clockwise rotate-all, delete, insert blank page, and reverse have verified
 bridge operation paths; the other
 source actions stay disabled with their own bridge or publication reason. The
 local move-previous/move-next controls remain in a separate draft-controls
@@ -159,3 +159,46 @@ reason if exceeded. Existing edit/preview/print/save/readonly locks apply and
 text-preview approval is invalidated by the changed complete snapshot. Source
 provenance and actual evidence are in `NATIVE_PDF_ROTATE_ALL_ACCEPTANCE.md`;
 this does not close Task 5 or implement other page operations.
+
+
+Whole-document comments (2026-11-09): pinned `note-threads.ts`/`CommentsPanel.tsx`
+read semantics and unmodified extracted date parser have upstream/local hashes in
+`genoffice-pdf-comments-source.json`. Native changes use iterative malformed-thread
+handling, immutable sourceRef joins, per-document cache/error retry and existing
+saved/pending card navigation instead of source popovers. Text-note replies are
+readonly; no reply write contract. See `NATIVE_PDF_COMMENTS_ACCEPTANCE.md`.
+
+
+Attachment reading/export (2026-11-09): pinned AttachmentsPanel/App originals and
+hashes are recorded by `genoffice-pdf-attachments-source.json`; humanBytes is
+unchanged. Native adaptation keeps internal PDF.js6 Map keys distinct from display
+filenames, document promise caches/retry and lifecycle guards. Browser Blob
+export replaces Electron's dialog; already-authorized opened-PDF bytes need no
+new backend route. Attachment add/remove is not implemented. Evidence:
+`NATIVE_PDF_ATTACHMENTS_ACCEPTANCE.md`.
+
+
+Reading persistence (2026-11-09): view-state.ts is copied unchanged with SHA in
+`genoffice-pdf-reading-source.json`; source App open/restore/300ms/pagehide lifecycle
+is the primary reference. Native adaptation scopes keys to immutable authorized
+identity and measures DOM rows instead of assuming desktop row heights. Numeric
+page retains original source ordinal, not mutable output order; preview view state
+never overwrites source. Existing basic fit recalculates on reopen, not full source
+fit/continuous resize parity. See `NATIVE_PDF_READING_ACCEPTANCE.md`.
+
+
+All-row fit/continuous reflow (2026-11-09): unchanged pinned spread.ts supplies
+adjacent visible-page pairing; App rowSize/recomputeFit/ResizeObserver and fixed
+PAGE_GAP are primary references. Native fit uses actual responsive padding and
+unscaled heading/border/gutter constraints across all retained canvases. Notes
+stay below pages instead of the source side margin. Form controls reuse unchanged
+model/value state during automatic reflow. Provenance/adaptations:
+`genoffice-pdf-fit-source.json`; evidence: `NATIVE_PDF_FIT_ACCEPTANCE.md`.
+
+
+Sidebar sizing (2026-11-09): unchanged sidebar config extraction and App drag/
+thumbRasterW/window clamp are recorded in `genoffice-pdf-sidebar-source.json`.
+Native adaptations add nonfatal storage, ARIA keyboard/cancellation cleanup,
+measured pane chrome, DPR2 raster caps and document/page lazy bitmap lifetime.
+Initial/preview reading guards stay intact while pagehide during ordinary reflow
+saves stable position/latest fit intent. See `NATIVE_PDF_SIDEBAR_ACCEPTANCE.md`.

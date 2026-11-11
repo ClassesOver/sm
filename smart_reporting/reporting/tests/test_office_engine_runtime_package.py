@@ -102,13 +102,13 @@ def test_docx_bundle_runs_without_source_or_node_modules(tmp_path, monkeypatch):
 
     from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
 
-    bundle = _REPO / "smart_reporting/reporting/slides_engine/dist/edit-docx.mjs"
+    bundle = _REPO / "smart_reporting/reporting/doc_engine/dist/edit-docx.mjs"
     if not bundle.is_file():
-        pytest.skip("需要先为 slides_engine 执行 bundle:bridges")
+        pytest.skip("需要先为 doc_engine 执行 bundle:bridges")
     runtime = tmp_path / "runtime"
     (runtime / "dist").mkdir(parents=True)
     shutil.copy2(bundle, runtime / "dist/edit-docx.mjs")
-    monkeypatch.setenv("AGENT_REPORTING_SLIDES_ENGINE_DIR", str(runtime))
+    monkeypatch.setenv("AGENT_REPORTING_DOC_ENGINE_DIR", str(runtime))
     monkeypatch.delenv("NODE_PATH", raising=False)
     monkeypatch.delenv("NODE_OPTIONS", raising=False)
 
@@ -182,3 +182,45 @@ def test_isolated_bundles_build_edit_render_slides_and_patch_workbook(isolated_e
     assert inspected["sheets"][0]["cells"]["B2"]["value"] == 9
     with ZipFile(patched) as archive:
         assert '<definedName name="Amount">Data!$B$2</definedName>' in archive.read("xl/workbook.xml").decode()
+
+
+def test_runtime_package_collects_cross_workspace_bundle_licenses_without_escaping(tmp_path):
+    source = tmp_path / 'reporting/pdf_engine'
+    files = {
+        'reporting/pdf_engine/dist/edit-pdf.mjs': "console.log('bundled')",
+        'reporting/pdf_engine/LICENSE': 'pdf engine license',
+        'reporting/slides_engine/LICENSE': 'shared engine license',
+        'reporting/slides_engine/packages/shared/package.json': '{"name":"shared","license":"Apache-2.0"}',
+        'reporting/slides_engine/packages/shared/src/index.ts': 'export const shared = 1',
+        'report_editor/frontend/node_modules/@scope/dependency/package.json': '{"name":"@scope/dependency","license":"MIT"}',
+        'report_editor/frontend/node_modules/@scope/dependency/LICENSE': 'external npm license',
+        'report_editor/frontend/node_modules/@scope/dependency/README.md': 'npm attribution',
+        'report_editor/frontend/node_modules/@scope/dependency/dist/index.js': 'module.exports = 1',
+        'report_editor/frontend/src/vendor/example/LICENSE': 'vendor license',
+        'report_editor/frontend/src/vendor/example/NOTICE': 'vendor attribution',
+        'report_editor/frontend/src/vendor/example/src/helper.ts': 'export const helper = 1',
+    }
+    for name, content in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    (source / 'dist/metafile.json').write_text(json.dumps({
+        'inputs': {name: {} for name in [
+            '../slides_engine/packages/shared/src/index.ts',
+            '../../report_editor/frontend/node_modules/@scope/dependency/dist/index.js',
+            '../../report_editor/frontend/src/vendor/example/src/helper.ts',
+        ]},
+        'outputs': {'dist/edit-pdf.mjs': {'imports': []}},
+    }))
+    destination = tmp_path / 'runtime'
+    subprocess.run(['node', str(_PACKAGE_SCRIPT), str(source), str(destination)], check=True)
+    output = {str(path.relative_to(destination)): path.read_text() for path in destination.rglob('*') if path.is_file()}
+    assert 'external npm license' in output.values()
+    assert 'vendor license' in output.values()
+    assert 'vendor attribution' in output.values()
+    assert 'shared engine license' in output.values()
+    assert len([value for value in output.values() if value == 'external npm license']) == 1
+    assert all(name == 'dist/edit-pdf.mjs' or name == 'LICENSE' or name.startswith('licenses/') for name in output)
+    assert not any(name.endswith(('.ts', '.js')) for name in output)
+    assert not (tmp_path / 'runtime/report_editor').exists()
+    assert not (tmp_path / 'report_editor/frontend/node_modules/@scope/dependency/LICENSE').samefile(destination / 'LICENSE')

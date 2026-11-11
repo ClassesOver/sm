@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { applyCellEdits, applyDefinedNames, createBlankWorkbook, readWorkbook } from '@sheets-web/xlsx-engine'
+import { applyCellEdits, applyDefinedNames, applySheetEdits, createBlankWorkbook, readWorkbook } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { createWorkbookEditorView } from './workbook-main'
 import { createNativeOfficeTransport } from './native-office-view'
@@ -12,7 +12,7 @@ vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => (
 vi.mock('@univerjs/preset-sheets-note', () => ({ UniverSheetsNotePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
-vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({}) }))
+vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({ plugins: [] }) }))
 vi.mock('@univerjs/preset-sheets-sort', () => ({ UniverSheetsSortPreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-filter', () => ({ UniverSheetsFilterPreset: () => ({}) }))
 vi.mock('./workbook-ribbon', () => ({
@@ -20,7 +20,7 @@ vi.mock('./workbook-ribbon', () => ({
   applyWorkbookRibbonCommand: grid.apply,
 }))
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
-vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {} }))
+vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
 vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { Univer, IUniverInstanceService, LocaleType, mergeLocales } = await import('@univerjs/core')
@@ -30,14 +30,25 @@ vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { UniverSheetsPlugin } = await import('@univerjs/sheets')
   const { UniverSheetsNotePlugin } = await import('@univerjs/sheets-note')
   const { UniverSheetsSortPlugin } = await import('@univerjs/sheets-sort')
+  const { UniverFormulaEnginePlugin } = await import('@univerjs/engine-formula')
+  const { UniverSheetsFormulaPlugin } = await import('@univerjs/sheets-formula')
+  const { UniverSheetsDataValidationPlugin } = await import('@univerjs/sheets-data-validation')
+  const { UniverSheetsTablePlugin } = await import('@univerjs/sheets-table')
+  const { UniverSheetsFilterPlugin } = await import('@univerjs/sheets-filter')
   await import('@univerjs/sheets/facade')
   await import('@univerjs/sheets-note/facade')
+  await import('@univerjs/sheets-table/facade')
   return { createUniver: () => {
     const univer = new Univer({ locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, NoteZhCN) } })
     grid.instances.push(univer)
     univer.registerPlugin(UniverSheetsPlugin)
     univer.registerPlugin(UniverSheetsNotePlugin)
     univer.registerPlugin(UniverSheetsSortPlugin)
+    univer.registerPlugin(UniverFormulaEnginePlugin)
+    univer.registerPlugin(UniverSheetsFormulaPlugin)
+    univer.registerPlugin(UniverSheetsDataValidationPlugin)
+    univer.registerPlugin(UniverSheetsTablePlugin)
+    univer.registerPlugin(UniverSheetsFilterPlugin)
     const api = FUniver.newAPI(univer)
     const create = api.createWorkbook.bind(api)
     api.createWorkbook = data => {
@@ -283,7 +294,7 @@ it('definedNamesPlan diff semantics: adds, ref changes (in-place rename-safe), r
   ])).toEqual({ sets: [{ name: 'dup', refersTo: 'S!$A$1' }] })
   // 非法名（含 _xlnm.）：引擎不能写也不删，保持原样。
   expect(definedNamesPlan([{ name: '_xlnm.Print_Area', refersTo: 'S!$A$1' }], [])).toEqual({})
-  // 工作表级 scope 条目在 live 读取时即被排除。
+  // 工作表级scope与全局同样保留，依稳定工作表身份区分。
   const scopedWorkbook = {
     getDefinedNames: () => [
       { getName: () => 'local', getFormulaOrRefString: () => 'S!$A$1', getLocalSheetId: () => 'sheet-0' },
@@ -291,7 +302,7 @@ it('definedNamesPlan diff semantics: adds, ref changes (in-place rename-safe), r
       { getName: () => 'plain', getFormulaOrRefString: () => '=S!$C$1' },
     ],
   }
-  expect(liveDefinedNames(scopedWorkbook as never)).toEqual([{ name: 'global', refersTo: 'S!$B$1' }, { name: 'plain', refersTo: 'S!$C$1' }])
+  expect(liveDefinedNames(scopedWorkbook as never)).toEqual([{ name: 'local', refersTo: 'S!$A$1', scopeSheetId: 'sheet-0' }, { name: 'global', refersTo: 'S!$B$1' }, { name: 'plain', refersTo: 'S!$C$1' }])
   // 组合差分 → 协议 op。
   expect(definedNamesPlanOperation([{ name: 'gone', refersTo: 'S!$A$1' }], [{ name: 'new', refersTo: 'S!$B$2' }]))
     .toEqual({ kind: 'applyDefinedNames', plan: { sets: [{ name: 'new', refersTo: 'S!$B$2' }], removes: ['gone'] } })
@@ -320,4 +331,97 @@ it('engine protocol applies sets and removals to workbook.xml and the bridge pla
     { name: '城市', refersTo: 'Sheet1!$A$2' },
     { name: 'RateMark', refersTo: 'Sheet1!$B$3' }, { name: '旧名', refersTo: 'Sheet1!$B$2' },
   ])
+})
+
+it('creates and updates a sheet-scoped name independently from the same global name, then saves and restores it', async () => {
+  const source = await applyDefinedNames(await applySheetEdits(await createBlankWorkbook(), { renames: [], additions: [{ name: 'Other' }], removals: [], order: ['Sheet1', 'Other'] }),
+    { sets: [{ name: 'Rate', refersTo: '10' }, { name: 'Rate', refersTo: '20', scopeSheetName: 'Other' }] })
+  const storage = store(), draft = new NativeDraft(identity, storage)
+  let downloaded: Uint8Array | undefined
+  const save = async (request: NativeSaveRequest) => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/names.xlsx' } }, validation: { issues: [] } }
+  }
+  const current = await open(source, draft, save)
+  grid.ribbon('name-manager-open')
+  const box = dialog(), scope = document.querySelector<HTMLSelectElement>('[aria-label="名称作用域"]')!
+  expect([...scope.options].map(option => option.textContent)).toEqual(['工作簿', 'Sheet1', 'Other'])
+  const sheetId = grid.api.getActiveWorkbook().getSheetByName('Sheet1').getSheetId()
+  scope.value = sheetId
+  box.name.value = 'Rate'; box.ref.value = '30'; box.add.click()
+  expect(box.error.textContent).toBe('')
+  expect(liveNames()).toContainEqual({ name: 'Rate', refersTo: '30', scopeSheetId: sheetId })
+  await vi.waitFor(() => expect(namesOperation(draft.operations)?.plan.sets).toEqual([{ name: 'Rate', refersTo: '30', scopeSheetName: 'Sheet1' }]))
+  history('undo')
+  await vi.waitFor(() => expect(draft.operations).toEqual([]))
+  history('redo')
+  await vi.waitFor(() => expect(namesOperation(draft.operations)?.plan.sets).toHaveLength(1))
+  current.view?.dispose()
+  const restored = new NativeDraft(identity, storage)
+  const reopened = await open(source, restored, save)
+  expect(liveNames().filter(row => row.name === 'Rate')).toHaveLength(3)
+  grid.ribbon('name-manager-open')
+  const selected = dialog(), local = liveNames().find(row => row.name === 'Rate' && row.scopeSheetId === 'sheet-0')!
+  selected.list.value = [...selected.list.options].find(option => option.textContent?.includes('Sheet1'))!.value
+  selected.list.dispatchEvent(new Event('change'))
+  expect(document.querySelector<HTMLSelectElement>('[aria-label="名称作用域"]')!.disabled).toBe(true)
+  selected.ref.value = '40'; selected.update.click()
+  expect(selected.error.textContent).toBe('')
+  expect(liveNames()).toContainEqual({ ...local, refersTo: '40' })
+  reopened.shell.save.click()
+  await vi.waitFor(() => expect(reopened.shell.statusLabel.textContent).toContain('已保存修订 2'))
+  expect((await readWorkbook(downloaded!)).definedNames).toEqual(expect.arrayContaining([
+    { name: 'Rate', refersTo: '10' }, { name: 'Rate', refersTo: '20', scopeSheetName: 'Other' }, { name: 'Rate', refersTo: '40', scopeSheetName: 'Sheet1' },
+  ]))
+  reopened.view?.dispose()
+})
+
+
+it.each([
+  { mode: 'insert', targetId: 'sheet-0', before: '$A$1', row: '$A$2', after: '$B$2' },
+  { mode: 'delete', targetId: 'sheet-0', before: '$B$2', row: '$B$1', after: '$A$1' },
+  { mode: 'delete-inactive', targetId: 'sheet-1', before: '$B$2', row: '$B$1', after: '$A$1' },
+])('keeps local name $mode row and column shifts in their owning sheet through undo, draft restore and real save', async ({ mode, targetId, before, row, after }) => {
+  const source = await applyDefinedNames(await applySheetEdits(await fixture(), { renames: [], additions: [{ name: 'Other' }], removals: [], order: ['Sheet1', 'Other'] }),
+    { sets: [{ name: 'Local', refersTo: before, scopeSheetName: 'Sheet1' }, { name: 'Local', refersTo: before, scopeSheetName: 'Other' }] })
+  const storage = store(), draft = new NativeDraft(identity, storage)
+  let downloaded: Uint8Array | undefined
+  const save = async (request: NativeSaveRequest) => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/names.xlsx' } }, validation: { issues: [] } }
+  }
+  const current = await open(source, draft, save)
+  const otherId = targetId === 'sheet-0' ? 'sheet-1' : 'sheet-0'
+  const target = () => grid.api.getActiveWorkbook().getSheetBySheetId(targetId)
+  const local = (id: string) => liveNames().find(row => row.name === 'Local' && row.scopeSheetId === id)?.refersTo
+  if (mode === 'insert') target().insertRowsBefore(0, 1)
+  else target().deleteRows(0, 1)
+  expect(local(targetId)).toBe(row)
+  expect(local(otherId)).toBe(before)
+  history('undo')
+  expect(local(targetId)).toBe(before)
+  expect(local(otherId)).toBe(before)
+  history('redo')
+  if (mode === 'insert') target().insertColumnsBefore(0, 1)
+  else target().deleteColumns(0, 1)
+  expect(local(targetId)).toBe(after)
+  expect(local(otherId)).toBe(before)
+  await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyRowColumnOps')).toBe(true))
+  expect(namesOperation(draft.operations)).toBeUndefined()
+  current.view?.dispose()
+  const restored = new NativeDraft(identity, storage)
+  const reopened = await open(source, restored, save)
+  expect(local(targetId)).toBe(after)
+  expect(local(otherId)).toBe(before)
+  reopened.shell.save.click()
+  await vi.waitFor(() => expect(reopened.shell.statusLabel.textContent).toContain('已保存修订 2'))
+  const saved = await readWorkbook(downloaded!)
+  expect(saved.definedNames).toEqual(expect.arrayContaining([
+    { name: 'Local', refersTo: after, scopeSheetName: targetId === 'sheet-0' ? 'Sheet1' : 'Other' },
+    { name: 'Local', refersTo: before, scopeSheetName: targetId === 'sheet-0' ? 'Other' : 'Sheet1' },
+  ]))
+  if (targetId === 'sheet-1') expect(saved.definedNames).toEqual(expect.arrayContaining([
+    { name: 'RateMark', refersTo: 'Sheet1!$B$3' }, { name: '旧名', refersTo: 'Sheet1!$B$2' },
+  ]))
+  reopened.view?.dispose()
 })

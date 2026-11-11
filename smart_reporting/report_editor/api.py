@@ -24,6 +24,7 @@ from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
 from ..reporting.trace.contracts_v1 import TRACE_ERROR_HTTP_STATUS
+from .capabilities import EditorCapabilities
 from .chart_ai import ChartAIEditRequest, ChartStandardEditRequest, ChartTemplateApplyRequest
 from .recalculation import (
     PolicyAdoptionPreviewRequest,
@@ -31,6 +32,7 @@ from .recalculation import (
     PreparationConfirmationRequest,
     RecalculationRequest,
 )
+from .data_revision_contract import ReportDataEditRequest
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
 from .table_ai import TableAIEditRequest, TableTemplateApplyRequest
 from .trace_retention import SourceFileResponse
@@ -137,6 +139,7 @@ def create_report_editor_router(
     ai: Any | None = None,
     chart_ai: Any | None = None,
     table_ai: Any | None = None,
+    data_revisions: Any | None = None,
     native_editor: Any | None = None,
     cookie_secure: bool = True,
     allowed_origin: str | None = None,
@@ -192,6 +195,63 @@ def create_report_editor_router(
         return response
 
     if editor is not None:
+
+        if data_revisions is not None:
+
+            @router.post('/reports/v1/editor/{report_id}/{revision}/api/data-revisions/freeze', include_in_schema=False)
+            async def freeze_report_data(report_id: str, revision: int, request: Request):
+                session, context = await _write_session_context(grants, editor, request,
+                    report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+                _require_data_revision_access(session)
+                try:
+                    snapshot = await data_revisions.freeze(context)
+                    return await data_revisions.presentation(context, snapshot)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.get('/reports/v1/editor/{report_id}/{revision}/api/data-revisions/{snapshot_id}', include_in_schema=False)
+            async def read_report_data(report_id: str, revision: int, snapshot_id: str, request: Request):
+                session, context = await _read_session_context(grants, editor, request,
+                    report_id=report_id, revision=revision)
+                _require_data_revision_access(session)
+                try:
+                    snapshot = await data_revisions.read(context, snapshot_id)
+                    return await data_revisions.presentation(context, snapshot)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.post('/reports/v1/editor/{report_id}/{revision}/api/data-revisions', include_in_schema=False)
+            async def revise_report_data(report_id: str, revision: int, payload: ReportDataEditRequest, request: Request):
+                session, context = await _write_session_context(grants, editor, request,
+                    report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+                _require_data_revision_access(session)
+                try:
+                    snapshot = await data_revisions.revise(context, payload)
+                    return await data_revisions.presentation(context, snapshot)
+                except ReportingError as error:
+                    _editor_http_error(error)
+
+            @router.post('/reports/v1/editor/{report_id}/{revision}/api/data-revisions/{snapshot_id}/export', include_in_schema=False)
+            async def export_report_data(report_id: str, revision: int, snapshot_id: str, request: Request):
+                session, context = await _write_session_context(grants, editor, request,
+                    report_id=report_id, revision=revision, allowed_origin=allowed_origin)
+                _require_data_revision_access(session)
+                try:
+                    result = await data_revisions.export(context, snapshot_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+                return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+            @router.get('/reports/v1/editor/{report_id}/{revision}/api/data-revisions/{snapshot_id}/exports/{export_id}', include_in_schema=False)
+            async def read_report_data_export(report_id: str, revision: int, snapshot_id: str, export_id: str, request: Request):
+                session, context = await _read_session_context(grants, editor, request,
+                    report_id=report_id, revision=revision)
+                _require_data_revision_access(session)
+                try:
+                    result = await data_revisions.read_export(context, snapshot_id, export_id)
+                except ReportingError as error:
+                    _editor_http_error(error)
+                return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
         @router.get(
             "/reports/v1/editor/{report_id}/{revision}/export",
@@ -1649,7 +1709,18 @@ def _request_id(value: str | None) -> str:
         return str(uuid4())
 
 
+def _require_data_revision_access(session):
+    if EditorCapabilities.of(session.capabilities).restricted:
+        raise HTTPException(status_code=403, detail={'code': 'report_data_revision_forbidden'})
+
+
 def _editor_error_status(code: str) -> int:
+    if code == 'report_data_export_unknown':
+        return 404
+    if code in {'report_data_revision_conflict', 'report_data_base_revision_conflict'}:
+        return 409
+    if code.startswith('report_data_'):
+        return 422
     if code in {
         "report_editor_conflict",
         "report_editor_design_conflict",

@@ -1351,6 +1351,7 @@ async def test_publication_manifest_failures_keep_artifacts_and_report_issue(mon
     )
 
     gate = output.content["publicationGate"]
+    assert output.content["revision"] == result["revision"]
     if quality_fault:
         assert output.content["formalReleaseAllowed"] is (not gate_failure)
         assert gate["issues"] == ([prior_issue] if gate_failure else [])

@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.artifacts_v1 import ArtifactFile
@@ -29,7 +29,7 @@ NATIVE_ARTIFACT_KEYS: dict[NativeFormat, str] = {
     "docx": "word", "pdf": "pdf", "xlsx": "xlsx", "pptx": "pptx"
 }
 NATIVE_ARTIFACT_MEDIA = {key: NATIVE_MEDIA[format] for format, key in NATIVE_ARTIFACT_KEYS.items()}
-NativeOrigin = Literal["report", "upload"]
+NativeOrigin = Literal["report", "upload", "derived"]
 
 
 class NativeModel(BaseModel):
@@ -50,6 +50,18 @@ class NativeSource(NativeModel):
     report_id: str | None = Field(default=None, alias="reportId", min_length=1)
     workflow_run_id: str | None = Field(default=None, alias="workflowRunId", min_length=1)
     revision: int | None = Field(default=None, ge=1)
+    parent_document_id: str | None = Field(default=None, alias="parentDocumentId", min_length=1, max_length=256)
+    parent_revision: int | None = Field(default=None, alias="parentRevision", ge=1)
+    parent_sha256: str | None = Field(default=None, alias="parentSha256", pattern=SHA256_PATTERN)
+
+    @model_serializer(mode="wrap")
+    def serialize_source(self, handler):
+        result = handler(self)
+        # 旧来源的创建幂等键依赖完整序列化；新增追溯字段不能改变旧请求摘要。
+        if self.origin != "derived":
+            for key in ("parent_document_id", "parent_revision", "parent_sha256", "parentDocumentId", "parentRevision", "parentSha256"):
+                result.pop(key, None)
+        return result
 
     @model_validator(mode="after")
     def validate_identity(self) -> NativeSource:
@@ -61,6 +73,12 @@ class NativeSource(NativeModel):
             raise ValueError("报告来源必须携带完整报告身份")
         if self.origin == "upload" and any(value is not None for value in identity):
             raise ValueError("上传来源不能伪造报告身份")
+        parent = (self.parent_document_id, self.parent_revision, self.parent_sha256)
+        if self.origin == "derived":
+            if any(value is None for value in parent) or any(value is not None for value in identity):
+                raise ValueError("派生来源必须绑定父文档身份，不能伪造报告来源")
+        elif any(value is not None for value in parent):
+            raise ValueError("只有派生来源可以携带父文档身份")
         return self
 
 

@@ -1,6 +1,7 @@
 """原生修订保存与交付；身份可读的文件不受验收/登记附加故障阻断。"""
 
 from __future__ import annotations
+from .native_pdf_contract import PDF_CONFIRMATION_KINDS,PDF_RECEIPT_KINDS,pdf_review_issues
 
 import asyncio
 import hashlib
@@ -209,10 +210,10 @@ class NativePublicationService:
 
                     from .native_office import patch_office
                     patch = partial(patch_office, parent.format)
-                if parent.format == "pdf" and any(op.get("kind") == "replaceText" for op in operations):
+                if parent.format == 'pdf' and any(op.get('kind') in PDF_RECEIPT_KINDS for op in operations):
                     text_receipt = await run_office_engine(patch_pdf_with_receipt, content, operations)
-                    if not confirmed_preview_digest or text_receipt["previewDigest"] != confirmed_preview_digest:
-                        raise ReportingError("native_pdf_text_preview_changed", "PDF 文字修改或字体资源已变化，请重新预览并确认。")
+                    if any(op.get('kind') in PDF_CONFIRMATION_KINDS for op in operations) and (not confirmed_preview_digest or text_receipt['previewDigest'] != confirmed_preview_digest):
+                        raise ReportingError('native_pdf_text_preview_changed','PDF 实际输出或资源已变化，请重新预览并确认。')
                     revised = text_receipt["content"]
                 else:
                     revised = await run_office_engine(patch, content, operations)
@@ -236,7 +237,15 @@ class NativePublicationService:
             issues = list(recovery_issues)
             if text_receipt is not None:
                 for skipped in text_receipt.get("skippedOperations", []):
-                    issues.append(self._issue("native_pdf_text_skipped", f"第 {skipped['operationIndex'] + 1} 项文字修改未应用，已保留原文：{skipped['reason']}"))
+                    styled_text = any(op.get('kind') == 'replaceText' and (
+                        any(key in op for key in ('font','fontSize','color','bold','italic','align','lineLeading','styleRuns'))
+                        or chr(10) in str(op.get('newText',''))) for op in operations)
+                    message = (f"第 {skipped['operationIndex'] + 1} 项 PDF 编辑执行或复核告警，已保留实际生成文件，请核对内容：{skipped['reason']}"
+                        if skipped.get('kind') != 'replaceText' or styled_text else
+                        f"第 {skipped['operationIndex'] + 1} 项文字修改未应用，已保留原文：{skipped['reason']}")
+                    issues.append(self._issue("native_pdf_text_skipped", message))
+                for review_issue in pdf_review_issues(text_receipt):
+                    issues.append(self._issue(review_issue["code"], review_issue["message"]))
             try:
                 identities[primary_label] = await self._write_file(
                     key, primary.path, revised, primary.media_type
@@ -435,12 +444,23 @@ class NativePublicationService:
                     format_name=label,
                 )
             except Exception:
-                issues.append(
-                    self._issue(
-                        f"native_{label}_identity_unavailable",
-                        f"{label} 文件身份无法核验，未签发该格式下载。",
+                try:
+                    actual, _ = await self.workspace.afile_bytes(key, file.path)
+                    if len(actual) != file.size or hashlib.sha256(actual).hexdigest() != file.sha256:
+                        raise ValueError("actual identity mismatch")
+                except Exception:
+                    issues.append(
+                        self._issue(
+                            f"native_{label}_identity_unavailable",
+                            f"{label} 文件身份无法核验，未签发该格式下载。",
+                        )
                     )
-                )
+                else:
+                    verified[label] = file
+                    issues.append(self._issue(
+                        f"native_{label}_identity_review_failed",
+                        f"{label} 后置复核异常，但已直接读取并重新核验实际文件身份，下载仍可用。",
+                    ))
             else:
                 verified[label] = file
         return NativeArtifacts(**verified), issues
@@ -452,6 +472,8 @@ class NativePublicationService:
         validation: NativeValidation,
         registered: bool,
         workspace_key: str,
+        *,
+        allow_editor: bool = True,
     ) -> dict[str, Any]:
         verified, issues = await self._verified_artifacts(workspace_key, artifacts)
         identities = {
@@ -504,6 +526,7 @@ class NativePublicationService:
         editable_primary = getattr(verified, NATIVE_ARTIFACT_KEYS[context.format])
         if (
             registered
+            and allow_editor
             and editable_primary == context.source_file
             and self.editor_grants is not None
         ):

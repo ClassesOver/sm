@@ -6,7 +6,7 @@
 /// corrupt references.
 
 import { columnIndex, columnLabel } from './cell-address'
-import { decodeXmlText, escapeXmlText, readXmlAttribute } from './xml'
+import { decodeXmlText, escapeXmlText, readXmlAttribute, extractElements } from './xml'
 import { FORMULA_REFERENCE_PATTERN, qualifierMatches } from './sheets-edit'
 
 export type StructuralOp =
@@ -37,6 +37,36 @@ export function shiftIndex(index: number, spec: ShiftSpec): number | null {
   if (spec.delta > 0) return index + spec.delta
   if (index < spec.start - spec.delta) return null
   return index + spec.delta
+}
+
+/// Shared by persisted worksheet breaks and session page-setup coordinates.
+export function shiftPageBreakIndexes(indexes: readonly number[], spec: ShiftSpec): number[] {
+  const maximum = spec.axis === 'row' ? 1_048_575 : 16_383
+  return [...new Set(indexes.flatMap(index => {
+    const shifted = shiftIndex(index, spec)
+    if (shifted === null || shifted <= 0) return []
+    if (shifted > maximum) throw new StructuralShiftError('Page break exceeds worksheet bounds')
+    return [shifted]
+  }))].sort((a, b) => a - b)
+}
+
+function shiftWorksheetPageBreaks(xml: string, spec: ShiftSpec): string {
+  const tag = spec.axis === 'row' ? 'rowBreaks' : 'colBreaks'
+  return xml.replace(new RegExp(`<((?:[\\w.-]+:)?)${tag}\\b([^>]*?)>([\\s\\S]*?)<\\/\\1${tag}>`, 'g'),
+    (_full: string, namespace: string, attributes: string, body: string) => {
+      let count = 0, manual = 0
+      const next = body.replace(/<((?:[\w.-]+:)?)brk\b([^>]*?)\/>/g, (full, prefix: string, attrs: string) => {
+        const raw = readXmlAttribute(attrs, 'id')
+        if (raw === undefined) return full
+        const [index] = shiftPageBreakIndexes([Number(raw)], spec)
+        if (index === undefined) return ''
+        count++
+        if (!['0', 'false'].includes(readXmlAttribute(attrs, 'man') ?? '1')) manual++
+        return `<${prefix}brk${attrs.replace(/(\bid\s*=\s*["'])[0-9]+(["'])/, `$1${index}$2`)}/>`
+      })
+      const attrs = attributes.replace(/\s+(?:count|manualBreakCount)\s*=\s*(?:"[^"]*"|'[^']*')/g, '')
+      return `<${namespace}${tag}${attrs} count="${count}" manualBreakCount="${manual}">${next}</${namespace}${tag}>`
+    })
 }
 
 /// Cell coordinates after the shift (null when deleted); outside a band the
@@ -209,11 +239,11 @@ function shiftWorksheetFormulas(
   sameSheet: boolean,
 ): string {
   return worksheetXml.replace(
-    /<f\b([^>]*[^/>])?>([\s\S]*?)<\/f>/g,
-    (full, attributes: string | undefined, body: string) => {
+    /<(f|formula[12]|xm:f)\b([^>]*[^/>])?>([\s\S]*?)<\/\1>/g,
+    (full, tag: string, attributes: string | undefined, body: string) => {
       const shifted = shiftFormulaText(decodeXmlText(body), spec, sameSheet, sheetName)
       if (shifted === decodeXmlText(body)) return full
-      return `<f${attributes ?? ''}>${escapeXmlText(shifted)}</f>`
+      return `<${tag}${attributes ?? ''}>${escapeXmlText(shifted)}</${tag}>`
     },
   )
 }
@@ -226,21 +256,25 @@ export function shiftQualifiedFormulas(
   sheetName: string,
 ): string {
   return partXml.replace(
-    /<f\b([^>]*[^/>])?>([\s\S]*?)<\/f>/g,
-    (full, attributes: string | undefined, body: string) => {
+    /<(f|formula[12]|xm:f)\b([^>]*[^/>])?>([\s\S]*?)<\/\1>/g,
+    (full, tag: string, attributes: string | undefined, body: string) => {
       const shifted = shiftFormulaText(decodeXmlText(body), spec, false, sheetName)
       if (shifted === decodeXmlText(body)) return full
-      return `<f${attributes ?? ''}>${escapeXmlText(shifted)}</f>`
+      return `<${tag}${attributes ?? ''}>${escapeXmlText(shifted)}</${tag}>`
     },
   )
 }
 
-/// definedName bodies: refs qualified with sheetName shift.
+/// Local names also resolve unqualified references against their owning sheet.
 export function shiftDefinedNames(workbookXml: string, spec: ShiftSpec, sheetName: string): string {
+  const sheetNames = [...(workbookXml.match(/<sheets\b[^>]*>[\s\S]*?<\/sheets>/)?.[0] ?? '').matchAll(/<sheet\b[^>]*>/g)]
+    .map(match => decodeXmlText(readXmlAttribute(match[0], 'name') ?? ''))
   return workbookXml.replace(
     /(<definedName\b[^>]*>)([\s\S]*?)(<\/definedName>)/g,
     (full, open: string, body: string, close: string) => {
-      const shifted = shiftFormulaText(decodeXmlText(body), spec, false, sheetName)
+      const localId = readXmlAttribute(open, 'localSheetId')
+      const ownSheet = localId !== undefined && /^[0-9]+$/.test(localId) && sheetNames[Number(localId)] === sheetName
+      const shifted = shiftFormulaText(decodeXmlText(body), spec, ownSheet, sheetName)
       if (shifted === decodeXmlText(body)) return full
       return `${open}${escapeXmlText(shifted)}${close}`
     },
@@ -418,7 +452,8 @@ function rewriteDimension(worksheetXml: string, spec: ShiftSpec): string {
 /// (their caches keep worksheet-scoped references genoffice also refuses to
 /// rewrite). Everything else — drawings, oleObjects, VML shapes, autoFilter,
 /// dataValidations, conditionalFormatting, tables, extLst — either shifts
-/// with the op or (extLst x14 extensions, matching genoffice) stays put.
+/// with the op. Known linked CF x14 scopes shift with their base rules; other
+/// extLst extensions remain untouched.
 const UNSHIFTABLE_MARKERS = [
   '<pivotTable',
   '<pivotSelection',
@@ -557,7 +592,7 @@ export function shiftDrawingAnchors(drawingXml: string, specs: readonly ShiftSpe
 // ── ranged features on the worksheet ────────────────────────────────────
 
 /// A1:B3 (or single A1) → shifted, or null when fully inside the deleted region.
-function shiftRangeReference(reference: string, spec: ShiftSpec): string | null {
+export function shiftRangeReference(reference: string, spec: ShiftSpec): string | null {
   const parts = reference.split(':')
   const first = parts[0]
   const second = parts[1] ?? first
@@ -644,8 +679,48 @@ function shiftAutoFilterElement(
 /// conditionalFormatting sqref, and hyperlink ref anchors with the op.
 /// Elements whose every reference dies are dropped (the rows they annotated
 /// are gone).
+/** Only migrate source-verified base/x14 twins; unrelated extensions stay raw. */
+function shiftLinkedConditionalFormats(xml: string, spec: ShiftSpec): string {
+  const twins = extractElements(xml, 'x14:conditionalFormatting')
+  const replacements = new Map<string, string>()
+  const usedIds = new Set<string>()
+  const namespaces = (name: string, uri: string) => {
+    const values = [...xml.matchAll(new RegExp(`\\bxmlns:${name}\\s*=\\s*["']([^"']+)["']`, 'g'))]
+    return values.length > 0 && values.every(value => value[1] === uri)
+  }
+  for (const base of extractElements(xml, 'conditionalFormatting')) {
+    const sqref = readXmlAttribute(base, 'sqref')
+    for (const rule of extractElements(base, 'cfRule')) {
+      const ids = extractElements(rule, 'x14:id')
+      if (!ids.length) continue
+      const id = decodeXmlText(ids[0]!.replace(/^<[^>]*>|<\/[^>]*>$/g, ''))
+      const matches = twins.filter(twin => extractElements(twin, 'x14:cfRule').some(entry => readXmlAttribute(entry, 'id') === id))
+      if (ids.length !== 1 || !id || usedIds.has(id) || matches.length !== 1 || !sqref ||
+          !namespaces('x14', 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main') ||
+          !namespaces('xm', 'http://schemas.microsoft.com/office/excel/2006/main')) {
+        throw new StructuralShiftError('Conditional-formatting linked identity is missing or ambiguous.')
+      }
+      usedIds.add(id)
+      const twin = matches[0]!, rules = extractElements(twin, 'x14:cfRule'), refs = extractElements(twin, 'xm:sqref')
+      if (rules.length !== 1 || refs.length !== 1 ||
+          decodeXmlText(refs[0]!.replace(/^<[^>]*>|<\/[^>]*>$/g, '')) !== sqref ||
+          readXmlAttribute(rules[0]!, 'type') !== readXmlAttribute(rule, 'type') ||
+          readXmlAttribute(rules[0]!, 'priority') !== readXmlAttribute(rule, 'priority')) {
+        throw new StructuralShiftError('Conditional-formatting linked scope differs from its base rule.')
+      }
+      const shifted = shiftSqrefAttribute(sqref, spec)
+      replacements.set(twin, shifted.allDead ? '' : twin.replace(refs[0]!, () => refs[0]!.replace(/>[^<]*</, () => `>${escapeXmlText(shifted.sqref)}<`)))
+    }
+  }
+  for (const [original, replacement] of replacements) xml = xml.replace(original, () => replacement)
+  // Remove only the known CF container/extension when its last twin dies.
+  xml = xml.replace(/<x14:conditionalFormattings\b[^>]*>\s*<\/x14:conditionalFormattings>/g, '')
+  return xml.replace(/<ext\b([^>]*)>\s*<\/ext>/g, (full, attributes: string) =>
+    readXmlAttribute(attributes, 'uri') === '{78C0D931-6437-407D-A8EE-F0AAD7539E65}' ? '' : full)
+}
+
 export function shiftRangedFeatures(worksheetXml: string, spec: ShiftSpec): string {
-  let xml = worksheetXml.replace(
+  let xml = shiftLinkedConditionalFormats(worksheetXml, spec).replace(
     /<autoFilter\b([^>]*?)(\/>|>([\s\S]*?)<\/autoFilter>)/g,
     (_full, attributes: string, _tail: string, body: string | undefined) => {
       const shifted = shiftAutoFilterElement(attributes, body, spec)
@@ -666,6 +741,25 @@ export function shiftRangedFeatures(worksheetXml: string, spec: ShiftSpec): stri
       return shifted.allDead ? '' : `<conditionalFormatting${open}${shifted.sqref}${closeQuote}${rest}>${body}</conditionalFormatting>`
     },
   )
+  xml = xml.replace(
+    /<x14:dataValidation\b[^>]*>[\s\S]*?<\/x14:dataValidation>/g,
+    (full) => {
+      const sqref = full.match(/<xm:sqref\b[^>]*>([\s\S]*?)<\/xm:sqref>/)
+      if (!sqref) return full
+      const shifted = shiftSqrefAttribute(decodeXmlText(sqref[1]!), spec)
+      return shifted.allDead ? '' : full.replace(sqref[0], () => '<xm:sqref>' + escapeXmlText(shifted.sqref) + '</xm:sqref>')
+    },
+  )
+  xml = xml.replace(/<(x14:)?dataValidations\b([^>]*)>([\s\S]*?)<\/(?:x14:)?dataValidations>/g,
+    (_full, namespace: string | undefined, attributes: string, body: string) => {
+      const count = [...body.matchAll(/<(?:x14:)?dataValidation\b/g)].length
+      if (!count) return ''
+      const attrs = attributes.replace(/\s+count="[^"]*"/, '')
+      return `<${namespace ?? ""}dataValidations${attrs} count="${count}">${body}</${namespace ?? ""}dataValidations>`
+    })
+  xml = xml.replace(/<ext\b([^>]*)>\s*<\/ext>/g, (full, attrs: string) =>
+    readXmlAttribute(attrs, 'uri') === '{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}' ? '' : full)
+  xml = xml.replace(/<extLst\b[^>]*>\s*<\/extLst>/g, '')
   return xml.replace(
     /(<hyperlink\b[^>]*?\bref=")([^"]+)(")/g,
     (full, prefix: string, reference: string, suffix: string) => {
@@ -673,6 +767,29 @@ export function shiftRangedFeatures(worksheetXml: string, spec: ShiftSpec): stri
       return shifted === null ? full : `${prefix}${shifted}${suffix}`
     },
   )
+}
+
+/// 固定来源 transformColDefinitions：整列定义随列身份迁移，范围内插入扩展，删除裁剪。
+function shiftColumnDefinitions(xml: string, spec: ShiftSpec): string {
+  const definitions = [...xml.matchAll(/<col\b([^>]*?)\/>/g)].map(match => ({
+    min: Number(match[1]!.match(/(?:^|\s)min\s*=\s*(["'])([0-9]+)\1/)?.[2]),
+    max: Number(match[1]!.match(/(?:^|\s)max\s*=\s*(["'])([0-9]+)\1/)?.[2]),
+  })).sort((a, b) => a.min - b.min)
+  for (let index = 0; index < definitions.length; index++) {
+    const range = definitions[index]!
+    if (!Number.isInteger(range.min) || !Number.isInteger(range.max) || range.min < 1 || range.max < range.min || range.max > 16384)
+      throw new StructuralShiftError('列定义范围无效，无法安全移动列。')
+    if (index && range.min <= definitions[index - 1]!.max) throw new StructuralShiftError('列定义范围重叠，无法安全移动列。')
+  }
+  return xml.replace(/<col\b([^>]*?)\/>/g, (full, attrs: string) => {
+    const min = Number(attrs.match(/(?:^|\s)min\s*=\s*(["'])([0-9]+)\1/)?.[2]) - 1, max = Number(attrs.match(/(?:^|\s)max\s*=\s*(["'])([0-9]+)\1/)?.[2]) - 1
+    const first = shiftIndex(min, spec), last = shiftIndex(max, spec)
+    if (first === null && last === null) return ''
+    const start = first ?? spec.start, end = last ?? spec.start - 1
+    if (end >= 16384) throw new StructuralShiftError('列定义超出工作表宽度。')
+    return full.replace(/(\smin\s*=\s*["'])[0-9]+(["'])/, `$1${start + 1}$2`)
+      .replace(/(\smax\s*=\s*["'])[0-9]+(["'])/, `$1${end + 1}$2`)
+  })
 }
 
 /// Apply one structural op to the target worksheet part (same-sheet view).
@@ -684,8 +801,10 @@ export function applyStructuralOp(
   const spec = shiftSpecOf(op)
   let xml =
     spec.axis === 'row' ? applyRowShift(worksheetXml, spec) : applyColumnShift(worksheetXml, spec)
+  if (spec.axis === 'column') xml = shiftColumnDefinitions(xml, spec)
   xml = shiftWorksheetFormulas(xml, spec, sheetName, true)
   xml = shiftMerges(xml, spec)
+  xml = shiftWorksheetPageBreaks(xml, spec)
   xml = shiftRangedFeatures(xml, spec)
   xml = rewriteDimension(xml, spec)
   return shiftOleObjectAnchors(xml, [spec])

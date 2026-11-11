@@ -1,10 +1,11 @@
 import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
-export interface SavedPdfNote { annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
+export interface SavedPdfNote { sourceRef?: string | null; replyable?: boolean; parentAnnotationId?: string; annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
 export function validatePdfNoteOperation(operation: NativeOperation, page: PdfPageIdentity): SavedPdfNote {
   const allowed = ['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256', ...(operation.kind === 'editNote' ? ['contents', 'modifiedAt'] : [])]
   const note = page.notes?.find(note => note.annotationId === operation.annotationId)
   if (!['editNote', 'removeNote'].includes(operation.kind) || Object.keys(operation).some(key => !allowed.includes(key)) || !page.notesReadSafe || !note?.editable || !note.removable || !/^[a-f0-9]{64}$/.test(String(operation.annotationId)) || note.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || operation.pageId !== page.pageId || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error(note?.removalReason || '便签身份已过期或当前来源只读；原草稿已保留')
+  if (note.parentAnnotationId !== undefined && (!/^[a-f0-9]{64}$/.test(note.parentAnnotationId) || page.notes?.filter(parent => parent.annotationId === note.parentAnnotationId && parent.replyable === true && parent.parentAnnotationId === undefined).length !== 1)) throw new Error('回复根便签身份未完整确认')
   if (operation.kind === 'editNote') {
     if (typeof operation.contents !== 'string' || !operation.contents.trim() || operation.contents.length > 10000 || operation.contents !== operation.contents.trim()) throw new Error('便签正文须为 1–10000 个字符')
     if (typeof operation.modifiedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(operation.modifiedAt) || !Number.isFinite(Date.parse(operation.modifiedAt)) || new Date(operation.modifiedAt).toISOString() !== operation.modifiedAt.replace('Z', '.000Z')) throw new Error('便签修改时间无效')
@@ -16,6 +17,7 @@ export function stagePdfNote(pages: PdfPageIdentity[], operations: NativeOperati
   const page = pages.find(page => page.pageId === pageId), note = page?.notes?.find(note => note.annotationId === annotationId)
   if (!page || !note || operations.some(op => op.kind === 'deletePage' && op.pageId === pageId)) throw new Error('便签来源页面已过期或已删除')
   const operation = { kind: contents === null ? 'removeNote' : 'editNote', pageId, annotationId, expectedAnnotationSha256: note.expectedAnnotationSha256, ...(contents === null ? {} : { contents: contents.trim(), modifiedAt }) }
+  if (operations.some(op => op.kind === 'replyNote' && op.annotationId === annotationId)) throw new Error('请先保存或取消此便签的回复')
   validatePdfNoteOperation(operation, page)
   const next = structuredClone(operations).filter(op => !(op.pageId === pageId && op.annotationId === annotationId && ['editNote', 'removeNote'].includes(op.kind)))
   if (contents === null || contents.trim() !== note.contents) next.push(operation)
@@ -30,7 +32,8 @@ export function pendingPdfNoteReference(operations: NativeOperation[], index: nu
 /** Same strict pending-note payload accepted by the existing writer; IDs remain source-page IDs. */
 export function validatePendingPdfNote(operation: NativeOperation, page: PdfPageIdentity) {
   const rect = operation.rect, color = operation.color, box = page.cropBox
-  if (operation.kind !== 'addTextAnnotation' || operation.pageId !== page.pageId || Object.keys(operation).some(key => !['kind', 'pageId', 'rect', 'text', 'color', 'createdMs', 'sourceSha256'].includes(key)) || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error('新增便签记录或来源身份无效')
+  if (operation.kind !== 'addTextAnnotation' || operation.pageId !== page.pageId || Object.keys(operation).some(key => !['kind', 'pageId', 'rect', 'text', 'color', 'createdMs', 'sourceSha256', 'localId'].includes(key)) || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error('新增便签记录或来源身份无效')
+  if (operation.localId !== undefined && (typeof operation.localId !== 'string' || !/^[a-f0-9]{32}$/.test(operation.localId))) throw new Error('待保存根便签身份无效')
   if (operation.createdMs !== undefined && (typeof operation.createdMs !== 'number' || !Number.isSafeInteger(operation.createdMs) || operation.createdMs < 0 || operation.createdMs > 253402300799999)) throw new Error('新增便签创建时间无效')
   if (typeof operation.text !== 'string' || !operation.text.trim() || operation.text.trim().length > 10000) throw new Error('便签正文须为 1–10000 个字符')
   if (!Array.isArray(rect) || rect.length !== 4 || !rect.every(value => typeof value === 'number' && Number.isFinite(value)) || rect[0] >= rect[2] || rect[1] >= rect[3] || rect[0] < box.x || rect[1] < box.y || rect[2] > box.x + box.width || rect[3] > box.y + box.height || rect[0] + 20 > box.x + box.width || rect[3] - 18 < box.y) throw new Error('新增便签必须完整位于当前页面内')
@@ -43,7 +46,10 @@ export function stagePendingPdfNote(pages: PdfPageIdentity[], operations: Native
   if (!page || operations.some(op => op.kind === 'deletePage' && op.pageId === page.pageId)) throw new Error('待保存便签来源页面已过期或已删除')
   validatePendingPdfNote(target, page)
   const next = structuredClone(operations)
-  if (contents === null) next.splice(reference.index, 1)
+  if (contents === null) {
+    next.splice(reference.index, 1)
+    if (target.localId !== undefined) return next.filter(op => !(op.kind === 'replyPendingNote' && op.parentLocalId === target.localId))
+  }
   else { next[reference.index].text = contents.trim(); validatePendingPdfNote(next[reference.index], page) }
   return next
 }

@@ -1,10 +1,24 @@
+import { createOfficeAIEntry } from './office-ai-entry'
+import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
+import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
+import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
+import { CHART_GALLERY } from './vendor/genoffice-slides/components/chart-gallery-data'
+import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
+/** 固定源 ribbon zh 语言包中的艺术字预设名称（ribbonWordArtPreset*） */
+export const WORDART_PRESET_LABELS: Record<string, string> = { blue: '填充：蓝色', gold: '填充：金色', red: '填充：深红', purple: '填充：紫色', 'green-italic': '填充：绿色；斜体', 'white-orange': '填充：白色；描边：橙色', 'white-red': '填充：白色；描边：深红', 'gold-brown': '填充：金色；描边：棕色', 'sky-navy': '填充：天蓝；描边：藏青', 'navy-white': '填充：藏青；描边：白色', 'black-gold': '填充：黑色；描边：金色', 'silver-dark': '填充：银色；描边：深灰' }
+import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS } from './vendor/genoffice-slides/components/shape-gallery-data'
+import './office-theme.css'
 import { BULLET_GLYPHS, BULLET_GLYPH_LABELS, BULLET_SYMBOLS, NUMBER_TYPES, BULLET_COLORS, PARAGRAPH_LIST_COMMANDS } from './slides-paragraph'
 import { ArrowDown, ArrowUp, Bold, Download, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
 import { createElement as reactElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { IconAlignCenter, IconAlignJustify, IconAlignLeft, IconAlignRight, IconChart, IconComment, IconCopy, IconCut, IconDateTime, IconEquation, IconFooter, IconFormatPainter, IconGrowFont, IconNavPane, IconNewSlide, IconPageNumber, IconPaste, IconPicture, IconPlayFromStart, IconSave, IconSection, IconShapes, IconShrinkFont, IconSmartArt, IconSlideLayout, IconSlideMaster, IconTable, IconTextBox, IconWordArt } from './vendor/genoffice-slides/components/icons'
+import { IconAlignCenter, IconAlignJustify, IconAlignLeft, IconAlignRight, IconChart, IconComment, IconCopy, IconCut, IconDateTime, IconEquation, IconFooter, IconFormatPainter, IconGrowFont, IconNavPane, IconNewSlide, IconPageNumber, IconPaste, IconPicture, IconPlayFromStart, IconSave, IconSection, IconShapes, IconShrinkFont, IconSmartArt, IconSlideLayout, IconSlideMaster, IconSwitchRowCol, IconTable, IconTextBox, IconWordArt } from './vendor/genoffice-slides/components/icons'
 import { genOfficeHomeClipboardLocale } from './vendor/genoffice-slides/components/ribbon-home-clipboard-locales'
+import { slidesLayoutLabel, slidesRibbonLabel } from './slides-native-ribbon-locales'
+import { slidesRibbonIcons, slidesRibbonSourceIcons } from './slides-native-ribbon-icons'
+import { createNativeChartGallery, type NativeChartGalleryState } from './slides-native-chart-gallery'
 
 /**
  * Native web subset of GenOffice Slides Ribbon at f8c17004fb730df11f0f743164ffd8b4281bb38c.
@@ -14,14 +28,16 @@ import { genOfficeHomeClipboardLocale } from './vendor/genoffice-slides/componen
  */
 export type NativeSlidesContext = 'table' | 'chart' | 'picture' | 'shape' | 'model3d' | null
 export type NativeSlidesAction = (command: string, value?: unknown) => void
-export interface NativeSlidesLayout { path: string; name: string }
+export interface NativeSlidesLayout { path: string; name: string; layoutType?: string }
 export interface NativeSlidesRibbon {
+  setChartDesign(state: NativeChartGalleryState | null): void
   setContext(context: NativeSlidesContext): void
   setLayouts(layouts: NativeSlidesLayout[]): void
   setValue(command: string, value: string, hint?: string): void
   setTextFormatEnabled(enabled: boolean): void
   setListTargets(state: { bullets: boolean; numbers: boolean; hanging: boolean }): void
   setSlideOrientationEnabled(enabled: boolean): void
+  setCommentEditEnabled(enabled: boolean, reason?: string): void
   setTransitionEditEnabled(enabled: boolean, reason?: string): void
   setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
   setLocked(locked: boolean): void
@@ -29,7 +45,7 @@ export interface NativeSlidesRibbon {
 }
 
 type RibbonGlyph = ComponentType<{ size?: number }>
-type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'text' | 'font' | 'spacing'; options?: string[]; optionLabels?: string[]; caption?: string; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
+type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'font' | 'spacing'; options?: string[]; optionLabels?: string[]; caption?: string; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
 type Group = { label: string; controls: Control[] }
 type Tab = { id: string; label: string; groups: Group[]; context?: NativeSlidesContext }
 
@@ -57,36 +73,47 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'home', label: 'Home', groups: [
+    { label: 'AI 助手', controls: [] },
     { label: 'Clipboard', controls: [
-      { id: 'paste', label: 'Paste', sourceIcon: IconPaste, sourceActionId: 'onPaste', unavailable: desktop('粘贴') },
-      { id: 'cut', label: 'Cut', sourceIcon: IconCut, sourceActionId: 'onCut', unavailable: desktop('剪切') },
-      { id: 'copy', label: 'Copy', sourceIcon: IconCopy, sourceActionId: 'onCopy', unavailable: desktop('复制') },
-      { id: 'formatBrush', label: 'Format Painter', sourceIcon: IconFormatPainter, sourceActionId: 'onFormatBrushClick', unavailable: noWrite('格式刷') },
+      { id: 'paste', label: 'Paste', sourceIcon: IconPaste, sourceActionId: 'onPaste' },
+      { id: 'cut', label: 'Cut', sourceIcon: IconCut, sourceActionId: 'onCut' },
+      { id: 'copy', label: 'Copy', sourceIcon: IconCopy, sourceActionId: 'onCopy' },
+      { id: 'formatBrush', label: 'Format Painter', sourceIcon: IconFormatPainter, sourceActionId: 'onFormatBrushClick' },
     ] },
     { label: 'Slides', controls: [
-      { id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide', unavailable: noWrite('新建幻灯片操作') },
-      { id: 'addSlideWithLayout', label: 'New Slide with Layout', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout', unavailable: noWrite('指定版式新建幻灯片操作') },
+      { id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide' },
+      { id: 'addSlideWithLayout', label: 'New Slide with Layout', kind: 'select', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlideWithLayout' },
       { id: 'layout', label: 'Change Layout', kind: 'select', sourceIcon: IconSlideLayout, sourceActionId: 'onSetLayout' },
-      { id: 'resetLayout', label: 'Reset Layout', sourceIcon: IconSlideLayout, sourceActionId: 'onResetLayout', unavailable: noWrite('重置版式操作') },
-      { id: 'addSection', label: 'Add Section', sourceIcon: IconSection, sourceActionId: 'onAddSection', unavailable: noWrite('分节数据操作') },
+      { id: 'resetLayout', label: 'Reset Layout', sourceIcon: IconSlideLayout, sourceActionId: 'onResetLayout' },
+      { id: 'addSection', label: 'Add Section', sourceIcon: IconSection, sourceActionId: 'onAddSection' },
       { id: 'movePrevious', label: 'Move Earlier', icon: ArrowUp }, { id: 'moveNext', label: 'Move Later', icon: ArrowDown },
     ] },
     { label: 'Font', controls: [
-      { id: 'text', label: 'Text', kind: 'text' },
+      { id: 'fontFamily', label: 'Font Family', kind: 'font' },
+      { id: 'fontSize', label: 'Font Size (pt)', kind: 'number' },
       { id: 'bold', label: 'Bold', kind: 'toggle', icon: Bold },
       { id: 'italic', label: 'Italic', kind: 'toggle', icon: Italic },
       { id: 'underline', label: 'Underline', kind: 'toggle', icon: Underline },
       { id: 'strike', label: 'Strikethrough', kind: 'toggle', icon: Strikethrough },
-      { id: 'fontSize', label: 'Font Size (pt)', kind: 'number' },
       { id: 'fontSizeUp', label: 'Increase Font Size', sourceIcon: IconGrowFont },
       { id: 'fontSizeDown', label: 'Decrease Font Size', sourceIcon: IconShrinkFont },
-      { id: 'fontFamily', label: 'Font Family', kind: 'font' },
       { id: 'fontColor', label: 'Font Color', kind: 'color' },
     ] },
     { label: 'Paragraph', controls: [
       { id: 'bulletChar', label: 'Bullets', sourceActionId: 'onParagraphFormat' },
       { id: 'bulletNumber', label: 'Numbering', sourceActionId: 'onParagraphFormat' },
       { id: 'bulletNone', label: 'No Bullets', sourceActionId: 'onParagraphFormat' },
+      { id: 'paragraphAlignLeft', label: 'Align Left', sourceIcon: IconAlignLeft, sourceActionId: 'onAlign' },
+      { id: 'paragraphAlignCenter', label: 'Center', sourceIcon: IconAlignCenter, sourceActionId: 'onAlign' },
+      { id: 'paragraphAlignRight', label: 'Align Right', sourceIcon: IconAlignRight, sourceActionId: 'onAlign' },
+      { id: 'paragraphAlignJustify', label: 'Justify', sourceIcon: IconAlignJustify, sourceActionId: 'onAlign' },
+      { id: 'indentDecrease', label: 'Decrease Indent', sourceActionId: 'onParagraphFormat' },
+      { id: 'indentIncrease', label: 'Increase Indent', sourceActionId: 'onParagraphFormat' },
+      { id: 'directionLtr', label: 'Left to Right', sourceActionId: 'onDirection' },
+      { id: 'directionRtl', label: 'Right to Left', sourceActionId: 'onDirection' },
+      { id: 'lineSpacingPct', label: 'Line Spacing', kind: 'select', options: ['100', '115', '150', '200', '250', '300'], sourceActionId: 'onParagraphFormat' },
+      { id: 'spaceBeforePt', label: 'Space Before', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
+      { id: 'spaceAfterPt', label: 'Space After', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
       { id: 'bulletCharPreset', label: 'Bullet Gallery', caption: '项目符号', kind: 'select', options: BULLET_GLYPHS.map((_, i) => String(i)), optionLabels: BULLET_GLYPHS.map(([, font], i) => `${BULLET_GLYPH_LABELS[i]} (${font})`), sourceActionId: 'onParagraphFormat' },
       { id: 'bulletSymbol', label: 'Bullet Symbols', caption: '其他符号', kind: 'select', options: BULLET_SYMBOLS, sourceActionId: 'onParagraphFormat' },
       { id: 'bulletCustomChar', label: 'Custom Bullet Character', caption: '自定义字符', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
@@ -98,40 +125,42 @@ const tabs: Tab[] = [
       { id: 'bulletSizePct', label: 'Bullet Size', caption: '符号大小', kind: 'select', options: ['75', '90', '100', '125', '150'], optionLabels: ['75%', '90%', '100%', '125%', '150%'], sourceActionId: 'onParagraphFormat' },
       { id: 'bulletColorPreset', label: 'Bullet Color Palette', caption: '符号颜色', kind: 'select', options: BULLET_COLORS, sourceActionId: 'onParagraphFormat' },
       { id: 'bulletColor', label: 'Custom Bullet Color', caption: '自定义颜色', kind: 'color', sourceActionId: 'onParagraphFormat' },
-      { id: 'indentDecrease', label: 'Decrease Indent', sourceActionId: 'onParagraphFormat' },
-      { id: 'indentIncrease', label: 'Increase Indent', sourceActionId: 'onParagraphFormat' },
-      { id: 'directionLtr', label: 'Left to Right', sourceActionId: 'onDirection' },
-      { id: 'directionRtl', label: 'Right to Left', sourceActionId: 'onDirection' },
-      { id: 'paragraphAlignLeft', label: 'Align Left', sourceIcon: IconAlignLeft, sourceActionId: 'onAlign' },
-      { id: 'paragraphAlignCenter', label: 'Center', sourceIcon: IconAlignCenter, sourceActionId: 'onAlign' },
-      { id: 'paragraphAlignRight', label: 'Align Right', sourceIcon: IconAlignRight, sourceActionId: 'onAlign' },
-      { id: 'paragraphAlignJustify', label: 'Justify', sourceIcon: IconAlignJustify, sourceActionId: 'onAlign' },
-      { id: 'lineSpacingPct', label: 'Line Spacing', kind: 'select', options: ['100', '115', '150', '200', '250', '300'], sourceActionId: 'onParagraphFormat' },
-      { id: 'spaceBeforePt', label: 'Space Before', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
-      { id: 'spaceAfterPt', label: 'Space After', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
     ] },
+    { label: 'Editing', controls: [{ id: 'findReplace', label: 'Find and Replace', sourceActionId: 'onFindReplace' }] },
     { label: 'Arrange', controls: [
-      { id: 'alignLeft', label: 'Align Left', unavailable: noWrite('对象对齐') },
-      { id: 'distribute', label: 'Distribute', unavailable: noWrite('对象均匀分布') },
+      { id: 'groupObjects', label: 'Group', sourceActionId: 'groupSelected' },
+      { id: 'ungroupObjects', label: 'Ungroup', sourceActionId: 'ungroupSelected' },
+      { id: 'bringToFront', label: 'Bring to Front', sourceActionId: 'reorderSelected' },
+      { id: 'bringForward', label: 'Bring Forward', sourceActionId: 'reorderSelected' },
+      { id: 'sendBackward', label: 'Send Backward', sourceActionId: 'reorderSelected' },
+      { id: 'sendToBack', label: 'Send to Back', sourceActionId: 'reorderSelected' },
+      { id: 'alignLeft', label: 'Align Left', sourceActionId: 'onAlignSelected' },
+      { id: 'alignCenter', label: 'Align Center', sourceActionId: 'onAlignSelected' },
+      { id: 'alignRight', label: 'Align Right', sourceActionId: 'onAlignSelected' },
+      { id: 'alignTop', label: 'Align Top', sourceActionId: 'onAlignSelected' },
+      { id: 'alignMiddle', label: 'Align Middle', sourceActionId: 'onAlignSelected' },
+      { id: 'alignBottom', label: 'Align Bottom', sourceActionId: 'onAlignSelected' },
+      { id: 'distributeHorizontal', label: 'Distribute Horizontally', sourceActionId: 'onAlignSelected' },
+      { id: 'distributeVertical', label: 'Distribute Vertically', sourceActionId: 'onAlignSelected' },
       { id: 'addText', label: 'Text Box', icon: Plus }, { id: 'addWatermark', label: 'Watermark' }, { id: 'deleteObject', label: 'Delete Object', icon: Trash2 },
     ] },
   ] },
   { id: 'insert', label: 'Insert', groups: [
-    { label: 'Slides', controls: [{ id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, unavailable: noWrite('新增幻灯片') }] },
-    { label: 'Tables', controls: [{ id: 'insertTable', label: 'Table', sourceIcon: IconTable, sourceActionId: 'onInsertTable', unavailable: noWrite('表格插入尚未接入 editSlides 请求') }] },
-    { label: 'Images', controls: [{ id: 'insertPicture', label: 'Pictures', sourceIcon: IconPicture, sourceActionId: 'onInsertImage', unavailable: desktop('图片插入目前没有浏览器文件选择与上传控件') }] },
+    { label: 'Slides', controls: [{ id: 'addSlide', label: 'New Slide', sourceIcon: IconNewSlide, sourceActionId: 'onAddSlide' }] },
+    { label: 'Tables', controls: [{ id: 'insertTable', label: 'Table', sourceIcon: IconTable, sourceActionId: 'onInsertTable' }] },
+    { label: 'Images', controls: [{ id: 'insertPicture', label: 'Pictures', sourceIcon: IconPicture, sourceActionId: 'onInsertImage' }] },
     { label: 'Illustrations', controls: [
-      { id: 'insertShape', label: 'Shapes', sourceIcon: IconShapes, sourceActionId: 'onPickShape', unavailable: noWrite('形状插入尚未接入 editSlides 请求') },
-      { id: 'insertSmartArt', label: 'SmartArt', sourceIcon: IconSmartArt, sourceActionId: 'onInsertSmartArt', unavailable: noWrite('SmartArt 插入尚未接入 editSlides 请求') },
-      { id: 'insertChart', label: 'Chart', sourceIcon: IconChart, sourceActionId: 'onInsertChart', unavailable: noWrite('图表插入尚未接入 editSlides 请求') },
+      { id: 'insertShape', label: 'Shapes', kind: 'select', sourceIcon: IconShapes, sourceActionId: 'onPickShape' },
+      { id: 'insertSmartArt', label: 'SmartArt', kind: 'select', sourceIcon: IconSmartArt, sourceActionId: 'onInsertSmartArt' },
+      { id: 'insertChart', label: 'Chart', kind: 'select', sourceIcon: IconChart, sourceActionId: 'onInsertChart' },
     ] },
     { label: 'Text', controls: [
       { id: 'addText', label: 'Text Box', sourceIcon: IconTextBox, sourceActionId: 'onInsert' },
-      { id: 'insertWordArt', label: 'WordArt', sourceIcon: IconWordArt, sourceActionId: 'onInsertWordArt', unavailable: noWrite('WordArt 样式数据未进入 textBoxes 请求') },
-      { id: 'headerFooter', label: 'Header and Footer', sourceIcon: IconFooter, sourceActionId: 'onOpenHeaderFooter', unavailable: noWrite('页眉页脚字段/应用范围未进入 editSlides 请求') },
-      { id: 'dateTime', label: 'Date and Time', sourceIcon: IconDateTime, sourceActionId: 'onInsertField:datetime', unavailable: noWrite('动态日期字段未进入 textBoxes 请求') },
-      { id: 'slideNumber', label: 'Slide Number', sourceIcon: IconPageNumber, sourceActionId: 'onInsertField:slidenum', unavailable: noWrite('动态页码字段未进入 textBoxes 请求') },
-      { id: 'insertLink', label: 'Link', unavailable: noWrite('超链接') },
+      { id: 'insertWordArt', label: 'WordArt', kind: 'select', sourceIcon: IconWordArt, sourceActionId: 'onInsertWordArt' },
+      { id: 'headerFooter', label: 'Header and Footer', sourceIcon: IconFooter, sourceActionId: 'onOpenHeaderFooter' },
+      { id: 'dateTime', label: 'Date and Time', sourceIcon: IconDateTime, sourceActionId: 'onInsertField:datetime' },
+      { id: 'slideNumber', label: 'Slide Number', sourceIcon: IconPageNumber, sourceActionId: 'onInsertField:slidenum' },
+      { id: 'insertLink', label: 'Link', sourceActionId: 'onOpenLink' },
     ] },
     { label: 'Symbols', controls: [{ id: 'insertEquation', label: 'Equation', sourceIcon: IconEquation, sourceActionId: 'onOpenEquation', unavailable: noWrite('公式编辑/数学标记未进入 editSlides 请求') }] },
     { label: 'Media', controls: [
@@ -162,19 +191,19 @@ const tabs: Tab[] = [
   { id: 'animations', label: 'Animations', groups: [
     { label: 'Preview', controls: [{ id: 'animationPreview', label: 'Preview', sourceActionId: 'onAnimPreview', unavailable: noWrite('动画预览') }] },
     { label: 'Animation', controls: [
-      { id: 'animationNone', label: 'None', sourceActionId: 'onApplyAnimation', unavailable: noWrite('移除现有动画') },
+      { id: 'animationNone', label: 'None', sourceActionId: 'onApplyAnimation' },
       { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onApplyAnimation', options: ['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut'] },
       { id: 'animationDirection', label: 'Direction', kind: 'select', options: ['top', 'bottom', 'left', 'right'] },
       { id: 'addAnimation', label: 'Add Animation', sourceActionId: 'onAddAnimation' },
-      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane', unavailable: noWrite('动画窗格状态') },
-      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph', unavailable: noWrite('按段动画状态') },
+      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane' },
+      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph' },
     ] },
     { label: 'Motion Paths', controls: [
-      { id: 'motionPathRight', label: 'Line Right', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathDown', label: 'Line Down', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathDiagonal', label: 'Diagonal', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathCircle', label: 'Circle', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
-      { id: 'motionPathZigzag', label: 'Zigzag', sourceActionId: 'onApplyMotionPath', unavailable: noWrite('动画路径数据') },
+      { id: 'motionPathRight', label: 'Line Right', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathDown', label: 'Line Down', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathDiagonal', label: 'Diagonal', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathCircle', label: 'Circle', sourceActionId: 'onApplyMotionPath' },
+      { id: 'motionPathZigzag', label: 'Zigzag', sourceActionId: 'onApplyMotionPath' },
     ] },
     { label: 'Timing', controls: [
       { id: 'animationTrigger', label: 'Trigger', kind: 'select', sourceActionId: 'onAnimTiming', options: ['onClick', 'withPrev', 'afterPrev'] },
@@ -183,13 +212,13 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'slideShow', label: 'Slide Show', groups: [
-    { label: 'Start Slide Show', controls: [{ id: 'startShow', label: 'From Beginning', sourceIcon: IconPlayFromStart, unavailable: noWrite('浏览器放映视图') }, { id: 'presenter', label: 'Presenter View', unavailable: desktop('演讲者视图') }] },
-    { label: 'Set Up', controls: [{ id: 'rehearse', label: 'Rehearse Timings', unavailable: noWrite('排练计时') }, { id: 'record', label: 'Record', unavailable: desktop('屏幕/旁白录制') }, { id: 'hideSlide', label: 'Hide Slide', unavailable: noWrite('隐藏页') }] },
+    { label: 'Start Slide Show', controls: [{ id: 'startShow', label: 'From Beginning', sourceIcon: IconPlayFromStart, sourceActionId: 'onSlideShow' }, { id: 'startShowCurrent', label: 'From Current Slide', sourceActionId: 'onSlideShow' }, { id: 'presenter', label: 'Presenter View', unavailable: desktop('演讲者视图') }] },
+    { label: 'Set Up', controls: [{ id: 'rehearse', label: 'Rehearse Timings', unavailable: noWrite('排练计时') }, { id: 'record', label: 'Record', unavailable: desktop('屏幕/旁白录制') }, { id: 'hideSlide', label: 'Hide Slide', kind: 'toggle' }] },
   ] },
   { id: 'review', label: 'Review', groups: [
     { label: 'Comments', controls: [
-      { id: 'newComment', label: 'New Comment', sourceIcon: IconComment, sourceActionId: 'onNewComment', unavailable: noWrite('新增批注') },
-      { id: 'commentsPane', label: 'Comments Pane', sourceIcon: IconNavPane, sourceActionId: 'onToggleComments', unavailable: noWrite('批注窗格状态') },
+      { id: 'newComment', label: 'New Comment', sourceIcon: IconComment, sourceActionId: 'onNewComment' },
+      { id: 'commentsPane', label: 'Comments Pane', kind: 'toggle', sourceIcon: IconNavPane, sourceActionId: 'onToggleComments' },
     ] },
     { label: 'Proofing', controls: [{ id: 'spelling', label: 'Spelling', unavailable: noWrite('拼写检查') }, { id: 'translate', label: 'Translate', unavailable: noWrite('翻译写回') }] },
   ] },
@@ -199,29 +228,28 @@ const tabs: Tab[] = [
       { id: 'slideSorter', label: 'Slide Sorter', unavailable: noWrite('大纲/排序/阅读视图状态') },
       { id: 'slideMaster', label: 'Slide Master', sourceIcon: IconSlideMaster, unavailable: noWrite('母版编辑') },
     ] },
-    { label: 'Show', controls: [{ id: 'ruler', label: 'Ruler', unavailable: noWrite('标尺显示状态') }, { id: 'grid', label: 'Gridlines', unavailable: noWrite('网格线显示状态') }, { id: 'notes', label: 'Notes', unavailable: noWrite('演讲者备注') }] },
+    { label: 'Show', controls: [{ id: 'ruler', label: 'Ruler', unavailable: noWrite('标尺显示状态') }, { id: 'grid', label: 'Gridlines', unavailable: noWrite('网格线显示状态') }, { id: 'notes', label: 'Notes', kind:'toggle', sourceActionId:'onToggleNotes' }] },
   ] },
-  { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [{ label: 'Table Styles', controls: [{ id: 'tableStyle', label: 'Table Style', unavailable: noWrite('表格样式') }] }] },
-  { id: 'chartDesign', label: 'Chart Design', context: 'chart', groups: [{ label: 'Chart Data', controls: [{ id: 'chartType', label: 'Change Chart Type', unavailable: noWrite('图表结构编辑') }, { id: 'chartData', label: 'Edit Data', unavailable: noWrite('图表数据表编辑') }] }] },
-  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id: 'replacePicture', label: 'Replace Picture', unavailable: desktop('选择替换图片文件') }, { id: 'cropPicture', label: 'Crop', unavailable: noWrite('图片裁切') }, { id: 'pictureOpacity', label: 'Transparency', unavailable: noWrite('图片透明度') }] }] },
+  { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [{ label: 'Table Styles', controls: [{ id: 'tableStructure', label: 'Rows and Columns', caption: '行列操作', sourceActionId: 'editTableStructure' }, { id: 'tableStyle', label: 'Table Style', caption: '表格样式', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...SLIDES_TABLE_PRESETS.map(item => item.name)], optionLabels: ['来源样式或未选择', ...SLIDES_TABLE_PRESETS.map(item => item.label)] }, { id: 'tableFirstRow', label: '标题行', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableBandRow', label: '斑马纹', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableRtl', label: '从右到左表格', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' }, { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] }, { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' }, { id: 'tableNoBorders', label: 'No Borders', caption: '无边框', sourceActionId: 'onEditTableStyle' }] }] },
+  { id: 'chartDesign', label: 'Chart Design', context: 'chart', groups: [{ label: 'Chart Elements', controls: [{ id: 'chartElements', label: 'Chart Elements', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Styles', controls: [{ id: 'chartDesignPresets', label: 'Chart Colors and Styles', sourceActionId: 'onEditChart', sourceIcon: IconChart }, { id: 'chartPointColors', label: 'Chart Point Colors', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Data', controls: [{ id: 'chartSwitchRowCol', label: 'Switch Row/Column', sourceActionId: 'onEditChart', sourceIcon: IconSwitchRowCol }, { id: 'chartType', label: 'Change Chart Type', sourceActionId: 'onChartType' }, { id: 'chartData', label: 'Edit Data', sourceActionId: 'onChartData' }] }] },
+  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'cropPicture', label: 'Crop', sourceActionId: 'onPictureCrop' }, { id: 'pictureOpacity', label: 'Transparency', unavailable: noWrite('图片透明度') }] }] },
   { id: 'shapeFormat', label: 'Shape Format', context: 'shape', groups: [
     { label: 'Size', controls: [{ id: 'shapeGeometry', label: 'Position and Size' }] },
-    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', unavailable: noWrite('形状填充') }, { id: 'shapeOutline', label: 'Outline', unavailable: noWrite('形状描边') }, { id: 'changeShape', label: 'Change Shape', unavailable: noWrite('形状类型') }] },
+    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', caption: '填充', kind: 'color', sourceActionId: 'onShapeFill' }, { id: 'shapeNoFill', label: 'No Fill', caption: '无填充', sourceActionId: 'onShapeFill' }, { id: 'shapeOutline', label: 'Outline', caption: '轮廓', kind: 'color', sourceActionId: 'onShapeOutline' }, { id: 'shapeOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: ['0.75', '1', '1.5', '2.25', '3', '4.5', '6'], optionLabels: ['0.75 磅', '1 磅', '1.5 磅', '2.25 磅', '3 磅', '4.5 磅', '6 磅'], sourceActionId: 'onShapeOutline' }, { id: 'shapeNoOutline', label: 'No Outline', caption: '无轮廓', sourceActionId: 'onShapeOutline' }, { id: 'changeShape', label: 'Change Shape', caption: '更改形状', kind: 'select', sourceActionId: 'onChangeShape' }] },
   ] },
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
 
 export function createSlidesNativeRibbon(host: HTMLElement, options: {
   onAction: NativeSlidesAction
+  onAssistant?: () => void
   layouts?: NativeSlidesLayout[]
   locked?: boolean
 }): NativeSlidesRibbon {
   const root = document.createElement('section')
   root.className = 'slides-native-ribbon'
-  root.setAttribute('aria-label', 'PowerPoint ribbon')
-  const style = document.createElement('style')
-  style.textContent = `.slides-native-ribbon{flex:none;background:#fff;border-bottom:1px solid #d5dcd9;color:#273532}.slides-native-ribbon-tabs{display:flex;gap:2px;overflow:auto;padding:5px 8px 0;border-bottom:1px solid #e5e9e7}.slides-native-ribbon-tabs [role=tab]{flex:none;border:0;border-bottom:2px solid transparent;padding:7px 11px;background:transparent;color:inherit;font:inherit;cursor:pointer}.slides-native-ribbon-tabs [aria-selected=true]{border-bottom-color:#247f70;color:#176b5e}.slides-native-ribbon [role=tabpanel]{display:flex;min-height:80px;gap:8px;overflow:auto;padding:8px}.slides-native-ribbon [role=tabpanel][hidden]{display:none}.slides-native-ribbon-group{position:relative;display:flex;align-items:center;align-content:flex-start;flex-wrap:wrap;gap:5px;min-width:max-content;padding:0 9px 15px;border-right:1px solid #e1e6ec}.slides-native-ribbon-group h3{position:absolute;bottom:0;left:0;right:0;margin:0;text-align:center;color:#687487;font-size:10px;font-weight:400}.slides-native-ribbon-group button,.slides-native-ribbon-group select,.slides-native-ribbon-group input,.slides-native-ribbon-group textarea{max-width:180px;min-height:30px;border:1px solid #ccd5d2;border-radius:3px;padding:5px 7px;background:#fff;color:#263431;font-size:11px}.slides-native-ribbon-group button:disabled,.slides-native-ribbon-group select:disabled,.slides-native-ribbon-group input:disabled{opacity:.52;cursor:not-allowed}.slides-native-ribbon-group textarea{width:150px;min-height:48px;resize:vertical}@media(max-width:700px){.slides-native-ribbon-tabs [role=tab]{padding:7px 8px}.slides-native-ribbon [role=tabpanel]{min-height:72px;padding:6px}.slides-native-ribbon-group{gap:4px;padding-inline:6px}}`
-  root.append(style)
+  const disposeScroll = bindOfficeRibbonScroll(root)
+  root.setAttribute('aria-label', 'PowerPoint 功能区')
   const tablist = document.createElement('div')
   tablist.className = 'slides-native-ribbon-tabs'
   tablist.setAttribute('role', 'tablist')
@@ -230,13 +258,22 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   const controls = new Map<string, HTMLElement[]>()
   let activeTab = 'home'
   let activeContext: NativeSlidesContext = null
+  let chartGallery: ReturnType<typeof createNativeChartGallery> | undefined
   let locked = options.locked === true
   let currentAnimationEffect = ''
   let listTargets = { bullets: false, numbers: false, hanging: false }
   let hasTextTarget = false
   let hasWritableSlideSize = false
   const clipboardLocale = genOfficeHomeClipboardLocale(document.documentElement.lang)
+  const localize = (label: string) => slidesRibbonLabel(label, document.documentElement.lang)
 
+  let commentEditReady = false, commentEditReason: string | undefined
+  const updateCommentEdit = () => {
+    for (const control of controls.get('newComment') ?? []) {
+      ;(control as HTMLButtonElement).disabled = locked || !commentEditReady
+      control.title = commentEditReady ? '在当前来源页新建经典批注' : commentEditReason ?? '请先打开已核验的批注来源'
+    }
+  }
   let transitionEditReady = false
   let transitionEditReason: string | undefined
   const updateTransitionEdit = () => {
@@ -254,6 +291,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     }
   }
   const selectTab = (id: string) => {
+    if (id !== 'chartDesign') chartGallery?.close()
     activeTab = id
     for (const tab of tabs) {
       const selected = tab.id === id
@@ -268,7 +306,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     button.type = 'button'
     button.id = `slides-native-tab-${tab.id}`
     button.dataset.ribbonTab = tab.id
-    button.textContent = tab.label
+    button.textContent = localize(tab.label)
     button.setAttribute('role', 'tab')
     button.setAttribute('aria-controls', `slides-native-panel-${tab.id}`)
     button.hidden = !!tab.context
@@ -296,21 +334,26 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     for (const groupDefinition of tab.groups) {
       const group = document.createElement('section')
       group.className = 'slides-native-ribbon-group'
-      const groupLabel = tab.id === 'home' && groupDefinition.label === 'Clipboard' ? clipboardLocale.group : groupDefinition.label
+      group.dataset.ribbonGroup = groupDefinition.label
+      const groupLabel = tab.id === 'home' && groupDefinition.label === 'Clipboard' ? clipboardLocale.group : localize(groupDefinition.label)
       group.setAttribute('aria-label', groupLabel)
       const heading = document.createElement('h3')
       heading.textContent = groupLabel
       group.append(heading)
+      if (groupDefinition.label === 'AI 助手') {
+        group.classList.add('office-ai-group')
+        group.append(createOfficeAIEntry(options.onAssistant))
+      }
       for (const control of groupDefinition.controls) {
         const localizedLabel = tab.id === 'home' && groupDefinition.label === 'Clipboard'
           ? clipboardLocale[(control.id === 'formatBrush' ? 'formatPainter' : control.id) as keyof typeof clipboardLocale] as string
-          : control.label
-        const unavailable = control.id === 'paste' ? clipboardLocale.pasteUnavailable
-          : control.id === 'cut' || control.id === 'copy' ? clipboardLocale.clipboardUnavailable
-            : control.id === 'formatBrush' ? clipboardLocale.formatPainterUnavailable : control.unavailable
+          : localize(control.label)
+        const unavailable = control.unavailable
         const controlId = `slides-native-command-${tab.id}-${control.id}`
-        const sourceIcon = control.sourceIcon
-          ? renderToStaticMarkup(reactElement(control.sourceIcon, { size: 15 }))
+        const sourceGlyph = control.sourceIcon ?? slidesRibbonSourceIcons[control.id]
+        const glyph = control.icon ?? slidesRibbonIcons[control.id]
+        const sourceIcon = sourceGlyph
+          ? renderToStaticMarkup(reactElement(sourceGlyph, { size: 15 }))
           : ''
         let element: HTMLElement
         if (unavailable) {
@@ -320,27 +363,49 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           buttonElement.title = unavailable
           buttonElement.setAttribute('aria-label', `${localizedLabel}. ${unavailable}`)
           if (sourceIcon) buttonElement.insertAdjacentHTML('afterbegin', sourceIcon)
-          else if (control.icon) buttonElement.append(createElement(control.icon, { width: 15, height: 15, 'aria-hidden': 'true' }))
+          else if (glyph) buttonElement.append(createElement(glyph, { width: 15, height: 15, 'aria-hidden': 'true' }))
           buttonElement.append(document.createTextNode(localizedLabel))
           buttonElement.dataset.command = control.id
           buttonElement.dataset.unavailable = 'true'
           element = buttonElement
         } else if (control.kind === 'select') {
           const select = document.createElement('select')
-          select.setAttribute('aria-label', control.label)
+          select.setAttribute('aria-label', localizedLabel)
           select.dataset.command = control.id
           if (control.id === 'lineSpacingPct' || PARAGRAPH_LIST_COMMANDS.includes(control.id)) select.add(new Option('未设置或混合值', ''))
-          if (control.id === 'layout') {
-            for (const layout of options.layouts ?? []) select.add(new Option(`${layout.name || layout.path}`, layout.path))
+          if (control.id === 'insertSmartArt') {
+            // 固定源 SMARTART_GALLERY：7 种布局
+            select.add(new Option('插入 SmartArt…', ''))
+            for (const item of SMARTART_GALLERY) select.add(new Option(item.label, item.layout))
+          } else if (control.id === 'insertChart') {
+            // 固定源 CHART_GALLERY：13 种图表，顺序与名称同固定源。
+            select.add(new Option('插入图表…', ''))
+            for (const item of CHART_GALLERY) select.add(new Option(item.label, item.kind))
+          } else if (control.id === 'insertWordArt') {
+            // 固定源共享艺术字库：12 个预设，顺序与名称同固定源。
+            select.add(new Option('插入艺术字…', ''))
+            for (const preset of WORDART_PRESETS) select.add(new Option(WORDART_PRESET_LABELS[preset.id] ?? preset.id, preset.id))
+          } else if (control.id === 'insertShape' || control.id === 'changeShape') {
+            // 固定源形状库：分组与顺序同 SHAPE_GALLERY_GROUPS，选后复位。
+            select.add(new Option(control.id === 'insertShape' ? '插入形状…' : '更改形状…', ''))
+            // 更改形状与固定源一致：线条不在可选范围内。
+            for (const group of SHAPE_GALLERY_GROUPS.filter(item => control.id === 'insertShape' || item.shapes.some(shape => !LINE_SHAPE_KINDS.includes(shape.prst)))) {
+              const optgroup = document.createElement('optgroup'); optgroup.label = group.group
+              for (const shape of group.shapes.filter(item => control.id === 'insertShape' || !LINE_SHAPE_KINDS.includes(item.prst))) optgroup.append(new Option(shape.label, shape.prst))
+              select.append(optgroup)
+            }
+          } else if (control.id === 'layout' || control.id === 'addSlideWithLayout') {
+            if (control.id === 'addSlideWithLayout') select.add(new Option('新建指定版式幻灯片…', ''))
+            for (const layout of options.layouts ?? []) select.add(new Option(slidesLayoutLabel(layout, document.documentElement.lang), layout.path))
           } else {
-            for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value), value))
+            for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(localize(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value)), value))
           }
-          select.addEventListener('change', () => options.onAction(control.id, select.value))
+          select.addEventListener('change', () => { options.onAction(control.id, select.value); if (['addSlideWithLayout', 'insertShape', 'changeShape', 'insertWordArt', 'insertChart', 'insertSmartArt'].includes(control.id)) select.value = '' })
           element = select
-        } else if (control.kind === 'text' || control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
-          const input = document.createElement(control.kind === 'text' ? 'textarea' : 'input')
-          if (input instanceof HTMLInputElement) input.type = control.kind === 'font' || control.kind === 'spacing' ? 'text' : control.kind
-          input.setAttribute('aria-label', control.label)
+        } else if (control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
+          const input = document.createElement('input')
+          input.type = control.kind === 'font' || control.kind === 'spacing' ? 'text' : control.kind
+          input.setAttribute('aria-label', localizedLabel)
           input.dataset.command = control.id
           if (control.kind === 'spacing') {
             input.setAttribute('inputmode', 'decimal')
@@ -352,15 +417,23 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         } else {
           const buttonElement = document.createElement('button')
           buttonElement.type = 'button'
+          buttonElement.setAttribute('aria-label', localizedLabel)
           if (sourceIcon) buttonElement.insertAdjacentHTML('afterbegin', sourceIcon)
-          else if (control.icon) buttonElement.append(createElement(control.icon, { width: 15, height: 15, 'aria-hidden': 'true' }))
-          buttonElement.append(document.createTextNode(localizedLabel))
+          else if (glyph) buttonElement.append(createElement(glyph, { width: 15, height: 15, 'aria-hidden': 'true' }))
+          if (control.kind === 'toggle') {
+            buttonElement.title = localizedLabel
+            const label = document.createElement('span')
+            label.className = 'slides-ribbon-toggle-label'
+            label.textContent = localizedLabel
+            buttonElement.append(label)
+          } else buttonElement.append(document.createTextNode(localizedLabel))
           buttonElement.dataset.command = control.id
           if (control.kind === 'toggle') {
             buttonElement.setAttribute('aria-pressed', 'false')
             buttonElement.addEventListener('click', () => options.onAction(control.id, buttonElement.getAttribute('aria-pressed') !== 'true'))
           } else {
             buttonElement.addEventListener('click', () => options.onAction(control.id))
+            if (control.id === 'formatBrush') buttonElement.addEventListener('dblclick', () => options.onAction(control.id, 'continuous'))
           }
           element = buttonElement
         }
@@ -371,12 +444,13 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (locked) (element as HTMLButtonElement).disabled = true
         }
         if (control.sourceActionId) element.dataset.sourceAction = control.sourceActionId
-        if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = '作用于当前对象的全部段落；自定义输入 Enter 提交'
+        if (!element.title) element.title = localizedLabel
+        if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = localizedLabel + '：作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
         if (control.caption || ['lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
           const label = document.createElement('label')
           label.htmlFor = controlId
-          Object.assign(label.style, { display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', whiteSpace: 'nowrap' })
+          label.className = 'slides-ribbon-field'
           label.append(document.createTextNode(control.caption ?? (control.id === 'lineSpacingPct' ? '行距' : control.id === 'spaceBeforePt' ? '段前（磅）' : '段后（磅）')), element)
           if (control.id === 'bulletColor') {
             const status = document.createElement('span')
@@ -385,6 +459,10 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           }
           group.append(label)
         } else group.append(element)
+      }
+      if (tab.id === 'chartDesign' && groupDefinition.label === 'Chart Styles') {
+        chartGallery = createNativeChartGallery(group, (command, value) => options.onAction(command, value))
+        chartGallery.setLocked(locked)
       }
       panel.append(group)
     }
@@ -398,9 +476,12 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   updateSlideOrientationState()
   updateTransitionApplyAll()
   updateTransitionEdit()
+  updateCommentEdit()
 
   return {
+    setChartDesign(state) { chartGallery?.setState(state) },
     setContext(context) {
+      if (context !== 'chart') chartGallery?.setState(null)
       activeContext = context
       for (const tab of tabs.filter(item => item.context)) {
         const visible = tab.context === context
@@ -419,6 +500,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       hasTextTarget = enabled
       updateTextFormattingState()
     },
+    setCommentEditEnabled(enabled, reason) { commentEditReady = enabled; commentEditReason = reason; updateCommentEdit() },
     setTransitionEditEnabled(enabled, reason) { transitionEditReady = enabled; transitionEditReason = reason; updateTransitionEdit() },
     setTransitionApplyAllEnabled(enabled, reason) { transitionApplyAllReady = enabled; transitionApplyAllReason = reason; updateTransitionApplyAll() },
     setSlideOrientationEnabled(enabled) {
@@ -429,8 +511,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       for (const select of controls.get('layout') ?? []) {
         const picker = select as HTMLSelectElement
         const current = picker.value
-        picker.replaceChildren(...layouts.map(layout => new Option(layout.name || layout.path, layout.path)))
+        picker.replaceChildren(...layouts.map(layout => new Option(slidesLayoutLabel(layout, document.documentElement.lang), layout.path)))
         picker.value = layouts.some(layout => layout.path === current) ? current : ''
+      }
+      for (const select of controls.get('addSlideWithLayout') ?? []) {
+        (select as HTMLSelectElement).replaceChildren(new Option('新建指定版式幻灯片…', ''), ...layouts.map(layout => new Option(slidesLayoutLabel(layout, document.documentElement.lang), layout.path)))
       }
     },
     setValue(command, value, hint) {
@@ -451,7 +536,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (command === 'lineSpacingPct' && element instanceof HTMLSelectElement) element.options[0]!.textContent = hint
         }
         if (command === 'bold' && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
-        if (['italic', 'underline', 'strike'].includes(command) && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
+        if (['commentsPane', 'italic', 'underline', 'strike', 'hideSlide', 'tableFirstRow', 'tableBandRow', 'tableRtl'].includes(command) && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
       }
       if (command === 'bulletKind') for (const [kind, id] of [['char', 'bulletChar'], ['number', 'bulletNumber'], ['none', 'bulletNone']]) {
         for (const element of controls.get(id!) ?? []) element.setAttribute('aria-pressed', String(kind === value))
@@ -464,6 +549,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(alignment === value))
         }
       }
+      if (['toggleAnimationPane', 'animationByParagraph'].includes(command)) for (const element of controls.get(command) ?? []) element.setAttribute('aria-pressed', value)
       if (command === 'animationEffect') {
         currentAnimationEffect = value
         const direction = (controls.get('animationDirection') ?? [])[0] as HTMLSelectElement | undefined
@@ -476,6 +562,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
+      chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
         if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
           element.disabled = locked || element.dataset.unavailable === 'true'
@@ -487,8 +574,9 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateSlideOrientationState()
       updateTransitionApplyAll()
       updateTransitionEdit()
+      updateCommentEdit()
     },
-    dispose() { root.remove() },
+    dispose() { chartGallery?.dispose(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

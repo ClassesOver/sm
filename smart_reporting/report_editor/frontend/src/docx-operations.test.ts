@@ -65,7 +65,7 @@ describe('DOCX snapshots to allowed operations', () => {
     expect(() => docxOperations(original, styleChange, tableAnchors)).toThrow(/表格布局/)
     const cellStyleChange = structuredClone(original)
     cellStyleChange.content[0].content[0].content[0] = cell('旧值', 'FF0000')
-    expect(() => docxOperations(original, cellStyleChange, tableAnchors)).toThrow(/单元格结构或样式/)
+    expect(() => docxOperations(original, cellStyleChange, tableAnchors)).toThrow(/单元格底纹来源或草稿无效/)
   })
 })
 
@@ -168,7 +168,7 @@ it('resolves the upstream start alignment against paragraph direction and reject
 it('rejects alignment on unsaved paragraphs and invalid replay values instead of dropping them', () => {
   const inserted = { ...para(null, '新增'), attrs: { docxIndex: null, align: 'center' } }
   expect(() => docxOperations(base, { type: 'doc', content: [inserted, ...base.content] }, anchors)).toThrow(/保存后再修改对齐/)
-  expect(() => replayDocxOperations(base, [{ kind: 'setParagraphAlignment', blockId: 'a', alignment: 'distribute' }], anchors)).toThrow(/对齐方式无效/)
+  expect(() => replayDocxOperations(base, [{ kind: 'setParagraphAlignment', blockId: 'a', expectedObjectSha256: 'hash-a', alignment: 'distribute' }], anchors)).toThrow(/对齐方式无效/)
 })
 
 it.each(['bullet', 'ordered'])('binds %s list toggles to source anchors and replays without accepting numbering XML', kind => {
@@ -231,7 +231,7 @@ it('reapplies an unchanged literal spacing value to clear automatic source forma
   expect(docxOperations(original, replayDocxOperations(original, [operation], anchors), anchors)).toEqual([operation])
 })
 
-it('maps only source line-spacing presets and arbitrary before/after spacing to anchored operations', () => {
+it('maps source line-spacing multiples and arbitrary before/after spacing to anchored operations', () => {
   const original = { type: 'doc', content: [{ ...para(0, '行距正文'), attrs: { docxIndex: 0, spaceBefore: 0, spaceAfter: 120, lineSpacing: 1.5, lineRule: null, lineRawTwips: null } }] }
   const current = structuredClone(original) as any
   current.content[0].attrs.spaceBefore = 240
@@ -243,6 +243,8 @@ it('maps only source line-spacing presets and arbitrary before/after spacing to 
   expect(docxOperations(original, current, anchors)).toEqual(operations)
   expect(docxOperations(original, replayDocxOperations(original, operations, anchors), anchors)).toEqual(operations)
   current.content[0].attrs.lineSpacing = 1.2
+  expect(docxOperations(original, current, anchors)).toEqual([{ ...operations[0], lineSpacing: 1.2 }])
+  current.content[0].attrs.lineSpacing = 1.234
   expect(() => docxOperations(original, current, anchors)).toThrow(/行距/)
 })
 
@@ -277,6 +279,8 @@ it.each([0, 720, 1440])('writes and replays an anchored %s-twip paragraph indent
   expect(docxOperations(original, current, anchors)).toEqual(operations)
   expect(docxOperations(original, replayDocxOperations(original, operations, anchors), anchors)).toEqual(operations)
   current.content[0].attrs.indentFirstLine = 360
+  expect(docxOperations(original, current, anchors)).toEqual([...operations, { kind: 'setParagraphSpecialIndent', blockId: 'a', expectedObjectSha256: 'hash-a', twips: 360 }])
+  current.content[0].attrs.keepLines = true
   expect(() => docxOperations(original, current, anchors)).toThrow(/布局/)
 })
 
@@ -369,4 +373,11 @@ describe('粘贴图片 insertParagraphImage（docProtected/genImage 的协议内
     expect(() => replayDocxOperations(base, [{ ...valid, position: 'middle' }], anchors)).toThrow(/字段或来源身份/)
     expect(() => replayDocxOperations(base, [{ ...valid, note: 'x' }], anchors)).toThrow(/字段或来源身份/)
   })
+})
+
+it('toggles a list on a paragraph carrying the null local cover-page marker (dropped by docListItem)', () => {
+  const original = { type: 'doc', content: [{ ...para(0, '原文'), attrs: { docxIndex: 0, nativeCoverPage: null, align: 'center' } }, base.content[1]] }
+  const current = structuredClone(original) as any
+  current.content[0] = { ...current.content[0], type: 'docListItem', attrs: { docxIndex: 0, align: 'center', kind: 'bullet', numId: 'native-bullet', ilvl: 0 } }
+  expect(docxOperations(original, current, anchors)).toEqual([{ kind: 'setParagraphList', blockId: 'a', expectedObjectSha256: 'hash-a', list: 'bullet' }])
 })

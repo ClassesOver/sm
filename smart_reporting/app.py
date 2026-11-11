@@ -67,10 +67,21 @@ from .report_editor import (
     create_report_workbook_ai_service,
     create_report_workbook_editor_router,
 )
+from .report_editor.data_revisions import ReportDataRevisionService
 from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
 from .report_editor.native import NativeEditorService
 from .report_editor.native_ai import create_native_ai_service
 from .report_editor.native_ai_api import create_native_ai_router
+from .report_editor.slides_native_ai import create_native_slides_ai_service
+from .report_editor.slides_native_ai_api import create_native_slides_ai_router
+from .report_editor.native_pdf_ai import create_native_pdf_read_planner
+from .report_editor.native_pdf_ai_tasks import NativePDFReadService
+from .report_editor.native_pdf_review_ai import create_native_pdf_review_planner
+from .report_editor.native_pdf_review_ai_tasks import NativePDFReviewService
+from .report_editor.native_pdf_review_ai_api import create_native_pdf_review_ai_router
+from .report_editor.native_pdf_form_ai import AgnoNativePDFFormPlanner
+from .report_editor.native_pdf_form_ai_tasks import NativePDFFormService
+from .report_editor.native_pdf_form_ai_api import create_native_pdf_form_ai_router
 from .report_editor.native_api import create_native_editor_router
 from .report_editor.native_import import NativeImportService
 from .report_editor.native_import_api import create_native_import_router
@@ -346,6 +357,21 @@ native_editor = NativeEditorService(
 native_ai = create_native_ai_service(
     reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
 )
+native_slides_ai = create_native_slides_ai_service(
+    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+)
+native_pdf_read_ai = NativePDFReadService(
+    native_editor, planner=create_native_pdf_read_planner(reporting_agent_template.model),
+    enabled=settings.native_ai_enabled,
+)
+native_pdf_review_ai = NativePDFReviewService(
+    native_editor, planner=create_native_pdf_review_planner(reporting_agent_template.model),
+    enabled=settings.native_ai_enabled,
+)
+native_pdf_form_ai = NativePDFFormService(
+    native_editor, planner=AgnoNativePDFFormPlanner(reporting_agent_template.model),
+    enabled=settings.native_ai_enabled,
+)
 native_import = NativeImportService(native_workspace, native_document_repository, report_editor_grants)
 report_slides_editor = ReportSlidesEditorService(
     state_repository=report_runtime.state_repository,
@@ -403,6 +429,7 @@ report_slides_chart_ai = (
     ReportSlidesChartAIService(report_slides_editor, chart_ai=report_editor_chart_ai)
     if report_editor_chart_ai is not None else None
 )
+report_data_revisions = ReportDataRevisionService(editor=report_editor, chart_service=report_editor_chart_ai)
 report_editor_table_ai = None
 if settings.report_editor_table_ai_enabled:
     report_editor_table_ai = create_report_editor_table_ai_service(
@@ -486,6 +513,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
             editor=report_editor,
             ai=report_editor_ai,
             chart_ai=report_editor_chart_ai,
+            data_revisions=report_data_revisions,
             table_ai=report_editor_table_ai,
             native_editor=native_editor,
             cookie_secure=bool(
@@ -507,7 +535,19 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
         cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
     ))
     application.include_router(create_native_ai_router(
-        report_editor_grants, editor=native_editor, ai=native_ai,
+        report_editor_grants, editor=native_editor, ai=native_ai, pdf_read=native_pdf_read_ai,
+        allowed_origin=settings.report_public_base_url,
+    ))
+    application.include_router(create_native_pdf_review_ai_router(
+        report_editor_grants, editor=native_editor, review=native_pdf_review_ai,
+        allowed_origin=settings.report_public_base_url,
+    ))
+    application.include_router(create_native_pdf_form_ai_router(
+        report_editor_grants, editor=native_editor, forms=native_pdf_form_ai,
+        allowed_origin=settings.report_public_base_url,
+    ))
+    application.include_router(create_native_slides_ai_router(
+        report_editor_grants, editor=native_editor, ai=native_slides_ai,
         allowed_origin=settings.report_public_base_url,
     ))
     application.include_router(create_native_import_router(native_import, enabled=settings.native_upload_enabled))
@@ -552,6 +592,10 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("shutdown", business_ingestion_worker.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
+    application.router.add_event_handler("shutdown", native_slides_ai.aclose)
+    application.router.add_event_handler("shutdown", native_pdf_read_ai.aclose)
+    application.router.add_event_handler("shutdown", native_pdf_review_ai.aclose)
+    application.router.add_event_handler("shutdown", native_pdf_form_ai.aclose)
     if report_editor_chart_ai is not None:
         application.router.add_event_handler("shutdown", report_editor_chart_ai.aclose)
     if report_editor_table_ai is not None:

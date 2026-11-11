@@ -60,7 +60,7 @@ try {
   const ops = () => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.includes('search-fixture')).map(([, value]) => JSON.parse(value).operations))
   await open(); const beforeDraft = await ops()
   await search.fill('cat'); await waitCount('1 / 6')
-  await page.waitForFunction(() => document.querySelectorAll('.pdf-page:first-child .pdf-search-match').length === 5)
+  await page.waitForFunction(() => document.querySelector('.pdf-page')?.querySelectorAll('.pdf-search-match').length === 5)
   const firstBox = await page.locator('.pdf-search-match.is-current').first().evaluate(node => ({ left: parseFloat(node.style.left), width: parseFloat(node.style.width), top: parseFloat(node.style.top) }))
   await next.click(); await waitCount('2 / 6')
   const secondBox = await page.locator('.pdf-search-match.is-current').first().evaluate(node => ({ left: parseFloat(node.style.left), width: parseFloat(node.style.width) }))

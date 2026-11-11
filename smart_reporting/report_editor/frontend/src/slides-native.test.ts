@@ -48,6 +48,37 @@ it('native PPTX exposes initialization failure to the host', async () => {
   await expect(view.ready).rejects.toThrow('源文件不可读'); view.dispose()
 })
 
+it('native PPTX connects the Chinese AI host to one draft with explicit adoption, undo and save', async () => {
+  document.body.innerHTML = '<main id="app"></main>'
+  const shell = createEditorShell(document.querySelector('#app')!, 'full', 'pptx')
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const proposal = { summary: '润色标题', operations: [{ kind: 'editSlides', edits: [{ slideIndex: 0, elementId: 'title', text: 'AI标题' }], order: [0] }] }
+  const nativeAI = { start: vi.fn(async () => ({ editId: 'ai', status: 'running', snapshotSha256: 'b'.repeat(64) })),
+    status: vi.fn(async () => ({ editId: 'ai', status: 'succeeded', snapshotSha256: 'b'.repeat(64), proposal })),
+    accept: vi.fn(async () => ({ operations: proposal.operations })), cancel: vi.fn(async () => ({})), cancelRequest: vi.fn(async () => ({})) }
+  const request = vi.fn(async (path: string) => path === 'deck' ? deck : path === 'render-tree' ? { slides: [] } : { revision: 2, revisionRegistered: true, validation: { issues: [] } })
+  const view = createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: true, request: request as any, draft, nativeAI })
+  await view.ready
+  expect(shell.editor.querySelector('.slides-native-ai')).not.toBeNull()
+  const text = shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '人工修改'; text.dispatchEvent(new Event('input'))
+  expect(shell.editor.querySelector('.native-ai-context')!.textContent).toContain('人工修改')
+  shell.editor.querySelector<HTMLTextAreaElement>('.slides-native-ai textarea')!.value = '润色'
+  shell.editor.querySelector('form.native-ai-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+  await vi.waitFor(() => expect(shell.editor.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+  expect(text.value).toBe('人工修改')
+  expect(nativeAI.start.mock.calls[0]).toEqual([expect.objectContaining({ operations: draft.operations, selection: [{ slideIndex: 0, elementId: 'title' }] }), expect.any(AbortSignal)])
+  shell.editor.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+  await vi.waitFor(() => expect(text.value).toBe('AI标题'))
+  expect(draft.operations).toEqual(proposal.operations)
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(text.value).toBe('人工修改')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(text.value).toBe('AI标题')
+  shell.save.click(); await vi.waitFor(() => expect(request.mock.calls.some(([path]) => path === 'save')).toBe(true))
+  view.dispose()
+})
+
 const draftIdentity: NativeDraftIdentity = { documentId: 'slides-draft', revision: 1, sourceSha256: deck.sha256,
   scope: { database: 'fixture', companyId: 'company', userId: 'user', threadId: 'thread' } }
 const draftContext = { context: { ...draftIdentity, format: 'pptx', sourceFile: { sha256: deck.sha256 } }, editingEnabled: true } as unknown as NativeContextResponse
@@ -768,4 +799,61 @@ it('refuses an unsafe restored source transition without replacing persisted dra
   const source = { ...deck, slides: [{ ...deck.slides[0], transitionEditSafe: false }] }
   await expect(openDraft(new NativeDraft(draftIdentity, store), { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })).rejects.toThrow(/原草稿已保留/)
   expect(new NativeDraft(draftIdentity, store).operations).toEqual(operations)
+})
+
+it('keeps text and paragraph animation targets coherent in one undo snapshot', async () => {
+  const model=structuredClone(deck) as any
+  model.slides[0].elements[0].text='one\ntwo\nthree'
+  model.slides[0].elements[0].paragraphFormatting=[{}, {}, {}]
+  model.slides[0].animations=[0,1,2].map(paragraph=>({spid:2,elementId:'title',effect:'fade',trigger:'onClick',durationMs:500,delayMs:0,paragraph}))
+  const draft=new NativeDraft(draftIdentity,draftStore())
+  const {shell,view}=await openDraft(draft,{preview:vi.fn(async()=>({model})),renderTree:vi.fn(async()=>({slides:[]}))})
+  const text=shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value='single';text.dispatchEvent(new Event('input'))
+  expect(draft.operations[0]).toMatchObject({edits:[{text:'single'}],animationSequences:[{slideIndex:0,items:[{source:0,spid:2,effect:'fade'}]}]})
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(text.value).toBe('one\ntwo\nthree');expect(draft.operations).toEqual([])
+  view.dispose()
+})
+
+it('builds By Paragraph animations from pending expanded text rather than source paragraph count', async()=>{
+  const draft=new NativeDraft(draftIdentity,draftStore())
+  const {shell,view}=await openDraft(draft,{preview:vi.fn(async()=>({model:deck})),renderTree:vi.fn(async()=>({slides:[]}))})
+  const text=shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value='one\ntwo\nthree';text.dispatchEvent(new Event('input'))
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="animationByParagraph"]')!.click()
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="addAnimation"]')!.click()
+  const operation=draft.operations[0] as any
+  expect(operation.animationSequences[0].items.map((item:any)=>item.paragraph)).toEqual([0,1,2])
+  view.dispose()
+})
+
+it('stages table shading and borders with text edits, history and exact source recovery',async()=>{
+  const model=structuredClone(deck) as any
+  model.slides[0].elements=[{id:'tbl_1',type:'table',name:'Source table',editable:false,text:'',tableCells:[['a','b'],['c','d']]}]
+  const store=draftStore(),draft=new NativeDraft(draftIdentity,store)
+  const api={preview:vi.fn(async()=>({model})),renderTree:vi.fn(async()=>({slides:[]}))}
+  let {shell,view}=await openDraft(draft,api)
+  const shading=shell.editor.querySelector<HTMLSelectElement>('[data-command="tableShading"]')!
+  shading.value='#FFF2CC';shading.dispatchEvent(new Event('change',{bubbles:true}))
+  shell.editor.querySelector<HTMLButtonElement>('[data-command="tableAllBorders"]')!.click()
+  expect(draft.operations[0]).toMatchObject({tableStyles:[{slideIndex:0,elementId:'tbl_1',shadingColor:'#FFF2CC',borderPreset:'all'}]})
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect((draft.operations[0] as any).tableStyles[0]).toEqual({slideIndex:0,elementId:'tbl_1',shadingColor:'#FFF2CC'})
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  view.dispose()
+  const recovered=new NativeDraft(draftIdentity,store)
+  ;({shell,view}=await openDraft(recovered,api))
+  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="tableShading"]')!.value).toBe('#FFF2CC')
+  expect((recovered.operations[0] as any).tableStyles[0].borderPreset).toBe('all')
+  view.dispose()
+})
+
+it('recovers new paragraph targets against the recovered text snapshot',async()=>{
+  const draft=new NativeDraft(draftIdentity,draftStore())
+  const operations=[{kind:'editSlides',edits:[{slideIndex:0,elementId:'title',text:'one\ntwo\nthree'}],animationSequences:[{slideIndex:0,items:[{elementId:'title',effect:'fade',trigger:'onClick',durationMs:500,delayMs:0,paragraph:2}]}]}]
+  draft.setOperations(operations)
+  const {shell,view}=await openDraft(draft,{preview:vi.fn(async()=>({model:deck})),renderTree:vi.fn(async()=>({slides:[]}))})
+  expect(shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!.value).toBe('one\ntwo\nthree')
+  expect(draft.operations).toEqual(operations);view.dispose()
 })

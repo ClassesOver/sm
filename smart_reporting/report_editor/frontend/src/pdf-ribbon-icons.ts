@@ -1,7 +1,8 @@
 /** Browser-safe icon subset adapted from GenOffice PDF icons.tsx at f8c17004fb730df11f0f743164ffd8b4281bb38c. */
-export type PdfRibbonIconName = 'download' | 'undo' | 'redo' | 'highlight' | 'note' | 'rotateLeft' | 'rotateRight' | 'deletePage' | 'fitWidth' | 'fitPage' | 'thumbnails' | 'print' | 'search'
+export type PdfRibbonIconName = 'sparkles' | 'download' | 'undo' | 'redo' | 'highlight' | 'note' | 'rotateLeft' | 'rotateRight' | 'deletePage' | 'fitWidth' | 'fitPage' | 'thumbnails' | 'print' | 'search'
 
 const paths: Record<PdfRibbonIconName, string[]> = {
+  sparkles: ['m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7z', 'M20 2v4', 'M18 4h4'],
   download: ['M12 3v11', 'm7 9 5 5 5-5', 'M5 17v3h14v-3'],
   undo: ['M5.9 4 2.5 7.15l3.4 3.67', 'M4 7.4h11.2A6.3 6.3 0 1 1 15.2 20H6.9'],
   redo: ['M18.1 4 21.5 7.15l-3.4 3.67', 'M20 7.4H8.8A6.3 6.3 0 1 0 8.8 20h8.3'],

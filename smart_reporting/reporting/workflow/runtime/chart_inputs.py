@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from ..checkpoint import payload_sha256
 from .phase_models import ChartDataBinding, ChartDraft, VisualizationPlanDraft
 
 CHART_INPUT_SCHEMA = "chart-input/v1"
@@ -24,6 +25,16 @@ CHART_INPUT_PREVIEW_ROWS = 3
 _PATH_TOKEN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]")
 _UNSAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_CHART_INPUT_BYTES = 8 * 1024 * 1024
+
+
+def chart_input_key(plan: VisualizationPlanDraft) -> str:
+    """同一组图及数据绑定复用冻结输入，并以该键关联执行证据。"""
+    return payload_sha256({'charts': [
+        {'chartId': chart.chart_id, 'dataBindings': [
+            binding.model_dump(mode='json', by_alias=True) for binding in chart.data_bindings
+        ]}
+        for chart in plan.charts
+    ]})
 
 
 def ranked_detail_scope(data_path: str) -> dict[str, Any] | None:
@@ -226,11 +237,17 @@ def _table_for_binding(
             raise ChartInputError(f"对象绑定字段缺失或非标量：{missing + nested}")
         column_meta = None
         # 标量端点复用同一冻结指标单位；计数、比率和未知键不借用金额单位。
-        if (len(tokens) == 2 and tokens[0] in {'metrics', 'breakdowns'}
+        if (len(tokens) == 2 and tokens[0] in {'metrics', 'breakdowns', 'derivedMetrics', 'comparisons'}
                 and isinstance(tokens[1], int) and isinstance(value.get('unit'), str)
                 and value['unit'].strip()):
+            measure_fields = {
+                'metrics': {'total', 'average', 'minimum', 'maximum'},
+                'breakdowns': {'total', 'average', 'minimum', 'maximum'},
+                'derivedMetrics': {'value'},
+                'comparisons': {'currentTotal', 'baselineTotal', 'change'},
+            }[tokens[0]]
             column_meta = {name: {'unit': value['unit']} for name in fields
-                           if name in {'total', 'average', 'minimum', 'maximum'}} or None
+                           if name in measure_fields} or None
             if isinstance(value.get('isPercent'), bool) and column_meta:
                 for meta in column_meta.values():
                     meta['isPercent'] = value['isPercent']

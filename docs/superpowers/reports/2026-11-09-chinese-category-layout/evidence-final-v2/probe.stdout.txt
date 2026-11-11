@@ -1,0 +1,36 @@
+[
+  {
+    "variant": "wrap-8-manual",
+    "execution": "rejected",
+    "outside": [
+      "合成机构超长中文\n分类标签用于验证\n画布边缘完整显示"
+    ]
+  },
+  {
+    "variant": "wrap-8-tight",
+    "execution": "rendered",
+    "outside": []
+  },
+  {
+    "variant": "wrap-8-constrained",
+    "execution": "rendered",
+    "outside": []
+  },
+  {
+    "variant": "wrap-40-manual",
+    "execution": "rejected",
+    "outside": [
+      "合成机构超长中文分类标签用于验证画布边缘完整显示"
+    ]
+  },
+  {
+    "variant": "wrap-40-tight",
+    "execution": "rendered",
+    "outside": []
+  },
+  {
+    "variant": "wrap-40-constrained",
+    "execution": "rendered",
+    "outside": []
+  }
+]

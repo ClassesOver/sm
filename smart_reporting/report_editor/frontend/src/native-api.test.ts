@@ -87,3 +87,16 @@ it('真实PDF预览字节必须与显示的确认清单摘要一致',async()=>{
   expect(new Uint8Array(await api.previewFile(payload))).toEqual(new Uint8Array([37,80,68,70]))
   await expect(api.previewFile(payload)).rejects.toThrow('预览')
 })
+
+it('PDF阅读取消在页面卸载时仍使用keepalive并保留同源CSRF', async () => {
+  const fetcher=vi.fn().mockImplementation(async()=>new Response(JSON.stringify({taskId:'t',clientRequestId:'request',status:'cancelled'})))
+  vi.stubGlobal('fetch',fetcher)
+  await createNativeApi('document',1,'csrf').pdfAICancel('request')
+  expect(fetcher.mock.calls[0][0]).toBe('/reports/v1/native/document/1/api/ai/read/cancel')
+  const init=fetcher.mock.calls[0][1]
+  expect(init.keepalive).toBe(true)
+  expect(init.signal).toBeUndefined()
+  expect(init.credentials).toBe('same-origin')
+  expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('csrf')
+  expect(JSON.parse(init.body)).toEqual({clientRequestId:'request'})
+})

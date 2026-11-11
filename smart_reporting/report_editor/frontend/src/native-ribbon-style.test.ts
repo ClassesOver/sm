@@ -30,8 +30,8 @@ describe('native ribbon theme isolation', () => {
   })
 
   it('uses the report action palette for both active tabs and keeps the font inherited', () => {
-    expect(rule('.docx-native .docx-ribbon .ribbon-tab.active').color).toBe('var(--color-primary)')
-    expect(rule('.workbook-ribbon-tabs button[aria-selected="true"]').color).toBe('var(--color-primary)')
+    expect(rule('.docx-native .docx-ribbon .ribbon-tab.active').color).toBe('var(--office-accent)')
+    expect(rule('.workbook-ribbon-tabs button[aria-selected="true"]').color).toBe('var(--office-accent)')
     expect(rule('.docx-native .docx-ribbon').fontFamily).toBe('inherit')
     expect(rule('.workbook-ribbon').fontFamily).toBe('inherit')
   })

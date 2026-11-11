@@ -4,7 +4,7 @@ Vendored from GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c` (2026-11-05 s
 
 ## Source inventory and identity
 
-SOURCE-SHA256.json maps each vendored TS path to its original upstream path and SHA-256. It covers 21 source modules: PDF main text/font/save/crypt/attachment/atomic-write/redaction dependencies, three shared IPC/radical/layer modules, six font-metrics modules, and electron-utils' pure Node atomic writer. The source bytes are unchanged except the explicitly recorded wasm-path.ts, save-pdf.ts and read-only text-edit.ts census adaptations. Local vendor package manifests expose only the copied modules and do not import the desktop package dependency tree.
+SOURCE-SHA256.json maps each vendored TS path to its original upstream path and SHA-256. It covers 21 source modules: PDF main text/font/save/crypt/attachment/atomic-write/redaction dependencies, three shared IPC/radical/layer modules, six font-metrics modules, and electron-utils' pure Node atomic writer. The source bytes are unchanged except the explicitly recorded wasm-path.ts, save-pdf.ts, read-only text-edit.ts census and desktop-printer-only IPC adaptations. Local vendor package manifests expose only the copied modules and do not import the desktop package dependency tree. The separate vendor/pdf2docx/SOURCE-SHA256.json records the fixed-source 48-file DOCX/XLSX/PPTX conversion closure; three PPTX rebuild imports point to the existing local slides engine. Its LICENSE, NOTICE and SOURCE.md accompany the copied code.
 
 LOCAL-SHA256.json records every current TS/MJS source and test, local package manifests, package-lock.json, LICENSE and NOTICE. For patched source, it records the current hash while SOURCE-SHA256.json preserves the upstream hash. Documentation, the hash manifests themselves, generated dist and node_modules are excluded. New local source files must be added to LOCAL-SHA256.json. bridge/* and the Python wrapper are smart_reporting additions; Python files live outside this source manifest's scope.
 
@@ -12,23 +12,23 @@ LOCAL-SHA256.json records every current TS/MJS source and test, local package ma
 
 `src/main/wasm-path.ts`: accept an explicit AGENT_REPORTING_PDF_WASM_DIR containing `pdfium.wasm` and `hb-subset.wasm`, prefer this configuration, resolve standalone bundle-relative `../wasm` assets, and give a clear error for missing configured assets or a missing Electron resourcesPath fallback. Original node_modules resolution remains available.
 
-`src/main/save-pdf.ts`: the image-edit and annotation-delete branches now throw explicit unsupported errors instead of dynamically importing absent desktop-only modules. This closes the frozen bridge capability boundary before bundling; no stub claims success, no Electron code is shipped, and the upstream SOURCE hash remains unchanged in the provenance manifest. The whitelist still rejects these operations before calling the writer. No PDF writer, layout engine or content-edit implementation was reimplemented.
+`src/main/save-pdf.ts`: the image-edit and annotation-delete branches now throw explicit unsupported errors instead of dynamically importing absent desktop-only modules. This closes the frozen bridge capability boundary before bundling; no stub claims success, no Electron code is shipped, and the upstream SOURCE hash remains unchanged in the provenance manifest. The whitelist still rejects those legacy desktop requests; the separate identity-bound existing-image geometry adapter is described below. No PDF writer, layout engine or content-edit implementation was reimplemented.
 
 ## Allowed operations
 
-The bridge reads a JSON request file at argv[2], returns one JSON receipt on the last stdout line, and writes errors to stderr with a nonzero status. inspect requests are `{kind:"inspect",input}`; patch requests are `{kind:"patch",input,output,sourceSha256,operations}`. It calls upstream applySaveRequest, takes the returned bytes and writes a new destination using exclusive creation (`wx`); existing output files, source aliases, hard links and symbolic links are not overwritten. It never calls savePdfToPath or its verification-before-write path.
+The bridge reads a strict JSON request file at argv[2], returns one JSON receipt on the last stdout line, and writes errors to stderr with a nonzero status. CLI kinds are inspect, patch, textResources, extractPages, inspectDesignWidgets, removeDesignWidget, protect and convertOffice (PPTX only). Output files use exclusive creation (wx); existing output files and source aliases are not overwritten. It never calls savePdfToPath or its verification-before-write path. Protect and convertOffice create separate downloads/derived documents rather than PDF draft operations.
 
-At most 500 operations are accepted. Only highlight, addMarkup, removeMarkup, editNote, removeNote, addTextAnnotation (sticky Text comment, not page-content text insertion), cropPage, setPageSize, rotatePage, deletePage, reorderPages and identity-bound replaceText are accepted by a strict schema. Unknown fields/kinds, non-finite values, invalid colors/coordinates, stale source digest/page identity, duplicate reorder/delete, deleting all pages, and edits to a deleted page are rejected before invoking the writer. Coordinates are unrotated PDF user space within CropBox; UI conversion belongs to the caller. For addTextAnnotation the passed rectangle anchors the upper-left corner of upstream's fixed 20×18 pt sticky-note icon; it does not resize the icon. A rectangle wider/taller than the icon is accepted only as a positioning box.
+At most 500 operations are accepted by the strict schema: page/blank/layout, markup/notes/replies, attachments, form values, static text, drawings/stamps and redaction. Exclusive single-operation branches additionally support createFormField (text/checkbox), editFormFieldRequired, removeFormWidget, externalPages (insert/replace) and transformExistingImage (move/resize). Unknown keys/kinds, non-finite geometry, stale source/object identity, invalid page combinations and unsupported sources are rejected before writing. Coordinates use unrotated PDF user space within CropBox. Sticky-note rectangles position the fixed upstream 20 by 18 point icon; they do not resize it. Each module documents its narrower source, resource and batch constraints.
 
 Page IDs are `sha256:<source SHA-256>:page:<original zero-based index>`. The source digest is required at patch request level; optional per-operation sourceSha256 must agree if present. IDs are stable within one immutable source; after saving, inspect the new bytes to obtain new IDs. Operations reference original source page IDs. An optional single reorderPages must list every surviving page exactly once, even when deletePage appears later in the list. A page cannot be both deleted and otherwise edited in one request. Multiple rotatePage deltas on one retained page accumulate via upstream order. Empty operation lists return the exact original bytes.
 
-The schema cannot pass image edits, generic annotation deletion, redaction, arbitrary upstream text-edit fields, inserted content text, encryption, arbitrary file paths or other upstream request fields. Upstream image-edit/annot-delete modules are intentionally absent; image-edit imports Electron. The local save-pdf adaptation explicitly rejects their requests, and they are unreachable through this bridge's whitelist. This is a documented subset, not a promise that arbitrary upstream save requests work.
+The legacy desktop image/annotation branches remain unreachable. The separate existing-image-engine adapter ports only fixed-source geometry operations without Electron; it edits actual content objects rather than inserting stamps. Generic annotation deletion, existing-image pixel replacement/crop, arbitrary desktop writer fields and client-selected server paths remain unsupported. Static text, real redaction and independent AES-256 protection downloads have explicit narrow entrypoints. PDF to PPTX reuses the fixed local converter without OCR; scanned pages remain images. This is a documented subset, not full desktop parity.
 
 ## Development, bundle and deployment assets
 
 Install with `npm ci --ignore-scripts --no-audit --no-fund`. `npm run test` exercises Node operation/asset boundaries; Python integration tests use an independent pypdf reader. `npm run bundle:bridges` emits dist/cli.mjs for the shared office_engine.run_bridge launcher.
 
-The bridge is now a standalone production bundle: pdf-lib, PDFium JS, zod and all reachable local modules are included. `dist/metafile.json` is checked by the unchanged shared `docker/package-office-engine.mjs`, which rejects every non-builtin external import. There are no runtime node_modules, TypeScript source, Electron imports or unresolved dynamic imports. The bundle enables only the declared basic operations and the separately gated identity-bound text replacement contract described below.
+The bridge is now a standalone production bundle: pdf-lib, PDFium JS, zod and all reachable local modules are included. `dist/metafile.json` is checked by the unchanged shared `docker/package-office-engine.mjs`, which rejects every non-builtin external import. There are no runtime node_modules, TypeScript source, Electron imports or unresolved dynamic imports. The bundle enables only the declared strict operation subset and local non-OCR PPTX converter; text editing remains separately gated by the host.
 
 Run `npm run bundle:bridges -- --metafile=dist/metafile.json`, then `npm run package:runtime -- /absolute/runtime/destination`. The PDF-specific package script invokes the shared strict packer, verifies both WASM files against fixed SHA-256 before creating the destination, and copies them to `wasm/` with `WASM-SHA256.json`. It separately retains HarfBuzz and PDFium license/README/manifests, including packages whose WASM is absent from JS metafile inputs. The optional third script argument selects the shared packer path in Docker; it does not relax verification.
 
@@ -60,7 +60,7 @@ PDFium font handle within a census to avoid copying a large font for every objec
 The original SOURCE hash remains retained separately from the local hash.
 
 `inspect` accepts optional `includeText` (default false). The basic path does not
-load PDFium or resolve fonts. With text enabled, each page has `textObjects` with
+load the text census or resolve text fonts. Existing-image inspection does load PDFium even when includeText is false; enumeration failure lowers only the image capability. With text enabled, each page has textObjects with
 `objectId`, `text`, `rect`, `fontName`, `fontSize`, `fontSha256` and
 `expectedTextSha256`. The object ID binds the immutable source digest, original
 page index, top-level/Form ordinal path, exact text and bounds. Empty/unreadable physical text objects are retained for overlap detection and
@@ -196,3 +196,163 @@ The actual output SHA now binds their preview receipt. No global TZ/clock overri
 is used in product code. Source-writer cross-zone counterexample, guards, actual
 preview/save/download and legacy compatibility proof are documented in
 `report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`. Vendor SOURCE hashes unchanged.
+
+
+Inspect note references (2026-11-09): optional note `sourceRef` is the original
+indirect object's full number/generation key matching PDF.js IDs (`80R3`, zero
+`80R`, direct dictionary null). It supports a readonly sidebar join only; strict
+write schemas still reject it and require annotationId/dictionary digest. The
+new focused bridge test covers nonzero generations and direct-note readonly.
+No upstream vendor source or write protocol changed. LOCAL-SHA256 has36 entries.
+
+
+## Native bounded attachment write adapter (2026-11-09)
+
+`bridge/attachments.ts` wraps unchanged pinned `src/main/pdf-attachments.ts`.
+The source writer uses EmbeddedFiles name-tree keys, removes before adding,
+preserves existing Filespec references and refuses Kids trees. The native adapter
+adds immutable source/key/Filespec+stream/content identities, canonical payload
+and decoded-byte budgets, bounded Flate inspection, conservative reference and
+protection census, intermediate/output content verification and encoded-string
+byte ordering (the source writer sorts decoded labels). Only flat, unambiguous,
+unshared embedded files are writable. Associated/linked files, signature/XFA/
+permission sources, unsupported filters and complex structures remain readonly.
+Removed objects can remain in the PDF; no secure erasure is claimed.
+
+Added data is limited to2 MiB/file and6 MiB/batch; source census is bounded to
+200 entries,20,000 indirect objects,8 MiB decoded/file and24 MiB decoded total.
+Native operation count/JSON and online source size limits remain in force.
+Attachment writes run after page/form/note work and verify source survivors.
+Text-replacement combinations are refused until their preservation contract is
+verified. No vendor source, WASM, dependency or signing route changed.
+See `report_editor/NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.
+
+
+## Native exact-parent reply adapter (2026-11-09)
+
+`bridge/note-replies.ts` reuses the unchanged pinned note-reply drawing branch in
+`save-pdf.ts`, but never accepts its fallback to a root note. Public replyNote
+requests bind source/page/annotation identity and dictionary digest, with required
+creation instant and bounded contents. A conservative object/reference census
+allows only safe saved flat roots and standard same-page RT/R children. Protected,
+shared, nested, popup, rich, locked/hidden or ambiguous sources remain readonly.
+The writer runs after other supported page/form/note/attachment stages. Exact
+parent reference/dictionary must still match before writing; appended counts,
+payload, IRT/RT, UTC dates and every pre-existing annotation are verified after.
+Root edit/delete and text/crop/page-size mixtures are refused. Five new engine
+cases include actual original-writer orphan and wrong-identical-parent
+counterexamples. See `report_editor/NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
+
+
+## Native pending-root reply adapter (2026-11-09)
+
+`bridge/local-note-replies.ts` uses the pinned note drawing's localId and
+replyToLocalId fields unchanged. Strict addTextAnnotation accepts an optional
+32-hex localId; replyPendingNote requires same-source page ID, parentLocalId,
+contents and creation instant. Duplicates, absent/cross-page parents, protected
+sources and unsupported geometry/text mixtures fail before creating output.
+Referenced roots are deferred out of the ordinary drawing stage, then all roots
+are written before their replies after supported page/form/note/attachment work.
+Appended-note verification maps actual new references to roots, rejects aliases
+to old or other new notes, checks root/IRT/RT and payload/date contracts, and
+preserves every existing annotation dictionary/reference. Draft local IDs are not
+written into PDF metadata. The source/visit census is shared with saved-root reply
+validation. Existing ordinary-note/text combinations retain their prior checks.
+See `report_editor/NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+
+
+## Native saved flat-leaf reply mutation (2026-11-09)
+
+The shared source census now exposes safe reply leaves with parentAnnotationId.
+Strict editNote/removeNote and the existing markup-delete adapter are reused,
+with no new public operation schema. Safe leaf edits preserve identity, IRT/RT,
+creation time, author, geometry and AP; only Contents/M change. Deletion unlinks
+the exact page slot and releases the globally unshared leaf dictionary. Leaving
+that dictionary behind retains an inbound IRT and makes the conservative future
+census readonly, as shown by a real counterexample. All surviving annotation
+references/dictionaries are read back after mutation. Source thread protection,
+flags/links and global counts remain authoritative; root/thread subtree and complex
+mutations remain unsupported. Leaf mutations cannot mix with text/crop/size work.
+The original annot-delete.ts blob660951ad1e2556276245f64054af23fd4929e081
+was fetched at the fixed ref as a semantic/fallback reference; its PDFium matching
+path is not shipped or executed for these operations. No vendor/dependency/WASM
+change. See `report_editor/NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
+
+
+## Native secure redaction adapter (2026-11-10)
+
+The bridge `redact` operation (`{pageId, rect}` in PDF user space, inside the
+crop-aware visible box, ≤ MAX_REDACTION_REGIONS) calls the unchanged pinned
+`src/main/redaction.ts` `redactPdf` as the final serializer of the native patch,
+after every pdf-lib pass (crop, attachments, note replies), with page indices
+mapped to the final page order and page `/Thumb` + `/PieceInfo` removed first —
+the same steps `applySaveRequest` performs before its own redaction pass. Every
+native save writes a new revision and leaves the source revision unchanged, which
+is the pinned "redact a Save As copy" requirement. Redaction is rejected on blank
+draft pages and together with a page-size change. `bridge/redaction.test.ts`
+reads the output text back with PDFium. Vendor SOURCE hashes unchanged;
+LOCAL-SHA256 has 47 entries.
+
+
+## Native merge pages / split pages adapter (2026-11-10)
+
+Bridge `mergePages` (`perSheet` 2–16, `direction`, `separator`) and `splitPages`
+(`perPage` 2/4/9) call the unchanged pinned `mergePagesBytes` / `splitPagesBytes`.
+Like the pinned commands, they write a new file — here a new revision; the source
+revision is unchanged. Each must be the only operation in its save, is refused for
+sources with signature fields, and is checked by reading back the expected page count.
+The pinned writers stamp the new document with the current time; the adapter copies
+the source CreationDate/ModDate (or drops them) so an output — and its preview digest —
+is reproducible from the source bytes and operation alone.
+`bridge/page-layout.test.ts`. LOCAL-SHA256 has 48 entries.
+
+Native preservation follow-up: `bridge/layout-preservation.ts` uses the fixed PDFium 2.15.1 FPDFPage_Flatten normal-display API, serialized through the existing chainPdfium/withDocument/saveDoc helpers, before N-up embedding. It reuses the local note adapter reference census to refuse recoverable annotation graphs before redaction. The vendored redaction/save implementation and WASM are unchanged. Split with form fields and both layouts with XFA are refused rather than emitted with missing fields/content.
+
+
+## Native 页面提取与单控件删除（2026-11-11）
+
+extractPagesBytes 复用固定源 copyPages 路径，补充页码去重、范围及整数校验，
+保留请求页序，沿用来源日期或 epoch。暂拒绝 AcroForm、批注和 Perms 来源。
+服务绑定父文档/修订/SHA并独立登记，登记或验收失败仍签发身份可读产物。
+
+bridge/form-design.ts 复用固定源 applyFormWidgetEdits(remove:true)，仅开放
+严格来源 SHA、字段和 Widget 引用/字典摘要绑定的独立单 Widget 删除。
+补充移除遗留页面 Widget 引用，回读幸存字段字典与批注引用顺序。
+XFA、签名、保护、动作、共享、多 Widget 或层级字段只读，删除须单独保存。
+SOURCE-SHA256 保持原样，本地适配及专项测试登记到 LOCAL-SHA256。
+
+## 2026-11-11 text / conversion / form extension
+
+The local bridge reuses the pinned text insert and paragraph replacement writers
+for fonts, whole-object styles and manual multiline alignment. PDFium face metrics
+supply line advances; source and object identities remain authoritative. Styled
+replacement batches contain only distinct source text objects. Selection-level
+styleRuns, full caret editing and arbitrary mixed-operation reflow are not exposed.
+
+The AcroForm adapter reuses pinned field/widget writers for date, choice and radio
+creation, safe rect/required edits and same-page arrangement. Date actions allow
+only exact built-in date formatting scripts. No XFA or digital-signature engine
+is introduced. The legacy independent-widget deletion guard is unchanged.
+
+Runtime packaging now writes fresh esbuild metadata and includes DOCX/XLSX/PPTX
+engine source notices and licenses; the shared packer still rejects non-builtin
+unbundled dependencies. Converter original and adapted hashes are recorded
+separately under vendor/pdf2docx. OCR remains disabled.
+
+2026-11-11 provenance correction: `src/shared/ipc.ts` omits only the desktop PrinterOption import/export, printerOptions channel and method. Its prior SOURCE entry accidentally recorded the local cropped hash; SOURCE now records the pinned Git blob SHA-256 `c60ce0c653ccdb6a1e6825d7e0c3a0b78a9b937c78a351deac4360767b89d620`, while LOCAL retains the unchanged local source identity. No IPC runtime behavior was changed in this correction.
+
+2026-11-11 measurement bounds adaptation: local `src/main/measure-label-bounds.ts` uses the existing pdf-lib StandardFontEmbedder and standard-fonts 1.0.0 formal Helvetica full-font BBox, per-glyph unkerned widths and the actual rounded Tm. `save-pdf.ts` expands only measurement Rect/AP BBox and includes serialized line endpoints; label drawing commands, midpoint origin and caret remain unchanged. Mixed output review uses the same bound contract and exact AP bytes. Literal labels whose byte encoding disagrees with WinAnsi are rejected. The existing transitive standard-fonts 1.0.0 is now explicitly pinned as a direct dependency; no package version was added or upgraded. SOURCE retains original upstream hashes, LOCAL records all current adaptations.
+
+2026-11-11 后续限定适配：表单多页选区按固定源逐页排列，跳过不足页并保留未排列控件原AP；测量草稿显示适配位于前端，原生writer不改。PPTX安全span链接复用现有run关系写入API，保留精确文字范围与来源外观，不修正尚无可靠逆映射的首行基线。详见 NATIVE_PDF_AP_ARRANGE_LINKS_ACCEPTANCE.md（report_editor）。
+
+2026-11-11 DOCX exact text-fill adaptation: the PDF IR already records RGB highlights. `vendor/pdf2docx/src/rebuild/index.ts` (converter-relative `src/rebuild/index.ts`) now retains exact non-palette six-digit RGB as the existing shared writer Run.shading and compares shading when merging runs. Exact named palette entries keep named highlight output; white remains unshaded. No shared DOCX writer, layout, font, or dependency change. Notes still lack a shading carrier; complete PDF/DOCX fidelity is not certified. Fixed source hashes remain unchanged, local hashes recorded separately.
+
+
+## Shared DOCX engine relocation (Word PR 214 integration)
+
+The PDF DOCX reader/rebuilder now resolves `doc_engine/packages/docx-engine`,
+matching the shared Word baseline after its package relocation. The PDF Docker
+stage copies that package and its own source/license notices; PDF runtime
+packaging carries the DOCX, workbook and slides notices separately. The source
+reconstruction logic is unchanged. Original upstream source hashes are retained;
+only the local import adaptation and its local hashes change.

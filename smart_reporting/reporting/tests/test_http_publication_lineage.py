@@ -277,6 +277,119 @@ async def test_http_workbook_summary_registration_fault_keeps_actual_download(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['registration', 'persistence', 'primary_grant', 'editor_grant', 'oversize', 'receipt', 'receipt_identity', 'postwrite', 'review', 'missing', 'identity', 'publication_review', 'publication_missing', 'publication_identity'])
+async def test_pdf_extract_http_keeps_verified_download_on_post_generation_faults(tmp_path, monkeypatch, fault):
+    """提取回执、写后复核及登记故障不阻断实际身份可核验的 PDF 下载。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
+    from .test_native_pdf_extract import extract_fixture
+
+    f = await extract_fixture(tmp_path)
+    raw, _ = await f.editor.grants.issue(f.parent, capabilities=f.editor.capabilities(f.parent))
+    token, _ = await f.editor.grants.exchange(raw)
+    if fault == 'registration':
+        monkeypatch.setattr(f.repository, 'create_from_source', AsyncMock(side_effect=OSError('registration failed')))
+    elif fault == 'persistence':
+        monkeypatch.setattr(f.publication.artifact_persistence, 'persist_available', AsyncMock(side_effect=OSError('persistence failed')))
+    elif fault == 'primary_grant':
+        monkeypatch.setattr(f.publication.download_grants, 'issue', AsyncMock(side_effect=OSError('primary grant failed')))
+    elif fault == 'editor_grant':
+        monkeypatch.setattr(f.publication.editor_grants, 'issue', AsyncMock(side_effect=OSError('editor grant failed')))
+    elif fault in {'receipt', 'receipt_identity'}:
+        from smart_reporting.reporting.delivery import pdf_native
+        original_invoke = pdf_native._invoke
+        def faulty_receipt(*args, **kwargs):
+            receipt = original_invoke(*args, **kwargs)
+            if args[0].get('kind') == 'extractPages':
+                if fault == 'receipt':
+                    raise OSError('injected after extraction output')
+                return {**receipt, 'sha256': '0' * 64, 'pageCount': 999}
+            return receipt
+        monkeypatch.setattr(pdf_native, '_invoke', faulty_receipt)
+    elif fault in {'postwrite', 'missing', 'identity'}:
+        original_write = f.workspace.awrite_bytes
+        async def write_then_raise(*args, **kwargs):
+            if str(args[1]).endswith('/extracted.pdf'):
+                if fault != 'missing':
+                    await original_write(args[0], args[1], b'foreign bytes' if fault == 'identity' else args[2], **kwargs)
+                raise OSError('injected after actual extraction write')
+            return await original_write(*args, **kwargs)
+        monkeypatch.setattr(f.workspace, 'awrite_bytes', write_then_raise)
+    elif fault == 'review':
+        from smart_reporting.report_editor import native_pdf_extract
+        monkeypatch.setattr(native_pdf_extract, 'read_verified_file', AsyncMock(side_effect=OSError('injected extraction review failure')))
+    elif fault.startswith('publication_'):
+        from smart_reporting.report_editor import native_pdf_extract, native_publication
+        monkeypatch.setattr(native_pdf_extract, 'read_verified_file', AsyncMock(side_effect=OSError('injected extraction review failure')))
+        original_read = f.workspace.afile_bytes
+        publication_review_started = False
+        async def failed_publication_review(*args, **kwargs):
+            nonlocal publication_review_started
+            publication_review_started = True
+            raise OSError('injected publication review failure')
+        async def actual_output_read(key, path):
+            if publication_review_started and path.endswith('/extracted.pdf'):
+                if fault == 'publication_missing':
+                    raise OSError('actual publication output unavailable')
+                if fault == 'publication_identity':
+                    _, metadata = await original_read(key, path)
+                    return b'foreign bytes', metadata
+            return await original_read(key, path)
+        monkeypatch.setattr(native_publication, 'read_verified_file', failed_publication_review)
+        monkeypatch.setattr(f.workspace, 'afile_bytes', actual_output_read)
+    else:
+        from smart_reporting.report_editor import native_pdf_extract
+        real_extract = native_pdf_extract.extract_pdf_pages
+        def larger_output(source, pages):
+            receipt = real_extract(source, pages)
+            content = receipt['content'] + b'\n' * (24 * 1024 * 1024)
+            return {**receipt, 'content': content, 'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
+        monkeypatch.setattr(native_pdf_extract, 'extract_pdf_pages', larger_output)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(f.editor.grants, editor=f.editor, download_service=f.downloads, cookie_secure=False))
+    base = f'/reports/v1/native/{f.parent.document_id}/{f.parent.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url='http://reports.test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token, path=base)
+        response = await client.post(base + '/api/extract-pages',
+            headers={'Origin': 'http://reports.test', 'X-CSRF-Token': f.editor.grants.csrf_token(token)},
+            json={'requestId': 'extract-fault', 'expectedSha256': f.parent.source_file.sha256, 'pages': [3, 1]})
+        if fault in {'missing', 'identity'}:
+            assert response.status_code == 403, response.text
+            assert response.json()['detail']['code'] == 'native_extract_output_unavailable'
+            assert 'artifacts' not in response.json()
+            original, _ = await f.workspace.afile_bytes(f.thread, f.original_identity.path)
+            assert original == f.original
+            return
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result['validation']['ok'] is False
+        if fault in {'publication_missing', 'publication_identity'}:
+            assert 'pdf' not in result['artifacts']
+            assert 'native_pdf_identity_unavailable' in {issue['code'] for issue in result['validation']['issues']}
+            original, _ = await f.workspace.afile_bytes(f.thread, f.original_identity.path)
+            assert original == f.original
+            return
+        expected = {'registration': 'native_derived_registration_failed', 'persistence': 'native_artifact_persistence_failed',
+                    'primary_grant': 'native_download_grant_failed', 'editor_grant': 'native_editor_grant_failed',
+                    'oversize': 'native_file_too_large', 'receipt': 'native_pdf_extract_receipt_warning',
+                    'receipt_identity': 'native_pdf_extract_receipt_warning',
+                    'postwrite': 'native_pdf_extract_postwrite_warning', 'review': 'native_pdf_extract_review_failed',
+                    'publication_review': 'native_pdf_identity_review_failed'}[fault]
+        assert expected in {issue['code'] for issue in result['validation']['issues']}
+        if fault == 'oversize':
+            assert result['revisionRegistered'] is False and result.get('editor') is None
+        artifact = result['artifacts']['pdf']
+        downloaded = await client.get(artifact['downloadUrl'])
+        assert downloaded.status_code == 200, downloaded.text
+        assert hashlib.sha256(downloaded.content).hexdigest() == artifact['sha256']
+        assert len(downloaded.content) == artifact['size']
+        assert [page.extract_text().strip() for page in PdfReader(BytesIO(downloaded.content)).pages] == ['source page three', 'source page one']
+        original, _ = await f.workspace.afile_bytes(f.thread, f.original_identity.path)
+        assert original == f.original
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('fault', ['context_read', 'context_write', 'revision_reservation', 'download_grant', 'artifact_grant', 'chart_bindings', 'chart_binding_item', 'layout_audit'])
 async def test_pptx_editor_http_download_survives_delivery_faults(tmp_path, monkeypatch, fault):
     from smart_reporting.report_editor.service import ReportEditorSession
@@ -2221,6 +2334,852 @@ async def test_native_revision_notice_failure_keeps_actual_http_download(tmp_pat
     assert len(response.content) == result[format_]['size']
     assert hashlib.sha256(response.content).hexdigest() == result[format_]['sha256']
     assert (await runtime.workspace_service.afile_bytes(scope.workspace_key, path))[0] == content
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+@pytest.mark.parametrize('fault', [None, 'record', 'manifest', 'validation', 'persistence', 'office_postwrite'])
+async def test_data_export_service_keeps_downloads_and_registers_common_revision(tmp_path, monkeypatch, fault, anyio_backend):
+    from smart_reporting.report_editor import data_revision_exports as module
+    from smart_reporting.reporting.delivery import office_engine
+    from smart_reporting.reporting.delivery.publishing import ReportDownloadScope
+    from smart_reporting.reporting.tests.test_report_data_revision_service import service_case
+
+    async def run_local(func, **kwargs):
+        return func(**kwargs)
+
+    monkeypatch.setattr(office_engine, 'run_office_engine', run_local)
+
+    service, context, repository, files, editor = service_case()
+    context.scope.update(database='test', companyId='company-1', sessionId='session-1')
+    # 编辑上下文的摘要受作用域影响；内存恢复器及状态均共享该已授权上下文。
+    repository.state.payload['reportEditorContexts']['1'] = context.model_dump(mode='json', by_alias=True)
+    snapshot = await service.freeze(context)
+    editor.workspace_registry.get = lambda thread: SimpleNamespace(root=tmp_path)
+    grants = InMemoryDownloadGrantRepository()
+    artifacts = InMemoryReportArtifactRepository()
+
+    async def chunks(thread, path, **kwargs):
+        yield files[path]
+
+    async def read_regular(thread, path, **kwargs):
+        return files[path]
+
+    editor.workspace.aiter_regular_file_chunks = chunks
+    editor.workspace.read_limited_regular_file = read_regular
+    editor.workspace.normalize_path = ReportingWorkspaceRouter.normalize_path
+    editor.artifact_persistence = ReportArtifactPersistenceService(artifacts, editor.workspace)
+    if fault == 'persistence':
+        async def fail_persist(**kwargs):
+            raise RuntimeError('persistence unavailable')
+        editor.artifact_persistence.persist_available = fail_persist
+    editor.download_grants = ReportDownloadGrantService(grants)
+    editor.public_base_url = 'http://test'
+    old_token, _ = await editor.download_grants.issue(
+        scope=ReportDownloadScope('test', 'user-1', 'company-1', 'session-1', 'thread-1', context.workflow_run_id),
+        report_id=context.report_id, revision=1, pdf_path='reports/original.pdf',
+        pdf_size=1, pdf_sha256='a' * 64,
+    )
+    original_apply = repository.apply
+
+    async def apply(run_id, command, **kwargs):
+        if fault == 'record' and command.name == 'record_report_data_export':
+            raise RuntimeError('record unavailable')
+        return await original_apply(run_id, command, **kwargs)
+
+    repository.apply = apply
+    original_write = editor.workspace.awrite_bytes
+
+    async def write(thread, path, raw, **kwargs):
+        if fault == 'manifest' and path.endswith('/export-manifest.json'):
+            raise RuntimeError('manifest unavailable')
+        return await original_write(thread, path, raw, **kwargs)
+
+    editor.workspace.awrite_bytes = write
+
+    def render(**kwargs):
+        refs = {}
+        for label, suffix in [('pdf', 'pdf'), ('word', 'docx'), ('pptx', 'pptx'), ('xlsx', 'xlsx')]:
+            raw = f'{label} snapshot={snapshot["snapshotId"]}'.encode()
+            path = kwargs['output_root'] + '/report.' + suffix
+            files[path] = raw
+            refs[label] = {'path': path, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+        return {'snapshotId': snapshot['snapshotId'],
+            'chartRevisions': {key: chart['chartRevision'] for key, chart in snapshot['charts'].items()},
+            'artifacts': refs, 'validation': {'ok': fault != 'validation', 'issues': [
+                {'code': 'test_validation_failed', 'message': '验收失败'}
+            ] if fault == 'validation' else []}}
+
+    monkeypatch.setattr(module, 'render_data_revision_formats', render)
+    if fault == 'office_postwrite':
+        render_formats = module.render_data_revision_formats
+        def office_postwrite(**kwargs):
+            result = render_formats(**kwargs)
+            result['validation'] = {'ok': False, 'issues': [
+                {'code': 'report_data_pptx_render_failed', 'message': 'PPTX写入后回执失败，保留实际文件。'},
+                {'code': 'report_data_xlsx_render_failed', 'message': 'XLSX写入后回执失败，保留实际文件。'},
+            ]}
+            return result
+        monkeypatch.setattr(module, 'render_data_revision_formats', office_postwrite)
+    first = await service.export(context, snapshot['snapshotId'])
+    second = await service.export(context, snapshot['snapshotId'])
+    assert first['snapshotId'] == second['snapshotId'] == snapshot['snapshotId']
+    assert first['exportId'] != second['exportId']
+    assert second['revision'] > first['revision']
+    assert all(first[label]['downloadUrl'].startswith('http://test/reports/v1/download/') for label in ['pdf', 'word', 'pptx', 'xlsx'])
+    assert all('path' not in first[label] for label in ['pdf', 'word', 'pptx', 'xlsx'])
+    assert len(artifacts.records) == (0 if fault == 'persistence' else 8)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(
+        editor.download_grants, artifacts, workspace_service=editor.workspace,
+    )))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        for label in ['pdf', 'word', 'pptx', 'xlsx']:
+            response = await client.get(first[label]['downloadUrl'])
+            assert response.status_code == 200
+            assert response.content == f'{label} snapshot={snapshot["snapshotId"]}'.encode()
+    assert (await editor.download_grants.lookup(old_token)).revision == 1
+    first_token = first['pdf']['downloadUrl'].rsplit('/', 1)[-1]
+    assert (await editor.download_grants.lookup(first_token)).revision == first['revision']
+    assert await service.read(context, snapshot['snapshotId']) == snapshot
+    if fault:
+        assert first['validation']['ok'] is False and first['validation']['issues']
+    if fault not in {'record', 'manifest'}:
+        history = (await service._history(context))['exports']
+        assert set(history) == {first['exportId'], second['exportId']}
+        manifest = json.loads(files[history[first['exportId']]['manifest']['path']])
+        assert manifest['snapshotId'] == snapshot['snapshotId']
+        assert manifest['chartRevisions'] == first['chartRevisions']
+        assert set(manifest['artifacts']) == {'pdf', 'word', 'pptx', 'xlsx'}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('edit_kind',['insert','styledReplace','selectionRuns','styledMarkup','styledMarkupWriterFault','styledDrawing','styledDrawingWriterFault','styledVector','styledVectorWriterFault','styledPng','styledPngWriterFault','styledLink','styledInternalLink','styledLinkWriterFault','styledMeasure','styledCaret','styledMeasureWriterFault','styledMeasureBounds'])
+async def test_static_text_postwrite_review_warning_keeps_verified_http_download(tmp_path, monkeypatch, edit_kind):
+    """静态文字输出复核故障登记：已生成字节保留 HTTP 下载。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from pypdf.generic import NullObject
+    from smart_reporting.report_editor import native_publication
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
+    from smart_reporting.reporting.tests.test_native_pdf_text_service import fixture
+    editor, context, _, downloads = await fixture(tmp_path)
+    operations = [{'kind': 'insertText', 'sourceSha256': context.source_file.sha256,
+        'pageId': f'sha256:{context.source_file.sha256}:page:0', 'origin': [50, 180],
+        'text': 'RETAINED INSERT', 'fontSize': 12, 'color': [0, 0, 0], 'align': 'left'}]
+    if edit_kind in {'styledReplace','selectionRuns','styledMarkup','styledMarkupWriterFault','styledDrawing','styledDrawingWriterFault','styledVector','styledVectorWriterFault','styledPng','styledPngWriterFault','styledLink','styledInternalLink','styledLinkWriterFault','styledMeasure','styledCaret','styledMeasureWriterFault','styledMeasureBounds'}:
+        from smart_reporting.reporting.tests.test_pdf_native_text_edits import text_operation
+        operations=[{**text_operation(await editor.read_file(context),'RETAINED INSERT'),
+            'sourceSha256':context.source_file.sha256,**({'styleRuns':[{'start':0,'end':15,'bold':True}]} if edit_kind=='selectionRuns' else {'font':'times','bold':True,'italic':True,'fontSize':14})}]
+    if edit_kind in {'styledMarkup','styledMarkupWriterFault'}:
+        operations.insert(0,{'kind':'addMarkup','pageId':operations[0]['pageId'],
+            'markupType':'underline','quads':[[30,174,160,174,30,158,160,158]],
+            'color':[0.2,0.4,0.6]})
+    if edit_kind in {'styledDrawing','styledDrawingWriterFault'}:
+        operations.insert(0,{'kind':'addDrawing','pageId':operations[0]['pageId'],
+            'shape':'rect','rect':[25,150,170,185],'color':[0.2,0.4,0.6],
+            'width':2})
+    if edit_kind in {'styledVector','styledVectorWriterFault'}:
+        operations.insert(0,{'kind':'addDrawing','pageId':operations[0]['pageId'],
+            'shape':'arrow','from':[25,150],'to':[170,185],'color':[0.2,0.4,0.6],
+            'width':2})
+    if edit_kind in {'styledPng','styledPngWriterFault'}:
+        operations.insert(0,{'kind':'addDrawing','pageId':operations[0]['pageId'],
+            'shape':'image','rect':[25,100,125,140],'image':'iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8Dwn+E/QwMAEHkDfiHA/Y0AAAAASUVORK5CYII=',
+            'color':[0,0,0],'width':1})
+    if edit_kind in {'styledLink','styledInternalLink','styledLinkWriterFault'}:
+        operations.insert(0,{'kind':'addDrawing','pageId':operations[0]['pageId'],
+            'shape':'link','rect':[25,100,125,140],'color':[0,0,0],'width':1,
+            **({'destPage':1} if edit_kind=='styledInternalLink' else {'url':'https://example.com/report?pdf=1#section'})})
+    if edit_kind in {'styledMeasure','styledMeasureWriterFault','styledCaret','styledMeasureBounds'}:
+        operations.insert(0,{'kind':'addDrawing','pageId':operations[0]['pageId'],
+            'shape':'caret' if edit_kind=='styledCaret' else 'measure',
+            **({'point':[180,120]} if edit_kind=='styledCaret' else {'from':[25,100],'to':[27,100],'label':'W'*24} if edit_kind=='styledMeasureBounds' else {'from':[25,100],'to':[170,160],'label':'145 pt'}),
+            'color':[0.2,0.4,0.6],'width':2})
+    def check_measure_caret(content):
+        expected='/Caret' if edit_kind=='styledCaret' else '/Line'
+        annotation=next(ref.get_object() for ref in PdfReader(BytesIO(content)).pages[0]['/Annots']
+            if ref.get_object()['/Subtype']==expected)
+        assert annotation['/AP']['/N'].get_data()
+        if edit_kind=='styledMeasureBounds':
+            assert list(annotation['/L'])==[25,100,27,100] and annotation['/Contents']=='W'*24
+            rect=list(annotation['/Rect'])
+            assert rect[2]>230 and rect[3]>114
+            assert list(annotation['/AP']['/N']['/BBox'])==rect
+        elif edit_kind=='styledMeasure':
+            assert list(annotation['/L'])==[25,100,170,160]
+            assert annotation['/Contents']=='145 pt'
+        else:
+            assert list(annotation['/Rect'])==[170,110,190,130]
+    def check_link(content):
+        reader=PdfReader(BytesIO(content))
+        link=next(ref.get_object() for ref in reader.pages[0]['/Annots']
+            if ref.get_object()['/Subtype']=='/Link')
+        assert list(link['/Rect'])==[25,100,125,140]
+        assert not {'/AP','/AA','/Next'} & set(link)
+        if edit_kind=='styledInternalLink':
+            destination=link['/Dest']
+            assert destination[0]==reader.pages[0].indirect_reference
+            assert str(destination[1])=='/XYZ' and all(isinstance(value,NullObject) for value in destination[2:])
+            assert '/A' not in link
+        else:
+            assert link['/A']['/S']=='/URI'
+            assert link['/A']['/URI']=='https://example.com/report?pdf=1#section'
+            assert set(link['/A'])=={'/Type','/S','/URI'}
+    original = native_publication.patch_pdf_with_receipt
+    def review_warning(content, ops):
+        # 模拟第二阶段批注/绘图写入失败，保留第一阶段真实改字字节。
+        writer_fault = edit_kind in {'styledMarkupWriterFault','styledDrawingWriterFault','styledVectorWriterFault','styledPngWriterFault','styledLinkWriterFault','styledMeasureWriterFault'}
+        result = original(content, ops[1:] if writer_fault else ops)
+        assert 'RETAINED INSERT' in PdfReader(BytesIO(result['content'])).pages[0].extract_text()
+        if edit_kind=='styledMarkup':
+            annotations=PdfReader(BytesIO(result['content'])).pages[0]['/Annots']
+            assert any(ref.get_object()['/Subtype']=='/Underline' for ref in annotations)
+        if edit_kind=='styledDrawing':
+            annotations=PdfReader(BytesIO(result['content'])).pages[0]['/Annots']
+            assert any(ref.get_object()['/Subtype']=='/Square' for ref in annotations)
+        if edit_kind=='styledVector':
+            annotation=next(ref.get_object() for ref in PdfReader(BytesIO(result['content'])).pages[0]['/Annots']
+                if ref.get_object()['/Subtype']=='/Line')
+            assert list(annotation['/L'])==[25,150,170,185]
+            assert annotation['/AP']['/N'].get_data()
+        if edit_kind=='styledPng':
+            stamp=next(ref.get_object() for ref in PdfReader(BytesIO(result['content'])).pages[0]['/Annots']
+                if ref.get_object()['/Subtype']=='/Stamp')
+            image=stamp['/AP']['/N']['/Resources']['/XObject']['/Im0']
+            assert list(stamp['/Rect'])==[25,100,125,140]
+            assert image['/Width']==2 and image['/Height']==1
+            assert image.get_data()==bytes([255,0,0,0,255,0])
+            assert image['/SMask'].get_data()==bytes([255,128])
+        if edit_kind in {'styledMeasure','styledCaret','styledMeasureBounds'}:
+            check_measure_caret(result['content'])
+        if edit_kind in {'styledLink','styledInternalLink'}:
+            check_link(result['content'])
+        return {**result, 'appliedOperationIndices': [1] if writer_fault else [],
+            'skippedOperations': [{'operationIndex': 0, 'kind': operations[0]['kind'],
+            'reason': (('pdf_text_drawing_writer_failed_generated_bytes_retained: injected readback fault'
+                if edit_kind in {'styledDrawingWriterFault','styledVectorWriterFault','styledPngWriterFault','styledLinkWriterFault','styledMeasureWriterFault'} else 'pdf_text_markup_writer_failed_generated_bytes_retained: injected readback fault')
+                if writer_fault else 'pdf_text_output_review_failed: injected readback fault')}]}
+    monkeypatch.setattr(native_publication, 'patch_pdf_with_receipt', review_warning)
+    preview = review_warning(await editor.read_file(context), operations)
+    editor.context_for_session = AsyncMock(return_value=context)
+    grants = editor.grants
+    raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await grants.exchange(raw)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(grants, editor=editor, download_service=downloads,
+        cookie_secure=False, allowed_origin='http://test'))
+    base = f'/reports/v1/native/{context.document_id}/{context.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token, path=base)
+        response = await client.post(base + '/api/save',
+            headers={'Origin': 'http://test', 'X-CSRF-Token': grants.csrf_token(token)},
+            json={'requestId': 'static-review-fault', 'expectedSha256': context.source_file.sha256,
+                'operations': operations, 'confirmedPreviewDigest': preview['previewDigest']})
+        assert response.status_code == 200, response.text
+        saved = response.json()
+        assert saved['validation']['ok'] is False
+        warning = next(issue['message'] for issue in saved['validation']['issues'] if 'injected readback fault' in issue['message'])
+        assert '实际生成文件' in warning
+        assert '未应用' not in warning and '保留原文' not in warning
+        artifact = saved['artifacts']['pdf']
+        actual = await client.get(artifact['downloadUrl'])
+        assert actual.status_code == 200
+        assert hashlib.sha256(actual.content).hexdigest() == artifact['sha256']
+        assert actual.content == preview['content']
+        assert 'RETAINED INSERT' in PdfReader(BytesIO(actual.content)).pages[0].extract_text()
+        if edit_kind=='styledMarkup':
+            assert any(ref.get_object()['/Subtype']=='/Underline'
+                for ref in PdfReader(BytesIO(actual.content)).pages[0]['/Annots'])
+        if edit_kind=='styledDrawing':
+            assert any(ref.get_object()['/Subtype']=='/Square'
+                for ref in PdfReader(BytesIO(actual.content)).pages[0]['/Annots'])
+        if edit_kind=='styledVector':
+            annotation=next(ref.get_object() for ref in PdfReader(BytesIO(actual.content)).pages[0]['/Annots']
+                if ref.get_object()['/Subtype']=='/Line')
+            assert list(annotation['/L'])==[25,150,170,185]
+            assert annotation['/AP']['/N'].get_data()
+        if edit_kind=='styledPng':
+            stamp=next(ref.get_object() for ref in PdfReader(BytesIO(actual.content)).pages[0]['/Annots']
+                if ref.get_object()['/Subtype']=='/Stamp')
+            image=stamp['/AP']['/N']['/Resources']['/XObject']['/Im0']
+            assert list(stamp['/Rect'])==[25,100,125,140]
+            assert image.get_data()==bytes([255,0,0,0,255,0])
+            assert image['/SMask'].get_data()==bytes([255,128])
+        if edit_kind in {'styledMeasure','styledCaret','styledMeasureBounds'}:
+            check_measure_caret(actual.content)
+        if edit_kind in {'styledLink','styledInternalLink'}:
+            check_link(actual.content)
+        if edit_kind=='styledLinkWriterFault':
+            assert not PdfReader(BytesIO(actual.content)).pages[0].get('/Annots')
+
+
+@pytest.mark.anyio
+async def test_pdf_measure_appearance_warning_keeps_applied_indices_and_actual_http_download(tmp_path):
+    """固定测量线外观差异是软告警：已应用的线和改字均可预览、保存、下载。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
+    from smart_reporting.reporting.tests.test_native_pdf_text_service import fixture
+    from smart_reporting.reporting.tests.test_pdf_native_text_edits import text_operation
+    editor, context, source, downloads = await fixture(tmp_path)
+    operation = {**text_operation(source, 'MEASURE RETAINED'),
+        'sourceSha256': context.source_file.sha256, 'font': 'times', 'bold': True}
+    operations = [{'kind': 'addDrawing', 'pageId': operation['pageId'], 'shape': 'measure',
+        'from': [25, 100], 'to': [170, 160], 'label': '145 pt', 'color': [0.2, 0.4, 0.6], 'width': 2}, operation]
+    editor.context_for_session = AsyncMock(return_value=context)
+    raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await editor.grants.exchange(raw)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(editor.grants, editor=editor,
+        download_service=downloads, cookie_secure=False, allowed_origin='http://test'))
+    base = f'/reports/v1/native/{context.document_id}/{context.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token, path=base)
+        headers = {'Origin': 'http://test', 'X-CSRF-Token': editor.grants.csrf_token(token)}
+        payload = {'expectedSha256': context.source_file.sha256, 'operations': operations}
+        response = await client.post(base + '/api/preview', headers=headers, json=payload)
+        assert response.status_code == 200, response.text
+        preview = response.json()
+        assert preview['appliedOperationIndices'] == [0, 1] and preview['skippedOperations'] == []
+        assert len(preview['reviewIssues']) == 1
+        issue = preview['reviewIssues'][0]
+        assert issue['operationIndex'] == 0 and issue['kind'] == 'addDrawing'
+        assert issue['code'] == 'pdf_measure_label_appearance_review_required'
+        assert '字体' in issue['message'] and '页边' in issue['message']
+        assert '草稿居中位置不同' not in issue['message']
+        response = await client.post(base + '/api/save', headers=headers,
+            json={**payload, 'requestId': 'measure-appearance-warning', 'confirmedPreviewDigest': preview['previewDigest']})
+        assert response.status_code == 200, response.text
+        saved = response.json()
+        assert saved['validation']['ok'] is False
+        assert any(item['code'] == issue['code'] and issue['message'] in item['message']
+            for item in saved['validation']['issues'])
+        assert not any(item['code'] == 'native_pdf_text_skipped' for item in saved['validation']['issues'])
+        artifact = saved['artifacts']['pdf']
+        downloaded = await client.get(artifact['downloadUrl'])
+        assert downloaded.status_code == 200
+        assert hashlib.sha256(downloaded.content).hexdigest() == artifact['sha256']
+        assert len(downloaded.content) == artifact['size']
+        reader = PdfReader(BytesIO(downloaded.content))
+        assert 'MEASURE RETAINED' in reader.pages[0].extract_text()
+        line = next(ref.get_object() for ref in reader.pages[0]['/Annots'] if ref.get_object()['/Subtype'] == '/Line')
+        assert list(line['/L']) == [25, 100, 170, 160] and line['/Contents'] == '145 pt'
+        assert line['/AP']['/N'].get_data()
+        assert await editor.read_file(context) == source
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['overflow', 'review_failed', 'metadata_null', 'metadata_object', 'metadata_incomplete'])
+async def test_pdf_form_review_issues_keep_applied_value_and_actual_http_download(tmp_path, monkeypatch, fault):
+    """填值后溢出或测量故障是独立软告警，不得伪装未执行或阻断下载。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from reportlab.pdfgen import canvas
+    from smart_reporting.report_editor import native, native_publication
+    from smart_reporting.report_editor.native import bind_native_workspace
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
+    from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf_with_receipt
+    from smart_reporting.reporting.tests.test_native_pdf_text_service import fixture
+
+    editor, context, _, downloads = await fixture(tmp_path)
+    stream = BytesIO()
+    page = canvas.Canvas(stream, pagesize=(300, 400))
+    page.drawString(20, 360, 'FORM WARNING CONTROL')
+    page.acroForm.textfield(name='customer', x=30, y=230, width=120, height=24,
+        fontName='Courier-BoldOblique', fontSize=18, value='Alice')
+    page.showPage(); page.save()
+    source = stream.getvalue()
+    identity = ArtifactFile(path='native/form-review.pdf', size=len(source),
+        sha256=hashlib.sha256(source).hexdigest(), mediaType='application/pdf')
+    await editor.workspace.awrite_bytes(bind_native_workspace(editor.workspace, context.scope), identity.path, source)
+    context = context.model_copy(update={'source_file': identity})
+    field = inspect_pdf(source)['formFields'][0]
+    operation = {'kind': 'setFormValue', **{key: field[key] for key in
+        ('fieldId', 'expectedFieldSha256', 'name')}, 'fieldKind': 'text', 'value': 'Alice Updated'}
+    issue = {'operationIndex': 0, 'kind': 'setFormValue', 'fieldName': 'customer',
+        'code': 'pdf_form_text_overflow' if fault == 'overflow' else 'pdf_form_text_overflow_review_failed',
+        'message': '字段 customer 的文本超出控件可见范围，实际内容与下载已保留。' if fault == 'overflow'
+            else '字段 customer 的溢出测量失败，实际内容与下载已保留，请人工核对。'}
+    malformed = {'metadata_null': None, 'metadata_object': {}, 'metadata_incomplete': [{}]}
+    if fault in malformed:
+        issue = {'operationIndex': 0, 'kind': 'pdfOutput', 'fieldName': '',
+            'code': 'native_pdf_review_issues_invalid',
+            'message': 'PDF 内容或版式复核回执无效；已保留实际生成文件，请人工核对。'}
+    def review_warning(content, operations):
+        result = patch_pdf_with_receipt(content, operations)
+        assert PdfReader(BytesIO(result['content'])).get_fields()['customer']['/V'] == 'Alice Updated'
+        assert result['appliedOperationIndices'] == [0] and result['skippedOperations'] == []
+        return {**result, 'reviewIssues': malformed[fault] if fault in malformed else [issue]}
+    monkeypatch.setattr(native, 'patch_pdf_with_receipt', review_warning)
+    monkeypatch.setattr(native_publication, 'patch_pdf_with_receipt', review_warning)
+    editor.context_for_session = AsyncMock(return_value=context)
+    raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await editor.grants.exchange(raw)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(editor.grants, editor=editor,
+        download_service=downloads, cookie_secure=False, allowed_origin='http://test'))
+    base = f'/reports/v1/native/{context.document_id}/{context.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token, path=base)
+        headers = {'Origin': 'http://test', 'X-CSRF-Token': editor.grants.csrf_token(token)}
+        payload = {'expectedSha256': identity.sha256, 'operations': [operation]}
+        preview = await client.post(base + '/api/preview', headers=headers, json=payload)
+        assert preview.status_code == 200, preview.text
+        assert preview.json()['reviewIssues'] == [issue]
+        assert preview.json()['appliedOperationIndices'] == [0]
+        assert preview.json()['skippedOperations'] == []
+        saved_response = await client.post(base + '/api/save', headers=headers,
+            json={**payload, 'requestId': 'form-review-' + fault})
+        assert saved_response.status_code == 200, saved_response.text
+        saved = saved_response.json()
+        assert saved['validation']['ok'] is False
+        assert any(item['code'] == issue['code'] and issue['message'] in item['message']
+            for item in saved['validation']['issues'])
+        assert not any(item['code'] == 'native_pdf_text_skipped' for item in saved['validation']['issues'])
+        artifact = saved['artifacts']['pdf']
+        actual = await client.get(artifact['downloadUrl'])
+        assert actual.status_code == 200
+        assert hashlib.sha256(actual.content).hexdigest() == artifact['sha256']
+        assert len(actual.content) == artifact['size']
+        reader = PdfReader(BytesIO(actual.content))
+        assert reader.get_fields()['customer']['/V'] == 'Alice Updated'
+        assert 'FORM WARNING CONTROL' in reader.pages[0].extract_text()
+        assert await editor.read_file(context) == source
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('kind',['editFormWidget','arrangeFormWidgets','appendRadioWidget','editFormTextProperties','renameFormWidget','editChoiceOptions','renameRadioGroup','removeRadioWidget','requiredRadioGroup','arrangePerPage'])
+async def test_form_design_postwrite_review_warning_keeps_actual_http_download(tmp_path,monkeypatch,kind):
+    """新控件属性/排列/单选追加签发：复读故障仅告警，保留真实修改后的 PDF。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from pypdf.generic import StreamObject
+    from smart_reporting.report_editor import native_publication
+    from smart_reporting.report_editor.native import bind_native_workspace
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
+    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+    from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf_with_receipt
+    from smart_reporting.reporting.tests.test_native_pdf_text_service import fixture
+
+    editor,context,source,downloads=await fixture(tmp_path)
+    if kind=='arrangePerPage':
+        from pypdf import PdfWriter
+        writer=PdfWriter();writer.clone_document_from_reader(PdfReader(BytesIO(source)))
+        writer.add_blank_page(width=300,height=400);writer.add_blank_page(width=300,height=400)
+        stream=BytesIO();writer.write(stream);source=stream.getvalue()
+    for index,rect in enumerate([[30,100,100,124],[150,150,220,174]]):
+        digest=hashlib.sha256(source).hexdigest()
+        source=patch_pdf_with_receipt(source,[{'kind':'createFormField','sourceSha256':digest,
+            'pageId':f'sha256:{digest}:page:0','fieldKind':'choice' if kind=='editChoiceOptions' and index==0 else 'text','fieldName':f'field{index}',
+            'rect':rect,'required':False,**({'options':['One','Two','Three'],'value':'Two'} if kind=='editChoiceOptions' and index==0 else {})}])['content']
+    if kind=='arrangePerPage':
+        for name,page_index,rect in [('page10',1,[100,200,150,224]),('page11',1,[200,140,250,164]),('page20',2,[170,240,220,264])]:
+            digest=hashlib.sha256(source).hexdigest()
+            source=patch_pdf_with_receipt(source,[{'kind':'createFormField','sourceSha256':digest,
+                'pageId':f'sha256:{digest}:page:{page_index}','fieldKind':'text','fieldName':name,
+                'rect':rect,'required':False,'value':name}])['content']
+    if kind in {'appendRadioWidget','renameRadioGroup','removeRadioWidget','requiredRadioGroup'}:
+        digest=hashlib.sha256(source).hexdigest()
+        page_id=f'sha256:{digest}:page:0'
+        source=patch_pdf_with_receipt(source,[{'kind':'createFormField','sourceSha256':digest,
+            'pageId':page_id,'fieldKind':'radio','fieldName':'answer','rect':[30,200,50,220],
+            'required':True,'radioWidgets':[{'pageId':page_id,'rect':[30,200,50,220],'exportValue':'Yes','checked':True},{'pageId':page_id,'rect':[130,200,150,220],'exportValue':'Maybe'}]}])['content']
+    digest=hashlib.sha256(source).hexdigest()
+    identity=ArtifactFile(path='native/design-base.pdf',size=len(source),sha256=digest,mediaType='application/pdf')
+    key=bind_native_workspace(editor.workspace,context.scope)
+    await editor.workspace.awrite_bytes(key,identity.path,source)
+    context=context.model_copy(update={'source_file':identity})
+    widgets=inspect_pdf(source)['formDesignWidgets']
+    keys=['fieldName','widgetId','widgetIdentity','expectedWidgetSha256']
+    targets=[{name:widget[name] for name in keys} for widget in widgets]
+    operation=({'kind':kind,'sourceSha256':digest,**targets[0],'rect':[30,80,140,104],'required':True}
+        if kind=='editFormWidget' else {'kind':kind,'sourceSha256':digest,'targets':targets,'alignment':'left'})
+    if kind=='arrangePerPage':operation={**operation,'kind':'arrangeFormWidgets'}
+    if kind=='renameFormWidget':
+        operation={'kind':'editFormWidget','sourceSha256':digest,**targets[0],'newFieldName':'renamed0'}
+    if kind=='renameRadioGroup':
+        anchor=next(widget for widget in widgets if widget['fieldName']=='answer')
+        operation={'kind':'editFormWidget','sourceSha256':digest,
+            **{key:anchor[key] for key in keys},'newFieldName':'renamedAnswer'}
+    if kind=='requiredRadioGroup':
+        anchor=next(widget for widget in widgets if widget['fieldName']=='answer')
+        operation={'kind':'editFormWidget','sourceSha256':digest,**{key:anchor[key] for key in keys},'required':False}
+    if kind=='removeRadioWidget':
+        anchor=next(widget for widget in widgets if widget['fieldName']=='answer' and widget.get('radioRemovalEditable'))
+        operation={'kind':'removeFormWidget','sourceSha256':digest,**{key:anchor[key] for key in keys}}
+    if kind=='editChoiceOptions':
+        operation={'kind':'editFormWidget','sourceSha256':digest,**targets[0],'choiceOptions':['Four','Two','One']}
+    if kind=='appendRadioWidget':
+        anchor=next(widget for widget in widgets if widget['fieldName']=='answer')
+        operation={'kind':kind,'sourceSha256':digest,**{key:anchor[key] for key in keys},
+            'pageId':f'sha256:{digest}:page:0','rect':[80,200,100,220],'exportValue':'No'}
+    if kind=='editFormTextProperties':
+        operation={'kind':kind,'sourceSha256':digest,**targets[0],
+            'multiLine':True,'maxLen':50,'textAlignment':'right','fontSize':18,
+            'fontName':'Courier-BoldOblique'}
+    original=native_publication.patch_pdf_with_receipt
+    def review_warning(content,operations):
+        receipt=original(content,operations)
+        return {**receipt,'appliedOperationIndices':[],'skippedOperations':[{'operationIndex':0,
+            'kind':operation['kind'],'reason':'injected form output review failure'}]}
+    monkeypatch.setattr(native_publication,'patch_pdf_with_receipt',review_warning)
+    preview=review_warning(source,[operation])
+    editor.context_for_session=AsyncMock(return_value=context)
+    raw,_=await editor.grants.issue(context,capabilities=editor.capabilities(context))
+    token,_=await editor.grants.exchange(raw)
+    app=FastAPI();app.include_router(create_native_editor_router(editor.grants,editor=editor,
+        download_service=downloads,cookie_secure=False,allowed_origin='http://test'))
+    base=f'/reports/v1/native/{context.document_id}/{context.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE,token,path=base)
+        response=await client.post(base+'/api/save',headers={'Origin':'http://test',
+            'X-CSRF-Token':editor.grants.csrf_token(token)},json={'requestId':kind+'-review',
+            'expectedSha256':digest,'operations':[operation],'confirmedPreviewDigest':preview['previewDigest']})
+        assert response.status_code==200,response.text
+        saved=response.json();assert saved['validation']['ok'] is False
+        warning=next(issue['message'] for issue in saved['validation']['issues'] if 'injected form' in issue['message'])
+        assert '实际生成文件' in warning and '保留原文' not in warning
+        artifact=saved['artifacts']['pdf'];download=await client.get(artifact['downloadUrl'])
+        assert download.status_code==200 and download.content==preview['content']
+        assert hashlib.sha256(download.content).hexdigest()==artifact['sha256']
+        fields=PdfReader(BytesIO(download.content)).get_fields()
+        expected_names={'field0','field1','answer'} if kind in {'appendRadioWidget','renameRadioGroup','removeRadioWidget','requiredRadioGroup'} else {'field0','field1'}
+        if kind=='renameFormWidget':expected_names=expected_names-{targets[0]['fieldName']}|{'renamed0'}
+        if kind=='renameRadioGroup':expected_names=expected_names-{'answer'}|{'renamedAnswer'}
+        if kind=='arrangePerPage':expected_names|={'page10','page11','page20'}
+        assert set(fields)==expected_names
+        actual=inspect_pdf(download.content)['formDesignWidgets']
+        if kind=='editFormWidget':
+            assert next(w for w in actual if w['fieldName']==targets[0]['fieldName'])['rect']==[30,80,140,104]
+            assert int(fields[targets[0]['fieldName']]['/Ff'])&2
+        elif kind in {'renameFormWidget','renameRadioGroup'}:
+            before=PdfReader(BytesIO(source));after=PdfReader(BytesIO(download.content))
+            old_name='answer' if kind=='renameRadioGroup' else targets[0]['fieldName']
+            new_name='renamedAnswer' if kind=='renameRadioGroup' else 'renamed0'
+            old_ref=next(ref for ref in before.trailer['/Root']['/AcroForm']['/Fields']
+                if str(ref.get_object()['/T'])==old_name)
+            new_ref=next(ref for ref in after.trailer['/Root']['/AcroForm']['/Fields']
+                if str(ref.get_object()['/T'])==new_name)
+            assert (old_ref.idnum,old_ref.generation)==(new_ref.idnum,new_ref.generation)
+            assert [(ref.idnum,ref.generation) for ref in before.pages[0]['/Annots']]==[(ref.idnum,ref.generation) for ref in after.pages[0]['/Annots']]
+            for old,new in zip(before.pages[0]['/Annots'],after.pages[0]['/Annots'],strict=True):
+                old_normal=old.get_object()['/AP']['/N'];new_normal=new.get_object()['/AP']['/N']
+                if kind=='renameRadioGroup' and not isinstance(old_normal,StreamObject):
+                    assert set(old_normal)==set(new_normal)
+                    for state in old_normal:
+                        old_state=old_normal.raw_get(state);new_state=new_normal.raw_get(state)
+                        assert (old_state.idnum,old_state.generation)==(new_state.idnum,new_state.generation)
+                        assert old_state.get_object().get_data()==new_state.get_object().get_data()
+                else:
+                    assert old_normal.get_data()==new_normal.get_data()
+            assert before.pages[0].get_contents().get_data()==after.pages[0].get_contents().get_data()
+            old_ids={widget['widgetId'] for widget in widgets if widget['fieldName']==old_name}
+            assert {widget['widgetId'] for widget in actual if widget['fieldName']==new_name}==old_ids
+            if kind=='renameRadioGroup':
+                assert str(fields[new_name]['/V'])=='/0' and len(fields[new_name]['/Kids'])==2
+                assert [(ref.idnum,ref.generation) for ref in old_ref.get_object()['/Kids']]==[(ref.idnum,ref.generation) for ref in new_ref.get_object()['/Kids']]
+                assert [str(ref.get_object()['/AS']) for ref in new_ref.get_object()['/Kids']]==['/0','/Off']
+        elif kind=='requiredRadioGroup':
+            from pypdf.generic import IndirectObject
+            before=PdfReader(BytesIO(source));after=PdfReader(BytesIO(download.content))
+            original=before.get_fields()['answer']
+            assert int(original['/Ff']) ^ int(fields['answer']['/Ff']) == 2
+            assert str(fields['answer']['/V'])=='/0' and len(fields['answer']['/Kids'])==2
+            assert all(widget.get('radioRequiredEditable') for widget in actual if widget['fieldName']=='answer')
+            def canonical(value):
+                if isinstance(value,IndirectObject):return ['ref',value.idnum,value.generation]
+                if isinstance(value,StreamObject):return [canonical(dict(value)),hashlib.sha256(value._data).hexdigest(),hashlib.sha256(value.get_data()).hexdigest()]
+                if isinstance(value,dict):return [[str(k),canonical(v)] for k,v in sorted(value.items())]
+                if isinstance(value,list):return [canonical(v) for v in value]
+                return repr(value)
+            target=next(ref for ref in before.trailer['/Root']['/AcroForm']['/Fields'] if str(ref.get_object()['/T'])=='answer')
+            assert before.xref.keys()==after.xref.keys()
+            for generation,objects in before.xref.items():
+                assert set(objects)==set(after.xref[generation])
+                for number in objects:
+                    if number==0:continue
+                    old=before.get_object(IndirectObject(number,generation,before));new=after.get_object(IndirectObject(number,generation,after))
+                    if (number,generation)==(target.idnum,target.generation):
+                        old={k:v for k,v in old.items() if k!='/Ff'};new={k:v for k,v in new.items() if k!='/Ff'}
+                    assert canonical(old)==canonical(new),(number,generation)
+        elif kind=='removeRadioWidget':
+            assert len(fields['answer']['/Kids'])==1 and str(fields['answer']['/V'])=='/0'
+            assert [str(option) for option in fields['answer']['/Opt']]==['Yes']
+            remaining=[widget for widget in actual if widget['fieldName']=='answer']
+            assert len(remaining)==1 and remaining[0]['widgetId']!=operation['widgetId']
+            assert remaining[0]['designEditable'] is True
+            assert PdfReader(BytesIO(source)).pages[0].get_contents().get_data()==PdfReader(BytesIO(download.content)).pages[0].get_contents().get_data()
+        elif kind=='editChoiceOptions':
+            options=[(str(option[0]),str(option[1])) if isinstance(option,list)
+                else (str(option),str(option)) for option in fields['field0']['/Opt']]
+            assert options==[(value,value) for value in ['Four','Two','One']]
+            assert fields['field0']['/V']=='Two'
+            before=PdfReader(BytesIO(source));after=PdfReader(BytesIO(download.content))
+            assert [(ref.idnum,ref.generation) for ref in before.pages[0]['/Annots']]==[(ref.idnum,ref.generation) for ref in after.pages[0]['/Annots']]
+            for old,new in zip(before.pages[0]['/Annots'],after.pages[0]['/Annots'],strict=True):
+                assert old.get_object()['/AP']['/N'].get_data()==new.get_object()['/AP']['/N'].get_data()
+            assert before.pages[0].get_contents().get_data()==after.pages[0].get_contents().get_data()
+        elif kind=='arrangePerPage':
+            before=PdfReader(BytesIO(source));after=PdfReader(BytesIO(download.content))
+            by_name={widget['fieldName']:widget for widget in actual}
+            assert [by_name[name]['rect'][0] for name in ['field0','field1','page10','page11','page20']]==[30,30,100,100,170]
+            assert [by_name[name]['pageIndex'] for name in ['field0','field1','page10','page11','page20']]==[0,0,1,1,2]
+            assert fields['page20']['/V']=='page20'
+            for old_page,new_page in zip(before.pages,after.pages,strict=True):
+                assert [(ref.idnum,ref.generation) for ref in old_page['/Annots']]==[(ref.idnum,ref.generation) for ref in new_page['/Annots']]
+                old_contents=old_page.get_contents();new_contents=new_page.get_contents()
+                assert (old_contents.get_data() if old_contents else None)==(new_contents.get_data() if new_contents else None)
+            old_widget=before.pages[2]['/Annots'][0].get_object();new_widget=after.pages[2]['/Annots'][0].get_object()
+            assert list(old_widget['/Rect'])==list(new_widget['/Rect'])
+            assert old_widget['/AP']['/N'].get_data()==new_widget['/AP']['/N'].get_data()
+        elif kind=='arrangeFormWidgets':assert len({w['rect'][0] for w in actual})==1
+        elif kind=='editFormTextProperties':
+            raw_reader=PdfReader(BytesIO(download.content))
+            field=next(ref.get_object() for ref in raw_reader.trailer['/Root']['/AcroForm']['/Fields']
+                if str(ref.get_object()['/T'])==targets[0]['fieldName'])
+            assert int(field['/Ff'])&4096
+            assert int(field['/MaxLen'])==50 and int(field['/Q'])==2
+            target=next(w for w in actual if w['fieldName']==targets[0]['fieldName'])
+            assert target['textProperties']['fontName']=='Courier-BoldOblique'
+            assert len(actual)==2
+        else:
+            assert len(fields['answer']['/Kids'])==3
+            assert str(fields['answer']['/V'])=='/0'
+            assert next(field for field in inspect_pdf(download.content)['formFields'] if field['name']=='answer')['options']==['Yes','Maybe','No']
+        assert await editor.read_file(context)==source
+
+
+@pytest.mark.anyio
+async def test_protected_pdf_review_warning_keeps_verified_http_download(tmp_path,monkeypatch):
+    """新增保护签发：生成后权限复核故障只能告警，不能丢弃加密下载。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor import native_pdf_protection
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+    from smart_reporting.reporting.tests.test_native_pdf_protection import protection_client
+
+    editor,context,_,app,base,token=await protection_client(tmp_path)
+    original=native_pdf_protection.protect_pdf_bytes
+    def fault(*args,**kwargs):
+        receipt=original(*args,**kwargs)
+        return {**receipt,'reviewIssues':['injected review failure']}
+    monkeypatch.setattr(native_pdf_protection,'protect_pdf_bytes',fault)
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE,token,path=base)
+        response=await client.post(base+'/api/protect-pdf',headers={'Origin':'http://test','X-CSRF-Token':editor.grants.csrf_token(token)},json={'requestId':'protect-review-fault','expectedSha256':context.source_file.sha256,'userPassword':'reader-secret','ownerPassword':'owner-secret','permissions':{'printing':False,'modifying':False,'annotating':False,'copying':False}})
+        assert response.status_code==200,response.text
+        saved=response.json();assert not saved['validation']['ok']
+        assert any(i['code']=='native_pdf_protection_review_failed' for i in saved['validation']['issues'])
+        artifact=saved['artifacts']['pdf'];actual=await client.get(artifact['downloadUrl'])
+        assert actual.status_code==200 and hashlib.sha256(actual.content).hexdigest()==artifact['sha256']
+        pdf=PdfReader(BytesIO(actual.content));assert pdf.is_encrypted and pdf.decrypt('reader-secret')==1
+        assert 'Amount due 500' in pdf.pages[0].extract_text()
+
+
+@pytest.mark.anyio
+async def test_external_pdf_postwrite_warning_keeps_actual_http_download(tmp_path,monkeypatch):
+    """外部页生成后复核异常，仍签发实际包含外部页面的新文件。"""
+    import base64
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor import native_publication
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+    from smart_reporting.reporting.tests.test_native_pdf_protection import protection_client
+    from smart_reporting.reporting.tests.test_pdf_external_pages import pdf
+    editor,context,_,app,base,token=await protection_client(tmp_path)
+    original=native_publication.patch_pdf_with_receipt
+    def fault(content,operations):
+        receipt=original(content,operations)
+        return {**receipt,'appliedOperationIndices':[],'skippedOperations':[{'operationIndex':0,'kind':'externalPages','reason':'injected external output review fault'}]}
+    monkeypatch.setattr(native_publication,'patch_pdf_with_receipt',fault)
+    foreign=pdf('retained external',1)
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE,token,path=base)
+        response=await client.post(base+'/api/external-pages',headers={'Origin':'http://test','X-CSRF-Token':editor.grants.csrf_token(token)},json={'requestId':'external-review-fault','expectedSha256':context.source_file.sha256,'action':'insert','afterPage':1,'externalSha256':hashlib.sha256(foreign).hexdigest(),'bytesBase64':base64.b64encode(foreign).decode()})
+        assert response.status_code==200,response.text
+        saved=response.json();assert not saved['validation']['ok']
+        warning=next(i['message'] for i in saved['validation']['issues'] if 'injected external output review fault' in i['message'])
+        assert '实际生成文件' in warning and '保留原文' not in warning
+        artifact=saved['artifacts']['pdf'];actual=await client.get(artifact['downloadUrl'])
+        assert actual.status_code==200 and hashlib.sha256(actual.content).hexdigest()==artifact['sha256']
+        assert 'retained external 1' in PdfReader(BytesIO(actual.content)).pages[1].extract_text()
+
+
+@pytest.mark.anyio
+async def test_pdf_xlsx_rich_supplement_failure_keeps_plain_actual_http_download(tmp_path,monkeypatch):
+    """富文本补写步骤登记：原生专项验证真实补写故障，此处验证其回退回执不阻断签发。"""
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from smart_reporting.report_editor import native_pdf_convert
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+    from smart_reporting.reporting.tests.test_native_pdf_protection import protection_client
+
+    editor,context,source,app,base,token=await protection_client(tmp_path)
+    original=native_pdf_convert.convert_pdf_office
+    retained={}
+    message='XLSX 富文本补写失败，已保留补写前实际工作簿：injected rich supplement failure'
+    def fallback_receipt(content,*,output_format):
+        # 来源仅有统一样式正文，实际转换结果就是补写前可读的 plain workbook。
+        result=original(content,output_format=output_format)
+        retained['content']=result['content']
+        return {**result,'warnings':[*result.get('warnings',[]),message],
+            'validation':{'ok':False,'issues':[*result['validation']['issues'],message]}}
+    monkeypatch.setattr(native_pdf_convert,'convert_pdf_office',fallback_receipt)
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE,token,path=base)
+        response=await client.post(base+'/api/convert-office',headers={'Origin':'http://test',
+            'X-CSRF-Token':editor.grants.csrf_token(token)},json={'requestId':'xlsx-rich-fallback',
+            'expectedSha256':context.source_file.sha256,'format':'xlsx'})
+        assert response.status_code==200,response.text
+        saved=response.json();assert saved['validation']['ok'] is False
+        assert any(message in issue['message'] for issue in saved['validation']['issues'])
+        artifact=saved['artifacts']['xlsx'];actual=await client.get(artifact['downloadUrl'])
+        assert actual.status_code==200 and actual.content==retained['content']
+        assert hashlib.sha256(actual.content).hexdigest()==artifact['sha256']
+        workbook=load_workbook(BytesIO(actual.content))
+        assert 'Amount due 500' in ' '.join(str(cell.value) for sheet in workbook for row in sheet for cell in row if cell.value is not None)
+        assert await editor.read_file(context)==source
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('output_format',['pptx','docx','xlsx'])
+@pytest.mark.parametrize('fault',['review','registration','postwrite','persistence','receipt'])
+async def test_pdf_conversion_late_fault_keeps_actual_pptx_http_download(tmp_path,monkeypatch,fault,output_format):
+    """转换新增签发步骤故障：真实Office身份可读便保留下载，始终声明待人工验收。"""
+    from io import BytesIO
+    from pptx import Presentation
+    from smart_reporting.report_editor import native_pdf_convert
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+    from smart_reporting.reporting.tests.test_native_pdf_protection import protection_client
+    editor,context,source,app,base,token=await protection_client(tmp_path)
+    linked_source=output_format=='pptx' and fault=='review'
+    shaded_source=output_format=='docx' and fault=='review'
+    if shaded_source:
+        from reportlab.lib.colors import HexColor
+        from reportlab.pdfgen.canvas import Canvas
+        from smart_reporting.report_editor.native import bind_native_workspace
+        from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+        buffer=BytesIO();canvas=Canvas(buffer,pagesize=(400,300),invariant=1)
+        canvas.setFillColor(HexColor('#FFF2CC'));canvas.rect(39,217,115,16,fill=1,stroke=0)
+        canvas.setFillColor(HexColor('#123456'));canvas.setFont('Helvetica',12);canvas.drawString(40,220,'Amount due 500')
+        canvas.showPage();canvas.save();source=buffer.getvalue()
+        identity=ArtifactFile(path='native/conversion-shaded.pdf',size=len(source),sha256=hashlib.sha256(source).hexdigest(),mediaType='application/pdf')
+        await editor.workspace.awrite_bytes(bind_native_workspace(editor.workspace,context.scope),identity.path,source)
+        context=context.model_copy(update={'source_file':identity});editor.context_for_session=AsyncMock(return_value=context)
+        raw,_=await editor.grants.issue(context,capabilities=editor.capabilities(context));token,_=await editor.grants.exchange(raw)
+    if linked_source:
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.annotations import Link
+        from smart_reporting.report_editor.native import bind_native_workspace
+        from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+        writer=PdfWriter();writer.clone_document_from_reader(PdfReader(BytesIO(source)))
+        writer.add_annotation(0,Link(rect=(30,225,170,245),url='https://example.com/report'))
+        buffer=BytesIO();writer.write(buffer);source=buffer.getvalue()
+        identity=ArtifactFile(path='native/conversion-linked.pdf',size=len(source),sha256=hashlib.sha256(source).hexdigest(),mediaType='application/pdf')
+        await editor.workspace.awrite_bytes(bind_native_workspace(editor.workspace,context.scope),identity.path,source)
+        context=context.model_copy(update={'source_file':identity});editor.context_for_session=AsyncMock(return_value=context)
+        raw,_=await editor.grants.issue(context,capabilities=editor.capabilities(context));token,_=await editor.grants.exchange(raw)
+    if fault=='receipt':
+        from smart_reporting.reporting.delivery import pdf_native
+        original_invoke=pdf_native._invoke
+        def receipt_then_raise(*args,**kwargs):
+            result=original_invoke(*args,**kwargs)
+            if args[0].get('kind')=='convertOffice':raise RuntimeError('injected after conversion output')
+            return result
+        monkeypatch.setattr(pdf_native,'_invoke',receipt_then_raise)
+    if fault=='review':monkeypatch.setattr(native_pdf_convert,'read_verified_file',AsyncMock(side_effect=RuntimeError('injected output review failure')))
+    if fault=='registration':monkeypatch.setattr(editor.repository,'create_from_source',AsyncMock(side_effect=RuntimeError('injected registration failure')),raising=False)
+    if fault=='persistence':monkeypatch.setattr(editor.publication.artifact_persistence,'persist_available',AsyncMock(side_effect=RuntimeError('injected persistence failure')))
+    if fault=='postwrite':
+        original=editor.workspace.awrite_bytes
+        async def write_then_raise(*args,**kwargs):
+            result=await original(*args,**kwargs)
+            if str(args[1]).endswith('.'+output_format):raise RuntimeError('injected after actual write')
+            return result
+        monkeypatch.setattr(editor.workspace,'awrite_bytes',write_then_raise)
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE,token,path=base)
+        response=await client.post(base+'/api/convert-office',headers={'Origin':'http://test','X-CSRF-Token':editor.grants.csrf_token(token)},json={'requestId':'conversion-'+fault,'expectedSha256':context.source_file.sha256,'format':output_format})
+        assert response.status_code==200,response.text
+        saved=response.json();assert saved['validation']['ok'] is False
+        if fault=='receipt':assert any('回执' in issue.get('message','') for issue in saved['validation']['issues'])
+        else:assert any(fault in issue['code'] for issue in saved['validation']['issues'])
+        artifact=saved['artifacts'][{'docx':'word','xlsx':'xlsx','pptx':'pptx'}[output_format]];actual=await client.get(artifact['downloadUrl'])
+        assert actual.status_code==200 and len(actual.content)==artifact['size']
+        assert hashlib.sha256(actual.content).hexdigest()==artifact['sha256']
+        if output_format=='pptx':
+            deck=Presentation(BytesIO(actual.content));assert len(deck.slides)==1
+            text=' '.join(shape.text for slide in deck.slides for shape in slide.shapes if shape.has_text_frame)
+        elif output_format=='docx':
+            from docx import Document
+            document=Document(BytesIO(actual.content));text=' '.join(p.text for p in document.paragraphs)
+            text+=' '.join(cell.text for table in document.tables for row in table.rows for cell in row.cells)
+        else:
+            from openpyxl import load_workbook
+            workbook=load_workbook(BytesIO(actual.content));text=' '.join(str(cell.value) for sheet in workbook for row in sheet for cell in row if cell.value is not None)
+        assert 'Amount due 500' in text
+        if shaded_source:
+            from zipfile import ZipFile
+            import xml.etree.ElementTree as ET
+            ns={'w':'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            with ZipFile(BytesIO(actual.content)) as archive:
+                document_xml=ET.fromstring(archive.read('word/document.xml'))
+            runs=[run for run in document_xml.findall('.//w:r',ns) if 'Amount due 500' in ''.join(run.itertext())]
+            assert runs and any(run.find('w:rPr/w:shd',ns) is not None and run.find('w:rPr/w:shd',ns).get('{'+ns['w']+'}fill')=='FFF2CC' for run in runs)
+        if linked_source:
+            from zipfile import ZipFile
+            import xml.etree.ElementTree as ET
+            ns={'a':'http://schemas.openxmlformats.org/drawingml/2006/main','r':'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+            with ZipFile(BytesIO(actual.content)) as archive:
+                slide=ET.fromstring(archive.read('ppt/slides/slide1.xml'))
+                rels=ET.fromstring(archive.read('ppt/slides/_rels/slide1.xml.rels'))
+                targets={rel.attrib['Id']:rel.attrib for rel in rels}
+                linked_runs=[run for run in slide.findall('.//a:r',ns) if run.find('a:rPr/a:hlinkClick',ns) is not None]
+                assert any('Amount due 500' in (run.findtext('a:t',default='',namespaces=ns)) for run in linked_runs)
+                assert all(targets[run.find('a:rPr/a:hlinkClick',ns).attrib['{'+ns['r']+'}id']]['Target']=='https://example.com/report' for run in linked_runs)
+                assert all(targets[run.find('a:rPr/a:hlinkClick',ns).attrib['{'+ns['r']+'}id']]['TargetMode']=='External' for run in linked_runs)
+        assert await editor.read_file(context)==source
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault',['receipt','postwrite','review'])
+async def test_protected_pdf_late_fault_keeps_actual_encrypted_http_download(tmp_path,monkeypatch,fault):
+    """保护新增后置签发步骤故障：拒绝坏回执，保留实际加密PDF的身份下载。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor import native_pdf_protection
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+    from smart_reporting.reporting.delivery import pdf_native
+    from smart_reporting.reporting.tests.test_native_pdf_protection import protection_client
+    editor,context,source,app,base,token=await protection_client(tmp_path)
+    if fault=='receipt':
+        original=pdf_native._invoke
+        def receipt_then_raise(*args,**kwargs):
+            result=original(*args,**kwargs)
+            if args[0].get('kind')=='protect':raise RuntimeError('injected after engine output')
+            return result
+        monkeypatch.setattr(pdf_native,'_invoke',receipt_then_raise)
+    if fault=='postwrite':
+        original_write=editor.workspace.awrite_bytes
+        async def write_then_raise(*args,**kwargs):
+            result=await original_write(*args,**kwargs)
+            if '/protected/' in str(args[1]):raise RuntimeError('injected after actual write')
+            return result
+        monkeypatch.setattr(editor.workspace,'awrite_bytes',write_then_raise)
+    if fault=='review':monkeypatch.setattr(native_pdf_protection,'read_verified_file',AsyncMock(side_effect=RuntimeError('injected review helper failure')))
+    async with AsyncClient(transport=ASGITransport(app=app),base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE,token,path=base)
+        response=await client.post(base+'/api/protect-pdf',headers={'Origin':'http://test','X-CSRF-Token':editor.grants.csrf_token(token)},json={'requestId':'protect-late-'+fault,'expectedSha256':context.source_file.sha256,'userPassword':'reader-secret','ownerPassword':'owner-secret','permissions':{'printing':True,'modifying':False,'annotating':False,'copying':False}})
+        assert response.status_code==200,response.text
+        saved=response.json();assert saved['validation']['ok'] is False
+        code='native_pdf_protection_postwrite_warning' if fault=='postwrite' else 'native_pdf_protection_review_failed'
+        assert any(issue['code']==code for issue in saved['validation']['issues'])
+        artifact=saved['artifacts']['pdf'];actual=await client.get(artifact['downloadUrl'])
+        assert actual.status_code==200 and len(actual.content)==artifact['size'] and hashlib.sha256(actual.content).hexdigest()==artifact['sha256']
+        pdf=PdfReader(BytesIO(actual.content));assert pdf.is_encrypted and pdf.decrypt('reader-secret')==1
+        assert 'Amount due 500' in pdf.pages[0].extract_text()
+        assert await editor.read_file(context)==source
 
 
 # 新签发链路故障点在这里逐项登记；使用真实文件桥接、签名授权及 HTTP 下载。

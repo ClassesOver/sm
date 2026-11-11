@@ -1,4 +1,6 @@
 import type { Editor } from '@tiptap/core'
+import { closeHistory } from '@tiptap/pm/history'
+import { highlightTarget, textFormattingRange } from './docx-highlight'
 import type { DocxAnchor, DocxPmNode } from './docx-operations'
 
 export type ParagraphVerticalAlign = 'baseline' | 'superscript' | 'subscript'
@@ -22,7 +24,8 @@ export function withoutVerticalAlign(node: DocxPmNode): DocxPmNode {
     return Object.values(attrs).some(value => value != null && value !== false) ? [{ ...mark, attrs }] : []
   }) })) }
 }
-export function verticalAlignTarget(editor: Editor, anchors: DocxAnchor[]) {
+export function verticalAlignTarget(editor: Editor, anchors: DocxAnchor[], allowNoteReferences = false) {
+  if (!editor.state.selection.empty || allowNoteReferences) return highlightTarget(editor, anchors, allowNoteReferences)
   const { $from, $to } = editor.state.selection
   if ($from.depth !== 1 || $to.depth !== 1 || $from.before(1) !== $to.before(1)) return undefined
   const node = $from.node(1)
@@ -30,9 +33,27 @@ export function verticalAlignTarget(editor: Editor, anchors: DocxAnchor[]) {
     || !anchors.some(anchor => anchor.docxIndex === node.attrs.docxIndex && anchor.editable)) return undefined
   return { node, from: $from.start(1), to: $from.end(1) }
 }
-export function toggleParagraphVerticalAlign(editor: Editor, anchors: DocxAnchor[], kind: 'superscript' | 'subscript') {
-  const target = verticalAlignTarget(editor, anchors)
-  if (!editor.isEditable || !target) return false
-  const value = paragraphVerticalAlign(target.node.toJSON()) === kind ? null : kind
-  return editor.chain().focus().setTextSelection({ from: target.from, to: target.to }).setMark('docTextStyle', { vertAlign: value }).run()
+export function selectedVerticalAlign(editor: Editor, anchors: DocxAnchor[], allowNoteReferences = false) {
+  const target = verticalAlignTarget(editor, anchors, allowNoteReferences)
+  const range = target && textFormattingRange(editor, target)
+  return target && range ? paragraphVerticalAlign(target.node.cut(range.from - target.from, range.to - target.from).toJSON()) : undefined
+}
+export function toggleParagraphVerticalAlign(editor: Editor, anchors: DocxAnchor[], kind: 'superscript' | 'subscript', allowNoteReferences = false) {
+  const target = verticalAlignTarget(editor, anchors, allowNoteReferences)
+  const mark = editor.schema.marks.docTextStyle
+  if (!editor.isEditable || !target || !mark) return false
+  const range = textFormattingRange(editor, target)
+  if (!range) return false
+  const value = selectedVerticalAlign(editor, anchors, allowNoteReferences) === kind ? 'baseline' : kind
+  const tr = closeHistory(editor.state.tr)
+  target.node.forEach((run, offset) => {
+    if (!run.isText) return
+    const from = Math.max(target.from + offset, range.from)
+    const to = Math.min(target.from + offset + run.nodeSize, range.to)
+    const old = run.marks.find(item => item.type === mark)
+    if (from < to) tr.addMark(from, to, mark.create({ ...old?.attrs, vertAlign: value }))
+  })
+  if (tr.docChanged) editor.view.dispatch(tr)
+  editor.commands.focus()
+  return true
 }

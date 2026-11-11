@@ -8,5 +8,9 @@
   "grid/sparkline-render.ts": "64e4fdd31a442718fc1d21118833f4697a0398a95aec47ef9a2494c6a5d248d1",
   "grid/sync.ts": "024cd9fe1c0dcf7d0e534c8d331b10a4b9a1a380c5466377fb8f8d293f3c8a61",
   "grid/decimal-step.ts": "f97c59a2aa70900c99dc9f8f350a214430878c7f2e0868e8a98fe042c5712a60",
-  "ui/ribbon-icons.tsx": "a1e97bd2b06ab56d9dd5f1febed1ab67a8a663321b5294684fed6aacbf8d154a"
+  "ui/ribbon-icons.tsx": "a1e97bd2b06ab56d9dd5f1febed1ab67a8a663321b5294684fed6aacbf8d154a",
+  "core/dedupe.ts": "1601316531a9ae9db34dfdbed58c60dd247931269b012c7eebb18b90af075f8e",
+  "grid/csv-import.ts": "b079c025774d89410ca8b861365c67c5b4525df0cfb7a2a4be87c3e0bae3f552",
+  "grid/workbook-queries.ts": "14a4f198482a1731d994749d07069dd7c5dca7855f3f7b9604ef0e010f72ee16",
+  "grid/query-parts.ts": "f1b20c4fd4868b39f4fe0e0c2c3d5a462343d87c84d9f091037f778249467679"
 }

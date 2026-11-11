@@ -2063,8 +2063,6 @@ class RuntimePublicationMixin:
                 "revision": (
                     manifest.revision if manifest is not None else
                     int(result.get("revision", 1))
-                    if state.get("report_request_context", {}).get("deliveryFormat") in {"pptx", "xlsx"}
-                    else int(result.get("revision", 0)) + 1
                 ),
                 "markdownPath": result["markdownPath"],
                 **(

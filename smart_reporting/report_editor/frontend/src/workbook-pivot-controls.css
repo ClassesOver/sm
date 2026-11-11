@@ -1,0 +1,16 @@
+.workbook-pivot-control { position: relative; width: 100%; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 8px; overflow: auto; border: 1px solid #9aaec8; border-radius: 4px; background: #fff; color: #182230; font: 13px/1.4 system-ui, sans-serif; }
+.workbook-pivot-control-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; flex: none; }
+.workbook-pivot-control [data-control-geometry] { touch-action: none; user-select: none; flex: none; }
+.workbook-pivot-control [data-control-geometry=move] { cursor: move; padding: 0 4px; font-size: 11px; }
+.workbook-pivot-control .workbook-pivot-control-resize { position: absolute; right: 1px; bottom: 1px; width: 16px; height: 16px; padding: 0; border: 0; background: transparent; cursor: nwse-resize; }
+.workbook-pivot-control-title { flex: none; overflow-wrap: anywhere; }
+.workbook-pivot-control fieldset { border: 0; padding: 0; margin: 0; min-width: 0; min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.workbook-pivot-control-members { flex: 1; min-height: 32px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+.workbook-pivot-control-members label { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.workbook-pivot-control-dates { display: flex; flex-wrap: wrap; gap: 8px; }
+.workbook-pivot-control-dates label { display: flex; flex-direction: column; gap: 2px; }
+.workbook-pivot-control input[type=date] { width: 138px; box-sizing: border-box; }
+.workbook-pivot-control-actions { display: flex; flex-wrap: wrap; gap: 6px; flex: none; }
+.workbook-pivot-control button { cursor: pointer; border: 1px solid #9aaec8; border-radius: 3px; background: #eef4ff; padding: 3px 8px; color: inherit; font: inherit; }
+.workbook-pivot-control button:disabled { cursor: default; opacity: .6; }
+.workbook-pivot-control [role=alert] { margin: 0; color: #b42318; overflow-wrap: anywhere; }

@@ -1,3 +1,4 @@
+import { tdParas, sameTableParagraphs, sameTableModel, selectTableInputContents, tableInputCells } from './table-input-paragraphs'
 import { ScriptFonts } from './script-fonts'
 import {
   asciiFamilyResolver,
@@ -83,7 +84,6 @@ import {
   type StyleDisplay,
   type StyleInfo,
   type TabStop,
-  type TableCell,
   type TableModel,
   type TextboxDisplay,
   type TextboxListMarker,
@@ -2750,7 +2750,10 @@ function tableCellHtml(node: PmNode): Record<string, string> {
     node.attrs.fill
       ? `background-color:#${node.attrs.fill};${dkBackground(`#${node.attrs.fill}`)}`
       : '',
-    node.attrs.align ? `text-align:${node.attrs.align}` : '',
+    // cell.align is a legacy first-paragraph projection, not a tc property.
+    // Each PM paragraph paints its own effective alignment; null means start
+    // in that paragraph's direction and must not inherit a sibling's old jc.
+    'text-align:start',
     // a fixed-layout table (w:tblLayout fixed) sets the fallback to normal: Word
     // ignores w:noWrap there and wraps inside the grid column
     node.attrs.noWrap ? 'white-space:var(--doc-cell-nowrap,nowrap)' : '',
@@ -3387,7 +3390,8 @@ export const DocCellBoxes = Node.create({
 
 /** Nested table inside a cell: read-only atomic child table (editing the outer cell's text
  *  doesn't affect it; saving is byte-faithful via the outer table's originalXml, dropped on structural rebuild — matching old behavior) */
-export const DocNestedTable = Node.create({
+export const DocNestedTable = Node.create<{ canEditCell?: (node: PmNode, pos: number, row: number, column: number, editor: Editor) => boolean; validateParagraphs?: (paragraphs: string[]) => string | null; onCommitError?: (reason: string) => void }>({
+  addOptions() { return {} },
   name: 'docNestedTable',
   atom: true,
   selectable: false,
@@ -3409,6 +3413,7 @@ export const DocNestedTable = Node.create({
   // in-place cell editing: contenteditable island; on blur the text is committed back to the model attribute
   // (saving goes through the outer table's nested-text surgical patch; cells that themselves contain nested tables stay non-editable)
   addNodeView() {
+    const { canEditCell, validateParagraphs, onCommitError } = this.options
     return ({ node, editor, getPos }) => {
       let currentNode = node
       const dom = document.createElement('div')
@@ -3422,6 +3427,8 @@ export const DocNestedTable = Node.create({
         if (td) dirty.add(td)
       })
 
+      dom.addEventListener('keydown', event => { if (canEditCell) selectTableInputContents(event, dom) })
+
       /** this table's own td elements (excluding deeper nested-table td), ordered like the model's non-vMerge-continue cells */
       const ownTds = (): HTMLElement[] => {
         const root = dom.querySelector('table')
@@ -3429,21 +3436,14 @@ export const DocNestedTable = Node.create({
         return Array.from(dom.querySelectorAll('td')).filter((td) => td.closest('table') === root)
       }
 
-      const flatCells = (): TableCell[] => {
-        const model = currentNode.attrs.model as TableModel | null
-        const flat: TableCell[] = []
-        model?.rows.forEach((row) =>
-          row.forEach((cell) => {
-            if (cell.vMerge !== 'continue') flat.push(cell)
-          }),
-        )
-        return flat
+      const permitted = (row: number, column: number) => {
+        const pos = getPos()
+        return !canEditCell || typeof pos === 'number' && canEditCell(currentNode, pos, row, column, editor)
       }
-
       const applyEditable = () => {
-        const cells = flatCells()
+        const cells = tableInputCells(currentNode.attrs.model as TableModel | null)
         ownTds().forEach((td, i) => {
-          const editable = editor.isEditable && cells[i] && !cells[i].nestedTables?.length
+          const editable = editor.isEditable && cells[i] && !cells[i].cell.nestedTables?.length && permitted(cells[i].row, cells[i].column)
           td.setAttribute('contenteditable', editable ? 'true' : 'false')
         })
       }
@@ -3465,27 +3465,33 @@ export const DocNestedTable = Node.create({
         if (!model) return
         const tds = ownTds()
         let k = 0
-        let changed = false
-        const rows = model.rows.map((row) =>
-          row.map((cell) => {
+        let changed = false, invalid: string | null = null
+        const rows = model.rows.map((row, r) =>
+          row.map((cell, c) => {
             if (cell.vMerge === 'continue') return cell
             const td = tds[k++]
-            if (!td || cell.nestedTables?.length || !dirty.has(td)) return cell
+            if (!td || !editor.isEditable || !permitted(r, c) || cell.nestedTables?.length || !dirty.has(td)) return cell
             const paras = tdParas(td)
-            if (paras.join('\n') === cell.paras.join('\n')) return cell
+            const reason = validateParagraphs?.(paras)
+            if (reason) { invalid = reason; return cell }
+            if (sameTableParagraphs(paras, cell.paras)) return cell
             changed = true
             const next = { ...cell, paras }
             delete next.richParas
             return next
           }),
         )
-        dirty.clear()
-        if (!changed) return
+        if (invalid) { onCommitError?.(invalid); return }
+        if (!changed) { dirty.clear(); return }
         const pos = getPos()
         if (typeof pos !== 'number') return
-        editor.view.dispatch(
-          editor.view.state.tr.setNodeMarkup(pos, undefined, { model: { ...model, rows } }),
-        )
+        const nextModel = { ...model, rows }
+        editor.view.dispatch(editor.view.state.tr.setNodeMarkup(pos, undefined, { model: nextModel }))
+        if (!sameTableModel(editor.state.doc.nodeAt(pos)?.attrs.model, nextModel)) {
+          onCommitError?.('嵌套表格文字未能提交，请先分别保存同一表格的其他修改')
+          return
+        }
+        dirty.clear()
       }
 
       const onFocusOut = (e: Event) => {
@@ -3495,7 +3501,7 @@ export const DocNestedTable = Node.create({
       }
       dom.addEventListener('focusout', onFocusOut)
       window.addEventListener('ai-docs-commit-tables', commit)
-      editor.on('update', applyEditable)
+      editor.on('transaction', applyEditable)
 
       return {
         dom,
@@ -3517,7 +3523,7 @@ export const DocNestedTable = Node.create({
         },
         destroy: () => {
           window.removeEventListener('ai-docs-commit-tables', commit)
-          editor.off('update', applyEditable)
+          editor.off('transaction', applyEditable)
         },
       }
     }
@@ -5216,26 +5222,6 @@ function wireProtectedInteractionMode(
     document.removeEventListener('mousedown', onDocumentMouseDown, true)
     dom.removeEventListener('keydown', onKeyDown, true)
   }
-}
-
-/** split a contenteditable cell back into paragraph strings */
-function tdParas(td: HTMLElement): string[] {
-  // one rendered block per paragraph (below the exact-height / vertical-text
-  // wrapper): read them structurally so empty paragraphs survive (innerText
-  // drops trailing empty blocks) and NBSP stays document text
-  const wrapper = td.children.length === 1 ? td.children[0] : null
-  const host = wrapper?.matches('.cell-clip, .cell-vert') ? wrapper : td
-  const blocks = Array.from(host.childNodes)
-  if (blocks.length > 0 && blocks.every((n) => n instanceof HTMLElement && n.tagName === 'DIV')) {
-    return blocks.map((block) => {
-      const el = block as HTMLElement
-      return (el.innerText ?? el.textContent ?? '').replace(/\n$/, '')
-    })
-  }
-  const text = (td.innerText ?? td.textContent ?? '').replace(/\n+$/, '')
-  const paras = text.split('\n')
-  if (paras.length === 1 && paras[0].trim() === '') return ['']
-  return paras
 }
 
 /**

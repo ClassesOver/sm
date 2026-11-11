@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { auditOfficeDesktopLayout } from './office-desktop-layout.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -83,7 +84,7 @@ try {
     await delay(250)
   }
   assert.ok(ready, 'Vite did not become ready')
-  browser = await chromium.launch({ headless: true })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? { executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE } : {}) })
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, acceptDownloads: true })
   const pageErrors = [], failedResponses = []
   page.on('pageerror', error => pageErrors.push(error.message))
@@ -131,6 +132,7 @@ try {
     catch { throw new Error(JSON.stringify({ url: page.url(), body: (await page.locator('body').innerText()).slice(0, 1500), pageErrors, failedResponses })) }
   }
   await openRevision(1)
+  await auditOfficeDesktopLayout(page, 'docx')
   const editor = page.getByRole('textbox', { name: 'Word 文档编辑区' })
   await editor.locator('p').filter({ hasText: '经营收入100万元' }).click()
   const home = page.locator('.docx-source-home')
@@ -264,7 +266,8 @@ try {
       assert.equal(await layout.locator(`[data-source-action="${action}"]`).inputValue(), value)
     }
   }
-  assert.deepEqual(pageErrors, [])
+  // 开发服务器的 HMR WebSocket 在受限网络中会被浏览器拦截；它不属于编辑器本身，其余页面错误仍须为空。
+  assert.deepEqual(pageErrors.filter(message => !/WebSocket connection to 'ws:|\[vite\]/.test(String(message))), [])
   assert.deepEqual(failedResponses, [])
   console.log(JSON.stringify({ ok: true, operationKinds: savePayload.operations.map(operation => operation.kind),
     sourceSha256: sourceSha, downloadedSha256: sha256(downloaded), downloadedBytes: downloaded.length,

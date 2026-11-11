@@ -70,7 +70,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
         raise ReportingError("report_slides_edit_invalid", "页面背景内容无效。")
     if len({item["slideIndex"] for item in backgrounds}) != len(backgrounds):
         raise ReportingError("report_slides_edit_invalid", "同一页面只能设置一次背景。")
-    optional = {"fontSize", "fontFamily", "color", "bold", "rotation"}
+    optional = {"fontSize", "fontFamily", "color", "bold", "rotation", "field", "italic", "outline", "wordArt"}
     if (
         not isinstance(text_boxes, list) or len(text_boxes) > _MAX_STRUCTURE_EDITS
         or any(
@@ -93,6 +93,11 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
             or ("color" in item and (not isinstance(item["color"], str) or not _HEX_COLOR.match(item["color"])))
             or ("bold" in item and not isinstance(item["bold"], bool))
             or ("rotation" in item and not _number(item["rotation"], -360, 360))
+            or ("field" in item and item["field"] not in {"slidenum", "datetime1"})
+            or any(key in item and not isinstance(item[key], bool) for key in ("italic", "wordArt"))
+            or ("outline" in item and (not isinstance(item["outline"], dict) or set(item["outline"]) != {"color", "widthEmu"}
+                or not isinstance(item["outline"]["color"], str) or not _HEX_COLOR.match(item["outline"]["color"])
+                or not isinstance(item["outline"]["widthEmu"], int) or isinstance(item["outline"]["widthEmu"], bool) or not 1 <= item["outline"]["widthEmu"] <= 254000))
             for item in text_boxes
         )
     ):
@@ -544,9 +549,35 @@ class ReportSlidesEditorService:
         *,
         edits: list[dict[str, Any]] | None = None,
         order: list[int] | None = None,
+        new_slides: list[dict[str, Any]] | None = None,
+        deleted_slides: list[int] | None = None,
+        reset_layouts: list[int] | None = None,
+        shapes: list[dict[str, Any]] | None = None,
+        tables: list[dict[str, Any]] | None = None,
+        shape_styles: list[dict[str, Any]] | None = None,
+        shape_kinds: list[dict[str, Any]] | None = None,
+        sections: list[dict[str, Any]] | None = None,
+        header_footer: dict[str, Any] | None = None,
+        table_cells: list[dict[str, Any]] | None = None,
+        table_styles: list[dict[str, Any]] | None = None,
+        table_structures: list[dict[str, Any]] | None = None,
+        charts: list[dict[str, Any]] | None = None,
+        smart_arts: list[dict[str, Any]] | None = None,
+        animation_sequences: list[dict[str, Any]] | None = None,
         theme: str | None = None,
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
+        native_images: list[dict[str, Any]] | None = None,
+        picture_replacements: list[dict[str, Any]] | None = None,
+        picture_crops: list[dict[str, Any]] | None = None,
+        element_orders: list[dict[str, Any]] | None = None,
+        group_edits: list[dict[str, Any]] | None = None,
+        notes_edits: list[dict[str, Any]] | None = None,
+        link_edits: list[dict[str, Any]] | None = None,
+        clipboard_pastes: list[dict[str, Any]] | None = None,
+        chart_edits: list[dict[str, Any]] | None = None,
+        hidden_slides: list[dict[str, Any]] | None = None,
+        comment_edits: list[dict[str, Any]] | None = None,
         transitions: list[dict[str, Any]] | None = None,
         animations: list[dict[str, Any]] | None = None,
         slide_layouts: list[dict[str, Any]] | None = None,
@@ -564,6 +595,36 @@ class ReportSlidesEditorService:
             output_path = root / "output.pptx"
             if action == "edit":
                 request.update({"output": str(output_path), "edits": edits or [], "order": order})
+                if new_slides:
+                    request["newSlides"] = new_slides
+                if deleted_slides:
+                    request["deletedSlides"] = deleted_slides
+                if reset_layouts:
+                    request["resetLayouts"] = reset_layouts
+                if shapes:
+                    request["shapes"] = shapes
+                if tables:
+                    request["tables"] = tables
+                if shape_styles:
+                    request["shapeStyles"] = shape_styles
+                if shape_kinds:
+                    request["shapeKinds"] = shape_kinds
+                if sections:
+                    request["sections"] = sections
+                if header_footer is not None:
+                    request["headerFooter"] = header_footer
+                if table_structures:
+                    request["tableStructures"] = table_structures
+                if table_styles:
+                    request["tableStyles"] = table_styles
+                if table_cells:
+                    request["tableCells"] = table_cells
+                if charts:
+                    request["charts"] = charts
+                if smart_arts:
+                    request["smartArts"] = smart_arts
+                if animation_sequences:
+                    request["animationSequences"] = animation_sequences
                 if theme is not None:
                     request["theme"] = theme
                 if slide_size is not None:
@@ -581,6 +642,30 @@ class ReportSlidesEditorService:
                         }
                         for image in images
                     ]
+                if native_images:
+                    request["nativeImages"] = native_images
+                if picture_replacements:
+                    request["pictureReplacements"] = picture_replacements
+                if group_edits:
+                    request["groupEdits"] = group_edits
+                if notes_edits:
+                    request["notesEdits"] = notes_edits
+                if link_edits:
+                    request["linkEdits"] = link_edits
+                if clipboard_pastes:
+                    request["clipboardPastes"] = clipboard_pastes
+                if element_orders:
+                    request["elementOrders"] = element_orders
+                if picture_crops:
+                    request["pictureCrops"] = picture_crops
+                if chart_edits:
+                    request["chartEdits"] = chart_edits
+                if hidden_slides:
+                    request["hiddenSlides"] = hidden_slides
+                if comment_edits:
+                    request["commentEdits"] = comment_edits
+                    # 固定宿主标签，不接收客户端作者冒认，也不宣称账号协作身份。
+                    request["commentAuthor"] = "用户"
                 if transitions:
                     request["transitions"] = transitions
                 if animations:

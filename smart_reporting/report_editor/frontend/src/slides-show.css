@@ -1,0 +1,9 @@
+.slides-show { position: fixed; inset: 0; margin: 0; width: 100vw; height: 100vh; max-width: none; max-height: none; padding: 16px; box-sizing: border-box; border: 0; color: #fff; background: #080b10; }
+.slides-show[open] { display: flex; flex-direction: column; gap: 12px; }
+.slides-show::backdrop { background: #080b10; }
+.slides-show-stage { flex: 1; min-height: 0; display: flex; justify-content: center; align-items: center; overflow: hidden; }
+.slides-show-controls { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 16px; }
+.slides-show-controls button { border: 1px solid #65748a; border-radius: 6px; padding: 8px 16px; color: #fff; background: #26344a; cursor: pointer; }
+.slides-show-controls button:disabled { opacity: .45; cursor: default; }
+.slides-show-controls button:focus-visible { outline: 3px solid #80bfff; outline-offset: 3px; }
+.slides-show-note { margin: 0; color: #b8c2d2; font-size: 12px; text-align: center; }

@@ -12,57 +12,104 @@ from time import perf_counter
 
 from loguru import logger
 
+from ....workspace import WorkspacePathConflict
+from ...code_agent.context import ExecutionReceipt
 from ...models import ReportingError
 from .chart_inputs import ChartInputMaterialization
 from .phase_models import StandardChartCanvas
 from .standard_chart_proof import create_standard_render_proofs
-from .standard_visualization import standard_visualization_preflight
+from .standard_visualization import StandardVisualizationPreflight, standard_visualization_preflight
+
+
+async def _observe_route_call(state, phase, chart_ids, operation):
+    """保留每次真实调用，失败及取消不覆盖先前成功成本。"""
+    started = perf_counter()
+    result = error = None
+    try:
+        result = await operation
+        return result
+    except BaseException as caught:
+        error = caught
+        raise
+    finally:
+        attempts = (getattr(result, "execution_attempts", ()) if result is not None else
+                    getattr(error, "standard_execution_attempts", ()))
+        if not attempts:
+            observation = (getattr(error, "standard_execution", None) if error is not None else None)
+            attempts = (observation or {
+                "stageTimings": dict(getattr(result, "stage_timings", None) or {}),
+                "executionSpans": getattr(result, "execution_spans", None),
+                "status": "cancelled" if isinstance(error, asyncio.CancelledError) else
+                          "failed" if error is not None else "succeeded",
+            },)
+        elapsed = max(0, round((perf_counter() - started) * 1000))
+        for item in attempts:
+            state["executionAttempts"].append({**item, "routePhase": phase,
+                "chartIds": list(chart_ids), "durationMs": item.get("durationMs", elapsed)})
+
+
+def _merge_execution_spans(spans, observed):
+    """任一尝试缺少阶段证据时保留unknown，不能把字符串展开成字符。"""
+    if isinstance(observed, Mapping):
+        for name, values in observed.items():
+            if not isinstance(values, (list, tuple)):
+                spans[name] = "unknown"
+            elif spans.get(name) != "unknown":
+                spans.setdefault(name, []).extend(values)
+
+
+def _route_observation(state, total, status):
+    timings, spans = {}, {}
+    spans_complete = True
+    for item in state["executionAttempts"]:
+        for name, elapsed in item.get("stageTimings", {}).items():
+            timings[name] = timings.get(name, 0) + elapsed
+        observed = item.get("executionSpans")
+        spans_complete = spans_complete and isinstance(observed, Mapping)
+        _merge_execution_spans(spans, observed)
+    timings["compile"] = timings.get("compile", 0) + state["initialCompileMs"] + state["componentCompileMs"]
+    return {**state, "status": status, "stageTimings": timings,
+            "executionSpans": (spans or None) if spans_complete else "unknown", "routeTotalMs": total}
 
 
 async def run_standard_chart_routes(
     runner, context, workspace, plan, inputs, facts, run_context, *, deterministic=False
 ):
-    """记录完整路由边界，包括首次编译及失败/取消，不改变原异常。"""
+    """墙钟与全尝试累计分别记录；观测不替代真实执行/视觉回执。"""
     started = perf_counter()
-    route_state = {"initialCompileMs": 0, "initialCompileStatus": "not_started"}
+    state = {"initialCompileMs": 0, "initialCompileStatus": "not_started",
+             "componentCompileMs": 0, "executionAttempts": [], "routes": []}
     try:
         result = await _run_standard_chart_routes(
             runner, context, workspace, plan, inputs, facts, run_context,
-            deterministic=deterministic, route_state=route_state,
+            deterministic=deterministic, route_state=state,
         )
     except BaseException as error:
-        attempts = getattr(error, "standard_execution_attempts", ())
-        observations = attempts or (getattr(error, "standard_execution", {}),)
-        timings = {}
-        spans = {}
-        for observation in observations:
-            for name, elapsed in observation.get("stageTimings", {}).items():
-                timings[name] = timings.get(name, 0) + elapsed
-            observed_spans = observation.get("executionSpans")
-            if isinstance(observed_spans, Mapping):
-                for name, values in observed_spans.items():
-                    spans.setdefault(name, []).extend(values)
-        timings["compile"] = timings.get("compile", 0) + route_state["initialCompileMs"]
         total = max(0, round((perf_counter() - started) * 1000))
-        observation = {
-            **route_state, "status": "cancelled" if isinstance(error, asyncio.CancelledError) else "failed",
-            "stageTimings": timings, "executionSpans": spans or None, "routeTotalMs": total,
-        }
+        observation = _route_observation(state, total,
+            "cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
         error.standard_route_total_ms = total
         error.standard_route_execution = observation
+        error.standard_execution_attempts = tuple(state["executionAttempts"])
+        error.standard_chart_routes = tuple(state["routes"])
         if isinstance(error, ReportingError):
             details = (dict(error.details) if isinstance(error.details, Mapping) else
                        {} if error.details is None else {"originalDetails": error.details})
             error.details = {**details, "standardRouteExecution": observation, "standardRouteTotalMs": total}
         logger.bind(standard_route_execution=observation).info(
             "report_standard_route_finished status={} route_total_ms={} initial_compile_ms={}",
-            observation["status"], total, route_state["initialCompileMs"],
+            observation["status"], total, state["initialCompileMs"],
         )
         raise
     total = max(0, round((perf_counter() - started) * 1000))
+    observation = _route_observation(state, total, "succeeded")
+    updates = dict(route_total_ms=total, stage_timings=observation["stageTimings"],
+                   execution_spans=observation["executionSpans"],
+                   execution_attempts=tuple(state["executionAttempts"]))
     if is_dataclass(result) and not isinstance(result, type):
-        return replace(result, route_total_ms=total)
-    result.route_total_ms = total
+        return replace(result, **updates)
+    for name, value in updates.items():
+        setattr(result, name, value)
     return result
 
 
@@ -100,13 +147,13 @@ async def _run_standard_chart_routes(
             )
         route_state["initialCompileStatus"] = "succeeded"
         if len(plan.charts) == 1:
-            result = await _run_standard_with_layout_retry(
-                runner, context, workspace, plan, inputs, facts, deterministic=True
-            )
+            result = await _observe_route_call(route_state, 'group', [chart.chart_id for chart in plan.charts], _run_standard_with_layout_retry(
+                runner, context, workspace, plan, inputs, facts, deterministic=True,
+                initial_preflight=complete))
         else:
-            result = await runner.run_standard_visualization(
+            result = await _observe_route_call(route_state, 'group', [chart.chart_id for chart in plan.charts], runner.run_standard_visualization(
                 context, workspace, complete.source, facts, deterministic=True
-            )
+            ))
             result = _with_standard_proofs(result, plan, inputs)
         result = _with_compile_timing(result, compile_ms, route_started)
         return _with_routes(result, [
@@ -125,13 +172,13 @@ async def _run_standard_chart_routes(
     if complete.source is not None:
         try:
             if len(plan.charts) == 1:
-                result = await _run_standard_with_layout_retry(
-                    runner, context, workspace, plan, inputs, facts
-                )
+                result = await _observe_route_call(route_state, 'group', [chart.chart_id for chart in plan.charts], _run_standard_with_layout_retry(
+                    runner, context, workspace, plan, inputs, facts,
+                    initial_preflight=complete))
             else:
-                result = await runner.run_standard_visualization(
+                result = await _observe_route_call(route_state, 'group', [chart.chart_id for chart in plan.charts], runner.run_standard_visualization(
                     context, workspace, complete.source, facts
-                )
+                ))
                 result = _with_standard_proofs(result, plan, inputs)
             return _with_routes(
                 _with_compile_timing(result, compile_ms, route_started),
@@ -148,20 +195,21 @@ async def _run_standard_chart_routes(
 
     if len(plan.charts) == 1:
         diagnostic = _diagnostic(plan.charts[0].chart_id, complete.diagnostic)
-        result = await runner.run(
+        result = await _observe_route_call(route_state, 'component_coding', [chart.chart_id for chart in plan.charts], runner.run(
             context,
             workspace,
             {**facts, "standardChartPreflight": diagnostic},
             run_context=run_context,
             diagnostic=None,
-        )
+        ))
         return _with_routes(
             result, [dict(chartId=plan.charts[0].chart_id, route="coding", diagnostic=diagnostic)]
         )
 
     components = []
+    snapshots = {}
     component_proofs = {}
-    routes = []
+    routes = route_state["routes"]
     child_tasks = []
     for index, chart in enumerate(plan.charts):
         single = plan.model_copy(update={"charts": (chart,)})
@@ -172,7 +220,11 @@ async def _run_standard_chart_routes(
             entries=entries,
             fallback_chart_ids=inputs.fallback_chart_ids & {chart.chart_id},
         )
-        preflight = standard_visualization_preflight(single, bound)
+        compile_started = perf_counter()
+        try:
+            preflight = standard_visualization_preflight(single, bound)
+        finally:
+            route_state["componentCompileMs"] += max(0, round((perf_counter() - compile_started) * 1000))
         path = str(
             PurePosixPath(context.script_path).with_name(
                 PurePosixPath(context.script_path).stem + f"-chart-{index + 1:03}.py"
@@ -201,9 +253,9 @@ async def _run_standard_chart_routes(
         route = "coding"
         if preflight.source is not None:
             try:
-                result = await _run_standard_with_layout_retry(
-                    runner, child, workspace, single, bound, payload
-                )
+                result = await _observe_route_call(route_state, 'component_standard', [chart.chart_id], _run_standard_with_layout_retry(
+                    runner, child, workspace, single, bound, payload,
+                    initial_preflight=preflight))
                 route = "standard"
             except Exception as error:
                 details = error.details if isinstance(error, ReportingError) else {}
@@ -222,13 +274,13 @@ async def _run_standard_chart_routes(
         if result is None:
             if preflight.source is None:
                 payload["standardChartPreflight"] = diagnostic
-            result = await runner.run(
+            result = await _observe_route_call(route_state, 'component_coding', [chart.chart_id], runner.run(
                 child,
                 workspace,
                 payload,
                 run_context=run_context,
                 diagnostic=diagnostic if preflight.source is not None else None,
-            )
+            ))
         identity = result.script_file
         raw, _mime = await workspace.afile_bytes(context.task_id, identity.path)
         if hashlib.sha256(raw).hexdigest() != identity.sha256:
@@ -236,6 +288,9 @@ async def _run_standard_chart_routes(
                 "report_chart_component_identity_changed", "图表组件脚本身份已变化。"
             )
         components.append((identity.path, identity.sha256))
+        snapshot = await _snapshot_component(workspace, context, chart, result)
+        if snapshot is not None:
+            snapshots[identity.path] = snapshot
         if route == 'standard':
             component_proofs[chart.chart_id] = getattr(result, 'standard_render_proofs', ())
         routes.append(
@@ -254,26 +309,19 @@ async def _run_standard_chart_routes(
             json.dumps(diagnostic, ensure_ascii=False, default=str)[:2000] if diagnostic else "-",
         )
 
-    final_context = replace(
-        context,
-        authorized_read_paths=tuple(
-            sorted(
-                {
-                    *context.authorized_read_paths,
-                    *(path for path, _digest in components),
-                }
-            )
-        ),
-    )
     for attempt in range(2):
+        final_context = replace(context, authorized_read_paths=tuple(sorted({
+            *context.authorized_read_paths, *(path for path, _digest in components),
+            *(snapshot[1] for snapshot in snapshots.values()),
+        })))
         try:
-            result = await runner.run_standard_visualization(
+            result = await _observe_route_call(route_state, 'final', [chart.chart_id for chart in plan.charts], runner.run_standard_visualization(
                 final_context,
                 workspace,
-                _composite_source(components, inputs, routes, context.declared_output_paths),
+                _composite_source(components, inputs, routes, context.declared_output_paths, snapshots=snapshots),
                 {**facts, "standardChartRoutes": routes},
-            )
-            # 组合脚本会重画所有组件。只在最终图片仍与真实标准执行逐字节一致时保留证明。
+            ))
+            # 复用和兼容重绘都须与最终新回执逐字节一致，不能沿用组件的视觉回执。
             receipt = getattr(result, 'execution_receipt', None)
             outputs = {item.path: item.sha256 for item in getattr(receipt, 'output_files', ())}
             proofs = tuple(record for chart in plan.charts
@@ -293,9 +341,9 @@ async def _run_standard_chart_routes(
             index = failed[0]
             child, payload = child_tasks[index]
             # The previous signed component exists, so this is a repair request.
-            result = await runner.run(
+            result = await _observe_route_call(route_state, 'component_repair', [plan.charts[index].chart_id], runner.run(
                 child, workspace, payload, run_context=run_context, diagnostic=diagnostic
-            )
+            ))
             identity = result.script_file
             raw, _mime = await workspace.afile_bytes(context.task_id, identity.path)
             if hashlib.sha256(raw).hexdigest() != identity.sha256:
@@ -303,6 +351,10 @@ async def _run_standard_chart_routes(
                     "report_chart_component_identity_changed", "修复组件身份已变化。"
                 ) from error
             components[index] = (identity.path, identity.sha256)
+            snapshot = await _snapshot_component(workspace, context, plan.charts[index], result)
+            snapshots.pop(identity.path, None)
+            if snapshot is not None:
+                snapshots[identity.path] = snapshot
             component_proofs.pop(plan.charts[index].chart_id, None)
             routes[index] = dict(
                 chartId=plan.charts[index].chart_id, route="coding", diagnostic=diagnostic
@@ -310,18 +362,43 @@ async def _run_standard_chart_routes(
     raise AssertionError("Unreachable composite retry")
 
 
-def _composite_source(components, inputs, routes, output_paths):
+async def _snapshot_component(workspace, context, chart, result):
+    """仅将当前真实执行回执指向的图片保存为不可覆盖、带SHA的宿主快照。"""
+    receipt = getattr(result, 'execution_receipt', None)
+    if not isinstance(receipt, ExecutionReceipt):
+        return None  # 旧runner没有结构化回执，仍走原有组件重绘。
+    outputs = [item for item in receipt.output_files if item.path == chart.source_path]
+    if receipt.source_file != result.script_file or len(outputs) != 1:
+        raise ReportingError('report_chart_component_receipt_invalid', '图表组件执行回执身份不一致。')
+    output = outputs[0]
+    raw, _mime = await workspace.afile_bytes(context.task_id, output.path)
+    if len(raw) != output.size or hashlib.sha256(raw).hexdigest() != output.sha256:
+        raise ReportingError('report_chart_component_image_changed', '图表组件图片在执行后发生变化。')
+    path = str(PurePosixPath(result.script_file.path).with_name(
+        f'{PurePosixPath(result.script_file.path).stem}-image-{output.sha256}{PurePosixPath(output.path).suffix}'))
+    try:
+        await workspace.awrite_bytes(context.task_id, path, raw, overwrite=False)
+    except WorkspacePathConflict:
+        existing, _mime = await workspace.afile_bytes(context.task_id, path)
+        if existing != raw:
+            raise ReportingError('report_chart_component_snapshot_changed', '已登记的图表图片快照身份已变化。')
+    return output.path, path, output.sha256
+
+
+def _composite_source(components, inputs, routes, output_paths, *, snapshots=None):
+    snapshots = snapshots or {}
     source = 'import hashlib\nfrom pathlib import Path\nimport matplotlib\nmatplotlib.use("Agg")\nimport matplotlib.pyplot as plt\n'
     # Preflight every dependency before executing any component.
     source += "COMPONENTS = " + repr(components) + "\n"
     source += "CHART_ROUTES = " + repr(routes) + "\n"
     source += "OUTPUT_PATHS = " + repr(tuple(output_paths)) + "\n"
+    source += "SNAPSHOTS = " + repr([(path, digest) for _output, path, digest in snapshots.values()]) + "\n"
     source += (
         "CHART_INPUTS = "
         + repr([(entry["path"], entry["sha256"]) for entry in inputs.entries])
         + "\n"
     )
-    source += """sources = []
+    source += """sources = {}
 for path, digest in CHART_INPUTS:
     if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest:
         raise ValueError("chart input identity changed")
@@ -329,16 +406,29 @@ for path, digest in COMPONENTS:
     raw = Path(path).read_bytes()
     if hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError("chart component identity changed")
-    sources.append((path, raw))
+    sources[path] = raw
+images = {}
+for path, digest in SNAPSHOTS:
+    raw = Path(path).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("chart image snapshot identity changed")
+    images[path] = raw
 for path in OUTPUT_PATHS:
     Path(path).unlink(missing_ok=True)
-# rc_context在每个组件后恢复进入前的项目主题（matplotlibrc及启动引导），
-# 使组件与其单独执行、视觉验收时的状态一致；不能rcdefaults回到库内置默认。
-for path, raw in sources:
-    with plt.rc_context():
-        exec(compile(raw, path, "exec"), {"__name__": "__main__", "__file__": path})
-    plt.close("all")
-for path in OUTPUT_PATHS:
+"""
+    # rc_context在每个组件后恢复项目主题，与组件单独执行、视觉验收时一致。
+    for path, _digest in components:
+        if path in snapshots:
+            output, snapshot, _digest = snapshots[path]
+            source += f'Path({output!r}).write_bytes(images[{snapshot!r}])\n'
+        else:
+            source += f'path = {path!r}\n' + '''\
+raw = sources[path]
+with plt.rc_context():
+    exec(compile(raw, path, "exec"), {"__name__": "__main__", "__file__": path})
+plt.close("all")
+'''
+    source += """for path in OUTPUT_PATHS:
     if not Path(path).is_file():
         raise ValueError("chart component output missing: " + path)
 """
@@ -386,8 +476,10 @@ def _diagnostic(chart_id, diagnostic):
 
 
 async def _run_standard_with_layout_retry(
-    runner, context, workspace, plan, inputs, facts, *, deterministic=False
+    runner, context, workspace, plan, inputs, facts, *, deterministic=False,
+    initial_preflight: StandardVisualizationPreflight | None = None,
 ):
+    """仅复用同次调用、同一计划/输入的预检；扩容候选与产物证明仍重新编译。"""
     current = plan
     route_started = perf_counter()
     attempts = []
@@ -399,10 +491,14 @@ async def _run_standard_with_layout_retry(
         result = None
         attempt_error = None
         try:
-            try:
-                preflight = standard_visualization_preflight(current, inputs)
-            finally:
-                compile_ms = max(0, round((perf_counter() - compile_started) * 1000))
+            if attempt == 0 and initial_preflight is not None:
+                # 同次路由刚完成的预检；耗时由外层登记，不重复编译或累计。
+                preflight = initial_preflight
+            else:
+                try:
+                    preflight = standard_visualization_preflight(current, inputs)
+                finally:
+                    compile_ms = max(0, round((perf_counter() - compile_started) * 1000))
             if preflight.source is None:
                 raise ReportingError(
                     "report_standard_layout_retry_invalid",
@@ -450,9 +546,7 @@ async def _run_standard_with_layout_retry(
                 for name, elapsed in observation.get("stageTimings", {}).items():
                     timings[name] = timings.get(name, 0) + elapsed
                 observed_spans = observation.get("executionSpans")
-                if isinstance(observed_spans, dict):
-                    for name, values in observed_spans.items():
-                        spans.setdefault(name, []).extend(values)
+                _merge_execution_spans(spans, observed_spans)
             result = _with_standard_proofs(result, current, inputs)
             updates = dict(execution_attempts=tuple(attempts), route_total_ms=route_total,
                            stage_timings=timings, execution_spans=spans or None)

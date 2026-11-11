@@ -1,28 +1,28 @@
-.editor-format-xlsx .report-outline,.editor-format-xlsx .report-meta,.editor-format-xlsx .focus-mode-exit{display:none}.editor-format-xlsx .report-workspace{display:block}.editor-format-xlsx .editor-surface{max-width:none;padding:0}.editor-format-xlsx #report-editor{height:calc(100vh - 76px);padding:0;display:flex;flex-direction:column;max-width:none}.workbook-ai{padding:12px 20px;border-bottom:1px solid #e3e5ea;background:#fff}.workbook-ai form{display:flex;align-items:center;gap:12px}.workbook-ai label{font-weight:600;color:#48546a;white-space:nowrap}.workbook-ai textarea{flex:1;resize:vertical;border:1px solid #d7dce4;border-radius:6px;padding:8px;font:inherit}.workbook-ai button{border:1px solid #d7dce4;border-radius:6px;padding:8px 12px;background:#fff;cursor:pointer}.workbook-ai button:disabled{opacity:.5;cursor:default}.workbook-feedback{font-size:13px;color:#68738a;padding-top:6px}.workbook-candidate{max-height:220px;overflow:auto;padding:10px;background:#f6f8fc;border-radius:6px}.workbook-candidate pre{font-size:12px;white-space:pre-wrap}.workbook-grid{flex:1;min-height:360px;position:relative}.workbook-grid .univer-textarea{font-family:inherit}@media(max-width:720px){.workbook-ai form{flex-wrap:wrap}.workbook-ai textarea{min-width:70%}}
+.editor-format-xlsx .report-outline,.editor-format-xlsx .report-meta,.editor-format-xlsx .focus-mode-exit{display:none}.editor-format-xlsx .report-workspace{display:block}.editor-format-xlsx .editor-surface{max-width:none;padding:0}.editor-format-xlsx #report-editor{min-height:0;padding:0;display:flex;flex-direction:column;max-width:none}.workbook-ai{padding:12px 20px;border-bottom:1px solid var(--office-border);background:var(--office-chrome)}.workbook-ai form{display:flex;align-items:center;gap:12px}.workbook-ai label{font-weight:600;color:var(--office-ink-2);white-space:nowrap}.workbook-ai textarea{flex:1;resize:vertical;border:1px solid var(--office-border-strong);border-radius:6px;padding:8px;font:inherit}.workbook-ai button{border:1px solid var(--office-border-strong);border-radius:6px;padding:8px 12px;background:var(--office-chrome);cursor:pointer}.workbook-ai button:disabled{opacity:.5;cursor:default}.workbook-feedback{font-size:13px;color:var(--office-muted);padding-top:6px}.workbook-candidate{max-height:220px;overflow:auto;padding:10px;background:var(--office-tabbar);border-radius:6px}.workbook-candidate pre{font-size:12px;white-space:pre-wrap}.workbook-grid{flex:1;min-height:0;position:relative}.workbook-grid .univer-textarea{font-family:inherit}@media(max-width:720px){.workbook-ai form{flex-wrap:wrap}.workbook-ai textarea{min-width:70%}}
 .workbook-actions{display:flex;gap:8px;padding-top:8px}
 .editor-format-xlsx .workbook-ribbon-host { flex:0 0 auto; min-width:0; max-width:100%; }
 .workbook-ribbon { min-width:0; max-width:100%; background:var(--color-surface); border-bottom:1px solid var(--color-border); color:var(--color-ink); font-family:inherit; font-size:var(--font-size-md); line-height:1.4; }
-.workbook-ribbon-tabs { display:flex; align-items:stretch; gap:2px; min-height:40px; overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--color-bg-soft); padding:4px 12px 0; scrollbar-width:thin; }
-.workbook-ribbon-tabs button { flex:0 0 auto; min-height:36px; padding:0 14px; border:0; border-bottom:2px solid transparent; border-radius:var(--radius-sm) var(--radius-sm) 0 0; background:transparent; color:var(--color-text-muted); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
-.workbook-ribbon-tabs button:hover { background:var(--color-primary-soft); color:var(--color-primary); }
-.workbook-ribbon-tabs button[aria-selected="true"] { border-bottom-color:var(--color-primary); background:var(--color-surface); color:var(--color-primary); font-weight:600; }
-.workbook-ribbon-body { display:flex; align-items:stretch; min-width:0; min-height:110px; gap:0; overflow-x:auto; padding:10px 12px 6px; box-sizing:border-box; scrollbar-width:thin; scrollbar-color:var(--color-border-strong) transparent; }
-.workbook-ribbon-group { display:grid; flex:0 0 auto; grid-template-rows:repeat(3,32px); grid-auto-flow:column; grid-auto-columns:max-content; align-items:center; gap:4px; width:max-content; border-right:1px solid var(--color-border-soft); padding:0 12px 22px; position:relative; }
+.workbook-ribbon-tabs { display:flex; align-items:stretch; gap:2px; min-height:var(--office-tabbar-height); overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--office-tabbar); padding:3px 12px 0; scrollbar-width:thin; }
+.workbook-ribbon-tabs button { flex:0 0 auto; min-height:var(--office-tab-height); padding:0 14px; border:0; border-bottom:2px solid transparent; border-radius:var(--radius-sm) var(--radius-sm) 0 0; background:transparent; color:var(--color-text-muted); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
+.workbook-ribbon-tabs button:hover { background:var(--office-accent-soft); color:var(--office-accent); }
+.workbook-ribbon-tabs button[aria-selected="true"] { border-bottom-color:var(--office-accent); background:var(--office-chrome); color:var(--office-accent); font-weight:600; }
+.workbook-ribbon-body { display:flex; align-items:stretch; min-width:0; min-height:var(--office-body-height); gap:0; overflow-x:auto; padding:6px 12px; box-sizing:border-box; scrollbar-width:thin; scrollbar-color:var(--color-border-strong) transparent; }
+.workbook-ribbon-group { display:grid; flex:0 0 auto; grid-template-rows:repeat(3,var(--office-control-height)); grid-auto-flow:column; grid-auto-columns:max-content; align-items:center; gap:4px; width:max-content; border-right:1px solid var(--office-separator); padding:0 12px 22px; position:relative; }
 .workbook-ribbon-group .workbook-ribbon-number-format { max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .workbook-ribbon-group:first-child { padding-left:0; }
 .workbook-ribbon-group:last-child { border-right:0; }
 .workbook-ribbon-group h3 { position:absolute; bottom:0; left:12px; right:12px; margin:0; color:var(--color-text-muted); font-size:var(--font-size-xs); font-weight:500; text-align:center; }
-.workbook-ribbon-group button { display:inline-flex; flex:0 0 auto; align-items:center; justify-content:center; gap:4px; min-height:32px; padding:4px 8px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
-.workbook-ribbon-group button:hover:not(:disabled) { background:var(--color-primary-soft); border-color:var(--color-select-border); color:var(--color-primary); }
-.workbook-ribbon-group button[aria-pressed="true"] { background:var(--color-primary-soft); border-color:var(--color-select-border); color:var(--color-primary); }
+.workbook-ribbon-group button { display:inline-flex; flex:0 0 auto; align-items:center; justify-content:center; gap:4px; min-height:var(--office-control-height); padding:4px 8px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
+.workbook-ribbon-group button:hover:not(:disabled) { background:var(--office-hover-bg); border-color:var(--office-hover-border); }
+.workbook-ribbon-group button:is([aria-pressed="true"],[aria-expanded="true"]) { background:var(--office-pressed-bg); border-color:var(--office-pressed-border); color:var(--office-pressed-ink); }
 .workbook-ribbon-group button[aria-pressed="mixed"] { background:var(--color-bg-soft); border-color:var(--color-border-strong); border-style:dashed; }
-.workbook-ribbon :is(button,input,select):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
-.workbook-ribbon-group button:disabled { opacity:1; color:var(--color-text-muted); background:var(--color-bg-soft); cursor:not-allowed; }
-.workbook-ribbon-select { width:136px; height:32px; box-sizing:border-box; padding:4px 8px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.workbook-ribbon :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:2px; }
+.workbook-ribbon-group button:disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+.workbook-ribbon-select { width:136px; height:var(--office-control-height); box-sizing:border-box; padding:4px 8px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
 .workbook-ribbon-size { width:64px; }
-.workbook-ribbon-select:disabled { background:var(--color-bg-soft); color:var(--color-text-muted); border-color:var(--color-border-soft); }
-.workbook-ribbon-color { display:inline-flex; align-items:center; justify-content:center; gap:4px; min-width:32px; height:32px; box-sizing:border-box; padding:4px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); }
-.workbook-ribbon-color input { width:22px; height:22px; padding:0; border:0; background:transparent; cursor:pointer; }
+.workbook-ribbon-select:disabled { opacity:var(--office-disabled-opacity); border-color:var(--office-border-soft); cursor:not-allowed; }
+.workbook-ribbon-color { display:inline-flex; justify-self:start; align-items:center; justify-content:center; gap:4px; min-width:32px; height:var(--office-control-height); box-sizing:border-box; padding:2px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); }
+.workbook-ribbon-color input { width:20px; height:20px; min-height:0; flex:none; padding:0; border:0; background:transparent; cursor:pointer; }
 .workbook-ribbon-color:has(input:disabled) { background:var(--color-bg-soft); }
 .workbook-ribbon-color[data-mixed="true"] { border-style:dashed; }
 .workbook-ribbon-group button .workbook-ribbon-icon { display:inline-grid; width:18px; height:18px; place-items:center; flex:0 0 18px; }
@@ -59,4 +59,18 @@
   .workbook-ribbon-tabs { padding-inline:8px; }
   .workbook-ribbon-tabs button { min-height:40px; padding-inline:12px; }
   .workbook-ribbon-body { padding-inline:8px; }
+}
+
+.workbook-native-ai { margin-bottom: 8px; border: 1px solid #d8dee8; padding: 8px; }
+.workbook-native-ai button { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; }
+.workbook-native-ai [hidden] { display: none; }
+.workbook-native-ai .native-ai-preview { max-height: 220px; overflow: auto; }
+
+.workbook-ai > form[hidden] { display: none; }
+
+@media screen {
+  .editor-format-xlsx .workbook-grid-frame { display:grid; flex:1; min-width:0; min-height:0; }
+  .editor-format-xlsx .workbook-ai { flex:none; max-height:30dvh; overflow:auto; padding:8px 12px; }
+  .editor-format-xlsx .workbook-ai:has(form[hidden]) { padding:0 12px; }
+  .editor-format-xlsx .workbook-ai:has(form[hidden]) .workbook-feedback { padding:4px 0; font-size:var(--office-label-size); }
 }

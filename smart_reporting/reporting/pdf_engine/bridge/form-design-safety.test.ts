@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict'
+import {test} from 'node:test'
+import {readFile} from 'node:fs/promises'
+import {createHash} from 'node:crypto'
+import {PDFDocument,PDFDict,PDFArray,PDFName,PDFString,degrees} from 'pdf-lib'
+import {applyFormFields} from '../src/main/save-pdf'
+import {createDesignField,formDesignCreateAvailability} from './form-design-create'
+import {inspectDesignWidgets} from './form-design'
+import {editDesignWidget,arrangeDesignWidgets} from './form-design-properties'
+import {FORM_ARRANGEMENTS,pdfRectToCss} from './form-design-layout'
+const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex'),fixture=()=>readFile(new URL('./fixtures/form-design-create-reportlab.pdf',import.meta.url))
+const target=(w:any)=>({fieldName:w.fieldName,widgetId:w.widgetId,widgetIdentity:w.widgetIdentity,expectedWidgetSha256:w.expectedWidgetSha256})
+function create(bytes:Uint8Array,kind='text',extra:Record<string,unknown>={}){return {kind:'createFormField',sourceSha256:hash(bytes),pageId:'sha256:'+hash(bytes)+':page:0',fieldName:'customer',fieldKind:kind,rect:[30,180,150,204],required:true,...extra} as any}
+test('safe hierarchy with multiple widgets edits exact child without widening legacy deletion',async()=>{
+ const d=await PDFDocument.load(await fixture()),field=d.getForm().createTextField('customer');const parent=d.context.register(d.context.obj({T:PDFString.of('party'),Kids:[field.ref]}));field.acroField.dict.set(PDFName.of('Parent'),parent);d.getForm().acroForm.dict.set(PDFName.of('Fields'),d.context.obj([parent]));field.addToPage(d.getPage(0),{x:30,y:180,width:120,height:24});field.addToPage(d.getPage(1),{x:30,y:180,width:120,height:24});field.setText('Alice');const bytes=await d.save(),widgets=(await inspectDesignWidgets(bytes)).widgets;assert.equal(widgets.length,2);assert.ok(widgets.every(w=>w.designEditable&&!w.removable));assert.equal((await formDesignCreateAvailability(bytes)).createFormField,true)
+ const result=await editDesignWidget(bytes,hash(bytes),{kind:'editFormWidget',sourceSha256:hash(bytes),...target(widgets[0]),rect:[50,160,170,184],required:true});assert.deepEqual(result.skippedOperations,[]);const after=(await inspectDesignWidgets(result.bytes)).widgets;assert.deepEqual(after[1].rect,widgets[1].rect);assert.equal((await PDFDocument.load(result.bytes)).getForm().getTextField('party.customer').getText(),'Alice')
+})
+test('malicious date scripts XFA blank signatures and cyclic field trees remain specifically unavailable',async()=>{
+ const bytes=await fixture(),date=await createDesignField(bytes,hash(bytes),create(bytes,'date',{dateFormat:'yyyy-mm-dd'})),d=await PDFDocument.load(date.bytes),aa=d.getForm().getTextField('customer').acroField.dict.lookup(PDFName.of('AA'),PDFDict);aa.lookup(PDFName.of('F'),PDFDict).set(PDFName.of('JS'),PDFString.of('AFDate_FormatEx("yyyy-mm-dd");app.alert(1)'));const malicious=await d.save();assert.equal((await formDesignCreateAvailability(malicious)).createFormField,false)
+ for(const mode of ['xfa','signature','cycle']){const d=await PDFDocument.load(bytes);if(mode==='xfa')d.getForm().acroForm.dict.set(PDFName.of('XFA'),d.context.obj([]));if(mode==='signature')applyFormFields(d,[{name:'signature',kind:'signature',pageIndex:0,rect:[30,180,150,224]}]);if(mode==='cycle'){const dict=d.context.obj({T:PDFString.of('cycle'),Kids:[]}),ref=d.context.register(dict);dict.set(PDFName.of('Kids'),d.context.obj([ref]));dict.set(PDFName.of('Parent'),ref);d.getForm().acroForm.dict.set(PDFName.of('Fields'),d.context.obj([ref]))}const content=await d.save({updateFieldAppearances:false}),availability=await formDesignCreateAvailability(content);assert.equal(availability.createFormField,false);assert.match(availability.createFormFieldReason!,mode==='xfa'?/XFA/:mode==='signature'?/签名/:/层级/)}
+})
+test('all eleven arrangements preserve appearances and source values at every right angle',async()=>{
+ for(const angle of [0,90,180,270]){const d=await PDFDocument.load(await fixture());d.getPage(0).setRotation(degrees(angle));d.getPage(0).setCropBox(10,10,280,380);applyFormFields(d,[{name:'a',kind:'text',pageIndex:0,rect:[30,230,130,254],value:'Alice'},{name:'b',kind:'text',pageIndex:0,rect:[80,160,200,190],value:'Bob'},{name:'c',kind:'checkbox',pageIndex:0,rect:[180,80,200,100],checked:true}]);const bytes=await d.save(),widgets=(await inspectDesignWidgets(bytes)).widgets
+  for(const alignment of FORM_ARRANGEMENTS){const op={kind:'arrangeFormWidgets' as const,sourceSha256:hash(bytes),targets:widgets.map(target),alignment},result=await arrangeDesignWidgets(bytes,hash(bytes),op);assert.deepEqual(result.skippedOperations,[],angle+' '+alignment);const out=await PDFDocument.load(result.bytes);assert.equal(out.getForm().getTextField('a').getText(),'Alice');assert.equal(out.getForm().getTextField('b').getText(),'Bob');assert.equal(out.getForm().getCheckBox('c').isChecked(),true);const after=(await inspectDesignWidgets(result.bytes)).widgets;if(alignment==='left'){const lefts=after.map(w=>pdfRectToCss({pw:280,ph:380,rot:angle,x0:10,y0:10},w.rect,1).left);assert.equal(new Set(lefts).size,1);assert.equal((await arrangeDesignWidgets(bytes,hash(bytes),op)).previewDigest,result.previewDigest)}}
+ }
+})
+test('new property schemas refuse null geometry unknown keys stale identities and page groups with too few targets',async()=>{
+ const bytes=await fixture(),first=await createDesignField(bytes,hash(bytes),create(bytes)),w=(await inspectDesignWidgets(first.bytes)).widgets[0],base={kind:'editFormWidget' as const,sourceSha256:hash(first.bytes),...target(w),required:false}
+ for(const extra of [{rect:null},{unexpected:true},{widgetId:'999R'},{fieldName:'other'},{widgetIdentity:'0'.repeat(64)},{expectedWidgetSha256:'0'.repeat(64)}])await assert.rejects(editDesignWidget(first.bytes,hash(first.bytes),{...base,...extra} as any))
+ const second=await createDesignField(first.bytes,hash(first.bytes),create(first.bytes,'text',{fieldName:'other',pageId:'sha256:'+hash(first.bytes)+':page:1'})),widgets=(await inspectDesignWidgets(second.bytes)).widgets;await assert.rejects(arrangeDesignWidgets(second.bytes,hash(second.bytes),{kind:'arrangeFormWidgets',sourceSha256:hash(second.bytes),targets:widgets.map(target),alignment:'left'}),/每页/)
+})

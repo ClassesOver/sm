@@ -1,0 +1,392 @@
+{
+  "L1": {
+    "binding": {
+      "analysisId": "synthetic",
+      "dataPath": "rows",
+      "factPath": "facts.json",
+      "fields": [
+        "label",
+        "value"
+      ],
+      "role": "合成冻结数据"
+    },
+    "document": {
+      "columnMeta": {
+        "value": {
+          "unit": "人次"
+        }
+      },
+      "columns": [
+        "label",
+        "value"
+      ],
+      "rows": [
+        [
+          "合成机构超长中文分类标签用于验证画布边缘完整显示",
+          -12
+        ]
+      ]
+    },
+    "pixels": [
+      600,
+      450
+    ],
+    "request": {
+      "allowedDatasetIds": [
+        "synthetic"
+      ],
+      "bindingContract": "逐字复用给定dataBindings、citationIds、metricCodes、数据集和期间；原始数值、类别、缺失均保持不变。",
+      "businessRequest": "完整展示一类人次净变化的横向柱图。保留负数和完整中文类别，9pt分类字号，绘图区至少300×200px；不得截断、删行、缩字号或扩大图片。仅一图，固定4×3英寸、150dpi、canvas裁切、9pt分类字号。期间2025-01，分类粒度category，不比较其他期间。",
+      "requiredCharts": [
+        {
+          "chartId": "synthetic",
+          "sourcePath": "chart.png"
+        }
+      ],
+      "standardChartCapabilities": {
+        "families": {
+          "composition": {
+            "denominatorModes": [
+              "bound_sum",
+              "reference"
+            ],
+            "forms": [
+              "pie",
+              "donut"
+            ]
+          },
+          "funnel": {
+            "order": [
+              "source",
+              "explicit"
+            ],
+            "ratioBases": [
+              "none",
+              "first",
+              "previous"
+            ]
+          },
+          "radar": {
+            "axes": [
+              3,
+              8
+            ],
+            "maxEntities": 8,
+            "scaleEndpoints": "frozen_scalar"
+          },
+          "sankey": {
+            "encodingFields": [
+              "xField",
+              "yField",
+              "valueField"
+            ],
+            "maxEdges": 480,
+            "maxNodes": 60,
+            "topology": "DAG"
+          }
+        },
+        "familyAxesOverrides": [
+          "leftDisplayUnit"
+        ],
+        "forms": [
+          "line",
+          "bar",
+          "barh",
+          "stacked-bar",
+          "stacked-area",
+          "stacked-total",
+          "summary-bars",
+          "scatter",
+          "bubble",
+          "heatmap",
+          "waterfall",
+          "boxplot",
+          "pie",
+          "donut",
+          "radar",
+          "funnel",
+          "sankey",
+          "custom"
+        ],
+        "ordering": {
+          "invalidValues": [
+            "NaN",
+            "Inf",
+            "bool"
+          ],
+          "max_abs": {
+            "excludeMissing": "explicit_only",
+            "fields": "same_unit_frozen_numeric_columns"
+          },
+          "missingDefault": "reject",
+          "value": {
+            "excludeMissing": "explicit_only",
+            "field": "frozen_numeric_column"
+          }
+        },
+        "sourceLabelModes": [
+          "exact",
+          "month",
+          "month_of_year"
+        ],
+        "summaryAggregations": [
+          "row",
+          "sum"
+        ]
+      },
+      "visualizationFacts": [
+        {
+          "aggregationGrain": "category",
+          "analysisId": "synthetic",
+          "citationIds": [
+            "synthetic"
+          ],
+          "currentPeriod": "2025-01",
+          "dataBindings": [
+            {
+              "analysisId": "synthetic",
+              "dataPath": "rows",
+              "factPath": "facts.json",
+              "fields": [
+                "label",
+                "value"
+              ],
+              "role": "合成冻结数据"
+            }
+          ],
+          "document": {
+            "columnMeta": {
+              "value": {
+                "unit": "人次"
+              }
+            },
+            "columns": [
+              "label",
+              "value"
+            ],
+            "rows": [
+              [
+                "合成机构超长中文分类标签用于验证画布边缘完整显示",
+                -12
+              ]
+            ]
+          },
+          "metricCodes": [
+            "synthetic"
+          ],
+          "sourceDatasetId": "synthetic"
+        }
+      ],
+      "visualizationWorkspace": {
+        "chartOutputRoot": "."
+      }
+    },
+    "values": [
+      -12
+    ]
+  },
+  "U1": {
+    "binding": {
+      "analysisId": "synthetic",
+      "dataPath": "rows",
+      "factPath": "facts.json",
+      "fields": [
+        "label",
+        "value"
+      ],
+      "role": "合成冻结数据"
+    },
+    "document": {
+      "columnMeta": {
+        "value": {
+          "unit": "人次"
+        }
+      },
+      "columns": [
+        "label",
+        "value"
+      ],
+      "rows": [
+        [
+          "普通门诊",
+          12
+        ],
+        [
+          "合成缺失类别",
+          null
+        ],
+        [
+          "特需门诊",
+          -3
+        ]
+      ]
+    },
+    "pixels": [
+      900,
+      600
+    ],
+    "request": {
+      "allowedDatasetIds": [
+        "synthetic"
+      ],
+      "bindingContract": "逐字复用给定dataBindings、citationIds、metricCodes、数据集和期间；原始数值、类别、缺失均保持不变。",
+      "businessRequest": "逐类横向柱图展示门诊量，保留缺失空位并给出中文缺失说明。value的已确认业务显示名是门诊量；以普通门诊的冻结值画参考线，已确认简称为基准门诊量。所有读者可见文案使用这些中文含义，不能自填参考数值。仅一图，固定6×4英寸、150dpi、canvas裁切、9pt分类字号。期间2025-01，分类粒度category，不比较其他期间。",
+      "requiredCharts": [
+        {
+          "chartId": "synthetic",
+          "sourcePath": "chart.png"
+        }
+      ],
+      "standardChartCapabilities": {
+        "families": {
+          "composition": {
+            "denominatorModes": [
+              "bound_sum",
+              "reference"
+            ],
+            "forms": [
+              "pie",
+              "donut"
+            ]
+          },
+          "funnel": {
+            "order": [
+              "source",
+              "explicit"
+            ],
+            "ratioBases": [
+              "none",
+              "first",
+              "previous"
+            ]
+          },
+          "radar": {
+            "axes": [
+              3,
+              8
+            ],
+            "maxEntities": 8,
+            "scaleEndpoints": "frozen_scalar"
+          },
+          "sankey": {
+            "encodingFields": [
+              "xField",
+              "yField",
+              "valueField"
+            ],
+            "maxEdges": 480,
+            "maxNodes": 60,
+            "topology": "DAG"
+          }
+        },
+        "familyAxesOverrides": [
+          "leftDisplayUnit"
+        ],
+        "forms": [
+          "line",
+          "bar",
+          "barh",
+          "stacked-bar",
+          "stacked-area",
+          "stacked-total",
+          "summary-bars",
+          "scatter",
+          "bubble",
+          "heatmap",
+          "waterfall",
+          "boxplot",
+          "pie",
+          "donut",
+          "radar",
+          "funnel",
+          "sankey",
+          "custom"
+        ],
+        "ordering": {
+          "invalidValues": [
+            "NaN",
+            "Inf",
+            "bool"
+          ],
+          "max_abs": {
+            "excludeMissing": "explicit_only",
+            "fields": "same_unit_frozen_numeric_columns"
+          },
+          "missingDefault": "reject",
+          "value": {
+            "excludeMissing": "explicit_only",
+            "field": "frozen_numeric_column"
+          }
+        },
+        "sourceLabelModes": [
+          "exact",
+          "month",
+          "month_of_year"
+        ],
+        "summaryAggregations": [
+          "row",
+          "sum"
+        ]
+      },
+      "visualizationFacts": [
+        {
+          "aggregationGrain": "category",
+          "analysisId": "synthetic",
+          "citationIds": [
+            "synthetic"
+          ],
+          "currentPeriod": "2025-01",
+          "dataBindings": [
+            {
+              "analysisId": "synthetic",
+              "dataPath": "rows",
+              "factPath": "facts.json",
+              "fields": [
+                "label",
+                "value"
+              ],
+              "role": "合成冻结数据"
+            }
+          ],
+          "document": {
+            "columnMeta": {
+              "value": {
+                "unit": "人次"
+              }
+            },
+            "columns": [
+              "label",
+              "value"
+            ],
+            "rows": [
+              [
+                "普通门诊",
+                12
+              ],
+              [
+                "合成缺失类别",
+                null
+              ],
+              [
+                "特需门诊",
+                -3
+              ]
+            ]
+          },
+          "metricCodes": [
+            "synthetic"
+          ],
+          "sourceDatasetId": "synthetic"
+        }
+      ],
+      "visualizationWorkspace": {
+        "chartOutputRoot": "."
+      }
+    },
+    "values": [
+      12,
+      null,
+      -3
+    ]
+  }
+}

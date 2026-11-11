@@ -1,0 +1,12 @@
+.office-task-workspace{display:flex;flex:1;min-width:0;min-height:0;position:relative;overflow:hidden;width:100%}
+.office-task-workspace>.office-task-main{flex:1;min-width:0;min-height:0;width:auto}
+.office-task-dock{position:relative;box-sizing:border-box;flex:0 0 var(--office-task-width,360px);width:var(--office-task-width,360px);min-width:0;min-height:0;overflow:auto;border-left:1px solid var(--office-border,#dbe3ef);background:var(--office-chrome,#fff);color:var(--office-ink,#172033);font:12px/1.5 sans-serif}
+.office-task-dock[hidden]{display:none!important}
+.office-task-dock>header{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;min-height:32px;border-bottom:1px solid var(--office-border)}
+.office-task-dock>nav{display:flex;gap:4px;padding:8px}
+.office-task-dock>header button,.office-task-dock>nav button{display:inline-flex;align-items:center;justify-content:center;min-height:30px;padding:4px 8px;background:var(--office-chrome,#fff);border:1px solid var(--office-border,#dbe3ef);border-radius:4px;color:inherit;cursor:pointer}
+.office-task-dock>nav button[aria-pressed=true]{background:var(--office-accent-soft,#eaf1ff);color:var(--office-accent,#245ecc)}
+.office-task-dock>.native-ai,.office-task-dock>.native-ai-panel,.office-task-dock>.workbook-native-ai{box-sizing:border-box;max-height:none;min-width:0;width:100%;padding:10px;border:0;overflow:visible}
+.office-task-dock form{display:block}.office-task-dock textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical}.office-task-dock pre{white-space:pre-wrap;overflow-wrap:anywhere}.office-task-dock .native-ai-preview{overflow-wrap:anywhere}
+.office-task-divider{position:absolute;top:0;bottom:0;left:0;width:5px;cursor:ew-resize;touch-action:none;z-index:3}.office-task-divider:focus-visible{outline:2px solid var(--office-accent,#245ecc)}
+@media(max-width:900px){.office-task-dock{position:absolute;top:0;bottom:0;right:0;width:min(var(--office-task-width,360px),92%);max-width:92%;z-index:30;box-shadow:-5px 0 24px #0002}.office-task-divider{display:none}}

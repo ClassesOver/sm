@@ -2,39 +2,44 @@
 .docx-native .docx-tools { min-width:0; padding:0; background:var(--color-surface); border-bottom:1px solid var(--color-border); }
 /* Interface tokens stay inside the ribbon; source document styles are untouched. */
 .docx-native .docx-ribbon { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); min-width:0; max-width:100%; overflow:visible; background:var(--color-surface); color:var(--color-ink); font-family:inherit; font-size:var(--font-size-md); line-height:1.4; }
-.docx-native .docx-ribbon .ribbon-tabs { -webkit-app-region:no-drag; display:flex; align-items:stretch; min-width:0; min-height:40px; margin:0; padding:4px 12px 0; overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--color-bg-soft); scrollbar-width:thin; }
-.docx-native .docx-ribbon .ribbon-tab { position:relative; flex:0 0 auto; min-height:36px; border:0; border-radius:var(--radius-sm) var(--radius-sm) 0 0; padding:0 14px; background:transparent; color:var(--color-text-muted); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
-.docx-native .docx-ribbon .ribbon-tab:hover:not(:disabled) { background:var(--color-primary-soft); color:var(--color-primary); }
-.docx-native .docx-ribbon .ribbon-tab.active { background:var(--color-surface); color:var(--color-primary); font-weight:600; }
-.docx-native .docx-ribbon .ribbon-tab.active::after { position:absolute; right:12px; bottom:0; left:12px; height:2px; background:var(--color-primary); content:""; }
-.docx-native .docx-ribbon .ribbon-body { height:auto; min-height:112px; max-height:none; padding:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; scrollbar-color:var(--color-border-strong) transparent; }
-.docx-native .docx-ribbon .ribbon-content { display:flex; align-items:stretch; width:max-content; min-width:100%; min-height:110px; padding:10px 12px 6px; box-sizing:border-box; }
-.docx-native .docx-ribbon .ribbon-group { display:flex; flex:0 0 auto; flex-direction:column; align-items:stretch; justify-content:space-between; min-width:64px; gap:6px; margin:0; padding:0 12px; border-right:1px solid var(--color-border-soft); }
+.docx-native .docx-ribbon .ribbon-tabs { -webkit-app-region:no-drag; display:flex; align-items:stretch; min-width:0; min-height:var(--office-tabbar-height); margin:0; padding:3px 12px 0; overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--office-tabbar); scrollbar-width:thin; }
+.docx-native .docx-ribbon .ribbon-tab { position:relative; flex:0 0 auto; min-height:var(--office-tab-height); border:0; border-radius:var(--radius-sm) var(--radius-sm) 0 0; padding:0 14px; background:transparent; color:var(--color-text-muted); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
+.docx-native .docx-ribbon .ribbon-tab:hover:not(:disabled) { background:var(--office-accent-soft); color:var(--office-accent); }
+.docx-native .docx-ribbon .ribbon-tab.active { background:var(--office-chrome); color:var(--office-accent); font-weight:600; }
+.docx-native .docx-ribbon .ribbon-tab.active::after { position:absolute; right:12px; bottom:0; left:12px; height:2px; background:var(--office-accent); content:""; }
+.docx-native .docx-ribbon .ribbon-body { height:auto; min-height:var(--office-body-height); max-height:none; padding:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; scrollbar-color:var(--color-border-strong) transparent; }
+.docx-native .docx-ribbon .ribbon-content { display:flex; align-items:stretch; width:max-content; min-width:100%; min-height:var(--office-body-height); padding:6px 12px; box-sizing:border-box; }
+.docx-native .docx-ribbon .ribbon-group { display:flex; flex:0 0 auto; flex-direction:column; align-items:stretch; justify-content:space-between; min-width:64px; gap:6px; margin:0; padding:0 12px; border-right:1px solid var(--office-separator); }
 .docx-native .docx-ribbon .ribbon-group:first-child { padding-left:0; }
 .docx-native .docx-ribbon .ribbon-group:last-child { border-right:0; }
 .docx-native .docx-ribbon .ribbon-group-items { display:flex; flex-wrap:wrap; align-content:flex-start; align-items:center; justify-content:flex-start; gap:4px; }
-.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) { flex-direction:column; align-items:flex-start; flex-wrap:nowrap; }
-.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) > .rb-row { flex-wrap:wrap; max-width:360px; }
-.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) > .rb-split-wrap { align-self:flex-end; }
+.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) { display:grid; grid-template-columns:max-content auto auto; align-items:center; justify-content:start; }
+.docx-native .docx-ribbon .ribbon-group-items > .rb-row { grid-column:1 / -1; }
+.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) > .rb-row { flex-wrap:nowrap; max-width:none; }
+.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) > .rb-split-wrap { justify-self:start; }
 .docx-native .docx-ribbon .ribbon-group { position:relative; }
 .docx-native .docx-ribbon .ribbon-group-label { display:block; padding-top:2px; color:var(--color-text-muted); font-size:var(--font-size-xs); font-weight:500; text-align:center; }
 .docx-native .docx-ribbon .ribbon-sep { display:none; }
 .docx-native .docx-ribbon .rb-row { display:flex; align-items:center; gap:4px; }
-.docx-native .docx-ribbon .rb-icon { display:inline-flex; flex:0 0 auto; width:32px; height:32px; align-items:center; justify-content:center; gap:2px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
+.docx-native .docx-ribbon .rb-icon { display:inline-flex; flex:0 0 auto; width:var(--office-control-height); height:var(--office-control-height); align-items:center; justify-content:center; gap:2px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
 .docx-native .docx-ribbon .rb-icon svg { flex-shrink:0; max-width:24px; max-height:24px; }
+.docx-native .docx-ribbon .docx-source-command { width:auto; min-width:var(--office-control-height); padding-inline:6px; white-space:nowrap; }
+.docx-native .docx-source-home .ribbon-group-items:has(> [data-action="convert-pdf"]) { display:grid; grid-template-rows:repeat(2,var(--office-control-height)); grid-auto-flow:column; grid-auto-columns:max-content; }
+.docx-native .docx-source-home .ribbon-group-items:has(> [data-action="find"]) { display:flex; flex-direction:column; align-items:stretch; flex-wrap:nowrap; }
+.docx-native .docx-source-home .ribbon-group-items > [data-action="select"] { min-height:var(--office-control-height); padding:0 6px; color:var(--office-ink-2); }
 .docx-native .docx-ribbon .rb-icon:hover:not(:disabled),
-.docx-native .docx-ribbon .rb-big:hover:not(:disabled) { border-color:var(--color-select-border); background:var(--color-primary-soft); color:var(--color-primary); }
+.docx-native .docx-ribbon .rb-big:hover:not(:disabled) { border-color:var(--office-hover-border); background:var(--office-hover-bg); }
 .docx-native .docx-ribbon .rb-icon.active,
-.docx-native .docx-ribbon button[aria-pressed="true"] { border-color:var(--color-select-border); background:var(--color-primary-soft); color:var(--color-primary); }
-.docx-native .docx-ribbon :disabled { opacity:1; color:var(--color-text-muted); cursor:not-allowed; }
-.docx-native .docx-ribbon button:disabled { background:var(--color-bg-soft); border-color:transparent; }
-.docx-native .docx-ribbon :is(button,input,select):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
-.docx-native .docx-ribbon :is(.rb-select,.layout-num input,.layout-num select) { height:32px; box-sizing:border-box; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); padding:4px 8px; background:var(--color-surface); color:var(--color-ink); font:inherit; }
-.docx-native .docx-ribbon :is(input,select):disabled { background:var(--color-bg-soft); border-color:var(--color-border-soft); }
+.docx-native .docx-ribbon button:is([aria-pressed="true"],[aria-expanded="true"]) { border-color:var(--office-pressed-border); background:var(--office-pressed-bg); color:var(--office-pressed-ink); }
+.docx-native .docx-ribbon :disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+.docx-native .docx-ribbon button:disabled { background:transparent; border-color:transparent; }
+.docx-native .docx-ribbon :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:2px; }
+.docx-native .docx-ribbon :is(.rb-select,.layout-num input,.layout-num select) { height:var(--office-control-height); box-sizing:border-box; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); padding:4px 8px; background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.docx-native .docx-ribbon :is(input,select):disabled { border-color:var(--office-border-soft); }
 .docx-native .docx-ribbon .rb-font-family { width:136px; }
 .docx-native .docx-ribbon .rb-font-size { width:62px; }
-.docx-native .docx-ribbon .rb-color-input { width:32px; height:32px; padding:4px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); cursor:pointer; }
-.docx-native .docx-ribbon .rb-big { display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-height:58px; gap:4px; border:1px solid transparent; border-radius:var(--radius-sm); padding:6px 10px; background:transparent; color:var(--color-ink-2); font:inherit; white-space:pre-line; }
+.docx-native .docx-ribbon .rb-color-input { width:var(--office-control-height); height:var(--office-control-height); padding:4px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); cursor:pointer; }
+.docx-native .docx-ribbon .rb-big { display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-height:var(--office-big-control-height); gap:4px; border:1px solid transparent; border-radius:var(--radius-sm); padding:6px 10px; background:transparent; color:var(--color-ink-2); font:inherit; white-space:pre-line; }
 .docx-native .docx-ribbon .docx-ribbon-command { width:auto; min-width:56px; max-width:110px; height:auto; min-height:32px; padding:4px 8px; font-size:var(--font-size-sm); line-height:1.4; white-space:normal; }
 .docx-native .docx-ribbon .layout-num { display:inline-flex; align-items:center; gap:6px; color:var(--color-ink-2); font-size:var(--font-size-sm); }
 .docx-native .docx-ribbon .layout-num input { width:76px; text-align:right; }
@@ -56,12 +61,12 @@
 .docx-zoom-form [role=alert] { color:var(--color-danger); }
 .docx-zoom-actions { display:flex; justify-content:flex-end; gap:8px; }
 .docx-zoom-dialog :is(button,input):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
-.docx-native .docx-find-replace { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); position:relative; width:auto; max-width:100%; box-sizing:border-box; border-bottom:1px solid var(--color-border); padding:12px 14px; background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.docx-native .docx-find-replace { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); position:relative; inset:auto; width:auto; max-width:100%; box-sizing:border-box; border-bottom:1px solid var(--color-border); padding:12px 14px; background:var(--color-surface); color:var(--color-ink); font:inherit; }
 .docx-native .docx-find-replace[hidden],
 .docx-native .docx-find-replace [hidden] { display:none; }
 .docx-native .docx-find-replace :is(.find-tabs,.find-row,.find-options) { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .docx-native .docx-find-replace .find-row { margin-top:8px; }
-.docx-native .docx-find-replace .find-input { flex:1 1 180px; min-width:0; min-height:32px; box-sizing:border-box; padding:5px 8px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.docx-native .docx-find-replace .find-input { flex:1 1 180px; min-width:0; min-height:var(--office-control-height); box-sizing:border-box; padding:5px 8px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
 .docx-native .docx-find-replace :is(button,select) { min-height:32px; border:1px solid var(--color-border); border-radius:var(--radius-sm); padding:4px 10px; background:var(--color-bg-soft); color:var(--color-ink-2); font:inherit; }
 .docx-native .docx-find-replace button:is(:hover,.on):not(:disabled) { border-color:var(--color-select-border); background:var(--color-primary-soft); color:var(--color-primary); }
 .docx-native .docx-find-replace :is(button,input,select):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
@@ -69,12 +74,17 @@
 .docx-native .docx-find-replace .find-results { max-height:180px; overflow:auto; }
 .docx-native .docx-find-replace .find-result { display:block; width:100%; margin-top:4px; text-align:left; white-space:normal; }
 .docx-native .docx-find-replace :is([data-find-status],.find-results-note) { margin:8px 0 0; color:var(--color-text-muted); font-size:var(--font-size-sm); line-height:1.5; }
-.docx-native .docx-notice { margin:0; padding:8px 14px; color:#526174; background:#f3f6fb; font-size:13px; }
-.docx-native .editor-scroll { overflow:auto; max-height:calc(100vh - 230px); background:#e8ecf1; padding:24px; }
+.docx-native .docx-notice { margin:0; padding:8px 14px; color:var(--office-muted); background:var(--office-tabbar); font-size:13px; }
+.docx-native .editor-scroll { overflow:auto; min-height:0; max-height:none; background:var(--office-canvas); padding:24px; }
 .docx-native .doc-zoom { width:max-content; min-width:100%; }
-.docx-native .doc-page { margin:auto; background:white; color:#111; box-shadow:0 2px 10px #0002; outline:none; }
+.docx-native .doc-page { margin:auto; background:white; color:#111; box-shadow:0 2px 10px rgb(27 42 65 / 13%); outline:none; }
 .docx-native .pagination-preview { z-index:100; }
-.editor-format-docx .editor-surface { padding:0; background:#e8ecf1; }
+.docx-native .docx-comment-panel { padding:16px; border-bottom:1px solid var(--color-border); background:var(--office-page, white); }
+.docx-native .docx-comment-panel label { display:block; margin-block:8px; }
+.docx-native .docx-comment-panel select, .docx-native .docx-comment-panel textarea { display:block; width:100%; max-width:640px; margin-top:4px; font:inherit; }
+.docx-native .docx-comment-panel button { margin-right:8px; }
+.docx-native .doc-comment.native-comment-hidden { background:none; border-bottom:none; cursor:text; }
+.editor-format-docx .editor-surface { padding:0; background:var(--office-canvas); }
 .editor-format-docx #report-editor { max-width:none; padding:0; }
 @media(max-width:768px) {
   .docx-native .docx-ribbon .ribbon-tabs { padding-inline:8px; }
@@ -86,4 +96,15 @@
 .docx-native .table-picker-form { display: grid; grid-template-columns: auto auto; gap: 6px 8px; align-items: center; padding: 6px 2px 2px; font-size: 12px; }
 .docx-native .table-picker-form label { display: contents; }
 .docx-native .table-picker-form input { width: 64px; font: inherit; }
-.docx-native .table-picker-error { margin: 6px 2px 0; max-width: 220px; color: #b42318; font-size: 12px; }
+.docx-native .table-picker-error { margin: 6px 2px 0; max-width: 220px; color: var(--color-danger); font-size: 12px; }
+/* 固定源App uniform多栏：测量时撤列，并以真实栏宽读取1D流。 */
+.docx-native .editor-scroll .doc-page.native-uniform-columns { column-count:var(--native-cols); column-gap:var(--native-col-gap); column-fill:balance; }
+.docx-native .editor-scroll .doc-page.native-uniform-columns.measuring-columns { column-count:auto; width:var(--native-col-measure-width) !important; }
+
+@media screen {
+  .editor-format-docx .docx-native { display:flex; flex:1; flex-direction:column; min-height:0; min-width:0; }
+  .docx-native .docx-tools, .docx-native .docx-view-status { flex:none; }
+  .docx-native .docx-notice { flex:none; max-height:64px; overflow:auto; padding:4px 12px; font-size:var(--office-label-size); }
+  .docx-native .docx-find-replace, .docx-native .docx-comment-panel { flex:none; max-height:30dvh; overflow:auto; }
+  .docx-native .editor-scroll { flex:1; }
+}

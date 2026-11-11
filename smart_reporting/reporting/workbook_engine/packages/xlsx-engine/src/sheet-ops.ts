@@ -7,7 +7,6 @@ import {
   applySheetPlanToWorkbookXml,
   addWorksheetOverride,
   addWorksheetRelationship,
-  assertSheetRemovable,
   buildWorksheetPartXml,
   chartReferencesSheet,
   definedNamesReferenceSheet,
@@ -24,6 +23,7 @@ import {
 import {
   applyStructuralOp,
   assertShiftable,
+  StructuralShiftError,
   shiftChartSeriesReferences,
   shiftDefinedNames,
   shiftDrawingAnchors,
@@ -35,11 +35,16 @@ import {
   type StructuralOp,
 } from './structural'
 import { setWorksheetCellText } from './workbook-write'
+import { shiftConditionalFormattingXml,overlayConditionalFormattingXml } from './conditional-formatting-structure-xml'
+import {parseThemePalette} from './style-read'
 import { shiftSheetNotes } from './notes'
 import { parseRange, parseAddress, formatAddress, columnIndex } from './cell-address'
 import { computeSortedRowOrder } from './sort-range'
 import { parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
 import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
+import { assertRemovedTableDependencies, planSheetRemovalParts, removePartOverrides } from './sheet-removal-parts'
+
+import { isPivotCacheDefinitionPath, pivotCacheReadsFromSheet, renameSheetInPivotCacheSource } from './pivot-cache-source'
 
 const RELS_PATH = 'xl/_rels/workbook.xml.rels'
 const CONTENT_TYPES_PATH = '[Content_Types].xml'
@@ -90,7 +95,7 @@ async function worksheetPathByChart(
 /// Rename / add / remove worksheets. Renames rewrite every qualified
 /// reference (other sheets' formulas, chart series, defined names, internal
 /// hyperlink anchors); removals fail closed while anything still references
-/// the sheet or it carries owned satellite parts.
+/// the sheet; exclusively owned satellite parts are deleted with their sheet.
 export async function applySheetEdits(
   sourceBytes: Uint8Array,
   plan: SheetEditPlan,
@@ -131,17 +136,24 @@ export async function applySheetEdits(
 
   // ── removals: fail closed while referenced ───────────────────────────
   const removedNames = new Set(plan.removals)
+  const removedParts = plan.removals.length
+    ? (await planSheetRemovalParts(source, plan.removals.map(name => partByName.get(name)!.path))).removedParts
+    : new Set<string>()
   const removedLocalIds = new Set(
     parseSheetElements(workbookXml)
       .map((element, index) => ({ element, index }))
       .filter(({ element }) => removedNames.has(element.name))
       .map(({ index }) => index),
   )
+  if (plan.removals.length) await assertRemovedTableDependencies(
+    source, removedParts, parts.filter(part => !removedNames.has(part.name)).map(part => part.path), workbookXml, removedLocalIds,
+  )
+  const pivotCachePaths = plan.removals.length || plan.renames.length ? (await source.paths()).filter(isPivotCacheDefinitionPath) : []
   for (const removal of plan.removals) {
-    const part = partByName.get(removal)!
-    const relsPartPath = part.path.replace(/worksheets\/([^/]+)$/, 'worksheets/_rels/$1.rels')
-    if (await source.has(relsPartPath)) {
-      assertSheetRemovable(await source.readText(relsPartPath), removal)
+    for (const cachePath of pivotCachePaths) {
+      if (pivotCacheReadsFromSheet(await source.readText(cachePath), removal)) {
+        throw new Error(`仍有透视表读取工作表 "${removal}" 的来源数据，已拒绝删除。`)
+      }
     }
     for (const other of parts) {
       if (removedNames.has(other.name)) continue
@@ -152,6 +164,7 @@ export async function applySheetEdits(
       }
     }
     for (const chartPath of await worksheetPathByChart(source)) {
+      if (removedParts.has(chartPath)) continue
       if (chartReferencesSheet(await source.readText(chartPath), removal)) {
         throw new Error(`仍有图表引用 "${removal}"，已拒绝删除。`)
       }
@@ -163,7 +176,7 @@ export async function applySheetEdits(
 
   const replaced = new Map<string, string>()
   const added = new Map<string, string>()
-  const removedEntries: string[] = []
+  const removedEntries: string[] = [...removedParts]
   const touchedEntries: string[] = []
 
   // ── renames: rewrite references first ────────────────────────────────
@@ -182,11 +195,20 @@ export async function applySheetEdits(
       }
     }
     for (const chartPath of await worksheetPathByChart(source)) {
-      const xml = await source.readText(chartPath)
+      if (removedParts.has(chartPath)) continue
+      const xml = replaced.get(chartPath) ?? await source.readText(chartPath)
       const rewritten = renameSheetReferencesInChart(xml, rename.sheetName, rename.newName)
       if (rewritten !== xml) {
         replaced.set(chartPath, rewritten)
         touchedEntries.push(chartPath)
+      }
+    }
+    for (const cachePath of pivotCachePaths) {
+      const xml = replaced.get(cachePath) ?? await source.readText(cachePath)
+      const rewritten = renameSheetInPivotCacheSource(xml, rename.sheetName, rename.newName)
+      if (rewritten !== xml) {
+        replaced.set(cachePath, rewritten)
+        if (!touchedEntries.includes(cachePath)) touchedEntries.push(cachePath)
       }
     }
     workbookXml = renameSheetReferencesInDefinedNames(workbookXml, rename.sheetName, rename.newName)
@@ -202,11 +224,10 @@ export async function applySheetEdits(
       new RegExp(`<Relationship\\b[^>]*\\bId="${part.relationshipId}"[^>]*/>\\s*`),
       '',
     )
-    contentTypes = contentTypes.replace(
-      new RegExp(`<Override\\b[^>]*PartName="/${part.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*/>\\s*`),
-      '',
-    )
   }
+  if (plan.removals.length) contentTypes = removePartOverrides(contentTypes, new Set([
+    ...removedParts, ...plan.removals.map(name => partByName.get(name)!.path),
+  ]))
 
   // ── additions: allocate parts ─────────────────────────────────────────
   const allocations: SheetAllocation[] = []
@@ -326,6 +347,12 @@ export async function applyRowColumnOps(
   const target = parts.find((part) => part.name === sheetName)
   if (!target) throw new Error(`workbook.xml 中找不到工作表 "${sheetName}"。`)
 
+  // 固定来源同样拒绝缓存来源页的行列移位，避免数据已移动而 worksheetSource.ref 留在旧坐标。
+  for (const path of (await source.paths()).filter(isPivotCacheDefinitionPath)) {
+    if (pivotCacheReadsFromSheet(await source.readText(path), sheetName)) {
+      throw new StructuralShiftError(`仍有透视表读取工作表 "${sheetName}" 的来源数据，已拒绝插入/删除行列。`)
+    }
+  }
   const targetXml = await source.readText(target.path)
   assertShiftable(targetXml)
   // Notes can belong to cells with no stored cell value or row record.
@@ -410,6 +437,20 @@ export async function applyRowColumnOps(
       replaced.set(part.path, shifted)
       touchedEntries.push(part.path)
     }
+  }
+
+  // Derive CF partitions from the original trusted source, once per journaled
+  // operation. The same pure planner is used by official grid followers.
+  const cfStyles=await source.has('xl/styles.xml')?await source.readText('xl/styles.xml'):'<styleSheet/>'
+  const cfTheme=await source.has('xl/theme/theme1.xml')?parseThemePalette(await source.readText('xl/theme/theme1.xml')):undefined
+  for(const part of parts){
+    const original=await source.readText(part.path)
+    if(!/<conditionalFormatting\b/.test(original))continue
+    let planned=original
+    for(const spec of specs)planned=shiftConditionalFormattingXml(planned,cfStyles,cfTheme,part.name,sheetName,spec)
+    const before=replaced.get(part.path)??original
+    const next=overlayConditionalFormattingXml(before,planned)
+    if(next!==before){replaced.set(part.path,next);if(!touchedEntries.includes(part.path))touchedEntries.push(part.path)}
   }
 
   // defined names referencing the sheet shift too

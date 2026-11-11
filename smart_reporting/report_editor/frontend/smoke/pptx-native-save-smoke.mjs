@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { auditOfficeDesktopLayout } from './office-desktop-layout.mjs'
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -12,6 +13,9 @@ const repo = new URL('../../../', `file://${frontend}/`).pathname
 const port = Number(process.env.PPTX_SMOKE_PORT ?? 4191)
 const baseUrl = `http://127.0.0.1:${port}`
 const smokeMode = process.env.PPTX_SMOKE_MODE ?? 'textbox'
+const builtPreview = process.env.NATIVE_GUI_PREVIEW === '1'
+const manifestSha256 = builtPreview ? createHash('sha256').update(await readFile(resolve(frontend, '../static/.vite/manifest.json'))).digest('hex') : undefined
+if (process.env.PPTX_EXPECTED_MANIFEST_SHA256) assert.equal(manifestSha256, process.env.PPTX_EXPECTED_MANIFEST_SHA256)
 const listVariant = process.env.PPTX_LIST_VARIANT ?? 'number'
 if (!['number', 'glyph', 'none'].includes(listVariant)) throw new Error('Unknown list variant')
 const paperPreset = process.env.PPTX_SMOKE_PRESET ?? 'A4'
@@ -42,13 +46,29 @@ if payload['mode'] == 'create':
         other = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(4), Inches(1)); other.text = 'Untouched object'
         p = other.text_frame.paragraphs[0]; p.line_spacing = 1.37; p.space_before = Pt(8.25); p.space_after = Pt(9.75)
         p.runs[0].font.bold = True
+    if payload.get('extraSlide'):
+        from pptx.enum.shapes import MSO_SHAPE
+        slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(6), Inches(4), Inches(2), Inches(1)).name = 'Fixture Shape'
+        fixture_table = slide.shapes.add_table(2, 2, Inches(1), Inches(5.5), Inches(4), Inches(0.8))
+        fixture_table.name = 'Fixture Table'
+        for (r, c), value in {(0, 0): '项目', (0, 1): '金额', (1, 0): '收入', (1, 1): '100'}.items(): fixture_table.table.cell(r, c).text = value
+        extra = presentation.slides.add_slide(presentation.slide_layouts[6])
+        extra.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1)).text = 'Second source slide'
+        if payload.get('hiddenSample'): extra._element.set('show', '0')
     if payload.get('listsSample'):
         for index, paragraph in enumerate(shape.text_frame.paragraphs):
             paragraph._p.get_or_add_pPr().set('lvl', '0' if index == 0 else '8')
         props = shape.text_frame.paragraphs[0]._p.get_or_add_pPr()
         props.set('marL', '285750'); props.set('indent', '-285750')
     stream = BytesIO(); presentation.save(stream)
-    print(base64.b64encode(stream.getvalue()).decode())
+    created = stream.getvalue()
+    if payload.get('animatedSample'):
+        # 来源文件自带两条动画：正文淡入、另一对象缩放（经同一真实写入链路生成）
+        targets = [item for item in inspect_office('pptx', created)['slides'][0]['elements'] if item['text'].strip()]
+        created = patch_office('pptx', created, [{'kind': 'editSlides', 'animations': [
+            {'slideIndex': 0, 'elementId': targets[0]['id'], 'effect': 'fade', 'trigger': 'onClick', 'durationMs': 500, 'delayMs': 0},
+            {'slideIndex': 0, 'elementId': targets[1]['id'], 'effect': 'zoom', 'trigger': 'onClick', 'durationMs': 600, 'delayMs': 0, 'append': True}]}])
+    print(base64.b64encode(created).decode())
 elif payload['mode'] == 'inspect':
     content = base64.b64decode(payload['bytes'])
     model = inspect_office('pptx', content)
@@ -80,7 +100,7 @@ elif payload['mode'] == 'inspect':
                 'bulletColor': props.find(qn('a:buClr')).find(qn('a:srgbClr')).get('val') if props is not None and props.find(qn('a:buClr')) is not None and props.find(qn('a:buClr')).find(qn('a:srgbClr')) is not None else None})
         python_pptx_paragraphs.append({'paragraphs': paragraphs, 'xml': shape._element.xml})
     slides = [{'transition': slide.get('transition'), 'animations': slide.get('animations', [])} for slide in model['slides']]
-    print(json.dumps({'revision': payload.get('revision'), 'sha256': __import__('hashlib').sha256(content).hexdigest(), 'size': model['size'], 'pythonPptxSize': [presentation.slide_width, presentation.slide_height], 'pythonPptxParagraphs': python_pptx_paragraphs, 'pythonPptxGeometry': python_pptx_geometry, 'texts': [item['text'] for item in targets], 'elements': targets, 'pythonPptxTexts': python_pptx_texts, 'slides': slides, 'slideCount': len(model['slides'])}))
+    print(json.dumps({'revision': payload.get('revision'), 'sha256': __import__('hashlib').sha256(content).hexdigest(), 'size': model['size'], 'pythonPptxSize': [presentation.slide_width, presentation.slide_height], 'pythonPptxParagraphs': python_pptx_paragraphs, 'pythonPptxGeometry': python_pptx_geometry, 'texts': [item['text'] for item in targets], 'elements': targets, 'pythonPptxTexts': python_pptx_texts, 'slides': slides, 'slideCount': len(model['slides']), 'pythonPptxHidden': [slide._element.get('show', '1') == '0' for slide in presentation.slides]}))
 elif payload['mode'] == 'patch':
     content = base64.b64decode(payload['bytes'])
     edited = patch_office('pptx', content, payload['operations'])
@@ -90,7 +110,7 @@ elif payload['mode'] == 'patch':
   return result.stdout.trim()
 }
 
-const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists'].includes(smokeMode), listsSample: smokeMode === 'paragraph-lists' }), 'base64')
+const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists', 'animation-pane'].includes(smokeMode), animatedSample: smokeMode === 'animation-pane', listsSample: smokeMode === 'paragraph-lists', extraSlide: ['new-slide', 'hidden-slides'].includes(smokeMode), hiddenSample: smokeMode === 'hidden-slides' }), 'base64')
 const sourceIdentity = createHash('sha256').update(sourceBytes).digest('hex')
 const sourceSha = sourceIdentity
 let activeBytes = sourceBytes
@@ -110,7 +130,7 @@ let savedBytes
 let savePayload
 let saveReceipt
 const saveAttempts = []
-const server = spawn('./node_modules/.bin/vite', ['--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+const server = spawn('./node_modules/.bin/vite', [...(builtPreview ? ['preview'] : []), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 let browser
 try {
   for (let attempt = 0; attempt < 120; attempt++) {
@@ -122,6 +142,11 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true })
   const pageErrors = []
   const failedResponses = []
+  const runtimeJavaScript = new Map(), runtimeIdentityReads = []
+  page.on('response', response => {
+    const path = new URL(response.url()).pathname
+    if (response.ok() && path.endsWith('.js')) runtimeIdentityReads.push(response.body().then(bytes => runtimeJavaScript.set(path, { path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') })))
+  })
   page.on('pageerror', error => pageErrors.push(error.message))
   page.on('response', response => { if (response.status() >= 400) failedResponses.push({ status: response.status(), url: response.url() }) })
   await page.route('**/favicon.ico', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' }))
@@ -130,7 +155,7 @@ try {
     context: { documentId: 'fixture-pptx', format: 'pptx', revision: activeRevision, parentRevision: activeRevision === 1 ? null : 1,
       scope: { database: 'fixture', companyId: 'fixture', userId: 'fixture', threadId: 'fixture' },
       sourceFile: { path: 'fixture.pptx', size: activeBytes.length, sha256: activeSha, mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }, origin: 'upload' },
-    csrfToken: 'fixture-csrf', capabilities: { pptx_editor: true }, editingEnabled: true,
+    csrfToken: 'fixture-csrf', capabilities: { pptx_editor: true }, editingEnabled: true, aiEnabled: smokeMode === 'native-ai',
   } }))
   await page.route('**/reports/v1/native/fixture-pptx/*/api/file', route => route.fulfill({ body: activeBytes, contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }))
   await page.route('**/reports/v1/native/fixture-pptx/*/api/preview.pdf*', route => route.fulfill({ status: 200, contentType: 'application/pdf', body: '%PDF-1.4\n%%EOF' }))
@@ -171,6 +196,42 @@ try {
     await route.fulfill({ json: saveReceipt })
   })
   await page.route('**/fixture-download.pptx', route => route.fulfill({ body: savedBytes, contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }))
+  // 浏览器层使用确定性 planner 回执；候选预览和最终保存仍运行真实 PPTX 引擎。
+  // 真正服务的 session/CSRF/范围校验由 test_slides_native_ai.py 单独覆盖，不冒充真实模型探针。
+  let aiBase, aiCandidate, aiSnapshot, aiAccepts = 0
+  const cancelledRequests = new Set()
+  await page.route('**/reports/v1/native/fixture-pptx/1/api/slides-ai/**', async route => {
+    const request = route.request(), path = new URL(request.url()).pathname
+    if (request.method() === 'POST') assert.equal(request.headers()['x-csrf-token'], 'fixture-csrf')
+    if (path.endsWith('/cancel-request')) {
+      const payload = request.postDataJSON(); assert.match(payload.clientRequestId, /^[a-zA-Z0-9_-]{1,128}$/)
+      cancelledRequests.add(payload.clientRequestId)
+      return route.fulfill({ json: { status: 'cancelled', clientRequestId: payload.clientRequestId } })
+    }
+    if (path.endsWith('/start')) {
+      const payload = request.postDataJSON()
+      assert.match(payload.clientRequestId, /^[a-zA-Z0-9_-]{1,128}$/)
+      assert.equal(cancelledRequests.has(payload.clientRequestId), false)
+      assert.equal(payload.expectedSha256, sourceSha)
+      assert.deepEqual(payload.selection, [{ slideIndex: 0, elementId: inspected.slides[0].elements[0].id }])
+      assert.equal(payload.scope, 'selection')
+      aiBase = payload.operations
+      aiSnapshot = createHash('sha256').update(JSON.stringify(aiBase)).digest('hex')
+      const base = structuredClone(aiBase[0] ?? { kind: 'editSlides' })
+      base.edits = [{ ...(base.edits?.[0] ?? {}), slideIndex: 0, elementId: payload.selection[0].elementId, text: 'AI候选标题' }]
+      aiCandidate = [base]
+      runPython({ mode: 'patch', bytes: sourceBytes.toString('base64'), operations: aiCandidate })
+      return route.fulfill({ json: { editId: 'fixture-ai', status: 'running', snapshotSha256: aiSnapshot } })
+    }
+    if (path.endsWith('/accept')) {
+      const payload = request.postDataJSON(); assert.equal(payload.snapshotSha256, aiSnapshot); assert.deepEqual(payload.operations, aiBase)
+      aiAccepts++
+      return route.fulfill({ json: { operations: aiCandidate } })
+    }
+    if (path.endsWith('/cancel')) return route.fulfill({ json: { status: 'cancelled' } })
+    return route.fulfill({ json: { editId: 'fixture-ai', status: 'succeeded', snapshotSha256: aiSnapshot,
+      proposal: { summary: '润色所选标题', operations: [{ kind: 'editSlides', edits: aiCandidate[0].edits, order: [0] }] } } })
+  })
   await page.addInitScript(() => {
     if (location.origin !== 'null') history.replaceState(null, '', `/reports/v1/native/fixture-pptx/${new URL(location.href).searchParams.get('smokeRevision') === '2' ? 2 : 1}`)
   })
@@ -180,8 +241,171 @@ try {
   try { await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 }) }
   catch { throw new Error(JSON.stringify({ phase: 'canvas', body: (await page.locator('body').innerText()).slice(-2500), pageErrors, failedResponses })) }
   await page.waitForFunction(() => document.querySelector('.canvas-status')?.textContent.includes('点击对象选择'))
+  await auditOfficeDesktopLayout(page, 'pptx')
+  const ribbonAudit = ['native-ai', 'hidden-slides'].includes(smokeMode) ? await page.locator('.slides-native-ribbon button[data-command]').evaluateAll(buttons => ({
+    buttonCount: buttons.length,
+    invalid: buttons.filter(button => button.querySelectorAll('svg').length !== 1 || button.querySelector('svg')?.getAttribute('aria-hidden') !== 'true').map(button => button.getAttribute('data-command')),
+  })) : undefined
+  if (ribbonAudit) {
+    assert.ok(ribbonAudit.buttonCount > 70); assert.deepEqual(ribbonAudit.invalid, [])
+    assert.equal(await page.locator('[data-ribbon-tab="home"]').textContent(), '开始')
+    assert.equal(await page.locator('[data-ribbon-tab="design"]').textContent(), '设计')
+  }
 
-  if (smokeMode === 'textbox') {
+  if (smokeMode === 'hidden-slides') {
+    const toggle = page.locator('[data-command="hideSlide"]')
+    await page.locator('[data-ribbon-tab="slideShow"]').click()
+    assert.equal(await toggle.isEnabled(), true)
+    assert.equal(await toggle.textContent(), '隐藏幻灯片')
+    assert.equal(await toggle.locator('svg').count(), 1)
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'false')
+    await toggle.click()
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true')
+    await page.locator('[data-source-action="onUndo"]').click()
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'false')
+    await page.locator('[data-source-action="onRedo"]').click()
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true')
+    await page.locator('.slide-open').nth(1).click()
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'true')
+    await toggle.click()
+    assert.equal(await toggle.getAttribute('aria-pressed'), 'false')
+    await page.locator('.slide-row').nth(1).getByRole('button', { name: '上移页面', exact: true }).click()
+    assert.deepEqual(await page.locator('.slide-row').evaluateAll(rows => rows.map(row => row.dataset.hidden)), ['false', 'true'])
+    await page.goto(baseUrl + '/reports/v1/editor/assets/native.html')
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.locator('[data-ribbon-tab="slideShow"]').click()
+    assert.deepEqual(await page.locator('.slide-row').evaluateAll(rows => rows.map(row => row.dataset.hidden)), ['false', 'true'])
+  } else if (smokeMode === 'native-ai') {
+    await page.getByRole('region', { name: 'PPTX AI 助手' }).waitFor()
+    assert.equal(await page.locator('.slides-native-ai').isVisible(), true)
+    const text = page.locator('#object-text'), prompt = page.locator('.slides-native-ai textarea')
+    await text.fill('人工标题')
+    await page.locator('.native-ai-context').filter({ hasText: '人工标题' }).waitFor()
+    await prompt.fill('润色所选标题，保留事实')
+    await page.locator('.native-ai-form button[type=submit]').click()
+    await page.locator('.native-ai-preview:not([hidden])').waitFor()
+    assert.equal(await text.inputValue(), '人工标题')
+    await text.fill('人工后续修改')
+    await page.locator('.native-ai-accept').click()
+    await page.locator('.native-ai-status').filter({ hasText: '草稿已变化' }).waitFor()
+    assert.equal(aiAccepts, 0)
+    await page.locator('.native-ai-form button[type=submit]').click()
+    await page.locator('.native-ai-preview:not([hidden])').waitFor()
+    await page.locator('.native-ai-accept').click()
+    await page.waitForFunction(() => document.querySelector('#object-text')?.value === 'AI候选标题')
+    assert.equal(aiAccepts, 1)
+    await page.locator('[data-source-action="onUndo"]').click()
+    assert.equal(await text.inputValue(), '人工后续修改')
+    await page.locator('[data-source-action="onRedo"]').click()
+    assert.equal(await text.inputValue(), 'AI候选标题')
+  } else if (smokeMode === 'new-slide') {
+    // 固定源 Home ▸ New Slide（onAddSlide）：在当前页后新建沿用当前页版式的空白页；保存前可移动、移除，不可编辑内容。
+    await page.locator('[data-ribbon-tab="home"]').click()
+    const add = page.locator('[data-command="addSlide"][data-source-action="onAddSlide"]').first()
+    assert.equal(await add.isEnabled(), true)
+    await add.click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    assert.equal(await page.locator('.slide-row').nth(1).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+    assert.equal(await page.locator('.slide-row').nth(1).getAttribute('data-selected'), 'true')
+    assert.equal(await page.locator('#background-color').isDisabled(), true)
+    await page.locator('.slides-canvas canvas').first().waitFor()
+    await add.click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    await page.locator('.slide-row').nth(2).getByRole('button', { name: '移除新建的幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    // 删除幻灯片：新页沿用其版式的来源页不可删除；另一来源页可删除，保存时由引擎按部件路径删除。
+    await page.locator('.slide-row').nth(0).getByRole('button', { name: '删除幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelector('.slides-statusbar')?.textContent?.includes('被新建页沿用版式'))
+    assert.equal(await page.locator('.slide-row').count(), 3)
+    await page.locator('.slide-row').nth(2).getByRole('button', { name: '删除幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 2)
+    assert.equal(await page.locator('.slide-row').filter({ hasText: 'Second source slide' }).count(), 0)
+    await page.locator('.slide-row').nth(1).locator('.slide-open').click()
+    await page.locator('[data-command="movePrevious"]').first().click()
+    assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+    // 复制幻灯片（固定源 duplicateSlide）：副本插在来源页之后，展示已保存内容，保存前只读。
+    await page.locator('.slide-row').nth(1).getByRole('button', { name: '复制幻灯片' }).click()
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 3)
+    assert.equal(await page.locator('.slide-row').nth(2).locator('.slide-title').textContent(), '副本：Native browser formatting fixture（保存后写入）')
+    assert.equal(await page.locator('#object-text').isDisabled(), true)
+    // 新建指定版式幻灯片（固定源 onAddSlideWithLayout）：在当前页（副本）之后按“Title Slide”版式新建。
+    const layoutPicker = page.locator('select[data-command="addSlideWithLayout"]')
+    const titleLayout = inspected.layouts.find(item => item.name === 'Title Slide')
+    await layoutPicker.selectOption(titleLayout.path)
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    assert.equal(await layoutPicker.inputValue(), '')
+    assert.equal(await page.locator('.slide-row').nth(3).locator('.slide-title').textContent(), '新建幻灯片 · Title Slide（保存后写入）')
+    // 重置版式（固定源 onResetLayout）：作用于来源页，进入待保存清单。
+    await page.locator('.slide-row').filter({ hasText: 'Native browser' }).first().locator('.slide-open').click()
+    await page.locator('[data-command="resetLayout"][data-source-action="onResetLayout"]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '重置版式' }).waitFor()
+    // 插入形状（固定源形状库 onPickShape）：圆角矩形与箭头线条。
+    const shapePicker = page.locator('select[data-command="insertShape"]')
+    await page.locator('[data-ribbon-tab="insert"]').click()
+    await shapePicker.selectOption('roundRect'); await shapePicker.selectOption('lineArrow')
+    assert.equal(await shapePicker.inputValue(), '')
+    await page.locator('.structure-pending li').filter({ hasText: '形状 圆角矩形' }).waitFor()
+    await page.locator('.structure-pending li').filter({ hasText: '形状 箭头' }).waitFor()
+    // 插入表格（固定源 onInsertTable）：3 列 × 4 行。
+    await page.locator('[data-command="insertTable"][data-source-action="onInsertTable"]').click()
+    await page.locator('.slides-table-dialog input[name=cols]').fill('3')
+    await page.locator('.slides-table-dialog input[name=rows]').fill('4')
+    await page.locator('.slides-table-dialog button[value=ok]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '表格 4×3' }).waitFor()
+    // 页码字段（固定源 insertField:slidenum）
+    await page.locator('[data-command="slideNumber"][data-source-action="onInsertField:slidenum"]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '页码字段' }).waitFor()
+    // 艺术字（固定源 insertWordArt）：白色填充 + 橙色描边
+    await page.locator('select[data-command="insertWordArt"]').selectOption('white-orange')
+    await page.locator('.structure-pending li').filter({ hasText: '艺术字' }).waitFor()
+    // 插入图表（固定源 CHART_GALLERY）：簇状柱形图 + 固定源示例数据
+    await page.locator('select[data-command="insertChart"]').selectOption('bar')
+    await page.locator('.structure-pending li').filter({ hasText: '图表 簇状柱形图（示例数据）' }).waitFor()
+    // SmartArt（固定源 SMARTART_GALLERY）：基本流程，并在待保存清单改写节点
+    await page.locator('select[data-command="insertSmartArt"]').selectOption('process')
+    const smartArtItems = page.locator('.structure-pending li').filter({ hasText: 'SmartArt 基本流程' }).locator('textarea.smartart-items')
+    assert.equal(await smartArtItems.inputValue(), '计划\n执行\n检查\n改进')
+    await smartArtItems.fill('立项\n开发\n上线'); await smartArtItems.dispatchEvent('change')
+    // 形状格式（固定源 Shape Format 填充/轮廓）：作用于来源页文本框。
+    const styledTarget = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    await page.locator('#object-select').selectOption(styledTarget.id)
+    await page.locator('[data-ribbon-tab="shapeFormat"]').click()
+    await page.locator('input[data-command="shapeFill"]').fill('#2e7d32')
+    await page.locator('select[data-command="shapeOutlineWidth"]').selectOption('3')
+    await page.locator('.structure-pending li').filter({ hasText: '填充 #2E7D32、轮廓 #000000 3 磅' }).waitFor()
+    // 更改形状（固定源 onChangeShape）：圆角矩形 → 六边形
+    const fixtureShape = inspected.slides[0].elements.find(item => item.type === 'shape')
+    await page.locator('#object-select').selectOption(fixtureShape.id)
+    await page.locator('[data-ribbon-tab="shapeFormat"]').click()
+    await page.locator('select[data-command="changeShape"]').selectOption('hexagon')
+    await page.locator('.structure-pending li').filter({ hasText: '更改为六边形' }).waitFor()
+    // 已有表格单元格改字
+    const fixtureTable = inspected.slides[0].elements.find(item => item.type === 'table')
+    await page.locator('#object-select').selectOption(fixtureTable.id)
+    const cell = page.locator('.table-cell-grid textarea[data-table-cell="1:1"]')
+    assert.equal(await cell.inputValue(), '100')
+    await cell.fill('120'); await cell.dispatchEvent('change')
+    await page.locator('.structure-pending li').filter({ hasText: '表格单元格（2行2列）「120」' }).waitFor()
+    // 新增节（固定源 onAddSection）：在来源页前分节，列表显示待写入节标题。
+    await page.locator('[data-ribbon-tab="home"]').click()
+    await page.locator('[data-command="addSection"][data-source-action="onAddSection"]').click()
+    await page.locator('.slides-table-dialog input[name=name]').fill('第二部分')
+    await page.locator('.slides-table-dialog button[value=ok]').click()
+    await page.locator('.slide-section[data-pending=true]').filter({ hasText: '第二部分（保存后写入）' }).waitFor()
+    // 页眉和页脚（固定源 HeaderFooterDialog，全部应用）
+    await page.locator('[data-ribbon-tab="insert"]').click()
+    await page.locator('[data-command="headerFooter"][data-source-action="onOpenHeaderFooter"]').click()
+    await page.locator('.slides-hf-dialog input[name=slideNum]').check()
+    await page.locator('.slides-hf-dialog input[name=footerOn]').check()
+    await page.locator('.slides-hf-dialog input[name=footer]').fill('智能报告 · 内部')
+    await page.locator('.slides-hf-dialog button[value=ok]').click()
+    await page.locator('.structure-pending li').filter({ hasText: '页脚「智能报告 · 内部」' }).waitFor()
+    if (process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_NEW_SLIDE_SCREENSHOT })
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html`)
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    assert.equal(await page.locator('.slide-row').nth(0).locator('.slide-title').textContent(), '新建幻灯片（保存后写入）')
+  } else if (smokeMode === 'textbox') {
     await page.locator('[data-ribbon-tab="insert"]').click()
     const textBoxCommand = page.locator('[data-command="addText"][data-source-action="onInsert"]')
     await textBoxCommand.click()
@@ -200,6 +424,52 @@ try {
     await page.locator('[data-command="animationDuration"]').fill('1250')
     await page.locator('[data-command="animationDelay"]').fill('300')
     await page.locator('[data-command="addAnimation"][data-source-action="onAddAnimation"]').click()
+  } else if (smokeMode === 'animation-pane') {
+    // 固定源动画窗格 / 无 / 按段 / 动作路径：全部写入同一份整页动画序列。
+    const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
+    const command = id => page.locator(`[data-command="${id}"]`)
+    const rows = () => page.locator('.animation-pane-row .animation-pane-select').allTextContents()
+    await page.locator('[data-ribbon-tab="animations"]').click()
+    assert.equal(await page.locator('.slides-animation-pane').isHidden(), true)
+    await command('toggleAnimationPane').click()
+    assert.equal(await command('toggleAnimationPane').getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('.slides-animation-pane .inspector-heading').textContent(), '动画 · 第 1 页')
+    assert.equal((await rows()).length, 2)
+    assert.match((await rows())[0], /^1 淡入/); assert.match((await rows())[1], /^2 缩放/)
+    // 无：移除正文对象的全部动画
+    await page.locator('#object-select').selectOption(body.id)
+    await command('animationNone').click()
+    assert.equal((await rows()).length, 1)
+    // 按段：正文两段各生成一条飞入（自左侧）
+    await command('animationByParagraph').click()
+    assert.equal(await command('animationByParagraph').getAttribute('aria-pressed'), 'true')
+    await command('animationEffect').selectOption('flyIn')
+    await command('animationDirection').selectOption('left')
+    await command('addAnimation').click()
+    assert.equal((await rows()).length, 3)
+    assert.match((await rows())[1], /飞入.*第 1 段$/); assert.match((await rows())[2], /飞入.*第 2 段$/)
+    // 动作路径：锯齿
+    await page.locator('#object-select').selectOption(other.id)
+    await command('motionPathZigzag').click()
+    assert.equal((await rows()).length, 4)
+    assert.match((await rows())[3], /动作路径/)
+    // 窗格：动作路径上移一位；选中缩放改计时；删除最后一条
+    await page.locator('[data-animation-row="3"] button[title="上移"]').click()
+    assert.match((await rows())[2], /动作路径/); assert.match((await rows())[3], /第 2 段/)
+    await page.locator('[data-animation-row="0"] .animation-pane-select').click()
+    assert.equal(await page.locator('[data-animation-row="0"]').getAttribute('class'), 'animation-pane-row is-selected')
+    await command('animationTrigger').selectOption('withPrev')
+    await command('animationDuration').fill('1200'); await command('animationDuration').blur()
+    assert.match(await page.locator('[data-animation-row="0"] .animation-pane-detail').textContent(), /与上一动画同时 · 1\.20 秒/)
+    await page.locator('[data-animation-row="0"] .animation-pane-select').click()
+    await page.locator('[data-animation-row="3"] button[title="删除"]').click()
+    assert.equal((await rows()).length, 3)
+    await page.locator('[data-source-action="onUndo"]').click()
+    assert.equal((await rows()).length, 4)
+    await page.locator('[data-source-action="onRedo"]').click()
+    assert.equal((await rows()).length, 3)
+    if (process.env.PPTX_SMOKE_SCREENSHOT) await page.screenshot({ path: process.env.PPTX_SMOKE_SCREENSHOT })
   } else if (smokeMode === 'paragraph-lists') {
     const target = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     await page.locator('#object-select').selectOption(target.id)
@@ -302,6 +572,7 @@ try {
     }
   }
   await page.screenshot({ path: `/tmp/pptx-native-ribbon-${smokeMode}-after-edit.png`, fullPage: true })
+  if (process.env.PPTX_SMOKE_EVIDENCE_DIR) { const evidenceRoot = resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR); await mkdir(evidenceRoot, { recursive: true }); await page.screenshot({ path: join(evidenceRoot, 'after-edit.png'), fullPage: true }) }
   await page.locator('[data-action="save"]').click()
   if (smokeMode === 'slide-size-recovery') {
     await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '保存失败')
@@ -320,7 +591,13 @@ try {
 
   const operation = savePayload?.operations?.[0]
   assert.equal(operation?.kind, 'editSlides')
-  if (smokeMode === 'textbox') {
+  if (smokeMode === 'hidden-slides') {
+    assert.deepEqual(operation.hiddenSlides, [{ slideIndex: 0, hidden: true }, { slideIndex: 1, hidden: false }])
+    assert.deepEqual(operation.order, [1, 0])
+  } else if (smokeMode === 'native-ai') {
+    assert.equal(operation.edits[0].text, 'AI候选标题')
+    assert.equal(aiAccepts, 1)
+  } else if (smokeMode === 'textbox') {
     assert.deepEqual(operation.textBoxes, [{
       slideIndex: 0,
       text: 'Ribbon inserted textbox smoke',
@@ -335,6 +612,16 @@ try {
       slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.editable && item.text.trim()).id,
       effect: 'flyIn', trigger: 'afterPrev', durationMs: 1250, delayMs: 300, direction: 'right', append: true,
     }])
+  } else if (smokeMode === 'animation-pane') {
+    const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
+    const zoom = inspected.slides[0].animations[1]
+    assert.deepEqual(operation.animations, [])
+    assert.deepEqual(operation.animationSequences, [{ slideIndex: 0, items: [
+      { source: 1, spid: zoom.spid, effect: 'zoom', trigger: 'withPrev', durationMs: 1200 },
+      { elementId: body.id, effect: 'flyIn', trigger: 'onClick', durationMs: 500, delayMs: 0, direction: 'left', paragraph: 0 },
+      { elementId: other.id, effect: 'motionPath', trigger: 'onClick', durationMs: 2000, delayMs: 0, motionPath: 'M 0 0 L 0.12 -0.12 L 0.24 0.12 L 0.36 0' },
+    ] }])
   } else if (smokeMode === 'paragraph-lists') {
     assert.deepEqual(operation.paragraphFormatting.filter(record => record.indentDelta != null).map(record => record.indentDelta), [1, -1])
     assert.ok(operation.paragraphFormatting.some(record => record.bulletChar === '😀'))
@@ -343,6 +630,23 @@ try {
     const target = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     assert.ok(operation.paragraphFormatting.every(record => record.slideIndex === 0 && record.elementId === target.id))
     assert.deepEqual(operation.paragraphFormatting.reduce((value, patch) => ({ ...value, ...patch }), {}), { slideIndex: 0, elementId: target.id, align: 'right', lineSpacingPct: 200, spaceBeforePt: 12.5, spaceAfterPt: 0 })
+  } else if (smokeMode === 'new-slide') {
+    assert.deepEqual(operation.newSlides, [{ layoutFrom: 0 }, { duplicateOf: 0 }, { withLayout: inspected.layouts.find(item => item.name === 'Title Slide').path }])
+    assert.deepEqual(operation.deletedSlides, [1])
+    assert.deepEqual(operation.resetLayouts, [0])
+    assert.deepEqual(operation.shapes.map(shape => [shape.slideIndex, shape.kind]), [[0, 'roundRect'], [0, 'lineArrow']])
+    assert.deepEqual(operation.tables, [{ slideIndex: 0, rows: 4, cols: 3 }])
+    assert.deepEqual(operation.sections, [{ slideIndex: 0, name: '第二部分' }])
+    assert.deepEqual(operation.smartArts, [{ slideIndex: 0, layout: 'process', items: ['立项', '开发', '上线'] }])
+    assert.deepEqual(operation.charts, [{ slideIndex: 0, kind: 'bar', categories: ['类别 1', '类别 2', '类别 3', '类别 4'], series: [{ name: '系列 1', values: [4.3, 2.5, 3.5, 4.5] }, { name: '系列 2', values: [2.4, 4.4, 1.8, 2.8] }, { name: '系列 3', values: [2, 2, 3, 5] }] }])
+    assert.deepEqual(operation.tableCells, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'table').id, row: 1, col: 1, text: '120' }])
+    assert.deepEqual(operation.headerFooter, { footer: '智能报告 · 内部', slideNum: true, date: null, dateAuto: true })
+    assert.deepEqual(operation.shapeKinds, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.type === 'shape').id, kind: 'hexagon' }])
+    assert.deepEqual(operation.shapeStyles, [{ slideIndex: 0, elementId: inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture')).id, fill: '#2E7D32', stroke: { color: '#000000', widthPt: 3 } }])
+    assert.deepEqual(operation.textBoxes.map(box => [box.slideIndex, box.field, box.text]), [[0, 'slidenum', '2'], [0, undefined, '请在此放置您的文字']])
+    assert.deepEqual(operation.textBoxes[1].outline, { color: '#ED7D31', widthEmu: 19050 })
+    assert.equal(operation.textBoxes[1].wordArt, true)
+    assert.deepEqual(operation.order, [2, 0, 3, 4])
   } else {
     assert.deepEqual(operation.slideSize, targetSize)
     if (smokeMode === 'slide-size-presets') assert.deepEqual(operation.edits[0].geometry, { x: 75, y: 80, width: 300, height: 90 })
@@ -362,12 +666,65 @@ try {
   })
   assert.equal(download.status, 200)
   const downloaded = Buffer.from(download.bytes)
+  if (process.env.PPTX_SMOKE_OUTPUT) (await import('node:fs')).writeFileSync(process.env.PPTX_SMOKE_OUTPUT, downloaded)
   assert.equal(createHash('sha256').update(downloaded).digest('hex'), saveReceipt.artifacts.pptx.sha256)
   assert.equal(downloaded.length, saveReceipt.artifacts.pptx.size)
   const reopened = JSON.parse(runPython({ mode: 'inspect', bytes: downloaded.toString('base64'), revision: saveReceipt.revision }))
   assert.equal(reopened.revision, 2)
   assert.equal(reopened.sha256, saveReceipt.artifacts.pptx.sha256)
-  if (smokeMode === 'textbox') {
+  if (smokeMode === 'new-slide') {
+    const independent = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nhf=lambda sh: sh.is_placeholder and sh.placeholder_format.type is not None and int(sh.placeholder_format.type) in (13,15,16)\nprint(json.dumps([[s.slide_layout.name,[sh.text for sh in s.shapes if sh.has_text_frame and sh.text and not hf(sh)],len([sh for sh in s.shapes if not hf(sh)])] for s in p.slides]))'], { input: downloaded, encoding: 'utf8' })
+    if (independent.status !== 0) throw new Error(independent.stderr)
+    const slides = JSON.parse(independent.stdout)
+    assert.equal(slides.length, 4)
+    assert.equal(slides[3][0], 'Title Slide')
+    assert.deepEqual(slides[0][1], [])
+    assert.equal(slides[0][0], slides[1][0])
+    assert.deepEqual(slides[1][1], ['Native browser formatting fixture', '2', '请在此放置您的文字'])
+    // 副本复制的是已保存内容（不含同批新增形状）；原页多出两个形状
+    assert.deepEqual(slides[2].slice(0, 2), [slides[1][0], ['Native browser formatting fixture']])
+    assert.equal(slides[1][2], slides[2][2] + 7)
+    const chartCount = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(sum(s.has_chart for s in p.slides[1].shapes), [list(c.categories) for c in [s.chart.plots[0] for s in p.slides[1].shapes if s.has_chart]])'], { input: downloaded, encoding: 'utf8' })
+    const smartArtXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum(all(t in s for t in ("立项","开发","上线")) for s in x))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(smartArtXml.stdout.trim(), '1')
+    assert.equal(chartCount.stdout.trim(), "1 [['类别 1', '类别 2', '类别 3', '类别 4']]")
+    const table = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[len(s.table.rows),len(s.table.columns)] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
+    // 夹具原有 2×2 表格 + 新插入的 4×3 表格
+    assert.deepEqual(JSON.parse(table.stdout), [[2, 2], [4, 3]])
+    const shapeXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") and "prst=\\"roundRect\\"" in z.read(n).decode() and "C43E1C" in z.read(n).decode()))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(shapeXml.stdout.trim(), '1')
+    const fieldXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(z.read(n).decode().count("type=\\"slidenum\\"") for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")))'], { input: downloaded, encoding: 'utf8' })
+    // 1 个插入的页码字段 + 4 页页眉页脚中的幻灯片编号占位符
+    assert.equal(fieldXml.stdout.trim(), '5')
+    const styleXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(sum(1 for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml") for sp in re.findall(r"<p:sp>.*?</p:sp>", z.read(n).decode(), re.S) if "Native browser formatting fixture" in sp and "2E7D32" in sp and "<a:ln w=\\"38100\\"" in sp))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(styleXml.stdout.trim(), '1')
+    const kindXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum(s.count("prst=\\"hexagon\\"") for s in x), sum(s.count("prst=\\"roundRect\\"") for s in x))'], { input: downloaded, encoding: 'utf8' })
+    // 原页六边形 1 个；圆角矩形 2 个 = 副本保留原形状 + 新插入的圆角矩形
+    assert.equal(kindXml.stdout.trim(), '1 2')
+    const sectionXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io,re\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nprint(re.findall(r"<p14:section name=\\"([^\\"]*)\\"", z.read("ppt/presentation.xml").decode()))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(sectionXml.stdout.trim(), "['Default Section', '第二部分']")
+    const hfXml = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,zipfile,io\nz=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))\nx=[z.read(n).decode() for n in sorted(z.namelist()) if n.startswith("ppt/slides/slide") and n.endswith(".xml")]\nprint(sum("type=\\"ftr\\"" in s and "智能报告 · 内部" in s and "type=\\"sldNum\\"" in s for s in x), len(x))'], { input: downloaded, encoding: 'utf8' })
+    assert.equal(hfXml.stdout.trim(), '4 4')
+    const cellText = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import sys,json\nfrom io import BytesIO\nfrom pptx import Presentation\np=Presentation(BytesIO(sys.stdin.buffer.read()))\nprint(json.dumps([[s.name,[[c.text for c in r.cells] for r in s.table.rows]] for s in p.slides[1].shapes if s.has_table]))'], { input: downloaded, encoding: 'utf8' })
+    assert.deepEqual(JSON.parse(cellText.stdout).find(([name]) => name === 'Fixture Table')[1], [['项目', '金额'], ['收入', '120']])
+  }
+  if (smokeMode === 'hidden-slides') {
+    assert.deepEqual(reopened.pythonPptxHidden, [false, true])
+    assert.ok(reopened.pythonPptxTexts.includes('Second source slide'))
+    activeBytes = downloaded; activeSha = saveReceipt.artifacts.pptx.sha256; activeRevision = 2
+    await page.goto(baseUrl + '/reports/v1/editor/assets/native.html?smokeRevision=2')
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.locator('[data-ribbon-tab="slideShow"]').click()
+    assert.equal(await page.locator('[data-command="hideSlide"]').getAttribute('aria-pressed'), 'false')
+    await page.locator('.slide-open').nth(1).click()
+    assert.equal(await page.locator('[data-command="hideSlide"]').getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('.slide-hidden-badge').count(), 1)
+    if (process.env.PPTX_SMOKE_EVIDENCE_DIR) await page.screenshot({ path: join(resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR), 'revision-2.png'), fullPage: true })
+  } else if (smokeMode === 'native-ai') {
+    assert.ok(reopened.pythonPptxTexts.includes('AI候选标题'))
+    assert.ok(!reopened.pythonPptxTexts.includes('人工后续修改'))
+    assert.deepEqual(reopened.size, inspected.size)
+  } else if (smokeMode === 'textbox') {
     assert.ok(reopened.texts.includes('Ribbon inserted textbox smoke'))
     assert.ok(reopened.pythonPptxTexts.includes('Ribbon inserted textbox smoke'))
     const inserted = reopened.elements.find(item => item.text === 'Ribbon inserted textbox smoke')
@@ -382,6 +739,15 @@ try {
       elementId: operation.animations[0].elementId, effect: 'flyIn', trigger: 'afterPrev',
       durationMs: 1250, delayMs: 300, direction: 'right',
     }])
+  } else if (smokeMode === 'animation-pane') {
+    // 重开回读：缩放保留并改为“同时/1200ms”，正文第 1 段自左飞入，另一对象沿锯齿路径；原淡入已移除。
+    const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+    const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
+    assert.deepEqual(reopened.slides[0].animations.map(({ spid, ...animation }) => animation), [
+      { elementId: other.id, effect: 'zoom', trigger: 'withPrev', durationMs: 1200, delayMs: 0 },
+      { elementId: body.id, effect: 'flyIn', trigger: 'onClick', durationMs: 500, delayMs: 0, direction: 'left', paragraph: 0 },
+      { elementId: other.id, effect: 'motionPath', trigger: 'onClick', durationMs: 2000, delayMs: 0, motionPath: 'M 0 0 L 0.12 -0.12 L 0.24 0.12 L 0.36 0' },
+    ])
   } else if (smokeMode === 'paragraph-lists') {
     const original = JSON.parse(runPython({ mode: 'inspect', bytes: sourceBytes.toString('base64') }))
     assert.deepEqual(reopened.pythonPptxParagraphs[1], original.pythonPptxParagraphs[1])
@@ -431,6 +797,13 @@ try {
     assert.equal(await page.locator('[data-command="lineSpacingPct"]').inputValue(), '200')
     assert.equal(await page.locator('[data-command="spaceBeforePt"]').inputValue(), '12.5')
     assert.equal(await page.locator('[data-command="spaceAfterPt"]').inputValue(), '0')
+  } else if (smokeMode === 'new-slide') {
+    // 修订 2 重开：新页成为普通来源页，不再标记为待写入。
+    activeBytes = downloaded; activeSha = saveReceipt.artifacts.pptx.sha256; activeRevision = 2
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`)
+    await page.locator('.slides-canvas canvas').first().waitFor({ timeout: 60000 })
+    await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
+    assert.equal(await page.locator('.slide-row[data-new-slide]').count(), 0)
   } else {
     assert.deepEqual(reopened.size, targetSize)
     assert.deepEqual(reopened.pythonPptxSize, [targetSize.cx, targetSize.cy])
@@ -465,7 +838,7 @@ try {
     assert.equal(await page.locator('[data-command="slideOrientation"][data-source-action="onSlideSize"]').inputValue(), smokeMode === 'slide-size-presets' ? 'portrait' : 'landscape')
     assert.equal(Number(await page.locator('.geometry-grid input[name="x"]').inputValue()), expectedGeometry.x)
   }
-  assert.equal(reopened.slideCount, 1)
+  assert.equal(reopened.slideCount, smokeMode === 'new-slide' ? 4 : smokeMode === 'hidden-slides' ? 2 : 1)
   if (smokeMode === 'slide-size-recovery') {
     assert.equal(failedResponses.length, 2)
     assert.ok(failedResponses.every(item => item.status === 503 && item.url.endsWith('/api/save')))
@@ -475,8 +848,10 @@ try {
     assert.deepEqual(pageErrors, [])
     assert.deepEqual(failedResponses, [])
   }
-  const receipt = { ok: true, inputBaseline, mode: smokeMode, revision: reopened.revision, originalSha256: sourceIdentity,
-    downloadedSha256: reopened.sha256, size: reopened.size, transitions: reopened.slides[0].transition,
+  await Promise.all(runtimeIdentityReads)
+  const receipt = { ok: true, inputBaseline, mode: smokeMode, manifestSha256, runtimeJavaScript: [...runtimeJavaScript.values()].sort((a, b) => a.path.localeCompare(b.path)), ribbonAudit,
+    ...(smokeMode === 'native-ai' ? { planner: 'deterministic-route-fixture', engine: 'real-pptx-preview-and-save', aiAccepts, cancelledRequestCount: cancelledRequests.size } : {}), revision: reopened.revision, originalSha256: sourceIdentity,
+    downloadedSha256: reopened.sha256, ...(smokeMode === 'hidden-slides' ? { hiddenSlides: operation.hiddenSlides, order: operation.order, pythonPptxHidden: reopened.pythonPptxHidden } : {}), size: reopened.size, transitions: reopened.slides[0].transition,
     animations: reopened.slides[0].animations, operationKinds: savePayload.operations.map(item => item.kind),
     ...(['paragraph-spacing', 'paragraph-lists'].includes(smokeMode) ? { listVariant: smokeMode === 'paragraph-lists' ? listVariant : undefined, paragraphs: reopened.pythonPptxParagraphs.map(shape => shape.paragraphs) } : {}),
   }

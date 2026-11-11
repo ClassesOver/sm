@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from loguru import logger
 from pydantic import ValidationError
+from .native_pdf_contract import PDF_CONFIRMATION_KINDS, pdf_review_issues
 
 from ..reporting.delivery.artifacts_v1 import ArtifactFile
 from ..reporting.delivery.docx_native import inspect_docx, patch_docx
@@ -237,7 +238,7 @@ class NativeEditorService:
     ) -> dict[str, Any]:
         started = perf_counter()
         self.require_enabled(context.format)
-        text_edits = context.format == "pdf" and any(op.get("kind") == "replaceText" for op in operations)
+        text_edits = context.format == "pdf" and any(op.get("kind") in {"replaceText", "insertText"} for op in operations)
         if text_edits and not self.pdf_text_enabled:
             raise ReportingError("native_pdf_text_disabled", "PDF 原位文字编辑尚未开放。")
         content = await self.read_file(context)
@@ -263,7 +264,8 @@ class NativeEditorService:
             patch = partial(patch_office, context.format)
         try:
             receipt = None
-            if text_edits or (context.format == "pdf" and any(op.get("kind") in {"setPageSize", "addMarkup", "removeMarkup", "editNote", "removeNote", "addTextAnnotation"} for op in operations)):
+            # PDF 预览一律走回执路径：每种修改（含绘图、图章、空白页、涂黑、合并/拆分页面）都返回绑定实际输出的确认摘要。
+            if text_edits or (context.format == "pdf" and operations):
                 receipt = await run_office_engine(patch_pdf_with_receipt, content, operations)
                 edited = receipt["content"]
             else:
@@ -284,7 +286,8 @@ class NativeEditorService:
             "sourceSha256": context.source_file.sha256,
             "draftSha256": hashlib.sha256(edited).hexdigest(),
             "model": model,
-            **({key: receipt[key] for key in ("previewDigest", "skippedOperations", "appliedOperationIndices")} if receipt is not None else {}),
+            **({key: receipt[key] for key in ("previewDigest", "skippedOperations", "appliedOperationIndices", "pendingNoteMapping") if key in receipt} if receipt is not None else {}),
+            **({"reviewIssues": pdf_review_issues(receipt)} if receipt is not None and context.format == 'pdf' else {}),
         }
         logger.bind(
             format=context.format, document_id=context.document_id, revision=context.revision,
@@ -327,7 +330,7 @@ class NativeEditorService:
         content = await self.read_file(context)
         try:
             if context.format == "pdf":
-                if any(op.get("kind") == "replaceText" for op in operations) and not self.pdf_text_enabled:
+                if any(op.get("kind") in {"replaceText", "insertText"} for op in operations) and not self.pdf_text_enabled:
                     raise ReportingError("native_pdf_text_disabled", "PDF 原位文字编辑尚未开放。")
                 receipt = await run_office_engine(patch_pdf_with_receipt, content, operations)
                 if expected_preview_digest is not None and receipt["previewDigest"] != expected_preview_digest:
@@ -347,6 +350,11 @@ class NativeEditorService:
         except (OSError, subprocess.SubprocessError):
             raise ReportingError("native_engine_unavailable", "预览引擎暂不可用。") from None
 
+    async def extract_pages(self, context: NativeEditorContext, *, pages: list[int], request_id: str) -> dict[str, Any]:
+        from .native_pdf_extract import extract_pages
+
+        return await extract_pages(self, context, pages=pages, request_id=request_id)
+
     async def save(
         self,
         context: NativeEditorContext,
@@ -359,11 +367,11 @@ class NativeEditorService:
         confirmed_preview_digest: str | None = None,
     ) -> dict[str, Any]:
         self.require_enabled(context.format)
-        if context.format == "pdf" and any(op.get("kind") == "replaceText" for op in operations):
+        if context.format == "pdf" and any(op.get("kind") in {"replaceText", "insertText"} for op in operations):
             if not self.pdf_text_enabled:
                 raise ReportingError("native_pdf_text_disabled", "PDF 原位文字编辑尚未开放。")
-            if not confirmed_preview_digest:
-                raise ReportingError("native_pdf_text_confirmation_required", "请先预览 PDF 文字修改并确认已应用和跳过的项目。")
+        if context.format == 'pdf' and any(op.get('kind') in PDF_CONFIRMATION_KINDS for op in operations) and not confirmed_preview_digest:
+            raise ReportingError('native_pdf_text_confirmation_required','请先核对实际 PDF 预览，并确认执行结果和告警。')
         if self.publication is None:
             raise ReportingError("native_engine_unavailable", "原生保存服务尚未部署。")
         try:

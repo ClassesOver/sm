@@ -1,7 +1,8 @@
+import { IconHeader, IconFooter, IconPageNumber, IconTrash } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { useEffect, useRef, useState } from 'react'
 import { PAGE_MARK, SECTION_PAGES_MARK, TOTAL_PAGES_MARK, type HeaderFooter, type HfParagraph } from '@genoffice/docx-engine'
 import { insertHfField, mountHfEditor, type HfEditorHandle, type HfFieldKind } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/hf-editor'
-import { docxHfTextOf, type DocxHeadersFootersModel, type DocxHfFlags, type DocxHfPart, type DocxHfPartAnchor, type DocxHfSectionAnchor, type DocxHfVariant } from './docx-hf'
+import { docxHfDisplayText, docxHfTextOf, type DocxHeadersFootersModel, type DocxHfFlags, type DocxHfPart, type DocxHfPartAnchor, type DocxHfSectionAnchor, type DocxHfVariant } from './docx-hf'
 
 /** 页眉/页脚编辑面板：固定源 hf-editor 交互收敛——进入部件即挂载嵌套 TipTap 编辑器，
  *  PAGE/NUMPAGES 域为原子节点，退出（完成/失焦/Esc）即提交 setHeaderFooter 严格操作。 */
@@ -13,11 +14,23 @@ export interface DocxHfPendingEditor {
 
 export interface DocxHeaderFooterController {
   editable: boolean
+  forSection?: (sectionId: string) => DocxHeaderFooterController
+  prepareEdges?: () => Promise<DocxPreparedHfEdges>
+  flushPendingEdits?: () => void
   registerEditor?: (editor: DocxHfPendingEditor | null) => void
+  sectionLabel?: string
+  linked?: (part: DocxHfPart, variant: DocxHfVariant) => { value: boolean | null; reason?: string; ownerLabel?: string }
+  onLink?: (part: DocxHfPart, variant: DocxHfVariant, value: boolean, pending?: HeaderFooter) => void
   anchor: DocxHfSectionAnchor
   model: DocxHeadersFootersModel
   valueOf: (part: DocxHfPart, variant: DocxHfVariant) => { value: HeaderFooter; anchor: DocxHfPartAnchor } | null
   onCommit: (part: DocxHfPart, variant: DocxHfVariant, value: HeaderFooter, flags?: DocxHfFlags) => void
+}
+
+export interface DocxPreparedHfEdges {
+  header: { controller: DocxHeaderFooterController; part: 'header'; variant: DocxHfVariant }
+  footer: { controller: DocxHeaderFooterController; part: 'footer'; variant: DocxHfVariant }
+  assertCurrent(): void
 }
 
 const stripPageMarks = (value: HeaderFooter): HeaderFooter => {
@@ -31,19 +44,22 @@ const stripPageMarks = (value: HeaderFooter): HeaderFooter => {
 
 const group = (label: string, children: React.ReactNode) => <section className="ribbon-group docx-ribbon-group" aria-label={label}><div className="ribbon-group-items">{children}</div><div className="ribbon-group-label">{label}</div></section>
 
-export function DocxHeaderFooterSource({ controller }: { controller: DocxHeaderFooterController }) {
+export function DocxHeaderFooterSource({ controller, target }: { controller: DocxHeaderFooterController; target?: { part: DocxHfPart; variant: DocxHfVariant } }) {
+  const sectionAtRender = controller.anchor.sectionId
   const model = controller.model
   const [locked, setLocked] = useState(!controller.editable)
   const editable = controller.editable && !locked
-  const [part, setPart] = useState<DocxHfPart>('header')
-  const [variant, setVariant] = useState<DocxHfVariant>('default')
+  const [part, setPart] = useState<DocxHfPart>(target?.part ?? 'header')
+  const [variant, setVariant] = useState<DocxHfVariant>(target?.variant ?? 'default')
   const [editorReady, setEditorReady] = useState(false)
   const [, refresh] = useState(0)
-  const effectiveVariant = variant === 'first' && !model.titlePg ? 'default' : variant === 'even' && !model.evenAndOddHeaders ? 'default' : variant
+  const effectiveVariant = target ? variant : variant === 'first' && !model.titlePg ? 'default' : variant === 'even' && !model.evenAndOddHeaders ? 'default' : variant
   const found = controller.valueOf(part, effectiveVariant)
+  const link = controller.linked?.(part, effectiveVariant)
+  const contentEditable = editable && found?.anchor.editable !== false
   const host = useRef<HTMLDivElement | null>(null)
   const handle = useRef<HfEditorHandle | null>(null)
-  const valueKey = found ? `${found.value.paras ? docxHfTextOf(found.value) : found.value.text}\u0000${found.value.pageNumber ?? false}\u0000${found.value.paras?.length ?? 0}` : 'missing'
+  const valueKey = found ? `${link?.value ?? ''}\u0000${link?.ownerLabel ?? ''}\u0000${found.value.paras ? docxHfTextOf(found.value) : found.value.text}\u0000${found.value.pageNumber ?? false}\u0000${found.value.paras?.length ?? 0}` : 'missing'
   useEffect(() => {
     controller.registerEditor?.({
       flush: () => { const pending = handle.current?.changed(); if (pending) commit(pending) },
@@ -53,7 +69,7 @@ export function DocxHeaderFooterSource({ controller }: { controller: DocxHeaderF
   }, [controller, part, effectiveVariant])
   useEffect(() => {
     const container = host.current
-    if (!container || !found || !editable) { setEditorReady(false); return }
+    if (!container || !found || !contentEditable) { setEditorReady(false); return }
     const editorHost = document.createElement('div')
     container.replaceChildren(editorHost)
     const mounted = mountHfEditor(editorHost, {
@@ -66,9 +82,9 @@ export function DocxHeaderFooterSource({ controller }: { controller: DocxHeaderF
     return () => { mounted.discard(); if (handle.current === mounted) handle.current = null }
     // valueKey 只作挂载依据：提交后的新值重新挂载，未变化的值不重挂。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [part, effectiveVariant, valueKey, editable])
+  }, [part, effectiveVariant, valueKey, contentEditable, controller.anchor.sectionId])
   const commit = (value: HeaderFooter, flags?: DocxHfFlags) => {
-    if (!controller.editable) return
+    if (!controller.editable || controller.anchor.sectionId !== sectionAtRender) return
     controller.onCommit(part, effectiveVariant, value, flags)
     refresh(value => value + 1)
   }
@@ -84,8 +100,8 @@ export function DocxHeaderFooterSource({ controller }: { controller: DocxHeaderF
   return <div className="ribbon-content docx-source-headerfooter">
     {group('部件', <>
       <div className="docx-hf-tabs" role="group" aria-label="页眉页脚部件">
-        <button type="button" className={`rb-icon docx-ribbon-command${part === 'header' ? ' active' : ''}`} disabled={!editable} onClick={() => { commitPending(); setPart('header') }} aria-pressed={part === 'header'}>页眉</button>
-        <button type="button" className={`rb-icon docx-ribbon-command${part === 'footer' ? ' active' : ''}`} disabled={!editable} onClick={() => { commitPending(); setPart('footer') }} aria-pressed={part === 'footer'}>页脚</button>
+        <button type="button" className={`rb-icon docx-ribbon-command${part === 'header' ? ' active' : ''}`} disabled={!editable} onClick={() => { commitPending(); setPart('header') }} aria-pressed={part === 'header'}><IconHeader size={16} />页眉</button>
+        <button type="button" className={`rb-icon docx-ribbon-command${part === 'footer' ? ' active' : ''}`} disabled={!editable} onClick={() => { commitPending(); setPart('footer') }} aria-pressed={part === 'footer'}><IconFooter size={16} />页脚</button>
       </div>
       <div className="docx-hf-tabs" role="group" aria-label="页眉页脚变体">
         {variantTab('default', '默认', true)}
@@ -93,23 +109,45 @@ export function DocxHeaderFooterSource({ controller }: { controller: DocxHeaderF
         {variantTab('even', '偶数页', model.evenAndOddHeaders)}
       </div>
     </>)}
+    {controller.linked ? group('节归属', <>
+      <span data-source-action="hf-current-section">{controller.sectionLabel}</span>
+      <span data-source-action="hf-effective-owner">{link?.ownerLabel}</span>
+      <label className="docx-hf-option"><input type="checkbox" data-source-action="hf-link-previous" aria-label="链接到前一节" checked={link?.value === true}
+        disabled={!editable || link?.value == null || !!link?.reason} title={link?.reason ?? (link?.value == null ? '首节没有前一节' : '仅作用于当前节的此部件变体')}
+        onMouseDown={event => event.preventDefault()}
+        onChange={event => {
+          const on = event.currentTarget.checked
+          if (on && !window.confirm(`是否替换当前节此${part === 'header' ? '页眉' : '页脚'}变体的内容，并继承前一节？`)) return
+          if (on) { handle.current?.discard(); handle.current = null }
+          const pending = on ? null : handle.current?.changed()
+          if (pending) controller.onLink?.(part, effectiveVariant, on, pending)
+          else controller.onLink?.(part, effectiveVariant, on)
+          refresh(value => value + 1)
+        }} /><span>链接到前一节</span></label>
+    </>) : null}
     {group('选项', <>
-      <label className="docx-hf-option"><input type="checkbox" data-source-action="hf-title-page" aria-label="首页不同" checked={model.titlePg} disabled={!editable}
+      <label className="docx-hf-option"><input type="checkbox" data-source-action="hf-title-page" aria-label="首页不同" checked={model.titlePg}
+        disabled={!editable || !!model.titlePgReadOnlyReason} title={model.titlePgReadOnlyReason ?? undefined}
+        ref={input => { if (input) input.indeterminate = !!model.titlePgReadOnlyReason }}
         onChange={event => commit(currentValue(), { titlePg: event.currentTarget.checked })} /><span>首页不同</span></label>
-      <label className="docx-hf-option"><input type="checkbox" data-source-action="hf-even-odd" aria-label="奇偶页不同" checked={model.evenAndOddHeaders} disabled={!editable}
+      <label className="docx-hf-option"><input type="checkbox" data-source-action="hf-even-odd" aria-label="奇偶页不同" checked={model.evenAndOddHeaders}
+        disabled={!editable || !!model.evenAndOddHeadersReadOnlyReason} title={model.evenAndOddHeadersReadOnlyReason ?? '作用于整篇文档'}
+        ref={input => { if (input) input.indeterminate = !!model.evenAndOddHeadersReadOnlyReason }}
         onChange={event => commit(currentValue(), { evenAndOddHeaders: event.currentTarget.checked })} /><span>奇偶页不同</span></label>
     </>)}
     {group('页码', <>
-      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-insert-page" disabled={!editable || !editorReady} onClick={() => insertField('PAGE')}>页码</button>
-      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-insert-total" disabled={!editable || !editorReady} onClick={() => insertField('NUMPAGES')}>总页数</button>
-      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-insert-section-pages" disabled={!editable || !editorReady} onClick={() => insertField('SECTIONPAGES')}>节页数</button>
-      <label className="layout-num"><span>位置</span><select data-source-action="hf-page-number-position" aria-label="页码位置" defaultValue="" disabled={!editable}
+      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-insert-page" aria-label="页码" disabled={!contentEditable || !editorReady} onClick={() => insertField('PAGE')}><IconPageNumber size={16} />页码</button>
+      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-insert-total" aria-label="总页数" disabled={!contentEditable || !editorReady} onClick={() => insertField('NUMPAGES')}><IconPageNumber size={16} />总页数</button>
+      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-insert-section-pages" aria-label="节页数" disabled={!contentEditable || !editorReady} onClick={() => insertField('SECTIONPAGES')}><IconPageNumber size={16} />节页数</button>
+      <label className="layout-num"><span>位置</span><select data-source-action="hf-page-number-position" aria-label="页码位置" defaultValue="" disabled={!contentEditable}
         onChange={event => { const value = event.currentTarget.value as 'left' | 'center' | 'right' | ''; if (value) pageNumberOnly(value); event.currentTarget.value = '' }}>
         <option value="" disabled>选择位置</option><option value="left">左</option><option value="center">居中</option><option value="right">右</option>
       </select></label>
-      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-remove-page-number" disabled={!editable || !found?.value} onClick={() => found && commit(stripPageMarks(found.value))}>删除页码</button>
+      <button type="button" className="rb-icon docx-ribbon-command" data-source-action="hf-remove-page-number" aria-label="删除页码" disabled={!contentEditable || !found?.value} onClick={() => found && commit(stripPageMarks(found.value))}><IconTrash size={16} />删除页码</button>
     </>)}
     {group('编辑', <div className="docx-hf-editor-host" data-testid="docx-hf-editor-host" ref={host} />)}
+    {found?.anchor.editable === false && <p data-source-action="hf-readonly-content">{docxHfDisplayText(found.value.text)}</p>}
+    {found?.anchor.editable === false && <p className="docx-notice" role="status">{link?.reason ?? '此部件已切换链接，先保存后编辑内容。'}</p>}
     {!editable && <p className="docx-notice" role="status">当前文档不可编辑或正在保存。</p>}
   </div>
 }

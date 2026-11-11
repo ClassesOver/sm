@@ -1649,7 +1649,7 @@ const SLD_OPEN_RE = /<p:sld\b[^>]*>/
 export function patchSlideHiddenXml(bodyPrefix: string, hidden: boolean): string {
   const m = SLD_OPEN_RE.exec(bodyPrefix)
   if (!m) return bodyPrefix
-  let tag = m[0].replace(/\s+show="[^"]*"/, '')
+  let tag = m[0].replace(/\s+show\s*=\s*(?:"[^"]*"|'[^']*')/, '')
   if (hidden) tag = `${tag.slice(0, -1)} show="0">`
   return bodyPrefix.slice(0, m.index) + tag + bodyPrefix.slice(m.index + m[0].length)
 }
@@ -1657,7 +1657,7 @@ export function patchSlideHiddenXml(bodyPrefix: string, hidden: boolean): string
 /** Read whether the bodyPrefix marks the slide as hidden. */
 export function readSlideHiddenXml(bodyPrefix: string): boolean {
   const m = SLD_OPEN_RE.exec(bodyPrefix)
-  return !!m && /\sshow="0"/.test(m[0])
+  return !!m && /\sshow\s*=\s*(?:"(?:0|false)"|'(?:0|false)')/.test(m[0])
 }
 
 // ── Geometry patch (dirtyTransform) ─────────────────────────────────────

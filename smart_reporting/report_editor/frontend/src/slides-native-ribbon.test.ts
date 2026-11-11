@@ -3,6 +3,190 @@ import { createSlidesNativeRibbon, stepNativeFontSize } from './slides-native-ri
 
 afterEach(() => document.body.replaceChildren())
 
+const chartGalleryState = { target: 'rev1:0:chart', kind: 'bar' as const,
+  style: { legendPos: 'b' as const, dataLabels: false, gridlines: true, gapWidthPct: 150 },
+  colorSchemes: [{key:'default' as const,label:'主题默认',colors:[]},{key:'warm' as const,label:'暖色',colors:['#ED7D31','#FFC000','#FF0000','#C55A11','#833C00']}] }
+
+it('图表图库显示源缩略图并按实际样式标记当前预设，点击委托既有编辑动作',()=>{
+ const host=document.body.appendChild(document.createElement('div')),onAction=vi.fn()
+ const ribbon=createSlidesNativeRibbon(host,{onAction})
+ ribbon.setContext('chart');ribbon.setChartDesign(chartGalleryState)
+ const cards=host.querySelectorAll<HTMLButtonElement>('[data-chart-preset-card]')
+ expect(cards).toHaveLength(10)
+ expect(cards[0]!.querySelector('svg')?.getAttribute('viewBox')).toBe('0 0 64 40')
+ expect(cards[0]!.querySelectorAll('svg rect')).toHaveLength(8)
+ expect(host.querySelector('[data-chart-preset-card="grid"]')?.getAttribute('aria-pressed')).toBe('true')
+ host.querySelector<HTMLButtonElement>('[data-chart-preset-card="bold"]')!.click()
+ expect(onAction).toHaveBeenCalledWith('chartStylePreset','bold')
+ ribbon.setChartDesign({...chartGalleryState,kind:'line',style:{...chartGalleryState.style,gapWidthPct:50}})
+ expect(host.querySelector('[data-chart-preset-card="classic"]')!.querySelectorAll('polyline')).toHaveLength(2)
+ expect([...host.querySelectorAll('[data-chart-preset-card][aria-pressed="true"]')].map(el=>el.getAttribute('data-chart-preset-card'))).toEqual(['grid','bold','slim'])
+ ribbon.setChartDesign({...chartGalleryState,kind:'doughnut'})
+ expect(host.querySelector('[data-chart-preset-card="classic"]')!.querySelectorAll('circle')).toHaveLength(2)
+ ribbon.dispose()
+})
+
+it('图表配色卡片显示来源前四色，选择关闭菜单且旧菜单不能跨对象写入',()=>{
+ const host=document.body.appendChild(document.createElement('div')),onAction=vi.fn()
+ const ribbon=createSlidesNativeRibbon(host,{onAction})
+ ribbon.setContext('chart');ribbon.setChartDesign(chartGalleryState)
+ const toggle=host.querySelector<HTMLButtonElement>('[data-chart-colors-toggle]')!
+ expect(toggle).not.toBeNull();toggle.click()
+ const menu=document.querySelector<HTMLElement>('[data-chart-colors-menu]')!
+ expect(menu.hidden).toBe(false)
+ const warm=menu.querySelector<HTMLButtonElement>('[data-chart-scheme-card="warm"]')!
+ expect(warm.querySelectorAll('.rb-chart-scheme-dot')).toHaveLength(4)
+ warm.click();expect(menu.hidden).toBe(true)
+ expect(onAction).toHaveBeenCalledWith('chartColorScheme','warm')
+ toggle.click()
+ const stale=menu.querySelector<HTMLButtonElement>('[data-chart-scheme-card="warm"]')!
+ ribbon.setChartDesign({...chartGalleryState,target:'rev1:0:other'})
+ expect(menu.hidden).toBe(true);toggle.click();stale.click()
+ expect(onAction).toHaveBeenCalledTimes(1)
+ ribbon.setLocked(true)
+ expect(toggle.disabled).toBe(true)
+ expect([...host.querySelectorAll<HTMLButtonElement>('[data-chart-preset-card]')].every(card=>card.disabled)).toBe(true)
+ ribbon.setLocked(false);ribbon.setChartDesign(null)
+ expect(toggle.disabled).toBe(true)
+ ribbon.dispose();expect(document.querySelector('[data-chart-colors-menu]')).toBeNull()
+})
+
+it('图表配色菜单支持Escape、点外部和切换功能区关闭，不产生编辑',()=>{
+ const host=document.body.appendChild(document.createElement('div')),onAction=vi.fn()
+ const ribbon=createSlidesNativeRibbon(host,{onAction})
+ ribbon.setContext('chart');ribbon.setChartDesign(chartGalleryState)
+ host.querySelector<HTMLButtonElement>('[data-ribbon-tab="chartDesign"]')!.click()
+ const toggle=host.querySelector<HTMLButtonElement>('[data-chart-colors-toggle]')!
+ toggle.click()
+ const menu=document.querySelector<HTMLElement>('[data-chart-colors-menu]')!
+ menu.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))
+ expect(menu.hidden).toBe(true);expect(document.activeElement).toBe(toggle)
+ const outside=document.body.appendChild(document.createElement('button'))
+ outside.addEventListener('pointerdown',event=>event.stopPropagation())
+ toggle.click();outside.dispatchEvent(new Event('pointerdown',{bubbles:true}))
+ expect(menu.hidden).toBe(true)
+ toggle.click();host.querySelector<HTMLButtonElement>('[data-ribbon-tab="home"]')!.click()
+ expect(menu.hidden).toBe(true)
+ toggle.click();ribbon.setContext('shape');expect(menu.hidden).toBe(true)
+ expect(onAction).not.toHaveBeenCalled();ribbon.dispose()
+})
+
+it('图表配色卡片可在浮层内滚动，页面或功能区滚动时关闭旧锚点',()=>{
+ const host=document.body.appendChild(document.createElement('div'))
+ const ribbon=createSlidesNativeRibbon(host,{onAction:vi.fn()})
+ ribbon.setContext('chart');ribbon.setChartDesign(chartGalleryState)
+ host.querySelector<HTMLButtonElement>('[data-chart-colors-toggle]')!.click()
+ const menu=document.querySelector<HTMLElement>('[data-chart-colors-menu]')!
+ menu.dispatchEvent(new Event('scroll'))
+ expect(menu.hidden).toBe(false)
+ const toggle=host.querySelector<HTMLButtonElement>('[data-chart-colors-toggle]')!
+ vi.spyOn(toggle,'getBoundingClientRect').mockReturnValue({left:20,top:10,width:100,height:30} as DOMRect)
+ window.dispatchEvent(new Event('scroll'));expect(menu.hidden).toBe(true)
+ ribbon.dispose()
+})
+
+it('图表配色浮层忽略打开前延迟送达的滚动和resize，只在锚点实际移动后关闭',()=>{
+ const host=document.body.appendChild(document.createElement('div'))
+ const ribbon=createSlidesNativeRibbon(host,{onAction:vi.fn()})
+ ribbon.setContext('chart');ribbon.setChartDesign(chartGalleryState)
+ const toggle=host.querySelector<HTMLButtonElement>('[data-chart-colors-toggle]')!
+ const rect=vi.spyOn(toggle,'getBoundingClientRect').mockReturnValue({left:20,top:10,bottom:40,width:100,height:30} as DOMRect)
+ toggle.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))
+ const menu=document.querySelector<HTMLElement>('[data-chart-colors-menu]')!
+ host.querySelector('.rb-chart-style-row')!.dispatchEvent(new Event('scroll'))
+ window.dispatchEvent(new Event('scroll'));window.dispatchEvent(new Event('resize'))
+ expect(menu.hidden).toBe(false)
+ rect.mockReturnValue({left:10,top:10,bottom:40,width:100,height:30} as DOMRect)
+ host.dispatchEvent(new Event('scroll'))
+ expect(menu.hidden).toBe(true)
+ toggle.click()
+ const originalWidth=window.innerWidth
+ try {
+   window.innerWidth=originalWidth-1
+   window.dispatchEvent(new Event('resize'))
+   expect(menu.hidden).toBe(true)
+ } finally { window.innerWidth=originalWidth }
+ ribbon.dispose()
+})
+
+it('初始只读的图表图库不能因来源回填而重新启用',()=>{
+ const host=document.body.appendChild(document.createElement('div'))
+ const ribbon=createSlidesNativeRibbon(host,{onAction:vi.fn(),locked:true})
+ ribbon.setContext('chart');ribbon.setChartDesign(chartGalleryState)
+ expect(host.querySelector<HTMLButtonElement>('[data-chart-colors-toggle]')!.disabled).toBe(true)
+ expect([...host.querySelectorAll<HTMLButtonElement>('[data-chart-preset-card]')].every(card=>card.disabled)).toBe(true)
+ ribbon.dispose()
+})
+
+it('字体功能区只提供排版控件，正文由画布和对象面板编辑', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const font = host.querySelector('[data-ribbon-group=Font]')!
+  expect(font.querySelector('textarea, [data-command=text]')).toBeNull()
+  expect(font.querySelectorAll('.slides-ribbon-toggle-label')).toHaveLength(4)
+  expect([...font.querySelectorAll('[data-command]')].slice(0, 2).map(control => control.getAttribute('data-command'))).toEqual(['fontFamily', 'fontSize'])
+  ribbon.setTextFormatEnabled(true)
+  ribbon.setValue('fontFamily', 'Arial')
+  ribbon.setValue('fontSize', '24')
+  expect(font.querySelector<HTMLInputElement>('[data-command=fontFamily]')!.value).toBe('Arial')
+  expect(font.querySelector<HTMLInputElement>('[data-command=fontSize]')!.value).toBe('24')
+  font.querySelector<HTMLButtonElement>('[data-command=bold]')!.click()
+  expect(onAction).toHaveBeenCalledWith('bold', true)
+  ribbon.dispose()
+})
+
+it('提供来源组合和取消组合动作，以及两个只读静态放映入口', () => {
+  const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  for (const [command, source] of [['groupObjects', 'groupSelected'], ['ungroupObjects', 'ungroupSelected'], ['startShow', 'onSlideShow'], ['startShowCurrent', 'onSlideShow']]) {
+    const control = host.querySelector<HTMLButtonElement>('[data-command="' + command + '"]')!
+    expect(control, command).not.toBeNull()
+    expect(control.disabled, command).toBe(false)
+    expect(control.dataset.sourceAction).toBe(source)
+    expect(control.querySelector('svg')).not.toBeNull()
+    control.click()
+  }
+  expect(onAction.mock.calls.map(([command]) => command)).toEqual(['groupObjects', 'ungroupObjects', 'startShow', 'startShowCurrent'])
+  expect(host.querySelector<HTMLButtonElement>('[data-command="presenter"]')!.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('新增组合和当前页放映入口采用中文文案', () => {
+  document.documentElement.lang = 'zh-CN'
+  const host = document.body.appendChild(document.createElement('div'))
+  const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
+  try {
+    for (const [command, label] of [['groupObjects', '组合'], ['ungroupObjects', '取消组合'], ['startShowCurrent', '从当前页开始']]) {
+      expect(host.querySelector('[data-command="' + command + '"]')?.textContent).toContain(label)
+    }
+  } finally { ribbon.dispose(); document.documentElement.lang = '' }
+})
+
+it('gives every command button a semantic decorative SVG without changing its accessible name', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('button[data-command]')]
+  expect(buttons.length).toBeGreaterThan(70)
+  expect(buttons.filter(button => !button.querySelector('svg')).map(button => button.dataset.command)).toEqual([])
+  for (const button of buttons) {
+    const glyphs = [...button.querySelectorAll('svg')]
+    expect(glyphs).toHaveLength(1)
+    expect(glyphs[0]!.getAttribute('aria-hidden'), button.dataset.command).toBe('true')
+    expect(glyphs[0]!.querySelector('title, desc')).toBeNull()
+    const text = button.cloneNode(true) as HTMLButtonElement
+    text.querySelectorAll('svg').forEach(glyph => glyph.remove())
+    const visibleLabel = text.textContent!.trim()
+    expect(visibleLabel, button.dataset.command).not.toBe('')
+    const accessibleLabel = button.getAttribute('aria-label')!
+    expect(accessibleLabel.startsWith(visibleLabel), button.dataset.command).toBe(true)
+    if (button.dataset.unavailable !== 'true') expect(accessibleLabel).toBe(visibleLabel)
+  }
+  expect(host.querySelector<HTMLButtonElement>('[data-command="print"]')!.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('keeps the upstream slide ribbon tabs and contextual tabs available by selection type', () => {
   const host = document.createElement('div')
   document.body.append(host)
@@ -18,7 +202,7 @@ it('keeps the upstream slide ribbon tabs and contextual tabs available by select
   ribbon.dispose()
 })
 
-it('preserves GenOffice Home clipboard action IDs, source glyphs and disabled browser states', () => {
+it('preserves GenOffice Home clipboard action IDs and source glyphs for enabled browser adapters', () => {
   const host = document.createElement('div')
   document.body.append(host)
   const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
@@ -27,8 +211,8 @@ it('preserves GenOffice Home clipboard action IDs, source glyphs and disabled br
   expect(host.querySelector('[aria-label="Clipboard"]')).not.toBeNull()
   for (const sourceId of sourceActions) {
     const control = host.querySelector<HTMLButtonElement>(`[data-source-action="${sourceId}"]`)!
-    expect(control.disabled).toBe(true)
-    expect(control.dataset.unavailable).toBe('true')
+    expect(control.disabled).toBe(false)
+    expect(control.dataset.unavailable).toBeUndefined()
     expect(control.querySelector('svg')).not.toBeNull()
   }
   ribbon.dispose()
@@ -47,16 +231,54 @@ it('uses the pinned GenOffice Simplified Chinese clipboard labels when the docum
   document.documentElement.lang = ''
 })
 
-it('preserves the pinned Review Comments actions, order, icons and disabled states', () => {
+it('localizes visible slide ribbon tabs, groups and controls in Simplified Chinese without dropping icons', () => {
   const host = document.createElement('div')
   document.body.append(host)
+  document.documentElement.lang = 'zh-CN'
   const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
+
+  expect([...host.querySelectorAll('[role=tab]:not([hidden])')].map(tab => tab.textContent)).toEqual([
+    '文件', '开始', '插入', '绘图', '设计', '切换', '动画', '幻灯片放映', '审阅', '视图',
+  ])
+  expect(host.querySelector('[aria-label="幻灯片"]')).not.toBeNull()
+  expect(host.querySelector('[data-command="addSlide"]')?.textContent).toContain('新建幻灯片')
+  expect(host.querySelector('[data-command="insertTable"] svg')).not.toBeNull()
+  expect(host.querySelector('[data-command="insertTable"]')?.textContent).toContain('表格')
+  const transition = host.querySelector<HTMLSelectElement>('[data-command="transition"]')!
+  expect(transition.options[0].textContent).toBe('无')
+  expect(transition.options[1].textContent).toBe('平滑')
+  expect(transition.options[1].value).toBe('morph')
+  ribbon.setContext('table')
+  expect(host.querySelector('[data-ribbon-tab="tableDesign"]')?.textContent).toBe('表格设计')
+  expect(host.querySelector('[aria-label="表格样式"]')).not.toBeNull()
+  ribbon.setContext('shape')
+  expect(host.querySelector('[data-ribbon-tab="shapeFormat"]')?.textContent).toBe('形状格式')
+  expect(host.querySelector('[aria-label="形状样式"]')).not.toBeNull()
+  ribbon.dispose()
+  document.documentElement.lang = ''
+})
+
+it('preserves the pinned Review Comments actions and gates writes on source availability and save lock', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
   const comments = host.querySelector<HTMLElement>('[aria-label="Comments"]')!
   const controls = [...comments.querySelectorAll<HTMLButtonElement>('[data-source-action]')]
 
   expect(controls.map(control => control.dataset.sourceAction)).toEqual(['onNewComment', 'onToggleComments'])
-  expect(controls.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
+  expect(controls[0]!.disabled).toBe(true)
+  expect(controls[1]!.disabled).toBe(false)
   expect(controls.every(control => control.querySelector('svg'))).toBe(true)
+  ribbon.setCommentEditEnabled(true)
+  controls[0]!.click(); controls[1]!.click()
+  expect(onAction.mock.calls.map(([command]) => command)).toEqual(['newComment', 'commentsPane'])
+  ribbon.setValue('commentsPane', 'true')
+  expect(controls[1]!.getAttribute('aria-pressed')).toBe('true')
+  ribbon.setCommentEditEnabled(false, '来源只读')
+  expect(controls[0]!.disabled).toBe(true); expect(controls[0]!.title).toBe('来源只读')
+  ribbon.setLocked(true); expect(controls.every(control => control.disabled)).toBe(true)
+  ribbon.setLocked(false); expect(controls[0]!.disabled).toBe(true); expect(controls[1]!.disabled).toBe(false)
   ribbon.dispose()
 })
 
@@ -204,17 +426,31 @@ it('preserves Insert table, image, shape and chart source actions while disablin
     const group = host.querySelector<HTMLElement>(`[aria-label="${groupName}"]`)!
     const controls = [...group.querySelectorAll<HTMLButtonElement>('[data-source-action]')]
     expect(controls.map(control => control.dataset.sourceAction)).toEqual(actions)
-    expect(controls.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
-    expect(controls.every(control => control.querySelector('svg'))).toBe(true)
+    const unsupported = controls.filter(control => !['onPickShape', 'onInsertTable', 'onInsertChart', 'onInsertSmartArt'].includes(control.dataset.sourceAction!))
+    expect(unsupported.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
+    expect(unsupported.every(control => control.querySelector('svg'))).toBe(true)
   }
+  // Chart 已接通（固定源 13 种图表）
+  const chartPicker = host.querySelector<HTMLSelectElement>('select[data-command="insertChart"]')!
+  expect(chartPicker.disabled).toBe(false)
+  expect([...chartPicker.options].slice(1).map(option => option.value)).toEqual(['bar', 'barStacked', 'barPercentStacked', 'barH', 'bar3D', 'line', 'area', 'pie', 'pie3D', 'doughnut', 'scatter', 'radar', 'comboBarLine'])
+  // Table 已接通（行列对话框）
+  expect(host.querySelector<HTMLButtonElement>('[data-source-action="onInsertTable"]')!.disabled).toBe(false)
+  // Shapes 已接通：固定源形状库 7 组 109 个预设
+  const shapes = host.querySelector<HTMLSelectElement>('select[data-command="insertShape"]')!
+  expect(shapes.closest('[data-source-action]')?.getAttribute('data-source-action') ?? shapes.dataset.sourceAction).toBe('onPickShape')
+  expect(shapes.disabled).toBe(false)
+  expect(shapes.querySelectorAll('optgroup')).toHaveLength(7)
+  expect(shapes.querySelectorAll('optgroup option')).toHaveLength(109)
   const images = host.querySelector<HTMLElement>('[aria-label="Images"]')!
   const picture = images.querySelector<HTMLButtonElement>('[data-source-action="onInsertImage"]')!
-  expect(picture.disabled).toBe(true)
-  expect(picture.dataset.unavailable).toBe('true')
+  expect(picture.disabled).toBe(false)
+  expect(picture.dataset.unavailable).toBeUndefined()
   expect(picture.querySelector('svg')).not.toBeNull()
-  const smartArt = host.querySelector<HTMLButtonElement>('[data-source-action="onInsertSmartArt"]')!
-  expect(smartArt.disabled).toBe(true)
-  expect(smartArt.dataset.unavailable).toBe('true')
+  // SmartArt 已接通：固定源 7 种布局
+  const smartArt = host.querySelector<HTMLSelectElement>('select[data-command="insertSmartArt"]')!
+  expect(smartArt.disabled).toBe(false)
+  expect([...smartArt.options].slice(1).map(option => option.textContent)).toEqual(['垂直列表', '基本流程', '基本循环', '组织结构', '基本棱锥图', '基本矩阵', '基本维恩图'])
   ribbon.dispose()
 })
 
@@ -225,9 +461,13 @@ it('connects the source text-box action and disables unsupported Insert Text and
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   const textGroup = host.querySelector<HTMLElement>('.slides-native-ribbon-group[aria-label="Text"]')!
   const textBox = textGroup.querySelector<HTMLButtonElement>('[data-command="addText"]')!
-  const unsupportedTextActions = [
-    'onInsertWordArt', 'onOpenHeaderFooter', 'onInsertField:datetime', 'onInsertField:slidenum',
-  ]
+  const unsupportedTextActions: string[] = []
+  const wordArt = textGroup.querySelector<HTMLSelectElement>('select[data-command="insertWordArt"]')!
+  expect(wordArt.disabled).toBe(false)
+  expect([...wordArt.options].slice(1).map(option => option.textContent)).toEqual(['填充：蓝色', '填充：金色', '填充：深红', '填充：紫色', '填充：绿色；斜体', '填充：白色；描边：橙色', '填充：白色；描边：深红', '填充：金色；描边：棕色', '填充：天蓝；描边：藏青', '填充：藏青；描边：白色', '填充：黑色；描边：金色', '填充：银色；描边：深灰'])
+  expect(textGroup.querySelector<HTMLButtonElement>('[data-source-action="onOpenHeaderFooter"]')!.disabled).toBe(false)
+  // 日期与页码字段已接通（固定源 insertField）
+  for (const action of ['onInsertField:datetime', 'onInsertField:slidenum']) expect(textGroup.querySelector<HTMLButtonElement>(`[data-source-action="${action}"]`)!.disabled).toBe(false)
 
   expect(textBox.disabled).toBe(false)
   expect(textBox.dataset.sourceAction).toBe('onInsert')
@@ -282,7 +522,7 @@ it('dispatches selected text formatting and keeps unsupported paragraph formats 
   expect(bold.querySelector('svg')).not.toBeNull()
   ribbon.setValue('underline', 'true')
   expect(underline.getAttribute('aria-pressed')).toBe('true')
-  expect(host.querySelector<HTMLButtonElement>('[data-command="alignLeft"]')!.disabled).toBe(true)
+  expect(host.querySelector<HTMLButtonElement>('[data-command="alignLeft"]')!.disabled).toBe(false)
   ribbon.dispose()
 })
 
@@ -360,9 +600,17 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(animationGroup.querySelector<HTMLElement>('[data-source-action="onAddAnimation"]')?.dataset.command).toBe('addAnimation')
   expect(animationPanel.querySelector<HTMLElement>('[data-source-action="onAnimTiming"]')?.dataset.command).toBe('animationTrigger')
   expect(animationPanel.querySelector('[data-command="animationPreview"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationPanel.querySelector('[data-command="motionPathRight"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('data-unavailable')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('data-unavailable')).toBe('true')
+  // 整页动画序列接通后：无、动画窗格、按段与五条动作路径均可用，并派发各自命令
+  for (const command of ['animationNone', 'toggleAnimationPane', 'animationByParagraph', 'motionPathRight', 'motionPathDown', 'motionPathDiagonal', 'motionPathCircle', 'motionPathZigzag']) {
+    const control = animationPanel.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!
+    expect(control.dataset.unavailable, command).toBeUndefined()
+    control.click()
+    expect(onAction, command).toHaveBeenCalledWith(command)
+  }
+  expect(animationPanel.querySelector<HTMLElement>('[data-command="motionPathZigzag"]')?.dataset.sourceAction).toBe('onApplyMotionPath')
+  ribbon.setValue('toggleAnimationPane', 'true'); ribbon.setValue('animationByParagraph', 'true')
+  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
+  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
 
   transition.value = 'wipe'
   transition.dispatchEvent(new Event('change', { bubbles: true }))
@@ -448,5 +696,102 @@ it('retains source transition editability across lock/unlock independently of Ap
   ribbon.setLocked(false); expect(select.disabled).toBe(false)
   ribbon.setTransitionEditEnabled(false, '来源无法保真'); ribbon.setLocked(true); ribbon.setLocked(false)
   expect(select.disabled).toBe(true); expect(select.title).toBe('来源无法保真')
+  ribbon.dispose()
+})
+
+it('enables the pinned New Slide command on Home and Insert and dispatches addSlide', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const commands = [...host.querySelectorAll<HTMLButtonElement>('[data-command="addSlide"]')]
+  expect(commands).toHaveLength(2)
+  for (const command of commands) {
+    expect(command.dataset.sourceAction).toBe('onAddSlide')
+    expect(command.disabled).toBe(false)
+    command.click()
+  }
+  expect(onAction.mock.calls.map(call => call[0])).toEqual(['addSlide', 'addSlide'])
+  ribbon.setLocked(true)
+  expect(commands.every(command => command.disabled)).toBe(true)
+  ribbon.dispose()
+})
+
+it('offers New Slide with Layout as a layout picker that dispatches the chosen path and resets', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction, layouts: [{ path: 'ppt/slideLayouts/slideLayout1.xml', name: 'Title Slide', layoutType: 'title', placeholders: [] }, { path: 'ppt/slideLayouts/slideLayout2.xml', name: 'Title and Content', layoutType: 'obj', placeholders: [] }] as never })
+  const picker = host.querySelector<HTMLSelectElement>('select[data-command="addSlideWithLayout"]')!
+  expect(picker.dataset.sourceAction ?? picker.closest('[data-source-action]')?.getAttribute('data-source-action')).toBe('onAddSlideWithLayout')
+  expect([...picker.options].map(option => option.value)).toEqual(['', 'ppt/slideLayouts/slideLayout1.xml', 'ppt/slideLayouts/slideLayout2.xml'])
+  picker.value = 'ppt/slideLayouts/slideLayout2.xml'; picker.dispatchEvent(new Event('change'))
+  expect(onAction).toHaveBeenCalledWith('addSlideWithLayout', 'ppt/slideLayouts/slideLayout2.xml')
+  expect(picker.value).toBe('')
+  ribbon.setLayouts([{ path: 'ppt/slideLayouts/slideLayout7.xml', name: 'Blank' }])
+  expect([...picker.options].map(option => option.textContent)).toEqual(['新建指定版式幻灯片…', 'Blank'])
+  ribbon.dispose()
+})
+
+it('enables the pinned Reset Layout command', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const command = host.querySelector<HTMLButtonElement>('[data-command="resetLayout"]')!
+  expect(command.dataset.sourceAction).toBe('onResetLayout')
+  expect(command.disabled).toBe(false)
+  command.click()
+  expect(onAction).toHaveBeenCalledWith('resetLayout')
+  ribbon.dispose()
+})
+
+it('enables the Shape Format fill and outline controls with their source actions', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  ribbon.setContext('shape')
+  const fill = host.querySelector<HTMLInputElement>('input[data-command="shapeFill"]')!
+  const width = host.querySelector<HTMLSelectElement>('select[data-command="shapeOutlineWidth"]')!
+  expect(fill.disabled).toBe(false)
+  expect([...width.options].map(option => option.value)).toEqual(['0.75', '1', '1.5', '2.25', '3', '4.5', '6'])
+  fill.value = '#2e7d32'; fill.dispatchEvent(new Event('change'))
+  host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
+  expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
+  expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
+  const change = host.querySelector<HTMLSelectElement>('select[data-command="changeShape"]')!
+  expect(change.disabled).toBe(false)
+  expect([...change.querySelectorAll('optgroup option')].map(option => (option as HTMLOptionElement).value)).not.toContain('lineArrow')
+  change.value = 'hexagon'; change.dispatchEvent(new Event('change'))
+  expect(onAction).toHaveBeenCalledWith('changeShape', 'hexagon')
+  expect(change.value).toBe('')
+  ribbon.dispose()
+})
+
+it('enables the pinned Add Section command', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  const command = host.querySelector<HTMLButtonElement>('[data-command="addSection"]')!
+  expect(command.dataset.sourceAction).toBe('onAddSection')
+  expect(command.disabled).toBe(false)
+  command.click()
+  expect(onAction).toHaveBeenCalledWith('addSection')
+  ribbon.dispose()
+})
+
+it('段落区先呈现列表与对齐，参数输入对齐且保留完整提示', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
+  const group = host.querySelector('[data-ribbon-group=Paragraph]')!
+  const commands = [...group.querySelectorAll('[data-command]')].map(control => control.getAttribute('data-command'))
+  expect(commands.slice(0, 7)).toEqual(['bulletChar', 'bulletNumber', 'bulletNone', 'paragraphAlignLeft', 'paragraphAlignCenter', 'paragraphAlignRight', 'paragraphAlignJustify'])
+  expect(group.querySelector('[data-command=bulletCharPreset]')?.parentElement?.className).toBe('slides-ribbon-field')
+  for (const command of ['bulletChar', 'indentIncrease', 'paragraphAlignLeft']) {
+    const control = group.querySelector<HTMLElement>('[data-command='+command+']')!
+    expect(control.title).toContain(control.getAttribute('aria-label'))
+  }
   ribbon.dispose()
 })

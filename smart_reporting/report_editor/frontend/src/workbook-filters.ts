@@ -1,3 +1,5 @@
+import { Styles, Worksheet, type IWorksheetData } from '@univerjs/core'
+import { FilterModel, type IAutoFilter, type ICustomFilters } from '@univerjs/sheets-filter'
 import type { WorkbookModel } from '@sheets-web/xlsx-engine'
 import type { WorkbookOperation } from './workbook-draft'
 import { isHiddenAxisEntry } from './workbook-vendor/core/univer-data'
@@ -54,7 +56,7 @@ const criteriaOf = (data: FilterCriteriaData, offset: number): FilterCriteria | 
   if (values?.length) criteria.values = [...values]
   if (data.filters?.blank === true) criteria.blank = true
   const customs = data.customFilters
-  if (customs?.customFilters?.length) criteria.customs = { and: customs.and === 1 || customs.and === true ? true : undefined, filters: customs.customFilters.map(item => ({ val: item.val, ...(item.operator ? { operator: item.operator } : {}) })) }
+  if (customs?.customFilters?.length) criteria.customs = { ...(customs.and === 1 || customs.and === true ? { and: true } : {}), filters: customs.customFilters.map(item => ({ val: item.val, ...(item.operator ? { operator: item.operator } : {}) })) }
   if (criteria.values === undefined && criteria.blank === undefined && criteria.customs === undefined) return null
   return criteria
 }
@@ -98,7 +100,9 @@ export const FILTER_RESOURCE = 'SHEET_FILTER_PLUGIN'
 
 /** 加载时把源筛选灌入网格（pinned sheets-filter 的 SHEET_FILTER_PLUGIN 快照资源，
  *  同 withWorkbookNotes 的 SHEET_NOTE_PLUGIN 方式）：范围、条件（colId 转为绝对列）
- *  及 cachedFilteredOut（文件中范围内已隐藏的数据行，加载不重算，避免改变可见性）。
+ *  及 cachedFilteredOut（文件中范围内已隐藏的数据行，保持初始可见性）。
+ *  可由原生条件解释的源隐藏只放入filter cache，不能同时保留为人工hd，
+ *  否则之后修改条件也无法重新显示；匹配条件却隐藏的源行保留人工hd。
  *  否则 getFilter() 加载后即为 null，保存无关修改时会被差分误判为"移除筛选"。 */
 export function withWorkbookFilters<T extends { sheets: Record<string, { id: string; name: string }> }>(data: T, model: WorkbookModel): T {
   const resource: Record<string, unknown> = {}
@@ -107,15 +111,26 @@ export function withWorkbookFilters<T extends { sheets: Record<string, { id: str
     if (!source || gridCannotCarry(source)) continue
     const span = source.range!
     const range: FilterRange = { startRow: span.startRow, endRow: span.endRow, startColumn: span.startColumn, endColumn: span.endColumn }
-    resource[sheet.id] = {
+    const state: IAutoFilter = {
       ref: range,
       filterColumns: source.columns.map(column => ({
         colId: range.startColumn + column.colId,
         ...(column.values !== undefined || column.blank ? { filters: { ...(column.blank ? { blank: true } : {}), ...(column.values?.length ? { filters: [...column.values] } : {}) } } : {}),
-        ...(column.customs ? { customFilters: { ...(column.customs.and ? { and: 1 } : {}), customFilters: column.customs.filters.map(item => ({ ...item })) } } : {}),
+        ...(column.customs ? { customFilters: { ...(column.customs.and ? { and: 1 } : {}), customFilters: column.customs.filters.map(item => ({ ...item })) as ICustomFilters['customFilters'] } } : {}),
       })),
       cachedFilteredOut: sourceHiddenRows(model, sheet.name, range),
     }
+    const snapshot = sheet as unknown as Partial<IWorksheetData>
+    // 仅完整加载cellData的实际网格可做分类；轻量资源投影调用方保持原行为。
+    if (snapshot.cellData && snapshot.rowData && state.cachedFilteredOut?.length) {
+      const styles = new Styles((data as T & { styles?: ConstructorParameters<typeof Styles>[0] }).styles)
+      const worksheet = new Worksheet('source-filter-visibility', snapshot, styles)
+      const calculated = FilterModel.deserialize('source-filter-visibility', sheet.id, worksheet, { ref: state.ref, filterColumns: state.filterColumns })
+      try {
+        for (const row of state.cachedFilteredOut) if (calculated.filteredOutRows.has(row) && snapshot.rowData[row]) delete snapshot.rowData[row]!.hd
+      } finally { calculated.dispose() }
+    }
+    resource[sheet.id] = state
   }
   if (!Object.keys(resource).length) return data
   const existing = (data as T & { resources?: { name: string; data: string }[] }).resources ?? []

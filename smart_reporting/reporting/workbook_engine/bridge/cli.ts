@@ -7,6 +7,7 @@ import {
   formatAddress, escapeXmlText, type CellEdit,
 } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from './operations'
+import { applyStaticImages, workbookSourceMapping } from './images'
 
 const scalar = z.union([z.string(), z.number().finite(), z.boolean(), z.null()])
 const rowCell = z.union([scalar, z.object({
@@ -88,18 +89,28 @@ async function create(request: any): Promise<void> {
   const contentTypes = await zip.file('[Content_Types].xml')!.async('string')
   zip.file('[Content_Types].xml', contentTypes.replace('</Types>', '<Override PartName="/smart-reporting/source-mapping.json" ContentType="application/json"/></Types>'))
   bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+  const images = await applyStaticImages(bytes, request.images ?? [])
+  bytes = images.bytes
   const model = await readWorkbook(bytes)
   await writeFile(request.output, bytes)
-  console.log(JSON.stringify({ sheetCount: model.sheets.length, issues: [] }))
+  console.log(JSON.stringify({ sheetCount: model.sheets.length, issues: images.issues }))
 }
 
 async function main() {
   const request = JSON.parse(await readFile(process.argv[2]!, 'utf-8'))
   if (request.kind === 'create') return create(request)
   const bytes = new Uint8Array(await readFile(request.input))
-  if (request.kind === 'inspect') console.log(JSON.stringify(await readWorkbook(bytes)))
+  if (request.kind === 'inspect') {
+    const mapping = await workbookSourceMapping(bytes)
+    console.log(JSON.stringify({ ...await readWorkbook(bytes), sourceMapping: mapping, images: mapping.images ?? [] }))
+  }
   else if (request.kind === 'patch') {
-    const output = await applyWorkbookOperations(bytes, request.operations)
+    let output: Uint8Array = bytes
+    for (const operation of request.operations) {
+      output = operation.kind === 'applyStaticImages'
+        ? (await applyStaticImages(output, operation.images, operation.sourceMapping, operation.imageIssues)).bytes
+        : await applyWorkbookOperations(output, [operation])
+    }
     await readWorkbook(output)
     await writeFile(request.output, output)
     console.log(JSON.stringify({ ok: true }))

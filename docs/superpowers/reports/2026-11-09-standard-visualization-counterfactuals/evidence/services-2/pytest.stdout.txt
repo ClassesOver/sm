@@ -1,0 +1,26 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0 -- /home/junge/pros/smart_reporting/.venv/bin/python
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /home/junge/pros/smart_reporting/.worktrees/standard-visualization-pr
+configfile: pyproject.toml
+plugins: typeguard-4.6.0, base-url-2.1.0, playwright-0.9.0, hypothesis-6.170.5, anyio-4.15.1
+collecting ... collected 8 items
+
+smart_reporting/reporting/tests/test_report_data_revision_exports.py::test_native_paginated_data_revision_redraws_and_exports_current_images[.png-asyncio] PASSED [ 12%]
+smart_reporting/reporting/tests/test_report_data_revision_service.py::test_revise_expands_verified_standard_pages_and_requires_current_receipts_for_each_page[None-asyncio] PASSED [ 25%]
+smart_reporting/reporting/tests/test_report_data_revision_service.py::test_revise_expands_verified_standard_pages_and_requires_current_receipts_for_each_page[missing_page_review-asyncio] PASSED [ 37%]
+smart_reporting/reporting/tests/test_report_data_revision_service.py::test_redraw_failure_or_old_review_preserves_latest_and_original_files[draw-asyncio] PASSED [ 50%]
+smart_reporting/reporting/tests/test_report_data_revision_service.py::test_redraw_failure_or_old_review_preserves_latest_and_original_files[old_review-asyncio] PASSED [ 62%]
+smart_reporting/reporting/tests/test_report_data_revision_service.py::test_concurrent_revisions_have_one_cas_winner_without_overwriting_history[asyncio] PASSED [ 75%]
+smart_reporting/reporting/tests/test_report_data_revision_state.py::test_data_export_records_reexports_without_changing_snapshot_history PASSED [ 87%]
+smart_reporting/reporting/tests/test_report_data_revision_state.py::test_editor_revisions_have_independent_snapshot_cas_and_export_history PASSED [100%]
+
+=============================== warnings summary ===============================
+../../.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2
+  /home/junge/pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2: DeprecationWarning: 'imghdr' is deprecated and slated for removal in Python 3.13
+    from imghdr import tests
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/junge/pros/smart_reporting/.worktrees/standard-visualization-pr/docs/superpowers/reports/2026-11-09-standard-visualization-counterfactuals/evidence/services-2/junit.xml -
+======================== 8 passed, 1 warning in 43.48s =========================

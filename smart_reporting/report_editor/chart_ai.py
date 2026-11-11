@@ -1659,6 +1659,18 @@ class ChartAIEditService:
         job.set_stage("register")
         image_identity = await workspace.ahash_file(thread_id, output_path)
         script_identity = await workspace.ahash_file(thread_id, script_path)
+        image_identities = {output_path: image_identity}
+        for page_path in output_paths[1:]:
+            image_identities[page_path] = await workspace.ahash_file(thread_id, page_path)
+        receipts_by_path = {}
+        for receipt in result.visual_inspection_receipts:
+            identity = image_identities.get(receipt.source_path)
+            if identity is None or identity.get("sha256") != receipt.sha256:
+                warnings.append("视觉回执未匹配当前图片身份，已丢弃；不代表已通过独立视觉审查。")
+                continue
+            receipts_by_path.setdefault(receipt.source_path, receipt)
+        if result.visual_inspection_receipts and any(path not in receipts_by_path for path in output_paths):
+            warnings.append("部分图片缺少匹配当前身份的视觉回执，未完成全部图片的独立视觉审查。")
         page_records = []
         expanded_pagination = (
             effective_standard is not None and effective_standard.standard_pagination is not None
@@ -1666,9 +1678,8 @@ class ChartAIEditService:
         )
         if len(standard_plan.charts) > 1 or expanded_pagination:
             for number, page in enumerate(standard_plan.charts, 1):
-                page_identity = await workspace.ahash_file(thread_id, page.source_path)
-                page_receipt = next((item for item in result.visual_inspection_receipts
-                                     if item.source_path == page.source_path), None)
+                page_identity = image_identities[page.source_path]
+                page_receipt = receipts_by_path.get(page.source_path)
                 page_records.append(ChartEditPage(
                     pageNumber=number,
                     image=ChartEditFileRef(path=page.source_path, size=int(page_identity["size"]),
@@ -1677,7 +1688,8 @@ class ChartAIEditService:
                                              visualForm=visual_form, datasetIds=effective_dataset_ids),
                     visualInspectionReceipt=page_receipt.model_dump(mode="json", by_alias=True) if page_receipt else {},
                 ))
-        warnings = list(dict.fromkeys(warnings))
+        warnings = list(dict.fromkeys(warnings))[-100:]
+        image_receipt = receipts_by_path.get(output_path)
         record = ChartEditRecord(
             editId=edit_id,
             chartId=chart_id,
@@ -1708,8 +1720,8 @@ class ChartAIEditService:
                 datasetIds=effective_dataset_ids,
             ),
             visualInspectionReceipt=(
-                result.visual_inspection_receipts[0].model_dump(mode="json", by_alias=True)
-                if result.visual_inspection_receipts
+                image_receipt.model_dump(mode="json", by_alias=True)
+                if image_receipt is not None
                 else {}
             ),
             warnings=tuple(warnings),
@@ -1752,8 +1764,10 @@ class ChartAIEditService:
                 "format": inspection.get("format"),
                 "width": inspection.get("width"),
                 "height": inspection.get("height"),
-                "reviewed": not deterministic and bool(result.visual_inspection_receipts)
-                    and all(receipt.reviewed for receipt in result.visual_inspection_receipts),
+                "reviewed": not deterministic and all(
+                    path in receipts_by_path and receipts_by_path[path].reviewed
+                    and receipts_by_path[path].inspection_mode == "vision" for path in output_paths
+                ),
             },
         }
 

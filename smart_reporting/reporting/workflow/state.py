@@ -1069,6 +1069,15 @@ def apply(
             payload["warnings"] = _tuple_unique(
                 [*payload.get("warnings", []), *arguments["warnings"]]
             )
+    elif name == "record_visualization_evidence":
+        section_code, task_id, event = (arguments.get(key) for key in ("sectionCode", "taskId", "event"))
+        if (not isinstance(section_code, str) or not section_code
+                or not isinstance(task_id, str) or not task_id or not isinstance(event, Mapping)):
+            raise ReportingStateError("report_visualization_evidence_invalid", "图表执行证据身份无效。")
+        records = payload.setdefault("visualizationEvidence", [])
+        if not isinstance(records, list):
+            raise ReportingStateError("report_state_invalid", "图表执行证据状态损坏。")
+        records.append({"sectionCode": section_code, "taskId": task_id, "event": dict(event)})
     elif name == "record_warnings":
         warnings = arguments.get("warnings")
         if not isinstance(warnings, list) or not all(
@@ -1114,6 +1123,62 @@ def apply(
             tasks[task.task_id] = serialized
         except (ValueError, TypeError, AttributeError) as error:
             raise ReportingStateError("report_editor_recalculation_invalid", "复核任务身份、输入或状态变更无效。") from error
+    elif name == "record_report_data_revision":
+        from ...report_editor.data_revision_contract import ReportDataRevision
+        from ...report_editor.service import ReportEditorContext
+
+        try:
+            record = ReportDataRevision.model_validate(arguments.get("revision"))
+            contexts = payload.get("reportEditorContexts", {})
+            context = ReportEditorContext.model_validate(contexts.get(str(record.base_revision)))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ReportingStateError("report_data_revision_invalid", "数据修订或报告来源身份无效。") from error
+        if (context.report_id != record.report_id or context.workflow_run_id != state.report_run_id
+                or context.scope.get("threadId") != state.thread_id
+                or context.scope.get("userId") != state.owner_user_id):
+            raise ReportingStateError("report_data_revision_invalid", "数据修订不属于当前报告作用域。")
+        expected = arguments.get("expectedSnapshotId")
+        if expected != record.parent_snapshot_id:
+            raise ReportingStateError("report_data_revision_invalid", "数据修订父快照与预期身份不一致。")
+        reports = payload.setdefault("reportDataRevisions", {})
+        if not isinstance(reports, dict):
+            raise ReportingStateError("report_state_invalid", "数据修订状态损坏。")
+        report = reports.setdefault(record.report_id, {})
+        if not isinstance(report, dict):
+            raise ReportingStateError("report_state_invalid", "数据修订状态损坏。")
+        history = report.setdefault(str(record.base_revision), {"latestSnapshotId": None, "revisions": {}})
+        if not isinstance(history, dict) or not isinstance(history.get("revisions"), dict):
+            raise ReportingStateError("report_state_invalid", "数据修订历史损坏。")
+        if history.get("latestSnapshotId") != expected:
+            raise ReportingStateError("report_data_revision_conflict", "报告数据已被其他编辑更新，请重新载入。")
+        if record.snapshot_id in history["revisions"]:
+            raise ReportingStateError("report_data_revision_conflict", "已登记的数据快照不可覆盖。")
+        history["revisions"][record.snapshot_id] = record.model_dump(mode="json", by_alias=True)
+        history["latestSnapshotId"] = record.snapshot_id
+    elif name == "record_report_data_export":
+        from ...report_editor.data_revision_contract import ReportDataExport, ReportDataRevision
+        from ...report_editor.service import ReportEditorContext
+
+        try:
+            record = ReportDataExport.model_validate(arguments.get("export"))
+            context = ReportEditorContext.model_validate(
+                payload.get("reportEditorContexts", {}).get(str(record.base_revision))
+            )
+            history = payload.get("reportDataRevisions", {}).get(record.report_id, {}).get(str(record.base_revision), {})
+            source = ReportDataRevision.model_validate(history.get("revisions", {}).get(record.snapshot_id))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ReportingStateError("report_data_export_invalid", "导出记录或已登记快照无效。") from error
+        if (context.report_id != record.report_id or context.workflow_run_id != state.report_run_id
+                or context.scope.get("threadId") != state.thread_id
+                or context.scope.get("userId") != state.owner_user_id
+                or source.base_revision != record.base_revision):
+            raise ReportingStateError("report_data_export_invalid", "导出记录不属于当前报告快照作用域。")
+        exports = history.setdefault("exports", {})
+        if not isinstance(exports, dict):
+            raise ReportingStateError("report_state_invalid", "数据导出历史损坏。")
+        if record.export_id in exports:
+            raise ReportingStateError("report_data_export_conflict", "已登记的数据导出不可覆盖。")
+        exports[record.export_id] = record.model_dump(mode="json", by_alias=True)
     elif name == "reserve_report_editor_revision":
         minimum = arguments.get("minimumRevision")
         if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:

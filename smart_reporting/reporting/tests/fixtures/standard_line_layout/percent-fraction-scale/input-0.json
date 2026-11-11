@@ -1,0 +1,1 @@
+{"columns": ["月份", "比例", "百分数"], "rows": [["一月", 0.125, 12.5], ["二月", -0.05, -5], ["三月", 1, 100]], "columnMeta": {"比例": {"unit": "%", "isPercent": false}, "百分数": {"unit": "%", "isPercent": true}}}

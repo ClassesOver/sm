@@ -4,17 +4,15 @@
 /// records) and refresh share the same label functions, keeping the
 /// group-member space self-consistent and round-trippable in-engine.
 ///
-/// TODO(OOXML persistence): ECMA-376 <fieldGroup> + <rangePr> + <groupItems>
-/// are not generated yet — grouping params live in a private extension under
-/// pivotTableDefinition/extLst (Excel ignores unknown ext, so the file remains
-/// valid OOXML; a manual refresh in Excel degrades to grouping by raw values).
-/// After reopening the file our engine reads the params back from extLst and
-/// can still refresh with grouping.
+/// Numeric sources with lossless range/date rules use standard OOXML via
+/// pivot-standard-grouping.ts. Text, blank and unrepresentable dates retain
+/// private metadata for compatible in-engine refresh; persistence records the
+/// exact mode and reason rather than claiming native grouping support.
 
 export type PivotDateUnit = 'year' | 'quarter' | 'month'
 
 export type PivotFieldGrouping =
-  | { readonly kind: 'date'; readonly dateUnit: PivotDateUnit }
+  | { readonly kind: 'date'; readonly dateUnit: PivotDateUnit; readonly date1904?: boolean | undefined }
   | {
       readonly kind: 'range'
       /// Interval step (one bucket per rangeStep); must be positive.
@@ -57,10 +55,11 @@ const EXCEL_PHANTOM_LEAP_SERIAL = 60
 /// Parses a cell date: numbers as Excel serial dates, strings in YYYY-MM-DD /
 /// YYYY/M/D read digits directly (avoiding Date.parse timezone ambiguity), and
 /// everything else goes to Date.parse.
-export function parseDateParts(value: string | number): { year: number; month: number } | null {
+export function parseDateParts(value: string | number, date1904 = false): { year: number; month: number } | null {
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || value < 0 || value > 2_958_465) return null
     const serial = Math.floor(value)
+    if (date1904) {const date=new Date(Date.UTC(1904,0,1)+serial*DAY_MS);return {year:date.getUTCFullYear(),month:date.getUTCMonth()+1}}
     if (serial === EXCEL_PHANTOM_LEAP_SERIAL) return { year: 1900, month: 2 }
     const shift = serial < EXCEL_PHANTOM_LEAP_SERIAL ? 1 : 0
     const date = new Date(EXCEL_EPOCH_UTC + (serial + shift) * DAY_MS)
@@ -98,7 +97,7 @@ export function groupValue(
   }
   if (grouping.kind === 'date') {
     if (typeof value === 'boolean') return { label: String(value), sort: null }
-    const parts = parseDateParts(value)
+    const parts = parseDateParts(value, grouping.date1904)
     if (!parts) return { label: String(value), sort: null }
     if (grouping.dateUnit === 'year') {
       return { label: String(parts.year), sort: parts.year }
