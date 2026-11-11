@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { auditOfficeDesktopLayout } from './office-desktop-layout.mjs'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -108,6 +109,7 @@ try {
   try { await page.locator('.pdf-ribbon').waitFor({ timeout: 60000 }) }
   catch { throw new Error(JSON.stringify({ url: page.url(), body: (await page.locator('body').innerText()).slice(0, 1200), pageErrors })) }
   await page.waitForFunction(() => { const canvas = document.querySelector('.pdf-page canvas'); return canvas && canvas.width > 0 }, null, { timeout: 30000 })
+  await auditOfficeDesktopLayout(page, 'pdf')
   // 固定源 Pages ▸ 合并页面（N 合 1）/ 拆分页面：单独保存为新修订，先显示服务端实际预览。
   const readDraft = () => page.evaluate(() => JSON.parse(Object.entries(localStorage).find(([key]) => key.includes('fixture-pdf'))?.[1] ?? '{"operations":[]}').operations)
   const readback = bytes => { const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', 'import json,sys; from io import BytesIO; from pypdf import PdfReader; r=PdfReader(BytesIO(sys.stdin.buffer.read())); print(json.dumps([[round(float(p.mediabox.width)),round(float(p.mediabox.height)),round(float(p.cropbox.width)),round(float(p.cropbox.height)),p.extract_text()] for p in r.pages]))'], { input: bytes, encoding: 'utf8' }); if (result.status !== 0) throw new Error(result.stderr); return JSON.parse(result.stdout) }
@@ -125,7 +127,7 @@ try {
   if (!appearances) {
   // 拆分页面：选择后显示实际预览（5 页 → 10 页），返回原文件后撤销
   await splitButton.click()
-  await page.locator('.pdf-layout-dialog').waitFor({ state: 'visible' })
+  await page.locator('.pdf-layout-dialog[open]').waitFor({ state: 'visible' })
   await page.locator('[data-pdf-split-pages="2"]').click()
   try { await page.waitForFunction(() => document.querySelector('.native-pdf-editor')?.dataset.pdfPreview === 'true' && document.querySelectorAll('.pdf-page').length === 10, null, { timeout: 60000 }) }
   catch { throw new Error(JSON.stringify({ preview: await page.evaluate(() => document.querySelector('.native-pdf-editor')?.dataset.pdfPreview), pages: await page.locator('.pdf-page').count(), status: await page.locator('.pdf-editor-message').textContent(), dialog: await page.locator('.pdf-layout-dialog [role=alert]').textContent(), draft: await readDraft(), previewCalls, pageErrors })) }
@@ -139,14 +141,14 @@ try {
   await page.locator('[data-pdf-ribbon-tab="page"]').click()
   } else { assert.equal(await splitButton.isDisabled(),true); assert.match(await splitButton.getAttribute('title'),/表单/) }
   await mergeButton.click()
-  await page.locator('.pdf-layout-dialog').waitFor({ state: 'visible' })
+  await page.locator('.pdf-layout-dialog[open]').waitFor({ state: 'visible' })
   await page.getByLabel('每张页数').fill('17')
-  await page.locator('.pdf-layout-dialog').getByRole('button', { name: '确定' }).click()
-  assert.match(await page.locator('.pdf-layout-dialog [role=alert]').textContent(), /2–16/)
+  await page.locator('.pdf-layout-dialog[open]').getByRole('button', { name: '确定' }).click()
+  assert.match(await page.locator('.pdf-layout-dialog[open] [role=alert]').textContent(), /2–16/)
   await page.getByLabel('每张页数').fill('4')
   await page.getByLabel('排列顺序').selectOption('horizontal')
   await page.getByLabel('绘制分隔线').check()
-  await page.locator('.pdf-layout-dialog').getByRole('button', { name: '确定' }).click()
+  await page.locator('.pdf-layout-dialog[open]').getByRole('button', { name: '确定' }).click()
   await page.waitForFunction(() => document.querySelector('.native-pdf-editor')?.dataset.pdfPreview === 'true' && document.querySelectorAll('.pdf-page').length === 2, null, { timeout: 60000 })
   assert.equal(await page.locator('.pdf-page-label').first().textContent(), '第 1 页（重排版预览）')
   const drafted = await readDraft()

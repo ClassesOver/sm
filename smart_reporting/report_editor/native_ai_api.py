@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +23,18 @@ class _DraftPayload(BaseModel):
 class NativeAIStartPayload(_DraftPayload):
     instruction: str = Field(min_length=1, max_length=2000)
     selection: list[dict[str, str]] = Field(min_length=1, max_length=100)
+
+
+class NativePDFReadPayload(_DraftPayload):
+    client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
+    action: Literal["ask", "summarize", "keyPoints", "reviewSummary"] = "ask"
+    instruction: str = Field(default="", max_length=2000)
+    selection: list[dict[str, str]] = Field(default_factory=list, max_length=100)
+
+
+class NativePDFReadCancelPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
 
 
 class NativeAIAcceptPayload(_DraftPayload):
@@ -48,6 +60,7 @@ def create_native_ai_router(
     *,
     editor: Any,
     ai: NativeAIService,
+    pdf_read: Any = None,
     allowed_origin: str | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -63,6 +76,47 @@ def create_native_ai_router(
             raise ReportingError("native_permission_denied", "原生会话与请求版本不一致。")
         await editor.context_for_session(session)
         return session
+
+    def reader():
+        if pdf_read is None:
+            raise ReportingError("native_ai_disabled", "PDF AI 阅读尚未开放。")
+        return pdf_read
+
+    @router.post(base + "/read/start")
+    async def read_start(document_id: str, revision: int, request: Request,
+                         payload: NativePDFReadPayload):
+        try:
+            session = await session_for(request, document_id, revision, write=True)
+            return await reader().start(session, **payload.model_dump())
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.post(base + "/read/cancel")
+    async def read_cancel(document_id: str, revision: int, request: Request,
+                          payload: NativePDFReadCancelPayload):
+        try:
+            session = await session_for(request, document_id, revision, write=True)
+            return await reader().cancel_request(session, payload.client_request_id)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.get(base + "/read/{task_id}")
+    async def read_status(document_id: str, revision: int, task_id: str, request: Request,
+                          wait_ms: int = Query(default=20000, alias="waitMs", ge=0, le=20000)):
+        try:
+            session = await session_for(request, document_id, revision)
+            return await reader().status(session, task_id, wait_ms=wait_ms)
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.get(base + "/read/{task_id}/events")
+    async def read_events(document_id: str, revision: int, task_id: str, request: Request,
+                          after: int = Query(default=0, ge=0)):
+        try:
+            session = await session_for(request, document_id, revision)
+            return await reader().event_stream(session, task_id, after)
+        except ReportingError as error:
+            raise _ai_error(error) from None
 
     @router.post(base + "/start")
     async def start(

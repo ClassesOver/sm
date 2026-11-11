@@ -46,6 +46,8 @@ import type {
 } from '../shared/ipc'
 import { writePdfAtomically } from './atomic-write'
 import { redactPdf } from './redaction'
+import { inspectDesignTextProperties } from './form-text-properties'
+import { measureLabelBounds } from './measure-label-bounds'
 
 const num = (v: number) => Math.round(v * 100) / 100
 const STATIC_FORM_FILLS_KEY = PDFName.of('GenOfficeStaticFormFills')
@@ -783,11 +785,9 @@ function addDrawing(
       )
       const esc = d.label.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')
       ops.push(`(${esc}) Tj ET`)
-      // Helvetica 9pt averages ~4.5pt per glyph, and the extent follows the
-      // label's tilt — an axis-aligned half-width clipped steep lines
-      const halfW = (d.label.length * 4.5) / 2
-      xs.push(mx + Math.cos(tilt) * halfW, mx - Math.cos(tilt) * halfW)
-      ys.push(my + 6 + Math.sin(tilt) * halfW, my + 6 - Math.sin(tilt) * halfW)
+      const bounds = measureLabelBounds(d.from, d.to, d.label)
+      xs.push(num(fx), num(tx), bounds[0], bounds[2])
+      ys.push(num(fy), num(ty), bounds[1], bounds[3])
     }
     if (d.kind === 'arrow') {
       const ang = Math.atan2(ty - fy, tx - fx)
@@ -1073,9 +1073,20 @@ export function applyFormWidgetEdits(pdfDoc: PDFDocument, edits: FormWidgetEditI
 /** Extract the given pages (original indices) into bytes of a new PDF */
 export async function extractPagesBytes(bytes: Uint8Array, pages: number[]): Promise<Uint8Array> {
   const src = await PDFDocument.load(bytes, { updateMetadata: false })
+  if (!Array.isArray(pages) || pages.length === 0 || pages.length > src.getPageCount()
+    || pages.some((page) => !Number.isInteger(page) || page < 0 || page >= src.getPageCount())
+    || new Set(pages).size !== pages.length) {
+    throw new Error('pdf_extract_pages_invalid')
+  }
+  // 单独复制页面不会重建字段树和跨页批注关系，首批只接受可证明独立的正文页。
+  if (src.catalog.has(PDFName.of('Perms')) || src.catalog.has(PDFName.of('AcroForm'))
+    || src.getPages().some(page => page.node.lookupMaybe(PDFName.of('Annots'), PDFArray)?.size())) {
+    throw new Error('pdf_extract_source_unsupported')
+  }
   const out = await PDFDocument.create()
-  const valid = pages.filter((p) => p >= 0 && p < src.getPageCount())
-  const copied = await out.copyPages(src, valid)
+  out.setCreationDate(src.getCreationDate() ?? new Date(0))
+  out.setModificationDate(src.getModificationDate() ?? new Date(0))
+  const copied = await out.copyPages(src, pages)
   for (const p of copied) out.addPage(p)
   return out.save({ useObjectStreams: false })
 }
@@ -1761,7 +1772,11 @@ function refreshFieldAppearances(pdfDoc: PDFDocument): void {
     if (!field.needsAppearancesUpdate()) continue
     // Same per-type dispatch pdf-lib's own save pass uses (check boxes and radios ignore the font)
     try {
-      field.defaultUpdateAppearances(font)
+      const support = inspectDesignTextProperties(field)
+      const appearanceFont = support.editable && support.properties
+        ? pdfDoc.embedStandardFont(support.properties.fontName as StandardFonts)
+        : font
+      field.defaultUpdateAppearances(appearanceFont)
     } catch {
       needAppearances = true
     }

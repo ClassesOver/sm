@@ -1,0 +1,341 @@
+{
+  "ref": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": [
+    {
+      "path": "src/analyze/blocks.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/blocks.ts",
+      "sourceSha256": "54bf6f106804f7a60f7e20107ec1a4f1d85e28708abb02ccd1a6bde620be66dd",
+      "localSha256": "54bf6f106804f7a60f7e20107ec1a4f1d85e28708abb02ccd1a6bde620be66dd",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/canvas.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/canvas.ts",
+      "sourceSha256": "9041517a45c3d2eae622f0244aff547cca3faec88ee2c6274093dc1b7fd30064",
+      "localSha256": "9041517a45c3d2eae622f0244aff547cca3faec88ee2c6274093dc1b7fd30064",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/chars.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/chars.ts",
+      "sourceSha256": "78c0340a0c7f853da0cac6893bfe30d015b8862c5e07ddb8ae31b646a57bd0a7",
+      "localSha256": "ba7bebbc53fa58ce757c244e071716e409194f752368e11468da09ab4942de2c",
+      "adaptation": "preserve measured first glyph origin only for horizontal LTR single-baseline lines without synthetic visible glyphs"
+    },
+    {
+      "path": "src/analyze/columns.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/columns.ts",
+      "sourceSha256": "b425edd19001dedd3167f9508a4bf11628b65f9fc2a0f1011ea5a75fc1f005bd",
+      "localSha256": "b425edd19001dedd3167f9508a4bf11628b65f9fc2a0f1011ea5a75fc1f005bd",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/confidence.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/confidence.ts",
+      "sourceSha256": "92bec21b476341dfaa78cd7c67bdb985744887e9b8acf5114b34baa3c4ca2f97",
+      "localSha256": "92bec21b476341dfaa78cd7c67bdb985744887e9b8acf5114b34baa3c4ca2f97",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/decor.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/decor.ts",
+      "sourceSha256": "ec3eebb488133240b0180f6a0391455b28b586776a31199cb2f5962298d1664c",
+      "localSha256": "ec3eebb488133240b0180f6a0391455b28b586776a31199cb2f5962298d1664c",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/floats.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/floats.ts",
+      "sourceSha256": "1b0e2104775f855c6e8c3d34dd4062d2d094fff5e5f913ba1f0f7016072e5ec5",
+      "localSha256": "1b0e2104775f855c6e8c3d34dd4062d2d094fff5e5f913ba1f0f7016072e5ec5",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/footnotes.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/footnotes.ts",
+      "sourceSha256": "bb2a00baf33984dc8f824d7983ccc94c02e480cd2d1e209ef2f44c73be483fb3",
+      "localSha256": "bb2a00baf33984dc8f824d7983ccc94c02e480cd2d1e209ef2f44c73be483fb3",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/form.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/form.ts",
+      "sourceSha256": "14c4588c4ea9eb02465c5587242d09f102e7be8bc19c3a017e2d9b28b4c778d3",
+      "localSha256": "14c4588c4ea9eb02465c5587242d09f102e7be8bc19c3a017e2d9b28b4c778d3",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/frames.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/frames.ts",
+      "sourceSha256": "57534cca7a0edb8f7ece16e0c2b31cd5606e218673fe0b14775785bbe4c91d2c",
+      "localSha256": "57534cca7a0edb8f7ece16e0c2b31cd5606e218673fe0b14775785bbe4c91d2c",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/furniture.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/furniture.ts",
+      "sourceSha256": "ac834a56328375a660f14f68ce4e0f1f3ebd5ea8deb18397cdb354833af4f7c0",
+      "localSha256": "ac834a56328375a660f14f68ce4e0f1f3ebd5ea8deb18397cdb354833af4f7c0",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/index.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/index.ts",
+      "sourceSha256": "2c23c51dceae488bab5af007a31de6acaad90df381888c39a65c387f22abeef2",
+      "localSha256": "3c6974b66766b85c4af0ff8acfac4de506fd67a106cbb76898fd9a06447e28a5",
+      "adaptation": "Expose and propagate exact existing cell-data quarter-turn recovery metadata; export existing rotateToDisplay for source-image display-coordinate restoration. No extraction/layout algorithm change."
+    },
+    {
+      "path": "src/analyze/lines.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/lines.ts",
+      "sourceSha256": "61dc45ff34e65544c7bf6501be98e0c31a4f2f78cf879990c3fee158497dc171",
+      "localSha256": "61dc45ff34e65544c7bf6501be98e0c31a4f2f78cf879990c3fee158497dc171",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/lists.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/lists.ts",
+      "sourceSha256": "0f447ef4d2d9656d224890ddabab40d03c74df3fd024c31c0a7ff0976253b8e5",
+      "localSha256": "0f447ef4d2d9656d224890ddabab40d03c74df3fd024c31c0a7ff0976253b8e5",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/panels.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/panels.ts",
+      "sourceSha256": "95b7ecfd1529be971a2bad073bd4a6e82eda6399784d9c135f43f138a50a7a62",
+      "localSha256": "95b7ecfd1529be971a2bad073bd4a6e82eda6399784d9c135f43f138a50a7a62",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/rtl.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/rtl.ts",
+      "sourceSha256": "38c586cbcc1f03d6c1608af1cd478028935b23897872fce1d0506b7eb9ad35bf",
+      "localSha256": "38c586cbcc1f03d6c1608af1cd478028935b23897872fce1d0506b7eb9ad35bf",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/shapes.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/shapes.ts",
+      "sourceSha256": "05a83968cb6bb1bd508f5bd66ae7e77cd785b6a19d1324584d2d8e20ea5d65ec",
+      "localSha256": "05a83968cb6bb1bd508f5bd66ae7e77cd785b6a19d1324584d2d8e20ea5d65ec",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/spacing.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/spacing.ts",
+      "sourceSha256": "a0d54798d350f54be233fb7be21da4bd64796cd1047799bd8ba7abdb09e3159c",
+      "localSha256": "a0d54798d350f54be233fb7be21da4bd64796cd1047799bd8ba7abdb09e3159c",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/spans.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/spans.ts",
+      "sourceSha256": "9f2defb736977b2bfb40250c906ca08582d64ea4e441defe78ec0e6402c80142",
+      "localSha256": "9f2defb736977b2bfb40250c906ca08582d64ea4e441defe78ec0e6402c80142",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/stream.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/stream.ts",
+      "sourceSha256": "8e3808dd641c35139da968a682da8ddd5a70c7207d8775bf340ff3fda7498868",
+      "localSha256": "8e3808dd641c35139da968a682da8ddd5a70c7207d8775bf340ff3fda7498868",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/styling.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/styling.ts",
+      "sourceSha256": "748c4f74854c216a7e35461063d3d8b4d8fbb811ed34eff07526b159249ba324",
+      "localSha256": "748c4f74854c216a7e35461063d3d8b4d8fbb811ed34eff07526b159249ba324",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/table.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/table.ts",
+      "sourceSha256": "5ff73d624b9f3a7abfb85ae0acc39a7cc18bc5f1f7fcda75ba5e3162b64ab596",
+      "localSha256": "5ff73d624b9f3a7abfb85ae0acc39a7cc18bc5f1f7fcda75ba5e3162b64ab596",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/toc.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/toc.ts",
+      "sourceSha256": "5c1f09620ca885d1f07c809f6a515631294c5e0f40245fcd2ecba7ddce393f44",
+      "localSha256": "5c1f09620ca885d1f07c809f6a515631294c5e0f40245fcd2ecba7ddce393f44",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/units.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/units.ts",
+      "sourceSha256": "1bb35148d91c27c0b20c5c821672a77f540ed6ce7da9e4704488d384fb8ab287",
+      "localSha256": "1bb35148d91c27c0b20c5c821672a77f540ed6ce7da9e4704488d384fb8ab287",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/vector.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/vector.ts",
+      "sourceSha256": "5d86f304543b06ed1d617e00625c5d86712191a1cbeecb5848d0e070f490735f",
+      "localSha256": "5d86f304543b06ed1d617e00625c5d86712191a1cbeecb5848d0e070f490735f",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/words.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/words.ts",
+      "sourceSha256": "aac6b412257fa761b8a1789a316403fdd6b9847164a38c18e87786562e78acee",
+      "localSha256": "aac6b412257fa761b8a1789a316403fdd6b9847164a38c18e87786562e78acee",
+      "adaptation": null
+    },
+    {
+      "path": "src/analyze/zones.ts",
+      "upstreamPath": "packages/pdf2docx/src/analyze/zones.ts",
+      "sourceSha256": "1a5a9272dcff3e86db9c4163089598dc4a193082d55c563e676a95f44fa37781",
+      "localSha256": "1a5a9272dcff3e86db9c4163089598dc4a193082d55c563e676a95f44fa37781",
+      "adaptation": null
+    },
+    {
+      "path": "src/extract/fontname.ts",
+      "upstreamPath": "packages/pdf2docx/src/extract/fontname.ts",
+      "sourceSha256": "be11efd880fbc704b561b55285466493fbc060f998cee4ea2e4afbef3c2cbc57",
+      "localSha256": "be11efd880fbc704b561b55285466493fbc060f998cee4ea2e4afbef3c2cbc57",
+      "adaptation": null
+    },
+    {
+      "path": "src/extract/index.ts",
+      "upstreamPath": "packages/pdf2docx/src/extract/index.ts",
+      "sourceSha256": "320c5ffcb4b9a0fedb84e37b9400502ab56688c87990c7556b1d64d06bcb6da0",
+      "localSha256": "ea3ab85ba6292ff238a6a48a7ec9d58b8b7c58c4db3a31138987c9202c7b1afa",
+      "adaptation": "Expose and propagate exact existing cell-data quarter-turn recovery metadata; export existing rotateToDisplay for source-image display-coordinate restoration. No extraction/layout algorithm change.; record actual PDFium CharOrigin success and explicitly mark synthetic/form-snapped origins unmeasured"
+    },
+    {
+      "path": "src/extract/pdfium.ts",
+      "upstreamPath": "packages/pdf2docx/src/extract/pdfium.ts",
+      "sourceSha256": "101d4a9869348977fceb1021278d19861c80ad582786646f0b814466cdbbdf1d",
+      "localSha256": "101d4a9869348977fceb1021278d19861c80ad582786646f0b814466cdbbdf1d",
+      "adaptation": null
+    },
+    {
+      "path": "src/extract/png.ts",
+      "upstreamPath": "packages/pdf2docx/src/extract/png.ts",
+      "sourceSha256": "4d153f3b41ef09f707f5b1ee1349f71ea896cd50716a3cceb20e3ef87c987596",
+      "localSha256": "4d153f3b41ef09f707f5b1ee1349f71ea896cd50716a3cceb20e3ef87c987596",
+      "adaptation": null
+    },
+    {
+      "path": "src/geometry.ts",
+      "upstreamPath": "packages/pdf2docx/src/geometry.ts",
+      "sourceSha256": "0508665d72af18f47590efc5a8203be2731d4c0ef9671fb11f04664b24cdcf5e",
+      "localSha256": "0508665d72af18f47590efc5a8203be2731d4c0ef9671fb11f04664b24cdcf5e",
+      "adaptation": null
+    },
+    {
+      "path": "src/ir.ts",
+      "upstreamPath": "packages/pdf2docx/src/ir.ts",
+      "sourceSha256": "2e98b5a2a7dedd7360fcd04305dbdf16cdfdc7b279e5911ccf111445cf6e03c8",
+      "localSha256": "ee76b36fed28918d2a158fce69915026990f561f894218bf9c07bf24bb88b561",
+      "adaptation": "Expose and propagate exact existing cell-data quarter-turn recovery metadata; export existing rotateToDisplay for source-image display-coordinate restoration. No extraction/layout algorithm change.; retain optional measured source baseline-X anchor and origin provenance without changing other format layout contracts"
+    },
+    {
+      "path": "src/ocr.ts",
+      "upstreamPath": "packages/pdf2docx/src/ocr.ts",
+      "sourceSha256": "011b7b5893d73ed305d3706e9e284d34d117f75212f41069caba5b018051d3e8",
+      "localSha256": "011b7b5893d73ed305d3706e9e284d34d117f75212f41069caba5b018051d3e8",
+      "adaptation": null
+    },
+    {
+      "path": "src/pipeline.ts",
+      "upstreamPath": "packages/pdf2docx/src/pipeline.ts",
+      "sourceSha256": "388e0a8ec90ee662ad532f7fe26f931f46d6953be4b040c9b83eb735d7413f1b",
+      "localSha256": "388e0a8ec90ee662ad532f7fe26f931f46d6953be4b040c9b83eb735d7413f1b",
+      "adaptation": null
+    },
+    {
+      "path": "src/rebuild-pptx/index.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-pptx/index.ts",
+      "sourceSha256": "95353ac717a8f9f2c6c47400e694b2e25a8690969dbd6efe414136b913bdd723",
+      "localSha256": "95353ac717a8f9f2c6c47400e694b2e25a8690969dbd6efe414136b913bdd723",
+      "adaptation": null
+    },
+    {
+      "path": "src/rebuild-pptx/rebuild.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-pptx/rebuild.ts",
+      "sourceSha256": "df6b39015717dfd2e3ab540aa52ae8578b66d3e54016711288b5aa89a447e183",
+      "localSha256": "7e9db03413aa541b96373c63eea2fadc121cc37d055ab10cf01580c3f73bdbaa",
+      "adaptation": "reuse existing slides_engine via relative import; freeze measured PDF text-body geometry with existing setElementTextBodyProps autofit none; do not inherit shape-resizing autofit; anchor common left-LTR lines to their measured glyph origin rather than tight ink bearing; preserve old alignment/fallback geometry otherwise Reuse ensureRunLinkRels for text/table paragraphs on the owning pre-created slide; retain valid intra-deck destinations without changing text geometry."
+    },
+    {
+      "path": "src/rebuild-pptx/table.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-pptx/table.ts",
+      "sourceSha256": "7e185f4769a19fd6f34864e3ba2d3d7fd04b66769dbcee6a5d3a17099471524a",
+      "localSha256": "8b92afbcc279ea7ddae6885a76053af2a1895b343dbb5c711f1feea3640d232e",
+      "adaptation": "Resolve existing vendored pptx-engine source; infer cell alignment with upstream helper and preserve flow width instead of using trailing ink whitespace as margin."
+    },
+    {
+      "path": "src/rebuild-pptx/text.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-pptx/text.ts",
+      "sourceSha256": "4d005d86323b56a6c349cd936fe8157d67efceced0400d56fdd572c0a68ecdf3",
+      "localSha256": "a42b7625fffb315026c57210eaf154727b3689ad7a29b15cff5ba0a4d13aa4f3",
+      "adaptation": "reuse existing slides_engine via relative import; use existing Line.baseline distances and median for multi-line exact pitch; retain prior single-line/unavailable-metric fallback. Preserve safe span hyperlinks as editable PPTX run targets and separate click ranges; suppress synthesized list/TOC target inheritance and retain authored color/underline state."
+    },
+    {
+      "path": "src/rebuild-xlsx/index.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-xlsx/index.ts",
+      "sourceSha256": "b1af1c0180ef383e00910a92407841ea6447fe5b16a5b7d1ae36bd66a2bab9e3",
+      "localSha256": "b1af1c0180ef383e00910a92407841ea6447fe5b16a5b7d1ae36bd66a2bab9e3",
+      "adaptation": null
+    },
+    {
+      "path": "src/rebuild-xlsx/numbers.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-xlsx/numbers.ts",
+      "sourceSha256": "280872219ec0972daf869d7997e851484497ea996b4865429be36d2c4ba3a315",
+      "localSha256": "a4703df9de3c070b03c846a50a7406d6b172a8a1049a368378cebc4a26c33a53",
+      "adaptation": "Preserve authored non-exponent decimal and currency fractional precision without changing numeric values or exponent/integer classification"
+    },
+    {
+      "path": "src/rebuild-xlsx/rebuild.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-xlsx/rebuild.ts",
+      "sourceSha256": "7c7670a6980f83e6ce5da43463a1ce6d41efe5c9960f90a40cd9f1d081806421",
+      "localSha256": "f53cb0229689e2050aa1404b4faa0ada78fc74dcbb435e8b1d6a4e5eefdb1d68",
+      "adaptation": "Preserve existing rich text, images and table claims; size standalone fixed decimals, recognized currencies and percentages using source ink and native output font advances including required grouping commas; distribute each table grid width across its covered sheet-slot intervals, preserving existing max claims, merges, run overrides, tiny-slot fallback and host width limitations"
+    },
+    {
+      "path": "src/rebuild-xlsx/rowsplit.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-xlsx/rowsplit.ts",
+      "sourceSha256": "e6c840106da15bcb5f72618edf1c2393ad493fb864ce5cb8c17fe8d3d09a677f",
+      "localSha256": "e6c840106da15bcb5f72618edf1c2393ad493fb864ce5cb8c17fe8d3d09a677f",
+      "adaptation": null
+    },
+    {
+      "path": "src/rebuild-xlsx/workbook.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild-xlsx/workbook.ts",
+      "sourceSha256": "6e72c499766c8dc45442eeb712ebd8993634d39cd4748c6d527412e25530f8af",
+      "localSha256": "4a612428fb73ec41da883e112b5eff4c43b4663374d2de030bd1c4f442e779ac",
+      "adaptation": "preserve measured PDF underline and strike on existing dominant-cell XLSX font styles using native OOXML font elements; carry WorkbookRichRun candidates for the existing native workbook writer"
+    },
+    {
+      "path": "src/rebuild/fit.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild/fit.ts",
+      "sourceSha256": "8735ef95fbe34d357d95c9d5b96cc3a78db874e1f1c41c279b50ebb68912b3b9",
+      "localSha256": "8735ef95fbe34d357d95c9d5b96cc3a78db874e1f1c41c279b50ebb68912b3b9",
+      "adaptation": null
+    },
+    {
+      "path": "src/rebuild/fontmap.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild/fontmap.ts",
+      "sourceSha256": "b946939f9a4156b99c9d4130514b85921420c90202b49c4137404a5639c1c66f",
+      "localSha256": "3ec99f2d693db3a83d98b8d95b00560fa46f2b3d6585537b7fd9ef93d36cf004",
+      "adaptation": "Map PDFium built-in Chrom Sans/Serif/Fixed OTF aliases to existing metric-compatible classic font candidates.; resolve the exact PDFium Chrom Sans PS family through existing Helvetica candidates, retaining installed-first behavior"
+    },
+    {
+      "path": "src/rebuild/index.ts",
+      "upstreamPath": "packages/pdf2docx/src/rebuild/index.ts",
+      "sourceSha256": "fb48f1a3eea0d7376e0da504e2e6cb1a002985ccfaf5369784ab04e3af61fb8c",
+      "localSha256": "69f9bb91f42a27a3460aedcb1c0e388463c2aaaa996e1b7b828998f9e12b5814",
+      "adaptation": "Resolve existing vendored docx-engine source; preserve exact non-palette PDF RGB text fills through existing Run.shading and include shading in run merge identity; retain exact named highlights and white/no-fill behavior"
+    },
+    {
+      "path": "src/script.ts",
+      "upstreamPath": "packages/pdf2docx/src/script.ts",
+      "sourceSha256": "4d66fddac6af2fc331a1bdf1708bc7fd1e0a31e22ae8a5fbdab16487201be6cb",
+      "localSha256": "4d66fddac6af2fc331a1bdf1708bc7fd1e0a31e22ae8a5fbdab16487201be6cb",
+      "adaptation": null
+    }
+  ]
+}

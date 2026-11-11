@@ -77,6 +77,12 @@ export default defineConfig({
         onlyExplicitManualChunks: true,
         chunkFileNames: 'assets/lazy-[name]-[hash].js',
         manualChunks(id) {
+          if (/\/src\/(?:pdf-replace-text-style|pdf-text-selection|pdf-selection-style-source|pdf-static-text|pdf-text-edit-shortcuts)\.ts$/.test(id)) return 'native-pdf-text-controls'
+          if (id.endsWith('/vendor/genoffice-docs/apps/docs/src/renderer/components/icons.tsx')) return 'native-docx-ribbon-icons'
+          if (/\/src\/pdf-form-(?:create|design|radio-extension|text-properties|canvas)\.ts$/.test(id)) return 'native-pdf-form-controls'
+          if (id.endsWith('/renderer/ai/table-ops.ts')) return 'native-docx-table-ops'
+          if (id.endsWith('/renderer/ai/lengths.ts')) return 'native-docx-lengths'
+          if (id.includes('/vendor/genoffice-docs/apps/docs/src/') && ['renderer/html-export.ts','renderer/export-markdown.ts','renderer/word-count.ts','renderer/ai/protocol.ts','renderer/ai/revision-ops.ts','renderer/ai/redact-view.ts','renderer/ai/page-setup.ts','renderer/ai/revision-author.ts','renderer/ai/inherit-formatting.ts','renderer/ai/ops.ts','renderer/ai/style-ops.ts','renderer/ai/field-ops.ts','renderer/ai/tab-stops.ts','renderer/ai/after-text.ts','shared/ipc.ts'].some(path=>id.endsWith('/'+path))) return 'native-pdf-text-serializer'
           if (id.endsWith('/src/workbook-ribbon.ts')) return 'workbook-ribbon'
           if (/\/workbook_engine\/packages\/xlsx-engine\/src\/pivot-(?:add|refresh|standard-grouping|layout|formula|grouping|filters)\.ts$/.test(id)) return 'workbook-pivot-calculation'
           if (id.endsWith('/workbook_engine/packages/xlsx-engine/src/chart-edit.ts')) return 'workbook-chart-edit'

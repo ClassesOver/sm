@@ -110,7 +110,7 @@
   "apps/docs/src/renderer/font-check.ts": "1b68832365cd3a516457ae70c189374bf13988dd42877f8582a7b6db40a9a745",
   "apps/docs/src/renderer/font-list.ts": "fbf587949b074f719e12c8faf1a70fc4593afe7fdaa24522b1c8b159e68db6a1",
   "apps/docs/src/renderer/font-name-patterns.ts": "d4271b28edee9c24200dd2a176755e9cd2657a45af700af21aae85e3aac619f2",
-  "apps/docs/src/renderer/font-resolve.ts": "8ee84d349529afd71ae57fee108ecf253bfa1f2d7b403dc5488cc60d8512068a",
+  "apps/docs/src/renderer/font-resolve.ts": "bb0faf90f0219473fbb4f4d8180e8015beec030b2a20017b39dffbe7efcfaadb",
   "apps/docs/src/renderer/fonts/stand-in-boxes.json": "2ab42e5a29475cad265305a2ae0fa70de06c774f7a579a0d15815d83c6de829f",
   "apps/docs/src/renderer/hf-heights.ts": "69e1a8e3126a4749194b7f217c685de1a26e35122d44140494b77d4e79576e15",
   "apps/docs/src/renderer/hf-sections.ts": "a14e21efa8de9ed928e973b3d237552688a8ffbe7f607de7a1acb8dffb61be6f",
@@ -229,5 +229,15 @@
   "apps/docs/src/renderer/i18n/ribbon/insert-zh.ts": "a74c091282ec9b08d105c21ff6f8b9e9e58b6b34f527c9e3cc2fb43515932c91",
   "packages/ui/src/popover-dismiss.ts": "581b8f1fe677bb95eeee57b6f495df48e3a20e84b2d62f57e3412e3f60e527db",
   "apps/docs/src/renderer/editor/new-table.ts": "b4454475492477aa835b1ac98e031236b17aa4989103cfe2bca9294a3619cb43",
-  "apps/docs/src/renderer/editor/cover-pages.ts": "d3b4fd06b80a5f6f34cc7238be6d9b6784b1ce0e74259c13628796baaf5a101b"
+  "apps/docs/src/renderer/editor/cover-pages.ts": "d3b4fd06b80a5f6f34cc7238be6d9b6784b1ce0e74259c13628796baaf5a101b",
+  "apps/docs/src/renderer/ai/inherit-formatting.ts": "b10c44c6f237f88d884876950b352e16dfc297b488a660de7a605a592dea5699",
+  "apps/docs/src/renderer/ai/page-setup.ts": "665d2075e353a2355ad3e0c4fe191e3bab10862b19d469d8661bbe4f90af289b",
+  "apps/docs/src/renderer/ai/protocol.ts": "0e28544a4458d9ad277225396f584866ed52490016bac6a3d0662196b23047e3",
+  "apps/docs/src/renderer/ai/redact-view.ts": "0479fe128608375c5cafe7c1bb665ab25293edbd3c3643c67f533f54a8b470bd",
+  "apps/docs/src/renderer/ai/revision-author.ts": "e49b455a0922a2eb6b22b0611fffa88ea094af9fe4e00f599e9c996f31cf7018",
+  "apps/docs/src/renderer/ai/revision-ops.ts": "ee7e02cce833e873f5f01ce9b60bc548831b7110d41564299ea2b5da3aa7c01d",
+  "apps/docs/src/renderer/export-markdown.ts": "a52e4a7c399428cf09d817df24fbdcba251a3a757765df78f6b0ed18107bde9c",
+  "apps/docs/src/renderer/html-export.ts": "75394d0bf9f1a02cc343025042814ffee3bac09ae52756749301319d0758916d",
+  "apps/docs/src/renderer/word-count.ts": "f9865d99ed9ac5f69ec208943f1c5305ed67e58451b8db058abf9c5b35fd24ee",
+  "apps/docs/src/shared/ipc.ts": "3f37273dcd48428bce79f4d153d5fd3c6444548a9de0a0363af95f8fca1693b2"
 }

@@ -3,8 +3,10 @@
  * Verify exact counts and ordered append payload before changing only the newly added dates.
  */
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, PDFRef, PDFString } from 'pdf-lib'
+import {markupDictionaryHash} from './markup-delete'
+export interface AddedNoteReference { sourceRef:string; expectedAnnotationSha256:string; pageIndex:number }
 export interface AddedNoteDate { pageIndex: number; contents: string; rect: number[]; createdMs?: number; replyToRef?: string; localId?: string; replyToLocalId?: string }
-export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes: Uint8Array, notes: AddedNoteDate[], markupPages: number[], outputOrder: number[], drawings?: { pageIndex: number; kind: string }[]) {
+export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes: Uint8Array, notes: AddedNoteDate[], markupPages: number[], outputOrder: number[], drawings?: { pageIndex: number; kind: string }[], references?: Map<string,AddedNoteReference>) {
   if (!notes.length) return outputBytes
   const base = await PDFDocument.load(baseBytes, { updateMetadata: false })
   const output = await PDFDocument.load(outputBytes, { updateMetadata: false })
@@ -68,6 +70,7 @@ export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes
         const when = 'D:' + new Date(note.createdMs).toISOString().slice(0, 19).replace(/[-:T]/g, '') + 'Z'
         annotation.set(PDFName.of('CreationDate'), PDFString.of(when)); annotation.set(PDFName.of('M'), PDFString.of(when))
       }
+      if(note.localId!==undefined) references?.set(note.localId,{sourceRef:String(raw.objectNumber)+'R'+(raw.generationNumber||''),expectedAnnotationSha256:markupDictionaryHash(annotation),pageIndex:outputIndex})
     }
   }
   return output.save({ useObjectStreams: false, updateFieldAppearances: false })

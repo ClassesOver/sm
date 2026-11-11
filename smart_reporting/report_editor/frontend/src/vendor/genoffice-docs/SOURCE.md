@@ -30,3 +30,18 @@
 2026-11-05 Ribbon increment: Home paragraph alignment maps the source `setSelectionAlign` behavior into an anchored `setParagraphAlignment` operation. The DOCX bridge changes only `w:jc`, preserves other paragraph properties, and rejects alignment edits on new unsaved paragraphs until a stable source anchor exists. Left/center/right/justify plus RTL, combined style edits, save/download/reopen and source preservation are covered by the DOCX brief and smoke.
 
 2026-11-06 Word Home 行距菜单补齐关闭行为：原样迁入固定版本 `packages/ui/src/popover-dismiss.ts`，仅依赖 React；接入其 `useDismissablePopover`，由本菜单容器 ref 提供 inside guard，并启用 Escape。外部 capture-phase pointerdown、窗口 blur 和已有可选 shell 通知均复用上游实现，不新增事件系统或桌面依赖。原始与本地文件哈希均已登记，独立 Home 测试覆盖外点关闭、Escape、失焦、菜单内部点击和触发器切换。
+
+## PDF text exports (2026-11-11)
+
+The browser PDF export adapter uses the existing Docs parse/render pipeline and
+these fixed-ref upstream serializers: renderer/export-markdown.ts and
+renderer/html-export.ts. Ten previously absent relative-import source modules
+were added without replacing existing local adaptations. SOURCE-SHA256.json
+records their original source hashes. shared/ipc.ts is a local narrow extract
+of the unchanged upstream MarkdownImage and MARKDOWN_MEDIA_DIR_TOKEN definitions,
+plus a type-only AgentToolDef re-export from the existing shared source package;
+it excludes unrelated desktop/AI protocol declarations. LOCAL-SHA256.json
+records the resulting local files. Markdown images are replaced with their
+verified parser-provided data URLs by the local browser adapter; no temporary
+media folder is exposed. HTML is attachment-only. OCR is not enabled, and
+content/layout/font fidelity remains pending manual review.

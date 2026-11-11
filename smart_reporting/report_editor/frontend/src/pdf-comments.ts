@@ -83,7 +83,7 @@ export function projectPageComments(raw: CommentAnnotation[], page: PdfPageIdent
   if (!preview) for (const [index, op] of operations.entries()) if (op.kind === 'addTextAnnotation' && op.pageId === page.pageId) roots.push({ key: `${page.pageId}:pending:${index}`, pageId: page.pageId, pageNo, contents: String(op.text), localRootId: typeof op.localId==='string'?op.localId:undefined, author: '', timeMs: typeof op.createdMs === 'number' ? op.createdMs : null, cardId: null, pendingIndex: index, readonly: false, replies: [] })
   if (!preview) for (const [index, op] of operations.entries()) if (['replyNote','replyPendingNote'].includes(op.kind) && op.pageId === page.pageId) {
     const target = op.kind==='replyNote' ? nodes.find(node => node.replyAnnotationId === op.annotationId) : roots.find(node => node.localRootId === op.parentLocalId)
-    if (target) { if(op.kind==='replyNote')target.readonly = true; target.replies.push({key:`${page.pageId}:reply:${index}`,pageId:page.pageId,pageNo,contents:String(op.contents),author:'',timeMs:typeof op.createdMs==='number'?op.createdMs:null,cardId:null,pendingIndex:index,pendingReply:true,readonly:false,replies:[]}) }
+    if (target) { if(op.kind==='replyNote')target.readonly = true; target.replies.push({key:`${page.pageId}:reply:${index}`,pageId:page.pageId,pageNo,contents:String(op.contents),author:op.author==='AI Assistant'?'AI Assistant':'',timeMs:typeof op.createdMs==='number'?op.createdMs:null,cardId:null,pendingIndex:index,pendingReply:true,readonly:false,replies:[]}) }
   }
   return roots
 }

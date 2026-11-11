@@ -19,7 +19,23 @@ for (const [name, [path, digest]] of Object.entries(assets)) {
   }
 }
 const packer = packerArg ?? fileURLToPath(new URL('../../../../docker/package-office-engine.mjs', import.meta.url))
+const converterNotices = ['LICENSE', 'NOTICE', 'SOURCE.md', 'SOURCE-SHA256.json']
+for (const name of converterNotices) {
+  if (!existsSync(join(source, 'vendor/pdf2docx', name))) throw new Error('PDF converter notice missing: ' + name)
+}
 execFileSync(process.execPath, [packer, source, destination], { stdio: 'inherit' })
+mkdirSync(join(destination, 'licenses/vendor/pdf2docx'), { recursive: true })
+for (const name of converterNotices) copyFileSync(join(source, 'vendor/pdf2docx', name), join(destination, 'licenses/vendor/pdf2docx', name))
+// 转换复用 DOCX/XLSX/PPTX 本地源码；运行包须携带各引擎的来源说明和许可。
+for (const engine of ['workbook_engine', 'slides_engine']) {
+  for (const name of ['LICENSE', 'NOTICE', 'SOURCE.md']) {
+    const input = join(source, '..', engine, name)
+    if (!existsSync(input)) throw new Error('PDF conversion source notice missing: ' + engine + '/' + name)
+    const output = join(destination, 'licenses/conversion', engine, name)
+    mkdirSync(dirname(output), { recursive: true })
+    copyFileSync(input, output)
+  }
+}
 mkdirSync(join(destination, 'wasm'), { recursive: true })
 for (const [name, [path]] of Object.entries(assets)) copyFileSync(join(source, 'node_modules', path), join(destination, 'wasm', name))
 writeFileSync(join(destination, 'WASM-SHA256.json'), JSON.stringify(Object.fromEntries(Object.entries(assets).map(([name, [, hash]]) => [name, hash])), null, 2) + '\n')

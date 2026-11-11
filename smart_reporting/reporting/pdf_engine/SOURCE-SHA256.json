@@ -33,7 +33,9 @@
   },
   "src/main/save-pdf.ts": {
     "upstreamPath": "apps/pdf/src/main/save-pdf.ts",
-    "sha256": "21648506698c378492dffee6ab4afc7d80e75cc589e184ae1e334d1ff4fca74b"
+    "sha256": "21648506698c378492dffee6ab4afc7d80e75cc589e184ae1e334d1ff4fca74b",
+    "localSha256": "ef072171fb49d6bfb61bad402e3f706cb4424f0f6ef89c81ba81b14ad8f67e4e",
+    "adaptation": "Keep existing headless unsupported desktop branches; preserve proved ASCII single-widget standard Latin text-field DA/AP font during dirty appearance refresh via shared pure form-text-properties inspector, retaining the existing default-font fallback for unproved fields. Expand measure Rect/AP BBox using formal Helvetica FontBBox, unkerned glyph advances and the actual rounded Tm, retaining the original appearance commands and midpoint label origin."
   },
   "src/main/text-edit.ts": {
     "upstreamPath": "apps/pdf/src/main/text-edit.ts",

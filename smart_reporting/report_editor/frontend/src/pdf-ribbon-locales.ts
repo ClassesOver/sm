@@ -1,5 +1,7 @@
 /** Small browser-safe localization closure adapted from GenOffice PDF i18n/strings.ts at f8c17004fb730df11f0f743164ffd8b4281bb38c. */
 const labels = {
+  'Edit': ['Edit', '编辑'], 'Convert & Export': ['Convert & Export', '转换与导出'], 'Search, Print & Properties': ['Search, Print & Properties', '搜索、打印与属性'], 'Signature & Protection': ['Signature & Protection', '签名与保护'],
+  'AI': ['AI', 'AI 助手'], 'AI Review': ['AI Review', 'AI 审阅'], 'Draw Tools': ['Draw Tools', '绘图工具'],
   '双页视图': ['Two-page view', '双页视图'], '单页视图': ['Single-page view', '单页视图'],
   '开始': ['Home', '开始'], '注释': ['Annotate', '注释'], '编辑': ['Edit', '编辑'], '页面': ['Pages', '页面'], '视图': ['View', '视图'],
   '填写表单': ['Fill Form', '填写表单'], '表单设计': ['Form Design', '表单设计'],

@@ -927,5 +927,45 @@
   "apps/docs/src/renderer/editor/cover-pages.ts": {
     "upstream": "apps/docs/src/renderer/editor/cover-pages.ts",
     "sha256": "d3b4fd06b80a5f6f34cc7238be6d9b6784b1ce0e74259c13628796baaf5a101b"
+  },
+  "apps/docs/src/renderer/ai/inherit-formatting.ts": {
+    "sha256": "b10c44c6f237f88d884876950b352e16dfc297b488a660de7a605a592dea5699",
+    "upstream": "apps/docs/src/renderer/ai/inherit-formatting.ts"
+  },
+  "apps/docs/src/renderer/ai/page-setup.ts": {
+    "sha256": "665d2075e353a2355ad3e0c4fe191e3bab10862b19d469d8661bbe4f90af289b",
+    "upstream": "apps/docs/src/renderer/ai/page-setup.ts"
+  },
+  "apps/docs/src/renderer/ai/protocol.ts": {
+    "sha256": "0e28544a4458d9ad277225396f584866ed52490016bac6a3d0662196b23047e3",
+    "upstream": "apps/docs/src/renderer/ai/protocol.ts"
+  },
+  "apps/docs/src/renderer/ai/redact-view.ts": {
+    "sha256": "0479fe128608375c5cafe7c1bb665ab25293edbd3c3643c67f533f54a8b470bd",
+    "upstream": "apps/docs/src/renderer/ai/redact-view.ts"
+  },
+  "apps/docs/src/renderer/ai/revision-author.ts": {
+    "sha256": "e49b455a0922a2eb6b22b0611fffa88ea094af9fe4e00f599e9c996f31cf7018",
+    "upstream": "apps/docs/src/renderer/ai/revision-author.ts"
+  },
+  "apps/docs/src/renderer/ai/revision-ops.ts": {
+    "sha256": "ee7e02cce833e873f5f01ce9b60bc548831b7110d41564299ea2b5da3aa7c01d",
+    "upstream": "apps/docs/src/renderer/ai/revision-ops.ts"
+  },
+  "apps/docs/src/renderer/export-markdown.ts": {
+    "sha256": "a52e4a7c399428cf09d817df24fbdcba251a3a757765df78f6b0ed18107bde9c",
+    "upstream": "apps/docs/src/renderer/export-markdown.ts"
+  },
+  "apps/docs/src/renderer/html-export.ts": {
+    "sha256": "75394d0bf9f1a02cc343025042814ffee3bac09ae52756749301319d0758916d",
+    "upstream": "apps/docs/src/renderer/html-export.ts"
+  },
+  "apps/docs/src/renderer/word-count.ts": {
+    "sha256": "f9865d99ed9ac5f69ec208943f1c5305ed67e58451b8db058abf9c5b35fd24ee",
+    "upstream": "apps/docs/src/renderer/word-count.ts"
+  },
+  "apps/docs/src/shared/ipc.ts": {
+    "sha256": "94afc8f035a64d8c3833288502c50bea8ee44c61d535e803d23ca2a5398262d6",
+    "upstream": "apps/docs/src/shared/ipc.ts"
   }
 }
