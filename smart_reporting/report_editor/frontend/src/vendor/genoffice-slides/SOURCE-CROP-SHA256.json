@@ -1,0 +1,11 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "upstream": {
+    "apps/slides/src/renderer/CropOverlay.tsx": "21dab30135e08d0a17a01c7b5483d0b1e2b0e24ffb8870ad3414691cf728b0bb",
+    "apps/slides/src/renderer/esc-overlay.ts": "c818c359a9bac2cb26c29392fa2a6c030bd4130d47f9fad824f063c0d19f4f23"
+  },
+  "local": {
+    "CropOverlay.tsx": "21dab30135e08d0a17a01c7b5483d0b1e2b0e24ffb8870ad3414691cf728b0bb",
+    "esc-overlay.ts": "c818c359a9bac2cb26c29392fa2a6c030bd4130d47f9fad824f063c0d19f4f23"
+  }
+}

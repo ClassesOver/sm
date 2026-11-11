@@ -48,6 +48,37 @@ it('native PPTX exposes initialization failure to the host', async () => {
   await expect(view.ready).rejects.toThrow('源文件不可读'); view.dispose()
 })
 
+it('native PPTX connects the Chinese AI host to one draft with explicit adoption, undo and save', async () => {
+  document.body.innerHTML = '<main id="app"></main>'
+  const shell = createEditorShell(document.querySelector('#app')!, 'full', 'pptx')
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const proposal = { summary: '润色标题', operations: [{ kind: 'editSlides', edits: [{ slideIndex: 0, elementId: 'title', text: 'AI标题' }], order: [0] }] }
+  const nativeAI = { start: vi.fn(async () => ({ editId: 'ai', status: 'running', snapshotSha256: 'b'.repeat(64) })),
+    status: vi.fn(async () => ({ editId: 'ai', status: 'succeeded', snapshotSha256: 'b'.repeat(64), proposal })),
+    accept: vi.fn(async () => ({ operations: proposal.operations })), cancel: vi.fn(async () => ({})), cancelRequest: vi.fn(async () => ({})) }
+  const request = vi.fn(async (path: string) => path === 'deck' ? deck : path === 'render-tree' ? { slides: [] } : { revision: 2, revisionRegistered: true, validation: { issues: [] } })
+  const view = createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: true, request: request as any, draft, nativeAI })
+  await view.ready
+  expect(shell.editor.querySelector('.slides-native-ai')).not.toBeNull()
+  const text = shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!
+  text.value = '人工修改'; text.dispatchEvent(new Event('input'))
+  expect(shell.editor.querySelector('.native-ai-context')!.textContent).toContain('人工修改')
+  shell.editor.querySelector<HTMLTextAreaElement>('.slides-native-ai textarea')!.value = '润色'
+  shell.editor.querySelector('form.native-ai-form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+  await vi.waitFor(() => expect(shell.editor.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+  expect(text.value).toBe('人工修改')
+  expect(nativeAI.start.mock.calls[0]).toEqual([expect.objectContaining({ operations: draft.operations, selection: [{ slideIndex: 0, elementId: 'title' }] }), expect.any(AbortSignal)])
+  shell.editor.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+  await vi.waitFor(() => expect(text.value).toBe('AI标题'))
+  expect(draft.operations).toEqual(proposal.operations)
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(text.value).toBe('人工修改')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click()
+  expect(text.value).toBe('AI标题')
+  shell.save.click(); await vi.waitFor(() => expect(request.mock.calls.some(([path]) => path === 'save')).toBe(true))
+  view.dispose()
+})
+
 const draftIdentity: NativeDraftIdentity = { documentId: 'slides-draft', revision: 1, sourceSha256: deck.sha256,
   scope: { database: 'fixture', companyId: 'company', userId: 'user', threadId: 'thread' } }
 const draftContext = { context: { ...draftIdentity, format: 'pptx', sourceFile: { sha256: deck.sha256 } }, editingEnabled: true } as unknown as NativeContextResponse

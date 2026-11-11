@@ -322,3 +322,194 @@
   cursor: default;
 }
 .pdf-ribbon .office-ai-group > button:not(.office-ai-entry) { grid-column: 2; }
+
+/* PPTX 专项覆盖；其他格式保持既有样式。 */
+.editor-format-pptx {
+  --office-tabbar-height: 36px;
+  --office-tab-height: 32px;
+  --office-body-height: 112px;
+  --office-control-height: 28px;
+  --office-big-control-height: 60px
+}
+
+.slides-native-ribbon-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-height: var(--office-tabbar-height);
+  box-sizing: border-box;
+  overflow-x: auto;
+  padding: 3px 12px 0;
+  border-bottom: 1px solid var(--office-border);
+  background: var(--office-tabbar);
+  scrollbar-width: thin;
+}
+.slides-native-ribbon [role=tabpanel] {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  min-height: var(--office-body-height);
+  box-sizing: border-box;
+  overflow-x: auto;
+  padding: 6px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--office-border-strong) transparent;
+}
+.slides-native-ribbon [role=tabpanel] > .slides-native-ribbon-group {
+  display: grid;
+  grid-template-rows: repeat(3, var(--office-control-height));
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  align-items: center;
+}
+.slides-native-ribbon-group > :is(textarea, .pdf-ribbon-palette, .pdf-ribbon-big) { grid-row: span 2; }
+.slides-native-ribbon { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.slides-native-ribbon-tabs { grid-column: 1; grid-row: 1; }
+.slides-native-ribbon > .slides-native-ribbon-group {
+  grid-column: 2;
+  grid-row: 1;
+  align-content: center;
+  padding: 0 8px;
+  border: 0;
+  border-bottom: 1px solid var(--office-border);
+  background: var(--office-tabbar);
+}
+.slides-native-ribbon > [role=tabpanel] { grid-column: 1 / -1; }
+.slides-statusbar {
+  flex: none;
+  min-height: 24px;
+  box-sizing: border-box;
+  border-top: 1px solid var(--office-border-soft);
+  background: var(--office-tabbar);
+  color: var(--office-muted);
+  font-size: var(--office-label-size);
+}
+.slides-native-ribbon-group input[data-command=fontSize] { width: 64px; font-variant-numeric: tabular-nums; }
+.slides-native-ribbon-group input[data-command=fontFamily] { width: 136px; }
+.slides-native-ribbon-group button > svg { flex: none; }
+.slides-native-ribbon-tabs [role=tab] { position: relative; }
+.slides-native-ribbon-tabs [role=tab][aria-selected=true] { border-bottom-color: transparent; }
+.slides-native-ribbon-tabs [role=tab][aria-selected=true]::after {
+  position: absolute;
+  right: 12px;
+  bottom: -2px;
+  left: 12px;
+  height: 2px;
+  background: var(--office-accent);
+  content: "";
+}
+.slides-native-ribbon-tabs [role=tab]:focus-visible { outline-offset: -3px; }
+.slides-sidebar button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 2px; }
+.slides-statusbar,
+.slide-number { font-variant-numeric: tabular-nums; }
+:is(.slides-sidebar, .slides-inspector, .slides-stage) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--office-border-strong) transparent;
+}
+@media screen {
+  .report-app.editor-format-pptx {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100dvh;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  .report-app.editor-format-pptx > .app-bar {
+    position: relative;
+    flex: none;
+    grid-template-columns: minmax(140px, 190px) minmax(0, auto) minmax(0, 1fr);
+    min-height: 44px;
+    padding: 5px 12px;
+    gap: 12px;
+    box-shadow: none;
+  }
+  .report-app.editor-format-pptx .report-actions {
+    position: static;
+    min-width: 0;
+    width: auto;
+    padding: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  .report-app.editor-format-pptx .report-actions :is(button, a:not([hidden])) {
+    height: 32px;
+    font-size: var(--office-font-size);
+  }
+  .report-app.editor-format-pptx > .report-meta {
+    flex: none;
+    width: 100%;
+    min-height: 24px;
+    margin: 0;
+    padding: 2px 12px;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .report-app.editor-format-pptx .reading-progress { display: none; }
+  .report-app.editor-format-pptx > .report-workspace {
+    display: flex;
+    flex: 1;
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    gap: 0;
+  }
+  .report-app.editor-format-pptx .editor-surface {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    height: auto;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: hidden;
+  }
+  .report-app.editor-format-pptx .editor-surface::before { display: none; }
+  .report-app.editor-format-pptx #report-editor {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    width: 100%;
+    max-width: none;
+    height: auto;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+  }
+}
+@media screen and (max-width: 768px) {
+  .report-app.editor-format-pptx > .app-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 8px;
+    padding: 4px 8px;
+  }
+  .report-app.editor-format-pptx .report-actions {
+    grid-column: 1 / -1;
+    overflow-x: auto;
+  }
+  .editor-format-pptx { --office-control-height: 36px; }
+}
+.slides-native-ribbon .slides-ribbon-field { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; white-space: nowrap; }
+.slides-native-ribbon .slides-ribbon-field > :is(input, select) { width: 112px; min-width: 0; }
+.slides-native-ribbon [data-ribbon-group=Font] { grid-template-columns: repeat(6, 32px); grid-auto-flow: row; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontFamily] { grid-area: 1 / 1 / 2 / 5; width: 100%; min-width: 0; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSize] { grid-area: 1 / 5 / 2 / 7; width: 100%; min-width: 0; }
+.slides-native-ribbon [data-ribbon-group=Font] > :is([data-command=bold], [data-command=italic], [data-command=underline], [data-command=strike]) { grid-row: 2; min-width: 0; padding-inline: 5px; }
+.slides-native-ribbon [data-ribbon-group=Font] .slides-ribbon-toggle-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontColor] { grid-area: 2 / 5 / 3 / 7; width: 100%; min-width: 0; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSizeUp] { grid-area: 3 / 1 / 4 / 4; }
+.slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontSizeDown] { grid-area: 3 / 4 / 4 / 7; }
+@media (max-width: 768px) {
+  .slides-native-ribbon [data-ribbon-group=Font] { grid-template-columns: repeat(6, 36px); }
+}

@@ -109,7 +109,6 @@ export default defineConfig({
           if (id.endsWith('/src/workbook-data-validation-structure.ts')) return 'workbook-structure-followers'
           if (id.endsWith('/src/workbook-conditional-formatting.ts')) return 'workbook-conditional-formatting-controls'
           if (id.endsWith('/src/workbook-rtl.ts') || id.includes('/src/vendor/genoffice-rtl/')) return 'workbook-rtl'
-          if (id.includes('/node_modules/zod/')) return 'workbook-schema'
           if (id.endsWith('/workbook_engine/packages/xlsx-engine/src/conditional-formatting-source.ts')) return 'workbook-conditional-formatting'
           if (/\/src\/workbook-(?:headings|formula-bar-view|view|statistics)\.ts$/.test(id)) return 'workbook-view-controls'
           if (id.endsWith('/src/workbook-checkbox.ts')) return 'workbook-checkbox-control'
@@ -139,6 +138,7 @@ export default defineConfig({
           if (id.includes('/node_modules/pdfjs-dist/')) return 'native-pdfjs'
           if (/\/vendor\/genoffice-docs\/.*\/i18n\/.*\.(json|ts)$/.test(id) && !id.endsWith('/index.ts')) return `native-docx-locale-${id.split('/i18n/').at(-1)!.replace(/[^a-zA-Z0-9]/g, '-')}`
           if (id.endsWith('/font-metrics/word-faces.json')) return 'native-docx-font-metrics'
+          if (id.endsWith('/vendor/genoffice-docs/apps/docs/src/renderer/components/icons.tsx')) return 'native-docx-ribbon-icons'
           if (id.includes('/vendor/genoffice-docs/apps/docs/src/') && ['renderer/html-export.ts','renderer/export-markdown.ts','renderer/word-count.ts','renderer/ai/protocol.ts','renderer/ai/revision-ops.ts','renderer/ai/redact-view.ts','renderer/ai/page-setup.ts','renderer/ai/revision-author.ts','renderer/ai/inherit-formatting.ts','renderer/ai/ops.ts','renderer/ai/style-ops.ts','renderer/ai/field-ops.ts','renderer/ai/tab-stops.ts','renderer/ai/after-text.ts','shared/ipc.ts'].some(path=>id.endsWith('/'+path))) return 'native-pdf-text-serializer'
           if (id.includes('/vendor/genoffice-docs/')) return 'native-docx-render'
           if (id.includes('/doc_engine/packages/docx-engine/')) return 'native-docx-engine'
@@ -150,16 +150,22 @@ export default defineConfig({
             return `workbook-${univer}`
           }
           if (id.includes('/node_modules/hyphen/')) return `workbook-hyphen-${id.split('/').at(-1)?.replace(/\.[^.]+$/, '')}`
-          if (id.includes('/workbook_engine/')) return 'workbook-engine'
+          if (id.includes('/node_modules/zod/')) return id.includes('/workbook_engine/') ? 'workbook-engine-schema' : 'workbook-schema'
+          if (id.includes('/workbook_engine/') && !id.includes('/node_modules/')) return 'workbook-engine'
           // Keep individually lazy-loaded React packages below the ordinary chunk cap.
           if (/node_modules\/scheduler\//.test(id)) return 'scheduler'
           if (/node_modules\/react\//.test(id)) return 'react'
+          if (id.endsWith('/src/office-ribbon-scroll.ts')) return 'office-ribbon-scroll'
+          if (id.endsWith('/src/slides-shape-format-pane.tsx')) return 'native-pptx-shape-format'
+          if (id.endsWith('/src/slides-geometry-pane.ts')) return 'native-pptx-geometry'
+          if (id.endsWith('/src/slides-chart-format-pane.tsx') || id.includes('/src/vendor/genoffice-slides/ui/color-picker')) return 'native-pptx-chart-format'
           if (id.includes('/node_modules/react-konva/')) return 'slides-bindings'
           if (id.includes('/node_modules/konva/')) return 'slides-konva'
           if (id.includes('/node_modules/opentype.js/')) return 'workbook-opentype'
           if (id.includes('/node_modules/franc-min/')) return 'workbook-language'
           if (id.includes('/node_modules/rxjs/')) return 'workbook-observable'
-          if (/node_modules\/(zod|jszip|numfmt)\//.test(id)) return 'workbook-format'
+          if (id.includes('/node_modules/jszip/')) return id.includes('/workbook_engine/') ? 'workbook-engine-zip' : id.includes('/slides_engine/') ? 'slides-zip' : 'workbook-zip'
+          if (id.includes('/node_modules/numfmt/')) return id.includes('/workbook_engine/') ? 'workbook-engine-format' : 'workbook-format'
           if (id.includes('/node_modules/@milkdown/')) return 'milkdown'
           if (id.includes('/node_modules/lucide/')) return 'icons'
           if (id.includes('/node_modules/diff/')) return 'diff'

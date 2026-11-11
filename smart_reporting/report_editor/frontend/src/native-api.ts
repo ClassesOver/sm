@@ -178,7 +178,5 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
   }
 }
 
-export interface NativeOfficeReadContext {
-  operations: NativeOperation[];
-  selection: null | { sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number } | { slideIndex: number; elementId: string }[];
-}
+export type NativeOfficeReadSelection = null | {sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number} | {slideIndex: number; elementId: string}[]
+export interface NativeOfficeReadContext {operations: NativeOperation[]; selection: NativeOfficeReadSelection}
