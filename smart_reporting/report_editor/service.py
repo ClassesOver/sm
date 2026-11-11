@@ -199,7 +199,7 @@ def _build_export_trace_sources(
 
     def summarize(entry: dict[str, Any]) -> dict[str, Any]:
         omitted = dict(entry.get("omittedCounts", {}))
-        for field, limit in (("datasetIds", 10), ("methods", 5), ("transformNotes", 10), ("subjectIds", 10), ("links", 10)):
+        for field, limit in (("datasetIds", 10), ("methods", 5), ("transformNotes", 10), ("subjectIds", 10), ("links", 10), ("periods", 10)):
             values = entry.get(field)
             if isinstance(values, list) and len(values) > limit:
                 omitted[field] = len(values) - limit
@@ -251,7 +251,7 @@ def _build_export_trace_sources(
                 "factValue": state.get("factValue"),
                 "unit": state.get("unit"),
                 "periods": list(state.get("periods") or ()),
-                "formula": state.get("formula"),
+                "formula": state.get("formulaText") or state.get("formula"),
                 "scope": dict(state.get("scope") or {}),
                 "datasetIds": list(state.get("datasetIds") or ()),
             }
@@ -348,6 +348,7 @@ def _build_export_trace_sources(
                 "status": table_statuses.get(table.table_id, "unbound"),
                 "datasetIds": dataset_ids,
                 "methods": methods,
+                **({'periods': list(detail['periods'])} if detail.get('periods') else {}),
                 "links": [link_of(subject_id) for subject_id in table_subjects],
             }
         )

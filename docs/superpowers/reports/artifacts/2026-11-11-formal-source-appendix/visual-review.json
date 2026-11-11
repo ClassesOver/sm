@@ -1,0 +1,16 @@
+{
+  "pdfPages": 2,
+  "wordPages": 2,
+  "inspected": [
+    "rendered/contact.png",
+    "rendered/pdf-pages/page-2.png",
+    "rendered/word-pages/page-2.png"
+  ],
+  "result": "Chinese/version/exact decimal/half-open period/limitations readable; no obvious overlap on inspected pages",
+  "limitations": [
+    "large whitespace",
+    "scope not registered in fixture",
+    "fixture date 2026-09-30",
+    "not full report visual acceptance"
+  ]
+}

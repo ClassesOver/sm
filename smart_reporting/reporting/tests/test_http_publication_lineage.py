@@ -79,6 +79,13 @@ from .test_native_publication_nonblocking import create_publication
 
 
 @pytest.mark.anyio
+async def test_http_editor_export_keeps_files_when_formal_source_explanation_fails(tmp_path, monkeypatch):
+    from .test_formal_source_explanations import exercise_formal_source_export_fault
+
+    await exercise_formal_source_export_fault(tmp_path, monkeypatch)
+
+
+@pytest.mark.anyio
 @pytest.mark.integration
 async def test_http_initial_workbook_retains_download_on_publication_fact_read_failure(
     basis_context, document_context, receipt_snapshot, monkeypatch,
@@ -444,7 +451,7 @@ def _identity(path: str, content: bytes, media_type: str) -> ArtifactFile:
 
 async def _publication_fixture(
     tmp_path: Path, *, forged: str | None = None, table_source: bool = False, source_cell: bool = False, denominator: bool = False, population: bool = False,
-    quality_record: bool = False, registered_result: bool = False,
+    quality_record: bool = False, registered_result: bool = False, native_document: bool = False,
 ):
     dependencies = {
         REPORT_WORKFLOW_SCOPE_DEPENDENCY: {
@@ -495,7 +502,10 @@ async def _publication_fixture(
         registered_fact_files = {analysis.analysis_id: _identity(path, files[path], 'application/json')}
         trace, table_markdown = build_analysis_tables(bundle, fact_file_resource_id=derive_resource_id(path))[0]
         registered_tables = (trace,)
-        markdown = ('# Report\n\n' + table_markdown).encode()
+        heading = '# Report\n\n'
+        if native_document:
+            heading += '[[section:overview]]\n\n## 1. 经营概览\n\n'
+        markdown = (heading + table_markdown).encode()
         files['reports/report.md'] = markdown
     if table_source:
         files[table_source_path] = table_bytes

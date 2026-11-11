@@ -1,0 +1,45 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_source_summary_does_not_use_formal_result_from_a_different_basis[asyncio] _
+
+tmp_path = PosixPath('/tmp/pytest-of-junge/pytest-202/test_source_summary_does_not_u0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76811bf32b10>
+
+    @pytest.mark.anyio
+    async def test_source_summary_does_not_use_formal_result_from_a_different_basis(tmp_path, monkeypatch):
+        from smart_reporting.report_editor import ReportEditorContext, ReportEditorService
+        from smart_reporting.reporting.tests import test_http_publication_lineage as fixtures
+    
+        builder = fixtures.build_csv_trace_index
+        monkeypatch.setattr(fixtures, 'build_csv_trace_index',
+            lambda **values: builder(**{**values, 'report_basis_id': 'basis-foreign'}))
+        runtime, arguments, scope, durable, _, _, _, _ = await fixtures._publication_fixture(tmp_path, registered_result=True)
+        await runtime.issue_http_publication(**arguments)
+        editor = ReportEditorService(state_repository=runtime.state_repository,
+            workspace_registry=runtime.workspace_registry, workspace=runtime.workspace_service,
+            trace_cursor_secret=b'trace-cursor-secret-32-bytes-ok!')
+        context = ReportEditorContext.model_validate(durable.payload['reportEditorContexts']['2'])
+        try:
+            runtime.workspace_registry.resolve(scope)
+            markdown = await runtime.workspace_service.aread_text(context.scope['threadId'], context.markdown_path)
+            validation = await editor.trace.validate(context, markdown, hashlib.sha256(markdown.encode()).hexdigest())
+            for table in validation['tables']:
+                for location in table['locations']:
+>                   assert not location.get('formulaText')
+E                   AssertionError: assert not '预算额（第1版）：求和；采用合成预算执行（第1版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 300.123456789123456789 CNY；取数时间未登记；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过'
+E                    +  where '预算额（第1版）：求和；采用合成预算执行（第1版）；期间 [2026-11-01, 2026-12-01)（含起日、不含止日）；登记结果 300.123456789123456789 CNY；取数时间未登记；数据完整性与更新状态尚未核实，暂不据此判断经营变化；登记结果不等于业务核验通过' = <built-in method get of dict object at 0x7680a5255a00>('formulaText')
+E                    +    where <built-in method get of dict object at 0x7680a5255a00> = {'rowKey': 'result:26d75adc15a9b7c8910490d013c0ad0975131572f964cf30b0638bf586df471e', 'columnKey': '计算结果（CNY）', 'rowIndex': 0, 'columnIndex': 1, ...}.get
+
+smart_reporting/reporting/tests/test_formal_source_explanations.py:103: AssertionError
+----------------------------- Captured stderr call -----------------------------
+2026-11-11 20:55:44.632 | INFO     | smart_reporting.reporting.workflow.runtime.planning:_release_workspace:441 - report_host_workspace_released workspace_key=reporting-run-4790f1b890327e09da450e8a6527b6e406af44e9b7d8cf5c4b80ffd88f15b444
+2026-11-11 20:55:44.771 | INFO     | smart_reporting.report_editor.trace_sources:validate:1774 - report_source_validation_completed report_id=report-1 revision=2 subjects=0 tables=1 duration_ms=135
+=============================== warnings summary ===============================
+../../../../pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2
+  /home/junge/pros/smart_reporting/.venv/lib/python3.12/site-packages/visions/utils/monkeypatches/imghdr_patch.py:2: DeprecationWarning: 'imghdr' is deprecated and slated for removal in Python 3.13
+    from imghdr import tests
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED smart_reporting/reporting/tests/test_formal_source_explanations.py::test_source_summary_does_not_use_formal_result_from_a_different_basis[asyncio]
+1 failed, 1 warning in 10.91s

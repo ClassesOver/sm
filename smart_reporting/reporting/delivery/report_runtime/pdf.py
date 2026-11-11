@@ -46,6 +46,8 @@ _MAX_TRACE_CLAIMS = 400
 _MAX_TRACE_TABLES = 400
 _MAX_TRACE_CHARTS = 200
 _MAX_TRACE_NUMBERED = 999
+# 单条正式说明保留精确版本、原值和限制；不得比上游附录总载荷16KiB更窄。
+_MAX_TRACE_EXPLANATION_CHARS = 16 * 1024
 _TRACE_STATUS_LABELS = frozenset({"valid", "stale", "unbound", "missing"})
 _TRACE_COMMON_KEYS = frozenset({"subjectIds", "status", "datasetIds", "links"})
 _TRACE_CLAIM_KEYS = _TRACE_COMMON_KEYS | {
@@ -96,11 +98,12 @@ def _trace_links(value: Any) -> list[dict[str, str]]:
 def _normalize_trace_entry(
     item: Any, *, keys: frozenset[str], kind: str
 ) -> dict[str, Any]:
-    if not isinstance(item, dict) or set(item) - {"omittedCounts"} != keys:
+    optional = {"omittedCounts", "periods"} if kind == 'table' else {"omittedCounts"}
+    if not isinstance(item, dict) or set(item) - optional != keys:
         raise ReportFailure("PDF 数据来源展示信息无效")
     omitted = item.get("omittedCounts", {})
     if not isinstance(omitted, dict) or any(
-        field not in {"datasetIds", "methods", "transformNotes", "subjectIds", "links"}
+        field not in {"datasetIds", "methods", "transformNotes", "subjectIds", "links", "periods"}
         or isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 100000
         for field, count in omitted.items()
     ):
@@ -200,7 +203,7 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
             raise ReportFailure("PDF 数据来源事实值无效")
         if unit is not None and (not isinstance(unit, str) or len(unit) > 64):
             raise ReportFailure("PDF 数据来源单位无效")
-        if formula is not None and (not isinstance(formula, str) or len(formula) > 1000):
+        if formula is not None and (not isinstance(formula, str) or len(formula) > _MAX_TRACE_EXPLANATION_CHARS):
             raise ReportFailure("PDF 数据来源方法无效")
         if not isinstance(scope, dict) or len(scope) > 20 or any(
             not isinstance(key, str)
@@ -245,7 +248,9 @@ def _normalize_trace_sources(value: Any) -> dict[str, Any]:
             or table_id in tables
         ):
             raise ReportFailure("PDF 数据来源表格无效或重复")
-        entry["methods"] = _trace_str_list(entry["methods"], field="方法", max_items=5, max_length=128)
+        entry["methods"] = _trace_str_list(entry["methods"], field="方法", max_items=5, max_length=_MAX_TRACE_EXPLANATION_CHARS)
+        if 'periods' in entry:
+            entry['periods'] = _trace_str_list(entry['periods'], field='期间', max_items=10, max_length=128)
         tables[table_id] = entry
     charts: list[dict[str, Any]] = []
     chart_ids: set[str] = set()

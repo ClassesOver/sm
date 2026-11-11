@@ -1109,6 +1109,12 @@ class ReportEditorTraceService:
             document = bundle_cache[file_ref.path]
             if not isinstance(document, dict):
                 return None
+            metric_context = document.get('metricContext')
+            if isinstance(metric_context, Mapping) and metric_context.get('basisId') != index.report_basis_id:
+                source_failures[file_ref.resource_id] = 'fact_binding_unavailable'
+                validated_source_bytes.pop(file_ref.resource_id, None)
+                bundle_cache[file_ref.path] = None
+                return None
             from ..reporting.trace.fact_index import fact_entry_from_pointer
 
             if document.get("analysisId") != ref.analysis_id:
@@ -1311,6 +1317,9 @@ class ReportEditorTraceService:
             """正文数值与表格单元格共用的冻结摘要：单位、期间、口径或可验算算式、范围与数据集。"""
             formula = _entry_formula(entry)
             return {
+                **({'periods': [f"[{selected['period']['start']}, {selected['period']['end']})（含起日、不含止日）"],
+                    'periodBoundary': 'half_open'}
+                    if selected and selected.get('period_boundary') == 'half_open' else {}),
                 "formula": formula,
                 # 派生值与对比值写出可验算的算式，其余与导出附录同一转换规则。
                 "formulaText": (selected or {}).get("explanation") or (readable_formula(formula, _formula_labels(
@@ -1513,17 +1522,17 @@ class ReportEditorTraceService:
                 selected = (await _resolved_group(source_ids)).get(key)
                 if selected is None:
                     continue
-                location.update(
-                    factValue=selected["value"],
-                    unit=selected["unit"],
-                    periods=list(selected["periods"]),
-                    computation=reference_computation(
+                location.update({
+                    'factValue': selected["value"],
+                    'unit': selected["unit"],
+                    'periods': list(selected["periods"]),
+                    'computation': reference_computation(
                         f"{{{{value:{key}:}}}}", selected.get("selector"), entry=selected.get("entry"),
                     ),
                     **_value_view(
                         {**selected["entry"], "formula": selected["formula"], "scope": selected["scope"]}, selected,
                     ),
-                )
+                })
             dataset_ids: list[str] = []
             methods: list[str] = []
             for cell in table.cells:
@@ -1539,6 +1548,18 @@ class ReportEditorTraceService:
                     if formula and formula not in methods:
                         methods.append(formula)
             payload.update(datasetIds=dataset_ids, methods=methods)
+            periods = []
+            for location in payload['locations']:
+                if location.get('periodBoundary') != 'half_open':
+                    continue
+                explanation = location.get('formulaText')
+                if explanation and explanation not in methods:
+                    methods.append(explanation)
+                for period in location.get('periods', ()):
+                    if period not in periods:
+                        periods.append(period)
+            if periods:
+                payload['periods'] = periods
         if any(chart.presentation_sha256 is None for chart in index.chart_traces):
             from ..reporting.trace.chart_subjects import freeze_chart_presentations
 

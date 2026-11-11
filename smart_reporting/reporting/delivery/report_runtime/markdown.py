@@ -1353,7 +1353,7 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
             joined = "、".join(entry.get("periods") or ())
             periods = _normalize_cjk_wording_text(joined) if joined else None
         else:
-            periods = "、".join(dataset_period_labels(dataset_ids)) or None
+            periods = "、".join(entry.get('periods') or dataset_period_labels(dataset_ids)) or None
         rows.append(f"<dd>期间：{html.escape(periods or '未登记')}</dd>")
         if kind == "claim":
             scope = entry.get("scope") or {}
@@ -1379,7 +1379,7 @@ def _trace_source_appendix_html(trace_sources: dict[str, Any] | None) -> str:
         ]
         online = "、".join(online_links) or "未提供在线定位"
         omitted = entry.get("omittedCounts") or {}
-        omitted_labels = {"datasetIds": "源文件", "methods": "方法", "transformNotes": "转换说明", "links": "在线定位"}
+        omitted_labels = {"datasetIds": "源文件", "methods": "方法", "transformNotes": "转换说明", "links": "在线定位", "periods": "期间"}
         omitted_text = "；".join(
             f"{label}省略 {omitted[field]} 项"
             for field, label in omitted_labels.items() if field in omitted

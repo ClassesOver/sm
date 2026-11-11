@@ -156,6 +156,7 @@ def test_agents_nonblocking_contract_registry_points_at_existing_tests():
 # 这类 raise 必须位于 try 体内且有 except Exception（或裸 except）兜底，把原因转为
 # validation.issues / publicationGate.issues 后继续。新增此类 raise 未兜底即失败。
 _SIGNING_CHAIN = {
+    "smart_reporting/reporting/trace/reader_formulas.py": ("reader_formula", "_formal_metric_formula"),
     "smart_reporting/reporting/workflow/claim_presentation.py": ("_registered_claim_support", "registered_claim_support_projection", "registered_native_claim_presentations"),
     "smart_reporting/reporting/trace/native_claims.py": ("native_claim_presentations", "present_native_summary"),
     "smart_reporting/reporting/trace/claim_presentation.py": ("claim_support_projection",),

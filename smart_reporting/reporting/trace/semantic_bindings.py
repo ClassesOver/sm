@@ -425,6 +425,7 @@ class NumberReferenceResolver:
         self.entries = {}
         self.registered_results = {}
         self.registered_definitions = {}
+        self.registered_sources = {}
         self.conflicts = set()
         records = {}
         for bundle in frozen_fact_bundles(contents):
@@ -445,6 +446,13 @@ class NumberReferenceResolver:
                                        if metric.version_ref() == result.metric_version]
                         if len(definitions) == 1:
                             self.registered_definitions[result.fact_id] = definitions[0]
+                            dependencies = (definitions[0].numerator_version, definitions[0].denominator_version)
+                            source = (bundle.metric_context.policy, definitions[0], calculation,
+                                tuple(metric for metric in bundle.metric_context.metrics if metric.version_ref() in dependencies))
+                            previous = self.registered_sources.get(result.fact_id)
+                            if previous is not None and previous != source:
+                                self.conflicts.add(result.fact_id)
+                            self.registered_sources[result.fact_id] = source
             for _, array in FACT_ARRAYS:
                 for fact in document.get(array, ()):
                     key = fact.get("factId")
@@ -557,10 +565,25 @@ class NumberReferenceResolver:
                     or primary_id not in self.registered_definitions
                     or token != f"{{{{value:{primary_id}:value:{result.unit}}}}}"):
                 return None
+            policy, definition, calculation, dependency_definitions = self.registered_sources[primary_id]
+            dependencies = tuple(ref for ref in (definition.numerator_version, definition.denominator_version) if ref)
+            names = {}
+            for metric in dependency_definitions:
+                key = (metric.id, metric.revision)
+                if key in names and names[key] != metric.name:
+                    return None
+                names[key] = metric.name
             return {"value": result.value, "unit": result.unit,
                     "period": result.period.model_dump(mode="json", by_alias=True),
                     "period_boundary": "half_open",
                     "metric_definition": self.registered_definitions[primary_id].model_dump(mode='json', by_alias=True),
+                    "calculation_source": {
+                        "policyName": policy.name, "policyRevision": policy.revision,
+                        "dependencies": [{"metricId": ref.metric_id, "revision": ref.revision,
+                            "name": names.get((ref.metric_id, ref.revision))} for ref in dependencies],
+                        "extractedAt": sorted({item.extracted_at.isoformat() for item in calculation.readiness
+                            if item.metric_version == result.metric_version and item.requested_period == result.period}),
+                    },
                     "periods": (), "period_roles": {},
                     "scope": {item.dimension_id: str(item.value) for item in result.dimensions},
                     "formula": None, "entry": self.entries[primary_id], "selector": "value"}

@@ -1,0 +1,17 @@
+{
+  "kind": "isolated_synthetic_technical_evidence",
+  "python": "3.12.3",
+  "baseCommit": "1fc1b400ea74ecd3a0ea47c451f3c67672f4698a",
+  "environmentFile": "/dev/null",
+  "repository": "in_memory_test_port",
+  "nativeRendering": [
+    "WeasyPrint",
+    "pandoc",
+    "LibreOffice_for_docx_visual_inspection"
+  ],
+  "http": "in_process_ASGI",
+  "starrocks": "not_exercised",
+  "realModel": "not_exercised",
+  "businessAcceptance": "not_performed",
+  "frozenFixtureDate": "2026-09-30"
+}
