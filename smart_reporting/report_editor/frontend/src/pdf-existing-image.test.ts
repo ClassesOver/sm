@@ -15,3 +15,17 @@ it('requires a unique editable target and an independent save',()=>{
  expect(()=>validatePdfExistingImage(pages,[operation],[{...target,editable:false}])).toThrow()
  expect(()=>validatePdfExistingImage(pages,[operation,operation],[target])).toThrow(PDF_EXISTING_IMAGE_ALONE_REASON)
 })
+
+const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
+it('stages pinned replaceImage pixels on a replaceable target only',()=>{
+ const replaceable={...target,replaceable:true}
+ const staged=existingImageTransform(sha,replaceable,{x:60,y:90,width:100,height:80},png)
+ expect(staged).toEqual({...operation,rect:[60,90,160,170],image:png})
+ expect(()=>validatePdfExistingImage(pages,[staged],[replaceable])).not.toThrow()
+ expect(()=>existingImageTransform(sha,{...target,replaceable:false,replaceReason:'同一图像数据被多处引用'},{x:60,y:90,width:100,height:80},png)).toThrow('多处引用')
+ expect(()=>validatePdfExistingImage(pages,[staged],[{...target,replaceable:false,replaceReason:'同一图像数据被多处引用'}])).toThrow('多处引用')
+ expect(()=>validatePdfExistingImage(pages,[staged],[target])).toThrow('暂不支持替换')
+ for(const bad of ['R0lGODlhAQABAAAAACw=','iVBORw0KGgo'+'A'.repeat(6_000_000),'iVBORw0KGgo***',42])
+  expect(()=>validatePdfExistingImage(pages,[{...staged,image:bad}],[replaceable])).toThrow('参数无效')
+ expect(()=>existingImageTransform(sha,replaceable,{x:60,y:90,width:100,height:80},'R0lGODlh')).toThrow('PNG')
+})

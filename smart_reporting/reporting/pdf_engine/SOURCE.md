@@ -356,3 +356,18 @@ stage copies that package and its own source/license notices; PDF runtime
 packaging carries the DOCX, workbook and slides notices separately. The source
 reconstruction logic is unchanged. Original upstream source hashes are retained;
 only the local import adaptation and its local hashes change.
+
+
+## Existing image pixel replacement (2026-11-11)
+
+`bridge/existing-image-engine.ts` now also ports the pinned `apps/pdf/src/main/image-edit.ts`
+`replaceImage` (same ref): `FPDFBitmap_CreateEx` + `FPDFImageObj_SetBitmap` on the matched
+content image, passing the owning page, then the shared geometry pass. The pinned Electron
+`nativeImage` decode is replaced by pdf-lib's own PNG decoder (`pdf-lib/cjs/utils/png`), which
+already yields straight alpha; input is PNG only (the renderer re-encodes picked files to PNG),
+bounded to 4096x4096 px. The bridge exposes it as an optional `image` on the existing
+`transformExistingImage` operation (pinned `replaceImage` carries oldRect + rect + image the same
+way). Because SetBitmap rewrites the image stream itself, a target whose pixel data also appears at
+any other placement is reported `replaceable:false` and refused before writing; the output review
+checks the target's new pixel size and footprint and every other image's unchanged pixels.
+`bridge/existing-image-replace.test.ts`. Vendor SOURCE hashes unchanged.

@@ -1,9 +1,15 @@
-/** Geometry-only transplant from GenOffice image-edit.ts, pinned ref f8c17004fb730df11f0f743164ffd8b4281bb38c.
- * Excludes Electron bitmap decode, replacement, insertion, deletion, layers and rotation. */
+/** Geometry and pixel-replacement transplant from GenOffice image-edit.ts, pinned ref f8c17004fb730df11f0f743164ffd8b4281bb38c.
+ * Electron nativeImage decode is replaced by pdf-lib's own PNG decoder (PNG input only);
+ * insertion, deletion, layers and rotation stay excluded. */
 import {createHash} from 'node:crypto'
+import {PNG} from 'pdf-lib/cjs/utils/png'
 import {FPDF_PAGEOBJ_TEXT,chainPdfium,loadPdfium,saveDoc,withDocument,type Pdfium} from '../src/main/text-edit'
 import {SHARED_TEMPLATE_IMAGE_REASON,chainIsExclusive,formDrawTree,liftOutOfForms,transformRect,walkPageText,type FormChain,type FormDrawTree} from '../src/main/form-text'
 const FPDF_PAGEOBJ_IMAGE = 3
+/** public/fpdfview.h FPDFBitmap_BGRA */
+const FPDF_BITMAP_BGRA = 4
+/** Bound on replacement bitmaps (the renderer already downsizes to <=2000px). */
+export const MAX_REPLACEMENT_PIXELS = 4096 * 4096
 
 type Rect = readonly [number, number, number, number]
 
@@ -154,7 +160,7 @@ function applyImageGeometry(
 }
 
 
-export interface ExistingEngineImage {pageIndex:number;rect:[number,number,number,number];aboveText:boolean;fingerprint:string;pixelsSha256:string;exclusive:boolean}
+export interface ExistingEngineImage {pageIndex:number;rect:[number,number,number,number];aboveText:boolean;fingerprint:string;pixelsSha256:string;width:number;height:number;exclusive:boolean}
 function fingerprint(m:Pdfium,o:ImageObj){
  const image=m as Pdfium&{_FPDFImageObj_GetImageDataDecoded(obj:number,buffer:number,length:number):number;_FPDFImageObj_GetImagePixelSize(obj:number,width:number,height:number):number}
  const length=m._FPDFImageObj_GetImageDataRaw(o.obj,0,0),decodedLength=image._FPDFImageObj_GetImageDataDecoded(o.obj,0,0),p=m._malloc(Math.max(length,decodedLength,24)),digest=createHash('sha256')
@@ -170,7 +176,7 @@ function fingerprint(m:Pdfium,o:ImageObj){
   // stream. Compare decoded content and dimensions, not its storage encoding.
   image._FPDFImageObj_GetImageDataDecoded(o.obj,p,decodedLength)
   const pixelsSha256=createHash('sha256').update(JSON.stringify([width,height])).update(m.HEAPU8.slice(p,p+decodedLength)).digest('hex')
-  return {fingerprint:digest.digest('hex'),pixelsSha256}
+  return {fingerprint:digest.digest('hex'),pixelsSha256,width,height}
  }finally{m._free(p)}
 }
 export async function listExistingEngineImages(bytes:Uint8Array):Promise<ExistingEngineImage[]>{
@@ -191,5 +197,38 @@ export async function applyExistingImageTransform(bytes:Uint8Array,pageIndex:num
  return chainPdfium(async()=>{const m=await loadPdfium();return withDocument(m,bytes,async doc=>{
   const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
   try{const target=await resolveImage(m,page,oldRect,{exclusive,pageIndex});applyImageGeometry(m,target.obj,target.bounds,rect);if(!m._FPDFPage_GenerateContent(page))throw Error('could not regenerate image page');return saveDoc(m,doc)}finally{m._FPDF_ClosePage(page)}
+ })})
+}
+
+/** Decode a PNG into straight-alpha BGRA (pinned decodeImage's output contract; pdfium splits alpha into an SMask itself). */
+export function decodePngBgra(b64:string):{width:number;height:number;bgra:Uint8Array}{
+ const bytes=Buffer.from(b64,'base64')
+ if(bytes.toString('base64')!==b64||!bytes.subarray(0,8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])))throw Error('replacement image must be PNG')
+ const png=PNG.load(bytes),{width,height}=png
+ if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<1||height<1||width*height>MAX_REPLACEMENT_PIXELS)throw Error('replacement image size invalid')
+ if(png.rgbChannel.length!==width*height*3||(png.alphaChannel&&png.alphaChannel.length!==width*height))throw Error('replacement image could not be decoded')
+ const bgra=new Uint8Array(width*height*4)
+ for(let i=0;i<width*height;i++){bgra[i*4]=png.rgbChannel[i*3+2]!;bgra[i*4+1]=png.rgbChannel[i*3+1]!;bgra[i*4+2]=png.rgbChannel[i*3]!;bgra[i*4+3]=png.alphaChannel?png.alphaChannel[i]!:255}
+ return {width,height,bgra}
+}
+/** Pinned replaceImage: swap the object's pixels (matrix untouched, so z-order and any original rotation stay), then the shared geometry pass. */
+export async function applyExistingImageReplace(bytes:Uint8Array,pageIndex:number,oldRect:Rect,rect:Rect,image:string):Promise<Uint8Array>{
+ const exclusive=formExclusivity(bytes),{width,height,bgra}=decodePngBgra(image)
+ return chainPdfium(async()=>{const m=await loadPdfium() as Pdfium&{_FPDFBitmap_CreateEx(w:number,h:number,format:number,buffer:number,stride:number):number;_FPDFImageObj_SetBitmap(pages:number,count:number,obj:number,bitmap:number):number;_FPDFBitmap_Destroy(bitmap:number):void};return withDocument(m,bytes,async doc=>{
+  const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
+  try{
+   const target=await resolveImage(m,page,oldRect,{exclusive,pageIndex})
+   const bufPtr=m._malloc(bgra.length);m.HEAPU8.set(bgra,bufPtr)
+   const bmp=m._FPDFBitmap_CreateEx(width,height,FPDF_BITMAP_BGRA,bufPtr,width*4)
+   if(!bmp){m._free(bufPtr);throw Error('FPDFBitmap_CreateEx failed')}
+   // Pass the owning page so pdfium drops its cached render of the old pixels
+   const pagesPtr=m._malloc(4);m.HEAP32[pagesPtr>>2]=page
+   const ok=m._FPDFImageObj_SetBitmap(pagesPtr,1,target.obj,bmp)
+   m._free(pagesPtr);m._FPDFBitmap_Destroy(bmp);m._free(bufPtr)
+   if(!ok)throw Error('FPDFImageObj_SetBitmap failed')
+   applyImageGeometry(m,target.obj,target.bounds,rect)
+   if(!m._FPDFPage_GenerateContent(page))throw Error('could not regenerate image page')
+   return saveDoc(m,doc)
+  }finally{m._FPDF_ClosePage(page)}
  })})
 }
