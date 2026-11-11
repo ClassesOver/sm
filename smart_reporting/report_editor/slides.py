@@ -570,6 +570,7 @@ class ReportSlidesEditorService:
         native_images: list[dict[str, Any]] | None = None,
         picture_replacements: list[dict[str, Any]] | None = None,
         picture_crops: list[dict[str, Any]] | None = None,
+        picture_opacities: list[dict[str, Any]] | None = None,
         element_orders: list[dict[str, Any]] | None = None,
         group_edits: list[dict[str, Any]] | None = None,
         notes_edits: list[dict[str, Any]] | None = None,
@@ -658,6 +659,8 @@ class ReportSlidesEditorService:
                     request["elementOrders"] = element_orders
                 if picture_crops:
                     request["pictureCrops"] = picture_crops
+                if picture_opacities:
+                    request["pictureOpacities"] = picture_opacities
                 if chart_edits:
                     request["chartEdits"] = chart_edits
                 if hidden_slides:

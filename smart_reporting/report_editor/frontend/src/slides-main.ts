@@ -40,7 +40,7 @@ import { captureSlidesBrush, planSlidesBrushApply, type BrushSource } from './sl
 import { validateSlidesClipboardDraft, captureSlidesClipboard, planSlidesClipboardPaste } from './slides-native-clipboard'
 import { validateSlidesLinkDraft, openSlidesLink } from './slides-native-link'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
@@ -88,6 +88,8 @@ type SlideChanges = {
   images?: { slideIndex: number; bytesBase64: string; extension: 'png' | 'jpg'; geometry: { x: number; y: number; width: number; height: number }; descr?: string }[]
   pictureReplacements?: { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number; bytesBase64: string; extension: 'png' | 'jpg' }[]
   pictureCrops?: { slideIndex:number; elementId:string; expectedSha256:string; expectedSize:number; srcRect:CropRect|null; geometry:{x:number;y:number;width:number;height:number} }[]
+  /** 固定源 Picture Format ▸ Transparency：整图不透明度（0–1，整数百分比），按媒体身份绑定。 */
+  pictureOpacities?: { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number; opacity: number }[]
   chartEdits?: ({ slideIndex: number; elementId: string } & NativeChartPatch)[]
   hiddenSlides?: { slideIndex: number; hidden: boolean }[]
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]; animationSequences?: { slideIndex: number; items: SequenceItem[] }[]
@@ -237,6 +239,7 @@ let showOverlay: { dispose(): void } | undefined
 let showOpening = false
 const pendingGroup = (slideIndex: number) => groupEdits.some(item => item.slideIndex === slideIndex)
 const pictureCrops: NonNullable<SlideChanges['pictureCrops']> = []
+const pictureOpacities: NonNullable<SlideChanges['pictureOpacities']> = []
 let cropOverlay: ReturnType<typeof openSlidesPictureCrop> | undefined
 const nativeImages: NonNullable<SlideChanges['images']> = []
 const pictureReplacements: NonNullable<SlideChanges['pictureReplacements']> = []
@@ -383,8 +386,18 @@ function renderAnimationPane() {
   empty.textContent = isNewSlide(selectedSlide) ? NEW_SLIDE_REASON : items.length ? '选中一条动画后，可用“计时”组修改触发方式、时长与延迟。' : '本页还没有动画。选择对象后在“动画”选项卡添加。'
   animationPane.replaceChildren(heading, list, empty)
 }
+/** 透明度可用性：单选、来源为单一嵌入位图的普通图片、没有待保存的替换。 */
+function opacityReason(): string | null {
+  const element = currentElement()
+  if (isNewSlide(selectedSlide)) return NEW_SLIDE_REASON
+  if (selectedObjects.size !== 1 || element?.type !== 'picture') return '请选择一张图片'
+  if (!element.pictureOpacityEditable || !element.pictureSha256 || !element.pictureSize) return element.pictureOpacityReason ?? '此图片暂不支持调整透明度'
+  if (pictureReplacements.some(item => item.slideIndex === selectedSlide && item.elementId === element.id)) return '请先保存或撤回此图片的替换'
+  if (!pictureOpacities.some(item => item.slideIndex === selectedSlide && item.elementId === element.id) && pictureOpacities.length >= 50) return '待保存的图片透明度修改已达 50 项，请先保存'
+  return null
+}
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
-  return notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
+  return pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
     || commentPane.hasDraft(slideIndex) || commentEdits.some(edit => edit.slideIndex === slideIndex) || hiddenSlideEdits.has(slideIndex) || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...tableStyleEdits.values(), ...tableStructureEdits.values(), ...chartEdits, ...smartArtEdits, ...nativeImages, ...pictureReplacements, ...pictureCrops, ...nativeChartEdits].some(item => item.slideIndex === slideIndex)
     || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
     || (!ignoreNewSlideSources && newSlides.some(item => newSlideSource(item) === slideIndex))
@@ -604,7 +617,7 @@ function renderCanvas() {
   let orderedIndex=0
   const projectedNodes=[...prefix,...blocks.flatMap(block=>rank.has(block[0]!.sourceId)?ordered[orderedIndex++]!:block)]
   canvas.update({
-    slide: {...slide,nodes:projectedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);return crop&&node.type==='picture'?{...node,srcRect:crop.srcRect??undefined,box:{...node.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:node})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
+    slide: {...slide,nodes:projectedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
     selectableIds: new Set(locked()?[]:slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id)),
     editableIds: new Set(locked() || pendingGroup(selectedSlide) ? [] : slideAt(selectedSlide).elements.filter(item => (item.editable || item.arrangeEditable) && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
     edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
@@ -963,6 +976,7 @@ async function chooseNativePicture(replace: boolean) {
   const slideIndex=selectedSlide, element=currentElement(), sourceSha=deck.sha256
   const snapshot=JSON.stringify(slideChanges())
   if(isNewSlide(slideIndex)) {statusMessage.textContent=NEW_SLIDE_REASON;return}
+  if(replace && pictureOpacities.some(item=>item.slideIndex===slideIndex&&item.elementId===element?.id)) {statusMessage.textContent='此图片有待保存的透明度修改，请先保存或撤回再替换';return}
   if(replace && pictureCrops.some(item=>item.slideIndex===slideIndex&&item.elementId===element?.id)) {statusMessage.textContent='此图片有待保存的裁切，请先保存或撤回裁切再替换';return}
   if(replace && !element?.pictureReplaceable) {statusMessage.textContent=element?.pictureReplaceReason??'请选择可替换的来源图片';return}
   try {
@@ -1070,6 +1084,7 @@ function slideChanges(): SlideChanges {
     ...(nativeImages.length ? { images: structuredClone(nativeImages) } : {}),
     ...(elementOrders.size ? {elementOrders:[...elementOrders].map(([slideIndex,elementIds])=>({slideIndex,elementIds:[...elementIds]}))}:{}),
     ...(pictureCrops.length ? {pictureCrops:structuredClone(pictureCrops)}:{}),
+    ...(pictureOpacities.length ? { pictureOpacities: structuredClone(pictureOpacities) } : {}),
     ...(pictureReplacements.length ? { pictureReplacements: structuredClone(pictureReplacements) } : {}),
     ...(nativeChartEdits.length ? { chartEdits: structuredClone(nativeChartEdits) } : {}),
     ...(commentEdits.length ? { commentEdits: commentEdits.map(edit => ({ ...edit })) } : {}),
@@ -1085,7 +1100,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false) {
   if (!nativeDraft) return
   const operations = candidate ?? nativeDraft.operations
-  const supported = new Set(['notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -1097,6 +1112,13 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredPastes = validateSlidesClipboardDraft(changes, deck.slides)
   const transitions = restoredTransitions(changes.transitions, deck.slides.length)
   if (native && transitions.some(item => !transitionEditingAllowed(deck.slides[item.slideIndex]))) throw new Error('来源含尚不能安全修改的转场兼容性内容；原草稿已保留')
+  const restoredOpacities = changes.pictureOpacities ?? []
+  if (!Array.isArray(restoredOpacities) || restoredOpacities.length > 50 || new Set(restoredOpacities.map(item => `${item?.slideIndex}:${item?.elementId}`)).size !== restoredOpacities.length || restoredOpacities.some(item => {
+    const element = deck.slides[item?.slideIndex]?.elements.find(candidate => candidate.id === item.elementId)
+    return !item || Object.keys(item).sort().join() !== 'elementId,expectedSha256,expectedSize,opacity,slideIndex' || !element?.pictureOpacityEditable || element.pictureSha256 !== item.expectedSha256 || element.pictureSize !== item.expectedSize
+      || typeof item.opacity !== 'number' || item.opacity < 0 || item.opacity > 1 || Math.abs(Math.round(item.opacity * 100) - item.opacity * 100) > 1e-9
+      || (changes.pictureReplacements ?? []).some(other => other.slideIndex === item.slideIndex && other.elementId === item.elementId)
+  })) throw new Error('图片透明度草稿与来源图片不一致；原草稿已保留')
   const restoredNew = changes.newSlides ?? []
   if (!Array.isArray(restoredNew) || restoredNew.length > 50 || restoredNew.some(item => !item || Object.keys(item).length !== 1 || !['layoutFrom', 'duplicateOf', 'withLayout'].includes(Object.keys(item)[0]!) || ('withLayout' in item ? !(deck.layouts ?? []).some(layout => layout.path === item.withLayout) : !Number.isInteger(newSlideSource(item)) || newSlideSource(item)! < 0 || newSlideSource(item)! >= deck.slides.length)) || (restoredNew.length && changes.order === undefined)) throw new Error('草稿中的新建幻灯片无效；原草稿已保留')
   const restoredDeleted = changes.deletedSlides ?? []
@@ -1221,6 +1243,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   nativeImages.splice(0,nativeImages.length,...structuredClone(changes.images??[]))
   pictureReplacements.splice(0,pictureReplacements.length,...structuredClone(changes.pictureReplacements??[]))
   pictureCrops.splice(0,pictureCrops.length,...structuredClone(changes.pictureCrops??[]))
+  pictureOpacities.splice(0, pictureOpacities.length, ...restoredOpacities.map(item => ({ ...item })))
   nativeChartEdits.splice(0,nativeChartEdits.length,...structuredClone(changes.chartEdits??[]))
   tableStructureEdits.clear(); for(const item of restoredStructures) tableStructureEdits.set(item.slideIndex,{...item})
   tableShadingCell = undefined
@@ -1488,6 +1511,8 @@ function renderInspector() {
   nativeRibbon?.setValue('slideOrientation', isPortrait(size) ? 'portrait' : 'landscape')
   nativeRibbon?.setSlideOrientationEnabled(isWritableSlideSize(size))
   nativeRibbon?.setValue('background', backgroundColor.value)
+  { const picture = currentElement(), pending = picture ? pictureOpacities.find(item => item.slideIndex === selectedSlide && item.elementId === picture.id) : undefined
+    nativeRibbon?.setValue('pictureOpacity', picture?.type === 'picture' ? String(Math.round((1 - (pending?.opacity ?? picture.pictureOpacity ?? 1)) * 100)) : '') }
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
   nativeRibbon?.setValue('animationTrigger', animationTrigger.value)
   nativeRibbon?.setValue('animationDuration', animationDuration.value)
@@ -1551,6 +1576,7 @@ function renderInspector() {
   updateArrangeControls(); updateElementOrderControls(); updateGroupControls(); updateClipboardControls()
   for(const [command,enabled,reason] of [
     ['cropPicture',!cropReason(),cropReason()??''],
+    ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
     ['replacePicture',selectedObjects.size===1&&element?.pictureReplaceable===true&&!pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id),pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id)?'请先保存或撤回此图片裁切':element?.pictureReplaceReason??'请选择已核验身份的来源图片'],
     ['chartData',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全编辑数据'],
     ['chartType',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全更改类型'],
@@ -1687,6 +1713,20 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'findReplace': openFindReplace(); return
       case 'insertPicture': void chooseNativePicture(false); return
       case 'replacePicture': void chooseNativePicture(true); return
+      case 'pictureOpacity': {
+        // 固定源 onPictureOpacity：控件输入的是透明度百分比，写回不透明度（1 − 透明度）。
+        const target = currentElement(), reason = opacityReason()
+        if (!target || reason) { if (reason) statusMessage.textContent = reason; break }
+        const transparency = Math.max(0, Math.min(100, Math.round(Number(value))))
+        if (!Number.isFinite(transparency)) break
+        const opacity = (100 - transparency) / 100
+        const index = pictureOpacities.findIndex(item => item.slideIndex === selectedSlide && item.elementId === target.id)
+        if (index >= 0) pictureOpacities.splice(index, 1)
+        if (opacity === (target.pictureOpacity ?? 1)) { if (index < 0) break }
+        else pictureOpacities.push({ slideIndex: selectedSlide, elementId: target.id, expectedSha256: target.pictureSha256!, expectedSize: target.pictureSize!, opacity })
+        markDirty()
+        break
+      }
       case 'chartData': openNativeChart('data'); return
       case 'chartType': openNativeChart('type'); return
       case 'chartElements': openNativeChart('style'); return
@@ -2243,6 +2283,7 @@ function renderStructurePending() {
   for(const [index,image] of nativeImages.entries()) row(`第 ${order.indexOf(image.slideIndex)+1} 页 · 图片 ${image.descr??''}`,()=>nativeImages.splice(index,1))
   for(const [slideIndex] of elementOrders)row(`第 ${order.indexOf(slideIndex)+1} 页 · 对象层级`,()=>elementOrders.delete(slideIndex))
   for(const [index,crop] of pictureCrops.entries())row(`第 ${order.indexOf(crop.slideIndex)+1} 页 · 图片裁切`,()=>pictureCrops.splice(index,1))
+  for (const [index, item] of pictureOpacities.entries()) row(`第 ${order.indexOf(item.slideIndex) + 1} 页 · 图片透明度 ${Math.round((1 - item.opacity) * 100)}%`, () => pictureOpacities.splice(index, 1))
   for(const [index,image] of pictureReplacements.entries()) row(`第 ${order.indexOf(image.slideIndex)+1} 页 · 替换图片`,()=>pictureReplacements.splice(index,1))
   for(const [index,chart] of nativeChartEdits.entries()) row(`第 ${order.indexOf(chart.slideIndex)+1} 页 · 图表数据/类型/元素修改`,()=>nativeChartEdits.splice(index,1))
   for (const [index, chart] of chartEdits.entries()) row(`第 ${order.indexOf(chart.slideIndex) + 1} 页 · 图表 ${CHART_GALLERY.find(item => item.kind === chart.kind)?.label ?? chart.kind}（示例数据）`, () => chartEdits.splice(index, 1))
@@ -2317,6 +2358,7 @@ objectDelete.addEventListener('click', () => {
   const key = editKey(selectedSlide, element.id)
   // 删除优先：同一对象的文字、位置、格式和动画修改一并撤回，避免保存时引用已删除对象。
   for(let index=pictureCrops.length-1;index>=0;index--)if(editKey(pictureCrops[index]!.slideIndex,pictureCrops[index]!.elementId)===key)pictureCrops.splice(index,1)
+  for (let index = pictureOpacities.length - 1; index >= 0; index--) if (editKey(pictureOpacities[index]!.slideIndex, pictureOpacities[index]!.elementId) === key) pictureOpacities.splice(index, 1)
   for(let index=pictureReplacements.length-1;index>=0;index--)if(editKey(pictureReplacements[index]!.slideIndex,pictureReplacements[index]!.elementId)===key)pictureReplacements.splice(index,1)
   edits.delete(key)
   textFormattingEdits.delete(key)

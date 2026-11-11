@@ -9,6 +9,7 @@ import {inspectClassicComments,validateClassicCommentEdits,applyClassicCommentEd
 import { inspectPictureImages, validatePictureInsertions, validatePictureReplacements, applyPictureReplacements, type PictureInsertion, type PictureReplacement } from './pptx-images.ts'
 import { inspectChartEdit, validateChartEdits, applyChartEdits, type NativeChartEdit } from './pptx-chart-edit.ts'
 import { inspectPictureCrop, validatePictureCrops, applyPictureCrops, type PictureCrop } from './pptx-picture-crop.ts'
+import { inspectPictureOpacity, validatePictureOpacities, applyPictureOpacities, type PictureOpacity } from './pptx-picture-opacity.ts'
 import { findReplaceEditable } from './pptx-find-replace.ts'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
@@ -104,6 +105,7 @@ type Input = {
   nativeImages?: PictureInsertion[]
   pictureReplacements?: PictureReplacement[]
   pictureCrops?: PictureCrop[]
+  pictureOpacities?: PictureOpacity[]
   elementOrders?: ElementOrder[]
   notesEdits?: NotesEdit[]
   linkEdits?: LinkEdit[]
@@ -356,6 +358,7 @@ if (request.action === 'inspect') {
         ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element), ...cellShadingState(element,slide.path) } : {}),
         ...(element.type === 'picture' ? (() => { const image=pictureImages.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id); return image ? {pictureReplaceable:image.replaceable,pictureReplaceReason:image.readOnlyReason,pictureSha256:image.sha256,pictureSize:image.size} : {} })() : {}),
         ...(element.type === 'picture' ? inspectPictureCrop(opened,slideIndex,element.id) : {}),
+        ...(element.type === 'picture' ? inspectPictureOpacity(opened, slideIndex, element.id) : {}),
         ...inspectGroupCapabilities(opened, slideIndex, element.id),
         ...inspectLinkCapabilities(opened,slideIndex,element.id),
         ...inspectClipboardCapabilities(opened,slideIndex,element.id),
@@ -546,7 +549,7 @@ if (request.action === 'inspect') {
     hiddenTargets.add(item.slideIndex)
   }
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.pictureReplacements, request.pictureCrops, request.chartEdits, request.hiddenSlides, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.pictureReplacements, request.pictureCrops, request.pictureOpacities, request.chartEdits, request.hiddenSlides, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -561,6 +564,7 @@ if (request.action === 'inspect') {
   const touchesDeleted = (slideIndex: number, elementId: string) => deleted.has(`${slideIndex}:${elementId}`)
   const pictureReplacements=request.pictureReplacements??[]
   const pictureCrops=validatePictureCrops(opened,request.pictureCrops,{deletedSlides,deletions,pictureReplacements})
+  const pictureOpacities = validatePictureOpacities(opened, request.pictureOpacities, { deletedSlides, deletions, pictureReplacements })
   validatePictureInsertions(opened,request.nativeImages??[])
   validatePictureReplacements(opened,pictureReplacements)
   for(const item of [...pictureReplacements,...chartEdits]) if(touchesDeleted(item.slideIndex,item.elementId)) throw new Error('media_edit_target_deleted')
@@ -717,6 +721,7 @@ if (request.action === 'inspect') {
     if ((box.italic !== undefined && typeof box.italic !== 'boolean') || (box.wordArt !== undefined && typeof box.wordArt !== 'boolean')
       || (box.outline !== undefined && (!box.outline || typeof box.outline !== 'object' || Object.keys(box.outline).sort().join() !== 'color,widthEmu' || typeof box.outline.color !== 'string' || !colorPattern.test(box.outline.color) || !Number.isInteger(box.outline.widthEmu) || box.outline.widthEmu < 1 || box.outline.widthEmu > 254000))) throw new Error('textbox_wordart_invalid')
   }
+  applyPictureOpacities(opened, pictureOpacities)
   applyPictureCrops(opened,pictureCrops)
   for (const edit of request.edits ?? []) {
     if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
