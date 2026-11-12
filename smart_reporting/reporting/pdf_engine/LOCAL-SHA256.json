@@ -66,7 +66,7 @@
   "bridge/note-timestamps.test.ts": "6c790ceba46c795e7f160d8f4a6f028effb3f8d62196259512760cf828c6109d",
   "bridge/note-timestamps.ts": "dff0307e7dd822027de1b460ab6d0ea2c86ae22392fe779b57ba3999b595fedd",
   "bridge/operations.test.ts": "1fb56168f1571cb5f101b8d893dd9d5d1f454b7bc1bc6dde6651a2c8ba63a1be",
-  "bridge/operations.ts": "7640c169a2070e6b218be0f9943e0380f3815234ee56a3991ff38b13df78d1a1",
+  "bridge/operations.ts": "93a15ddb16af447b202d649e5f506920981c3b216eb014cd863ea200914bacfb",
   "bridge/output-font-aliases.test.ts": "f8dd304f52507f53731dfc2c40979e01aa34a55d1f091d66ba8db16c76aa01f9",
   "bridge/package-runtime.mjs": "c7d55de0f80438dba6e058d70023a73fc9e30a83eb4f4b549fc23bfe943aa404",
   "bridge/page-layout.test.ts": "a5eed475d229ed0d1fe35a6a01495f27f8a7ebeecac0d47cc430947a83bd1019",
