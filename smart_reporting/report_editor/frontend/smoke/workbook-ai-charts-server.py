@@ -31,9 +31,9 @@ from smart_reporting.reporting.tests.test_workbook_ai_charts import (
 )
 
 
-async def create_app(directory: Path, port: int):
+async def create_app(directory: Path, port: int, *, source: bytes | None = None):
     f = await extract_fixture(directory / 'runtime')
-    source = await asyncio.to_thread(source_with_two_charts)
+    source = await asyncio.to_thread(source_with_two_charts) if source is None else source
     identity = ArtifactFile(path='native/source.xlsx', size=len(source), sha256=hashlib.sha256(source).hexdigest(),
         mediaType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     await f.workspace.awrite_bytes(f.thread, identity.path, source)
@@ -107,5 +107,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--port', type=int, default=4353)
+    parser.add_argument('--source', type=Path)
     args = parser.parse_args()
-    uvicorn.run(asyncio.run(create_app(args.directory, args.port)), host='127.0.0.1', port=args.port, log_level='warning')
+    uvicorn.run(asyncio.run(create_app(args.directory, args.port,
+        source=args.source.read_bytes() if args.source else None)), host='127.0.0.1', port=args.port, log_level='warning')

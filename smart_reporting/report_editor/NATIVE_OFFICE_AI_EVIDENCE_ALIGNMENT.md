@@ -26,7 +26,7 @@
 
 ## 整体目标仍有的缺口
 
-1. 后续已接入 XLSX AI **已有图表格式编辑/删除**及冻结 chartPath 授权，45项专项、真实浏览器两次保存下载重开通过，见 [已有图表 AI 验收](NATIVE_XLSX_AI_EXISTING_CHART_ACCEPTANCE.md)。AI 新增图表/替换数据、真实 provider 的同名多图消歧仍缺；已有画布 bar 仍按 column 绘制，不能把文件编辑闭环算作完整显示保真。
+1. 后续已接入 XLSX AI **已有图表格式编辑/删除**及冻结 chartPath 授权，45项专项、真实浏览器两次保存下载重开通过，见 [已有图表 AI 验收](NATIVE_XLSX_AI_EXISTING_CHART_ACCEPTANCE.md)。AI 新增图表/替换数据、真实 provider 的同名多图消歧仍缺；bar方向/零线/缺失分类后续已限定修复并通过像素验证，见 [画布增量](NATIVE_XLSX_BAR_CANVAS_ACCEPTANCE.md)，仍不等于完整显示保真。
 2. Word 完整段落/制表位对话框、复杂多级列表、嵌套表结构与复杂修订仍未对齐，见 [当前缺口](NATIVE_WORD_XLSX_CURRENT_GAPS.md)。本次只补阅读线程，不开放嵌套回复写入。
 3. 后续增量已补齐整稿演讲者备注阅读，当前对象选区不附带备注；图片视觉、解析器未返回的数据或外部数据源重算仍缺。复杂原生编辑仍按已有能力边界执行。
 4. PDF 保留最新已交付能力；四旋转×两缩放的草稿/保存 AP 字体专项已限定通过（32标签独立文字栅格边界最大差1px），见 [AP字体补证](NATIVE_PDF_DRAFT_AP_APPEARANCE_ACCEPTANCE.md)；后续已补CropBox/UserUnit限定组件浏览器并修复草稿线宽比例；页边长标签、复杂表单及其他转换仍见 [剩余计划](NATIVE_PDF_REMAINING_PARALLEL_PLAN.md)。用户排除的 OCR 不加入范围。两个既有 PDF WIP stash 保持原样。
@@ -59,3 +59,5 @@
 2026-11-12 测量物理单位续批：修复跨UserUnit页面共享标定时长度翻倍/减半的问题。按PDF.js实际来源页单位归一化到物理pt，保持原始坐标/既有标签/默认Unit1行为；固定GenOffice源同样使用raw hypot，因此为本地一致性适配。24项定向、完整类型/构建/预算、双向重标定及实际保存下载重开通过，见 [跨页标定验收](NATIVE_PDF_MEASURE_USERUNIT_ACCEPTANCE.md)。制图比例不同仍需用户重新标定，不自动推断图纸比例。
 
 2026-11-12 XLSX续批：已有图表格式/删除进入 AI 明确授权和显式采纳闭环，补冻结目标身份及严格运行时格式参数校验。45项图表专项、34项既有XLSX AI、旧报告AI两项与宿主7项通过；完整tsc/Vite45.17s和预算通过。真实浏览器手工草稿、UndoRedo、放弃删除、修订4→5→6、下载/重开及169份实际JS/CSS身份已核，独立openpyxl/lxml确认另一同名图表字节不变；ScriptedModel/内存仓储不算真实provider/生产DB链。原有bar画布渲染缺口明确保留，详见专项记录。
+
+2026-11-12 画布续批：上述bar方向缺口已补，并修复bar/column负值、虚构零条及缺失分类错位。10项新实际扩展测试全部先RED后GREEN，与相关测试合计17项；完整tsc/Vite49.08s、预算通过。真实截图独立像素恢复5/5/0色块及共同零线，169份资源SHA核验；相同新构建下AI两次保存下载重开再通过。标题/网格文字可见性和复杂图表样式仍开放，详见 [画布增量验收](NATIVE_XLSX_BAR_CANVAS_ACCEPTANCE.md)。

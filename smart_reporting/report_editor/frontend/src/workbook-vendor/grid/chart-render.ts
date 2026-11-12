@@ -47,17 +47,17 @@ interface SkeletonLike {
   ): { startX: number; endX: number; startY: number; endY: number }
 }
 
-const numbersOf = (
+const numberSlotsOf = (
   worksheet: NonNullable<SkeletonLike['worksheet']>,
   valuesRef: string,
-): number[] => {
+): Array<number | null> => {
   try {
     const bounds = parseRange(valuesRef.replace(/^[^!]*!/, ''))
-    const values: number[] = []
+    const values: Array<number | null> = []
     for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
       for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) {
         const value = worksheet.getCell(row, column)?.v
-        if (typeof value === 'number' && Number.isFinite(value)) values.push(value)
+        values.push(typeof value === 'number' && Number.isFinite(value) ? value : null)
       }
     }
     return values
@@ -65,6 +65,9 @@ const numbersOf = (
     return []
   }
 }
+
+const numbersOf = (worksheet: NonNullable<SkeletonLike['worksheet']>, ref: string): number[] =>
+  numberSlotsOf(worksheet, ref).filter((value): value is number => value !== null)
 
 const textsOf = (
   worksheet: NonNullable<SkeletonLike['worksheet']>,
@@ -128,6 +131,38 @@ function drawChart(
   const plotRight = x1 - 8
   const plotHeight = Math.max(4, plotBottom - plotTop)
   const plotWidth = Math.max(4, plotRight - plotLeft)
+
+  if (spec.kind === 'bar' || spec.kind === 'column') {
+    const slots = spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef))
+    // Preserve the category index of missing cells, including a longer later
+    // series. Zero is a zero-length bar, never an invented minimum pixel size.
+    const categoryCount = slots.reduce((count, values) => Math.max(count, values.length), 1)
+    let min = 0, max = 0
+    for (const values of slots) for (const value of values) if (value !== null) {
+      min = Math.min(min, value); max = Math.max(max, value)
+    }
+    // Normalize before subtracting: finite endpoints can have an infinite raw
+    // span (e.g. -MAX_VALUE..MAX_VALUE), while their plotted ratio is finite.
+    const magnitude = Math.max(-min, max) || 1
+    const lo = min / magnitude, span = max / magnitude - lo || 1
+    const fraction = (value: number) => (value / magnitude - lo) / span
+    const horizontal = spec.kind === 'bar'
+    const band = (horizontal ? plotHeight : plotWidth) / categoryCount
+    const thickness = band * 0.7 / Math.max(1, slots.length)
+    const zero = horizontal ? plotLeft + plotWidth * fraction(0) : plotBottom - plotHeight * fraction(0)
+    slots.forEach((values, seriesIndex) => {
+      ctx.fillStyle = PALETTE[seriesIndex % PALETTE.length]!
+      values.forEach((value, index) => {
+        if (value === null || value === 0) return
+        const offset = band * index + band * 0.15 + thickness * seriesIndex
+        const end = horizontal ? plotLeft + plotWidth * fraction(value) : plotBottom - plotHeight * fraction(value)
+        if (horizontal) ctx.fillRect(Math.min(zero, end), plotTop + offset, Math.abs(end - zero), thickness)
+        else ctx.fillRect(plotLeft + offset, Math.min(zero, end), thickness, Math.abs(end - zero))
+      })
+    })
+    ctx.restore()
+    return
+  }
 
   if (spec.kind === 'pie' || spec.kind === 'doughnut') {
     // first series pie/doughnut
@@ -243,8 +278,7 @@ function drawChart(
     return
   }
 
-  // column / bar / line share a category axis model
-  const categoryCount = Math.max(1, seriesValues[0]!.length)
+  // Line/area and combo retain their existing category-axis rendering.
   const max = Math.max(...flat, 0)
   const min = spec.kind === 'line' || spec.kind === 'area' ? Math.min(...flat, 0) : 0
   const span = max - min || 1
@@ -322,22 +356,6 @@ function drawChart(
     return
   }
 
-  // column (bar renders as horizontal columns in v1; anchored area too)
-  const barDirection = spec.kind === 'bar' ? 1 : 0
-  void barDirection
-  const groupCount = categoryCount
-  const seriesCount = Math.max(1, seriesValues.length)
-  const groupWidth = plotWidth / groupCount
-  const barWidth = Math.max(2, (groupWidth * 0.7) / seriesCount)
-  seriesValues.forEach((values, seriesIndex) => {
-    ctx.fillStyle = PALETTE[seriesIndex % PALETTE.length]!
-    values.forEach((value, index) => {
-      const barHeight = Math.max(1, (plotHeight * (value - min)) / span)
-      const x =
-        plotLeft + groupWidth * index + (groupWidth - barWidth * seriesCount) / 2 + barWidth * seriesIndex
-      ctx.fillRect(x, plotBottom - barHeight, barWidth, barHeight)
-    })
-  })
   ctx.restore()
 }
 
