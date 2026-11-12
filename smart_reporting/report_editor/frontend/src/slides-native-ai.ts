@@ -3,7 +3,7 @@ import {bindOfficeAssistantPanel} from './office-assistant-panel'
 import {NATIVE_CHART_TYPES} from './slides-native-chart-edit'
 import type {SlidesAIObject} from './slides-native-ai-context'
 import type { NativeOperation } from './native-draft'
-import { nativeAIProgressListener, type NativeAIProgressListener, type NativeAIProgressEvent } from './native-ai-progress'
+import { nativeAIProgressListener, type NativeAIProgressListener } from './native-ai-progress'
 import { mountNativeAIProgress } from './native-ai-progress'
 
 type Scope = 'object' | 'slide' | 'deck' | 'notes' | 'deckNotes'

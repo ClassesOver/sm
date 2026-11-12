@@ -3,7 +3,7 @@ import {
   IconAlignCenter, IconAlignJustify, IconAlignLeft, IconAlignRight, IconBorderAll, IconBorderBottom,
   IconBorderLeft, IconBorderNone, IconBorderRight, IconBorderTop, IconBullets,
   IconChangeCase, IconClearFormat, IconCopy, IconCut, IconFormatPainter,
-  IconFontColorA, IconGrowFont, IconHighlight, IconIndentDec, IconIndentInc, IconLineSpacing,
+  IconGrowFont, IconHighlight, IconIndentDec, IconIndentInc, IconLineSpacing,
   IconNumbered, IconPaste, IconPasteMerge, IconPasteSource, IconPasteText, IconPicture, IconShading,
   IconShrinkFont, IconSubscript, IconSuperscript, IconCaret, IconSelectAll, IconSearch, IconReplace, IconConvert,
 } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'

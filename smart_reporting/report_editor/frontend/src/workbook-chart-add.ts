@@ -31,8 +31,6 @@ export function chartAdditionFromGrid(input: {
     const valuesEnd = parsed.byRow ? input.values[0]!.length - 1 : item.column
     const categoriesStart = parsed.byRow ? categoryOffset : 0
     const categoriesEnd = parsed.byRow ? input.values[0]!.length - 1 : 0
-    const dataStartRow = parsed.byRow ? seriesRow : headerOffset + (parsed.hasCategoryColumn ? 0 : 0)
-    const dataEndRow = parsed.byRow ? seriesRow : input.values.length - 1
     const categories = parsed.categories
     return {
       name: item.name,
@@ -42,7 +40,7 @@ export function chartAdditionFromGrid(input: {
         ? rangeRef(input.sheetName, input.range, 0, 0, categoriesStart, categoriesEnd)
         : rangeRef(input.sheetName, input.range, headerOffset, input.values.length - 1, 0, 0),
       valuesRef: parsed.byRow
-        ? ref(input.sheetName, input.range, dataStartRow, valuesStart, valuesEnd)
+        ? ref(input.sheetName, input.range, seriesRow, valuesStart, valuesEnd)
         : rangeRef(input.sheetName, input.range, headerOffset, input.values.length - 1, valuesStart, valuesEnd),
     }
   })

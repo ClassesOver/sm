@@ -24,12 +24,6 @@ const paperSizes = [
   { key: 'envdl', name: 'Envelope DL', w: 6237, h: 12474 },
   { key: 'envc5', name: 'Envelope C5', w: 9185, h: 12983 },
 ] as const
-const pageSetup = [
-  ['layout-margins', '页边距', IconMargins],
-  ['layout-orientation', '纸张方向', IconOrientation],
-  ['layout-paper-size', '纸张大小', IconPageSize],
-  ['layout-columns', '分栏', IconColumns],
-] as const
 const unavailable = 'DOCX 原生 section 操作未覆盖此源命令'
 
 export function DocxLayoutSource({ pageNumberFmt, pageNumberStart, pageNumberReason, editable, settings: initialSettings, titlePg, titlePgReason, evenAndOddHeaders, evenAndOddHeadersReason, onChange, onEditHeaderFooter, sectionLabel, onSectionBreak }: Props) {

@@ -49,7 +49,7 @@ const PDF_EXCLUSIVE_DRAFT_KINDS=['insertText','removeFormWidget',...PDF_OBJECT_D
 const PDF_REVIEW_KINDS=['replaceText',...PDF_EXCLUSIVE_DRAFT_KINDS]
 
 import { MARKUP_COLORS, quadToRect, selectionQuadsByPage } from './genoffice-pdf-annotations'
-import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
+import { markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
 
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
@@ -602,7 +602,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   processNotes.disabled = response.pdfReviewAIEnabled !== true
   if (processNotes.disabled) processNotes.title = 'PDF AI 批注处理需要开启 AI 与正文编辑权限'
   commandGroup = ribbon.group('annotate', 'Markup')
-  const annotateMarkupGroup = commandGroup
   const select = button('选择文字', () => setMode('select'), false)
   for (const [type, label] of [['highlight', '高亮'], ['underline', '下划线'], ['squiggly', '波浪线'], ['strikeout', '删除线']] as const) selectionMarkupButton(type, label, `annotate.markup.${type}`)
   commandGroup.append(createMarkupPalette())
@@ -654,7 +653,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   annotateDrawGroup.append(redactTool, clearRedaction, applyRedaction)
   // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
   commandGroup = ribbon.group('annotate', 'Signature & Protection')
-  const signatureGroup = commandGroup
   const signButton = button('签名', () => openSignature(), true)
   sourceCommand(signButton, 'annotate.signature.sign'); signButton.dataset.pdfDrawShape = 'signature'
   signButton.title = '签名：手写或键入后在页面上拖出放置区域；这是可视签名，不是证书数字签名'

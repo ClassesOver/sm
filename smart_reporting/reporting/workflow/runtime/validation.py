@@ -541,21 +541,6 @@ def _normalize_requirement_metric_code_values(
     return requirement.model_copy(update={'tables': tuple(tables)}), replacements
 
 
-def _normalize_requirement_metric_codes(
-    bundle: AnalysisBundle,
-    snapshots: tuple[SourceSchemaSnapshot, ...],
-    metrics: tuple[EffectiveMetric, ...],
-) -> tuple[AnalysisBundle, list[dict[str, Any]]]:
-    requirements = []
-    repairs = []
-    for requirement in bundle.requirements:
-        normalized, replacements = _normalize_requirement_metric_code_values(requirement, snapshots, metrics)
-        requirements.append(normalized)
-        if replacements:
-            repairs.append({'requirementId': requirement.requirement_id, 'replacements': replacements})
-    return (_rebuilt_bundle(bundle.analyses, requirements), repairs) if repairs else (bundle, [])
-
-
 def _normalize_requirement_columns(
     bundle: AnalysisBundle,
     snapshots: tuple[SourceSchemaSnapshot, ...],

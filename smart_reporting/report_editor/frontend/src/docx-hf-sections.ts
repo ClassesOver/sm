@@ -1,4 +1,4 @@
-import type { HeaderFooter, SectionInfo, HfPartInfo } from '@genoffice/docx-engine'
+import type { SectionInfo, HfPartInfo } from '@genoffice/docx-engine'
 import type { NativeOperation } from './native-draft'
 import type { DocxSectionAnchor } from './docx-operations'
 import { restoredDocxHeaderFooterOperations, type DocxHfPart, type DocxHfVariant, type DocxHfPartAnchor, type DocxHeadersFootersModel } from './docx-hf'

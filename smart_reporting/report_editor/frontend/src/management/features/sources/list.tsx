@@ -1,5 +1,5 @@
 import { sourceDetailPath } from './paths'
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Alert, Button, Card, Grid, Input, Select, Space, Table } from 'antd'
 import PlusOutlined from '@ant-design/icons/PlusOutlined'
 import ReloadOutlined from '@ant-design/icons/ReloadOutlined'

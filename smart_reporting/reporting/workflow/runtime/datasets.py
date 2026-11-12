@@ -850,48 +850,6 @@ class RuntimeDatasetsMixin:
         return StepOutput(content=plan)
 
 
-def _analysis_context_payload(outline_context: Any) -> dict[str, Any]:
-    if not isinstance(outline_context, Mapping):
-        return {}
-    context: dict[str, Any] = {}
-    profile = outline_context.get("profile")
-    if isinstance(profile, Mapping):
-        context["profile"] = {
-            key: profile[key]
-            for key in (
-                "profileId",
-                "revision",
-                "effectiveProfileHash",
-                "dimensions",
-                "metrics",
-                "reconciliations",
-            )
-            if key in profile
-        }
-    for key in ("capabilities", "terms", "reconciliations", "metricUsageGroups"):
-        if key in outline_context:
-            context[key] = outline_context[key]
-    tables = outline_context.get("tables")
-    if isinstance(tables, list):
-        context["observedDataFacts"] = [
-            {
-                key: table[key]
-                for key in (
-                    "sourceId",
-                    "table",
-                    "periodGranularity",
-                    "periodRowCount",
-                    "periodCoverage",
-                    "missingPeriods",
-                )
-                if key in table
-            }
-            for table in tables
-            if isinstance(table, Mapping)
-        ]
-    return context
-
-
 def _profile_coverage_instruction_projection(
     manifest: ProfileCoverageManifest,
     analysis_context_file: FileIdentity,

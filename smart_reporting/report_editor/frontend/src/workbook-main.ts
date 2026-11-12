@@ -134,7 +134,7 @@ import {
   type RibbonWorkbook,
   type WorkbookPageSetupState,
 } from './workbook-ribbon'
-import { selectedWorkbookFormat, captureNumberFormatTarget, applyCapturedNumberFormat, validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook, type NumberFormatTarget } from './workbook-format'
+import { selectedWorkbookFormat, captureNumberFormatTarget, applyCapturedNumberFormat, validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook } from './workbook-format'
 import {
   absoluteRangeRef, applyDefinedNameAction, createNameManagerDialog, definedNamesPlanOperation,
   liveDefinedNames, type DefinedNameWorkbook,

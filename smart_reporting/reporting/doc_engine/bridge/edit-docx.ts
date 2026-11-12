@@ -845,7 +845,6 @@ const cellId = (block: Block, row: number, column: number) => hash(`${sourceSha2
 const allSections = readSections(parsed)
 const trailingSection = allSections.at(-1)!
 const sectionIdOf = (section: { lastBlockIndex: number }) => hash(`${sourceSha256}:section:${section.lastBlockIndex}`)
-const sectionId = sectionIdOf(trailingSection)
 /** 非尾节的设置以其分节段 sectPr 为准；尾节沿用 readSectionSettings（含文档级 gutterAtTop）。 */
 const sectionSettingsOf = (section: typeof trailingSection) => section === trailingSection ? readSectionSettings(parsed) : section.settings
 const tableColumnWidthSection = (block: Block) => allSections.find(item => item.firstBlockIndex <= block.docxIndex! && block.docxIndex! <= item.lastBlockIndex)

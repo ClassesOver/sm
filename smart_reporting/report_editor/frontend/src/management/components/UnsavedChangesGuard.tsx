@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import { useEffect } from 'react'
 import { Modal } from 'antd'
 import { useBlocker } from 'react-router-dom'
 export function UnsavedChangesGuard({ dirty }: { dirty: boolean }) {

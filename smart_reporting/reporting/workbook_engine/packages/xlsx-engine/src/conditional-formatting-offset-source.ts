@@ -17,10 +17,6 @@ const REF_RE =
 // out of the skip: they follow a quote or `=`/operator, never a table name.
 const REWRITE_SKIP_RE = /((?:"(?:[^"]|"")*")|(?:(?<=[A-Za-z0-9_.])\[(?:[^\][]|\[[^\][]*\])*\]))/
 
-function decodeQuotedSheetName(quoted: string): string {
-  return quoted.replaceAll("''", "'")
-}
-
 function offsetRefPart(part: RefPart, rowDelta: number, columnDelta: number): RefPart | null {
   const row = part.rowAbs === '$' ? part.row : part.row + rowDelta
   const col = part.colAbs === '$' ? part.col : part.col + columnDelta
@@ -34,18 +30,6 @@ function offsetRefPart(part: RefPart, rowDelta: number, columnDelta: number): Re
 // cell of B2:D4) from starting a new match. Quoted names use '' escaping like REF_RE.
 const COLUMN_SPAN_RE =
   /(?<![A-Za-z0-9_.$!:])(?:(?:'((?:[^']|'')+)'|([A-Za-z0-9_.]+))!)?(\$?)([A-Z]{1,3}):(\$?)([A-Z]{1,3})(?![A-Za-z0-9($!:])/gi
-
-function sheetPrefixApplies(
-  quoted: string | undefined,
-  bare: string | undefined,
-  formulaSheetMatchesOp: boolean,
-  opSheetName: string,
-): boolean {
-  if (quoted === undefined && bare === undefined) return formulaSheetMatchesOp
-  const prefixSheet = quoted !== undefined ? decodeQuotedSheetName(quoted) : bare
-  if (prefixSheet === undefined) return false
-  return prefixSheet.toLowerCase() === opSheetName.toLowerCase()
-}
 
 // Whole-row spans (2:4) — the row-axis mirror of COLUMN_SPAN_RE, same
 // lookbehind and '' sheet-name escaping.

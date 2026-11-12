@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { Alert, Button, Skeleton } from 'antd'
 import {
   createBrowserRouter,
