@@ -137,3 +137,5 @@ core/project preserve content and use a dedicated final-value intent; strict
 length/XML-character limits are host boundaries. Fixed source remains GenOffice
 `f8c17004fb730df11f0f743164ffd8b4281bb38c`, TablePropertiesDialog commitAlt,
 editor/table-properties updateSelectedTableAttrs and engine generateTableModelXml.
+
+2026-11-11 Native page-colour adapter: bridge/docx-page-color.ts exposes the document background (none or a single plain w:color) with its source digest; the strict setPageColor operation is validated batch-first and passed to the unchanged pinned saveDocx pageColor option (w:background + settings w:displayBackgroundShape), then read back from the output parts. Theme-colour, VML-fill, duplicate and protected sources stay read-only. Fixed source: Design ▸ Page Color (ribbon-design-tab.tsx onPageColor / RibbonColorPalette).

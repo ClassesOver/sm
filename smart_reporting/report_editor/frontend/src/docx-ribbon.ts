@@ -125,9 +125,12 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
   ],
 }
 
+/** 固定源 Design ▸ Page Color：当前值、不可用原因与选色回调（草稿写入由宿主负责）。 */
+export interface DocxPageColorControls { current(): string | null; reason(): string | null; apply(color: string | null): void }
+
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => void; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void }, commentCommands?: { open: () => void; openNew?: () => void }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void): HTMLElement {
+  section?: { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => void; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void }, commentCommands?: { open: () => void; openNew?: () => void }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void, pageColor?: DocxPageColorControls): HTMLElement {
   const formattingAnchors = noteAnchors.length ? noteAnchors : anchors
   const withNotes = noteAnchors.length > 0
   const ribbon = document.createElement('div')
@@ -359,6 +362,31 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           }
           continue
         }
+        if (id === 'design' && label === '页面颜色' && pageColor) {
+          // 固定源 RibbonColorPalette：主题色 + 标准色 + “无颜色”；色块与单元格底纹共用同一组固定源颜色。
+          const wrap = document.createElement('div'), trigger = document.createElement('button'), palette = document.createElement('div'), bar = document.createElement('span')
+          wrap.className = 'rb-split-wrap'
+          trigger.type = 'button'; trigger.className = 'rb-icon docx-ribbon-command docx-page-color-trigger'; trigger.dataset.action = 'page-color'
+          trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-haspopup', 'true')
+          bar.className = 'docx-page-color-bar'; trigger.append(document.createTextNode(label), bar)
+          palette.className = 'color-palette docx-page-color-palette'; palette.hidden = true; palette.dataset.rbPanel = ''
+          palette.setAttribute('role', 'group'); palette.setAttribute('aria-label', '页面颜色')
+          wrap.addEventListener('mousedown', event => event.preventDefault())
+          trigger.addEventListener('click', () => { palette.hidden = !palette.hidden; trigger.setAttribute('aria-expanded', String(!palette.hidden)) })
+          for (const fill of [...DOCX_SHADING_COLORS, null]) {
+            const swatch = document.createElement('button')
+            swatch.type = 'button'; swatch.className = fill ? 'color-swatch color-highlight-swatch' : 'color-none color-highlight-none'
+            swatch.dataset.action = `page-color-${fill ?? 'none'}`; swatch.setAttribute('aria-label', fill ? `页面颜色 #${fill}` : '无页面颜色')
+            if (fill) swatch.style.background = `#${fill}`; else swatch.textContent = '无颜色'
+            swatch.addEventListener('click', () => {
+              try { pageColor.apply(fill) } catch (error) { reportError?.(error) }
+              palette.hidden = true; trigger.setAttribute('aria-expanded', 'false'); syncPageColor()
+            })
+            palette.append(swatch)
+          }
+          wrap.append(trigger, palette); items.append(wrap)
+          continue
+        }
         if (actionId === 'table-cell-shading') {
           const wrap = document.createElement('div'), trigger = document.createElement('button'), palette = document.createElement('div')
           wrap.className = 'rb-split-wrap'
@@ -512,6 +540,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       renderNotes(); body.querySelector('.ribbon-content')!.append(notesPanel)
     }
     else if (id === 'layout') renderPending(id)
+    else if (id === 'design') { renderPending(id); syncPageColor() }
     else if (id !== 'home') renderPending(id)
     else { body.replaceChildren(home); body.setAttribute('aria-label', '开始') }
   }
@@ -733,8 +762,20 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   refreshHome = renderHome
   renderHome()
   ribbon.append(body)
+  /** 页面颜色按钮：可用性、提示与当前色条随编辑状态和草稿刷新。 */
+  function syncPageColor() {
+    const trigger = body.querySelector<HTMLButtonElement>('[data-action="page-color"]')
+    if (!trigger || !pageColor) return
+    const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : pageColor.reason()
+    const current = pageColor.current()
+    trigger.disabled = reason !== null
+    trigger.title = reason ?? `页面颜色：${current ? `#${current}` : '无颜色'}`
+    trigger.querySelector<HTMLElement>('.docx-page-color-bar')!.style.background = current ? `#${current}` : 'transparent'
+    for (const swatch of body.querySelectorAll<HTMLButtonElement>('[data-action^="page-color-"]')) swatch.setAttribute('aria-pressed', String(swatch.dataset.action === `page-color-${current ?? 'none'}`))
+  }
   const refreshSelection = () => {
     refreshView()
+    if (active === 'design') syncPageColor()
     refreshContextTabs()
     renderInsert()
     if (active === 'references') { renderNotes(); refreshToc(body) }

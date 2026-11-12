@@ -1,7 +1,7 @@
 import { IconBringForward, IconBringToFront, IconSendBackward, IconSendToBack } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { ComponentType } from 'react'
 import { BringToFront, SendToBack, ArrowUp, ArrowDown, Group, Ungroup, Search, Blend, Images, LayoutGrid, ListX, PaintBucket, PanelTop, Printer, Rows3, Save, SquareDashed, Table, TableProperties, createElement } from 'lucide'
-import { IconNoneX, IconFind, IconSave } from './vendor/genoffice-slides/components/icons'
+import { IconNoneX, IconFind, IconSave, IconPageColor } from './vendor/genoffice-slides/components/icons'
 import { Icon3d, IconAnimNone, IconAnimStar, IconApplyAll, IconAudio, IconBullets, IconChangeChartType, IconCrop, IconDirLtr, IconDirRtl, IconEditChartData, IconEraser, IconGridlines, IconHideSlide, IconIndentDec, IconIndentInc, IconLink, IconNavPane, IconNewSlide, IconNotes, IconNumbered, IconObjAlignLeft, IconObjAlignCenterH, IconObjAlignRight, IconObjAlignTop, IconObjAlignMiddle, IconObjAlignBottom, IconObjDistributeH, IconObjDistributeV, IconPageSize, IconPathCircle, IconPathDiagonal, IconPathDown, IconPathRight, IconPathZigzag, IconPen, IconPicture, IconPlayCurrent, IconPosition, IconPresenterView, IconRehearse, IconRecord, IconReplacePicture, IconRuler, IconSpellcheck, IconTranslate, IconVideo, IconWatermark } from './vendor/genoffice-slides/components/icons'
 
 /** 命令的语义图标；控件自带的 sourceIcon 优先于此补全表。 */
@@ -12,7 +12,7 @@ export const slidesRibbonSourceIcons: Record<string, ComponentType<{ size?: numb
   alignCenter:IconObjAlignCenterH, alignRight:IconObjAlignRight, alignTop:IconObjAlignTop, alignMiddle:IconObjAlignMiddle, alignBottom:IconObjAlignBottom, distributeHorizontal:IconObjDistributeH, distributeVertical:IconObjDistributeV,
   alignLeft: IconObjAlignLeft, distribute: IconObjDistributeH, addWatermark: IconWatermark,
   insertLink: IconLink, insertAudio: IconAudio, insertVideo: IconVideo, insertModel3d: Icon3d,
-  drawPen: IconPen, drawEraser: IconEraser, customSlideSize: IconPageSize, defaultSlideSize: IconNewSlide, backgroundImage: IconPicture,
+  drawPen: IconPen, drawEraser: IconEraser, customSlideSize: IconPageSize, defaultSlideSize: IconNewSlide, backgroundImage: IconPicture, formatBackground: IconPageColor,
   applyTransitionAll: IconApplyAll, animationPreview: IconPlayCurrent, animationNone: IconAnimNone, addAnimation: IconAnimStar,
   toggleAnimationPane: IconNavPane, animationByParagraph: IconBullets,
   motionPathRight: IconPathRight, motionPathDown: IconPathDown, motionPathDiagonal: IconPathDiagonal, motionPathCircle: IconPathCircle, motionPathZigzag: IconPathZigzag,

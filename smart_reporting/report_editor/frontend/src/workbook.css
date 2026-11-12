@@ -74,3 +74,12 @@
   .editor-format-xlsx .workbook-ai:has(form[hidden]) { padding:0 12px; }
   .editor-format-xlsx .workbook-ai:has(form[hidden]) .workbook-feedback { padding:4px 0; font-size:var(--office-label-size); }
 }
+
+/* 插入符号对话框（固定源 SymbolDialog）：分类页签 + 符号网格，外壳沿用 --office-* 交互色。 */
+.workbook-symbol-dialog .workbook-symbol-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+.workbook-symbol-dialog .workbook-symbol-tabs button { min-height: var(--office-control-height); padding: 0 10px; border: 1px solid var(--office-border); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font: inherit; cursor: pointer; }
+.workbook-symbol-dialog .workbook-symbol-tabs button[aria-selected=true] { background: var(--office-pressed-bg); border-color: var(--office-pressed-border); color: var(--office-pressed-ink); }
+.workbook-symbol-dialog .workbook-symbol-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 4px; max-width: 420px; }
+.workbook-symbol-dialog .workbook-symbol-grid button { height: 36px; border: 1px solid var(--office-border); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font-size: 18px; cursor: pointer; }
+.workbook-symbol-dialog button:hover { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
+.workbook-symbol-dialog button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }

@@ -62,6 +62,7 @@ import { normalizeDocxAutoFitSources } from './docx-table-autofit'
 import { normalizeDocxColumnWidthSources } from './docx-table-column-width'
 import { withDocxTableAlignmentDisplayIndents } from './docx-table-alignment-baseline'
 import { createDocxRibbon } from './docx-ribbon'
+import { docxPageColorModel, docxPageColorOperations, effectiveDocxPageColor, withDocxPageColor } from './docx-page-color'
 import { createDocxViewCommands } from './docx-view'
 import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/renderer/parse-off-thread'
 import { blocksToPmDoc, pmDocOptions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/convert'
@@ -187,6 +188,9 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   let commentReplyControls: ReturnType<typeof createDocxCommentReplyControls> | undefined
   const reportError = (error: unknown) => { notice.textContent = error instanceof Error ? error.message : String(error) }
   const notesModel = inspected.model.notes
+  // 固定源 Design ▸ Page Color：文档级非正文意图，随原生事务历史撤销/重做，按来源背景摘要绑定。
+  const pageColorModel = docxPageColorModel((inspected.model as { pageColor?: unknown }).pageColor)
+  docxPageColorOperations(draft.operations, pageColorModel)
   const isNote = (op: { kind?: unknown }) => ['insertNote', 'updateNote', 'deleteNote'].includes(String(op.kind))
   const collectOperationsUnchecked = (current: DocxPmNode, sectionOps = sectionOperation(docxNativeOperationsOf(current)), hfOps = headerFooterOperations(docxNativeOperationsOf(current)), operationBaseline = baseline) => {
     if (!notesModel) {
@@ -217,7 +221,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     const comments = commentsModel ? normalizeDocxCommentText(baseline, creations.current, commentsModel) : { current: creations.current, operations: [] }
     if (!commentsModel && commentTextOperationsOf(current).length) throw new Error('当前来源未提供批注文字编辑能力')
     const revisions = normalizeDocxTextRevisions(baseline, comments.current, anchors, editor.schema)
-    const operations = [...crossReferences.operations, ...captions.operations, ...bookmarks.operations, ...toc.operations, ...threads.operations, ...replies.operations, ...creations.operations, ...comments.operations, ...revisions.operations, ...collectOperationsUnchecked(revisions.current, sectionOps, hfOps, revisions.baseline)]
+    const operations = [...crossReferences.operations, ...captions.operations, ...bookmarks.operations, ...toc.operations, ...threads.operations, ...replies.operations, ...creations.operations, ...comments.operations, ...revisions.operations, ...collectOperationsUnchecked(revisions.current, sectionOps, hfOps, revisions.baseline), ...docxPageColorOperations(docxNativeOperationsOf(current), pageColorModel)]
     assertDocxBookmarksBatch(operations)
     assertDocxTocBatch(operations)
     assertDocxCrossReferencesBatch(operations)
@@ -328,7 +332,13 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   editor.storage.listNumbering.indentNotTabStop = parsed.indentNotNumberingTabStop === true
   editor.storage.tabStops.defaultTabStopTwips = parsed.defaultTabStopTwips ?? null
   setStaticAsciiResolver(() => editor.storage.listNumbering)
+  /** 画布纸面按生效页面颜色预览（与固定源 --page-bg 一致；属于文档内容色，不受外壳 token 改写）。 */
+  const syncPageColor = () => {
+    const color = effectiveDocxPageColor(nativeOperations(), pageColorModel)
+    if (color) host.style.setProperty('--page-bg', `#${color}`); else host.style.removeProperty('--page-bg')
+  }
   const syncSection = () => {
+    syncPageColor()
     const settings = { ...sectionAnchors[activeSection]!.settings, ...sectionValues(activeSection) }
     sectionRibbon.settings = settings
     Object.assign(sectionRibbon, pageNumberOf(activeSection), { pageNumberReason: sectionAnchors[activeSection]!.pageNumberReadOnlyReason })
@@ -925,7 +935,15 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const referenceLock=()=>saving||draft.saving||draft.closed||!context.editingEnabled||refreshing||nestedInputActive?'当前文档不可编辑、正在保存或有未完成的表格输入':null
   crossReferenceControls=createDocxCrossReferenceControls({editor,container:host,model:crossReferencesModel,collectOperations,readOnlyReason:referenceLock,onError:reportError})
   captionDialog=createDocxCaptionDialog({editor,container:host,controls:captionSource.controls(editor,()=>draft.operations,reportError),readOnlyReason:referenceLock,onError:reportError})
-  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError, () => nestedInputActive), view, findReplace.open, reportError, headerFooter, notes, noteFormattingAnchors, textRevisions, {open:commentControls.open,openNew:commentCreationControls.openNew}, tocSource.controls(editor, () => draft.operations, reportError), bookmarkControls, {crossReferences:crossReferenceControls,caption:captionDialog}, options.onAssistant))
+  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError, () => nestedInputActive), view, findReplace.open, reportError, headerFooter, notes, noteFormattingAnchors, textRevisions, {open:commentControls.open,openNew:commentCreationControls.openNew}, tocSource.controls(editor, () => draft.operations, reportError), bookmarkControls, {crossReferences:crossReferenceControls,caption:captionDialog}, options.onAssistant, pageColorModel ? {
+    current: () => effectiveDocxPageColor(nativeOperations(), pageColorModel),
+    reason: () => saving || draft.saving || draft.closed || !context.editingEnabled ? '当前文档不可编辑或正在保存' : pageColorModel.editable ? null : pageColorModel.readOnlyReason ?? '此文档的页面颜色不能修改',
+    apply: (color: string | null) => {
+      if (saving || draft.saving || draft.closed || !context.editingEnabled) return
+      commitDocxNativeOperations(editor, withDocxPageColor(nativeOperations(), pageColorModel, color))
+      syncPageColor()
+    },
+  } : undefined))
   editor.on('transaction', view.refresh)
   let columnFrame = 0, columnRequest = 0
   const scheduleColumns = () => {
