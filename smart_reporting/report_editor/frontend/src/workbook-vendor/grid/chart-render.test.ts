@@ -12,11 +12,13 @@ type Rect = { x: number; y: number; width: number; height: number; color: string
 function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Partial<ChartReadSpec> = {}) {
   const fills: Rect[] = []
   const texts: Array<{ text: string; x: number; y: number }> = []
+  const tickTexts: typeof texts = []
   const ctx = {
-    fillStyle: '', strokeStyle: '', lineWidth: 1,
+    fillStyle: '', strokeStyle: '', lineWidth: 1, font: '',
     save: vi.fn(), restore: vi.fn(), strokeRect: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), translate: vi.fn(), rotate: vi.fn(),
+    moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
     measureText: (text: string) => ({ width: text.length * 6 }),
-    fillText: (text: string, x: number, y: number) => texts.push({ text, x, y }),
+    fillText(text: string, x: number, y: number) { (this.font === '9px system-ui' ? tickTexts : texts).push({ text, x, y }) },
     fillRect(x: number, y: number, width: number, height: number) {
       fills.push({ x, y, width, height, color: this.fillStyle })
     },
@@ -36,7 +38,7 @@ function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Pa
     }),
   })
   expect(ctx.restore.mock.calls.length).toBe(ctx.save.mock.calls.length)
-  return { fills: fills.filter(rect => rect.color !== '#ffffff'), texts, ctx }
+  return { fills: fills.filter(rect => rect.color !== '#ffffff'), texts, tickTexts, ctx }
 }
 const paint = (kind: 'bar' | 'column', series: Array<Array<unknown>>) => render(kind, series).fills
 
@@ -87,10 +89,10 @@ describe.each(['bar', 'column'] as const)('%s actual registered canvas extension
     expect(bars).toHaveLength(2)
     if (kind === 'bar') {
       expect(bars[0]!.x + bars[0]!.width).toBeCloseTo(392)
-      expect(bars[1]!.x).toBeCloseTo(8)
+      expect(bars[1]!.x).toBeCloseTo(8+384*(2.5/22.5))
     } else {
       expect(bars[0]!.y).toBeCloseTo(8)
-      expect(bars[1]!.y + bars[1]!.height).toBeCloseTo(192)
+      expect(bars[1]!.y + bars[1]!.height).toBeCloseTo(8+184*20/22.5)
     }
   })
 
@@ -180,7 +182,7 @@ describe('actual linked axis titles', () => {
   expect(result.fills.every(bar=>bar.y>=32&&bar.x+bar.width<=368)).toBe(true)
  })
  it('does not invent titles for an unreadable reference without a cache',()=>{
-  const baseline=render('bar',[[3,5]])
+  const baseline=render('bar',[[3,5]],{axes:{category:{id:1,hidden:false},value:{id:2,hidden:false}}})
   const result=render('bar',[[3,5]],{axes:{category:{id:1,hidden:false,titleRef:'Other!A1'},value:{id:2,hidden:false}}})
   expect(result.texts).toEqual([])
   expect(result.fills).toEqual(baseline.fills)
@@ -190,7 +192,7 @@ describe('actual linked axis titles', () => {
   expect(result.texts.every(text=>text.text.endsWith('…'))).toBe(true)
   expect(result.texts[0]!.text.length*6).toBeLessThanOrEqual(160)
   expect(result.texts[1]!.text.length*6).toBeLessThanOrEqual(360)
-  expect(result.ctx.clip).toHaveBeenCalledTimes(2)
+  expect(result.ctx.clip).toHaveBeenCalledTimes(3)
  })
 })
 
@@ -224,4 +226,38 @@ describe.each(['bar','column'] as const)('%s saved value bounds',kind=>{
 it('does not apply automatic bounds when explicit scaling has no trustworthy axis pair',()=>{
  const result=render('bar',[[3,6]],{valueScaleUnavailable:true})
  expect(result.fills).toEqual([]);expect(result.texts.some(text=>text.text.includes('暂不支持'))).toBe(true)
+})
+
+describe('actual numeric axis ticks',()=>{
+ const axes={category:{id:1,hidden:false},value:{id:2,hidden:false}}
+ it('paints numeric labels from the same automatic scale as the bars',()=>{
+  const result=render('bar',[[300,-500]],{axes})
+  expect(result.tickTexts.map(t=>t.text)).toEqual(['-600','-400','-300','-200','-100','0','100','200','300','400'])
+  for(let i=1;i<result.tickTexts.length;i++){
+   const previous=result.tickTexts[i-1]!,current=result.tickTexts[i]!
+   expect(current.x-current.text.length*3).toBeGreaterThanOrEqual(previous.x+previous.text.length*3+4)
+  }
+  const [positive,negative]=result.fills
+  expect(positive!.x).toBeCloseTo(8+384*0.6)
+  expect(negative!.width).toBeCloseTo(384*0.5)
+  expect(result.ctx.stroke).toHaveBeenCalled()
+ })
+ it('honors percentage number format and a saved major unit',()=>{
+  const result=render('bar',[[0.1,0.4]],{axes:{...axes,value:{...axes.value,numberFormat:'0%',scaling:{min:0,max:0.5,majorUnit:0.1,reversed:false}}}})
+  expect(result.tickTexts.map(t=>t.text)).toEqual(['0%','10%','20%','30%','40%','50%'])
+ })
+ it('reverses labels and bars together at the top value axis',()=>{
+  const result=render('bar',[[3,6]],{axes:{...axes,value:{...axes.value,position:'top',scaling:{min:2,max:8,reversed:true}}}})
+  expect(result.tickTexts.find(t=>t.text==='2')!.x).toBeGreaterThan(result.tickTexts.find(t=>t.text==='8')!.x)
+  expect(result.tickTexts.every(t=>t.y<result.fills[0]!.y)).toBe(true)
+ })
+ it('puts right-side column labels outside the data and preserves full numbers',()=>{
+  const result=render('column',[[5000,10000]],{axes:{...axes,value:{...axes.value,position:'right'}}})
+  expect(result.tickTexts.some(t=>t.text==='10,000')).toBe(true)
+  expect(result.tickTexts.every(t=>t.x>=Math.max(...result.fills.map(b=>b.x+b.width)))).toBe(true)
+ })
+ it('does not invent ticks for hidden or unowned axes',()=>{
+  expect(render('bar',[[3,6]],{axes:{...axes,value:{...axes.value,hidden:true}}}).tickTexts).toEqual([])
+  expect(render('bar',[[3,6]]).tickTexts).toEqual([])
+ })
 })

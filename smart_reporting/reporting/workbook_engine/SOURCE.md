@@ -503,3 +503,13 @@ ranges, overlap refusal and single-quote/spaced-attribute XML. Evidence logs:
 Updated built smoke requires the shifted source hidden column D to survive
 saving and rejects its former phantom width operation; new built execution is
 owned by root after the next unified build, not claimed by these narrow tests.
+
+
+2026-11-12 chart value-axis projection: `packages/xlsx-engine/src/chart-read.ts`
+now retains the plot-linked `c:valAx/c:majorUnit` (positive finite number) and
+XML-decoded `c:numFmt/@formatCode`, alongside the existing min/max/orientation.
+This is a local bounded reader adaptation, not a writer replacement or a claim
+of full chart axis support. The frontend uses the pinned chart-visual.ts scale
+and its existing Univer number formatter; see the editor's
+NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md for source-oracle and final-pixel
+proof, intentional all-negative zero-top correction and unsupported properties.

@@ -91,7 +91,12 @@ def verify(directory):
                 assert abs(bar['y'] + bar['height'] - baseline) <= 2
         elif index == 3:
             assert abs(bars[0]['width'] - width) <= 2
-            assert bars[0]['y'] > y + 20 + height / 2  # The excluded first category remains empty.
+            # The new value-tick band reserves 20px below the horizontal
+            # data plot. Independently measure the second category's actual
+            # origin and thickness instead of using the old plot midpoint.
+            data_height = height - 20
+            assert abs(bars[0]['y'] - (y + 20 + data_height * 0.575)) <= 2
+            assert abs(bars[0]['height'] - data_height * 0.35) <= 2
         else:
             ink = sum(max(rgb) < 100 for rgb in image.crop((x + 10, y + 22, right - 10, y + 50)).getdata())
             assert ink >= 30, ink

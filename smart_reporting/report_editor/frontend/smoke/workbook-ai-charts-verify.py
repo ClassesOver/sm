@@ -97,7 +97,9 @@ def verify(directory: Path):
                 auto_geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](auto_image, ('#4472c4',))
                 auto_bars = sorted((r for r in auto_geometry['bars'] if r['width'] > 9 or r['height'] > 9), key=lambda bar: bar['y'])
                 assert len(auto_bars) == 2
-                for bar, fraction in zip(auto_bars, (0.5, 1)):
+                # Pinned source automatic range: 0..25 (5% headroom,
+                # 5 major unit) for the actual data 10/20.
+                for bar, fraction in zip(auto_bars, (10 / 25, 20 / 25)):
                     assert abs(bar['width'] - plot_width * fraction) <= 2, (bar, plot_width)
                 text_pixels[-1]['manualRangeAndAutoResetPixels'] = True
     return {'ok': True, 'sourceSha256': hashlib.sha256(source).hexdigest(),

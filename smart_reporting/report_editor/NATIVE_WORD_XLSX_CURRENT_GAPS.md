@@ -1,6 +1,6 @@
 # Word / XLSX 当前缺口索引（非穷尽）
 
-更新：2026-11-11。此索引以更新时共享工作区的实际代码为准，替代早期矩阵的“当前状态”用途；不改写 `NATIVE_WORD_XLSX_PARITY_AUDIT.md`、`NATIVE_RIBBON_COMMAND_AUDIT.md` 的历史。固定源 `/home/junge/pros/genoffice-source-full` HEAD 已只读核对为 `f8c17004fb730df11f0f743164ffd8b4281bb38c`。
+更新：2026-11-12。此索引以更新时共享工作区的实际代码为准，替代早期矩阵的“当前状态”用途；不改写 `NATIVE_WORD_XLSX_PARITY_AUDIT.md`、`NATIVE_RIBBON_COMMAND_AUDIT.md` 的历史。固定源 `/home/junge/pros/genoffice-source-full` HEAD 已只读核对为 `f8c17004fb730df11f0f743164ffd8b4281bb38c`。
 
 **完整对齐仍未完成。本表非穷尽，不给完成百分比。** 本索引汇总实际代码及分层专项证据；Word 根批注新建与 XLSX 透视表创建/编辑已有真实浏览器保存、下载和重开证据；最新构建入口与资产连续性单独补验，具体范围以专属验收文档为准。既有专项未重复全测，不冒充本次重新验收。调查、按钮标签、永久禁用、manifest/hash 通过都不计功能交付。并行工作会改变状态，以下稳定符号比行号更适合作后续查找。
 
@@ -11,6 +11,8 @@
 后续bar/column可信轴标题配对、隐藏标记、方向及top/right显示已通过读取和实际像素、带标题的AI保存下载重开，见 [轴标题专项](NATIVE_XLSX_AXIS_TITLE_CANVAS_ACCEPTANCE.md)。轴线/刻度/数值范围、次轴/组合与数据标签仍缺，不能把轴标题算作完整坐标轴能力。
 
 后续bar/column手动数值min/max、反向、零点与越界裁剪、null恢复本地自动范围已通过独立像素和实际候选保存重开，见 [数值范围专项](NATIVE_XLSX_VALUE_RANGE_CANVAS_ACCEPTANCE.md)。完整刻度/自动策略、对数计算、次轴/组合及数据标签仍未关闭。
+
+后续 bar/column 数值轴自动留白、主刻度/数字格式、top/right 与隐藏/反向显示、共享零线已补，见 [数值轴专项](NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md)。原源算法750组差分（748一致、2组明确全负零上界修正）、57项前端和34项读取分批通过，真实截图与AI保存重开已验证。类别刻度/完整轴属性、源链接格式继承、对数/次轴与复杂图表仍缺；前述“自动/刻度仍缺”为各专项当时范围，此续批只关闭普通线性数值轴子集。
 
 路径约定：`F=frontend/src/`（相对此文档）；`D=../reporting/doc_engine/`；`X=../reporting/workbook_engine/`；`U=/home/junge/pros/genoffice-source-full/`。源码路径均指实际文件，不指历史审计中已迁移的 `slides_engine` DOCX 路径。
 

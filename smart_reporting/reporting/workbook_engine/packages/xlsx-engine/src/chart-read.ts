@@ -40,9 +40,11 @@ export interface ChartReadAxis {
   readonly title?: string | undefined
   readonly titleRef?: string | undefined
   readonly titleCache?: string | undefined
+  readonly numberFormat?: string | undefined
   readonly scaling?: {
     readonly min?: number | undefined
     readonly max?: number | undefined
+    readonly majorUnit?: number | undefined
     readonly reversed: boolean
     readonly unsupported?: 'invalid' | 'logarithmic' | undefined
   } | undefined
@@ -144,10 +146,9 @@ const titleOf = (xml: string): string | undefined => {
 
 function valueScaling(body: string): ChartReadAxis['scaling'] {
   const block = body.match(/<c:scaling\b[^>]*>([\s\S]*?)<\/c:scaling>/)?.[1]
-  if (block === undefined) return undefined
   let invalid = false
-  const number = (tag: string): number | undefined => {
-    const element = block.match(new RegExp(`<c:${tag}\\b([^>]*)`))
+  const number = (tag: string, xml = block ?? ''): number | undefined => {
+    const element = xml.match(new RegExp(`<c:${tag}\\b([^>]*)`))
     if (!element) return undefined
     const raw = element[1]!.match(/\bval="([^"]*)"/)?.[1]?.trim() ?? ''
     const value = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw) ? Number(raw) : NaN
@@ -155,13 +156,15 @@ function valueScaling(body: string): ChartReadAxis['scaling'] {
     return value
   }
   const min = number('min'), max = number('max'), logBase = number('logBase')
-  const orientation = block.match(/<c:orientation\b[^>]*\bval="([^"]*)"/)?.[1] ?? 'minMax'
+  const majorUnit = number('majorUnit', body)
+  if (majorUnit !== undefined && !(majorUnit > 0)) invalid = true
+  const orientation = block?.match(/<c:orientation\b[^>]*\bval="([^"]*)"/)?.[1] ?? 'minMax'
   if (!['minMax', 'maxMin'].includes(orientation) || min !== undefined && max !== undefined && min >= max) invalid = true
   if (logBase !== undefined && (logBase < 2 || logBase > 1000)) invalid = true
   const unsupported = invalid ? 'invalid' : logBase !== undefined ? 'logarithmic' : undefined
-  if (min === undefined && max === undefined && orientation === 'minMax' && !unsupported) return undefined
+  if (min === undefined && max === undefined && majorUnit === undefined && orientation === 'minMax' && !unsupported) return undefined
   return { reversed: orientation === 'maxMin', ...(min !== undefined ? {min} : {}), ...(max !== undefined ? {max} : {}),
-    ...(unsupported ? {unsupported} : {}) }
+    ...(majorUnit !== undefined ? {majorUnit} : {}), ...(unsupported ? {unsupported} : {}) }
 }
 
 function axesOf(xml: string, kind: ChartReadKind): ChartReadSpec['axes'] {
@@ -189,7 +192,9 @@ function axesOf(xml: string, kind: ChartReadKind): ChartReadSpec['axes'] {
     const raw = prefix.match(/<c:axPos\b[^>]*\bval="([^"]*)"/)?.[1] ?? ''
     const positions = { l: 'left', r: 'right', t: 'top', b: 'bottom' } as const
     const scaling = axis.kind === 'valAx' ? valueScaling(axis.body) : undefined
+    const format = axis.body.match(/<c:numFmt\b[^>]*\bformatCode="([^"]*)"/)?.[1]
     return { id: axis.id!, hidden, ...titleText(axis.body), ...(scaling ? {scaling} : {}),
+      ...(format !== undefined ? {numberFormat:decodeXmlText(format)} : {}),
       ...(Object.hasOwn(positions, raw) ? { position: positions[raw as keyof typeof positions] } : {}) }
   }
   return { category: project(category), value: project(value) }

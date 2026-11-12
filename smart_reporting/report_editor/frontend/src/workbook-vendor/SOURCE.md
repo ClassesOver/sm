@@ -242,3 +242,21 @@ renderer-side `applyTint` / `rethemeStyles` recolouring is not copied: the nativ
 editor replays the `setThemePart` operation through the real workbook engine, so
 theme-provenance styles resolve exactly as a reopen would. LOCAL-ADAPTATIONS-SHA256
 records the adapted file.
+
+
+2026-11-12 numeric chart axes: `grid/chart-value-scale.ts` adapts
+`packages/xlsx-gateway/src/domain/chart-visual.ts::valueAxisScale` from pinned
+GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c` (5% headroom,
+1/2/5 major units and 1/2/2.5/5 negative-floor rounding). It keeps explicit
+endpoints and the native canvas's finite/clamped mapping. Local differences:
+finite fallback at overflowing/subnormal magnitudes; automatic all-negative
+upper bound stays zero even when the original rounds it above zero; dense
+saved units are sampled across the full domain before painting. The original
+source is executed independently by `smoke/workbook-chart-scale-source-oracle.mjs`.
+`grid/chart-value-axis.ts` is a canvas host adaptation of source axis roles and
+full-number labels, reusing Univer's existing numfmt for explicit formats.
+Labels, ticks, bars and zero baseline share one domain; the adapter reserves a
+separate band inside legend/title bands. LOCAL-ADAPTATIONS-SHA256 records both
+files. Category labels, full axis styling, source-linked cell format inheritance,
+logarithmic/secondary axes and chart families beyond bar/column remain outside
+this increment; see NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md.

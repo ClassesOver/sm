@@ -14,7 +14,8 @@ import {
 } from '@univerjs/engine-render'
 import { CHART_PALETTE, chartSeriesColor, fitted, paintChartLegend } from './chart-legend'
 import { paintAxisTitles } from './chart-axis-titles'
-import { barValueFraction } from './chart-value-scale'
+import { barValueScale } from './chart-value-scale'
+import { paintValueAxis } from './chart-value-axis'
 
 const store = new Map<string, ReadonlyArray<ChartReadSpec>>()
 
@@ -127,7 +128,10 @@ function drawChart(
   const basePlot = { top: y0 + (title ? 20 : 8), bottom: y1 - 8, left: x0 + 8, right: x1 - 8 }
   const hasSeriesLegend = spec.kind === 'bar' || spec.kind === 'column'
   const legendPlot = hasSeriesLegend && !spec.legend?.overlay ? paintChartLegend(ctx, spec, worksheet, basePlot) : basePlot
-  const plot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
+  const titledPlot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
+  const slots = hasSeriesLegend ? spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef)) : []
+  const scale = hasSeriesLegend && !spec.valueScaleUnavailable ? barValueScale(slots, spec.axes?.value.scaling) : undefined
+  const plot = scale && flat.length > 0 ? paintValueAxis(ctx, spec, scale, titledPlot) : titledPlot
   const { top: plotTop, bottom: plotBottom, left: plotLeft, right: plotRight } = plot
   const plotHeight = Math.max(4, plotBottom - plotTop)
   const plotWidth = Math.max(4, plotRight - plotLeft)
@@ -138,11 +142,10 @@ function drawChart(
   }
 
   if (spec.kind === 'bar' || spec.kind === 'column') {
-    const slots = spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef))
     // Preserve the category index of missing cells, including a longer later
     // series. Zero is a zero-length bar, never an invented minimum pixel size.
     const categoryCount = slots.reduce((count, values) => Math.max(count, values.length), 1)
-    const fraction = spec.valueScaleUnavailable ? undefined : barValueFraction(slots, spec.axes?.value.scaling)
+    const fraction = scale?.fraction
     if (!fraction) {
       ctx.save(); ctx.beginPath(); ctx.rect(plotLeft,plotTop,plotWidth,plotHeight); ctx.clip()
       ctx.fillStyle = '#1f2328'; ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'

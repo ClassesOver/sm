@@ -42,3 +42,18 @@ it('marks explicit scaling unavailable when axis ownership is ambiguous',async()
  const result=await chart(await zip.generateAsync({type:'uint8array'}))
  expect(result.axes).toBeUndefined();expect(result.valueScaleUnavailable).toBe(true)
 })
+
+it('reads value-axis major unit and decoded number format without borrowing the category format',async()=>{
+ const zip=await JSZip.loadAsync(await fixture()),path='xl/charts/chart1.xml'
+ zip.file(path,(await zip.file(path)!.async('string'))
+  .replace('<c:valAx>',()=>'<c:valAx><c:majorUnit val="0.5"/><c:numFmt formatCode="&quot;$&quot;0.00" sourceLinked="0"/>')
+  .replace('<c:catAx>','<c:catAx><c:numFmt formatCode="0%" sourceLinked="0"/>'))
+ const result=await chart(await zip.generateAsync({type:'uint8array'}))
+ expect(result.axes?.value.scaling).toEqual({min:2,max:8,majorUnit:0.5,reversed:false})
+ expect(result.axes?.value.numberFormat).toBe('"$"0.00')
+})
+it.each(['0','-1','NaN','Infinity'])('does not silently treat invalid major unit %s as automatic',async unit=>{
+ const zip=await JSZip.loadAsync(await fixture()),path='xl/charts/chart1.xml'
+ zip.file(path,(await zip.file(path)!.async('string')).replace('<c:valAx>',`<c:valAx><c:majorUnit val="${unit}"/>`))
+ expect((await chart(await zip.generateAsync({type:'uint8array'}))).axes?.value.scaling?.unsupported).toBe('invalid')
+})
