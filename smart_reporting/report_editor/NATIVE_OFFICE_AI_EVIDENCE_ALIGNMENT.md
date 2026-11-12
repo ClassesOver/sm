@@ -44,4 +44,10 @@
 最新依赖已按lockfile补齐；两个既有测试夹具类型问题已修且23项通过。完整tsc（Node heap 4GiB）、最终Vite50.16秒和全部JS预算通过。不会据此反推历史构建通过，仍不宣称生产数据库/真实provider整链验收。
 
 
-2026-11-12 PDF续批：非零CropBox/UserUnit2与默认来源各8个组件浏览器场景通过，修复草稿线宽/箭头头部未包含UserUnit的实际bug；73项定向、完整npm build/tsc和JS预算通过。见 [AP一致性验收末节](NATIVE_PDF_DRAFT_AP_APPEARANCE_ACCEPTANCE.md)。页边长标签仍可能裁切，普通测量路径尚无专项溢出提示，保留为开放缺口。
+2026-11-12 PDF续批：非零CropBox/UserUnit2与默认来源各8个组件浏览器场景通过，修复草稿线宽/箭头头部未包含UserUnit的实际bug；73项定向、完整npm build/tsc和JS预算通过。见 [AP一致性验收末节](NATIVE_PDF_DRAFT_AP_APPEARANCE_ACCEPTANCE.md)。页边长标签仍可能裁切，后续已补普通与样式混合测量的页框溢出风险提示，见 [风险提示专项](NATIVE_PDF_MEASURE_CROP_REVIEW_ACCEPTANCE.md)；自动重新排版仍未实现。
+
+
+2026-11-12 PDF页边提示续批：实际输出CropBox∩MediaBox的保守风险诊断、普通绘图保存回执保留、诊断异常不阻断真实预览保存下载均已限定验收。引擎20项、HTTP新3项与相关3项、既有发布合同79项、宿主UI12项通过；不会把风险提示算作消除实际裁切。详见专项记录。
+
+
+同批补齐预览后仅裁切诊断失败的非阻断边界：新诊断不使同内容确认失效，原字节SHA/操作/来源绑定不变。普通绘图保存现保留完整回执。最新PR219合入后的Word/PPTX包预算已通过纯helper静态拆包恢复到232.97/237.11KiB，不提高250KiB上限；相关103项窄测、实际Chrome模块导入与全部预算合同通过，详见 [裁切风险提示与构建验收](NATIVE_PDF_MEASURE_CROP_REVIEW_ACCEPTANCE.md)。

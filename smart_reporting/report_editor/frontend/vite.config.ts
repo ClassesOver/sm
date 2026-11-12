@@ -83,6 +83,10 @@ export default defineConfig({
           if (/\/src\/pdf-form-(?:create|design|radio-extension|text-properties|canvas)\.ts$/.test(id)) return 'native-pdf-form-controls'
           if (id.endsWith('/src/office-ai-entry.tsx')) return 'office-ai-entry'
           if (/\/src\/docx-ruler\.tsx$/.test(id) || id.endsWith('/docx-ruler-indent.ts') || id.endsWith('/docx-tab-stops.ts') || /\/vendor\/genoffice-docs\/apps\/docs\/src\/renderer\/(?:components\/Ruler\.tsx|use-measurement\.ts|units\.ts)$/.test(id)) return 'docx-ruler'
+          // Keep native review adapters and draft planners out of editor command chunks.
+          // Static ESM imports preserve their existing synchronous call paths.
+          if (/\/src\/docx-comment-(?:create|reply|thread|text)\.ts$/.test(id)) return 'docx-comment-model'
+          if (/\/src\/slides-(?:groups|native-clipboard|native-media-draft|element-order|arrange|format-brush)\.ts$/.test(id)) return 'slides-draft-plans'
           if (id.endsWith('/src/docx-line-spacing.ts')) return 'docx-line-spacing'
           if (id.endsWith('/src/docx-special-indent.ts')) return 'docx-special-indent'
           if (/\/src\/docx-navigation(?:-search|-pages)?\.ts$/.test(id)) return 'docx-navigation'
