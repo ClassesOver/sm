@@ -16,6 +16,7 @@ from .agent_event_streams import bind_agent_event_log, event_stream_response
 from .native_ai import NativeAIService, _copy_operations, _invalid, _NativeAIJob
 from .native_models import native_digest
 from .workbook_ai import AgnoWorkbookProposalPlanner, WorkbookAIProposal
+from .workbook_ai_charts import validate_chart_candidates
 
 
 @dataclass
@@ -161,7 +162,9 @@ class NativeWorkbookAIService(NativeAIService):
                 "公式使用 cell:{value:null,formula:\"SUM(A1:A3)\"}，公式无等号。"
                 "格式在 edits 项的 style，例如 {bold:true,fillColor:\"#EEF2FF\"}；不要把格式写到 cell 内。"
                 + ("仅可输出 applyCellEdits，且必须在冻结选区内。选区：" + json.dumps(selection, ensure_ascii=False) if scope == "range" else
-                    "已明确授权整份工作簿，可使用 WorkbookAIProposal 声明的12类操作；禁止图表、图片、保护、主题与外部请求。")
+                    "已明确授权整份工作簿，可使用WorkbookAIProposal声明的操作。已有图表仅允许格式编辑/删除，"
+                    "先read_sheet_features核对唯一chartPath与所属表；多图时按用户明确目标匹配，禁止按顺序猜测，不明确时请求澄清而不提交。"
+                    "使用load_guide(charts)读取协议；禁止新增图表、替换series/seriesSet数据、图片、保护、主题与外部请求。")
                 + "\n用户要求：" + instruction + "\n包含人工未保存修改的授权内容：" + encoded)
             workbook_planner = getattr(self.planner, "plan_workbook", None)
             plan = (workbook_planner(prompt, model=material, scope=scope, selection=selection,
@@ -180,6 +183,7 @@ class NativeWorkbookAIService(NativeAIService):
             candidate = planned.engine_operations()
             if scope == "range":
                 self._within_selection(candidate, selection)
+            validate_chart_candidates(material, candidate)
             combined = self._combined_operations(context, base, candidate)
             preview = await self.editor.preview(context, expected_sha256=context.source_file.sha256, operations=combined)
             if job.status != "running":

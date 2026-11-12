@@ -4,6 +4,14 @@
 
 **完整对齐仍未完成。本表非穷尽，不给完成百分比。** 本索引汇总实际代码及分层专项证据；Word 根批注新建与 XLSX 透视表创建/编辑已有真实浏览器保存、下载和重开证据；最新构建入口与资产连续性单独补验，具体范围以专属验收文档为准。既有专项未重复全测，不冒充本次重新验收。调查、按钮标签、永久禁用、manifest/hash 通过都不计功能交付。并行工作会改变状态，以下稳定符号比行号更适合作后续查找。
 
+2026-11-12 增量：XLSX AI 已有图表格式编辑/删除完成冻结目标身份、严格运行时格式校验、真实工具预览与显式采纳；45项专项和真实浏览器两次保存下载重开通过。后续bar方向/负值零线/空值分类已修并通过17项定向及截图像素，见 [画布增量](NATIVE_XLSX_BAR_CANVAS_ACCEPTANCE.md)；标题/网格文字已定位为验收环境字体解析问题并补预检和像素验证，见 [文字预检](NATIVE_XLSX_CANVAS_FONT_ENVIRONMENT.md)。AI 新建图表/替换数据、真实provider整链和复杂样式视觉对齐仍缺。见 [已有图表 AI 验收](NATIVE_XLSX_AI_EXISTING_CHART_ACCEPTANCE.md)。
+
+后续bar/column常见四侧/none图例、可信名称及显式RGB系列色已通过读取/画布与保存重开像素专项，见 [图例验收](NATIVE_XLSX_LEGEND_CANVAS_ACCEPTANCE.md)。非bar/column图例、复杂索引与手动布局、完整轴/标签等不计通过。
+
+后续bar/column可信轴标题配对、隐藏标记、方向及top/right显示已通过读取和实际像素、带标题的AI保存下载重开，见 [轴标题专项](NATIVE_XLSX_AXIS_TITLE_CANVAS_ACCEPTANCE.md)。轴线/刻度/数值范围、次轴/组合与数据标签仍缺，不能把轴标题算作完整坐标轴能力。
+
+后续bar/column手动数值min/max、反向、零点与越界裁剪、null恢复本地自动范围已通过独立像素和实际候选保存重开，见 [数值范围专项](NATIVE_XLSX_VALUE_RANGE_CANVAS_ACCEPTANCE.md)。完整刻度/自动策略、对数计算、次轴/组合及数据标签仍未关闭。
+
 路径约定：`F=frontend/src/`（相对此文档）；`D=../reporting/doc_engine/`；`X=../reporting/workbook_engine/`；`U=/home/junge/pros/genoffice-source-full/`。源码路径均指实际文件，不指历史审计中已迁移的 `slides_engine` DOCX 路径。
 
 状态严格区分：

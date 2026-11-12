@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatLength, parseCalibration } from './vendor/genoffice-pdf/renderer/measure'
-import { pdfDrawingOperation, pdfLineLength, validatePdfDrawing } from './pdf-operations'
+import { pdfDrawingOperation, pdfLineLength, pdfMeasurementOperation, validatePdfDrawing } from './pdf-operations'
 
 const box = { x: 10, y: 20, width: 300, height: 400 }
 const red: [number, number, number] = [0.86, 0.15, 0.15]
@@ -32,4 +32,31 @@ describe('PDF measure tool (pinned measure.ts + engine measure drawing)', () => 
 it('refuses unrepresentable measurement scales before committing a label', async()=>{
   const {pdfMeasurementOperation}=await import('./pdf-operations')
   for(const scale of [{unitsPerPt:0,unit:'m'},{unitsPerPt:Infinity,unit:'m'},{unitsPerPt:1e-320,unit:'m'}]) expect(()=>pdfMeasurementOperation('p1',[[20,100],[220,100]],box,red,scale)).toThrow()
+})
+
+
+it.each([
+ {referenceUnit:2,targetUnit:1,targetRawLength:100,expected:'1.00 m'},
+ {referenceUnit:2,targetUnit:1,targetRawLength:200,expected:'2.00 m'},
+ {referenceUnit:2,targetUnit:2,targetRawLength:100,expected:'2.00 m'},
+ {referenceUnit:1,targetUnit:2,targetRawLength:100,expected:'4.00 m'},
+])('shares a physical-point calibration across UserUnit $referenceUnit → $targetUnit ($targetRawLength raw)',({referenceUnit,targetUnit,targetRawLength,expected})=>{
+ const from=[20,100],referenceTo=[120,100],to=[20+targetRawLength,100]
+ const calibration=parseCalibration('2','m',pdfLineLength(from,referenceTo,referenceUnit))!
+ expect(calibration.unitsPerPt).toBe(100*referenceUnit/2)
+ const operation=pdfMeasurementOperation('target',[from,to],box,red,calibration,targetUnit)
+ expect(operation.label).toBe(expected)
+ expect(operation.from).toEqual(from);expect(operation.to).toEqual(to)
+ expect(operation).not.toHaveProperty('userUnit')
+})
+
+it.each([0,-1,NaN,Infinity])('refuses unreadable UserUnit %s instead of storing an incorrect label',userUnit=>{
+ expect(()=>pdfLineLength([20,100],[120,100],userUnit)).toThrow()
+ expect(()=>pdfMeasurementOperation('p',[[20,100],[120,100]],box,red,{unitsPerPt:50,unit:'m'},userUnit)).toThrow()
+})
+
+it('keeps the default UserUnit1 API and catches physical-length overflow',()=>{
+ expect(pdfLineLength([20,100],[120,100])).toBe(100)
+ expect(pdfMeasurementOperation('p',[[20,100],[120,100]],box,red,{unitsPerPt:50,unit:'m'}).label).toBe('2.00 m')
+ expect(()=>pdfLineLength([20,100],[120,100],Number.MAX_VALUE)).toThrow()
 })
