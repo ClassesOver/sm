@@ -4,6 +4,8 @@
 /// the live grid, so edits flow into the picture on the next paint.
 
 import { createBufferEntrySource } from './zip'
+import { chartThemePalette } from './chart-label-theme'
+import { resolveStyleColor, themeSlotIndex } from './style-color'
 import { decodeXmlText } from './xml'
 
 export type ChartReadKind =
@@ -237,7 +239,7 @@ function legendOf(xml: string): ChartReadSpec['legend'] {
     overlay: /<c:overlay\b[^>]*\bval="(?:1|true)"/.test(body), hiddenEntries }
 }
 
-function labelSettings(body: string): ChartReadDataLabel {
+function labelSettings(body: string, palette?: readonly string[]): ChartReadDataLabel {
   let unsupported = /<c:(?:tx|manualLayout)\b/.test(body)
   const txPr = body.match(/<c:txPr\b[^>]*>([\s\S]*?)<\/c:txPr>/)?.[1]
   let style: ChartReadDataLabel['style']
@@ -255,8 +257,12 @@ function labelSettings(body: string): ChartReadDataLabel {
     const fill = contents.match(/<a:solidFill\b[^>]*>([\s\S]*?)<\/a:solidFill>/)?.[1]
     const colorNode = fill?.match(/^\s*<a:srgbClr\b([^>]*?)(?:\/>|>\s*<\/a:srgbClr>)\s*$/)
     const rgb = colorNode?.[1]?.match(/\bval="([a-fA-F0-9]{6})"/)?.[1]
-    if (fill !== undefined && !rgb || /<a:(?:noFill|gradFill|pattFill|blipFill)\b/.test(contents)) unsupported = true
-    style = {...(size !== undefined ? {sizePt:size/100}:{}),...(rawBold !== undefined ? {bold:rawBold === '1' || rawBold === 'true'}:{}),...(rgb ? {color:'#'+rgb.toUpperCase()}: {})}
+    const schemeNode = fill?.match(/^\s*<a:schemeClr\b([^>]*?)(?:\/>|>\s*<\/a:schemeClr>)\s*$/)
+    const token = schemeNode?.[1]?.match(/\bval="([^"]*)"/)?.[1]
+    const index = token === undefined ? undefined : themeSlotIndex(token)
+    const color = rgb ? '#'+rgb.toUpperCase() : palette && index !== undefined ? resolveStyleColor({theme:index}, palette) : undefined
+    if (fill !== undefined && !color || /<a:(?:noFill|gradFill|pattFill|blipFill)\b/.test(contents)) unsupported = true
+    style = {...(size !== undefined ? {sizePt:size/100}:{}),...(rawBold !== undefined ? {bold:rawBold === '1' || rawBold === 'true'}:{}),...(color ? {color}: {})}
   }
   const flag = (name: string): boolean | undefined => {
     const elements = [...body.matchAll(new RegExp(`<c:${name}\\b([^>]*)`,'g'))]
@@ -278,7 +284,7 @@ function labelSettings(body: string): ChartReadDataLabel {
     ...(format !== undefined ? {numberFormat:decodeXmlText(format)}:{}),...(unsupported ? {unsupported:true}: {})}
 }
 
-function dataLabelsOf(xml: string): ChartReadDataLabels | undefined {
+function dataLabelsOf(xml: string, palette?: readonly string[]): ChartReadDataLabels | undefined {
   const blocks = [...xml.matchAll(/<c:dLbls\b[^>]*(?:\/>|>([\s\S]*?)<\/c:dLbls>)/g)]
   if (!blocks.length) return undefined
   if (blocks.length !== 1) return {unsupported:true}
@@ -287,10 +293,10 @@ function dataLabelsOf(xml: string): ChartReadDataLabels | undefined {
   const defaults = body.replace(/<c:dLbl\b[^>]*(?:\/>|>([\s\S]*?)<\/c:dLbl>)/g,(_all,pointBody: string | undefined)=>{
     const raw = pointBody?.match(/<c:idx\b[^>]*\bval="(\d+)"/)?.[1], index = raw === undefined ? NaN : Number(raw)
     if (!Number.isInteger(index) || index > 4294967295 || Object.hasOwn(points,index) || ++count > 10000) invalid = true
-    else points[index] = labelSettings(pointBody ?? '')
+    else points[index] = labelSettings(pointBody ?? '', palette)
     return ''
   })
-  return {...labelSettings(defaults),...(count ? {points}:{}),...(invalid ? {unsupported:true}: {})}
+  return {...labelSettings(defaults, palette),...(count ? {points}:{}),...(invalid ? {unsupported:true}: {})}
 }
 
 function categoryLabels(cat: string): Pick<ChartReadSeries, 'categories' | 'categoryNumberFormat'> {
@@ -314,7 +320,7 @@ function categoryLabels(cat: string): Pick<ChartReadSeries, 'categories' | 'cate
     ...(format !== undefined ? {categoryNumberFormat:decodeXmlText(format)} : {})}
 }
 
-function seriesOf(chartXml: string): ChartReadSeries[] {
+function seriesOf(chartXml: string, palette?: readonly string[]): ChartReadSeries[] {
   const series: ChartReadSeries[] = []
   for (const match of chartXml.matchAll(/<c:ser\b[^>]*>([\s\S]*?)<\/c:ser>/g)) {
     const body = match[1] ?? ''
@@ -339,7 +345,7 @@ function seriesOf(chartXml: string): ChartReadSeries[] {
       body.match(/<c:yVal\b[^>]*>([\s\S]*?)<\/c:yVal>/)?.[1]
     const valuesRef = val !== undefined ? val.match(/<c:f>([\s\S]*?)<\/c:f>/)?.[1] : undefined
     if (valuesRef === undefined) continue
-    const dataLabels = dataLabelsOf(body)
+    const dataLabels = dataLabelsOf(body, palette)
     const numberFormat = val?.match(/<c:formatCode\b[^>]*>([\s\S]*?)<\/c:formatCode>/)?.[1]
     // scatter: X lives in c:xVal — either a numRef (numeric categories) or a
     // numLit with literal ordinals (no reference to resolve on the grid)
@@ -381,6 +387,7 @@ export async function readCharts(
   const source = await createBufferEntrySource(sourceBytes)
   const drawingPath = await drawingPathOf(source, worksheetPath)
   if (drawingPath === null) return []
+  const palette = await chartThemePalette(source)
   const drawingXml = await source.readText(drawingPath)
   // drawing rels: r:id → ../charts/chartN.xml
   const rels = new Map<string, string>()
@@ -408,11 +415,11 @@ export async function readCharts(
     const chartXml = await source.readText(chartPath)
     const kind = chartKindOf(chartXml)
     if (kind === null) continue // combo/exotic types stay write-only for now
-    const series = seriesOf(chartXml)
+    const series = seriesOf(chartXml, palette)
     if (series.length === 0) continue
     const axes = axesOf(chartXml, kind)
     const plot = axes ? chartXml.match(/<c:barChart\b[^>]*>([\s\S]*?)<\/c:barChart>/)?.[1]?.replace(/<c:ser\b[^>]*>[\s\S]*?<\/c:ser>/g,'') : undefined
-    const dataLabels = plot === undefined ? undefined : dataLabelsOf(plot)
+    const dataLabels = plot === undefined ? undefined : dataLabelsOf(plot, palette)
     const valueScaleUnavailable = !axes && (kind === 'bar' || kind === 'column') &&
       [...chartXml.matchAll(/<c:valAx\b[^>]*>([\s\S]*?)<\/c:valAx>/g)].some(axis => valueScaling(axis[1]!) !== undefined)
     charts.push({

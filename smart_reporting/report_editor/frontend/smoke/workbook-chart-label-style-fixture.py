@@ -1,5 +1,6 @@
 """Source typography, partial overrides, physical point sizes and pixel proof."""
 import json
+import os
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +15,7 @@ C = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
 A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 NS = {'c': C, 'a': A}
 BLUE = '#4472c4'
+THEME_CASE = os.environ.get('WORKBOOK_CHART_RENDER_CASE') == 'label-theme'
 
 
 def font_style(size=None, bold=None, color=None, *, theme=False, fallback=False):
@@ -29,7 +31,7 @@ def font_style(size=None, bold=None, color=None, *, theme=False, fallback=False)
         properties.set('b', '1' if bold else '0')
     if color or theme:
         fill = etree.SubElement(properties, etree.QName(A, 'solidFill'))
-        etree.SubElement(fill, etree.QName(A, 'schemeClr' if theme else 'srgbClr'), val='tx1' if theme else color.lstrip('#'))
+        etree.SubElement(fill, etree.QName(A, 'schemeClr' if theme else 'srgbClr'), val='phClr' if theme else color.lstrip('#'))
     return root
 
 
@@ -98,6 +100,8 @@ def create():
                     etree.SubElement(own, etree.QName(C, 'showVal'), val='1')
                     series.insert(list(series).index(series.find('c:cat', NS)), own)
                 content = etree.tostring(xml, xml_declaration=True, encoding='UTF-8')
+            if THEME_CASE and entry.filename == 'xl/charts/chart2.xml':
+                content = content.replace(b'<a:srgbClr val="FFFFFF"/>', b'<a:schemeClr val="accent2"/>')
             after.writestr(entry, content)
     return target.getvalue()
 
@@ -124,7 +128,10 @@ def color_ink(image, box, background, foreground):
 def verify(directory):
     book = load_workbook(directory / 'source.xlsx')
     assert [book.active[f'B{row}'].value for row in (2, 3)] == [10, 20]
-    with ZipFile(directory / 'source.xlsx') as source:
+    source_path = directory / ('downloaded.xlsx' if (directory / 'downloaded.xlsx').exists() else 'source.xlsx')
+    with ZipFile(source_path) as source:
+        theme = etree.fromstring(source.read('xl/theme/theme1.xml'))
+        theme_color = '#' + theme.xpath('//a:clrScheme/a:accent2/a:srgbClr/@val', namespaces=NS)[0]
         second = etree.fromstring(source.read('xl/charts/chart2.xml'))
         third = etree.fromstring(source.read('xl/charts/chart3.xml'))
         assert second.xpath('//c:barChart/c:dLbls/c:txPr//a:defRPr/@sz', namespaces=NS) == ['1200']
@@ -136,10 +143,17 @@ def verify(directory):
         fourth = etree.fromstring(source.read('xl/charts/chart4.xml'))
         fifth = etree.fromstring(source.read('xl/charts/chart5.xml'))
         sixth = etree.fromstring(source.read('xl/charts/chart6.xml'))
-        assert fourth.xpath('//c:barChart/c:dLbls/c:txPr//a:schemeClr/@val', namespaces=NS) == ['tx1']
+        assert fourth.xpath('//c:barChart/c:dLbls/c:txPr//a:schemeClr/@val', namespaces=NS) == ['phClr']
         assert fifth.xpath('//c:barChart/c:dLbls/c:txPr//a:defRPr/@sz', namespaces=NS) == ['7200']
         assert sixth.xpath('//c:barChart/c:dLbls/c:txPr//a:endParaRPr/@sz', namespaces=NS) == ['900']
         assert sixth.xpath('//c:barChart/c:dLbls/c:txPr//a:srgbClr/@val', namespaces=NS) == ['A02040']
+    if THEME_CASE:
+        with ZipFile(directory / 'source.xlsx') as before, ZipFile(source_path) as after:
+            changed = [n for n in before.namelist() if before.read(n) != after.read(n)]
+            assert changed == ['xl/theme/theme1.xml'], changed
+            assert theme_color.upper() == '#E97132'
+            chart = etree.fromstring(after.read('xl/charts/chart2.xml'))
+            assert chart.xpath('//c:dLbls/c:txPr//a:schemeClr/@val', namespaces=NS) == ['accent2']
     image = Image.open(directory / 'charts.png').convert('RGB')
     geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, (BLUE,), ignore_enclosed_components=True)
     (directory / 'pixel-geometry.json').write_text(json.dumps(geometry, indent=2))
@@ -155,7 +169,7 @@ def verify(directory):
                 center = bar['y'] + bar['height'] / 2
                 glyph = color_ink(image, (bar['x'] + bar['width'] + 2, center - 15, bar['x'] + bar['width'] + 80, center + 15), '#FFFFFF', '#A02040')
             else:
-                color = ('#90EE90' if point_index == 0 else '#FFD700') if index == 2 else '#FFFFFF'
+                color = ('#90EE90' if point_index == 0 else '#FFD700') if index == 2 else theme_color if THEME_CASE and index == 1 else '#FFFFFF'
                 glyph = color_ink(image, (bar['x'] + 3, bar['y'] + 3, bar['x'] + bar['width'] - 3, bar['y'] + bar['height'] - 3), BLUE, color)
             if index in (3, 4):
                 assert glyph['pixels'] == 0, (index, glyph)

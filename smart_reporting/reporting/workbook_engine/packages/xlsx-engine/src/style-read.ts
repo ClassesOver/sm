@@ -3,7 +3,7 @@
 /// xlsx-style-read.ts and extended with fonts / borders / alignment / numFmts.
 
 import type { FillSpec, PatternType, StyleColor } from './style-color'
-import { PATTERN_TYPES } from './style-color'
+import { PATTERN_TYPES, THEME_SLOT_NAMES } from './style-color'
 import { extractElements, readCoreAttribute, sectionInner } from './xml'
 
 export interface FontInfo {
@@ -270,7 +270,7 @@ function decodeXml(input: string): string {
 /// Theme palette in styles.xml theme-index order (Excel swaps the dk/lt
 /// pairs relative to clrScheme order): lt1, dk1, lt2, dk2, accent1-6,
 /// hlink, folHlink.
-export function parseThemePalette(themeXml: string | undefined): string[] | undefined {
+export function parseThemePalette(themeXml: string | undefined, options: {requireComplete?: boolean} = {}): string[] | undefined {
   if (themeXml === undefined) return undefined
   const scheme = themeXml.match(/<a:clrScheme\b[^>]*>([\s\S]*?)<\/a:clrScheme>/)?.[1]
   if (scheme === undefined) return undefined
@@ -285,6 +285,10 @@ export function parseThemePalette(themeXml: string | undefined): string[] | unde
     if (sys !== undefined && /^[0-9A-Fa-f]{6}$/.test(sys)) return `#${sys.toUpperCase()}`
     return undefined
   }
+  if (options.requireComplete && !THEME_SLOT_NAMES.every(name => {
+    const elements = [...scheme.matchAll(new RegExp(`<a:${name}\\b[^>]*>([\\s\\S]*?)</a:${name}>`, 'g'))]
+    return elements.length === 1 && /^\s*<a:(?:srgbClr|sysClr)\b[^>]*\/>\s*$/.test(elements[0]![1]!) && slot(name) !== undefined
+  })) return undefined
   const dk1 = slot('dk1') ?? '#000000'
   const lt1 = slot('lt1') ?? '#FFFFFF'
   const dk2 = slot('dk2') ?? '#44546A'

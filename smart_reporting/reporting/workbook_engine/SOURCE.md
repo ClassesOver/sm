@@ -544,3 +544,13 @@ explicit plot-block removal behavior. Tests preserve raw point formats with >,
 custom Unicode text and extension bytes. This fixes a local/shared legacy writer
 limitation rather than claiming an unmodified upstream port. Full chart XML
 prefix/schema normalization and complete label typography remain outside scope.
+
+2026-11-12 chart label theme projection: chart-label-theme.ts follows the unique
+internal workbook theme relationship and validates the actual complete palette.
+parseThemePalette has an opt-in strict mode without default slot substitution;
+existing cell callers keep their former behavior. chart-read resolves plain
+schemeClr at plot/series/point label levels through existing style-color helpers.
+Transforms and unresolved/ambiguous sources remain unsupported. Chart edits and
+theme replay preserve original scheme tokens; no color math or writer added.
+See report_editor/NATIVE_XLSX_DATA_LABEL_THEME_ACCEPTANCE.md for actual UI,
+downloaded OOXML and independent pixel evidence and remaining limitations.
