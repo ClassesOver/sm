@@ -160,7 +160,13 @@ function applyImageGeometry(
 }
 
 
-export interface ExistingEngineImage {pageIndex:number;rect:[number,number,number,number];aboveText:boolean;fingerprint:string;pixelsSha256:string;width:number;height:number;exclusive:boolean}
+export interface ExistingEngineImage {pageIndex:number;rect:[number,number,number,number];aboveText:boolean;fingerprint:string;pixelsSha256:string;width:number;height:number;exclusive:boolean;axisAligned:boolean}
+/** Page-owned, unrotated and unmirrored (a>0, d>0, b=c=0): its rendered bitmap is exactly the object-space bitmap, so a baked edit written back with SetBitmap keeps orientation. */
+function axisAligned(m:Pdfium,o:ImageObj):boolean{
+ if(o.chain.length>0)return false
+ const p=m._malloc(24)
+ try{if(!m._FPDFPageObj_GetMatrix(o.obj,p))return false;const [a,b,c,d]=Array.from(m.HEAPF32.subarray(p>>2,(p>>2)+4));return a!>1e-6&&d!>1e-6&&Math.abs(b!)<1e-6&&Math.abs(c!)<1e-6}finally{m._free(p)}
+}
 function fingerprint(m:Pdfium,o:ImageObj){
  const image=m as Pdfium&{_FPDFImageObj_GetImageDataDecoded(obj:number,buffer:number,length:number):number;_FPDFImageObj_GetImagePixelSize(obj:number,width:number,height:number):number}
  const length=m._FPDFImageObj_GetImageDataRaw(o.obj,0,0),decodedLength=image._FPDFImageObj_GetImageDataDecoded(o.obj,0,0),p=m._malloc(Math.max(length,decodedLength,24)),digest=createHash('sha256')
@@ -187,7 +193,7 @@ export async function listExistingEngineImages(bytes:Uint8Array):Promise<Existin
    const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
    try{const textIdx=firstTextIndex(collectObjects(m,page));for(const o of collectImages(m,page)){
     if(o.bounds[2]-o.bounds[0]<3||o.bounds[3]-o.bounds[1]<3)continue
-    out.push({pageIndex,rect:o.bounds,aboveText:textIdx!==undefined&&o.index>textIdx,...fingerprint(m,o),exclusive:await exclusive(pageIndex,o)})
+    out.push({pageIndex,rect:o.bounds,aboveText:textIdx!==undefined&&o.index>textIdx,...fingerprint(m,o),exclusive:await exclusive(pageIndex,o),axisAligned:axisAligned(m,o)})
    }}finally{m._FPDF_ClosePage(page)}
   }return out
  })})
@@ -211,9 +217,37 @@ export function decodePngBgra(b64:string):{width:number;height:number;bgra:Uint8
  for(let i=0;i<width*height;i++){bgra[i*4]=png.rgbChannel[i*3+2]!;bgra[i*4+1]=png.rgbChannel[i*3+1]!;bgra[i*4+2]=png.rgbChannel[i*3]!;bgra[i*4+3]=png.alphaChannel?png.alphaChannel[i]!:255}
  return {width,height,bgra}
 }
+/** Pinned renderImagePng (image-edit.ts): render one image object alone (not the page under it) in its
+    displayed orientation, upscaled by `scale` up to RENDER_MAX_PX on the long side. The upscale transforms
+    the object of an in-memory copy only. Returns the tight BGRA rows instead of a PNG (no Electron nativeImage). */
+const RENDER_MAX_PX = 2400
+export async function renderExistingImageBgra(bytes:Uint8Array,pageIndex:number,rect:Rect,scale=1):Promise<{width:number;height:number;bgra:Uint8Array}>{
+ return chainPdfium(async()=>{const m=await loadPdfium() as Pdfium&{_FPDFImageObj_GetRenderedBitmap(doc:number,page:number,obj:number):number;_FPDFBitmap_GetWidth(b:number):number;_FPDFBitmap_GetHeight(b:number):number;_FPDFBitmap_GetStride(b:number):number;_FPDFBitmap_GetBuffer(b:number):number;_FPDFBitmap_Destroy(b:number):void};return withDocument(m,bytes,async doc=>{
+  const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
+  try{
+   const target=await resolveImage(m,page,rect)
+   const side=Math.max(target.bounds[2]-target.bounds[0],target.bounds[3]-target.bounds[1])
+   const k=Math.min(Math.max(1,scale),side>0?RENDER_MAX_PX/side:1)
+   if(k>1)m._FPDFPageObj_Transform(target.obj,k,0,0,k,0,0)
+   const bmp=m._FPDFImageObj_GetRenderedBitmap(doc,page,target.obj);if(!bmp)throw Error('image could not be rendered')
+   try{
+    const width=m._FPDFBitmap_GetWidth(bmp),height=m._FPDFBitmap_GetHeight(bmp),stride=m._FPDFBitmap_GetStride(bmp),buf=m._FPDFBitmap_GetBuffer(bmp)
+    if(!width||!height||!buf||width*height>MAX_REPLACEMENT_PIXELS)throw Error('rendered image size invalid')
+    const bgra=new Uint8Array(width*height*4)
+    for(let row=0;row<height;row++)bgra.set(m.HEAPU8.subarray(buf+row*stride,buf+row*stride+width*4),row*width*4)
+    return {width,height,bgra}
+   }finally{m._FPDFBitmap_Destroy(bmp)}
+  }finally{m._FPDF_ClosePage(page)}
+ })})
+}
 /** Pinned replaceImage: swap the object's pixels (matrix untouched, so z-order and any original rotation stay), then the shared geometry pass. */
 export async function applyExistingImageReplace(bytes:Uint8Array,pageIndex:number,oldRect:Rect,rect:Rect,image:string):Promise<Uint8Array>{
- const exclusive=formExclusivity(bytes),{width,height,bgra}=decodePngBgra(image)
+ return applyExistingImageReplaceBgra(bytes,pageIndex,oldRect,rect,decodePngBgra(image))
+}
+/** Same writer for pixels that are already straight-alpha BGRA (baked crop/flip/opacity edits). */
+export async function applyExistingImageReplaceBgra(bytes:Uint8Array,pageIndex:number,oldRect:Rect,rect:Rect,pixels:{width:number;height:number;bgra:Uint8Array}):Promise<Uint8Array>{
+ const exclusive=formExclusivity(bytes),{width,height,bgra}=pixels
+ if(!Number.isSafeInteger(width)||!Number.isSafeInteger(height)||width<1||height<1||width*height>MAX_REPLACEMENT_PIXELS||bgra.length!==width*height*4)throw Error('replacement image size invalid')
  return chainPdfium(async()=>{const m=await loadPdfium() as Pdfium&{_FPDFBitmap_CreateEx(w:number,h:number,format:number,buffer:number,stride:number):number;_FPDFImageObj_SetBitmap(pages:number,count:number,obj:number,bitmap:number):number;_FPDFBitmap_Destroy(bitmap:number):void};return withDocument(m,bytes,async doc=>{
   const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
   try{
