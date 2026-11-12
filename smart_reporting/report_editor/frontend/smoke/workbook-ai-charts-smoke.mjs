@@ -86,7 +86,7 @@ try{
   await page.screenshot({path:join(directory,name+'-reopened.png'),fullPage:true})
   saves.push({name,payload,reopened})
  }
- stage='edit-candidate';await generate('仅修改 Sheet 的 xl/charts/chart1.xml，标题 Updated、横向条形图、底部图例；保留另一张同名图表')
+ stage='edit-candidate';await generate('仅修改 Sheet 的 xl/charts/chart1.xml，标题 Updated、横向条形图、底部图例；保留另一张同名图表'+(process.env.WORKBOOK_AI_CHARTS_AXIS_TITLES==='1'?'；添加轴标题：分类 Quarter、数值 Amount (USD)':''))
  assert.deepEqual(await operations(),manual)
  await panel.locator('.native-ai-accept').click();await waitKind('applyChartEdits',true)
  const adopted=await operations();assert.deepEqual(adopted.slice(0,manual.length),manual)

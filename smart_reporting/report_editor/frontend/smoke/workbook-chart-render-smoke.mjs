@@ -14,9 +14,11 @@ const directory=process.env.WORKBOOK_CHART_RENDER_DIRECTORY??'/tmp/workbook-char
 const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../static')
 const port=Number(process.env.WORKBOOK_CHART_RENDER_PORT??4354),origin=`http://127.0.0.1:${port}`
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
-const legend=process.env.WORKBOOK_CHART_RENDER_CASE==='legend'
+const smokeCase=process.env.WORKBOOK_CHART_RENDER_CASE??'geometry'
+assert(['geometry','legend','axis'].includes(smokeCase),'Unknown chart render case')
+const legend=smokeCase==='legend',axis=smokeCase==='axis'
 await mkdir(directory,{recursive:false})
-const fixture=join(frontend,legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
+const fixture=join(frontend,axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
 const created=spawnSync(python,[fixture,'create',join(directory,'input.xlsx')],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
 assert.equal(created.status,0,created.stdout+created.stderr)
 const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'))
@@ -37,8 +39,8 @@ try{
  const fontPreflight=await probeCanvasTextRendering(browser)
  await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
  assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
- page=await browser.newPage({viewport:{width:1560,height:legend?1550:1400}})
- if(legend)await page.addInitScript(()=>{
+ page=await browser.newPage({viewport:{width:1560,height:legend||axis?1550:1400}})
+ if(legend||axis)await page.addInitScript(()=>{
   window.__legendTexts=[]
   const original=CanvasRenderingContext2D.prototype.fillText
   CanvasRenderingContext2D.prototype.fillText=function(...args){
@@ -66,10 +68,14 @@ try{
  const evidence=await page.evaluate(()=>({charts:[...window.__sheetsWebCharts.store.values()].flat(),legendTexts:window.__legendTexts??[]}))
  await writeFile(join(directory,'model.json'),JSON.stringify(evidence,null,2))
  await page.screenshot({path:join(directory,'charts.png'),fullPage:true})
- assert.deepEqual(evidence.charts.map(c=>c.kind),legend?Array(5).fill('bar'):['bar','column','bar'])
+ assert.deepEqual(evidence.charts.map(c=>c.kind),axis?['column','bar','column','bar']:legend?Array(5).fill('bar'):['bar','column','bar'])
  if(legend){
   assert(evidence.legendTexts.includes('Live Revenue'));assert(evidence.legendTexts.includes('Costs & tax'))
   assert(!evidence.legendTexts.includes('STALE'))
+ }
+ if(axis){
+  for(const title of ['Quarter','Amount (USD)','Year & quarter','USD','Group'])assert(evidence.legendTexts.includes(title),'Missing axis title: '+title)
+  assert(!evidence.legendTexts.includes('DO NOT DRAW'));assert(!evidence.legendTexts.includes('OLD GROUP'))
  }
  stage='independent-pixels'
  const verified=spawnSync(python,[fixture,'verify',directory],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})

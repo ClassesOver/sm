@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { chartLegendName } from './chart-legend'
+import { chartLegendName, chartTextValue } from './chart-legend'
 
 it('resolves only same-sheet single-cell names, preserves literals and falls back to source caches', () => {
  const worksheet={getName:()=>"Owner's Data!",getCell:()=>({v:'Live heading'})}
@@ -9,4 +9,10 @@ it('resolves only same-sheet single-cell names, preserves literals and falls bac
   expect(chartLegendName({nameRef,nameCache:'Cached heading',valuesRef:'B2:B3'},0,worksheet)).toBe('Cached heading')
  }
  expect(chartLegendName({nameRef:'Other!B1',valuesRef:'B2:B3'},1,worksheet)).toBe('系列 2')
+})
+
+it('does not resurrect a stale cache for a current same-sheet blank title cell',()=>{
+ const text={reference:'Sheet1!A1',cache:'STALE'}
+ for(const value of [undefined,null,'']) expect(chartTextValue(text,{getName:()=> 'Sheet1',getCell:()=>({v:value})})).toBe('')
+ expect(chartTextValue(text,{getName:()=> 'Other',getCell:()=>({v:'WRONG SHEET'})})).toBe('STALE')
 })

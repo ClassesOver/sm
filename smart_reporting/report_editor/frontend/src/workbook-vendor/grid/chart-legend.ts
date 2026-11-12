@@ -2,27 +2,32 @@ import { parseRange, type ChartReadSpec } from '@sheets-web/xlsx-engine'
 import type { UniverRenderingContext } from '@univerjs/engine-render'
 
 type Series = ChartReadSpec['series'][number]
-type Worksheet = { getName?(): string; getCell(row: number, column: number): { v?: unknown } | null | undefined }
-type Plot = { left: number; top: number; right: number; bottom: number }
+export type Worksheet = { getName?(): string; getCell(row: number, column: number): { v?: unknown } | null | undefined }
+export type Plot = { left: number; top: number; right: number; bottom: number }
 export const CHART_PALETTE = ['#4472c4', '#ed7d31', '#a5a5a5', '#ffc000', '#5b9bd5', '#70ad47']
 export const chartSeriesColor = (series: Series, index: number) => series.color ?? CHART_PALETTE[index % CHART_PALETTE.length]!
 
 export function chartLegendName(series: Series, index: number, worksheet: Worksheet): string {
-  if (!series.nameRef) return series.name || `系列 ${index + 1}`
+  return chartTextValue({literal:series.name,reference:series.nameRef,cache:series.nameCache},worksheet,`系列 ${index + 1}`)
+}
+
+export function chartTextValue(text: {literal?:string;reference?:string;cache?:string}, worksheet: Worksheet, fallback = ''): string {
+  if (!text.reference) return text.literal || fallback
   // Resolve only an actual single-cell reference in this worksheet. A literal
   // name that resembles an address stays literal; external refs are never read.
-  const ref = /^(?:(?:'((?:[^']|'')+)'|([^'!\[\]]+))!)?(\$?[A-Z]+\$?[1-9]\d*)$/.exec(series.nameRef)
+  const ref = /^(?:(?:'((?:[^']|'')+)'|([^'!\[\]]+))!)?(\$?[A-Z]+\$?[1-9]\d*)$/.exec(text.reference)
   if (ref && (!ref[1] && !ref[2] || (ref[1]?.replaceAll("''", "'") ?? ref[2]) === worksheet.getName?.())) {
     try {
       const range = parseRange(ref[3]!)
       const value = worksheet.getCell(range.startRow, range.startColumn)?.v
+      if (value === null || value === undefined || value === '') return fallback
       if (typeof value === 'string' && value || typeof value === 'number' && Number.isFinite(value) || typeof value === 'boolean') return String(value)
     } catch { /* Keep the original cached label when the reference is unreadable. */ }
   }
-  return series.nameCache || `系列 ${index + 1}`
+  return text.cache || fallback
 }
 
-function fitted(text: string, width: number, measure: (value: string) => number): string {
+export function fitted(text: string, width: number, measure: (value: string) => number): string {
   if (width <= 0 || measure('…') > width) return ''
   if (text.length <= 500 && measure(text) <= width) return text
   let low = 0, high = Math.min(500, text.length)

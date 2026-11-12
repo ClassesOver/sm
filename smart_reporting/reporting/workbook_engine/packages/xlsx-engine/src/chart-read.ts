@@ -33,6 +33,15 @@ export interface ChartReadSeries {
   readonly xValues?: ReadonlyArray<number> | undefined
 }
 
+export interface ChartReadAxis {
+  readonly id: number
+  readonly hidden: boolean
+  readonly position?: 'left' | 'right' | 'top' | 'bottom' | undefined
+  readonly title?: string | undefined
+  readonly titleRef?: string | undefined
+  readonly titleCache?: string | undefined
+}
+
 export interface ChartReadSpec {
   readonly chartPath: string
   readonly anchor: {
@@ -43,6 +52,7 @@ export interface ChartReadSpec {
   }
   readonly kind: ChartReadKind
   readonly title?: string | undefined
+  readonly axes?: { readonly category: ChartReadAxis; readonly value: ChartReadAxis } | undefined
   readonly legend?: {
     readonly position: 'right' | 'left' | 'top' | 'bottom' | 'top-right'
     readonly overlay: boolean
@@ -104,12 +114,55 @@ function chartKindOf(chartXml: string): ChartReadKind | null {
   return null
 }
 
-const titleOf = (chartXml: string): string | undefined => {
-  const title = chartXml.match(/<c:title\b[^>]*>([\s\S]*?)<\/c:title>/)?.[1]
-  if (title === undefined) return undefined
-  const texts = [...title.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((m) => decodeXmlText(m[1] ?? ''))
-  const joined = texts.join('')
-  return joined === '' ? undefined : joined
+function titleText(xml: string): Pick<ChartReadAxis, 'title' | 'titleRef' | 'titleCache'> {
+  const title = xml.match(/<c:title\b[^>]*>([\s\S]*?)<\/c:title>/)?.[1]
+  const tx = title?.match(/<c:tx\b[^>]*>([\s\S]*?)<\/c:tx>/)?.[1]
+  if (!tx) return {}
+  const reference = tx.match(/<c:f>([\s\S]*?)<\/c:f>/)?.[1]
+  if (reference !== undefined) {
+    const cache = tx.match(/<c:strCache\b[^>]*>[\s\S]*?<c:pt\b[^>]*\bidx="0"[^>]*>[\s\S]*?<c:v>([\s\S]*?)<\/c:v>/)?.[1]
+    return { titleRef: decodeXmlText(reference), ...(cache !== undefined ? { titleCache: decodeXmlText(cache) } : {}) }
+  }
+  const paragraphs = [...tx.matchAll(/<a:p\b[^>]*>([\s\S]*?)<\/a:p>/g)]
+  const text = paragraphs.map(paragraph => [...paragraph[1]!.matchAll(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g)]
+    .map(run => decodeXmlText(run[1] ?? '')).join('')).join('\n')
+  return text ? { title: text } : {}
+}
+
+const titleOf = (xml: string): string | undefined => {
+  // Axis titles live after plotArea begins and must never become chart titles.
+  const text = titleText(xml.split(/<c:plotArea\b/)[0] ?? '')
+  return text.title ?? text.titleCache
+}
+
+function axesOf(xml: string, kind: ChartReadKind): ChartReadSpec['axes'] {
+  if (kind !== 'column' && kind !== 'bar') return undefined
+  const plots = [...xml.matchAll(/<c:barChart\b[^>]*>([\s\S]*?)<\/c:barChart>/g)]
+  if (plots.length !== 1) return undefined
+  const unsigned = (raw: string | undefined): number | undefined => {
+    const value = raw === undefined ? NaN : Number(raw)
+    return Number.isInteger(value) && value >= 0 && value <= 4294967295 ? value : undefined
+  }
+  const idOf = (body: string, tag: string) => unsigned(body.match(new RegExp(`<c:${tag}\\b[^>]*\\bval="(\\d+)"`))?.[1])
+  const ids = [...plots[0]![1]!.matchAll(/<c:axId\b[^>]*\bval="(\d+)"/g)].map(match => unsigned(match[1]))
+  if (ids.length !== 2 || ids.some(id => id === undefined) || new Set(ids).size !== 2) return undefined
+  const axes = [...xml.matchAll(/<c:(catAx|dateAx|valAx)\b[^>]*>([\s\S]*?)<\/c:\1>/g)]
+    .map(match => ({ kind: match[1]!, body: match[2]!, id: idOf(match[2]!, 'axId') }))
+    .filter(axis => axis.id !== undefined && ids.includes(axis.id))
+  if (axes.length !== 2 || new Set(axes.map(axis => axis.id)).size !== 2) return undefined
+  const category = axes.find(axis => axis.kind === 'catAx' || axis.kind === 'dateAx')
+  const value = axes.find(axis => axis.kind === 'valAx')
+  if (!category || !value || idOf(category.body, 'crossAx') !== value.id || idOf(value.body, 'crossAx') !== category.id) return undefined
+  const project = (axis: NonNullable<typeof category>): ChartReadAxis => {
+    const prefix = axis.body.split(/<c:title\b/)[0] ?? ''
+    const deletion = prefix.match(/<c:delete\b([^>]*)/)
+    const hidden = !!deletion && !/\bval="(?:0|false)"/.test(deletion[1]!)
+    const raw = prefix.match(/<c:axPos\b[^>]*\bval="([^"]*)"/)?.[1] ?? ''
+    const positions = { l: 'left', r: 'right', t: 'top', b: 'bottom' } as const
+    return { id: axis.id!, hidden, ...titleText(axis.body),
+      ...(Object.hasOwn(positions, raw) ? { position: positions[raw as keyof typeof positions] } : {}) }
+  }
+  return { category: project(category), value: project(value) }
 }
 
 function legendOf(xml: string): ChartReadSpec['legend'] {
@@ -224,6 +277,7 @@ export async function readCharts(
       kind,
       ...(titleOf(chartXml) !== undefined ? { title: titleOf(chartXml) } : {}),
       ...(legendOf(chartXml) !== undefined ? { legend: legendOf(chartXml) } : {}),
+      ...(axesOf(chartXml, kind) !== undefined ? { axes: axesOf(chartXml, kind) } : {}),
       series,
     })
   }

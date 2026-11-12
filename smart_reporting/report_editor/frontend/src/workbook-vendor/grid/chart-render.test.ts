@@ -14,7 +14,7 @@ function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Pa
   const texts: Array<{ text: string; x: number; y: number }> = []
   const ctx = {
     fillStyle: '', strokeStyle: '', lineWidth: 1,
-    save: vi.fn(), restore: vi.fn(), strokeRect: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(),
+    save: vi.fn(), restore: vi.fn(), strokeRect: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), translate: vi.fn(), rotate: vi.fn(),
     measureText: (text: string) => ({ width: text.length * 6 }),
     fillText: (text: string, x: number, y: number) => texts.push({ text, x, y }),
     fillRect(x: number, y: number, width: number, height: number) {
@@ -153,4 +153,43 @@ describe('actual bar/column legends', () => {
     expect(result.texts[0]!.text.endsWith('…')).toBe(true)
     expect(result.texts[0]!.x + result.texts[0]!.text.length * 6).toBeLessThanOrEqual(392)
   })
+})
+
+describe('actual linked axis titles', () => {
+ const axes = {
+  category:{id:1,position:'bottom' as const,hidden:false,title:'Quarter'},
+  value:{id:2,position:'left' as const,hidden:false,title:'Amount (USD)'},
+ }
+ it.each(['bar','column'] as const)('places %s role titles on distinct bands without losing the bars',kind=>{
+  const result=render(kind,[[3,5]],{axes})
+  expect(result.texts.map(item=>item.text)).toEqual(['Quarter','Amount (USD)'])
+  expect(result.ctx.rotate).toHaveBeenCalledWith(-Math.PI/2)
+  expect(result.fills).toHaveLength(2)
+  expect(result.fills.every(bar=>bar.x>=32&&bar.y+bar.height<=168)).toBe(true)
+ })
+ it('honors hidden axes without hiding the data or reserving an empty title band',()=>{
+  const baseline=render('bar',[[3,5]])
+  const result=render('bar',[[3,5]],{axes:{category:{...axes.category,hidden:true},value:{...axes.value,hidden:true}}})
+  expect(result.texts).toEqual([])
+  expect(result.fills).toEqual(baseline.fills)
+ })
+ it('accepts top and right titles for a column and keeps them inside the frame',()=>{
+  const result=render('column',[[3,5]],{axes:{category:{...axes.category,position:'top'},value:{...axes.value,position:'right'}}})
+  expect(result.texts).toHaveLength(2)
+  expect(result.ctx.rotate).toHaveBeenCalledWith(Math.PI/2)
+  expect(result.fills.every(bar=>bar.y>=32&&bar.x+bar.width<=368)).toBe(true)
+ })
+ it('does not invent titles for an unreadable reference without a cache',()=>{
+  const baseline=render('bar',[[3,5]])
+  const result=render('bar',[[3,5]],{axes:{category:{id:1,hidden:false,titleRef:'Other!A1'},value:{id:2,hidden:false}}})
+  expect(result.texts).toEqual([])
+  expect(result.fills).toEqual(baseline.fills)
+ })
+ it('truncates long titles inside their reserved horizontal and rotated bands',()=>{
+  const result=render('bar',[[3,5]],{axes:{category:{...axes.category,title:'Long category '.repeat(80)},value:{...axes.value,title:'Long units '.repeat(80)}}})
+  expect(result.texts.every(text=>text.text.endsWith('…'))).toBe(true)
+  expect(result.texts[0]!.text.length*6).toBeLessThanOrEqual(160)
+  expect(result.texts[1]!.text.length*6).toBeLessThanOrEqual(360)
+  expect(result.ctx.clip).toHaveBeenCalledTimes(2)
+ })
 })

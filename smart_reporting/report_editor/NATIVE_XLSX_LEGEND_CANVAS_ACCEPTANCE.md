@@ -51,3 +51,5 @@
 复现：给workbook-chart-render-smoke.mjs设置WORKBOOK_CHART_RENDER_CASE=legend、新输出目录、冻结静态目录及显式FONTCONFIG_FILE；geometry模式保持原几何夹具。当前冻结资源为 `/tmp/workbook-chart-legend-static-20261112-final`。
 
 仍缺饼图/折线/组合等图例、手动布局与复杂图例条目排序、主题/点色/noFill等完整颜色语义，以及轴/数据标签/堆叠/百分比/跨表数值和完整字体度量。未部署或开启生产开关，两个PDF WIP stash保持原样。
+
+后续常见bar/column轴标题已限定补齐并通过保存重开像素检查，见 [轴标题专项](NATIVE_XLSX_AXIS_TITLE_CANVAS_ACCEPTANCE.md)；刻度/数值范围和其它轴能力仍未关闭。

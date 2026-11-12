@@ -22,12 +22,18 @@ def verify(directory: Path):
         untouched = 'xl/charts/chart2.xml'
         assert before.read(untouched) == first.read(untouched) == second.read(untouched)
         xml = etree.fromstring(first.read('xl/charts/chart1.xml'))
-        assert xml.xpath('//c:title//a:t/text()', namespaces=ns) == ['Updated']
+        assert xml.xpath('/c:chartSpace/c:chart/c:title//a:t/text()', namespaces=ns) == ['Updated']
         assert xml.xpath('//c:barDir/@val', namespaces=ns) == ['bar']
         assert xml.xpath('//c:legendPos/@val', namespaces=ns) == ['b']
         assert xml.xpath('//c:numCache/c:pt/c:v/text()', namespaces=ns) == ['10', '20']
         assert xml.xpath('//c:ser//c:f/text()', namespaces=ns) == ["'Sheet'!$A$2:$A$3", "'Sheet'!$B$2:$B$3"]
         assert 'xl/charts/chart1.xml' not in second.namelist()
+        saved_request = json.loads((directory / 'edited-save.json').read_text())['request']
+        axis_titles = next((record['axisTitles'] for operation in saved_request['operations']
+            if operation['kind'] == 'applyChartEdits' for record in operation['edits'] if 'axisTitles' in record), None)
+        if axis_titles:
+            assert xml.xpath('//c:catAx/c:title//a:t/text()', namespaces=ns) == [axis_titles['category']]
+            assert xml.xpath('//c:valAx/c:title//a:t/text()', namespaces=ns) == [axis_titles['value']]
     for output, count in ((source, 2), (edited, 2), (deleted, 1)):
         sheet = load_workbook(BytesIO(output)).active
         assert len(sheet._charts) == count
@@ -68,6 +74,13 @@ def verify(directory: Path):
             assert len(swatches) == 1 and len(bars) == 2, (swatches, bars)
             assert swatches[0]['y'] >= max(bar['y'] + bar['height'] for bar in bars) + 4
             text_pixels[-1]['bottomLegendSwatches'] = len(swatches)
+            if axis_titles:
+                frame = geometry['frames'][0]
+                x, y, right, bottom = frame['x'], frame['y'], frame['x'] + frame['width'], frame['y'] + frame['height']
+                category_ink = sum(max(rgb) < 100 for rgb in image.crop((x + 8, y + 20, x + 32, bottom - 56)).getdata())
+                value_ink = sum(max(rgb) < 100 for rgb in image.crop((x + 32, bottom - 56, right - 8, bottom - 32)).getdata())
+                assert category_ink >= 15 and value_ink >= 15, (category_ink, value_ink)
+                text_pixels[-1].update(categoryAxisTitleInk=category_ink, valueAxisTitleInk=value_ink)
     return {'ok': True, 'sourceSha256': hashlib.sha256(source).hexdigest(),
             'editedSha256': hashlib.sha256(edited).hexdigest(), 'deletedSha256': hashlib.sha256(deleted).hexdigest(),
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',

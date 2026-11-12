@@ -13,6 +13,7 @@ import {
   SpreadsheetExtensionRegistry,
 } from '@univerjs/engine-render'
 import { CHART_PALETTE, chartSeriesColor, paintChartLegend } from './chart-legend'
+import { paintAxisTitles } from './chart-axis-titles'
 
 const store = new Map<string, ReadonlyArray<ChartReadSpec>>()
 
@@ -124,7 +125,8 @@ function drawChart(
   const flat = seriesValues.flat()
   const basePlot = { top: y0 + (title ? 20 : 8), bottom: y1 - 8, left: x0 + 8, right: x1 - 8 }
   const hasSeriesLegend = spec.kind === 'bar' || spec.kind === 'column'
-  const plot = hasSeriesLegend && !spec.legend?.overlay ? paintChartLegend(ctx, spec, worksheet, basePlot) : basePlot
+  const legendPlot = hasSeriesLegend && !spec.legend?.overlay ? paintChartLegend(ctx, spec, worksheet, basePlot) : basePlot
+  const plot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
   const { top: plotTop, bottom: plotBottom, left: plotLeft, right: plotRight } = plot
   const plotHeight = Math.max(4, plotBottom - plotTop)
   const plotWidth = Math.max(4, plotRight - plotLeft)

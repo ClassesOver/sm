@@ -56,6 +56,8 @@ async def create_app(directory: Path, port: int, *, source: bytes | None = None)
             # authorization, real writer, candidate service or publication chain.
             instruction = prompt.split('用户要求：', 1)[1].split('\n', 1)[0]
             operation = deletion() if '删除' in instruction else edit(title='Updated', chartType='bar', legend='bottom')
+            if '轴标题' in instruction and operation['kind'] == 'applyChartEdits':
+                operation['arguments']['edits'][0]['axisTitles'] = {'category': 'Quarter', 'value': 'Amount (USD)'}
             scripted = ScriptedModel(id='chart-browser', responses=[
                 call('read_sheet_features', {'sheetId': 'Sheet'}, 'features'),
                 call('load_guide', {'guides': ['charts']}, 'guide'),
