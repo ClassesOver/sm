@@ -1,5 +1,7 @@
 """Source typography, partial overrides, physical point sizes and pixel proof."""
+import colorsys
 import json
+import math
 import os
 import sys
 from io import BytesIO
@@ -15,7 +17,8 @@ C = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
 A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 NS = {'c': C, 'a': A}
 BLUE = '#4472c4'
-THEME_CASE = os.environ.get('WORKBOOK_CHART_RENDER_CASE') == 'label-theme'
+LUMINANCE_CASE = os.environ.get('WORKBOOK_CHART_RENDER_CASE') == 'label-luminance'
+THEME_CASE = os.environ.get('WORKBOOK_CHART_RENDER_CASE') in ('label-theme', 'label-luminance')
 
 
 def font_style(size=None, bold=None, color=None, *, theme=False, fallback=False):
@@ -102,8 +105,18 @@ def create():
                 content = etree.tostring(xml, xml_declaration=True, encoding='UTF-8')
             if THEME_CASE and entry.filename == 'xl/charts/chart2.xml':
                 content = content.replace(b'<a:srgbClr val="FFFFFF"/>', b'<a:schemeClr val="accent2"/>')
+            if LUMINANCE_CASE and entry.filename == 'xl/charts/chart2.xml':
+                content = content.replace(b'<a:schemeClr val="accent2"/>', b'<a:schemeClr val="accent2"><a:lumMod val="40000"/><a:lumOff val="60000"/></a:schemeClr>')
+            if LUMINANCE_CASE and entry.filename == 'xl/charts/chart3.xml':
+                content = content.replace(b'<a:srgbClr val="90EE90"/>', b'<a:srgbClr val="90EE90"><a:lumMod val="75000"/></a:srgbClr>')
             after.writestr(entry, content)
     return target.getvalue()
+
+
+def luminance(hex_color, multiplier, offset):
+    h, lightness, s = colorsys.rgb_to_hls(*(int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)))
+    rgb = colorsys.hls_to_rgb(h, min(1, lightness * multiplier + offset), s)
+    return '#' + ''.join(f'{math.floor(v * 255 + 0.5):02X}' for v in rgb)
 
 
 def color_ink(image, box, background, foreground):
@@ -154,6 +167,11 @@ def verify(directory):
             assert theme_color.upper() == '#E97132'
             chart = etree.fromstring(after.read('xl/charts/chart2.xml'))
             assert chart.xpath('//c:dLbls/c:txPr//a:schemeClr/@val', namespaces=NS) == ['accent2']
+            if LUMINANCE_CASE:
+                assert chart.xpath('//a:schemeClr/a:lumMod/@val', namespaces=NS) == ['40000']
+                assert chart.xpath('//a:schemeClr/a:lumOff/@val', namespaces=NS) == ['60000']
+                assert third.xpath('//c:ser/c:dLbls/c:txPr//a:srgbClr/a:lumMod/@val', namespaces=NS) == ['75000']
+                theme_color = luminance(theme_color, .4, .6)
     image = Image.open(directory / 'charts.png').convert('RGB')
     geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, (BLUE,), ignore_enclosed_components=True)
     (directory / 'pixel-geometry.json').write_text(json.dumps(geometry, indent=2))
@@ -170,6 +188,8 @@ def verify(directory):
                 glyph = color_ink(image, (bar['x'] + bar['width'] + 2, center - 15, bar['x'] + bar['width'] + 80, center + 15), '#FFFFFF', '#A02040')
             else:
                 color = ('#90EE90' if point_index == 0 else '#FFD700') if index == 2 else theme_color if THEME_CASE and index == 1 else '#FFFFFF'
+                if LUMINANCE_CASE and index == 2 and point_index == 0:
+                    color = luminance(color, .75, 0)
                 glyph = color_ink(image, (bar['x'] + 3, bar['y'] + 3, bar['x'] + bar['width'] - 3, bar['y'] + bar['height'] - 3), BLUE, color)
             if index in (3, 4):
                 assert glyph['pixels'] == 0, (index, glyph)

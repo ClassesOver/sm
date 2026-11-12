@@ -41,7 +41,7 @@ it('follows the actual relationship to a relocated theme rather than a stale con
  })
  expect((await chart(bytes)).dataLabels?.style?.color).toBe('#A040C0')
 })
-it.each(['missing','incomplete','duplicate','external','unknown','transformed','theme-transform','duplicate-slot'] as const)('does not guess a default theme color for %s',async mode=>{
+it.each(['missing','incomplete','duplicate','external','unknown','unsupported-transform','theme-transform','duplicate-slot'] as const)('does not guess a default theme color for %s',async mode=>{
  const bytes=await fixture(mode==='unknown'?'phClr':'accent1',async zip=>{
   const path='xl/_rels/workbook.xml.rels',rels=await zip.file(path)!.async('string')
   if(mode==='missing')zip.remove('xl/theme/theme1.xml')
@@ -50,7 +50,7 @@ it.each(['missing','incomplete','duplicate','external','unknown','transformed','
   if(mode==='external')zip.file(path,rels.replace('Target="theme/theme1.xml"','TargetMode="External" Target="https://example.invalid/theme.xml"'))
   if(mode==='theme-transform')zip.file('xl/theme/theme1.xml',(await zip.file('xl/theme/theme1.xml')!.async('string')).replace('<a:srgbClr val="1A9B5D"/>','<a:srgbClr val="1A9B5D"><a:lumMod val="50000"/></a:srgbClr>'))
   if(mode==='duplicate-slot')zip.file('xl/theme/theme1.xml',(await zip.file('xl/theme/theme1.xml')!.async('string')).replace('</a:clrScheme>','<a:accent1><a:srgbClr val="FFFFFF"/></a:accent1></a:clrScheme>'))
-  if(mode==='transformed')zip.file('xl/charts/chart1.xml',(await zip.file('xl/charts/chart1.xml')!.async('string')).replace('<a:schemeClr val="accent1"/>','<a:schemeClr val="accent1"><a:lumMod val="50000"/></a:schemeClr>'))
+  if(mode==='unsupported-transform')zip.file('xl/charts/chart1.xml',(await zip.file('xl/charts/chart1.xml')!.async('string')).replace('<a:schemeClr val="accent1"/>','<a:schemeClr val="accent1"><a:satMod val="50000"/></a:schemeClr>'))
  })
  expect((await chart(bytes)).dataLabels?.unsupported).toBe(true)
 })
@@ -77,4 +77,48 @@ it('resolves series and point scheme colors independently from plot settings', a
  expect(result.dataLabels?.style?.color).toBe(PALETTE[4])
  expect(result.series[0]?.dataLabels?.style?.color).toBe(PALETTE[5])
  expect(result.series[0]?.dataLabels?.points?.[1]?.style?.color).toBe(PALETTE[0])
+})
+
+it.each([
+ ['<a:srgbClr val="4472C4"><a:lumMod val="75000"/></a:srgbClr>','#2F5597'],
+ ['<a:srgbClr val="7F0000"><a:lumMod val="40000"/><a:lumOff val="60000"/></a:srgbClr>','#FF6666'],
+ ['<a:srgbClr val="808080"><a:lumMod val="0"/></a:srgbClr>','#000000'],
+ ['<a:srgbClr val="000000"><a:lumOff val="100000"/></a:srgbClr>','#FFFFFF'],
+ ['<a:srgbClr val="808080"><a:lumOff val="80000"/></a:srgbClr>','#FFFFFF'],
+ ['<a:schemeClr val="accent1"><a:lumMod val="100000"/></a:schemeClr>',PALETTE[4]],
+])('resolves a bounded DrawingML luminance transform %s',async(fill,expected)=>{
+ const bytes=await fixture('accent1',async zip=>{
+  const path='xl/charts/chart1.xml'
+  zip.file(path,(await zip.file(path)!.async('string')).replace('<a:schemeClr val="accent1"/>',fill!))
+ })
+ const result=await chart(bytes)
+ expect(result.dataLabels?.style?.color).toBe(expected)
+ expect(result.dataLabels?.unsupported).toBeUndefined()
+})
+it.each([
+ '<a:lumMod val="-1"/>','<a:lumMod val="100001"/>','<a:lumMod val="NaN"/>',
+ '<a:lumOff val="-1"/>','<a:lumOff val="100001"/>','<a:lumMod/>',
+ '<a:lumMod val="50000"/><a:lumMod val="50000"/>',
+ '<a:lumOff val="10000"/><a:lumMod val="50000"/>',
+ '<a:lumMod val="50000"/><a:alpha val="50000"/>',
+ '<a:lumMod val="50000"><a:lumOff val="10000"/></a:lumMod>',
+])('does not silently reinterpret unsupported luminance input %s',async(mods)=>{
+ const bytes=await fixture('accent1',async zip=>{
+  const path='xl/charts/chart1.xml'
+  zip.file(path,(await zip.file(path)!.async('string')).replace('<a:schemeClr val="accent1"/>',`<a:schemeClr val="accent1">${mods}</a:schemeClr>`))
+ })
+ expect((await chart(bytes)).dataLabels?.unsupported).toBe(true)
+})
+it('retains original luminance XML through chart edits and theme replay',async()=>{
+ const fill='<a:schemeClr val="accent1"><a:lumMod val="40000"/><a:lumOff val="60000"/></a:schemeClr>'
+ const source=await fixture('accent1',async zip=>{
+  const path='xl/charts/chart1.xml'
+  zip.file(path,(await zip.file(path)!.async('string')).replace('<a:schemeClr val="accent1"/>',fill))
+ })
+ const edited=await applyChartEdits(source,[{chartPath:'xl/charts/chart1.xml',dataLabels:'value',dataLabelFormat:'0.0'}])
+ const values=[...PALETTE];values[4]='#7F0000'
+ const saved=await setThemePart(edited,'xl/theme/theme1.xml',{colors:{name:'Changed',values}})
+ const zip=await JSZip.loadAsync(saved)
+ expect(await zip.file('xl/charts/chart1.xml')!.async('string')).toContain(fill)
+ expect((await chart(saved)).dataLabels?.style?.color).toBe('#FF6666')
 })

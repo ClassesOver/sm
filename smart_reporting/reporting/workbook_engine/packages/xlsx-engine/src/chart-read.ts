@@ -5,7 +5,7 @@
 
 import { createBufferEntrySource } from './zip'
 import { chartThemePalette } from './chart-label-theme'
-import { resolveStyleColor, themeSlotIndex } from './style-color'
+import { chartLabelColor } from './chart-label-color'
 import { decodeXmlText } from './xml'
 
 export type ChartReadKind =
@@ -255,12 +255,7 @@ function labelSettings(body: string, palette?: readonly string[]): ChartReadData
     const rawBold = attributes.match(/\bb="([^"]*)"/)?.[1]
     if (rawBold !== undefined && !['0','1','false','true'].includes(rawBold)) unsupported = true
     const fill = contents.match(/<a:solidFill\b[^>]*>([\s\S]*?)<\/a:solidFill>/)?.[1]
-    const colorNode = fill?.match(/^\s*<a:srgbClr\b([^>]*?)(?:\/>|>\s*<\/a:srgbClr>)\s*$/)
-    const rgb = colorNode?.[1]?.match(/\bval="([a-fA-F0-9]{6})"/)?.[1]
-    const schemeNode = fill?.match(/^\s*<a:schemeClr\b([^>]*?)(?:\/>|>\s*<\/a:schemeClr>)\s*$/)
-    const token = schemeNode?.[1]?.match(/\bval="([^"]*)"/)?.[1]
-    const index = token === undefined ? undefined : themeSlotIndex(token)
-    const color = rgb ? '#'+rgb.toUpperCase() : palette && index !== undefined ? resolveStyleColor({theme:index}, palette) : undefined
+    const color = fill === undefined ? undefined : chartLabelColor(fill, palette)
     if (fill !== undefined && !color || /<a:(?:noFill|gradFill|pattFill|blipFill)\b/.test(contents)) unsupported = true
     style = {...(size !== undefined ? {sizePt:size/100}:{}),...(rawBold !== undefined ? {bold:rawBold === '1' || rawBold === 'true'}:{}),...(color ? {color}: {})}
   }

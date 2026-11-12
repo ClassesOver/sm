@@ -554,3 +554,12 @@ Transforms and unresolved/ambiguous sources remain unsupported. Chart edits and
 theme replay preserve original scheme tokens; no color math or writer added.
 See report_editor/NATIVE_XLSX_DATA_LABEL_THEME_ACCEPTANCE.md for actual UI,
 downloaded OOXML and independent pixel evidence and remaining limitations.
+
+2026-11-12 chart label luminance: chart-label-color.ts uses existing SaxesParser
+and style-color HLS conversion for bounded lumMod then lumOff on explicit RGB
+or resolved scheme labels. DrawingML rounds color bytes like the fixed source;
+cell tint keeps its old truncation. Unknown/repeated/nested/reordered or mixed
+transforms stay unsupported. The original chart modifier bytes survive edits
+and theme replay. Fixed source code execution matched 1120 cases; independent
+Python rounding differences and a source comment discrepancy are retained.
+See report_editor/NATIVE_XLSX_DATA_LABEL_LUMINANCE_ACCEPTANCE.md for evidence.

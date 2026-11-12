@@ -15,9 +15,10 @@ const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../
 const port=Number(process.env.WORKBOOK_CHART_RENDER_PORT??4354),origin=`http://127.0.0.1:${port}`
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
 const smokeCase=process.env.WORKBOOK_CHART_RENDER_CASE??'geometry'
-assert(['geometry','legend','axis','scale','ticks','category','labels','label-style','label-theme'].includes(smokeCase),'Unknown chart render case')
+assert(['geometry','legend','axis','scale','ticks','category','labels','label-style','label-theme','label-luminance'].includes(smokeCase),'Unknown chart render case')
 const legend=smokeCase==='legend',axis=smokeCase==='axis',scale=smokeCase==='scale',ticks=smokeCase==='ticks',category=smokeCase==='category',labels=smokeCase==='labels'
-const themeCase=smokeCase==='label-theme',typography=smokeCase==='label-style'||themeCase
+const luminance=smokeCase==='label-luminance',themeCase=smokeCase==='label-theme'||luminance,typography=smokeCase==='label-style'||themeCase
+const initialThemeColor=luminance?'#e6b9b8':'#c0504d',changedThemeColor=luminance?'#f6c6ad':'#e97132',seriesColor=luminance?'#3de13d':'#90ee90'
 await mkdir(directory,{recursive:false})
 const fixture=join(frontend,typography?'smoke/workbook-chart-label-style-fixture.py':labels?'smoke/workbook-chart-labels-fixture.py':category?'smoke/workbook-chart-category-fixture.py':ticks?'smoke/workbook-chart-ticks-fixture.py':scale?'smoke/workbook-chart-scale-fixture.py':axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
 const created=spawnSync(python,[fixture,'create',join(directory,'input.xlsx')],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
@@ -121,7 +122,7 @@ try{
   assert.equal(evidence.charts[7].dataLabels?.numberFormat,';;;')
  }
  if(typography){
-  const expected=[['Default 11px','10.0','11px system-ui','#ffffff'],['Plot 12pt bold','10.0','bold 16px system-ui',themeCase?'#c0504d':'#ffffff'],['Series and point RGB','10.0','16px system-ui','#90ee90'],['Series and point RGB','20.0','12px system-ui','#ffd700'],['Fallback 9pt red','10.0','bold 12px system-ui','#a02040']]
+  const expected=[['Default 11px','10.0','11px system-ui','#ffffff'],['Plot 12pt bold','10.0','bold 16px system-ui',themeCase?initialThemeColor:'#ffffff'],['Series and point RGB','10.0','16px system-ui',seriesColor],['Series and point RGB','20.0','12px system-ui','#ffd700'],['Fallback 9pt red','10.0','bold 12px system-ui','#a02040']]
   for(const [title,text,font,color] of expected)assert(evidence.labelStylePaints.some(p=>p.title===title&&p.text===text&&p.font===font&&p.color===color),'Missing actual styled paint: '+JSON.stringify({title,text,font,color}))
   for(const title of ['Unresolved theme','Too large 72pt']){
    assert(evidence.labelStyleFrames.some(frame=>frame.title===title))
@@ -133,13 +134,13 @@ try{
   stage='theme-replay'
   const settled=()=>page.waitForFunction(()=>!document.querySelector('#report-editor')?.inert,null,{timeout:60000})
   const color=()=>page.evaluate(()=>[...window.__sheetsWebCharts.store.values()].flat().find(c=>c.title==='Plot 12pt bold')?.dataLabels?.style?.color)
-  assert.equal((await color()).toLowerCase(),'#c0504d')
+  assert.equal((await color()).toLowerCase(),initialThemeColor)
   await page.locator('[data-ribbon-tab="Page Layout"]').click()
   await page.locator('[data-ribbon-menu="theme-colors"]').selectOption('ember');await settled()
-  await page.waitForFunction(()=>[...window.__sheetsWebCharts.store.values()].flat().find(c=>c.title==='Plot 12pt bold')?.dataLabels?.style?.color?.toLowerCase()==='#e97132')
-  const changed=await color();assert.equal(changed.toLowerCase(),'#e97132')
+  await page.waitForFunction(expected=>[...window.__sheetsWebCharts.store.values()].flat().find(c=>c.title==='Plot 12pt bold')?.dataLabels?.style?.color?.toLowerCase()===expected,changedThemeColor)
+  const changed=await color();assert.equal(changed.toLowerCase(),changedThemeColor)
   await page.locator('[data-ribbon-tab="File"]').click()
-  await page.locator('[data-ribbon-command="undo"]').click();await settled();assert.equal((await color()).toLowerCase(),'#c0504d')
+  await page.locator('[data-ribbon-command="undo"]').click();await settled();assert.equal((await color()).toLowerCase(),initialThemeColor)
   await page.locator('[data-ribbon-command="redo"]').click();await settled();assert.equal(await color(),changed)
   const waiting=page.waitForResponse(r=>r.url().endsWith('/api/save')&&r.request().method()==='POST')
   await page.locator('[data-action="save"]').click()
@@ -152,9 +153,9 @@ try{
   await page.waitForFunction(()=>document.querySelector('#report-editor')?.getAttribute('aria-busy')==='false',null,{timeout:60000})
   await page.waitForFunction(()=>window.__sheetsWebCharts?.store.size>0)
   assert.equal(await color(),changed)
-  await page.waitForFunction(()=>window.__labelStylePaints?.some(p=>p.title==='Plot 12pt bold'&&p.color==='#e97132'))
+  await page.waitForFunction(expected=>window.__labelStylePaints?.some(p=>p.title==='Plot 12pt bold'&&p.color===expected),changedThemeColor)
   const paints=await page.evaluate(()=>window.__labelStylePaints)
-  assert(paints.some(p=>p.title==='Series and point RGB'&&p.color==='#90ee90'))
+  assert(paints.some(p=>p.title==='Series and point RGB'&&p.color===seriesColor))
   assert(paints.some(p=>p.title==='Series and point RGB'&&p.color==='#ffd700'))
   await writeFile(join(directory,'theme-reopened-paints.json'),JSON.stringify(paints,null,2))
   await page.evaluate(()=>document.fonts.ready)
