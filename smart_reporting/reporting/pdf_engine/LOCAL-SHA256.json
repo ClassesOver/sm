@@ -111,7 +111,7 @@
   "bridge/xlsx-table-slot-width.test.ts": "6cc946fda0454fc77473eba1246f42588182fad1cfc826cab46f5eea28ee6d70",
   "bridge/xlsx-text-decoration.test.ts": "ced9d52df84e2cde486163708339d095b09e48fe32005a13aa92dc0451b98b2a",
   "package-lock.json": "78a2ca6e461c11dbc9d2c506214d6e22909a89ee01738ce198528195e7c51245",
-  "package.json": "351c8cd77e9a25e5e6b18c294e76e4825a397c26f6ce1d09f6b0b6955cd8852b",
+  "package.json": "ad2844bb50bce13f8cbdc16b63f0a5f2cbd90e9502b8e617765af2a69ae7f08a",
   "src/main/atomic-write.ts": "412030336168c38397fe0e04abba737c825b27e88417b1aec22583218572fc10",
   "src/main/font-cmap.ts": "16b81cff9f15aa5e974506b41a5862c56ea73bb449a0d586d8ffea0b1ca111fa",
   "src/main/font-locate.ts": "50209937d848a0f62847b1b1379cf02492b6a1e98d9c01a91ea637fc4fbee678",

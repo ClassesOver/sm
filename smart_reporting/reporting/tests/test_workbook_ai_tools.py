@@ -151,6 +151,46 @@ def call(name, arguments, identity):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('scope', ['range', 'workbook'])
+@pytest.mark.parametrize(('operation', 'expected'), [
+    ({'op': 'set_cell', 'value': 59}, 59),
+    ({'op': 'set_formula', 'formula': '=SUM(B1:C1)'}, '=SUM(B1:C1)'),
+    ({'op': 'clear_cell'}, None),
+])
+async def test_workbook_cell_dsl_previews_real_engine_in_both_scopes(scope, operation, expected):
+    from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
+
+    workbook = Workbook()
+    workbook.active.append([42, 17, 25, '保留未选内容'])
+    stream = BytesIO()
+    workbook.save(stream)
+    source = stream.getvalue()
+    previews = []
+
+    async def preview(operations):
+        edited = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        previews.append(edited)
+        return {'draftSha256': hashlib.sha256(edited).hexdigest()}
+
+    tools = WorkbookAIToolkit(
+        model=await asyncio.to_thread(inspect_office, 'xlsx', source),
+        scope=scope,
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0,
+                   'startColumn': 0, 'endColumn': 0},
+        preview=preview,
+    )
+    result = await tools.propose_operations(
+        [{**operation, 'sheetId': 'Sheet', 'address': 'A1'}], '修改选中单元格',
+    )
+    assert result['requiresAcceptance'] is True
+    assert len(previews) == 1
+    reopened = load_workbook(BytesIO(previews[0])).active
+    assert reopened['A1'].value == expected
+    assert [reopened.cell(1, column).value for column in (2, 3, 4)] == [17, 25, '保留未选内容']
+    assert load_workbook(BytesIO(source)).active['A1'].value == 42
+
+
+@pytest.mark.anyio
 async def test_workbook_tools_do_not_read_or_propose_outside_frozen_range():
     from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
     selection = {'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0}

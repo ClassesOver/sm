@@ -17,7 +17,7 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   const panel=document.createElement('section');panel.className='native-ai native-ai-panel native-office-assistant';panel.hidden=true;panel.setAttribute('aria-label',formatLabel+' AI 阅读助手')
   const title=document.createElement('h3');title.textContent='AI 助手'
   const help=document.createElement('p');help.textContent='阅读已核验原件或当前未保存草稿；回答不会修改文件。默认整篇阅读，可选择编辑器当前选区；请核对实际覆盖范围。'
-  if(options.format==='pptx')help.textContent+='仅阅读引擎已提取的对象文字，不含备注、图片视觉及未提取的表格和图表文字；范围已读完仅指已提取内容。'
+  if(options.format==='pptx')help.textContent+='读取引擎已提取的文字、表格和图表缓存；整稿包含演讲者备注，当前对象选区不包含备注。图片视觉不在范围，图表缓存可能不是最新值；范围已读完仅指已提取内容。'
   else help.textContent+='读取单元格值与公式；公式缓存可能未计算，图表、图片及批注不在本次阅读范围。'
   const controls=document.createElement('div')
   const scope=document.createElement('select');scope.dataset.officeAi='scope';scope.setAttribute('aria-label','Office AI 阅读范围')

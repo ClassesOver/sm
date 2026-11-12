@@ -1,13 +1,18 @@
 """PPTX 纯阅读冻结范围、分页证据与真实 Agno 执行。"""
 from __future__ import annotations
 
+import hashlib
 import json
 from importlib import import_module, util
 from io import BytesIO
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from agno.models.response import ModelResponse
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE
 from pptx.util import Inches
 
 from smart_reporting.report_editor.native_office import inspect_office
@@ -23,7 +28,7 @@ def adapter():
 
 def document():
     return {'slides': [
-        {'slideIndex': 0, 'notes': '保密备注', 'elements': [
+        {'slideIndex': 0, 'notesText': '保密备注', 'elements': [
             {'id': 'a', 'name': '收入', 'text': '本期收入42', 'editable': False},
             {'id': 'b', 'name': '秘密邻居', 'text': '未授权的秘密'},
             {'id': 'picture', 'type': 'picture', 'descr': '保密图片'},
@@ -109,14 +114,19 @@ def test_actual_pptx_engine_text_evidence_and_limitations():
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1)).text = '实际PPTX正文'
     slide.shapes.add_table(1, 1, Inches(1), Inches(3), Inches(3), Inches(1)).table.cell(0, 0).text = '实际表格'
-    slide.notes_slide.notes_text_frame.text = '不应声称读取的备注'
+    slide.notes_slide.notes_text_frame.text = '实际演讲者备注'
     buffer = BytesIO()
     presentation.save(buffer)
     model = inspect_office('pptx', buffer.getvalue())
     reader = adapter().NativeSlidesReadTools(model)
     page = reader.read_slide(0)
     assert '实际PPTX正文' in page['content']
-    assert '不应声称读取的备注' not in page['content']
+    assert json.loads(page['content'])[1]['tableCells'] == [['实际表格']]
+    assert '实际演讲者备注' in page['content']
+    assert reader.result('正文及备注', ['0'])['citations'][0]['speakerNotes'] is True
+    text = next(item for item in model['slides'][0]['elements'] if item.get('text') == '实际PPTX正文')
+    selected = adapter().NativeSlidesReadTools(model, [{'slideIndex': 0, 'elementId': text['id']}])
+    assert '实际演讲者备注' not in selected.read_slide(0)['content']
     assert reader.get_presentation_context()['limitations']
     assert reader.result('实际正文', ['0'])['citations'][0]['slideNumber'] == 1
 
@@ -146,3 +156,262 @@ def test_nontext_selection_reports_no_evidence_and_never_claims_all_content():
     assert result['citations'] == []
     assert 'native_slides_ai_no_evidence' in {issue['code'] for issue in result['issues']}
     assert result['limitations']
+
+
+@pytest.fixture
+def structured_deck():
+    """独立 python-pptx 写入，实际桥接引擎读取；图表自身没有 text。"""
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    table = slide.shapes.add_table(2, 2, Inches(1), Inches(1), Inches(4), Inches(2)).table
+    for row, values in enumerate([['项目', '金额'], ['收入', '59']]):
+        for column, value in enumerate(values):
+            table.cell(row, column).text = value
+    data = CategoryChartData()
+    data.categories = ['本期', '上期']
+    data.add_series('收入', [59, 42])
+    slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED,
+        Inches(1), Inches(3), Inches(4), Inches(2), data)
+    slide.shapes.add_textbox(Inches(6), Inches(1), Inches(2), Inches(1)).text = '未授权秘密'
+    slide.notes_slide.notes_text_frame.text = '秘密备注'
+    stream = BytesIO()
+    deck.save(stream)
+    content = stream.getvalue()
+    # 独立库确认源文件数值，避免仅对桥接引擎自己的输出自证。
+    original = Presentation(BytesIO(content))
+    assert list(original.slides[0].shapes[1].chart.series[0].values) == [59, 42]
+    return content, inspect_office('pptx', content)
+
+
+def test_actual_nontext_chart_and_table_are_readable_without_neighbour_leaks(structured_deck):
+    _, structured_deck = structured_deck
+    elements = structured_deck['slides'][0]['elements']
+    selected = [element for element in elements if element['type'] in {'table', 'chart'}]
+    chart = next(element for element in selected if element['type'] == 'chart')
+    assert not chart.get('text', '').strip()
+    selection = [{'slideIndex': 0, 'elementId': element['id']} for element in selected]
+    reader = adapter().NativeSlidesReadTools(structured_deck, selection)
+    assert not reader.coverage()['scopeReadComplete']
+    page = reader.read_slide(0)
+    values = json.loads(page['content'])
+    assert next(element for element in values if element['type'] == 'table')['tableCells'] == [
+        ['项目', '金额'], ['收入', '59']]
+    read_chart = next(element for element in values if element['type'] == 'chart')
+    assert chart['chartEditSafe'] is False  # 阅读不获得原生重建写权限
+    assert read_chart['chartReadData']['source'] == 'ooxml-cache'
+    assert read_chart['chartReadData']['categories'] == ['本期', '上期']
+    assert read_chart['chartReadData']['series'] == [{'name': '收入', 'values': [59, 42]}]
+    assert read_chart['geometry']['width'] == 384
+    visible = json.dumps([reader.get_presentation_context(), page], ensure_ascii=False)
+    assert '未授权秘密' not in visible and '秘密备注' not in visible
+    result = reader.result('本期收入59，比上期42增加17', ['0'], action='summary')
+    assert result['issues'] == [] and result['coverage']['scopeReadComplete']
+    assert {item['elementId'] for item in result['citations'][0]['elements']} == {
+        element['id'] for element in selected}
+
+
+def test_structured_data_is_frozen_and_requires_contiguous_pagination():
+    source = {'slides': [{'slideIndex': 0, 'elements': [
+        {'id': 'table', 'type': 'table', 'tableCells': [['长' * 60000, None]],
+         'privatePath': 'must-not-leak'},
+        {'id': 'other', 'type': 'chart', 'chartSeries': [{'name': '秘密', 'values': [888]}]},
+    ]}]}
+    reader = adapter().NativeSlidesReadTools(source, [{'slideIndex': 0, 'elementId': 'table'}])
+    source['slides'][0]['elements'][0]['tableCells'][0][0] = 'changed'
+    reader.read_slide(0, offset=48000)
+    assert not reader.coverage()['scopeReadComplete']
+    assert reader.result('部分内容', ['0'])['citations'] == []
+    first = reader.read_slide(0)
+    assert first['nextOffset'] == 24000 and not first['readComplete']
+    reader.read_slide(0, offset=first['nextOffset'])
+    assert reader.coverage()['scopeReadComplete']
+    parsed = json.loads(reader._serialized(0))
+    assert parsed[0]['tableCells'] == [['长' * 60000, None]]
+    assert 'privatePath' not in parsed[0]
+    assert '秘密' not in reader._serialized(0)
+
+
+@pytest.mark.anyio
+async def test_agno_reads_actual_chart_data_and_returns_verified_citation(structured_deck):
+    from smart_reporting.reporting.tests.pptx_ai_fixture import ScriptedModel as ChartModel
+    _, structured_deck = structured_deck
+    chart = next(element for element in structured_deck['slides'][0]['elements'] if element['type'] == 'chart')
+    model = ChartModel(id='scripted-chart-reader', expected_tool_text='chartReadData', responses=[
+        ModelResponse(tool_calls=[{'id': 'read', 'type': 'function', 'function': {
+            'name': 'read_slide', 'arguments': '{"slide_index":0}'}}]),
+        ModelResponse(content=json.dumps({'answer': '本期59，上期42，增加17', 'citations': ['0']})),
+    ])
+    module = adapter()
+    reader = module.NativeSlidesReadTools(structured_deck, [{'slideIndex': 0, 'elementId': chart['id']}])
+    result = await module.AgnoNativeSlidesReadPlanner(model)(reader=reader, action='ask',
+        instruction='收入增加多少？', session_id='chart-read', user_id='user')
+    assert result['coverage']['scopeReadComplete'] and result['issues'] == []
+    assert result['citations'][0]['elements'][0]['elementId'] == chart['id']
+    assert 'operations' not in result
+
+
+@pytest.mark.anyio
+async def test_chart_read_service_uses_actual_draft_and_keeps_selection_isolated(structured_deck):
+    from smart_reporting.report_editor.native_models import (
+        NATIVE_MEDIA,
+        NativeEditorContext,
+        NativeScope,
+    )
+    from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
+    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+    from smart_reporting.reporting.tests.test_native_office_read_tasks import read_all, request_for
+
+    content, model = structured_deck
+    elements = model['slides'][0]['elements']
+    chart = next(element for element in elements if element['type'] == 'chart')
+    neighbour = next(element for element in elements if element.get('text') == '未授权秘密')
+    context = NativeEditorContext(documentId='chart-read', revision=1, format='pptx', origin='upload',
+        scope=NativeScope(database='db', companyId='co', userId='u', threadId='chart-read'),
+        sourceFile=ArtifactFile(path='native/chart.pptx', size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(), mediaType=NATIVE_MEDIA['pptx']))
+    editor = SimpleNamespace(context_for_session=AsyncMock(return_value=context),
+        read_file=AsyncMock(return_value=content), require_enabled=lambda _format: None)
+    service = NativeOfficeReadService(editor, planners={'pptx': read_all}, enabled=True)
+    try:
+        job = await service.start(None, **request_for(context,
+            selection=[{'slideIndex': 0, 'elementId': chart['id']}],
+            operations=[{'kind': 'editSlides', 'edits': [
+                {'slideIndex': 0, 'elementId': neighbour['id'], 'text': '人工草稿秘密'}]}]))
+        job = await service.status(None, job['taskId'])
+        assert job['status'] == 'completed', job
+        result = job['result']
+        assert result['coverage']['scope'] == 'selection' and result['coverage']['scopeReadComplete']
+        assert result['readingVersion'] == 'draft'
+        assert result['sourceSha256'] == hashlib.sha256(content).hexdigest()
+        assert result['effectiveSha256'] != result['sourceSha256']
+        read = json.loads(result['answer'])[0]
+        assert read['chartReadData']['series'][0]['values'] == [59, 42]
+        assert result['citations'][0]['elements'] == [{'elementId': read['elementId'], 'name': read['name']}]
+        assert result['issues'] == [] and 'operations' not in result
+        assert '人工草稿秘密' not in json.dumps(result, ensure_ascii=False)
+        assert '未授权秘密' not in json.dumps(result, ensure_ascii=False)
+    finally:
+        await service.aclose()
+
+
+
+def test_notes_only_slide_is_readable_and_cited_without_fake_element_identity():
+    source = {'slides': [{'slideIndex': 0, 'elements': [], 'notesText': '仅备注中的结论59',
+                          'notesEditable': False}]}
+    reader = adapter().NativeSlidesReadTools(source)
+    assert reader.get_presentation_context()['slides'] == [
+        {'slideIndex': 0, 'blockId': '0', 'elementIds': [], 'hasSpeakerNotes': True}]
+    assert reader.coverage()['totalBlocks'] == 1 and not reader.coverage()['scopeReadComplete']
+    assert json.loads(reader.read_slide(0)['content']) == [
+        {'type': 'speakerNotes', 'text': '仅备注中的结论59'}]
+    result = reader.result('备注结论59', ['0'], action='summary')
+    assert result['issues'] == []
+    assert result['citations'] == [{'slideIndex': 0, 'slideNumber': 1, 'elements': [],
+                                    'speakerNotes': True, 'label': '第1页：演讲者备注'}]
+    selected_source = {'slides': [{'slideIndex': 0, 'elements': [{'id': 'shape', 'text': '正文'}],
+                                   'notesText': '同页秘密备注'}]}
+    selected = adapter().NativeSlidesReadTools(selected_source, [{'slideIndex': 0, 'elementId': 'shape'}])
+    assert selected.get_presentation_context()['slides'][0]['hasSpeakerNotes'] is False
+    selected.read_slide(0)
+    assert '秘密备注' not in json.dumps(selected.result('正文', ['0']), ensure_ascii=False)
+    assert 'speakerNotes' not in selected.result('正文', ['0'])['citations'][0]
+
+
+def test_notes_are_frozen_and_coverage_requires_reading_entire_notes():
+    source = {'slides': [{'slideIndex': 0, 'elements': [], 'notesText': '长' * 60000}]}
+    reader = adapter().NativeSlidesReadTools(source)
+    source['slides'][0]['notesText'] = 'later'
+    reader.get_presentation_context()
+    reader.read_slide(0, offset=48000)
+    assert not reader.coverage()['scopeReadComplete']
+    assert reader.result('未读完', ['0'])['citations'] == []
+    first = reader.read_slide(0)
+    assert first['nextOffset'] == 24000
+    middle = reader.read_slide(0, offset=24000)
+    assert middle['readComplete'] is True
+    assert 'later' not in reader._serialized(0)
+    assert json.loads(reader._serialized(0))[0]['text'] == '长' * 60000
+
+
+@pytest.mark.anyio
+async def test_actual_notes_draft_service_and_agno_read_only_evidence():
+    from smart_reporting.report_editor.native_models import (
+        NATIVE_MEDIA,
+        NativeEditorContext,
+        NativeScope,
+    )
+    from smart_reporting.report_editor.native_office import patch_office
+    from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
+    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+    from smart_reporting.reporting.tests.pptx_ai_fixture import ScriptedModel as NotesModel
+    from smart_reporting.reporting.tests.test_native_office_read_tasks import request_for
+
+    deck = Presentation()
+    deck.slides.add_slide(deck.slide_layouts[6])
+    stream = BytesIO()
+    deck.save(stream)
+    content = patch_office('pptx', stream.getvalue(), [{'kind': 'editSlides',
+        'notesEdits': [{'slideIndex': 0, 'text': '原备注42'}]}])
+    assert Presentation(BytesIO(content)).slides[0].notes_slide.notes_text_frame.text == '原备注42'
+    model = NotesModel(id='scripted-notes-reader', expected_tool_text='人工备注59', responses=[
+        ModelResponse(tool_calls=[{'id': 'read-notes', 'type': 'function', 'function': {
+            'name': 'read_slide', 'arguments': '{"slide_index":0}'}}]),
+        ModelResponse(content=json.dumps({'answer': '演讲者备注给出59', 'citations': ['0']})),
+    ])
+    context = NativeEditorContext(documentId='notes-read', revision=1, format='pptx', origin='upload',
+        scope=NativeScope(database='db', companyId='co', userId='u', threadId='notes-read'),
+        sourceFile=ArtifactFile(path='native/notes.pptx', size=len(content),
+            sha256=hashlib.sha256(content).hexdigest(), mediaType=NATIVE_MEDIA['pptx']))
+    editor = SimpleNamespace(context_for_session=AsyncMock(return_value=context),
+        read_file=AsyncMock(return_value=content), require_enabled=lambda _format: None)
+    service = NativeOfficeReadService(editor,
+        planners={'pptx': adapter().AgnoNativeSlidesReadPlanner(model)}, enabled=True)
+    try:
+        started = await service.start(None, **request_for(context,
+            operations=[{'kind': 'editSlides', 'notesEdits': [{'slideIndex': 0, 'text': '人工备注59'}]}]))
+        job = await service.status(None, started['taskId'])
+        assert job['status'] == 'completed', job
+        result = job['result']
+        assert result['coverage']['scopeReadComplete'] and result['issues'] == []
+        assert result['readingVersion'] == 'draft'
+        assert result['sourceSha256'] == hashlib.sha256(content).hexdigest()
+        assert result['effectiveSha256'] != result['sourceSha256']
+        assert result['citations'] == [{'slideIndex': 0, 'slideNumber': 1, 'elements': [],
+                                        'speakerNotes': True, 'label': '第1页：演讲者备注'}]
+        assert 'operations' not in result and 'proposal' not in result
+        assert Presentation(BytesIO(content)).slides[0].notes_slide.notes_text_frame.text == '原备注42'
+    finally:
+        await service.aclose()
+
+
+
+def test_reading_canvas_text_without_trailing_notes_cannot_claim_complete_page():
+    source = {'slides': [{'slideIndex': 0, 'elements': [{'id': 'canvas', 'text': '文' * 25000}],
+                          'notesText': '备注末尾证据59'}]}
+    reader = adapter().NativeSlidesReadTools(source)
+    first = reader.read_slide(0)
+    assert '备注末尾证据59' not in first['content']
+    incomplete = reader.result('正文部分', ['0'], action='summary')
+    assert incomplete['citations'] == [] and not incomplete['coverage']['scopeReadComplete']
+    assert 'native_slides_ai_incomplete_coverage' in {issue['code'] for issue in incomplete['issues']}
+    tail = reader.read_slide(0, offset=first['nextOffset'])
+    assert '备注末尾证据59' in tail['content'] and tail['readComplete']
+    assert reader.result('包含备注的整稿', ['0'])['citations'][0]['speakerNotes'] is True
+
+
+
+def test_actual_formatted_notes_can_be_read_without_granting_edit_permission():
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[6])
+    notes = slide.notes_slide.notes_text_frame
+    notes.text = '格式化备注可读59'
+    notes.paragraphs[0].runs[0].font.bold = True
+    stream = BytesIO()
+    deck.save(stream)
+    model = inspect_office('pptx', stream.getvalue())
+    assert model['slides'][0]['notesEditable'] is False
+    reader = adapter().NativeSlidesReadTools(model)
+    content = json.loads(reader.read_slide(0)['content'])
+    assert content == [{'type': 'speakerNotes', 'text': '格式化备注可读59'}]
+    assert reader.result('备注59', ['0'])['issues'] == []
+    assert not hasattr(reader, 'propose_operations')
