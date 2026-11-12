@@ -22,6 +22,17 @@ def verify(directory: Path):
         untouched = 'xl/charts/chart2.xml'
         assert before.read(untouched) == first.read(untouched) == second.read(untouched)
         xml = etree.fromstring(first.read('xl/charts/chart1.xml'))
+        original_xml = etree.fromstring(before.read('xl/charts/chart1.xml'))
+        source_style = original_xml.find('.//c:barChart/c:dLbls/c:txPr', ns)
+        if source_style is not None:
+            saved_style = xml.find('.//c:barChart/c:dLbls/c:txPr', ns)
+            assert saved_style is not None
+            assert etree.tostring(source_style, method='c14n', exclusive=True) == etree.tostring(saved_style, method='c14n', exclusive=True)
+            original_point = original_xml.find('.//c:barChart/c:dLbls/c:dLbl', ns)
+            saved_point = xml.find('.//c:barChart/c:dLbls/c:dLbl', ns)
+            assert original_point is not None and saved_point is not None
+            assert etree.tostring(original_point, method='c14n', exclusive=True) == etree.tostring(saved_point, method='c14n', exclusive=True)
+            assert saved_point.find('c:numFmt', ns).get('formatCode') == '0.00'
         assert xml.xpath('/c:chartSpace/c:chart/c:title//a:t/text()', namespaces=ns) == ['Updated']
         assert xml.xpath('//c:barDir/@val', namespaces=ns) == ['bar']
         assert xml.xpath('//c:legendPos/@val', namespaces=ns) == ['b']
@@ -129,6 +140,7 @@ def verify(directory: Path):
             'editedSha256': hashlib.sha256(edited).hexdigest(), 'deletedSha256': hashlib.sha256(deleted).hexdigest(),
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',
             'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True, 'categoryLabelsRetained': True,
+            'sourceLabelStyleAndPointPreserved': source_style is not None,
             'reopenedTextPixels': text_pixels}
 
 

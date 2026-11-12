@@ -532,3 +532,15 @@ or manualLayout, unknown positions, duplicate point identities and malformed
 switches are marked unsupported rather than becoming raw value labels. This
 local read-only adapter does not rewrite source label/cache bytes or implement
 all label styles/layouts; see NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md.
+
+
+2026-11-12 label-font preservation: the local reader projects explicit txPr
+size (hundredths of pt), plain srgbClr and b, retaining missing-vs-false for
+property inheritance. The native chart writer's mode/detail setters now use
+SaxesParser direct-child byte spans instead of rebuilding all dLbls or matching
+a nested point's numFmt/dLblPos. Existing root font XML, point overrides and
+unknown children survive global edits; removing mode=none retains its existing
+explicit plot-block removal behavior. Tests preserve raw point formats with >,
+custom Unicode text and extension bytes. This fixes a local/shared legacy writer
+limitation rather than claiming an unmodified upstream port. Full chart XML
+prefix/schema normalization and complete label typography remain outside scope.

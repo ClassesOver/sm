@@ -15,10 +15,11 @@ const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../
 const port=Number(process.env.WORKBOOK_CHART_RENDER_PORT??4354),origin=`http://127.0.0.1:${port}`
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
 const smokeCase=process.env.WORKBOOK_CHART_RENDER_CASE??'geometry'
-assert(['geometry','legend','axis','scale','ticks','category','labels'].includes(smokeCase),'Unknown chart render case')
+assert(['geometry','legend','axis','scale','ticks','category','labels','label-style'].includes(smokeCase),'Unknown chart render case')
 const legend=smokeCase==='legend',axis=smokeCase==='axis',scale=smokeCase==='scale',ticks=smokeCase==='ticks',category=smokeCase==='category',labels=smokeCase==='labels'
+const typography=smokeCase==='label-style'
 await mkdir(directory,{recursive:false})
-const fixture=join(frontend,labels?'smoke/workbook-chart-labels-fixture.py':category?'smoke/workbook-chart-category-fixture.py':ticks?'smoke/workbook-chart-ticks-fixture.py':scale?'smoke/workbook-chart-scale-fixture.py':axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
+const fixture=join(frontend,typography?'smoke/workbook-chart-label-style-fixture.py':labels?'smoke/workbook-chart-labels-fixture.py':category?'smoke/workbook-chart-category-fixture.py':ticks?'smoke/workbook-chart-ticks-fixture.py':scale?'smoke/workbook-chart-scale-fixture.py':axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
 const created=spawnSync(python,[fixture,'create',join(directory,'input.xlsx')],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
 assert.equal(created.status,0,created.stdout+created.stderr)
 const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'))
@@ -39,13 +40,25 @@ try{
  const fontPreflight=await probeCanvasTextRendering(browser)
  await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
  assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
- page=await browser.newPage({viewport:{width:1560,height:scale||ticks||category||labels?1850:legend||axis?1550:1400}})
- if(legend||axis||scale||ticks||category||labels)await page.addInitScript(()=>{
+ page=await browser.newPage({viewport:{width:1560,height:scale||ticks||category||labels||typography?1850:legend||axis?1550:1400}})
+ if(legend||axis||scale||ticks||category||labels||typography)await page.addInitScript(()=>{
   window.__legendTexts=[]
   window.__valueTickTexts=[]
   window.__categoryTexts=[]
+  window.__labelStylePaints=[];window.__labelStyleFrames=[]
+  const frames=new WeakMap(),stroke=CanvasRenderingContext2D.prototype.strokeRect
+  CanvasRenderingContext2D.prototype.strokeRect=function(...args){
+   if(this.strokeStyle==='#9aa4ad'&&args[2]>=40&&args[3]>=30){
+    const frame={x:args[0],y:args[1],width:args[2],height:args[3]}
+    frames.set(this,frame);if(window.__labelStyleFrames.length<5000)window.__labelStyleFrames.push(frame)
+   }
+   return stroke.apply(this,args)
+  }
   const original=CanvasRenderingContext2D.prototype.fillText
   CanvasRenderingContext2D.prototype.fillText=function(...args){
+   const frame=frames.get(this),numeric=/^-?\d+\.\d+$/.test(String(args[0]))
+   if(frame&&this.font==='11px system-ui'&&!numeric)frame.title=String(args[0])
+   if(frame&&numeric&&this.font.includes('system-ui')&&window.__labelStylePaints.length<5000)window.__labelStylePaints.push({title:frame.title,text:String(args[0]),font:this.font,color:String(this.fillStyle).toLowerCase()})
    if(this.font==='11px system-ui'&&window.__legendTexts.length<5000)window.__legendTexts.push(String(args[0]))
    if(this.font==='9px system-ui'&&window.__valueTickTexts.length<5000)window.__valueTickTexts.push(String(args[0]))
    if(this.font==='10px system-ui'&&window.__categoryTexts.length<5000)window.__categoryTexts.push(String(args[0]))
@@ -69,10 +82,10 @@ try{
  await page.evaluate(()=>document.fonts.ready)
  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
  stage='capture'
- const evidence=await page.evaluate(()=>({charts:[...window.__sheetsWebCharts.store.values()].flat(),legendTexts:window.__legendTexts??[],valueTickTexts:window.__valueTickTexts??[],categoryTexts:window.__categoryTexts??[]}))
+ const evidence=await page.evaluate(()=>({charts:[...window.__sheetsWebCharts.store.values()].flat(),legendTexts:window.__legendTexts??[],valueTickTexts:window.__valueTickTexts??[],categoryTexts:window.__categoryTexts??[],labelStylePaints:window.__labelStylePaints??[],labelStyleFrames:window.__labelStyleFrames??[]}))
  await writeFile(join(directory,'model.json'),JSON.stringify(evidence,null,2))
  await page.screenshot({path:join(directory,'charts.png'),fullPage:true})
- assert.deepEqual(evidence.charts.map(c=>c.kind),labels?['bar','column','bar','bar','bar','bar','bar','bar']:category?['bar','column','bar','column','bar','bar']:scale||ticks?['bar','column','bar','bar','bar','bar']:axis?['column','bar','column','bar']:legend?Array(5).fill('bar'):['bar','column','bar'])
+ assert.deepEqual(evidence.charts.map(c=>c.kind),typography?Array(6).fill('bar'):labels?['bar','column','bar','bar','bar','bar','bar','bar']:category?['bar','column','bar','column','bar','bar']:scale||ticks?['bar','column','bar','bar','bar','bar']:axis?['column','bar','column','bar']:legend?Array(5).fill('bar'):['bar','column','bar'])
  if(legend){
   assert(evidence.legendTexts.includes('Live Revenue'));assert(evidence.legendTexts.includes('Costs & tax'))
   assert(!evidence.legendTexts.includes('STALE'))
@@ -105,6 +118,14 @@ try{
   assert.equal(evidence.charts[5].dataLabels?.unsupported,true)
   assert.equal(evidence.charts[6].dataLabels?.numberFormat,'0;-0;;')
   assert.equal(evidence.charts[7].dataLabels?.numberFormat,';;;')
+ }
+ if(typography){
+  const expected=[['Default 11px','10.0','11px system-ui','#ffffff'],['Plot 12pt bold','10.0','bold 16px system-ui','#ffffff'],['Series and point RGB','10.0','16px system-ui','#90ee90'],['Series and point RGB','20.0','12px system-ui','#ffd700'],['Fallback 9pt red','10.0','bold 12px system-ui','#a02040']]
+  for(const [title,text,font,color] of expected)assert(evidence.labelStylePaints.some(p=>p.title===title&&p.text===text&&p.font===font&&p.color===color),'Missing actual styled paint: '+JSON.stringify({title,text,font,color}))
+  for(const title of ['Unresolved theme','Too large 72pt']){
+   assert(evidence.labelStyleFrames.some(frame=>frame.title===title))
+   assert(!evidence.labelStylePaints.some(p=>p.title===title),'Unsupported/unfittable style must not produce a false preview')
+  }
  }
  stage='independent-pixels'
  const verified=spawnSync(python,[fixture,'verify',directory],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})

@@ -18,6 +18,7 @@ export type ChartReadKind =
   | 'radar'
 
 export interface ChartReadDataLabel {
+  readonly style?: {readonly sizePt?: number; readonly bold?: boolean; readonly color?: string} | undefined
   readonly showValue?: boolean | undefined
   readonly deleted?: boolean | undefined
   readonly position?: 'center' | 'inside-end' | 'outside-end' | undefined
@@ -238,6 +239,25 @@ function legendOf(xml: string): ChartReadSpec['legend'] {
 
 function labelSettings(body: string): ChartReadDataLabel {
   let unsupported = /<c:(?:tx|manualLayout)\b/.test(body)
+  const txPr = body.match(/<c:txPr\b[^>]*>([\s\S]*?)<\/c:txPr>/)?.[1]
+  let style: ChartReadDataLabel['style']
+  if (txPr !== undefined) {
+    const defaults = [...txPr.matchAll(/<a:defRPr\b([^>]*)(?:\/>|>([\s\S]*?)<\/a:defRPr>)/g)]
+    const fallback = [...txPr.matchAll(/<a:endParaRPr\b([^>]*)(?:\/>|>([\s\S]*?)<\/a:endParaRPr>)/g)]
+    const runs = defaults.length ? defaults : fallback
+    if (runs.length > 1) unsupported = true
+    const attributes = runs[0]?.[1] ?? '', contents = runs[0]?.[2] ?? ''
+    const rawSize = attributes.match(/\bsz="([^"]*)"/)?.[1]
+    const size = rawSize !== undefined && /^\d+$/.test(rawSize) ? Number(rawSize) : undefined
+    if (rawSize !== undefined && (size === undefined || size < 100 || size > 400000)) unsupported = true
+    const rawBold = attributes.match(/\bb="([^"]*)"/)?.[1]
+    if (rawBold !== undefined && !['0','1','false','true'].includes(rawBold)) unsupported = true
+    const fill = contents.match(/<a:solidFill\b[^>]*>([\s\S]*?)<\/a:solidFill>/)?.[1]
+    const colorNode = fill?.match(/^\s*<a:srgbClr\b([^>]*?)(?:\/>|>\s*<\/a:srgbClr>)\s*$/)
+    const rgb = colorNode?.[1]?.match(/\bval="([a-fA-F0-9]{6})"/)?.[1]
+    if (fill !== undefined && !rgb || /<a:(?:noFill|gradFill|pattFill|blipFill)\b/.test(contents)) unsupported = true
+    style = {...(size !== undefined ? {sizePt:size/100}:{}),...(rawBold !== undefined ? {bold:rawBold === '1' || rawBold === 'true'}:{}),...(rgb ? {color:'#'+rgb.toUpperCase()}: {})}
+  }
   const flag = (name: string): boolean | undefined => {
     const elements = [...body.matchAll(new RegExp(`<c:${name}\\b([^>]*)`,'g'))]
     if (elements.length > 1) unsupported = true
@@ -253,6 +273,7 @@ function labelSettings(body: string): ChartReadDataLabel {
   if (positions.length > 1 || code !== undefined && !Object.hasOwn(map,code)) unsupported = true
   const format = body.match(/<c:numFmt\b[^>]*\bformatCode="([^"]*)"/)?.[1]
   return {...(showValue !== undefined ? {showValue}:{}),...(deleted !== undefined ? {deleted}:{}),
+    ...(style !== undefined ? {style}:{}),
     ...(code !== undefined && Object.hasOwn(map,code) ? {position:map[code as keyof typeof map]}:{}),
     ...(format !== undefined ? {numberFormat:decodeXmlText(format)}:{}),...(unsupported ? {unsupported:true}: {})}
 }

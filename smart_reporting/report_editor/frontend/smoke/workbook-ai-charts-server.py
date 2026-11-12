@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from runpy import run_path
@@ -34,6 +35,8 @@ from smart_reporting.reporting.tests.test_workbook_ai_charts import (
 async def create_app(directory: Path, port: int, *, source: bytes | None = None):
     f = await extract_fixture(directory / 'runtime')
     source = await asyncio.to_thread(source_with_two_charts) if source is None else source
+    if os.environ.get('WORKBOOK_AI_CHARTS_SOURCE_LABEL_STYLE') == '1':
+        source = run_path(str(Path(__file__).with_name('workbook-chart-label-style-fixture.py')))['styled_ai_source'](source)
     identity = ArtifactFile(path='native/source.xlsx', size=len(source), sha256=hashlib.sha256(source).hexdigest(),
         mediaType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     await f.workspace.awrite_bytes(f.thread, identity.path, source)

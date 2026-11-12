@@ -18,6 +18,8 @@
 
 后续普通 bar/column 显式数值数据标签（plot/series/point开关与删除、中心/内端/外端、正负与反向、显式格式/空分段）已补，见 [数值标签专项](NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md)。50项读取和87项前端分批通过，八个真实标签场景、短分类修复和AI带标签保存重开已验证。标签字体/手动偏移/分类及占比内容、完整格式继承、非普通图表仍缺，不能把value标签子集算完整数据标签家族。
 
+后续普通value标签的显式字号/纯RGB/加粗、逐属性继承与取消加粗已补；全局标签模式/格式/位置编辑改为SAX直属节点写回，保留根字体与点级覆盖。76项引擎、90项前端、45项真实CLI AI专项通过，真实字体像素及带原样式保存重开验证见 [标签样式验收](NATIVE_XLSX_DATA_LABEL_STYLE_ACCEPTANCE.md)。字体族、复杂富文本/主题色/完整字体度量与标签家族仍开放。
+
 路径约定：`F=frontend/src/`（相对此文档）；`D=../reporting/doc_engine/`；`X=../reporting/workbook_engine/`；`U=/home/junge/pros/genoffice-source-full/`。源码路径均指实际文件，不指历史审计中已迁移的 `slides_engine` DOCX 路径。
 
 状态严格区分：

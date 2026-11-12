@@ -36,9 +36,18 @@ export function paintBarDataLabels(ctx:UniverRenderingContext,spec:ChartReadSpec
     if (layers.some(layer=>layer?.unsupported)) continue
     const setting = Object.assign({},...layers)
     if (!setting.showValue || setting.deleted) continue
+    const style = Object.assign({},...layers.map(layer=>layer?.style))
+    const fontSize = style.sizePt === undefined ? 11 : style.sizePt*4/3
+    if (!(fontSize > 0) || !Number.isFinite(fontSize)) continue
+    ctx.font = `${style.bold ? 'bold ' : ''}${fontSize}px system-ui`
     const text = labelText(point.value,setting.numberFormat,series.numberFormat)
     if (!text) continue
-    const width = ctx.measureText(text).width, height = 12
+    const metrics = ctx.measureText(text), width = metrics.width
+    const measured = Number.isFinite(metrics.actualBoundingBoxAscent) && Number.isFinite(metrics.actualBoundingBoxDescent)
+    const ascent = measured ? metrics.actualBoundingBoxAscent : fontSize*6/11
+    const descent = measured ? metrics.actualBoundingBoxDescent : fontSize*6/11
+    const height = ascent+descent
+    if (!(height > 0) || !Number.isFinite(height)) continue
     if (!(width > 0) || !Number.isFinite(width)) continue
     const zero = point.value === 0
     const position = zero ? 'outside-end' : setting.position ?? 'outside-end'
@@ -55,8 +64,8 @@ export function paintBarDataLabels(ctx:UniverRenderingContext,spec:ChartReadSpec
     if (inside && !contains({left:point.rect.left+2,top:point.rect.top+2,right:point.rect.right-2,bottom:point.rect.bottom-2},box)) continue
     if (painted.some(other=>overlaps(box,other))) continue
     if (points.some(other=>other!==point && other.rect.right > other.rect.left && other.rect.bottom > other.rect.top && overlaps(box,other.rect))) continue
-    ctx.fillStyle = inside ? '#ffffff' : '#1f2328'
-    ctx.fillText(text,left,top+height/2)
+    ctx.fillStyle = style.color ?? (inside ? '#ffffff' : '#1f2328')
+    ctx.fillText(text,left,top+ascent)
     painted.push(box)
   }
   ctx.restore()

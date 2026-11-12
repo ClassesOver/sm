@@ -11,7 +11,7 @@ import { setCharts } from './chart-render'
 type Rect = { x: number; y: number; width: number; height: number; color: string }
 function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Partial<ChartReadSpec> = {}) {
   const fills: Rect[] = []
-  const texts: Array<{ text: string; x: number; y: number }> = []
+  const texts: Array<{ text: string; x: number; y: number; font:string; color:string }> = []
   const tickTexts: typeof texts = []
   const categoryTexts: typeof texts = []
   const ctx = {
@@ -19,7 +19,7 @@ function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Pa
     save: vi.fn(), restore: vi.fn(), strokeRect: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), translate: vi.fn(), rotate: vi.fn(),
     moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
     measureText: (text: string) => ({ width: text.length * 6 }),
-    fillText(text: string, x: number, y: number) { (this.font === '10px system-ui' ? categoryTexts : this.font === '9px system-ui' ? tickTexts : texts).push({ text, x, y }) },
+    fillText(text: string, x: number, y: number) { (this.font === '10px system-ui' ? categoryTexts : this.font === '9px system-ui' ? tickTexts : texts).push({ text, x, y, font:this.font, color:this.fillStyle }) },
     fillRect(x: number, y: number, width: number, height: number) {
       fills.push({ x, y, width, height, color: this.fillStyle })
     },
@@ -353,5 +353,20 @@ describe('actual bar and column numeric data labels',()=>{
  })
  it.each([[';;;',[]],['0;-0;;',['3']]] as const)('honors intentional empty number-format sections: %s',(numberFormat,expected)=>{
   expect(render('bar',[[0,3]],{dataLabels:{showValue:true,numberFormat}}).texts.map(t=>t.text)).toEqual(expected)
+ })
+})
+
+describe('actual data-label typography',()=>{
+ it('converts source points to CSS pixels and applies explicit RGB and bold',()=>{
+  const result=render('bar',[[3,6]],{dataLabels:{showValue:true,position:'center',style:{sizePt:12,bold:true,color:'#123456'}}})
+  expect(result.texts.map(t=>({font:t.font,color:t.color}))).toEqual([{font:'bold 16px system-ui',color:'#123456'},{font:'bold 16px system-ui',color:'#123456'}])
+ })
+ it('inherits style properties individually and honors an explicit point-level bold=false',()=>{
+  const result=render('bar',[[3,6]],{dataLabels:{showValue:true,position:'center',style:{sizePt:12,bold:true,color:'#FF0000'}},series:[{valuesRef:'A1:A2',dataLabels:{style:{color:'#00AA00'},points:{0:{style:{bold:false}},1:{style:{sizePt:9}}}}}]})
+  expect(result.texts.map(t=>({font:t.font,color:t.color}))).toEqual([{font:'16px system-ui',color:'#00AA00'},{font:'bold 12px system-ui',color:'#00AA00'}])
+ })
+ it('measures large labels before painting and omits those that cannot fit intact',()=>{
+  const result=render('bar',[[3,6]],{dataLabels:{showValue:true,position:'center',style:{sizePt:72}}})
+  expect(result.texts).toEqual([]);expect(result.fills).toHaveLength(2)
  })
 })

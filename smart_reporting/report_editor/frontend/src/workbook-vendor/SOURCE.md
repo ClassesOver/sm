@@ -294,3 +294,17 @@ whether a wider ellipsis fits; real A/B labels previously disappeared. Both
 local helper hashes are recorded. See NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md
 for original OOXML, independent colored-component/counter diagnostics and
 final screenshot/save/download/reopen evidence.
+
+
+2026-11-12 data-label typography: the native label painter now merges explicit
+plot/series/point size, RGB and bold properties individually (including b=0).
+The source point unit is converted by 4/3, matching the pinned chart-text-scale.ts
+PT_TO_PX constant; native grid transforms handle sheet zoom. Text is measured
+with the selected actual font and its ink ascent/descent before placement and
+collision checks. This fixes fixed-height placement for larger labels. The
+reader accepts one defRPr, or one endParaRPr fallback when defaults are absent;
+invalid size/weight and unresolved theme/transformed fills remain unsupported.
+Font family, italic and full rich-run/theme inheritance are not ported. See
+NATIVE_XLSX_DATA_LABEL_STYLE_ACCEPTANCE.md for actual source XML, passive font
+paint traces, foreground/background blend pixel proof and save/reopen evidence.
+The modified painter's local adaptation hash is refreshed.

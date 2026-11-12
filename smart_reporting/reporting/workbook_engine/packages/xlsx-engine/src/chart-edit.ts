@@ -6,6 +6,8 @@
 /// replacement / per-series rewrites. Anything outside the supported
 /// envelope throws — fail closed, never corrupt a chart part.
 
+import { SaxesParser } from 'saxes'
+
 export class ChartEditError extends Error {}
 
 export type ChartTargetType = 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut'
@@ -554,6 +556,40 @@ function setLegend(chartXml: string, legend: NonNullable<ChartEditLean['legend']
   return withoutLegend.slice(0, insertAt) + element + withoutLegend.slice(insertAt)
 }
 
+const LABEL_CHILD_ORDER = ['dLbl','delete','numFmt','spPr','txPr','dLblPos','showLegendKey','showVal','showCatName','showSerName','showPercent','showBubbleSize','separator','showLeaderLines','leaderLines','extLst']
+
+/** SAX identifies direct children; their original byte spans stay untouched.
+ * A point's nested numFmt/showVal/txPr must never become the plot defaults.
+ */
+function setLabelChildren(body: string, updates: Record<string,string>): string {
+  for (const [local,replacement] of Object.entries(updates)) {
+    const parser = new SaxesParser({fragment:true}), nodes: Array<{name:string;start:number;end:number}> = []
+    let depth = 0, current: typeof nodes[number] | undefined
+    parser.on('doctype',()=>{throw new ChartEditError('Data labels do not support DOCTYPE.')})
+    parser.on('opentag',tag=>{
+      if (depth++ === 0) current = {name:tag.name,start:body.lastIndexOf('<',parser.position-1),end:parser.position}
+    })
+    parser.on('closetag',()=>{if (--depth === 0 && current) {current.end=parser.position;nodes.push(current);current=undefined}})
+    parser.write(body).close()
+    const matches = nodes.filter(node=>node.name === 'c:'+local)
+    if (matches.length > 1) throw new ChartEditError('Duplicate plot data-label property: '+local)
+    const existing = matches[0]
+    const rank = LABEL_CHILD_ORDER.indexOf(local)
+    const before = nodes.find(node=>{const index=LABEL_CHILD_ORDER.indexOf(node.name.replace(/^c:/,''));return index >= 0 && index > rank})
+    const start = existing?.start ?? before?.start ?? body.length
+    body = spliceAt(body,start,existing ? existing.end-existing.start : 0,replacement)
+  }
+  return body
+}
+
+function plotLabelBlock(inner: string): {start:number;length:number;open:string;body:string} | undefined {
+  const afterSeries = inner.lastIndexOf('</c:ser>') + '</c:ser>'.length
+  const found = inner.slice(afterSeries).match(/^\s*(<c:dLbls\b[^>]*\/>|<c:dLbls\b[^>]*>([\s\S]*?)<\/c:dLbls>)/)
+  if (!found) return undefined
+  const block = found[1]!
+  return {start:afterSeries+found[0].length-block.length,length:block.length,open:block.match(/^<c:dLbls\b[^>]*>/)![0].replace(/\/>$/,'>'),body:found[2] ?? ''}
+}
+
 /// Plot-level data labels: what every slice/bar/point shows. 'none' removes
 /// the plot-level element (per-series overrides, if any, keep their own).
 function setDataLabels(
@@ -565,24 +601,22 @@ function setDataLabels(
     throw new ChartEditError('This chart type does not support data labels.')
   }
   const inner = plotMatch[2]
-  // The plot-level dLbls slot sits right after the last series.
-  const withoutLabels = inner.replace(/(<\/c:ser>)<c:dLbls>[\s\S]*?<\/c:dLbls>/, '$1')
-  let next = withoutLabels
+  const existing = plotLabelBlock(inner)
+  let next = existing ? spliceAt(inner,existing.start,existing.length,'') : inner
   if (mode !== 'none') {
     const showValue = mode === 'value'
     const showCategory = mode === 'category-percent'
     const showPercent = mode === 'percent' || mode === 'category-percent'
-    const labels =
-      '<c:dLbls><c:showLegendKey val="0"/>' +
-      `<c:showVal val="${showValue ? '1' : '0'}"/>` +
-      `<c:showCatName val="${showCategory ? '1' : '0'}"/>` +
-      '<c:showSerName val="0"/>' +
-      `<c:showPercent val="${showPercent ? '1' : '0'}"/>` +
-      '<c:showBubbleSize val="0"/></c:dLbls>'
-    const lastSeriesEnd = withoutLabels.lastIndexOf('</c:ser>')
+    const body = setLabelChildren(existing?.body ?? '',{
+      showLegendKey:'<c:showLegendKey val="0"/>',showVal:`<c:showVal val="${showValue ? '1' : '0'}"/>`,
+      showCatName:`<c:showCatName val="${showCategory ? '1' : '0'}"/>`,showSerName:'<c:showSerName val="0"/>',
+      showPercent:`<c:showPercent val="${showPercent ? '1' : '0'}"/>`,showBubbleSize:'<c:showBubbleSize val="0"/>',
+    })
+    const labels = (existing?.open ?? '<c:dLbls>')+body+'</c:dLbls>'
+    const lastSeriesEnd = next.lastIndexOf('</c:ser>')
     if (lastSeriesEnd === -1) throw new ChartEditError('This chart has no series to label.')
     const insertAt = lastSeriesEnd + '</c:ser>'.length
-    next = withoutLabels.slice(0, insertAt) + labels + withoutLabels.slice(insertAt)
+    next = next.slice(0, insertAt) + labels + next.slice(insertAt)
   }
   return chartXml.replace(
     LABELABLE_PLOT_PATTERN,
@@ -614,25 +648,11 @@ function setDataLabelDetail(
       ? ''
       : `<c:numFmt formatCode="${escapeXmlAttribute(format)}" sourceLinked="0"/>`
   const dLblPos = position === undefined ? '' : `<c:dLblPos val="${DLBL_POSITIONS[position]}"/>`
-  const existing = inner.match(/<\/c:ser><c:dLbls>([\s\S]*?)<\/c:dLbls>/)
+  const existing = plotLabelBlock(inner)
   let next: string
-  if (existing && existing[1] !== undefined && existing.index !== undefined) {
-    let labels = existing[1]
-    if (numFmt !== '') {
-      const pattern = /<c:numFmt [^>]*\/>/
-      labels = pattern.test(labels) ? labels.replace(pattern, () => numFmt) : numFmt + labels
-    }
-    if (dLblPos !== '') {
-      const pattern = /<c:dLblPos val="[^"]*"\/>/
-      if (pattern.test(labels)) {
-        labels = labels.replace(pattern, () => dLblPos)
-      } else {
-        const anchor = labels.match(/<c:show|<c:separator[>/]/)
-        const at = anchor?.index ?? labels.length
-        labels = labels.slice(0, at) + dLblPos + labels.slice(at)
-      }
-    }
-    next = spliceAt(inner, existing.index, existing[0].length, `</c:ser><c:dLbls>${labels}</c:dLbls>`)
+  if (existing) {
+    const labels = setLabelChildren(existing.body,{...(numFmt ? {numFmt}:{}),...(dLblPos ? {dLblPos}: {})})
+    next = spliceAt(inner, existing.start, existing.length, `${existing.open}${labels}</c:dLbls>`)
   } else {
     const lastSeriesEnd = inner.lastIndexOf('</c:ser>')
     if (lastSeriesEnd === -1) throw new ChartEditError('This chart has no series to label.')
