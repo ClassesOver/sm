@@ -49,8 +49,8 @@
 .docx-native .docx-ribbon :is(.spacing-menu,.symbol-picker,.symbol-panel,[data-rb-panel]) button:hover:not(:disabled) { background:var(--color-primary-soft); color:var(--color-primary); }
 .docx-native .docx-ribbon :is(.spacing-menu,.symbol-picker,.symbol-panel,[data-rb-panel]) button.active { background:var(--color-primary-soft); color:var(--color-primary); }
 .docx-native .docx-ribbon .docx-style-select { min-width:140px; max-width:220px; }
-.docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette) { border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-ink); box-shadow:var(--shadow-popover); }
-.docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette) button:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette,.docx-page-color-palette) { border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-ink); box-shadow:var(--shadow-popover); }
+.docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette,.docx-page-color-palette) button:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
 .docx-native .docx-view-status { display:block; padding:4px 14px; border-top:1px solid var(--color-border-soft); background:var(--color-bg-soft); color:var(--color-text-muted); font-size:var(--font-size-xs); text-align:right; }
 .docx-zoom-dialog { width:min(440px,calc(100vw - 32px)); box-sizing:border-box; }
 .docx-zoom-dialog h2 { margin:0 32px 18px 0; font-size:var(--font-size-lg); color:var(--color-ink); }
@@ -77,7 +77,7 @@
 .docx-native .docx-notice { margin:0; padding:8px 14px; color:var(--office-muted); background:var(--office-tabbar); font-size:13px; }
 .docx-native .editor-scroll { overflow:auto; min-height:0; max-height:none; background:var(--office-canvas); padding:24px; }
 .docx-native .doc-zoom { width:max-content; min-width:100%; }
-.docx-native .doc-page { margin:auto; background:white; color:#111; box-shadow:0 2px 10px rgb(27 42 65 / 13%); outline:none; }
+.docx-native .doc-page { margin:auto; background:var(--page-bg, white); color:#111; box-shadow:0 2px 10px rgb(27 42 65 / 13%); outline:none; }
 .docx-native .pagination-preview { z-index:100; }
 .docx-native .docx-comment-panel { padding:16px; border-bottom:1px solid var(--color-border); background:var(--office-page, white); }
 .docx-native .docx-comment-panel label { display:block; margin-block:8px; }
@@ -108,3 +108,10 @@
   .docx-native .docx-find-replace, .docx-native .docx-comment-panel { flex:none; max-height:30dvh; overflow:auto; }
   .docx-native .editor-scroll { flex:1; }
 }
+
+/* 设计 ▸ 页面颜色：按钮下方色条显示当前页面颜色；弹层沿用单元格底纹色板样式。 */
+.docx-page-color-trigger { display:inline-flex; flex-direction:column; align-items:center; gap:2px; }
+.docx-page-color-bar { display:block; width:22px; height:4px; border:1px solid var(--office-border); border-radius:1px; }
+.docx-native .docx-ribbon .docx-page-color-palette { grid-template-columns:repeat(10, 20px); }
+.docx-native .docx-ribbon .docx-page-color-palette .color-none { grid-column:1 / -1; }
+.docx-native .docx-ribbon .docx-page-color-palette [aria-pressed="true"] { outline:2px solid var(--office-accent); outline-offset:1px; }
