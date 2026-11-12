@@ -17,6 +17,17 @@ export type ChartReadKind =
   | 'scatter'
   | 'radar'
 
+export interface ChartReadDataLabel {
+  readonly showValue?: boolean | undefined
+  readonly deleted?: boolean | undefined
+  readonly position?: 'center' | 'inside-end' | 'outside-end' | undefined
+  readonly numberFormat?: string | undefined
+  readonly unsupported?: true | undefined
+}
+export interface ChartReadDataLabels extends ChartReadDataLabel {
+  readonly points?: Readonly<Record<number, ChartReadDataLabel>> | undefined
+}
+
 export interface ChartReadSeries {
   readonly index?: number | undefined
   /// series name reference (c:tx strRef) or literal
@@ -25,6 +36,8 @@ export interface ChartReadSeries {
   readonly nameCache?: string | undefined
   /// Explicit series fill only; point fills and line colors are separate.
   readonly color?: string | undefined
+  readonly dataLabels?: ChartReadDataLabels | undefined
+  readonly numberFormat?: string | undefined
   readonly categoriesRef?: string | undefined
   /// Preserve single-level category point indices. Empty means an unreadable
   /// source category block; absent means there was no category block.
@@ -65,6 +78,7 @@ export interface ChartReadSpec {
   }
   readonly kind: ChartReadKind
   readonly title?: string | undefined
+  readonly dataLabels?: ChartReadDataLabels | undefined
   readonly axes?: { readonly category: ChartReadAxis; readonly value: ChartReadAxis } | undefined
   readonly valueScaleUnavailable?: true | undefined
   readonly legend?: {
@@ -222,6 +236,42 @@ function legendOf(xml: string): ChartReadSpec['legend'] {
     overlay: /<c:overlay\b[^>]*\bval="(?:1|true)"/.test(body), hiddenEntries }
 }
 
+function labelSettings(body: string): ChartReadDataLabel {
+  let unsupported = /<c:(?:tx|manualLayout)\b/.test(body)
+  const flag = (name: string): boolean | undefined => {
+    const elements = [...body.matchAll(new RegExp(`<c:${name}\\b([^>]*)`,'g'))]
+    if (elements.length > 1) unsupported = true
+    if (!elements.length) return undefined
+    const raw = elements[0]![1]!.match(/\bval="([^"]*)"/)?.[1] ?? '1'
+    if (!['0','1','false','true'].includes(raw)) unsupported = true
+    return raw === '1' || raw === 'true'
+  }
+  const showValue = flag('showVal'), deleted = flag('delete')
+  for (const name of ['showCatName','showSerName','showPercent','showBubbleSize','showLegendKey']) if (flag(name)) unsupported = true
+  const positions = [...body.matchAll(/<c:dLblPos\b[^>]*\bval="([^"]*)"/g)]
+  const code = positions[0]?.[1], map = {ctr:'center',inEnd:'inside-end',outEnd:'outside-end'} as const
+  if (positions.length > 1 || code !== undefined && !Object.hasOwn(map,code)) unsupported = true
+  const format = body.match(/<c:numFmt\b[^>]*\bformatCode="([^"]*)"/)?.[1]
+  return {...(showValue !== undefined ? {showValue}:{}),...(deleted !== undefined ? {deleted}:{}),
+    ...(code !== undefined && Object.hasOwn(map,code) ? {position:map[code as keyof typeof map]}:{}),
+    ...(format !== undefined ? {numberFormat:decodeXmlText(format)}:{}),...(unsupported ? {unsupported:true}: {})}
+}
+
+function dataLabelsOf(xml: string): ChartReadDataLabels | undefined {
+  const blocks = [...xml.matchAll(/<c:dLbls\b[^>]*(?:\/>|>([\s\S]*?)<\/c:dLbls>)/g)]
+  if (!blocks.length) return undefined
+  if (blocks.length !== 1) return {unsupported:true}
+  const body = blocks[0]![1] ?? '', points: Record<number,ChartReadDataLabel> = {}
+  let invalid = false, count = 0
+  const defaults = body.replace(/<c:dLbl\b[^>]*(?:\/>|>([\s\S]*?)<\/c:dLbl>)/g,(_all,pointBody: string | undefined)=>{
+    const raw = pointBody?.match(/<c:idx\b[^>]*\bval="(\d+)"/)?.[1], index = raw === undefined ? NaN : Number(raw)
+    if (!Number.isInteger(index) || index > 4294967295 || Object.hasOwn(points,index) || ++count > 10000) invalid = true
+    else points[index] = labelSettings(pointBody ?? '')
+    return ''
+  })
+  return {...labelSettings(defaults),...(count ? {points}:{}),...(invalid ? {unsupported:true}: {})}
+}
+
 function categoryLabels(cat: string): Pick<ChartReadSeries, 'categories' | 'categoryNumberFormat'> {
   const cache = cat.match(/<c:(strCache|numCache|strLit|numLit)\b[^>]*>([\s\S]*?)<\/c:\1>/)
   if (!cache) return {categories:[]}
@@ -268,6 +318,8 @@ function seriesOf(chartXml: string): ChartReadSeries[] {
       body.match(/<c:yVal\b[^>]*>([\s\S]*?)<\/c:yVal>/)?.[1]
     const valuesRef = val !== undefined ? val.match(/<c:f>([\s\S]*?)<\/c:f>/)?.[1] : undefined
     if (valuesRef === undefined) continue
+    const dataLabels = dataLabelsOf(body)
+    const numberFormat = val?.match(/<c:formatCode\b[^>]*>([\s\S]*?)<\/c:formatCode>/)?.[1]
     // scatter: X lives in c:xVal — either a numRef (numeric categories) or a
     // numLit with literal ordinals (no reference to resolve on the grid)
     const xVal = body.match(/<c:xVal\b[^>]*>([\s\S]*?)<\/c:xVal>/)?.[1]
@@ -288,6 +340,8 @@ function seriesOf(chartXml: string): ChartReadSeries[] {
       ...(nameRef !== undefined ? { nameRef: decodeXmlText(nameRef) } : {}),
       ...(nameCache !== undefined ? { nameCache: decodeXmlText(nameCache) } : {}),
       ...(color !== undefined ? { color: '#' + color } : {}),
+      ...(dataLabels !== undefined ? {dataLabels}:{}),
+      ...(numberFormat !== undefined && numberFormat !== 'General' ? {numberFormat:decodeXmlText(numberFormat)}:{}),
       ...(categoriesRef !== undefined ? { categoriesRef: decodeXmlText(categoriesRef) } : {}),
       ...(cat !== undefined ? categoryLabels(cat) : {}),
       valuesRef: decodeXmlText(valuesRef),
@@ -336,6 +390,8 @@ export async function readCharts(
     const series = seriesOf(chartXml)
     if (series.length === 0) continue
     const axes = axesOf(chartXml, kind)
+    const plot = axes ? chartXml.match(/<c:barChart\b[^>]*>([\s\S]*?)<\/c:barChart>/)?.[1]?.replace(/<c:ser\b[^>]*>[\s\S]*?<\/c:ser>/g,'') : undefined
+    const dataLabels = plot === undefined ? undefined : dataLabelsOf(plot)
     const valueScaleUnavailable = !axes && (kind === 'bar' || kind === 'column') &&
       [...chartXml.matchAll(/<c:valAx\b[^>]*>([\s\S]*?)<\/c:valAx>/g)].some(axis => valueScaling(axis[1]!) !== undefined)
     charts.push({
@@ -343,6 +399,7 @@ export async function readCharts(
       anchor: anchorOf(block),
       kind,
       ...(titleOf(chartXml) !== undefined ? { title: titleOf(chartXml) } : {}),
+      ...(dataLabels !== undefined ? {dataLabels}:{}),
       ...(legendOf(chartXml) !== undefined ? { legend: legendOf(chartXml) } : {}),
       ...(axes !== undefined ? { axes } : {}), ...(valueScaleUnavailable ? {valueScaleUnavailable:true as const} : {}),
       series,

@@ -522,3 +522,13 @@ indices remain null slots; duplicate/out-of-range points, excessive counts and
 multi-level blocks return an explicitly empty projection rather than silently
 reindexing or inventing labels. No source chart/cache bytes are rewritten.
 See NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md for the native adapter scope.
+
+
+2026-11-12 explicit data-label projection: chart-read.ts retains plot/series
+showVal/delete, canonical ctr/inEnd/outEnd positions, decoded label formats,
+indexed point overrides and non-General value-cache formats. Plot settings are
+bounded outside actual series blocks. Unsupported nonvalue flags, point text
+or manualLayout, unknown positions, duplicate point identities and malformed
+switches are marked unsupported rather than becoming raw value labels. This
+local read-only adapter does not rewrite source label/cache bytes or implement
+all label styles/layouts; see NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md.

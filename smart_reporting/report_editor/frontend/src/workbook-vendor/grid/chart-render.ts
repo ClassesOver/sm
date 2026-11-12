@@ -17,6 +17,7 @@ import { paintAxisTitles } from './chart-axis-titles'
 import { barValueScale } from './chart-value-scale'
 import { paintValueAxis } from './chart-value-axis'
 import { chartCategorySlot, planCategoryAxis } from './chart-category-axis'
+import { paintBarDataLabels, type BarLabelDatum } from './chart-data-labels'
 
 const store = new Map<string, ReadonlyArray<ChartReadSpec>>()
 
@@ -160,17 +161,22 @@ function drawChart(
     const band = (horizontal ? plotHeight : plotWidth) / categoryCount
     const thickness = band * 0.7 / Math.max(1, slots.length)
     const zero = horizontal ? plotLeft + plotWidth * fraction(0) : plotBottom - plotHeight * fraction(0)
+    const labelPoints: BarLabelDatum[] = []
+    const wantsLabels = flat.length <= 500 && (spec.dataLabels !== undefined || spec.series.some(series=>series.dataLabels !== undefined))
     slots.forEach((values, seriesIndex) => {
       ctx.fillStyle = chartSeriesColor(spec.series[seriesIndex]!, seriesIndex)
       values.forEach((value, index) => {
-        if (value === null || value === 0) return
+        if (value === null) return
         const offset = band * chartCategorySlot(spec,index,categoryCount) + band * 0.15 + thickness * chartCategorySlot(spec,seriesIndex,slots.length)
         const end = horizontal ? plotLeft + plotWidth * fraction(value) : plotBottom - plotHeight * fraction(value)
-        if (end === zero) return
-        if (horizontal) ctx.fillRect(Math.min(zero, end), plotTop + offset, Math.abs(end - zero), thickness)
-        else ctx.fillRect(plotLeft + offset, Math.min(zero, end), thickness, Math.abs(end - zero))
+        if (end === zero && value !== 0) return
+        const rect = horizontal ? {left:Math.min(zero,end),top:plotTop+offset,right:Math.max(zero,end),bottom:plotTop+offset+thickness}
+          : {left:plotLeft+offset,top:Math.min(zero,end),right:plotLeft+offset+thickness,bottom:Math.max(zero,end)}
+        if (end !== zero) ctx.fillRect(rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top)
+        if (wantsLabels && (value !== 0 || scale!.min <= 0 && scale!.max >= 0)) labelPoints.push({value,index,seriesIndex,zero,end,rect})
       })
     })
+    if (wantsLabels) paintBarDataLabels(ctx,spec,labelPoints,plot)
     if (spec.legend?.overlay) paintChartLegend(ctx, spec, worksheet, basePlot)
     ctx.restore()
     return

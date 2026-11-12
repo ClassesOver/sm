@@ -62,6 +62,8 @@ async def create_app(directory: Path, port: int, *, source: bytes | None = None)
                 operation['arguments']['edits'][0]['valueAxis'] = {'min': 5, 'max': 25}
             if '恢复自动范围' in instruction and operation['kind'] == 'applyChartEdits':
                 operation['arguments']['edits'][0]['valueAxis'] = {'min': None, 'max': None}
+            if '数据标签' in instruction and operation['kind'] == 'applyChartEdits':
+                operation['arguments']['edits'][0].update(dataLabels='value', dataLabelPosition='center', dataLabelFormat='0.0')
             scripted = ScriptedModel(id='chart-browser', responses=[
                 call('read_sheet_features', {'sheetId': 'Sheet'}, 'features'),
                 call('load_guide', {'guides': ['charts']}, 'guide'),

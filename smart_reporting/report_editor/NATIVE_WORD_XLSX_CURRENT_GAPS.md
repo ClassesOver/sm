@@ -16,6 +16,8 @@
 
 后续 bar/column 单层类别名称、源 minMax/maxMin 分类与组内系列顺序、实时空槽和外表缓存、top/right/隐藏/长标签已补，见 [类别轴专项](NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md)。41项读取与75项前端分批通过，固定源排序表达式292个位置一致，最终构建的分类与相关浏览器/保存重开已验证。多级分类、日期比例、换行/旋转、完整轴属性、数据标签、对数/次轴及复杂图表仍开放；不把单层分类续批算完整图表。
 
+后续普通 bar/column 显式数值数据标签（plot/series/point开关与删除、中心/内端/外端、正负与反向、显式格式/空分段）已补，见 [数值标签专项](NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md)。50项读取和87项前端分批通过，八个真实标签场景、短分类修复和AI带标签保存重开已验证。标签字体/手动偏移/分类及占比内容、完整格式继承、非普通图表仍缺，不能把value标签子集算完整数据标签家族。
+
 路径约定：`F=frontend/src/`（相对此文档）；`D=../reporting/doc_engine/`；`X=../reporting/workbook_engine/`；`U=/home/junge/pros/genoffice-source-full/`。源码路径均指实际文件，不指历史审计中已迁移的 `slides_engine` DOCX 路径。
 
 状态严格区分：

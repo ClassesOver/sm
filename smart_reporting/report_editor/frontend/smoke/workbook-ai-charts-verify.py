@@ -41,6 +41,13 @@ def verify(directory: Path):
             assert value_range == {'min': 5, 'max': 25}
             assert xml.xpath('//c:valAx/c:scaling/c:min/@val', namespaces=ns) == ['5']
             assert xml.xpath('//c:valAx/c:scaling/c:max/@val', namespaces=ns) == ['25']
+        data_labels = next((record.get('dataLabels') for operation in saved_request['operations']
+            if operation['kind'] == 'applyChartEdits' for record in operation['edits'] if 'dataLabels' in record), None)
+        if data_labels:
+            assert data_labels == 'value'
+            assert xml.xpath('//c:barChart/c:dLbls/c:showVal/@val', namespaces=ns) == ['1']
+            assert xml.xpath('//c:barChart/c:dLbls/c:dLblPos/@val', namespaces=ns) == ['ctr']
+            assert xml.xpath('//c:barChart/c:dLbls/c:numFmt/@formatCode', namespaces=ns) == ['0.0']
     for output, count in ((source, 2), (edited, 2), (deleted, 1)):
         sheet = load_workbook(BytesIO(output)).active
         assert len(sheet._charts) == count
@@ -75,11 +82,21 @@ def verify(directory: Path):
         assert title_ink >= 15 and grid_ink >= 40, (name, title_ink, grid_ink)
         text_pixels.append({'revision': name, 'titleInkPixels': title_ink, 'gridHeaderInkPixels': grid_ink})
         if name == 'edited':
-            geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, ('#4472c4',))
+            geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, ('#4472c4',), ignore_enclosed_components=bool(data_labels))
+            if data_labels:
+                (directory / 'edited-label-color-components.json').write_text(json.dumps(geometry, indent=2))
             marks = geometry['bars']
             swatches = [mark for mark in marks if 6 <= mark['width'] <= 9 and 6 <= mark['height'] <= 9]
             bars = [mark for mark in marks if mark not in swatches]
             assert len(swatches) == 1 and len(bars) == 2, (swatches, bars)
+            if data_labels:
+                label_ink = [run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['blue_bar_label_ink'](image, b) for b in bars]
+                assert all(glyph['pixels'] >= 20 for glyph in label_ink), label_ink
+                for bar, glyph in zip(bars, label_ink):
+                    bounds = glyph['bounds']
+                    assert abs((bounds['left'] + bounds['right']) / 2 - (bar['x'] + bar['width'] / 2)) <= 3
+                    assert abs((bounds['top'] + bounds['bottom']) / 2 - (bar['y'] + bar['height'] / 2)) <= 3
+                text_pixels[-1]['insideDataLabelContrastPixels'] = label_ink
             assert swatches[0]['y'] >= max(bar['y'] + bar['height'] for bar in bars) + 4
             text_pixels[-1]['bottomLegendSwatches'] = len(swatches)
             if axis_titles:
@@ -100,7 +117,7 @@ def verify(directory: Path):
                 for bar, fraction in zip(ordered, (0.25, 0.75)):
                     assert abs(bar['width'] - plot_width * fraction) <= 2, (bar, plot_width)
                 auto_image = Image.open(directory / 'auto-range-preview.png').convert('RGB')
-                auto_geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](auto_image, ('#4472c4',))
+                auto_geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](auto_image, ('#4472c4',), ignore_enclosed_components=bool(data_labels))
                 auto_bars = sorted((r for r in auto_geometry['bars'] if r['width'] > 9 or r['height'] > 9), key=lambda bar: bar['y'], reverse=True)
                 assert len(auto_bars) == 2
                 # Pinned source automatic range: 0..25 (5% headroom,

@@ -276,3 +276,21 @@ The read-only original-source expression oracle checks 292 category/series
 positions. See NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md for original
 OOXML, final-pixel and save/download/reopen evidence. The adapted file's hash
 is recorded in LOCAL-ADAPTATIONS-SHA256.
+
+
+2026-11-12 value data labels: `grid/chart-data-labels.ts` adapts the pinned
+WorkbookVisuals.tsx showsLabel/labelFor/formatLabelValue semantics for explicit
+ordinary bar/column value labels (plot, series and indexed point settings;
+center/inEnd/outEnd; sign/reverse direction and number formats). It uses the
+existing Univer numfmt and final native bar rectangles. Local differences are
+explicit: no automatic labels are enabled when the source file has none; zero
+labels do not invent a nonzero bar; intentionally empty format sections remain
+empty; labels that cannot fit intact or collide are omitted; nonvalue/custom
+text/manual-layout settings are not guessed. More than 500 finite values skips
+this incremental label painter. Source-linked cell style resolution, txPr
+styling, custom offsets and nonbar/column families remain open.
+`grid/chart-legend.ts::fitted` now accepts an intact short label before checking
+whether a wider ellipsis fits; real A/B labels previously disappeared. Both
+local helper hashes are recorded. See NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md
+for original OOXML, independent colored-component/counter diagnostics and
+final screenshot/save/download/reopen evidence.

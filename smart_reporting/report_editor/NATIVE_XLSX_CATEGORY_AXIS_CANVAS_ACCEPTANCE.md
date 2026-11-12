@@ -43,3 +43,5 @@
 复现使用 WORKBOOK_CHART_RENDER_CASE=category；其他专项case保留。每次新目录，沿用显式FONTCONFIG_FILE和PDF_SMOKE_STATIC_DIRECTORY；AI链设置AXIS_TITLES=1及VALUE_RANGE=1。
 
 仍缺多级/日期比例分类、完整换行/旋转/交点/轴属性、数据标签、对数/次轴/组合堆叠、跨表数值及完整字体度量；未改发布下载门禁，未部署或开启生产开关。旧PDF暂存和初始数值轴WIP快照保持。
+
+后续普通bar/column显式数值标签及真实短分类A/B的拟合修复见 [数值标签续批](NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md)。本文件保留当时分类构建的历史证据，不将其倒算为已验收数据标签或短字形拟合的后续修正。

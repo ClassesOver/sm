@@ -15,10 +15,10 @@ const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../
 const port=Number(process.env.WORKBOOK_CHART_RENDER_PORT??4354),origin=`http://127.0.0.1:${port}`
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
 const smokeCase=process.env.WORKBOOK_CHART_RENDER_CASE??'geometry'
-assert(['geometry','legend','axis','scale','ticks','category'].includes(smokeCase),'Unknown chart render case')
-const legend=smokeCase==='legend',axis=smokeCase==='axis',scale=smokeCase==='scale',ticks=smokeCase==='ticks',category=smokeCase==='category'
+assert(['geometry','legend','axis','scale','ticks','category','labels'].includes(smokeCase),'Unknown chart render case')
+const legend=smokeCase==='legend',axis=smokeCase==='axis',scale=smokeCase==='scale',ticks=smokeCase==='ticks',category=smokeCase==='category',labels=smokeCase==='labels'
 await mkdir(directory,{recursive:false})
-const fixture=join(frontend,category?'smoke/workbook-chart-category-fixture.py':ticks?'smoke/workbook-chart-ticks-fixture.py':scale?'smoke/workbook-chart-scale-fixture.py':axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
+const fixture=join(frontend,labels?'smoke/workbook-chart-labels-fixture.py':category?'smoke/workbook-chart-category-fixture.py':ticks?'smoke/workbook-chart-ticks-fixture.py':scale?'smoke/workbook-chart-scale-fixture.py':axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
 const created=spawnSync(python,[fixture,'create',join(directory,'input.xlsx')],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
 assert.equal(created.status,0,created.stdout+created.stderr)
 const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'))
@@ -39,8 +39,8 @@ try{
  const fontPreflight=await probeCanvasTextRendering(browser)
  await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
  assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
- page=await browser.newPage({viewport:{width:1560,height:scale||ticks||category?1850:legend||axis?1550:1400}})
- if(legend||axis||scale||ticks||category)await page.addInitScript(()=>{
+ page=await browser.newPage({viewport:{width:1560,height:scale||ticks||category||labels?1850:legend||axis?1550:1400}})
+ if(legend||axis||scale||ticks||category||labels)await page.addInitScript(()=>{
   window.__legendTexts=[]
   window.__valueTickTexts=[]
   window.__categoryTexts=[]
@@ -72,7 +72,7 @@ try{
  const evidence=await page.evaluate(()=>({charts:[...window.__sheetsWebCharts.store.values()].flat(),legendTexts:window.__legendTexts??[],valueTickTexts:window.__valueTickTexts??[],categoryTexts:window.__categoryTexts??[]}))
  await writeFile(join(directory,'model.json'),JSON.stringify(evidence,null,2))
  await page.screenshot({path:join(directory,'charts.png'),fullPage:true})
- assert.deepEqual(evidence.charts.map(c=>c.kind),category?['bar','column','bar','column','bar','bar']:scale||ticks?['bar','column','bar','bar','bar','bar']:axis?['column','bar','column','bar']:legend?Array(5).fill('bar'):['bar','column','bar'])
+ assert.deepEqual(evidence.charts.map(c=>c.kind),labels?['bar','column','bar','bar','bar','bar','bar','bar']:category?['bar','column','bar','column','bar','bar']:scale||ticks?['bar','column','bar','bar','bar','bar']:axis?['column','bar','column','bar']:legend?Array(5).fill('bar'):['bar','column','bar'])
  if(legend){
   assert(evidence.legendTexts.includes('Live Revenue'));assert(evidence.legendTexts.includes('Costs & tax'))
   assert(!evidence.legendTexts.includes('STALE'))
@@ -96,6 +96,15 @@ try{
   assert(!evidence.categoryTexts.includes('STALE'))
   assert(evidence.categoryTexts.some(text=>text.startsWith('Long external')&&text.endsWith('…')))
   assert.equal(evidence.charts[2].axes?.category.reversed,true)
+ }
+ if(labels){
+  for(const text of ['A','B','C','D'])assert(evidence.categoryTexts.includes(text),'Missing short category: '+text)
+  for(const text of ['3','-5','0','$3.0','-$5.0','12.0','-5.0','$12','200%','400%'])assert(evidence.legendTexts.includes(text),'Missing data label: '+text)
+  assert.equal(evidence.charts[3].dataLabels?.points?.[1]?.deleted,true)
+  assert.equal(evidence.charts[3].dataLabels?.points?.[2]?.showValue,false)
+  assert.equal(evidence.charts[5].dataLabels?.unsupported,true)
+  assert.equal(evidence.charts[6].dataLabels?.numberFormat,'0;-0;;')
+  assert.equal(evidence.charts[7].dataLabels?.numberFormat,';;;')
  }
  stage='independent-pixels'
  const verified=spawnSync(python,[fixture,'verify',directory],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})

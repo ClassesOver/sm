@@ -310,3 +310,48 @@ describe('actual category labels and source category order',()=>{
   expect(result.fills[0]!.y).toBeGreaterThan(result.fills[1]!.y)
  })
 })
+
+describe('actual bar and column numeric data labels',()=>{
+ it.each(['bar','column'] as const)('paints %s live signed and zero values without inventing a zero bar',kind=>{
+  const result=render(kind,[[3,-5,0,null]],{dataLabels:{showValue:true}})
+  expect(result.texts.map(t=>t.text)).toEqual(['3','-5','0'])
+  expect(result.fills).toHaveLength(2)
+ })
+ it.each(['center','inside-end'] as const)('keeps %s labels inside positive and negative bars',position=>{
+  const result=render('bar',[[3,-5]],{dataLabels:{showValue:true,position,numberFormat:'"$"0.0'}})
+  expect(result.texts.map(t=>t.text)).toEqual(['$3.0','-$5.0'])
+  result.texts.forEach((t,index)=>{
+   const bar=result.fills[index]!
+   expect(t.x).toBeGreaterThanOrEqual(bar.x)
+   expect(t.x+t.text.length*6).toBeLessThanOrEqual(bar.x+bar.width)
+   expect(t.y).toBeGreaterThan(bar.y);expect(t.y).toBeLessThan(bar.y+bar.height)
+  })
+ })
+ it('follows the actual reversed growth direction for outside-end labels',()=>{
+  const result=render('bar',[[3,-5]],{axes:{category:{id:1,hidden:true},value:{id:2,hidden:true,scaling:{min:-6,max:4,reversed:true}}},dataLabels:{showValue:true}})
+  expect(result.texts.map(t=>t.text)).toEqual(['3','-5'])
+  expect(result.texts[0]!.x+6).toBeLessThan(result.fills[0]!.x)
+  expect(result.texts[1]!.x).toBeGreaterThan(result.fills[1]!.x+result.fills[1]!.width)
+ })
+ it('applies per-point enable/delete on top of series disable without changing point identity',()=>{
+  const result=render('bar',[[3,6,9]],{dataLabels:{showValue:true},series:[{valuesRef:'A1:A3',dataLabels:{showValue:false,points:{0:{showValue:true},1:{showValue:true,deleted:true}}}}]})
+  expect(result.texts.map(t=>t.text)).toEqual(['3'])
+ })
+ it('uses the original value of a clipped bar and omits a wholly invisible value',()=>{
+  const result=render('bar',[[-5,12]],{axes:{category:{id:1,hidden:true},value:{id:2,hidden:true,scaling:{min:2,max:8,reversed:false}}},dataLabels:{showValue:true,position:'center'}})
+  expect(result.texts.map(t=>t.text)).toEqual(['12']);expect(result.fills).toHaveLength(1)
+ })
+ it('keeps absent/disabled labels off and skips unsupported custom point labels',()=>{
+  expect(render('bar',[[3,6]]).texts).toEqual([])
+  expect(render('bar',[[3,6]],{dataLabels:{showValue:false}}).texts).toEqual([])
+  const result=render('bar',[[3,6]],{dataLabels:{showValue:true,points:{1:{unsupported:true}}}})
+  expect(result.texts.map(t=>t.text)).toEqual(['3'])
+ })
+ it('does not truncate numbers into partial labels when there is no room inside a thin bar',()=>{
+  const result=render('bar',[Array(100).fill(3)],{dataLabels:{showValue:true,position:'inside-end'}})
+  expect(result.texts).toEqual([]);expect(result.fills).toHaveLength(100)
+ })
+ it.each([[';;;',[]],['0;-0;;',['3']]] as const)('honors intentional empty number-format sections: %s',(numberFormat,expected)=>{
+  expect(render('bar',[[0,3]],{dataLabels:{showValue:true,numberFormat}}).texts.map(t=>t.text)).toEqual(expected)
+ })
+})
