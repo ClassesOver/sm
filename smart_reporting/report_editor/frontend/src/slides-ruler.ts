@@ -2,18 +2,36 @@
  * 固定源 View ▸ Ruler（components/StageRuler.tsx）的原生 DOM 移植：标尺位于缩放画布之外，
  * 0 在页面中心、向两侧递增（中文界面用厘米）；按住主键在画布上拖动时，两条标尺上有跟随指针的细线。
  * 刻度计算直接复用逐字节引入的 ruler-ticks.ts。纯视图状态，不写入文件。
- * 与固定源差异：暂不支持从标尺拖出参考线。
+ * 按住标尺拖入画布：横向标尺拉出水平参考线、纵向标尺拉出垂直参考线（4px 死区防误触），由 onPull 交给参考线模块。
  */
 import { computeRulerTicks, type RulerUnit } from './vendor/genoffice-slides/ruler-ticks'
 
 export interface SlidesRuler { setVisible(visible: boolean): void; update(): void; dispose(): void }
 
 /** stage：.slides-stage；content()：当前 Konva 画布内容元素；slidePx()：未缩放的幻灯片像素尺寸（96dpi，cx/9525）。 */
-export function mountSlidesRuler(stage: HTMLElement, content: () => HTMLElement | null, slidePx: () => { width: number; height: number }, unit: RulerUnit = 'cm'): SlidesRuler {
+export type GuidePull = (axis: 'h' | 'v', client: { x: number; y: number }, done: boolean) => void
+export function mountSlidesRuler(stage: HTMLElement, content: () => HTMLElement | null, slidePx: () => { width: number; height: number }, unit: RulerUnit = 'cm', onPull?: GuidePull): SlidesRuler {
   const corner = document.createElement('div'); corner.className = 'ruler-corner'
   const strip = (vertical: boolean) => {
     const root = document.createElement('div'); root.className = `ruler ${vertical ? 'ruler-v' : 'ruler-h'}`; root.setAttribute('aria-hidden', 'true')
     const indicator = document.createElement('div'); indicator.className = 'ruler-indicator'
+    // 固定源 startGuideDrag：拖动方向与标尺垂直，标尺只上报指针位置，由参考线模块换算到页面坐标。
+    root.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !onPull) return
+      event.preventDefault()
+      const start = { x: event.clientX, y: event.clientY }, axis = vertical ? 'v' : 'h'
+      let dragging = false
+      root.setPointerCapture?.(event.pointerId)
+      const move = (next: PointerEvent) => {
+        if (!dragging) { dragging = Math.abs(next.clientX - start.x) > 4 || Math.abs(next.clientY - start.y) > 4; if (!dragging) return }
+        onPull(axis, { x: next.clientX, y: next.clientY }, false)
+      }
+      const up = (next: PointerEvent) => {
+        root.removeEventListener('pointermove', move); root.removeEventListener('pointerup', up)
+        if (dragging) onPull(axis, { x: next.clientX, y: next.clientY }, true)
+      }
+      root.addEventListener('pointermove', move); root.addEventListener('pointerup', up)
+    })
     return { root, indicator, vertical }
   }
   const horizontal = strip(false), vertical = strip(true)

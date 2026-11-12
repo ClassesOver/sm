@@ -1,6 +1,6 @@
 import { IconBringForward, IconBringToFront, IconSendBackward, IconSendToBack } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { ComponentType } from 'react'
-import { BringToFront, SendToBack, ArrowUp, ArrowDown, Group, Ungroup, Search, Blend, Images, LayoutGrid, ListX, PaintBucket, PanelTop, Printer, Rows3, Save, SquareDashed, Table, TableProperties, createElement } from 'lucide'
+import { BringToFront, SendToBack, ArrowUp, ArrowDown, Group, Ungroup, Search, Blend, Crosshair, Images, LayoutGrid, ListX, PaintBucket, PanelTop, Printer, Rows3, Save, SquareDashed, Table, TableProperties, createElement } from 'lucide'
 import { IconNoneX, IconFind, IconSave, IconPageColor } from './vendor/genoffice-slides/components/icons'
 import { Icon3d, IconAnimNone, IconAnimStar, IconApplyAll, IconAudio, IconBullets, IconChangeChartType, IconCrop, IconDirLtr, IconDirRtl, IconEditChartData, IconEraser, IconGridlines, IconHideSlide, IconIndentDec, IconIndentInc, IconLink, IconNavPane, IconNewSlide, IconNotes, IconNumbered, IconObjAlignLeft, IconObjAlignCenterH, IconObjAlignRight, IconObjAlignTop, IconObjAlignMiddle, IconObjAlignBottom, IconObjDistributeH, IconObjDistributeV, IconPageSize, IconPathCircle, IconPathDiagonal, IconPathDown, IconPathRight, IconPathZigzag, IconPen, IconPicture, IconPlayCurrent, IconPosition, IconPresenterView, IconRehearse, IconRecord, IconReplacePicture, IconRuler, IconSpellcheck, IconTranslate, IconVideo, IconWatermark } from './vendor/genoffice-slides/components/icons'
 
@@ -29,5 +29,5 @@ export const slidesRibbonIcons: Record<string, Parameters<typeof createElement>[
   findReplace: Search, print: Printer, exportImages: Images, saveAs: Save, bulletNone: ListX, normalView: PanelTop, slideSorter: LayoutGrid,
   tableStructure: TableProperties, tableFirstRow: PanelTop, tableBandRow: Rows3,
   tableShadingWholeTable: PaintBucket, tableAllBorders: Table, tableNoBorders: SquareDashed,
-  pictureOpacity: Blend, shapeNoOutline: SquareDashed,
+  pictureOpacity: Blend, shapeNoOutline: SquareDashed, guides: Crosshair,
 }
