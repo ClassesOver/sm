@@ -8,6 +8,7 @@ import {join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {setTimeout as delay} from 'node:timers/promises'
 import {chromium} from 'playwright'
+import {probeCanvasTextRendering} from './canvas-font-preflight.mjs'
 
 const frontend=fileURLToPath(new URL('../',import.meta.url)),repo=fileURLToPath(new URL('../../../../',import.meta.url))
 const directory=process.env.WORKBOOK_AI_CHARTS_DIRECTORY??'/tmp/workbook-ai-charts-browser-20261112'
@@ -29,6 +30,10 @@ try{
  }
  const info=JSON.parse(await readFile(join(directory,'server-info.json'),'utf8'))
  browser=await chromium.launch({headless:true,...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE?{executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE}:{})})
+ stage='canvas-font-preflight'
+ const fontPreflight=await probeCanvasTextRendering(browser)
+ await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
+ assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
  page=await browser.newPage({viewport:{width:1560,height:1200}})
  // Force network bytes on each revision reopen so every loaded asset can be
  // hashed directly, rather than treating a valid cache 304 as a byte response.
@@ -106,7 +111,7 @@ try{
  assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(httpErrors,[]);assert.deepEqual(assetErrors,[])
  const state=await(await page.request.get(origin+'/__smoke__/state')).json()
  assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,2);assert.equal(state.plannerCalls,3)
- const summary={ok:true,scope:'real UI/HTTP/grant/cookie/CSRF/Agno tools/writer/publication/download/reopen; ScriptedModel provider and scoped memory repository',browserVersion:browser.version(),manifestSha256:sha(manifest),assets:Object.fromEntries(assets),manual,adopted,saves,independent,pageErrors,consoleErrors,httpErrors,assetErrors,state}
+ const summary={ok:true,scope:'real UI/HTTP/grant/cookie/CSRF/Agno tools/writer/publication/download/reopen; ScriptedModel provider and scoped memory repository',browserVersion:browser.version(),fontPreflight,manifestSha256:sha(manifest),assets:Object.fromEntries(assets),manual,adopted,saves,independent,pageErrors,consoleErrors,httpErrors,assetErrors,state}
  await writeFile(join(directory,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok:true,directory,assets:assets.size,independent}))
 }catch(error){
  await writeFile(join(directory,'failure.json'),JSON.stringify({ok:false,stage,error:String(error),stack:error.stack,pageErrors,consoleErrors,httpErrors,assetErrors,serverLog},null,2))

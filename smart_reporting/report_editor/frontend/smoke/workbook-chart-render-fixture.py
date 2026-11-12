@@ -93,6 +93,15 @@ def verify(directory):
             bars.append({'x': x0, 'y': y0, 'width': x1 - x0 + 1, 'height': y1 - y0 + 1, 'color': color})
     evidence = {'frames': frames, 'bars': bars}
     (directory / 'pixel-geometry.json').write_text(json.dumps(evidence, indent=2))
+    def dark_pixels(box):
+        return sum(1 for r, g, b in image.crop(box).getdata() if max(r, g, b) < 100)
+
+    # Presence checks use final pixels, not text widths/DOM labels. The title
+    # regions exclude the frame border; the grid region is the source header row.
+    title_ink = [dark_pixels((f['x'] + 4, f['y'] + 2, f['x'] + 250, f['y'] + 18)) for f in frames]
+    grid_ink = dark_pixels((50, frames[0]['y'] - 23, frames[0]['x'] - 3, frames[0]['y'] - 3))
+    assert all(count >= 15 for count in title_ink), title_ink
+    assert grid_ink >= 80, grid_ink
     results = []
     for index, frame in enumerate(frames):
         bars = [r for r in evidence['bars'] if (frame['x'] <= r['x'] and r['x'] + r['width'] <= frame['x'] + frame['width'] + 1
@@ -122,7 +131,8 @@ def verify(directory):
                 assert abs((orange[2]['x'] - orange[0]['x']) / (blue[1]['x'] - blue[0]['x']) - 3) < 0.04
         results.append({'chart': index + 1, 'bars': len(bars), 'actualPixelsMatch': True})
     assert len(results) == 3
-    return {'ok': True, 'charts': results, 'sourceCellsIndependentlyRead': True}
+    return {'ok': True, 'charts': results, 'sourceCellsIndependentlyRead': True,
+            'titleInkPixels': title_ink, 'gridHeaderInkPixels': grid_ink}
 
 
 if __name__ == '__main__':

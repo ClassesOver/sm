@@ -8,6 +8,7 @@ from zipfile import ZipFile
 
 from lxml import etree
 from openpyxl import load_workbook
+from PIL import Image
 
 
 def verify(directory: Path):
@@ -31,10 +32,38 @@ def verify(directory: Path):
         assert len(sheet._charts) == count
         assert [sheet[f'B{row}'].value for row in (2, 3)] == [10, 20]
         assert sheet['A1'].font.bold is (output != source)
+    text_pixels = []
+    for name in ('edited', 'deleted'):
+        image = Image.open(directory / (name + '-reopened.png')).convert('RGB')
+        # This fixed fixture's visible chart is chart1 after edit and chart2
+        # after deletion (at the right edge). Find the first long top border,
+        # including the partially visible chart2 frame on the second revision.
+        pixels = image.load()
+        border = None
+        for y in range(260, min(360, image.height)):
+            run = None
+            for x in range(image.width + 1):
+                match = x < image.width and pixels[x, y] == (154, 164, 173)
+                if match and run is None:
+                    run = x
+                elif not match and run is not None:
+                    if x - run >= 150:
+                        border = (run, y)
+                        break
+                    run = None
+            if border:
+                break
+        assert border is not None, name
+        x, y = border
+        title_ink = sum(1 for r, g, b in image.crop((x + 4, y + 2, min(x + 250, image.width), y + 18)).getdata() if max(r, g, b) < 100)
+        grid_ink = sum(1 for r, g, b in image.crop((50, y - 23, 300, y - 3)).getdata() if max(r, g, b) < 100)
+        assert title_ink >= 15 and grid_ink >= 40, (name, title_ink, grid_ink)
+        text_pixels.append({'revision': name, 'titleInkPixels': title_ink, 'gridHeaderInkPixels': grid_ink})
     return {'ok': True, 'sourceSha256': hashlib.sha256(source).hexdigest(),
             'editedSha256': hashlib.sha256(edited).hexdigest(), 'deletedSha256': hashlib.sha256(deleted).hexdigest(),
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',
-            'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True}
+            'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True,
+            'reopenedTextPixels': text_pixels}
 
 
 if __name__ == '__main__':
