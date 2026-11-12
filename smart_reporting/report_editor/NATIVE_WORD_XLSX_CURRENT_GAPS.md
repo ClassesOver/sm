@@ -14,6 +14,8 @@
 
 后续 bar/column 数值轴自动留白、主刻度/数字格式、top/right 与隐藏/反向显示、共享零线已补，见 [数值轴专项](NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md)。原源算法750组差分（748一致、2组明确全负零上界修正）、57项前端和34项读取分批通过，真实截图与AI保存重开已验证。类别刻度/完整轴属性、源链接格式继承、对数/次轴与复杂图表仍缺；前述“自动/刻度仍缺”为各专项当时范围，此续批只关闭普通线性数值轴子集。
 
+后续 bar/column 单层类别名称、源 minMax/maxMin 分类与组内系列顺序、实时空槽和外表缓存、top/right/隐藏/长标签已补，见 [类别轴专项](NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md)。41项读取与75项前端分批通过，固定源排序表达式292个位置一致，最终构建的分类与相关浏览器/保存重开已验证。多级分类、日期比例、换行/旋转、完整轴属性、数据标签、对数/次轴及复杂图表仍开放；不把单层分类续批算完整图表。
+
 路径约定：`F=frontend/src/`（相对此文档）；`D=../reporting/doc_engine/`；`X=../reporting/workbook_engine/`；`U=/home/junge/pros/genoffice-source-full/`。源码路径均指实际文件，不指历史审计中已迁移的 `slides_engine` DOCX 路径。
 
 状态严格区分：

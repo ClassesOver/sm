@@ -112,8 +112,8 @@ def verify(directory):
             color = tuple(bytes.fromhex(bar['color'].removeprefix('#')))
             assert image.getpixel(point) == color, (point, image.getpixel(point), color)
         if index < 2:
-            blue = sorted((b for b in bars if b['color'] == '#4472c4'), key=lambda b: b['y'] if index == 0 else b['x'])
-            orange = sorted((b for b in bars if b['color'] == '#ed7d31'), key=lambda b: b['y'] if index == 0 else b['x'])
+            blue = sorted((b for b in bars if b['color'] == '#4472c4'), key=lambda b: b['y'] if index == 0 else b['x'], reverse=index == 0)
+            orange = sorted((b for b in bars if b['color'] == '#ed7d31'), key=lambda b: b['y'] if index == 0 else b['x'], reverse=index == 0)
             assert len(blue) == 2 and len(orange) == 3
             axis = 'width' if index == 0 else 'height'
             # Solid-color components omit antialiased edge pixels. Compare

@@ -26,6 +26,10 @@ export interface ChartReadSeries {
   /// Explicit series fill only; point fills and line colors are separate.
   readonly color?: string | undefined
   readonly categoriesRef?: string | undefined
+  /// Preserve single-level category point indices. Empty means an unreadable
+  /// source category block; absent means there was no category block.
+  readonly categories?: ReadonlyArray<string | null> | undefined
+  readonly categoryNumberFormat?: string | undefined
   readonly valuesRef: string
   /// scatter only: X values reference (c:xVal numRef), absent for ordinal X
   readonly xValuesRef?: string | undefined
@@ -36,6 +40,7 @@ export interface ChartReadSeries {
 export interface ChartReadAxis {
   readonly id: number
   readonly hidden: boolean
+  readonly reversed?: boolean | undefined
   readonly position?: 'left' | 'right' | 'top' | 'bottom' | undefined
   readonly title?: string | undefined
   readonly titleRef?: string | undefined
@@ -193,7 +198,9 @@ function axesOf(xml: string, kind: ChartReadKind): ChartReadSpec['axes'] {
     const positions = { l: 'left', r: 'right', t: 'top', b: 'bottom' } as const
     const scaling = axis.kind === 'valAx' ? valueScaling(axis.body) : undefined
     const format = axis.body.match(/<c:numFmt\b[^>]*\bformatCode="([^"]*)"/)?.[1]
+    const reversed = axis.kind !== 'valAx' && /<c:orientation\b[^>]*\bval="maxMin"/.test(axis.body.match(/<c:scaling\b[^>]*>([\s\S]*?)<\/c:scaling>/)?.[1] ?? '')
     return { id: axis.id!, hidden, ...titleText(axis.body), ...(scaling ? {scaling} : {}),
+      ...(reversed ? {reversed:true} : {}),
       ...(format !== undefined ? {numberFormat:decodeXmlText(format)} : {}),
       ...(Object.hasOwn(positions, raw) ? { position: positions[raw as keyof typeof positions] } : {}) }
   }
@@ -213,6 +220,27 @@ function legendOf(xml: string): ChartReadSpec['legend'] {
     .filter(Number.isSafeInteger)
   return { position: position[raw as keyof typeof position],
     overlay: /<c:overlay\b[^>]*\bval="(?:1|true)"/.test(body), hiddenEntries }
+}
+
+function categoryLabels(cat: string): Pick<ChartReadSeries, 'categories' | 'categoryNumberFormat'> {
+  const cache = cat.match(/<c:(strCache|numCache|strLit|numLit)\b[^>]*>([\s\S]*?)<\/c:\1>/)
+  if (!cache) return {categories:[]}
+  const body = cache[2]!, limit = 10000
+  const rawCount = body.match(/<c:ptCount\b[^>]*\bval="([^"]*)"/)?.[1]
+  const count = rawCount === undefined ? undefined : /^\d+$/.test(rawCount) ? Number(rawCount) : NaN
+  if (count !== undefined && (!Number.isSafeInteger(count) || count > limit)) return {categories:[]}
+  const points = new Map<number,string | null>()
+  let length = count ?? 0
+  for (const point of body.matchAll(/<c:pt\b([^>]*)>([\s\S]*?)<\/c:pt>/g)) {
+    const raw = point[1]!.match(/\bidx="(\d+)"/)?.[1], index = raw === undefined ? NaN : Number(raw)
+    if (!Number.isSafeInteger(index) || index >= (count ?? limit) || points.has(index)) return {categories:[]}
+    const text = point[2]!.match(/<c:v\b[^>]*>([\s\S]*?)<\/c:v>/)?.[1]
+    points.set(index,text === undefined ? null : decodeXmlText(text))
+    length = Math.max(length,index+1)
+  }
+  const format = /^num/.test(cache[1]!) ? body.match(/<c:formatCode\b[^>]*>([\s\S]*?)<\/c:formatCode>/)?.[1] : undefined
+  return {categories:Array.from({length},(_,index)=>points.get(index) ?? null),
+    ...(format !== undefined ? {categoryNumberFormat:decodeXmlText(format)} : {})}
 }
 
 function seriesOf(chartXml: string): ChartReadSeries[] {
@@ -261,6 +289,7 @@ function seriesOf(chartXml: string): ChartReadSeries[] {
       ...(nameCache !== undefined ? { nameCache: decodeXmlText(nameCache) } : {}),
       ...(color !== undefined ? { color: '#' + color } : {}),
       ...(categoriesRef !== undefined ? { categoriesRef: decodeXmlText(categoriesRef) } : {}),
+      ...(cat !== undefined ? categoryLabels(cat) : {}),
       valuesRef: decodeXmlText(valuesRef),
       ...(xValuesRef !== undefined ? { xValuesRef: decodeXmlText(xValuesRef) } : {}),
       ...(xValues !== undefined ? { xValues } : {}),

@@ -16,6 +16,7 @@ import { CHART_PALETTE, chartSeriesColor, fitted, paintChartLegend } from './cha
 import { paintAxisTitles } from './chart-axis-titles'
 import { barValueScale } from './chart-value-scale'
 import { paintValueAxis } from './chart-value-axis'
+import { chartCategorySlot, planCategoryAxis } from './chart-category-axis'
 
 const store = new Map<string, ReadonlyArray<ChartReadSpec>>()
 
@@ -131,7 +132,10 @@ function drawChart(
   const titledPlot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
   const slots = hasSeriesLegend ? spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef)) : []
   const scale = hasSeriesLegend && !spec.valueScaleUnavailable ? barValueScale(slots, spec.axes?.value.scaling) : undefined
-  const plot = scale && flat.length > 0 ? paintValueAxis(ctx, spec, scale, titledPlot) : titledPlot
+  const categoryCount = slots.reduce((count, values) => Math.max(count, values.length), 1)
+  const category = scale && flat.length > 0 ? planCategoryAxis(ctx,spec,worksheet,categoryCount,titledPlot) : undefined
+  const plot = scale && flat.length > 0 ? paintValueAxis(ctx, spec, scale, category?.plot ?? titledPlot) : titledPlot
+  category?.paint(plot)
   const { top: plotTop, bottom: plotBottom, left: plotLeft, right: plotRight } = plot
   const plotHeight = Math.max(4, plotBottom - plotTop)
   const plotWidth = Math.max(4, plotRight - plotLeft)
@@ -144,7 +148,6 @@ function drawChart(
   if (spec.kind === 'bar' || spec.kind === 'column') {
     // Preserve the category index of missing cells, including a longer later
     // series. Zero is a zero-length bar, never an invented minimum pixel size.
-    const categoryCount = slots.reduce((count, values) => Math.max(count, values.length), 1)
     const fraction = scale?.fraction
     if (!fraction) {
       ctx.save(); ctx.beginPath(); ctx.rect(plotLeft,plotTop,plotWidth,plotHeight); ctx.clip()
@@ -161,7 +164,7 @@ function drawChart(
       ctx.fillStyle = chartSeriesColor(spec.series[seriesIndex]!, seriesIndex)
       values.forEach((value, index) => {
         if (value === null || value === 0) return
-        const offset = band * index + band * 0.15 + thickness * seriesIndex
+        const offset = band * chartCategorySlot(spec,index,categoryCount) + band * 0.15 + thickness * chartCategorySlot(spec,seriesIndex,slots.length)
         const end = horizontal ? plotLeft + plotWidth * fraction(value) : plotBottom - plotHeight * fraction(value)
         if (end === zero) return
         if (horizontal) ctx.fillRect(Math.min(zero, end), plotTop + offset, Math.abs(end - zero), thickness)

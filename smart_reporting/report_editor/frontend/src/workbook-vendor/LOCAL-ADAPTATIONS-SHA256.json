@@ -11,5 +11,6 @@
   "grid/sparkline-render.ts": "1274d848a8fa4b705e1005bacb66fab6d104305e8761e50bb446bbd082b5f6e5",
   "core/themes.ts": "009383e1fd1b26183f65d726fcb9aab91edff070646e1d175076295d6c3bc6dd",
   "grid/chart-value-scale.ts": "01553a789811d4f2df3075aea60dd5d73fd33d58706a6d4e642ee82db123bb07",
-  "grid/chart-value-axis.ts": "a2836b9faf6bd8538b552161929f24815fb2985ce0da621980ed1859da503196"
+  "grid/chart-value-axis.ts": "a2836b9faf6bd8538b552161929f24815fb2985ce0da621980ed1859da503196",
+  "grid/chart-category-axis.ts": "67f9261cc58b3388b2eb906244157136b09dd41ae1983387414b862867a03514"
 }

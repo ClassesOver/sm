@@ -260,3 +260,19 @@ separate band inside legend/title bands. LOCAL-ADAPTATIONS-SHA256 records both
 files. Category labels, full axis styling, source-linked cell format inheritance,
 logarithmic/secondary axes and chart families beyond bar/column remain outside
 this increment; see NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md.
+
+
+2026-11-12 category-axis increment: `grid/chart-category-axis.ts` adapts the
+pinned WorkbookVisuals.tsx rowSlot/catSlot/seriesSlot semantics. Horizontal
+minMax categories and their within-group series run bottom-up; maxMin reverses
+both, while column maxMin mirrors the horizontal category dimension. The
+adapter resolves bounded one-dimensional same-sheet category references from
+live cells, retaining blanks; external/unreadable references use indexed
+original caches. Unsupported source blocks are not flattened into fabricated
+ordinals. Category bands are reserved before the value axis is painted; labels
+use the final shared plot. Long labels are clipped/fitted and dense labels may
+be sampled; source wrapping/multi-level and full date-axis spacing remain open.
+The read-only original-source expression oracle checks 292 category/series
+positions. See NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md for original
+OOXML, final-pixel and save/download/reopen evidence. The adapted file's hash
+is recorded in LOCAL-ADAPTATIONS-SHA256.

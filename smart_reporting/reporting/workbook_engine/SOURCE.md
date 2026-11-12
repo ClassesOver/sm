@@ -513,3 +513,12 @@ of full chart axis support. The frontend uses the pinned chart-visual.ts scale
 and its existing Univer number formatter; see the editor's
 NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md for source-oracle and final-pixel
 proof, intentional all-negative zero-top correction and unsupported properties.
+
+
+2026-11-12 category chart projection: the local chart reader retains bounded,
+indexed single-level strCache/numCache/strLit/numLit labels and the numeric
+category format, plus maxMin from the actual linked category axis. Sparse
+indices remain null slots; duplicate/out-of-range points, excessive counts and
+multi-level blocks return an explicitly empty projection rather than silently
+reindexing or inventing labels. No source chart/cache bytes are rewritten.
+See NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md for the native adapter scope.

@@ -26,6 +26,7 @@ def verify(directory: Path):
         assert xml.xpath('//c:barDir/@val', namespaces=ns) == ['bar']
         assert xml.xpath('//c:legendPos/@val', namespaces=ns) == ['b']
         assert xml.xpath('//c:numCache/c:pt/c:v/text()', namespaces=ns) == ['10', '20']
+        assert xml.xpath('//c:ser/c:cat//c:pt/c:v/text()', namespaces=ns) == ['Q1', 'Q2']
         assert xml.xpath('//c:ser//c:f/text()', namespaces=ns) == ["'Sheet'!$A$2:$A$3", "'Sheet'!$B$2:$B$3"]
         assert 'xl/charts/chart1.xml' not in second.namelist()
         saved_request = json.loads((directory / 'edited-save.json').read_text())['request']
@@ -44,6 +45,7 @@ def verify(directory: Path):
         sheet = load_workbook(BytesIO(output)).active
         assert len(sheet._charts) == count
         assert [sheet[f'B{row}'].value for row in (2, 3)] == [10, 20]
+        assert [sheet[f'A{row}'].value for row in (2, 3)] == ['Q1', 'Q2']
         assert sheet['A1'].font.bold is (output != source)
     text_pixels = []
     for name in ('edited', 'deleted'):
@@ -89,13 +91,17 @@ def verify(directory: Path):
                 text_pixels[-1].update(categoryAxisTitleInk=category_ink, valueAxisTitleInk=value_ink)
             if value_range:
                 frame = geometry['frames'][0]
-                plot_width = frame['width'] - 16 - (24 if axis_titles else 0)
-                ordered = sorted(bars, key=lambda bar: bar['y'])
+                # Recover the actual zero/start from pixels. The category
+                # name gutter sits inside the separate title band.
+                plot_left = min(bar['x'] for bar in bars)
+                plot_width = frame['x'] + frame['width'] - 8 - plot_left
+                assert plot_left >= frame['x'] + 8 + (24 if axis_titles else 0)
+                ordered = sorted(bars, key=lambda bar: bar['y'], reverse=True)
                 for bar, fraction in zip(ordered, (0.25, 0.75)):
                     assert abs(bar['width'] - plot_width * fraction) <= 2, (bar, plot_width)
                 auto_image = Image.open(directory / 'auto-range-preview.png').convert('RGB')
                 auto_geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](auto_image, ('#4472c4',))
-                auto_bars = sorted((r for r in auto_geometry['bars'] if r['width'] > 9 or r['height'] > 9), key=lambda bar: bar['y'])
+                auto_bars = sorted((r for r in auto_geometry['bars'] if r['width'] > 9 or r['height'] > 9), key=lambda bar: bar['y'], reverse=True)
                 assert len(auto_bars) == 2
                 # Pinned source automatic range: 0..25 (5% headroom,
                 # 5 major unit) for the actual data 10/20.
@@ -105,7 +111,7 @@ def verify(directory: Path):
     return {'ok': True, 'sourceSha256': hashlib.sha256(source).hexdigest(),
             'editedSha256': hashlib.sha256(edited).hexdigest(), 'deletedSha256': hashlib.sha256(deleted).hexdigest(),
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',
-            'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True,
+            'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True, 'categoryLabelsRetained': True,
             'reopenedTextPixels': text_pixels}
 
 

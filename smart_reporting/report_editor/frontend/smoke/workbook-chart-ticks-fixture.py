@@ -91,13 +91,19 @@ def verify(directory):
     geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, ('#4472c4',))
     (directory / 'pixel-geometry.json').write_text(json.dumps(geometry, indent=2))
     assert len(geometry['frames']) == 6
+    hidden_frame = geometry['frames'][4]
+    hidden_bars = [r for r in geometry['bars'] if hidden_frame['y'] < r['y'] < hidden_frame['y'] + hidden_frame['height']]
+    assert len(hidden_bars) == 2
+    # Same A/B category labels and frame width in all horizontal fixtures.
+    plot_left = min(bar['x'] for bar in hidden_bars)
+    horizontal_width = hidden_frame['x'] + hidden_frame['width'] - 8 - plot_left
     results = []
     for index, frame in enumerate(geometry['frames']):
         x, y, right, bottom = frame['x'], frame['y'], frame['x'] + frame['width'], frame['y'] + frame['height']
         bars = sorted((r for r in geometry['bars'] if x <= r['x'] and r['x'] + r['width'] <= right
-                      and y <= r['y'] and r['y'] + r['height'] <= bottom), key=lambda r: r['x'] if index == 1 else r['y'])
+                      and y <= r['y'] and r['y'] + r['height'] <= bottom), key=lambda r: r['x'] if index == 1 else r['y'], reverse=index != 1)
         assert len(bars) == 2, (index, bars)
-        width, height = frame['width'] - 16, frame['height'] + 1 - 28
+        width, height = horizontal_width, frame['height'] + 1 - 48
         if index == 1:
             for bar, magnitude in zip(bars, (10, 20)):
                 assert abs(bar['height'] - height * magnitude / 22.5) <= 2, bar
@@ -108,7 +114,7 @@ def verify(directory):
             for bar, proportion in zip(bars, expected):
                 assert abs(bar['width'] - width * proportion) <= 2, (index, bar, width)
             if index == 0:
-                assert abs(bars[0]['x'] - (x + 8 + width * 0.6)) <= 2
+                assert abs(bars[0]['x'] - (plot_left + width * 0.6)) <= 2
                 assert abs(bars[1]['x'] + bars[1]['width'] - bars[0]['x']) <= 2
             if index == 3:
                 assert all(abs(b['x'] + b['width'] - (right - 8)) <= 2 for b in bars)

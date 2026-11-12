@@ -13,12 +13,13 @@ function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Pa
   const fills: Rect[] = []
   const texts: Array<{ text: string; x: number; y: number }> = []
   const tickTexts: typeof texts = []
+  const categoryTexts: typeof texts = []
   const ctx = {
     fillStyle: '', strokeStyle: '', lineWidth: 1, font: '',
     save: vi.fn(), restore: vi.fn(), strokeRect: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(), translate: vi.fn(), rotate: vi.fn(),
     moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
     measureText: (text: string) => ({ width: text.length * 6 }),
-    fillText(text: string, x: number, y: number) { (this.font === '9px system-ui' ? tickTexts : texts).push({ text, x, y }) },
+    fillText(text: string, x: number, y: number) { (this.font === '10px system-ui' ? categoryTexts : this.font === '9px system-ui' ? tickTexts : texts).push({ text, x, y }) },
     fillRect(x: number, y: number, width: number, height: number) {
       fills.push({ x, y, width, height, color: this.fillStyle })
     },
@@ -38,7 +39,7 @@ function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Pa
     }),
   })
   expect(ctx.restore.mock.calls.length).toBe(ctx.save.mock.calls.length)
-  return { fills: fills.filter(rect => rect.color !== '#ffffff'), texts, tickTexts, ctx }
+  return { fills: fills.filter(rect => rect.color !== '#ffffff'), texts, tickTexts, categoryTexts, ctx }
 }
 const paint = (kind: 'bar' | 'column', series: Array<Array<unknown>>) => render(kind, series).fills
 
@@ -170,7 +171,7 @@ describe('actual linked axis titles', () => {
   expect(result.fills.every(bar=>bar.x>=32&&bar.y+bar.height<=168)).toBe(true)
  })
  it('honors hidden axes without hiding the data or reserving an empty title band',()=>{
-  const baseline=render('bar',[[3,5]])
+  const baseline=render('bar',[[3,5]],{axes:{category:{id:1,hidden:true},value:{id:2,hidden:true}}})
   const result=render('bar',[[3,5]],{axes:{category:{...axes.category,hidden:true},value:{...axes.value,hidden:true}}})
   expect(result.texts).toEqual([])
   expect(result.fills).toEqual(baseline.fills)
@@ -192,7 +193,7 @@ describe('actual linked axis titles', () => {
   expect(result.texts.every(text=>text.text.endsWith('…'))).toBe(true)
   expect(result.texts[0]!.text.length*6).toBeLessThanOrEqual(160)
   expect(result.texts[1]!.text.length*6).toBeLessThanOrEqual(360)
-  expect(result.ctx.clip).toHaveBeenCalledTimes(3)
+  expect(result.ctx.clip).toHaveBeenCalledTimes(4)
  })
 })
 
@@ -201,7 +202,7 @@ describe.each(['bar','column'] as const)('%s saved value bounds',kind=>{
  it('uses visible min/max and the clamped zero baseline',()=>{
   const bars=render(kind,[[3,6]],{axes:axes({min:2,max:8,reversed:false})}).fills
   expect(bars).toHaveLength(2)
-  const length=kind==='bar'?'width':'height',extent=kind==='bar'?384:184
+  const length=kind==='bar'?'width':'height',extent=kind==='bar'?368:164
   expect(bars[0]![length]).toBeCloseTo(extent/6)
   expect(bars[1]![length]).toBeCloseTo(extent*4/6)
  })
@@ -209,7 +210,7 @@ describe.each(['bar','column'] as const)('%s saved value bounds',kind=>{
   const bars=render(kind,[[-5,3,12]],{axes:axes({min:2,max:8,reversed:false})}).fills
   expect(bars).toHaveLength(2)
   for(const bar of bars){expect(bar.x).toBeGreaterThanOrEqual(8);expect(bar.x+bar.width).toBeLessThanOrEqual(392);expect(bar.y).toBeGreaterThanOrEqual(8);expect(bar.y+bar.height).toBeLessThanOrEqual(192)}
-  expect(kind==='bar'?bars[1]!.width:bars[1]!.height).toBeCloseTo(kind==='bar'?384:184)
+  expect(kind==='bar'?bars[1]!.width:bars[1]!.height).toBeCloseTo(kind==='bar'?368:164)
  })
  it('honors reverse orientation while retaining lengths',()=>{
   const bars=render(kind,[[3,6]],{axes:axes({min:2,max:8,reversed:true})}).fills
@@ -238,8 +239,8 @@ describe('actual numeric axis ticks',()=>{
    expect(current.x-current.text.length*3).toBeGreaterThanOrEqual(previous.x+previous.text.length*3+4)
   }
   const [positive,negative]=result.fills
-  expect(positive!.x).toBeCloseTo(8+384*0.6)
-  expect(negative!.width).toBeCloseTo(384*0.5)
+  expect(positive!.x).toBeCloseTo(24+368*0.6)
+  expect(negative!.width).toBeCloseTo(368*0.5)
   expect(result.ctx.stroke).toHaveBeenCalled()
  })
  it('honors percentage number format and a saved major unit',()=>{
@@ -259,5 +260,53 @@ describe('actual numeric axis ticks',()=>{
  it('does not invent ticks for hidden or unowned axes',()=>{
   expect(render('bar',[[3,6]],{axes:{...axes,value:{...axes.value,hidden:true}}}).tickTexts).toEqual([])
   expect(render('bar',[[3,6]]).tickTexts).toEqual([])
+ })
+})
+
+describe('actual category labels and source category order',()=>{
+ const axes={category:{id:1,hidden:false},value:{id:2,hidden:false}}
+ const series=[{valuesRef:'A1:A3',categoriesRef:"'Test'!$B$1:$B$3",categories:['STALE A','STALE B','STALE C']}]
+ it.each(['bar','column'] as const)('keeps %s live blank labels and missing values in their original slots',kind=>{
+  const result=render(kind,[[3,null,9],['Alpha',null,'Gamma']],{axes,series})
+  expect(result.categoryTexts.map(t=>t.text).sort()).toEqual(['Alpha','Gamma'])
+  expect(result.fills).toHaveLength(2)
+  const [first,last]=result.fills
+  const alpha=result.categoryTexts.find(t=>t.text==='Alpha')!,gamma=result.categoryTexts.find(t=>t.text==='Gamma')!
+  if(kind==='bar'){
+   expect(first!.y).toBeGreaterThan(last!.y)
+   expect(alpha.y).toBeCloseTo(first!.y+first!.height/2)
+   expect(gamma.y).toBeCloseTo(last!.y+last!.height/2)
+  }else{
+   expect(alpha.x).toBeCloseTo(first!.x+first!.width/2)
+   expect(gamma.x).toBeCloseTo(last!.x+last!.width/2)
+  }
+ })
+ it.each(['bar','column'] as const)('reverses %s categories and within-group series as in the source',kind=>{
+  const entries=[{valuesRef:'A1:A2',categories:['North','South']},{valuesRef:'B1:B2'}]
+  const normal=render(kind,[[3,6],[2,4]],{axes,series:entries})
+  const reverse=render(kind,[[3,6],[2,4]],{axes:{...axes,category:{...axes.category,reversed:true}},series:entries})
+  const axis=kind==='bar'?'y':'x'
+  expect(Math.sign(normal.fills[0]![axis]-normal.fills[1]![axis])).toBe(-Math.sign(reverse.fills[0]![axis]-reverse.fills[1]![axis]))
+  expect(Math.sign(normal.fills[0]![axis]-normal.fills[2]![axis])).toBe(-Math.sign(reverse.fills[0]![axis]-reverse.fills[2]![axis]))
+ })
+ it('uses cached external categories without reading same-address cells in the active sheet',()=>{
+  const result=render('bar',[[3,6],['WRONG','WRONG']],{axes,series:[{valuesRef:'A1:A2',categoriesRef:'Other!B1:B2',categories:['Cached A','Cached B']}]})
+  expect(result.categoryTexts.map(t=>t.text).sort()).toEqual(['Cached A','Cached B'])
+ })
+ it('paints a top category axis and a right category axis inside their own bands',()=>{
+  for(const kind of ['column','bar'] as const){
+   const result=render(kind,[[3,6]],{axes:{...axes,category:{...axes.category,position:kind==='bar'?'right':'top'}},series:[{valuesRef:'A1:A2',categories:['A','B']}]})
+   expect(result.categoryTexts).toHaveLength(2)
+   expect(result.categoryTexts.every(t=>kind==='bar'?t.x>Math.max(...result.fills.map(b=>b.x+b.width)):t.y<Math.min(...result.fills.map(b=>b.y)))).toBe(true)
+  }
+ })
+ it('formats literal numeric categories with their saved percentage format',()=>{
+  const result=render('column',[[3,6]],{axes,series:[{valuesRef:'A1:A2',categories:['0.1','0.25'],categoryNumberFormat:'0.0%'}]})
+  expect(result.categoryTexts.map(t=>t.text)).toEqual(['10.0%','25.0%'])
+ })
+ it('hides category labels without changing category order or data',()=>{
+  const result=render('bar',[[3,6]],{axes:{...axes,category:{...axes.category,hidden:true}},series:[{valuesRef:'A1:A2',categories:['A','B']}]})
+  expect(result.categoryTexts).toEqual([])
+  expect(result.fills[0]!.y).toBeGreaterThan(result.fills[1]!.y)
  })
 })
