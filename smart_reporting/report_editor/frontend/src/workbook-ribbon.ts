@@ -10,6 +10,7 @@ import { applyWorkbookFontDecoration, type FontDecorationRange } from './workboo
 import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
 import { CELL_STYLE_PRESETS } from './workbook-cell-style-presets'
+import { THEME_MENU_OPTIONS } from './workbook-theme'
 
 type RibbonTab =
   | 'File'
@@ -153,6 +154,9 @@ type RibbonCommand =
   | 'filter-clear'
   | 'filter-reapply'
   | `insert-function-open:${string}`
+  | `theme:${string}`
+  | `theme-colors:${string}`
+  | `theme-fonts:${string}`
   | `page-margins:${'normal' | 'wide' | 'narrow'}`
   | `page-orientation:${'portrait' | 'landscape'}`
   | `page-paper:${number}`
@@ -585,6 +589,8 @@ const disabledReasons: Record<string, string> = {
   'new-window': '网页编辑器不管理桌面工作簿窗口',
   'arrange-all': '网页编辑器不管理桌面工作簿窗口',
   'split-window': '尚无拆分视口及文件回写',
+  // 固定源 Page Layout 主题组只有 Themes / Colors / Fonts 三个菜单，没有主题效果写入。
+  'theme-effects': '固定源未提供主题效果写入',
   'hide-window': '网页编辑器不管理桌面工作簿窗口',
   'switch-window': '网页编辑器不管理桌面工作簿窗口',
 }
@@ -765,6 +771,8 @@ export function mountWorkbookRibbon(
     formulaTrace?(): { active: boolean; available: boolean }
     pageBreakPreview?(): { active: boolean; available: boolean; pending?: boolean; reason?: string }
     pageSetup?(): WorkbookPageSetupState | undefined
+    /// 页面布局▸主题：当前主题名称与可用性（来自实际主题部件字节）。
+    theme?(): { colorName?: string; fontName?: string; reason?: string; fontsReason?: string } | undefined
     definedNames?(): readonly string[]
     /// 审阅▸保护：当前工作表与工作簿结构的有效保护状态；reason 为不可切换原因（密码保护）。
     protection?(): { sheet: { protected: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
@@ -979,6 +987,16 @@ export function mountWorkbookRibbon(
       pasteSpecial.disabled = !editable || !selected
       pasteSpecial.title = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : '选择性粘贴'
     }
+    const themeState = view.theme?.()
+    for (const menu of ['theme', 'theme-colors', 'theme-fonts'] as const) {
+      const select = body.querySelector<HTMLSelectElement>(`[data-ribbon-menu="${menu}"]`)
+      if (!select) continue
+      const reason = !editable ? '当前工作簿不可编辑或正在保存' : !themeState ? '工作簿尚未就绪' : themeState.reason ?? (menu === 'theme-fonts' ? themeState.fontsReason : undefined)
+      select.disabled = reason !== undefined
+      const current = menu === 'theme-fonts' ? themeState?.fontName : themeState?.colorName
+      select.title = reason ?? `${select.getAttribute('aria-label')}${current ? `（当前：${current}）` : ''}`
+      select.setAttribute('aria-description', select.title)
+    }
     // Page Layout 下拉与打印开关：状态来自引擎读模型 + 会话内页面设置日志。
     const pageState = view.pageSetup?.()
     const pageOption = (value: string, label: string, disabled = false) => {
@@ -1022,7 +1040,7 @@ export function mountWorkbookRibbon(
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
       zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放比例'
     }
-    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"])')) {
+    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
@@ -1195,6 +1213,17 @@ export function mountWorkbookRibbon(
       if (active === 'Home' && group.title === '数字') {
         const number = document.createElement('span'); number.className = 'workbook-ribbon-number-format'; number.dataset.ribbonControl = 'number-format'; number.setAttribute('aria-label', '当前数字格式'); number.textContent = '不可判定'; section.append(number)
       }
+      if (active === 'Page Layout' && group.title === '主题') {
+        // 固定源 ExcelShell：Themes 大菜单 + Colors / Fonts MenuSelect，选中即应用，菜单回弹到标题。
+        for (const [menu, label] of [['theme', '主题'], ['theme-colors', '颜色'], ['theme-fonts', '字体']] as const) {
+          const select = document.createElement('select')
+          select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', label); select.dataset.ribbonMenu = menu
+          const title = document.createElement('option'); title.value = ''; title.textContent = label
+          select.append(title, ...THEME_MENU_OPTIONS[menu].map(choice => { const option = document.createElement('option'); option.value = choice.id; option.textContent = choice.label; return option }))
+          select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`${menu}:${value}` as RibbonCommand) })
+          section.append(select)
+        }
+      }
       if (active === 'Page Layout' && group.title === '页面设置') {
         // 固定源 MenuSelect 形态：字段下拉直接切换，动作下拉（打印区域/
         // 分页符/顶端标题行）选中后回弹到菜单标题。
@@ -1267,6 +1296,7 @@ export function mountWorkbookRibbon(
         if (active === 'Home' && item.id === 'cell-style') continue
         if (active === 'Home' && group.title === '字体' && /^(font-family|font-size|font-color|fill):/.test(item.id)) continue
         if (active === 'Formulas' && item.id === 'use-in-formula') continue
+        if (active === 'Page Layout' && ['theme', 'theme-colors', 'theme-fonts'].includes(item.id)) continue
         const button = document.createElement('button')
         button.type = 'button'; button.dataset.ribbonCommand = item.id; button.title = item.label; button.setAttribute('aria-label', item.label)
         if (item.id === 'format-as-table') button.setAttribute('aria-label', '创建表格')

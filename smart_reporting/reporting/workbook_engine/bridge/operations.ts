@@ -59,6 +59,18 @@ const sheetFilterCriteriaSchema = z.object({
     { message: 'A filter column needs values, a blank flag, custom criteria, or date groups.' })).max(1000),
 }).strict()
 
+// 固定源 Page Layout ▸ Themes/Colors/Fonts（apps/sheets/src/renderer/themes.ts）：
+// 只改工作簿主题部件 xl/theme/theme1.xml 的 clrScheme/fontScheme；名称与字体名为纯文本。
+const themeText = z.string().min(1).max(100).regex(/^[^\u0000-\u001f\u007f]+$/)
+const setThemePartSchema = z.object({
+  kind: z.literal('setThemePart'),
+  themePath: z.literal('xl/theme/theme1.xml'),
+  state: z.object({
+    colors: z.object({ name: themeText, values: z.array(z.string().regex(/^#[0-9A-Fa-f]{6}$/)).length(12) }).strict().optional(),
+    fonts: z.object({ name: themeText, major: themeText, minor: themeText }).strict().optional(),
+  }).strict().refine(state => state.colors !== undefined || state.fonts !== undefined, { message: 'A theme change needs colors or fonts.' }),
+}).strict()
+
 export async function applyWorkbookOperations(bytes: Uint8Array, operations: readonly Record<string, any>[]): Promise<Uint8Array> {
   for (const op of operations) {
     switch (op.kind) {
@@ -188,7 +200,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await setSheetEditableRanges(bytes, parsed.sheetName, parsed.ranges); break
       }
       case 'protectWorkbookStructure': bytes = await protectWorkbookStructure(bytes, op.lockStructure); break
-      case 'setThemePart': bytes = await setThemePart(bytes, op.themePath, op.state); break
+      case 'setThemePart': { const valid = setThemePartSchema.parse(op); bytes = await setThemePart(bytes, valid.themePath, valid.state); break }
       case 'sortRange': {
         bytes = await sortRangeRows(bytes, op.sheetName, op.spec)
         break
