@@ -247,6 +247,21 @@ try {
   await page.screenshot({ path: resolve(output, 'gridlines.png') })
   await gridToggle.click()
   assert.equal(await gridLayer(), 'none')
+  // 视图 ▸ 标尺：0 位于页面中心（固定源 ruler-ticks），厘米刻度；拖动时细线跟随指针
+  await page.locator('[data-command="ruler"]').click()
+  assert.equal(await page.locator('[data-command="ruler"]').getAttribute('aria-pressed'), 'true')
+  await page.waitForFunction(() => document.querySelectorAll('.slides-stage > .ruler-h .ruler-num').length > 5 && document.querySelectorAll('.slides-stage > .ruler-v .ruler-num').length > 3)
+  const rulerCheck = await page.evaluate(() => {
+    const content = document.querySelector('.slides-canvas .konvajs-content').getBoundingClientRect()
+    const zero = (axis) => [...document.querySelectorAll(`.slides-stage > .ruler-${axis} .ruler-num`)].find(item => item.textContent === '0').getBoundingClientRect()
+    const h = zero('h'), v = zero('v')
+    return { dx: Math.abs((h.left + h.width / 2) - (content.left + content.width / 2)), dy: Math.abs((v.top + v.height / 2) - (content.top + content.height / 2)) }
+  })
+  assert.ok(rulerCheck.dx < 2 && rulerCheck.dy < 2, JSON.stringify(rulerCheck))
+  assert.deepEqual(await draft(), [])
+  await page.screenshot({ path: resolve(output, 'ruler.png') })
+  await page.locator('[data-command="ruler"]').click()
+  assert.equal(await page.locator('.slides-stage > .ruler').count(), 0)
   await page.screenshot({ path: resolve(output, 'revision-2.png'), fullPage: true })
   assert.deepEqual(await draft(), [])
   const ignorable = message => /WebSocket|\[vite\]/.test(message)

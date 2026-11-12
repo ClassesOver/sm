@@ -206,3 +206,8 @@ consoleErrors、failedResponses 均为空。Chromium 140.0.7339.16，端口 4307
 本次只验 final4 入口及资产连续性，未重跑 final3 的新建、双向更改和 Undo 完整交互链，
 不能将前述 final3 全部专项表述为 final4 重跑；鉴权仍为明确标识的 API route fixture，
 不代表生产鉴权、真实 AI provider 或完整保存下载链路验收。
+
+2026-11-12: `ruler-ticks.ts` is a byte-identical copy of the pinned `apps/slides/src/renderer/ruler-ticks.ts`
+(SHA-256 `3c784278b8d8f9755b45e357c22db10ed04b8a66135ff7917b816e58de57c42a`). `src/slides-ruler.ts` ports
+`components/StageRuler.tsx` to plain DOM (ticks from `computeRulerTicks`, 0 at the slide centre, the
+press-drag pointer hairline); pulling guides off the ruler is not ported yet.

@@ -333,3 +333,20 @@ button, a { -webkit-tap-highlight-color: transparent; }
   background-image: linear-gradient(to right, var(--slides-grid-line) 1px, transparent 1px), linear-gradient(to bottom, var(--slides-grid-line) 1px, transparent 1px);
   background-size: var(--slides-grid-x, 5.21%) 100%, 100% var(--slides-grid-y, 7.4%);
 }
+
+/* 固定源 View ▸ Ruler（styles.css .ruler*）：标尺在缩放画布之外，外壳色取 --office-* token。 */
+.slides-stage { position: relative; }
+.slides-stage[data-ruler="true"] { padding-top: 38px; padding-left: 38px; }
+.slides-stage > .ruler-corner { position: absolute; left: 0; top: 0; width: 20px; height: 20px; background: var(--office-chrome); border-right: 1px solid var(--office-border-strong); border-bottom: 1px solid var(--office-border-strong); z-index: 2; }
+.slides-stage > .ruler { position: absolute; background: var(--office-chrome); overflow: hidden; user-select: none; touch-action: none; z-index: 1; }
+.slides-stage > .ruler-h { left: 20px; right: 0; top: 0; height: 20px; border-bottom: 1px solid var(--office-border-strong); }
+.slides-stage > .ruler-v { top: 20px; bottom: 0; left: 0; width: 20px; border-right: 1px solid var(--office-border-strong); }
+.slides-stage .ruler-num { position: absolute; font-size: 9px; color: var(--office-muted); line-height: 1; }
+.slides-stage .ruler-h .ruler-num { top: 5px; transform: translateX(-50%); }
+.slides-stage .ruler-v .ruler-num { left: 50%; transform: translate(-50%, -50%); }
+.slides-stage .ruler-tick { position: absolute; background: var(--office-border-strong); }
+.slides-stage .ruler-h .ruler-tick { bottom: 0; width: 1px; height: 5px; }
+.slides-stage .ruler-v .ruler-tick { right: 0; height: 1px; width: 5px; }
+.slides-stage .ruler-indicator { position: absolute; display: none; pointer-events: none; background: var(--office-accent); }
+.slides-stage .ruler-h .ruler-indicator { inset: 0 auto 0 0; width: 1px; }
+.slides-stage .ruler-v .ruler-indicator { inset: 0 0 auto 0; height: 1px; }
