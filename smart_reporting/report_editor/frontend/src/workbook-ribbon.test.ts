@@ -245,11 +245,17 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
 
   expect(onCommand.mock.calls).toEqual([['bold'], ['font-family:Calibri'], ['decimal-inc'], ['autofn:SUM']])
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  // 剪贴板与格式刷已接入官方命令；上标仍缺引擎字段，保留以原因禁用。
-  for (const id of ['paste', 'format-painter']) expect(document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!.dataset.unavailableReason, id).toBeUndefined()
-  const deferred = document.querySelector<HTMLButtonElement>('[data-ribbon-command="superscript"]')!
-  expect(deferred.disabled).toBe(true)
-  expect(deferred.title).toContain('上标')
+  // 剪贴板、格式刷与上/下标均已接入：上下标经 Univer va 样式写网格，保存差分写回 OOXML vertAlign。
+  for (const id of ['paste', 'format-painter', 'superscript', 'subscript']) expect(document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!.dataset.unavailableReason, id).toBeUndefined()
+  const superscript = document.querySelector<HTMLButtonElement>('[data-ribbon-command="superscript"]')!
+  expect(superscript.disabled).toBe(false)
+  superscript.click(); expect(onCommand).toHaveBeenLastCalledWith('superscript')
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
+  const symbol = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-symbol"]')!
+  expect(symbol.dataset.unavailableReason).toBeUndefined()
+  symbol.click(); expect(onCommand).toHaveBeenLastCalledWith('insert-symbol')
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-equation"]')!.dataset.unavailableReason).toContain('公式')
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
   const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
   expect(rotation.disabled).toBe(false)
   expect(rotation.title).not.toContain('does not capture text rotation')

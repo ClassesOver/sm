@@ -97,6 +97,7 @@ import { installGoalSeek } from './workbook-goal-seek'
 import { createGoalSeekDialog } from './workbook-goal-seek-dialog'
 import { applyWorkbookOutline, workbookOutlineOperations, installWorkbookOutline, readWorkbookOutlineSummary, setWorkbookOutlineSummary, toggleWorkbookOutlineGroup, showWorkbookOutlineLevel } from './workbook-outline'
 import { zoomWorkbookToSelection } from './workbook-zoom-selection'
+import { createWorkbookSymbolDialog, symbolInsertion } from './workbook-symbol-dialog'
 import { createWorkbookZoomDialog, applyWorkbookZoomPercent, captureWorkbookZoomTarget, isWorkbookZoomTargetCurrent, type WorkbookZoomCommand, type WorkbookZoomTarget } from './workbook-zoom-dialog'
 import { createPrintScaleDialog, printScaleState, printScalePatch } from './workbook-print-scale'
 import { createHeaderFooterDialog, headerFooterEditorState } from './workbook-header-footer-editor'
@@ -431,6 +432,25 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   }
   const sheetProtected = (sheetId: string | undefined) =>
     sheetId !== undefined && (sheetProtection.get(sheetId) ?? originalSheet(sheetId)?.protection?.protected ?? false)
+  // 固定源 Insert ▸ 符号（handleInsertSymbol）：追加到活动单元格，经官方 FRange.setValue 写入网格，保存差分写回值。
+  const symbolDialog = createWorkbookSymbolDialog(shell.editor, char => {
+    if (!editable()) throw new Error('工作簿正在加载或保存')
+    const active = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+    const anchor = active?.getSelection()?.getActiveRange()
+    if (!active || !anchor) throw new Error('请先选中一个单元格，再插入符号')
+    if (sheetProtected(active.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+    const row = anchor.getRow(), column = anchor.getColumn()
+    const cell = active.getRange(row, column)
+    const data = (cell as unknown as { getCellData?: () => { v?: unknown; f?: string | null; si?: string | null; p?: unknown } | null }).getCellData?.() ?? null
+    const next = symbolInsertion({ value: (data?.v ?? cell.getValue()) as string | number | boolean | null | undefined, formula: data?.f || data?.si || cell.getFormula?.() || null, richText: !!data?.p }, char)
+    cell.setValue(next)
+    markDirty(); ribbon.refreshState?.()
+    let label = ''
+    for (let value = column + 1; value > 0; value = Math.floor((value - 1) / 26)) label = String.fromCharCode(65 + ((value - 1) % 26)) + label
+    const message = `已插入 ${char} 到 ${label}${row + 1}，修改尚未保存。`
+    feedback.textContent = message
+    return message
+  })
   let sparklines: ReturnType<typeof installWorkbookSparklines> | undefined
   let sparklineDialog: ReturnType<typeof createSparklineDialog> | undefined
   let chartDesignDialog: ReturnType<typeof createChartDesignDialog> | undefined
@@ -1283,6 +1303,14 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           ribbon.refreshState?.()
           feedback.textContent = same ? '冻结已取消，修改尚未保存。' : '冻结窗格已更新，修改尚未保存。'
         } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'insert-symbol') {
+        if (!editable()) return
+        const active = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+        if (!active?.getSelection()?.getActiveRange()) { feedback.textContent = '请先选中一个单元格，再插入符号'; return }
+        if (sheetProtected(active.getSheetId())) { feedback.textContent = '工作表受保护，请先撤销保护'; return }
+        symbolDialog.open()
         return
       }
       if (command === 'header-footer-open') {
@@ -2943,6 +2971,6 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       epoch: () => mergeGeneration, persisted: () => persistence, operations: async () => await currentOperations() as NativeOperation[],
       setOperations: operations => nativeDraft?.setOperations(operations) })
   }, dispose() {
-    disposed = true; pivotControlOverlay?.dispose(); queriesDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
+    disposed = true; pivotControlOverlay?.dispose(); queriesDialog.dispose(); symbolDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
   } }
 }
