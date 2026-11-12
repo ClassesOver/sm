@@ -38,6 +38,7 @@ import { editTableCellMargins, tableCellMarginsAvailability, verifyTableCellMarg
 import { createHash } from 'node:crypto'
 import { removeHfReference } from '../packages/docx-engine/src/patch.ts'
 import { assertDocxPageColorWritten, inspectDocxPageColor, validateDocxPageColorOperations } from './docx-page-color.ts'
+import { assertDocxWatermarkWritten, inspectDocxWatermark, readDocxHeaderParts, validateDocxWatermarkOperations } from './docx-watermark.ts'
 import { loadDocxZip } from '../packages/docx-engine/src/zip-load.ts'
 import { attrsOf, findChild, childrenOf, nameOf, textOf, xmlParser, escapeXmlAttr } from '../packages/docx-engine/src/xml-utils.ts'
 import { posix, resolve } from 'node:path'
@@ -735,6 +736,8 @@ function hasRevisionProtection(xml: string | undefined): boolean {
 const revisionProtected = !!parsed.protection?.enforced || hasRevisionProtection(revisionSettingsXml)
 // 固定源 Design ▸ Page Color：整篇 w:background；只读原因与来源摘要随 inspect 下发。
 const pageColorModel = inspectDocxPageColor(await sourceZip.file('word/document.xml')?.async('string') ?? '', !!parsed.protection?.enforced)
+// 固定源 Design ▸ Watermark：全部页眉部件摘要绑定来源；受保护文档只读。
+const watermarkModel = await inspectDocxWatermark(sourceZip, !!parsed.protection?.enforced)
 const revisionDocumentXml = await sourceZip.file('word/document.xml')!.async('string')
 const revisionDocument = xmlParser.parse(revisionDocumentXml).find((node: any) => nameOf(node) === 'w:document')
 const revisionBodyNodes = revisionDocument ? childrenOf(revisionDocument).filter(node => nameOf(node) === 'w:body') : []
@@ -1018,8 +1021,9 @@ const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c1700
   ...(bookmarks ? { bookmarks } : {}),
   ...(crossReferences ? { crossReferences } : {}),
   ...(notesPlanner ? { notes: notesPlanner.model } : {}),
-  capabilities: { paragraphs: true, basicStyles: true, simpleTableText: true, simpleTableStructure: true, replaceImage: false, headerFooter: true, pageColor: true },
+  capabilities: { paragraphs: true, basicStyles: true, simpleTableText: true, simpleTableStructure: true, replaceImage: false, headerFooter: true, pageColor: true, watermark: true },
   pageColor: pageColorModel,
+  watermark: watermarkModel,
   // 全部节（文档顺序，尾节在最后）：编辑器按光标所在块定位当前节。
   sections: allSections.map((section, index) => ({ headersFooters: sectionHfModels[index], sectionId: sectionIdOf(section), expectedSectionSha256: hash(section.sectPrXml), settings: sectionSettingsOf(section),
     firstBlockIndex: section.firstBlockIndex, lastBlockIndex: section.lastBlockIndex, startType: section.startType, ...sectionTitlePage(section), ...sectionPageNumber(section) })),
@@ -1059,6 +1063,8 @@ if (request.kind === 'inspect') {
   process.stdout.write(JSON.stringify(model()))
 } else {
   if (typeof request.output !== 'string' || !Array.isArray(request.operations) || request.operations.length > 500) fail('operation_invalid')
+  // 水印改写页眉部件：与页眉页脚、节设置同批时页眉回读语义不再唯一，要求分开保存（先于各操作的锚点校验）。
+  if (request.operations.some(raw => object(raw).kind === 'setWatermark') && request.operations.some(raw => ['setHeaderFooter', 'setHeaderFooterLink', 'setSectionLayout', 'insertSectionBreak'].includes(object(raw).kind as string))) fail('watermark_header_batch_conflict')
   const sourcePath = await realpath(request.input as string)
   const outputPath = await realpath(request.output as string).catch(() => resolve(request.output as string))
   const sourceIdentity = await stat(sourcePath)
@@ -1256,7 +1262,8 @@ if (request.kind === 'inspect') {
       (run, spec) => { const value = object(spec); if (!Object.keys(value).length) fail('style_invalid'); return applyRunFormatting(run, style(value), value) }, block.emptyRun))
   }
   const pageColor = validateDocxPageColorOperations(request.operations.map(object).filter(op => op.kind === 'setPageColor'), pageColorModel)
-  const blockOperations = request.operations.filter(raw => !['setHeaderFooter', 'setHeaderFooterLink', 'setPageColor', ...noteKinds, 'patchParagraphRuns', 'resolveTextRevision'].includes(object(raw).kind as string))
+  const watermark = validateDocxWatermarkOperations(request.operations.map(object).filter(op => op.kind === 'setWatermark'), watermarkModel)
+  const blockOperations = request.operations.filter(raw => !['setHeaderFooter', 'setHeaderFooterLink', 'setPageColor', 'setWatermark', ...noteKinds, 'patchParagraphRuns', 'resolveTextRevision'].includes(object(raw).kind as string))
   // 先对同一来源快照整批校验；应用时按请求顺序组合，expectedObjectSha256 不随前序修改改变。
   const operations = await Promise.all(blockOperations.map(async raw => {
     const op = object(raw)
@@ -1987,6 +1994,7 @@ if (request.kind === 'inspect') {
     ...(hfEvenOdd !== undefined ? { evenAndOddHeaders: hfEvenOdd } : {}),
     ...(pgNumType ? { pgNumType } : {}),
     ...(pageColor !== undefined ? { pageColor } : {}),
+    ...(watermark !== undefined ? { watermark } : {}),
   })
   const preserveHfNamespaces = async (input: Uint8Array, selected: HeaderFooterEdit[]) => {
     if (!selected.length) return input
@@ -2286,6 +2294,10 @@ if (request.kind === 'inspect') {
         if (table?.rows[cell.row]?.[cell.column]?.paras.join('\n') !== cell.text) fail('cell_write_not_applied')
       }
     }
+  }
+  if (watermark !== undefined) {
+    try { assertDocxWatermarkWritten(await readDocxHeaderParts(sourceZip), await readDocxHeaderParts(await loadDocxZip(output)), watermark) }
+    catch { fail('watermark_write_not_applied') }
   }
   if (pageColor !== undefined) {
     const outputZip = await loadDocxZip(output)

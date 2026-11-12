@@ -32,6 +32,8 @@ import { DocxLayoutSource } from './docx-layout-source'
 import { DocxHeaderFooterSource, type DocxHeaderFooterController } from './docx-hf-source'
 import type { SectionSettings } from '@genoffice/docx-engine'
 import { effectiveBidi, setSelectionAlign } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/direction'
+import { DOCX_WATERMARK_PRESETS, type DocxWatermarkModel, type DocxWatermarkSpec } from './docx-watermark'
+import { openDocxWatermarkDialog } from './docx-watermark-dialog'
 
 const tabs = [
   { id: 'file', label: '文件' }, { id: 'home', label: '开始' }, { id: 'insert', label: '插入' },
@@ -127,10 +129,12 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
 
 /** 固定源 Design ▸ Page Color：当前值、不可用原因与选色回调（草稿写入由宿主负责）。 */
 export interface DocxPageColorControls { current(): string | null; reason(): string | null; apply(color: string | null): void }
+/** 固定源 Design ▸ Watermark：当前生效水印、来源模型、不可用原因与应用回调（草稿写入由宿主负责）。 */
+export interface DocxWatermarkControls { current(): DocxWatermarkSpec | null; source: DocxWatermarkModel; reason(): string | null; apply(spec: DocxWatermarkSpec | null): void }
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => void; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void }, commentCommands?: { open: () => void; openNew?: () => void }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void, pageColor?: DocxPageColorControls): HTMLElement {
+  section?: { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => void; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void }, commentCommands?: { open: () => void; openNew?: () => void }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void, pageColor?: DocxPageColorControls, watermark?: DocxWatermarkControls): HTMLElement {
   const formattingAnchors = noteAnchors.length ? noteAnchors : anchors
   const withNotes = noteAnchors.length > 0
   const ribbon = document.createElement('div')
@@ -362,6 +366,28 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           }
           continue
         }
+        if (id === 'design' && label === '水印' && watermark) {
+          // 固定源水印菜单：预设文字、“自定义水印…”、“删除水印”。
+          const wrap = document.createElement('div'), trigger = document.createElement('button'), menu = document.createElement('div')
+          wrap.className = 'rb-split-wrap'
+          trigger.type = 'button'; trigger.className = 'rb-icon docx-ribbon-command'; trigger.dataset.action = 'watermark'; trigger.textContent = label
+          trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-haspopup', 'true')
+          menu.className = 'layout-menu docx-watermark-menu'; menu.hidden = true; menu.dataset.rbPanel = ''; menu.setAttribute('role', 'group'); menu.setAttribute('aria-label', '水印')
+          const close = () => { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false') }
+          const apply = (spec: DocxWatermarkSpec | null) => { try { watermark.apply(spec) } catch (error) { reportError?.(error) } close(); syncWatermark() }
+          wrap.addEventListener('mousedown', event => { if (!(event.target instanceof HTMLInputElement)) event.preventDefault() })
+          trigger.addEventListener('click', () => { menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden)) })
+          for (const text of DOCX_WATERMARK_PRESETS) {
+            const item = document.createElement('button'); item.type = 'button'; item.textContent = text; item.dataset.action = `watermark-preset-${text}`
+            item.addEventListener('click', () => apply({ text })); menu.append(item)
+          }
+          const custom = document.createElement('button'); custom.type = 'button'; custom.textContent = '自定义水印…'; custom.dataset.action = 'watermark-custom'
+          custom.addEventListener('click', () => { close(); openDocxWatermarkDialog(ribbon, watermark.current(), spec => apply(spec)) })
+          const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '删除水印'; remove.dataset.action = 'watermark-remove'
+          remove.addEventListener('click', () => apply(null))
+          menu.append(custom, remove); wrap.append(trigger, menu); items.append(wrap)
+          continue
+        }
         if (id === 'design' && label === '页面颜色' && pageColor) {
           // 固定源 RibbonColorPalette：主题色 + 标准色 + “无颜色”；色块与单元格底纹共用同一组固定源颜色。
           const wrap = document.createElement('div'), trigger = document.createElement('button'), palette = document.createElement('div'), bar = document.createElement('span')
@@ -540,7 +566,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       renderNotes(); body.querySelector('.ribbon-content')!.append(notesPanel)
     }
     else if (id === 'layout') renderPending(id)
-    else if (id === 'design') { renderPending(id); syncPageColor() }
+    else if (id === 'design') { renderPending(id); syncPageColor(); syncWatermark() }
     else if (id !== 'home') renderPending(id)
     else { body.replaceChildren(home); body.setAttribute('aria-label', '开始') }
   }
@@ -773,9 +799,20 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     trigger.querySelector<HTMLElement>('.docx-page-color-bar')!.style.background = current ? `#${current}` : 'transparent'
     for (const swatch of body.querySelectorAll<HTMLButtonElement>('[data-action^="page-color-"]')) swatch.setAttribute('aria-pressed', String(swatch.dataset.action === `page-color-${current ?? 'none'}`))
   }
+  /** 水印按钮：可用性、提示与菜单选中项随编辑状态和草稿刷新。 */
+  function syncWatermark() {
+    const trigger = body.querySelector<HTMLButtonElement>('[data-action="watermark"]')
+    if (!trigger || !watermark) return
+    const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : watermark.reason()
+    const current = watermark.current()
+    trigger.disabled = reason !== null
+    trigger.title = reason ?? (current ? `水印：${current.text}` : watermark.source.picture ? '水印：图片水印（可替换为文字水印或删除）' : '水印：无')
+    trigger.classList.toggle('active', !!current || (watermark.source.picture && !trigger.title.includes('无')))
+    for (const item of body.querySelectorAll<HTMLButtonElement>('[data-action^="watermark-preset-"]')) item.classList.toggle('active', current?.text === item.textContent && Object.keys(current).length === 1)
+  }
   const refreshSelection = () => {
     refreshView()
-    if (active === 'design') syncPageColor()
+    if (active === 'design') { syncPageColor(); syncWatermark() }
     refreshContextTabs()
     renderInsert()
     if (active === 'references') { renderNotes(); refreshToc(body) }
