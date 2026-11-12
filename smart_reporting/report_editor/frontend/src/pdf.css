@@ -151,3 +151,6 @@
   .editor-format-pdf .pdf-editor-message { flex:none; min-height:24px; max-height:64px; overflow:auto; padding:4px 12px; font-size:var(--office-label-size); }
   .editor-format-pdf .pdf-view-status { flex:none; min-width:0; padding:2px 12px; overflow-x:auto; white-space:nowrap; }
 }
+/* 编辑已有图像 ▸ 替换为新图像：按钮与所选文件说明同一行，沿用 --office-* 字号与弱化色。 */
+.pdf-existing-image-replace { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 10px 0; }
+.pdf-existing-image-replace-info { color: var(--office-muted); font-size: var(--office-label-size); }

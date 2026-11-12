@@ -41,7 +41,10 @@ else:
     content = base64.b64decode(payload['bytes'])
     if payload.get('operations'):
         content = patch_office('pptx', content, payload['operations'])
-    if mode == 'render':
+    if mode == 'slide-xml':
+        with ZipFile(BytesIO(content)) as archive:
+            result = {'xml': archive.read(payload['path']).decode()}
+    elif mode == 'render':
         from smart_reporting.report_editor.slides_render import render_pptx_tree
         result = render_pptx_tree(content)
     elif mode == 'independent':
