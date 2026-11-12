@@ -682,6 +682,15 @@ function sendCanvasPreview() {
 }
 
 const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!
+/** 固定源 View ▸ Gridlines：纯视图状态（不写入文件）；网格间距 48px = 0.5 英寸，随幻灯片尺寸换算为画布百分比。 */
+let gridVisible = false
+function syncGrid() {
+  const size = slideSizeEdit ?? deck.size
+  canvasHost.dataset.grid = String(gridVisible)
+  canvasHost.style.setProperty('--slides-grid-x', `${(457200 / size.cx) * 100}%`)
+  canvasHost.style.setProperty('--slides-grid-y', `${(457200 / size.cy) * 100}%`)
+  nativeRibbon?.setValue('grid', String(gridVisible))
+}
 const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 
 let canvasSelectionGeneration = 0
@@ -1422,6 +1431,7 @@ const notesPane=native?createSlidesNotesPane(root.querySelector<HTMLElement>('.s
 function syncNotesVisibility(){
   const pane=root.querySelector<HTMLElement>('[data-notes-panel]');if(pane)pane.hidden=!notesVisible
   nativeRibbon?.setValue('notes',String(notesVisible))
+  syncGrid()
 }
 function renderNotes(){
   if(!notesPane||!deck)return
@@ -1800,6 +1810,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   onAction(command, value) {
     if(notesPane&&!notesPane.flush())return
     if(command==='notes'){notesPane?.setVisible(!notesVisible);syncNotesVisibility();return}
+    if (command === 'grid') { gridVisible = !gridVisible; syncGrid(); return }
     if(command==='copy'||command==='cut'){copyObjects(command==='cut');return}
     if(command==='paste'){pasteObjects();return}
     if(command==='formatBrush'){startBrush(value==='continuous');return}

@@ -325,3 +325,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .slides-notes-pane.is-collapsed textarea,.slides-notes-pane.is-collapsed p { display:none; }
 .slides-notes-error { color:#b42318;font-size:12px;margin:4px 0; }
 .slides-notes-reason { color:#6e7b89;font-size:12px;margin:4px 0; }
+
+/* 固定源 View ▸ Gridlines（styles.css .grid-overlay）：画布上的不可交互叠加层，间距 0.5 英寸。 */
+.slides-canvas { --slides-grid-line: rgb(60 60 60 / 16%); }
+.slides-canvas[data-grid="true"] .konvajs-content::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 5;
+  background-image: linear-gradient(to right, var(--slides-grid-line) 1px, transparent 1px), linear-gradient(to bottom, var(--slides-grid-line) 1px, transparent 1px);
+  background-size: var(--slides-grid-x, 5.21%) 100%, 100% var(--slides-grid-y, 7.4%);
+}
