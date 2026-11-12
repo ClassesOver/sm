@@ -45,6 +45,14 @@
     "upstreamPath": "apps/pdf/src/main/wasm-path.ts",
     "sha256": "9e1b993dffaad77125212b9a3aa3b19744bf9a3e6400cc4062051cf06bd61a60"
   },
+  "src/renderer/cutout.ts": {
+    "upstreamPath": "apps/pdf/src/renderer/cutout.ts",
+    "sha256": "907bf9b770b660cdfca6d80ae91e2aed8f89a11831f4eeb023b2f73486b9a26e"
+  },
+  "src/renderer/image-bake.ts": {
+    "upstreamPath": "apps/pdf/src/renderer/image-bake.ts",
+    "sha256": "bf1b8eaab654e42e80092ed66044e21dd95efb77376798de9e23459151743f50"
+  },
   "src/shared/ipc.ts": {
     "upstreamPath": "apps/pdf/src/shared/ipc.ts",
     "sha256": "c03d6e31f299783cad2f777c688aa15adf2ba151577cb5d36ca327152daf77aa"

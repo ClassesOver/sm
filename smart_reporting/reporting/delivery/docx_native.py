@@ -11,7 +11,7 @@ from .office_engine import last_json_line, run_bridge
 
 _MAX_BYTES = 24 * 1024 * 1024
 _OPERATION_KINDS = frozenset({
-    'insertCrossReference', 'insertCaption', 'setPageColor',
+    'insertCrossReference', 'insertCaption', 'setPageColor', 'setWatermark',
     'createBookmark', 'deleteBookmark', 'insertToc', 'updateToc', 'deleteComment', 'resolveComment', 'replyComment', 'createComment', 'editCommentText', 'resolveTextRevision', 'insertNote', 'updateNote', 'deleteNote', 'patchParagraphRuns',
     'clearParagraphFormatting', 'setParagraphRulerIndent', 'setParagraphTabStops', 'setTableCellBorders', 'setTableRepeatHeaders', 'reshapeTableCells', 'resizeTableColumns', 'setTableRowHeights', 'setTableAutoFit', 'setTableCellTextDirection', 'setTableCellAlignment', 'setTableCellMargins', 'setTableCellMarginOverrides', 'setTableRowBreaks', 'setTableAlignment', 'setTableCellWrap', 'setTableAltText',
     'replaceParagraph', 'insertParagraph', 'insertParagraphImage', 'insertTable', 'insertCoverPage', 'deleteParagraph',

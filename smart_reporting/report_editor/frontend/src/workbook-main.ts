@@ -85,6 +85,7 @@ import { WorkbookDraft, workbookSaveOutcome, type WorkbookOperation, type Workbo
 import type { EditorShell } from './shell'
 import { gridMergeChanges, planGridSheets, structuralMutation, type GridSnapshot } from './workbook-grid-operations'
 import { withWorkbookLocked } from './workbook-grid-guards'
+import { readWorkbookThemeSource, themeOperation, type ThemeCommandKind, type WorkbookThemeSource } from './workbook-theme'
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
 import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
@@ -875,6 +876,27 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let pivotFilterDialog: ReturnType<(typeof import('./workbook-pivot-filters-dialog'))['createPivotFilterDialog']> | undefined
   let editableRangesDialog: ReturnType<(typeof import('./workbook-editable-ranges-dialog'))['createEditableRangesDialog']> | undefined
   let editableRangesContext: { bytes: Uint8Array; operations: WorkbookOperation[] } | undefined
+  // 页面布局▸主题：状态来自当前重放字节的主题部件（含草稿中已应用的主题操作）。
+  let themeSource: WorkbookThemeSource | undefined
+  const applyTheme = async (kind: ThemeCommandKind, id: string) => {
+    if (!editable() || !themeSource) throw new Error('当前工作簿不可编辑或尚未就绪')
+    const { operation, name } = themeOperation(kind, id, themeSource)
+    await withWorkbookLocked(shell.editor, async () => {
+      await persistence
+      const before = await currentOperations()
+      const operations = [...before, operation as unknown as WorkbookOperation]
+      captureGeneration++
+      try { await loadOperations(operations) }
+      catch (error) { await loadOperations(before); throw error }
+      if (nativeDraft) {
+        nativeDraft.setOperations(before as NativeOperation[])
+        nativeDraft.setOperations(operations as NativeOperation[])
+      } else draft.setOperations(operations)
+      gridChanged = false; dirty = true
+      shell.statusLabel.textContent = '有未保存修改'
+      feedback.textContent = `${kind === 'theme' ? '主题' : kind === 'theme-colors' ? '主题颜色' : '主题字体'}已设为「${name}」，修改尚未保存；引用主题色或主题字体的单元格已随之更新。`
+    }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
+  }
   const applyEditableRanges = async (sheetName: string, ranges: { name: string; sqref: string }[]) => {
     if (!editable() || !editableRangesContext) throw new Error('工作簿不可编辑，请重新打开允许编辑区域')
     const context = editableRangesContext
@@ -1333,6 +1355,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
           printScaleDialog.open(printScaleState(originalSheet(sheet.getSheetId())?.pageSetup, pageSetupJournal.get(sheet.getSheetId())), { book: liveWorkbook.getWorkbook(), sheet: sheet.getSheet(), sheetId: sheet.getSheetId() })
         } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (/^theme(-colors|-fonts)?:/.test(command)) {
+        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+        const [kind, id] = command.split(/:(.*)/s) as [ThemeCommandKind, string]
+        void applyTheme(kind, id).catch(error => { feedback.textContent = (error as Error).message })
         return
       }
       if (command === 'print-gridlines' || command === 'print-headings' ||
@@ -1967,6 +1995,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       queries: () => ({ available: formulaBarAvailable() }),
       formulaTrace: () => ({ ...formulaTrace.state(), available: formulaBarAvailable() }),
       pageBreakPreview: () => ({ ...pageBreakPreview.state(), available: !loading && !disposed }),
+      theme: () => themeSource && !loading && !disposed ? {
+        colorName: themeSource.colorName, fontName: themeSource.fontName, reason: themeSource.reason,
+        fontsReason: themeSource.fontsAvailable ? undefined : '主题没有可改写的字体方案',
+      } : undefined,
       pageSetup: () => {
         const context = activePageSetupContext()
         return context ? mergedPageSetup(context.sheet.getSheetName(), pageSetupJournal.get(context.sheet.getSheetId()) ?? {}) : undefined
@@ -2524,6 +2556,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     pageSetupJournal.clear()
     const bytes = ops.length ? await applyWorkbookOperations(original, ops) : original
     currentModel = await readModelWithStructureSource(bytes)
+    themeSource = await readWorkbookThemeSource(bytes)
     editableRanges = await readWorkbookEditableRanges(bytes)
     // 批注、筛选、视图状态随快照资源/工作表配置一并灌入，保存差分才有真实基线。
     const data = withWorkbookConditionalFormatting(withWorkbookDataValidations(withWorkbookTables(withWorkbookView(withWorkbookFilters(withWorkbookNotes(buildWorkbookData(currentModel, 'report-workbook', '报告工作簿'), currentModel), currentModel), currentModel), currentModel), currentModel), currentModel)

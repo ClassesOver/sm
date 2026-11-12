@@ -21,6 +21,8 @@ import { createSlidesCommentsPane } from './slides-comments-pane'
 import type { NativeDraft, NativeOperation } from './native-draft'
 import { mountSlidesNativeAI, type SlidesNativeAIClient } from './slides-native-ai'
 import { openSlidesSizeDialog } from './slides-size-dialog'
+import { mountSlidesRuler } from './slides-ruler'
+import { mountSlidesGuides } from './slides-guides'
 import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, isSourceItem, itemElementId, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, MOTION_PATHS, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 import { openSlidesFindReplace } from './slides-find-replace'
@@ -682,6 +684,22 @@ function sendCanvasPreview() {
 }
 
 const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!
+/** 固定源 View ▸ Gridlines：纯视图状态（不写入文件）；网格间距 48px = 0.5 英寸，随幻灯片尺寸换算为画布百分比。 */
+let gridVisible = false
+let rulerVisible = false
+let guidesVisible = false
+const slidePx = () => { const size = slideSizeEdit ?? deck.size; return { width: size.cx / 9525, height: size.cy / 9525 } }
+const slideContent = () => canvasHost.querySelector<HTMLElement>('.konvajs-content')
+const guides = mountSlidesGuides(slideContent, slidePx, `native-slides-guides:${location.pathname.replace(/\/\d+$/, '')}`, visible => { guidesVisible = visible; nativeRibbon?.setValue('guides', String(visible)) })
+const ruler = mountSlidesRuler(root.querySelector<HTMLElement>('.slides-stage')!, slideContent, slidePx, 'cm', (axis, client, done) => guides.pull(axis, client, done))
+function syncGrid() {
+  ruler.update(); nativeRibbon?.setValue('ruler', String(rulerVisible)); nativeRibbon?.setValue('guides', String(guidesVisible))
+  const size = slideSizeEdit ?? deck.size
+  canvasHost.dataset.grid = String(gridVisible)
+  canvasHost.style.setProperty('--slides-grid-x', `${(457200 / size.cx) * 100}%`)
+  canvasHost.style.setProperty('--slides-grid-y', `${(457200 / size.cy) * 100}%`)
+  nativeRibbon?.setValue('grid', String(gridVisible))
+}
 const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 
 let canvasSelectionGeneration = 0
@@ -694,6 +712,8 @@ function renderCanvas() {
   const layoutSource = pendingItem ? (pendingSource === null ? renderTree?.slides[0] : renderTree?.slides.find(item => item.slideIndex === pendingSource)) : undefined
   const slide = source ?? (layoutSource ? { ...layoutSource, slideIndex: selectedSlide, nodes: pendingItem && 'duplicateOf' in pendingItem ? layoutSource.nodes : [] } : undefined)
   if (!canvas || !slide || !deck) return
+  ruler.update()
+  queueMicrotask(() => guides.render())
   const selectionGeneration=++canvasSelectionGeneration, canvasSlide=selectedSlide, canvasSource=deck.sha256
   const rank=new Map((elementOrders.get(selectedSlide)??[]).map((id,index)=>[id,index]))
   // 固定渲染树的图表附属装饰紧随宿主；块整体移动，页首母版装饰保留在底层。
@@ -1422,6 +1442,7 @@ const notesPane=native?createSlidesNotesPane(root.querySelector<HTMLElement>('.s
 function syncNotesVisibility(){
   const pane=root.querySelector<HTMLElement>('[data-notes-panel]');if(pane)pane.hidden=!notesVisible
   nativeRibbon?.setValue('notes',String(notesVisible))
+  syncGrid()
 }
 function renderNotes(){
   if(!notesPane||!deck)return
@@ -1800,6 +1821,9 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   onAction(command, value) {
     if(notesPane&&!notesPane.flush())return
     if(command==='notes'){notesPane?.setVisible(!notesVisible);syncNotesVisibility();return}
+    if (command === 'grid') { gridVisible = !gridVisible; syncGrid(); return }
+    if (command === 'ruler') { rulerVisible = !rulerVisible; ruler.setVisible(rulerVisible); syncGrid(); return }
+    if (command === 'guides') { guidesVisible = !guidesVisible; guides.setVisible(guidesVisible); syncGrid(); return }
     if(command==='copy'||command==='cut'){copyObjects(command==='cut');return}
     if(command==='paste'){pasteObjects();return}
     if(command==='formatBrush'){startBrush(value==='continuous');return}

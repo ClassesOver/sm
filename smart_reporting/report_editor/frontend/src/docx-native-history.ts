@@ -10,7 +10,7 @@ export const NativeDocxHistory = Extension.create({
 })
 
 export function docxNativeOperations(operations: NativeOperation[]): NativeOperation[] {
-  return JSON.parse(JSON.stringify(operations.filter(operation => ['setSectionLayout', 'setHeaderFooter', 'setHeaderFooterLink', 'setPageColor'].includes(operation.kind))))
+  return JSON.parse(JSON.stringify(operations.filter(operation => ['setSectionLayout', 'setHeaderFooter', 'setHeaderFooterLink', 'setPageColor', 'setWatermark'].includes(operation.kind))))
 }
 
 export function docxNativeOperationsOf(doc: DocxPmNode): NativeOperation[] {

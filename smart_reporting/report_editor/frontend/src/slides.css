@@ -325,3 +325,41 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .slides-notes-pane.is-collapsed textarea,.slides-notes-pane.is-collapsed p { display:none; }
 .slides-notes-error { color:#b42318;font-size:12px;margin:4px 0; }
 .slides-notes-reason { color:#6e7b89;font-size:12px;margin:4px 0; }
+
+/* 固定源 View ▸ Gridlines（styles.css .grid-overlay）：画布上的不可交互叠加层，间距 0.5 英寸。 */
+.slides-canvas { --slides-grid-line: rgb(60 60 60 / 16%); }
+.slides-canvas[data-grid="true"] .konvajs-content::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 5;
+  background-image: linear-gradient(to right, var(--slides-grid-line) 1px, transparent 1px), linear-gradient(to bottom, var(--slides-grid-line) 1px, transparent 1px);
+  background-size: var(--slides-grid-x, 5.21%) 100%, 100% var(--slides-grid-y, 7.4%);
+}
+
+/* 固定源 View ▸ Ruler（styles.css .ruler*）：标尺在缩放画布之外，外壳色取 --office-* token。 */
+.slides-stage { position: relative; }
+.slides-stage[data-ruler="true"] { padding-top: 38px; padding-left: 38px; }
+.slides-stage > .ruler-corner { position: absolute; left: 0; top: 0; width: 20px; height: 20px; background: var(--office-chrome); border-right: 1px solid var(--office-border-strong); border-bottom: 1px solid var(--office-border-strong); z-index: 2; }
+.slides-stage > .ruler { position: absolute; background: var(--office-chrome); overflow: hidden; user-select: none; touch-action: none; z-index: 1; }
+.slides-stage > .ruler-h { left: 20px; right: 0; top: 0; height: 20px; border-bottom: 1px solid var(--office-border-strong); }
+.slides-stage > .ruler-v { top: 20px; bottom: 0; left: 0; width: 20px; border-right: 1px solid var(--office-border-strong); }
+.slides-stage .ruler-num { position: absolute; font-size: 9px; color: var(--office-muted); line-height: 1; }
+.slides-stage .ruler-h .ruler-num { top: 5px; transform: translateX(-50%); }
+.slides-stage .ruler-v .ruler-num { left: 50%; transform: translate(-50%, -50%); }
+.slides-stage .ruler-tick { position: absolute; background: var(--office-border-strong); }
+.slides-stage .ruler-h .ruler-tick { bottom: 0; width: 1px; height: 5px; }
+.slides-stage .ruler-v .ruler-tick { right: 0; height: 1px; width: 5px; }
+.slides-stage .ruler-indicator { position: absolute; display: none; pointer-events: none; background: var(--office-accent); }
+.slides-stage .ruler-h .ruler-indicator { inset: 0 auto 0 0; width: 1px; }
+.slides-stage .ruler-v .ruler-indicator { inset: 0 0 auto 0; height: 1px; }
+
+/* 固定源 View ▸ Guides（styles.css .guide-line / .guide-draggable / .ruler-bubble）：参考线叠加在画布上。 */
+.slides-canvas { --slides-guide: rgb(196 62 28 / 75%); }
+.slides-canvas .guide-line { position: absolute; pointer-events: none; z-index: 6; }
+.slides-canvas .guide-v { top: 0; bottom: 0; border-left: 1px dashed var(--slides-guide); }
+.slides-canvas .guide-h { left: 0; right: 0; border-top: 1px dashed var(--slides-guide); }
+.slides-canvas .guide-draggable { pointer-events: auto; }
+.slides-canvas .guide-draggable.guide-v { width: 9px; margin-left: -4px; cursor: col-resize; }
+.slides-canvas .guide-draggable.guide-h { height: 9px; margin-top: -4px; cursor: row-resize; }
+.slides-stage > .ruler-h { cursor: row-resize; }
+.slides-stage > .ruler-v { cursor: col-resize; }
+.ruler-bubble { position: fixed; z-index: 1000; padding: 2px 6px; font-size: 11px; line-height: 1.4; background: var(--office-chrome); color: var(--office-ink); border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); box-shadow: var(--shadow-popover); pointer-events: none; white-space: nowrap; }
+.ruler-bubble[hidden] { display: none; }

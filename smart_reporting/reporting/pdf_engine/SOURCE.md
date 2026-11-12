@@ -371,3 +371,19 @@ way). Because SetBitmap rewrites the image stream itself, a target whose pixel d
 any other placement is reported `replaceable:false` and refused before writing; the output review
 checks the target's new pixel size and footprint and every other image's unchanged pixels.
 `bridge/existing-image-replace.test.ts`. Vendor SOURCE hashes unchanged.
+
+## Existing image crop / flip / transparency bake (2026-11-12)
+
+New vendored files, byte-identical to the pinned ref and recorded in SOURCE-SHA256.json:
+`src/renderer/image-bake.ts` (`flipPixels`, `multiplyAlpha`, `cropRect`) and
+`src/renderer/cutout.ts` (only its `PixelImage` type is used here). `bridge/existing-image-engine.ts`
+ports the pinned `renderImagePng` as `renderExistingImageBgra` (image object alone via
+`FPDFImageObj_GetRenderedBitmap`, upscale on an in-memory copy, long side capped at 2400 px) and
+returns tight BGRA rows instead of an Electron `nativeImage` PNG; `applyExistingImageReplace` now
+delegates to `applyExistingImageReplaceBgra` so baked pixels skip a PNG round-trip. The bridge takes
+an optional `bake` ({flip axis} | {opacity alpha} | {crop fractions}) on `transformExistingImage`,
+mutually exclusive with `image`, mirroring the pinned App.tsx bake path (fetch displayed pixels at
+BAKE_SCALE 3, transform, land as replaceImage; crop shrinks the footprint to `cropRect`). Because the
+written bitmap keeps the original matrix, baking is limited to page-owned images with a positive,
+unrotated, unmirrored matrix (`axisAligned`) that are also replaceable; the rect must equal the
+footprint (flip/opacity) or `cropRect(footprint, crop)` (crop). `bridge/existing-image-bake.test.ts`.

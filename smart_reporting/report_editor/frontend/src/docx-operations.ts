@@ -807,7 +807,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     structural.add(id)
   }
   for (const operation of operations) {
-    if (operation.kind === 'resolveTextRevision' || operation.kind === 'replaceNestedCellText' || operation.kind === 'setSectionLayout' || operation.kind === 'setHeaderFooter' || operation.kind === 'setHeaderFooterLink' || operation.kind === 'setPageColor' || operation.kind === 'setCellShading' || operation.kind === 'setTableCellBorders') continue
+    if (operation.kind === 'resolveTextRevision' || operation.kind === 'replaceNestedCellText' || operation.kind === 'setSectionLayout' || operation.kind === 'setHeaderFooter' || operation.kind === 'setHeaderFooterLink' || operation.kind === 'setPageColor' || operation.kind === 'setWatermark' || operation.kind === 'setCellShading' || operation.kind === 'setTableCellBorders') continue
     const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
     if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
     if (operation.kind === 'setParagraphRulerIndent') { Object.assign(node, replayDocxRulerIndent(node, anchor, operation)); continue }
