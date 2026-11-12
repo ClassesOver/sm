@@ -1,14 +1,18 @@
 /** Fixed GenOffice f8c17004 drawing gestures; local SVG previews follow saved AP geometry. */
 import type { NativeOperation } from './native-draft'
 import { imageViewBox, type ImageViewport } from './pdf-image-gesture'
+import './pdf-drawing-font.css'
 const NS='http://www.w3.org/2000/svg'
 const num=(value:number)=>Math.round(value*100)/100
 export const CANVAS_DRAWING_KINDS=new Set(['image','rect','ellipse','arrow','measure','ink','polygon','caret','link'])
-export function paintDrawing(group: SVGGElement, operation: NativeOperation, viewport: ImageViewport, scale: number) {
+export function paintDrawing(group: SVGGElement, operation: NativeOperation, viewport: ImageViewport, _scale: number) {
   group.replaceChildren()
   const rgb=`rgb(${(operation.color as number[]).map(n=>Math.round(n*255)).join(',')})`
   const point=(value:number[])=>viewport.convertToViewportPoint(value[0]!,value[1]!)
   const shape=String(operation.shape)
+  // The viewport includes /UserUnit, CropBox and rotation; zoom alone is not
+  // the physical scale of PDF user-space stroke widths or arrow heads.
+  const origin=point([0,0]),unit=point([1,0]),scale=Math.hypot(unit[0]!-origin[0]!,unit[1]!-origin[1]!)
   if(shape==='image') {
     const image=document.createElementNS(NS,'image'),box=imageViewBox(operation.rect as number[],viewport)
     for(const [key,value]of Object.entries(box))image.setAttribute(key,String(value))
@@ -53,8 +57,8 @@ export function paintDrawing(group: SVGGElement, operation: NativeOperation, vie
         // Native Tm → PDF.js viewport → SVG glyph space (whose y points down).
         const origin=point([e,f]),u=point([e+a,f+b]),down=point([e-c,f-d])
         const matrix=[u[0]!-origin[0]!,u[1]!-origin[1]!,down[0]!-origin[0]!,down[1]!-origin[1]!,...origin]
-        const label=append('text',{x:0,y:0,fill:rgb,stroke:'none','font-size':9,'font-family':'Helvetica, Arial, sans-serif','dominant-baseline':'alphabetic','text-anchor':'start',transform:`matrix(${matrix.join(' ')})`})
-        label.style.fontKerning='none';label.style.fontVariantLigatures='none'
+        const label=append('text',{x:0,y:0,fill:rgb,stroke:'none','font-size':9,'font-family':'PDF Standard Helvetica, Liberation Sans, Helvetica, Arial, sans-serif','dominant-baseline':'alphabetic','text-anchor':'start',transform:`matrix(${matrix.join(' ')})`})
+        label.style.fontKerning='none';label.style.fontVariantLigatures='none';label.style.textRendering='geometricPrecision'
         label.dataset.pdfMeasureLabel='';label.textContent=String(operation.label)
       }
     }

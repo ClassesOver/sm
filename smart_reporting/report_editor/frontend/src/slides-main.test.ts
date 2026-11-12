@@ -75,6 +75,9 @@ describe('shared PPTX editor', () => {
     const shell = createEditorShell(root, 'full', 'pptx')
     const deck = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 },
       slides: [0, 1].map(slideIndex => ({ slideIndex, animations: [], elements: [] })) }
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify(deck)),
+    ))
     const storage = new Map<string, string>()
     const draft = new NativeDraft({ documentId: 'slides-test', revision: 1, sourceSha256: 'a'.repeat(64),
       scope: { database: 'test', companyId: '1', userId: '1', threadId: '1' } }, {
@@ -86,7 +89,7 @@ describe('shared PPTX editor', () => {
       newSlides: [{ layoutFrom: 0 }, { layoutFrom: 0 }],
       sections: [{ slideIndex: 3, name: 'Retained section' }] }])
     createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx,
-      native: true, draft, request: async () => deck })
+      native: true, draft })
     await vi.waitFor(() => expect(root.querySelectorAll('[data-new-slide="true"]')).toHaveLength(2))
     root.querySelector<HTMLElement>('[data-new-slide="true"]')!.querySelector<HTMLButtonElement>('[aria-label="移除新建的幻灯片"]')!.click()
     expect(draft.operations[0]).toMatchObject({ order: [0, 2, 1], newSlides: [{ layoutFrom: 0 }],

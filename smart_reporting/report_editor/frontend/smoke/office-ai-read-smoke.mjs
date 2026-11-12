@@ -39,11 +39,11 @@ try {
     assert.equal(await page.locator('[data-action="save"]').isDisabled(),true)
     const download=page.getByRole('link',{name:'下载原件',exact:true});assert.equal(await download.count(),1)
     const entry=page.locator('[data-action="office-read-ai"]');assert.equal(await entry.isDisabled(),false);assert.equal(await entry.locator('svg').count(),1)
-    assert.match(await entry.innerText(),format==='xlsx'?/Excel AI 阅读/:/PPT AI 阅读/)
+    assert.equal(await entry.innerText(),'AI 助手')
     const draftState=()=>page.evaluate(()=>Object.fromEntries(Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>[key,localStorage.getItem(key)])))
     const before=await draftState(),panel=page.locator('.native-office-assistant')
     await entry.click();await panel.waitFor({state:'visible'})
-    assert.match(await panel.innerText(),format==='xlsx'?/Excel AI 阅读助手/:/PPT AI 阅读助手/)
+    assert.equal(await panel.getAttribute('aria-label'),format==='xlsx'?'Excel AI 阅读助手':'PPT AI 阅读助手')
     assert.equal(await panel.getByLabel('Office AI 阅读范围').inputValue(),'document')
     assert.equal(await panel.getByLabel('Office AI 问题或补充要求').isEditable(),true)
     for(const action of ['ask','summarize','keyPoints','start','cancel','close'])assert.equal(await panel.locator('[data-office-ai="'+action+'"] svg').count(),1)
@@ -58,14 +58,22 @@ try {
     assert.equal(result.sourceSha256,document.sourceSha256);assert.equal(result.effectiveSha256,document.sourceSha256)
     assert.deepEqual(result.toolEvents.map(event=>event.tool),format==='xlsx'?['get_workbook_context','read_cells']:['get_presentation_context','read_slide'])
     assert.match(result.answer,/收入42.*费用12/)
-    assert(!result.answer.includes('备注专属秘密'))
+    if(format==='pptx') {
+      assert.match(result.answer,/演讲者备注.*下季度目标59/)
+      assert.equal(result.citations[0].speakerNotes,true)
+      assert.match(result.citations[0].label,/演讲者备注/)
+    }
     const evidence=await panel.locator('.native-ai-evidence').innerText()
+    const textLayout=await panel.locator('.native-ai-evidence > p').first().evaluate(el=>({height:el.getBoundingClientRect().height,fontFamily:getComputedStyle(el).fontFamily,hostFontFamily:getComputedStyle(document.querySelector('.office-task-workspace')).fontFamily}))
+    assert(textLayout.height>0,'引用与阅读覆盖文字必须实际可见')
+    assert.equal(textLayout.fontFamily,textLayout.hostFontFamily,'侧栏沿用可读宿主字体')
     assert.match(evidence,/已核验原件/);assert.match(evidence,/范围已读完/)
     assert.match(evidence,new RegExp('实际完整读取：'+(format==='xlsx'?'2 / 2':'1 / 1')))
     if(format==='pptx') {
       assert(result.limitations?.length,'服务端必须返回PPTX真实阅读边界')
+      await panel.locator('summary',{hasText:'阅读范围与限制'}).click()
       const panelText=await panel.innerText()
-      assert.match(panelText,/备注/);assert.match(panelText,/图片/);assert.match(panelText,/表格/)
+      assert.match(panelText,/整稿包含演讲者备注/);assert.match(panelText,/当前对象选区不包含备注/);assert.match(panelText,/引用：.*演讲者备注/);assert.match(panelText,/图片/);assert.match(panelText,/表格/)
       assert.match(panelText,/不代表.*PPTX.*全部内容|不代表.*全部.*PPTX|仅为引擎/)
     }
     const request=state.requests.filter(item=>item.path.includes('/'+document.context.documentId+'/')&&item.path.endsWith('/office-read/start')).at(-1)
@@ -79,7 +87,7 @@ try {
     assert(state.requests.some(item=>item.path.includes('/'+document.context.documentId+'/')&&item.path.endsWith('/events')),'浏览器须真实请求SSE工具进度')
     assert.deepEqual(await draftState(),before)
     await page.screenshot({path:join(checkpoint,format+'-document-summary.png'),fullPage:true})
-    results.push({format,result,evidence,progress,request,sourceUnchanged:true,draftUnchanged:true})
+    results.push({format,result,evidence,textLayout,progress,request,sourceUnchanged:true,draftUnchanged:true})
     await writeFile(join(checkpoint,format+'-result.json'),JSON.stringify(results.at(-1),null,2))
     await page.close();page=undefined
   }
@@ -90,7 +98,7 @@ try {
   const summary={ok:true,checkpoint,browserVersion:browser.version(),manifestSha256:sha(manifest),assets:Object.fromEntries(assets),provider:'ScriptedModel through actual Agno; not a real provider',http:'uvicorn FastAPI real routers/workspace/grant/cookie; scoped in-memory revision lookup',readOnly:true,editingEnabled:false,officeReadAIEnabled:true,identities:final.identities,results,errors,consoleErrors,httpErrors}
   await writeFile(join(checkpoint,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok:true,checkpoint,cases:results.length,assets:assets.size}))
 } catch(error) {
-  if(page){await writeFile(join(checkpoint,'failure.html'),await page.content()).catch(()=>{});await page.screenshot({path:join(checkpoint,'failure.png'),fullPage:true}).catch(()=>{})}
+  if(page){await writeFile(join(checkpoint,'failure-layout.json'),JSON.stringify(await page.evaluate(()=>[...document.querySelectorAll('.office-task-dock,.office-assistant-header,.office-assistant-body,.native-ai-evidence,.native-ai-evidence p')].map(el=>{const css=getComputedStyle(el),box=el.getBoundingClientRect();return {className:el.className,text:el.textContent?.slice(0,120),innerText:el.innerText,display:css.display,visibility:css.visibility,color:css.color,fontSize:css.fontSize,fontFamily:css.fontFamily,contentVisibility:css.contentVisibility,height:box.height,width:box.width}})),null,2)).catch(()=>{});await writeFile(join(checkpoint,'failure.html'),await page.content()).catch(()=>{});await page.screenshot({path:join(checkpoint,'failure.png'),fullPage:true}).catch(()=>{})}
   console.error(JSON.stringify({stage,checkpoint}));throw error
 } finally {
   await browser?.close();server.kill();await writeFile(join(checkpoint,'server.log'),serverLog)

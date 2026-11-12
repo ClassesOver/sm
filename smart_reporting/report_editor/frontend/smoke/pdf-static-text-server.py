@@ -23,11 +23,11 @@ from runpy import run_path
 SaveRepository = run_path(str(Path(__file__).with_name('pdf-form-design-server.py')))['SaveRepository']
 
 
-async def create_app(directory: Path, port: int):
+async def create_app(directory: Path, port: int, *, source: bytes | None = None):
     directory.mkdir(parents=True, exist_ok=True)
     f = await extract_fixture(directory / "runtime")
     f.editor.pdf_text_enabled = True
-    source = source_pdf()
+    source = source_pdf() if source is None else source
     identity = ArtifactFile(path=f.original_identity.path, size=len(source), sha256=hashlib.sha256(source).hexdigest(), mediaType="application/pdf")
     await f.workspace.awrite_bytes(f.thread, identity.path, source, overwrite=True, expected_sha256=f.original_identity.sha256)
     f.parent = f.parent.model_copy(update={"source_file": identity})

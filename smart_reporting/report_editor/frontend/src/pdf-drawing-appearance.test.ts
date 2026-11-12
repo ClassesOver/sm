@@ -19,7 +19,7 @@ for(const view of views){
   const group=document.createElementNS(ns,'g'),vp=viewport(view.rotation,view.zoom),op:NativeOperation={...base,shape:'measure',from:measure.from,to:measure.to,label:measure.label},original=structuredClone(op)
   paintDrawing(group,op,vp,view.zoom);expect(op).toEqual(original)
   const label=group.querySelector('[data-pdf-measure-label]')!
-  expect(label.getAttribute('text-anchor')).toBe('start');expect(label.getAttribute('font-size')).toBe('9');expect(label.getAttribute('font-family')).toBe('Helvetica, Arial, sans-serif');expect((label as SVGTextElement).style.fontKerning).toBe('none');expect((label as SVGTextElement).style.fontVariantLigatures).toBe('none');expect(label.getAttribute('dominant-baseline')).toBe('alphabetic');expect(label.getAttribute('x')).toBe('0');expect(label.getAttribute('y')).toBe('0');expect(label.textContent).toBe(measure.label)
+  expect(label.getAttribute('text-anchor')).toBe('start');expect(label.getAttribute('font-size')).toBe('9');expect(label.getAttribute('font-family')).toBe('PDF Standard Helvetica, Liberation Sans, Helvetica, Arial, sans-serif');expect((label as SVGTextElement).style.fontKerning).toBe('none');expect((label as SVGTextElement).style.fontVariantLigatures).toBe('none');expect(label.getAttribute('dominant-baseline')).toBe('alphabetic');expect(label.getAttribute('x')).toBe('0');expect(label.getAttribute('y')).toBe('0');expect(label.textContent).toBe(measure.label)
   const match=/^matrix\(([^)]+)\)$/.exec(label.getAttribute('transform')??'');expect(match).not.toBeNull();const [a,b,c,d,e,f]=match![1]!.split(/[ ,]+/).map(Number),[ta,tb,tc,td,te,tf]=measure.tm
   // Glyph-space y points down in SVG and up in PDF. Check multiple glyph
   // coordinates against the actual native Tm followed by the viewport.
@@ -38,4 +38,28 @@ it('sets browser kerning and ligature controls as CSS properties rather than ign
  const group=document.createElementNS(ns,'g');paintDrawing(group,{...base,shape:'measure',from:[80,200],to:[240,200],label:'AV To ffi'},viewport(0,1),1)
  const label=group.querySelector<SVGTextElement>('[data-pdf-measure-label]')!
  expect(label.style.fontKerning).toBe('none');expect(label.style.fontVariantLigatures).toBe('none')
+ expect(label.style.textRendering.toLowerCase()).toBe('geometricprecision')
 })
+
+for(const view of views){
+ it('scales visible strokes and arrow heads by actual UserUnit viewport at '+view.rotation+' degrees and '+view.zoom+' zoom',()=>{
+  const vp=viewport(view.rotation,view.zoom),group=document.createElementNS(ns,'g')
+  const geometry=[
+   {shape:'rect',rect:[80,80,180,180]}, {shape:'ellipse',rect:[80,80,180,180]},
+   {shape:'ink',paths:[[80,80,180,180]]}, {shape:'polygon',vertices:[[80,80],[180,80],[180,180]]},
+   {shape:'arrow',from:[80,80],to:[180,180]}, {shape:'measure',from:[80,80],to:[180,180],label:'1.00 m'},
+  ]
+  for(const shape of geometry){
+   const operation:NativeOperation={...base,...shape},original=structuredClone(operation)
+   paintDrawing(group,operation,vp,view.zoom)
+   // A 2-user-unit stroke on /UserUnit 2 is four physical points before zoom.
+   expect(Number(group.querySelector('[data-pdf-drawing]')!.getAttribute('stroke-width'))).toBeCloseTo(4*view.zoom,8)
+   expect(Number(group.querySelector('[data-pdf-shape-hit]')!.getAttribute('stroke-width'))).toBeGreaterThanOrEqual(16)
+   if(shape.shape==='arrow')for(const head of group.querySelectorAll('[data-pdf-arrow-head]')){
+    const x1=Number(head.getAttribute('x1')),y1=Number(head.getAttribute('y1')),x2=Number(head.getAttribute('x2')),y2=Number(head.getAttribute('y2'))
+    expect(Math.hypot(x2-x1,y2-y1)).toBeCloseTo(18*view.zoom,8)
+   }
+   expect(operation).toEqual(original)
+  }
+ })
+}

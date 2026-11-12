@@ -3478,3 +3478,115 @@ async def test_revision_editor_input_failure_keeps_office_download(tmp_path, del
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
         response = await client.get(result[delivery_format]['downloadUrl'])
     assert response.status_code == 200 and response.content == raw
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['actual_clipping', 'review_failed', 'after_preview_review_failed'])
+async def test_measure_label_crop_review_never_blocks_applied_pdf_http_download(tmp_path, monkeypatch, fault):
+    """测量页框复核：实际溢出及诊断失败均保留原字节、应用回执和下载。"""
+    from io import BytesIO
+
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import NameObject, NumberObject, RectangleObject
+
+    from smart_reporting.report_editor import native, native_publication
+    from smart_reporting.report_editor.native import bind_native_workspace
+    from smart_reporting.report_editor.native_api import (
+        NATIVE_SESSION_COOKIE,
+        create_native_editor_router,
+    )
+    from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf_with_receipt
+    from smart_reporting.reporting.tests.test_native_pdf_text_service import fixture
+
+    editor, context, _, downloads = await fixture(tmp_path)
+    writer = PdfWriter()
+    if fault == 'after_preview_review_failed':
+        from reportlab.pdfgen import canvas
+
+        original = BytesIO()
+        drawing = canvas.Canvas(original, pagesize=(500, 600))
+        drawing.drawString(60, 300, 'MEASURE REVIEW CONTROL')
+        drawing.showPage()
+        drawing.save()
+        page = writer.add_page(PdfReader(BytesIO(original.getvalue())).pages[0])
+    else:
+        page = writer.add_blank_page(width=500, height=600)
+    page.cropbox = RectangleObject([30, 40, 430, 440])
+    unit = 1 if fault == 'after_preview_review_failed' else 2
+    page[NameObject('/UserUnit')] = NumberObject(unit)
+    stream = BytesIO()
+    writer.write(stream)
+    source = stream.getvalue()
+    identity = ArtifactFile(path='native/measure-crop-review.pdf', size=len(source),
+        sha256=hashlib.sha256(source).hexdigest(), mediaType='application/pdf')
+    await editor.workspace.awrite_bytes(bind_native_workspace(editor.workspace, context.scope), identity.path, source)
+    context = context.model_copy(update={'source_file': identity})
+    page_id = inspect_pdf(source)['pages'][0]['pageId']
+    operation = {'kind': 'addDrawing', 'pageId': page_id, 'shape': 'measure',
+        'from': [330, 200], 'to': [410, 200], 'label': 'W' * 64, 'color': [1, 0, 0], 'width': 1}
+    operations = [operation]
+    if fault == 'after_preview_review_failed':
+        target = next(item for item in inspect_pdf(source, include_text=True)['pages'][0]['textObjects']
+                      if item['text'] == 'MEASURE REVIEW CONTROL')
+        operations.append({'kind': 'replaceText', 'pageId': page_id, 'sourceSha256': identity.sha256,
+            'objectId': target['objectId'], 'expectedTextSha256': target['expectedTextSha256'],
+            'newText': 'UPDATED MEASURE REVIEW', 'font': 'courier', 'fontSize': 12})
+    if fault != 'actual_clipping':
+        def failed_review(content, operations):
+            result = patch_pdf_with_receipt(content, operations)
+            # Simulate a diagnostic failure after successful writing, never a missing artifact.
+            issues = [issue for issue in result.get('reviewIssues', [])
+                      if issue['code'] != 'pdf_measure_label_crop_clipping'] + [{'operationIndex': 0, 'kind': 'addDrawing', 'fieldName': '',
+                'code': 'pdf_measure_label_crop_review_failed',
+                'message': '测量标签页框复核失败，实际生成文件已保留，请人工核对。'}]
+            digest = result['previewDigest'] if fault == 'after_preview_review_failed' else hashlib.sha256(
+                json.dumps({'base': result['previewDigest'], 'reviewIssues': issues}, sort_keys=True).encode()).hexdigest()
+            return {**result, 'reviewIssues': issues, 'previewDigest': digest}
+        if fault != 'after_preview_review_failed':
+            monkeypatch.setattr(native, 'patch_pdf_with_receipt', failed_review)
+        monkeypatch.setattr(native_publication, 'patch_pdf_with_receipt', failed_review)
+    code = 'pdf_measure_label_crop_clipping' if fault == 'actual_clipping' else 'pdf_measure_label_crop_review_failed'
+    editor.context_for_session = AsyncMock(return_value=context)
+    raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await editor.grants.exchange(raw)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(editor.grants, editor=editor,
+        download_service=downloads, cookie_secure=False, allowed_origin='http://test'))
+    base = f'/reports/v1/native/{context.document_id}/{context.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token, path=base)
+        headers = {'Origin': 'http://test', 'X-CSRF-Token': editor.grants.csrf_token(token)}
+        payload = {'expectedSha256': identity.sha256, 'operations': operations}
+        preview = await client.post(base + '/api/preview', headers=headers, json=payload)
+        assert preview.status_code == 200, preview.text
+        result = preview.json()
+        preview_code = 'pdf_measure_label_crop_clipping' if fault == 'after_preview_review_failed' else code
+        assert preview_code in {issue['code'] for issue in result['reviewIssues']}
+        assert result['appliedOperationIndices'] == list(range(len(operations))) and result['skippedOperations'] == []
+        preview_file = await client.post(base + '/api/preview.pdf', headers=headers,
+            json={**payload, 'expectedPreviewDigest': result['previewDigest']})
+        assert preview_file.status_code == 200, preview_file.text
+        assert PdfReader(BytesIO(preview_file.content)).pages[0]['/Annots']
+        saved_response = await client.post(base + '/api/save', headers=headers,
+            json={**payload, 'requestId': 'measure-crop-' + fault,
+                  **({'confirmedPreviewDigest': result['previewDigest']} if fault == 'after_preview_review_failed' else {})})
+        assert saved_response.status_code == 200, saved_response.text
+        saved = saved_response.json()
+        assert saved['validation']['ok'] is False
+        assert code in {issue['code'] for issue in saved['validation']['issues']}
+        assert not any(issue['code'] == 'native_pdf_text_skipped' for issue in saved['validation']['issues'])
+        artifact = saved['artifacts']['pdf']
+        actual = await client.get(artifact['downloadUrl'])
+        assert actual.status_code == 200
+        assert hashlib.sha256(actual.content).hexdigest() == artifact['sha256']
+        assert len(actual.content) == artifact['size']
+        reader = PdfReader(BytesIO(actual.content))
+        page = reader.pages[0]
+        assert list(page.cropbox) == [30, 40, 430, 440] and page['/UserUnit'] == unit
+        if fault == 'after_preview_review_failed':
+            assert 'UPDATED MEASURE REVIEW' in page.extract_text()
+        annotation = page['/Annots'][0].get_object()
+        assert annotation['/L'] == [330, 200, 410, 200]
+        assert annotation['/AP']['/N']['/BBox'][2] > page.cropbox.right
+        assert ('W' * 64).encode() in annotation['/AP']['/N'].get_data()
+        assert await editor.read_file(context) == source

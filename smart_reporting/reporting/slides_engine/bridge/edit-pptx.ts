@@ -1,3 +1,4 @@
+import { inspectChartReadData } from './pptx-chart-read.ts'
 import {inspectSlideNotes,prepareNotesEdits,applyNotesEdits,type NotesEdit} from './pptx-notes.ts'
 import {inspectLinkCapabilities,prepareLinkEdits,applyLinkEdits,type LinkEdit} from './pptx-links.ts'
 import {inspectClipboardCapabilities,prepareClipboardPastes,applyClipboardPastes,type ClipboardPaste} from './pptx-clipboard.ts'
@@ -375,7 +376,7 @@ if (request.action === 'inspect') {
         brushSource:inspectBrushSource(element),
         orderEditable: ['text','shape','picture'].includes(element.type) && !isConnectorXml(element.anchor.originalXml),
         arrangeEditable: ['text','shape','picture'].includes(element.type) && !isConnectorXml(element.anchor.originalXml),
-        ...(element.type === 'chart' ? inspectChartEdit(opened,slideIndex,element.id) : {}),
+        ...(element.type === 'chart' ? { ...inspectChartEdit(opened,slideIndex,element.id), chartReadData: inspectChartReadData(element.chart) } : {}),
         ...((element.type === 'text'||element.type === 'shape') ? {findReplaceEditable:findReplaceEditable(element)} : {}),
         // 表格单元格文字（合并单元格为 null），供编辑器单元格网格使用
         ...(element.type === 'table' ? { tableCells: (element as unknown as { rows: { merged?: boolean; text?: { paragraphs: { runs: { text: string }[] }[] } }[][] }).rows.map(row => row.map(cell => cell.merged ? null : (cell.text?.paragraphs ?? []).map(paragraph => paragraph.runs.map(run => run.text).join('')).join('\n'))) } : {}),

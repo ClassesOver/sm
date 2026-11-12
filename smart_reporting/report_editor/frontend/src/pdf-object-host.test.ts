@@ -52,3 +52,21 @@ it.each([
  await expect(f.create()).rejects.toThrow()
  expect(f.draft.operations).toEqual([op])
 })
+
+it('measurement crop warning remains separate from applied operations and preserves the draft',async()=>{
+ const f=await fixture(),view=await f.create()
+ const op:NativeOperation={kind:'addDrawing',pageId,shape:'measure',from:[230,200],to:[290,200],label:'W'.repeat(64),color:[1,0,0],width:1}
+ f.draft.setOperations([op])
+ const current=await f.api.preview({expectedSha256:sourceSha256,operations:[op]})
+ const message='第 1 页的测量标签可能超出可见页框而被裁切；标签和生成文件已保留，请核对实际预览。'
+ vi.mocked(f.api.preview).mockResolvedValue({...current,previewDigest:'f'.repeat(64),appliedOperationIndices:[0],skippedOperations:[],reviewIssues:[{operationIndex:0,kind:'addDrawing',fieldName:'',code:'pdf_measure_label_crop_clipping',message}]})
+ const button=[...f.root.querySelectorAll('button')].find(button=>button.textContent==='校验当前修改')!
+ button.click()
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-review-issue')?.textContent).toContain(message))
+ const panel=f.root.querySelector<HTMLElement>('.pdf-preview-review')!
+ expect(panel.textContent).toContain('已执行：第 1 项')
+ expect(panel.textContent).not.toContain('未执行，保留原文')
+ expect(f.draft.operations).toEqual([op])
+ expect(f.api.previewFile).toHaveBeenCalledWith(expect.objectContaining({operations:[op],expectedPreviewDigest:'f'.repeat(64)}),expect.any(AbortSignal))
+ view.dispose()
+})

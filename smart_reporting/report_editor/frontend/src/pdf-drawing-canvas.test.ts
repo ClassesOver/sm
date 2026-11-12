@@ -41,7 +41,7 @@ it('preserves cross-kind z-order and restricts handles to images, links stay non
 })
 it('renders all ink paths, fixed caret glyph, arrow heads and grouped measurement labels',()=>{
  const group=document.createElementNS(ns,'g')
- paintDrawing(group,shapes[4]!,viewport,3);expect(group.querySelectorAll('[data-pdf-drawing="ink"]')).toHaveLength(2);expect(group.querySelectorAll('[data-pdf-shape-hit]')).toHaveLength(2)
+ paintDrawing(group,shapes[4]!,{width:1200,height:1500,convertToViewportPoint:(x,y)=>viewport.convertToViewportPoint(x,y).map(v=>v*3),convertToPdfPoint:(x,y)=>viewport.convertToPdfPoint(x/3,y/3)},3);expect(group.querySelectorAll('[data-pdf-drawing="ink"]')).toHaveLength(2);expect(group.querySelectorAll('[data-pdf-shape-hit]')).toHaveLength(2)
  expect(group.querySelector('[data-pdf-shape-hit]')?.getAttribute('stroke-width')).toBe('24')
  expect(group.querySelector('[data-pdf-drawing="ink"]')?.getAttribute('stroke-linecap')).toBe('round')
  paintDrawing(group,shapes[6]!,viewport,3);expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('d')).toBe('M90 370 L82 376 L98 376 Z');expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('fill')).toBe('rgb(255,0,0)');expect(group.querySelector('[data-pdf-drawing="caret"]')?.getAttribute('stroke')).toBe('none')

@@ -41,6 +41,40 @@ def checked_review_operation(operation: dict) -> dict:
     return deepcopy(operation)
 
 
+def _thread_replies(model: dict, root: dict) -> list[dict]:
+    """Read only descendants of the authorized root, in source comment order.
+
+    parentId is an original OOXML comment id, not the opaque targetId used by
+    writers. Never infer membership from an anchor shared by another thread.
+    """
+    projection = model.get('commentThreads', {})
+    targets = [item for item in projection.get('targets', [])
+               if item.get('sourceId') == root['sourceId']]
+    root_id = root.get('originalCommentId')
+    by_id = {item.get('originalCommentId'): item for item in targets}
+    if (projection.get('readOnlyReason') or not isinstance(root_id, str) or
+            root_id not in by_id or len(by_id) != len(targets)):
+        raise _invalid('批注线程关系不可完整读取。', 'native_ai_selection_invalid')
+    result = []
+    for target in targets:
+        parent, seen = target.get('parentId'), set()
+        while parent is not None and parent != root_id:
+            if parent in seen or parent not in by_id:
+                raise _invalid('批注线程关系不可完整读取。', 'native_ai_selection_invalid')
+            seen.add(parent)
+            parent = by_id[parent].get('parentId')
+        if parent != root_id:
+            continue
+        if (target.get('readOnlyReason') or not isinstance(target.get('text'), str) or
+                not isinstance(target.get('targetId'), str) or
+                target.get('expectedCommentsSha256') != root['expectedCommentsSha256']):
+            raise _invalid('批注线程回复正文不可完整读取。', 'native_ai_selection_invalid')
+        result.append(deepcopy({key: target.get(key) for key in (
+            'sourceId', 'targetId', 'originalCommentId', 'parentId',
+            'text', 'author', 'date', 'done')}))
+    return result
+
+
 def selected_review_objects(model: dict, operations: list[dict], selection: list[dict]) -> list[dict]:
     if operations:
         raise _invalid('审阅操作不能与已有草稿合批，请先保存并重新打开。', 'native_ai_selection_invalid')
@@ -72,9 +106,10 @@ def selected_review_objects(model: dict, operations: list[dict], selection: list
             identity = f"comment:{item['sourceId']}:{item['targetId']}"
             snapshot = {'selectionKind': 'comment', 'reviewId': identity, 'allowedOperations': allowed,
                 **{key: deepcopy(target.get(key)) for key in ('sourceId', 'targetId',
-                    'expectedCommentsSha256', 'expectedObjectSha256', 'text', 'author', 'date')},
+                    'originalCommentId', 'expectedCommentsSha256', 'expectedObjectSha256', 'text', 'author', 'date')},
                 'parentId': target.get('parentId'),
                 'done': thread.get('done') if thread else None,
+                'replies': _thread_replies(model, target),
                 'replyMetadata': {'author': 'AI Assistant',
                     'date': datetime.now(UTC).isoformat(timespec='seconds').replace('+00:00', 'Z'),
                     'clientId': uuid4().hex}}
