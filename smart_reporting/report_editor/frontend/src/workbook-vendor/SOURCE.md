@@ -232,3 +232,13 @@ Queries host adapter review corrections (2026-11-11): free-form connection
 descriptions are omitted from the display projection; names sanitize UID and
 URL userinfo. SAX canonicalization only emits actual OOXML metadata parent
 paths, excluding nested extension payloads. Vendor source files are unchanged.
+
+2026-11-12 native workbook theme adapter: `core/themes.ts` adapts GenOffice
+`apps/sheets/src/renderer/themes.ts` at `f8c17004fb730df11f0f743164ffd8b4281bb38c`
+(upstream SHA-256 `42f527e0319a2d35c33d574256c683dfe74a9138db4aa2be54cdd735afc04f23`).
+The Page Layout ▸ Themes / Colors / Fonts preset data (8 colour schemes, 6 font
+schemes, 8 theme presets and their colour→font pairing) is copied verbatim. The
+renderer-side `applyTint` / `rethemeStyles` recolouring is not copied: the native
+editor replays the `setThemePart` operation through the real workbook engine, so
+theme-provenance styles resolve exactly as a reopen would. LOCAL-ADAPTATIONS-SHA256
+records the adapted file.
