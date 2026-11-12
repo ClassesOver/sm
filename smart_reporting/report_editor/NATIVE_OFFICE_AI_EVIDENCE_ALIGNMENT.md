@@ -51,3 +51,6 @@
 
 
 同批补齐预览后仅裁切诊断失败的非阻断边界：新诊断不使同内容确认失效，原字节SHA/操作/来源绑定不变。普通绘图保存现保留完整回执。最新PR219合入后的Word/PPTX包预算已通过纯helper静态拆包恢复到232.97/237.11KiB，不提高250KiB上限；相关103项窄测、实际Chrome模块导入与全部预算合同通过，详见 [裁切风险提示与构建验收](NATIVE_PDF_MEASURE_CROP_REVIEW_ACCEPTANCE.md)。
+
+
+2026-11-12 浏览器续批：测量标签页边风险已补真实UI标定/UndoRedo/预览告警/保存/下载/新修订重开闭环，独立pypdf/ReportLab回读与48份实际JS/CSS身份核验通过。原件不变、保存告警不阻断下载；真实路由与引擎、隔离内存修订仓储，不冒称生产DB。见 [页边风险提示浏览器补证](NATIVE_PDF_MEASURE_CROP_REVIEW_ACCEPTANCE.md)。

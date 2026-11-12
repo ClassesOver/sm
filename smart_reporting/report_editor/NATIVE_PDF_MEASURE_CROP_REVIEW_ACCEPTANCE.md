@@ -32,7 +32,7 @@
 - PDF bridge bundle通过，metafile包含新增helper。完整前端npm build（Node heap4GiB，含tsc）通过，Vite42.17秒。首次全量JS预算检查发现合入PR219后Word/PPTX主包分别253.6/260.4KiB超250KiB，随后仅通过既有纯helper的静态ESM拆包恢复预算，不放宽阈值；最终Word238565 bytes（232.97KiB）、PPTX242803 bytes（237.11KiB），全部JS预算与预算合同通过。
 - 本HTTP文件有既有lint问题，新增测试行经Ruff单独筛查无错误；native_pdf_contract.py与git diff检查通过。
 
-本记录不冒称生产数据库、真实模型或真实浏览器保存整链通过。保守字体边界可产生风险提示而非精确裁切结论；没有自动移动/缩小标签，实际页边裁切仍存在。未部署或开启功能开关。
+上述引擎/HTTP/宿主专项不单独构成真实浏览器保存整链；后续浏览器补证见下节。生产数据库与真实模型仍未在本专项验收。保守字体边界可产生风险提示而非精确裁切结论；没有自动移动/缩小标签，实际页边裁切仍存在。未部署或开启功能开关。
 
 
 ## 同批构建预算复核
@@ -40,3 +40,18 @@
 仅调整vite.config.ts的manualChunks：Word现有批注模型/控制器拆为docx-comment-model（21471 bytes），PPTX既有规划/校验模块拆为slides-draft-plans（16365 bytes），保持原同步调用与静态导入。首次选择notes模块没有降低Word main，已撤回无收益规则，转而按实际内联模块拆出批注边界。
 
 相关既有103项窄测通过；最终Vite54.49秒，全部预算和预算合同通过。Chromium实际导入两main及两新包成功，无页面错误；manifest核对新包无main传递回边。日志 `/tmp/office-budget-vite-final.log`、`/tmp/office-budget-final.log`、`/tmp/office-budget-module-import.log`；manifest SHA `da3919e9fa1658bbb3ae81feafc37232956ae06af50b0351d588336509ae4097`。导入专项不冒充完整Word/PPTX编辑、保存浏览器验收；未重复完整项目测试。
+
+
+## 2026-11-12 真实编辑器浏览器闭环补证
+
+新增 `pdf-measure-crop-review-smoke.mjs` / `-server.py` / `-verify.py`。服务端复用既有静态文字smoke的真实路由、授权、workspace、Node引擎和publication；仅在共享create_app增加可选的source字节参数供新夹具注入。旧调用不提供参数时仍生成原三页source，独立前置检查确认页数、原文与sourceSHA一致。修订仓储沿用有作用域的SaveRepository内存夹具，不冒充生产数据库。
+
+浏览器证据 `/tmp/pdf-measure-review-browser-20261112-03/summary.json` 的ok=true，Chromium 140.0.7339.16。使用独立冻结目录 `/tmp/pdf-measure-review-static-20261112`；没有在本批重新构建前端，也没有跑完整项目测试。manifest SHA `da3919e9fa1658bbb3ae81feafc37232956ae06af50b0351d588336509ae4097` 前后不变，48份实际加载的JS/CSS逐一核对HTTP/冻结磁盘SHA，page/console/HTTP/asset错误为空。
+
+实际用户链：打开有CONTROL CONTENT的一页PDF → 注释/测量 → 页面80%到95%水平拖动 → 输入参考长度3、单位12个W → 真正生成 `from=[350,240], to=[410,240], label=3.00 WWWWWWWWWWWW, width=2` → Undo/Redo保持操作 → 校验当前修改 → 真实PDF预览显示裁切告警及已执行[0]/跳过空 → 勾选既有预览确认 → 正常保存修订4→5 → 核对界面下载链接并通过浏览器请求取得实际字节 → 从新编辑URL重开并核sourceSHA等于下载SHA。
+
+普通测量原API不要求confirmedPreviewDigest，脚本只在实际请求存在该可选字段时核它与预览一致，始终核对真实勾选、完整操作与保存身份。前两轮脚本沿用了复杂编辑“摘要必填”断言而失败，目录-01/-02保留；改正测试契约后通过，没有修改产品或增加保存门槛。
+
+下载保存响应validation.ok=false且保留 `pdf_measure_label_crop_clipping`，下载链接仍有效。独立pypdf复读确认原线段/标签、Helvetica9pt AP/Tm、CropBox `[30,40,430,440]`、MediaBox `[0,0,500,600]`、UserUnit2及原正文保留；ReportLab独立Helvetica名义宽为121.968用户单位，从实际Tm原点x380起超过页框右界430。下载和重开SHA为 `215d6cdb61ec9cb5f73cbaeee8bab6f3e30ae0ad360be50cdfafe71af1abc6b0`，原件SHA为 `7a4dfd2257491953063757996019617cf2f5e88f3857f1cee50e2d2fd551c29c`，源文件未变。
+
+root独立重新核对summary、全部48个资源与manifest、文件身份/独立验证回执，并目视 `preview-warning.png`。实际标签在页边依然可见裁切，提示没有伪装自动修复布局。截图另有staged.png、saved-warning-download.png与reopened.png。新smoke均有语法或Python编译检查，新增Python文件Ruff及git diff检查通过。此补证覆盖本限定场景真实浏览器保存/下载/重开；不推广到全部PDF来源、生产数据库或像素全等。
