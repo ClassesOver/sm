@@ -42,3 +42,5 @@
 复现：图形smoke设置WORKBOOK_CHART_RENDER_CASE=scale；保存链设置WORKBOOK_AI_CHARTS_VALUE_RANGE=1（可同时设AXIS_TITLES=1）。沿用显式FONTCONFIG_FILE和冻结目录，每次新建输出目录，不覆盖失败现场。
 
 仍缺刻度/轴线/数值标签、源漂亮刻度与完整自动范围、对数计算、非零交点/次轴/组合/堆叠/百分比、跨表数值及完整字体度量。未部署或开启生产开关，两个既有PDF WIP stash保持原样。
+
+后续普通bar/column的源自动留白与数值刻度已另批补齐，见 [数值轴续批验收](NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md)。本文件保留当时本地自动范围的历史证据，不把旧冻结构建倒算为新算法已验收。

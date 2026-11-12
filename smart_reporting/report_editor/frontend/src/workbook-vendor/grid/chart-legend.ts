@@ -28,8 +28,9 @@ export function chartTextValue(text: {literal?:string;reference?:string;cache?:s
 }
 
 export function fitted(text: string, width: number, measure: (value: string) => number): string {
-  if (width <= 0 || measure('…') > width) return ''
+  if (width <= 0) return ''
   if (text.length <= 500 && measure(text) <= width) return text
+  if (measure('…') > width) return ''
   let low = 0, high = Math.min(500, text.length)
   while (low < high) {
     const middle = Math.ceil((low + high) / 2)

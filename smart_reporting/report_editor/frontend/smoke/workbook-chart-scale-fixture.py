@@ -70,28 +70,42 @@ def verify(directory):
     geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, ('#4472c4',))
     (directory / 'pixel-geometry.json').write_text(json.dumps(geometry, indent=2))
     assert len(geometry['frames']) == 6
+    clip_frame = geometry['frames'][3]
+    clipped = [r for r in geometry['bars'] if clip_frame['y'] < r['y'] < clip_frame['y'] + clip_frame['height']]
+    assert len(clipped) == 1
+    # The clipped 12 at the explicit 8 endpoint spans the complete visible
+    # range. All horizontal fixtures share the same A/B category gutter.
+    horizontal_width = clipped[0]['width']
+    horizontal_left = clipped[0]['x']
     results = []
     for index, frame in enumerate(geometry['frames']):
         x, y, right, bottom = frame['x'], frame['y'], frame['x'] + frame['width'], frame['y'] + frame['height']
         bars = sorted((r for r in geometry['bars'] if x <= r['x'] and r['x'] + r['width'] <= right
-                      and y <= r['y'] and r['y'] + r['height'] <= bottom), key=lambda r: r['x'] if index == 1 else r['y'])
+                      and y <= r['y'] and r['y'] + r['height'] <= bottom), key=lambda r: r['x'] if index == 1 else r['y'], reverse=index != 1)
         assert len(bars) == (0 if index == 5 else 1 if index == 3 else 2), (index, bars)
-        width, height = frame['width'] - 16, frame['height'] + 1 - 28
+        width, height = horizontal_width, frame['height'] + 1 - 28 - (20 if index == 1 else 0)
         if index in (0, 2, 4):
             for bar, proportion in zip(bars, (1 / 6, 4 / 6)):
                 assert abs(bar['width'] - width * proportion) <= 2, (index, bar)
                 if index == 0:
-                    assert abs(bar['x'] - (x + 8)) <= 2
+                    assert abs(bar['x'] - horizontal_left) <= 2
                 else:
                     assert abs(bar['x'] + bar['width'] - (right - 8)) <= 2
         elif index == 1:
-            baseline = bottom - 7 - height / 3
+            baseline = bottom - 27 - height / 3
             for bar, proportion in zip(bars, (3 / 12, 6 / 12)):
                 assert abs(bar['height'] - height * proportion) <= 2
                 assert abs(bar['y'] + bar['height'] - baseline) <= 2
         elif index == 3:
             assert abs(bars[0]['width'] - width) <= 2
-            assert bars[0]['y'] > y + 20 + height / 2  # The excluded first category remains empty.
+            assert abs(bars[0]['x'] + bars[0]['width'] - (right - 8)) <= 2
+            # The new value-tick band reserves 20px below the horizontal
+            # data plot. The source bottom-up order puts category 2 at the
+            # top. Independently measure that category's actual
+            # origin and thickness instead of using the old plot midpoint.
+            data_height = height - 20
+            assert abs(bars[0]['y'] - (y + 20 + data_height * 0.075)) <= 2
+            assert abs(bars[0]['height'] - data_height * 0.35) <= 2
         else:
             ink = sum(max(rgb) < 100 for rgb in image.crop((x + 10, y + 22, right - 10, y + 50)).getdata())
             assert ink >= 30, ink

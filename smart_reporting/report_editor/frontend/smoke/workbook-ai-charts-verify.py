@@ -22,10 +22,22 @@ def verify(directory: Path):
         untouched = 'xl/charts/chart2.xml'
         assert before.read(untouched) == first.read(untouched) == second.read(untouched)
         xml = etree.fromstring(first.read('xl/charts/chart1.xml'))
+        original_xml = etree.fromstring(before.read('xl/charts/chart1.xml'))
+        source_style = original_xml.find('.//c:barChart/c:dLbls/c:txPr', ns)
+        if source_style is not None:
+            saved_style = xml.find('.//c:barChart/c:dLbls/c:txPr', ns)
+            assert saved_style is not None
+            assert etree.tostring(source_style, method='c14n', exclusive=True) == etree.tostring(saved_style, method='c14n', exclusive=True)
+            original_point = original_xml.find('.//c:barChart/c:dLbls/c:dLbl', ns)
+            saved_point = xml.find('.//c:barChart/c:dLbls/c:dLbl', ns)
+            assert original_point is not None and saved_point is not None
+            assert etree.tostring(original_point, method='c14n', exclusive=True) == etree.tostring(saved_point, method='c14n', exclusive=True)
+            assert saved_point.find('c:numFmt', ns).get('formatCode') == '0.00'
         assert xml.xpath('/c:chartSpace/c:chart/c:title//a:t/text()', namespaces=ns) == ['Updated']
         assert xml.xpath('//c:barDir/@val', namespaces=ns) == ['bar']
         assert xml.xpath('//c:legendPos/@val', namespaces=ns) == ['b']
         assert xml.xpath('//c:numCache/c:pt/c:v/text()', namespaces=ns) == ['10', '20']
+        assert xml.xpath('//c:ser/c:cat//c:pt/c:v/text()', namespaces=ns) == ['Q1', 'Q2']
         assert xml.xpath('//c:ser//c:f/text()', namespaces=ns) == ["'Sheet'!$A$2:$A$3", "'Sheet'!$B$2:$B$3"]
         assert 'xl/charts/chart1.xml' not in second.namelist()
         saved_request = json.loads((directory / 'edited-save.json').read_text())['request']
@@ -40,10 +52,18 @@ def verify(directory: Path):
             assert value_range == {'min': 5, 'max': 25}
             assert xml.xpath('//c:valAx/c:scaling/c:min/@val', namespaces=ns) == ['5']
             assert xml.xpath('//c:valAx/c:scaling/c:max/@val', namespaces=ns) == ['25']
+        data_labels = next((record.get('dataLabels') for operation in saved_request['operations']
+            if operation['kind'] == 'applyChartEdits' for record in operation['edits'] if 'dataLabels' in record), None)
+        if data_labels:
+            assert data_labels == 'value'
+            assert xml.xpath('//c:barChart/c:dLbls/c:showVal/@val', namespaces=ns) == ['1']
+            assert xml.xpath('//c:barChart/c:dLbls/c:dLblPos/@val', namespaces=ns) == ['ctr']
+            assert xml.xpath('//c:barChart/c:dLbls/c:numFmt/@formatCode', namespaces=ns) == ['0.0']
     for output, count in ((source, 2), (edited, 2), (deleted, 1)):
         sheet = load_workbook(BytesIO(output)).active
         assert len(sheet._charts) == count
         assert [sheet[f'B{row}'].value for row in (2, 3)] == [10, 20]
+        assert [sheet[f'A{row}'].value for row in (2, 3)] == ['Q1', 'Q2']
         assert sheet['A1'].font.bold is (output != source)
     text_pixels = []
     for name in ('edited', 'deleted'):
@@ -73,11 +93,21 @@ def verify(directory: Path):
         assert title_ink >= 15 and grid_ink >= 40, (name, title_ink, grid_ink)
         text_pixels.append({'revision': name, 'titleInkPixels': title_ink, 'gridHeaderInkPixels': grid_ink})
         if name == 'edited':
-            geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, ('#4472c4',))
+            geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, ('#4472c4',), ignore_enclosed_components=bool(data_labels))
+            if data_labels:
+                (directory / 'edited-label-color-components.json').write_text(json.dumps(geometry, indent=2))
             marks = geometry['bars']
             swatches = [mark for mark in marks if 6 <= mark['width'] <= 9 and 6 <= mark['height'] <= 9]
             bars = [mark for mark in marks if mark not in swatches]
             assert len(swatches) == 1 and len(bars) == 2, (swatches, bars)
+            if data_labels:
+                label_ink = [run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['blue_bar_label_ink'](image, b) for b in bars]
+                assert all(glyph['pixels'] >= 20 for glyph in label_ink), label_ink
+                for bar, glyph in zip(bars, label_ink):
+                    bounds = glyph['bounds']
+                    assert abs((bounds['left'] + bounds['right']) / 2 - (bar['x'] + bar['width'] / 2)) <= 3
+                    assert abs((bounds['top'] + bounds['bottom']) / 2 - (bar['y'] + bar['height'] / 2)) <= 3
+                text_pixels[-1]['insideDataLabelContrastPixels'] = label_ink
             assert swatches[0]['y'] >= max(bar['y'] + bar['height'] for bar in bars) + 4
             text_pixels[-1]['bottomLegendSwatches'] = len(swatches)
             if axis_titles:
@@ -89,21 +119,28 @@ def verify(directory: Path):
                 text_pixels[-1].update(categoryAxisTitleInk=category_ink, valueAxisTitleInk=value_ink)
             if value_range:
                 frame = geometry['frames'][0]
-                plot_width = frame['width'] - 16 - (24 if axis_titles else 0)
-                ordered = sorted(bars, key=lambda bar: bar['y'])
+                # Recover the actual zero/start from pixels. The category
+                # name gutter sits inside the separate title band.
+                plot_left = min(bar['x'] for bar in bars)
+                plot_width = frame['x'] + frame['width'] - 8 - plot_left
+                assert plot_left >= frame['x'] + 8 + (24 if axis_titles else 0)
+                ordered = sorted(bars, key=lambda bar: bar['y'], reverse=True)
                 for bar, fraction in zip(ordered, (0.25, 0.75)):
                     assert abs(bar['width'] - plot_width * fraction) <= 2, (bar, plot_width)
                 auto_image = Image.open(directory / 'auto-range-preview.png').convert('RGB')
-                auto_geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](auto_image, ('#4472c4',))
-                auto_bars = sorted((r for r in auto_geometry['bars'] if r['width'] > 9 or r['height'] > 9), key=lambda bar: bar['y'])
+                auto_geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](auto_image, ('#4472c4',), ignore_enclosed_components=bool(data_labels))
+                auto_bars = sorted((r for r in auto_geometry['bars'] if r['width'] > 9 or r['height'] > 9), key=lambda bar: bar['y'], reverse=True)
                 assert len(auto_bars) == 2
-                for bar, fraction in zip(auto_bars, (0.5, 1)):
+                # Pinned source automatic range: 0..25 (5% headroom,
+                # 5 major unit) for the actual data 10/20.
+                for bar, fraction in zip(auto_bars, (10 / 25, 20 / 25)):
                     assert abs(bar['width'] - plot_width * fraction) <= 2, (bar, plot_width)
                 text_pixels[-1]['manualRangeAndAutoResetPixels'] = True
     return {'ok': True, 'sourceSha256': hashlib.sha256(source).hexdigest(),
             'editedSha256': hashlib.sha256(edited).hexdigest(), 'deletedSha256': hashlib.sha256(deleted).hexdigest(),
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',
-            'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True,
+            'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True, 'categoryLabelsRetained': True,
+            'sourceLabelStyleAndPointPreserved': source_style is not None,
             'reopenedTextPixels': text_pixels}
 
 

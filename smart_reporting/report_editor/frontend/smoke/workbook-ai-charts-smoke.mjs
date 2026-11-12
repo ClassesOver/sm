@@ -36,6 +36,14 @@ try{
  await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
  assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
  page=await browser.newPage({viewport:{width:1560,height:1200}})
+ if(process.env.WORKBOOK_AI_CHARTS_SOURCE_LABEL_STYLE==='1')await page.addInitScript(()=>{
+  window.__labelFontPaints=[]
+  const original=CanvasRenderingContext2D.prototype.fillText
+  CanvasRenderingContext2D.prototype.fillText=function(...args){
+   if(this.font.includes('system-ui')&&/^-?\d+\.\d+$/.test(String(args[0]))&&window.__labelFontPaints.length<5000)window.__labelFontPaints.push({text:String(args[0]),font:this.font,color:String(this.fillStyle).toLowerCase()})
+   return original.apply(this,args)
+  }
+ })
  // Force network bytes on each revision reopen so every loaded asset can be
  // hashed directly, rather than treating a valid cache 304 as a byte response.
  const cdp=await page.context().newCDPSession(page)
@@ -85,9 +93,15 @@ try{
   assert.equal(reopened.context.revision,parent+1);assert.equal(reopened.context.sourceFile.sha256,sha(bytes))
   const actual=await page.request.get(page.url()+'/api/file');assert.equal(actual.status(),200);assert.equal(sha(await actual.body()),sha(bytes))
   await page.screenshot({path:join(directory,name+'-reopened.png'),fullPage:true})
+  if(name==='edited'&&process.env.WORKBOOK_AI_CHARTS_SOURCE_LABEL_STYLE==='1'){
+   const paints=await page.evaluate(()=>window.__labelFontPaints)
+   await writeFile(join(directory,'edited-label-font-paints.json'),JSON.stringify(paints,null,2))
+   assert(paints.some(p=>p.text==='10.0'&&p.font==='bold 16px system-ui'&&p.color==='#ffffff'))
+   assert(paints.some(p=>p.text==='20.00'&&p.font==='16px system-ui'&&p.color==='#ffffff'))
+  }
   saves.push({name,payload,reopened})
  }
- stage='edit-candidate';await generate('仅修改 Sheet 的 xl/charts/chart1.xml，标题 Updated、横向条形图、底部图例；保留另一张同名图表'+(process.env.WORKBOOK_AI_CHARTS_AXIS_TITLES==='1'?'；添加轴标题：分类 Quarter、数值 Amount (USD)':'')+(manualRange?'；数值范围5到25':''))
+ stage='edit-candidate';await generate('仅修改 Sheet 的 xl/charts/chart1.xml，标题 Updated、横向条形图、底部图例；保留另一张同名图表'+(process.env.WORKBOOK_AI_CHARTS_AXIS_TITLES==='1'?'；添加轴标题：分类 Quarter、数值 Amount (USD)':'')+(manualRange?'；数值范围5到25':'')+(process.env.WORKBOOK_AI_CHARTS_DATA_LABELS==='1'?'；显示数值数据标签，居中，格式0.0':''))
  assert.deepEqual(await operations(),manual)
  await panel.locator('.native-ai-accept').click();await waitKind('applyChartEdits',true)
  const adopted=await operations();assert.deepEqual(adopted.slice(0,manual.length),manual)

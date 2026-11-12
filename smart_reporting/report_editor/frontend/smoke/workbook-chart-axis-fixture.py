@@ -91,7 +91,11 @@ def verify(directory):
             assert all(r['y'] >= y + 32 and r['x'] + r['width'] <= right - 32 for r in bars)
         else:
             vertical = ink((x + 8, y + 20, x + 32, bottom - 32))
-            horizontal = ink((x + 32, bottom - (56 if index == 3 else 32), right - 8, bottom - (32 if index == 3 else 8)))
+            # With a hidden value title the category name band is adjacent
+            # to this empty horizontal region. Start at the independent
+            # pixel-recovered data edge, excluding the real Q1 glyph edge.
+            horizontal_left = min(r['x'] for r in bars) if index == 3 else x + 32
+            horizontal = ink((horizontal_left, bottom - (56 if index == 3 else 32), right - 8, bottom - (32 if index == 3 else 8)))
             assert all(r['x'] >= x + 32 for r in bars)
         assert vertical >= 15, (index, vertical)
         assert horizontal >= 15 if index < 3 else horizontal == 0, (index, horizontal)

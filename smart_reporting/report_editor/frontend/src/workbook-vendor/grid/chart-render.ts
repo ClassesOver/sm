@@ -14,7 +14,10 @@ import {
 } from '@univerjs/engine-render'
 import { CHART_PALETTE, chartSeriesColor, fitted, paintChartLegend } from './chart-legend'
 import { paintAxisTitles } from './chart-axis-titles'
-import { barValueFraction } from './chart-value-scale'
+import { barValueScale } from './chart-value-scale'
+import { paintValueAxis } from './chart-value-axis'
+import { chartCategorySlot, planCategoryAxis } from './chart-category-axis'
+import { paintBarDataLabels, type BarLabelDatum } from './chart-data-labels'
 
 const store = new Map<string, ReadonlyArray<ChartReadSpec>>()
 
@@ -127,7 +130,13 @@ function drawChart(
   const basePlot = { top: y0 + (title ? 20 : 8), bottom: y1 - 8, left: x0 + 8, right: x1 - 8 }
   const hasSeriesLegend = spec.kind === 'bar' || spec.kind === 'column'
   const legendPlot = hasSeriesLegend && !spec.legend?.overlay ? paintChartLegend(ctx, spec, worksheet, basePlot) : basePlot
-  const plot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
+  const titledPlot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
+  const slots = hasSeriesLegend ? spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef)) : []
+  const scale = hasSeriesLegend && !spec.valueScaleUnavailable ? barValueScale(slots, spec.axes?.value.scaling) : undefined
+  const categoryCount = slots.reduce((count, values) => Math.max(count, values.length), 1)
+  const category = scale && flat.length > 0 ? planCategoryAxis(ctx,spec,worksheet,categoryCount,titledPlot) : undefined
+  const plot = scale && flat.length > 0 ? paintValueAxis(ctx, spec, scale, category?.plot ?? titledPlot) : titledPlot
+  category?.paint(plot)
   const { top: plotTop, bottom: plotBottom, left: plotLeft, right: plotRight } = plot
   const plotHeight = Math.max(4, plotBottom - plotTop)
   const plotWidth = Math.max(4, plotRight - plotLeft)
@@ -138,11 +147,9 @@ function drawChart(
   }
 
   if (spec.kind === 'bar' || spec.kind === 'column') {
-    const slots = spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef))
     // Preserve the category index of missing cells, including a longer later
     // series. Zero is a zero-length bar, never an invented minimum pixel size.
-    const categoryCount = slots.reduce((count, values) => Math.max(count, values.length), 1)
-    const fraction = spec.valueScaleUnavailable ? undefined : barValueFraction(slots, spec.axes?.value.scaling)
+    const fraction = scale?.fraction
     if (!fraction) {
       ctx.save(); ctx.beginPath(); ctx.rect(plotLeft,plotTop,plotWidth,plotHeight); ctx.clip()
       ctx.fillStyle = '#1f2328'; ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
@@ -154,17 +161,22 @@ function drawChart(
     const band = (horizontal ? plotHeight : plotWidth) / categoryCount
     const thickness = band * 0.7 / Math.max(1, slots.length)
     const zero = horizontal ? plotLeft + plotWidth * fraction(0) : plotBottom - plotHeight * fraction(0)
+    const labelPoints: BarLabelDatum[] = []
+    const wantsLabels = flat.length <= 500 && (spec.dataLabels !== undefined || spec.series.some(series=>series.dataLabels !== undefined))
     slots.forEach((values, seriesIndex) => {
       ctx.fillStyle = chartSeriesColor(spec.series[seriesIndex]!, seriesIndex)
       values.forEach((value, index) => {
-        if (value === null || value === 0) return
-        const offset = band * index + band * 0.15 + thickness * seriesIndex
+        if (value === null) return
+        const offset = band * chartCategorySlot(spec,index,categoryCount) + band * 0.15 + thickness * chartCategorySlot(spec,seriesIndex,slots.length)
         const end = horizontal ? plotLeft + plotWidth * fraction(value) : plotBottom - plotHeight * fraction(value)
-        if (end === zero) return
-        if (horizontal) ctx.fillRect(Math.min(zero, end), plotTop + offset, Math.abs(end - zero), thickness)
-        else ctx.fillRect(plotLeft + offset, Math.min(zero, end), thickness, Math.abs(end - zero))
+        if (end === zero && value !== 0) return
+        const rect = horizontal ? {left:Math.min(zero,end),top:plotTop+offset,right:Math.max(zero,end),bottom:plotTop+offset+thickness}
+          : {left:plotLeft+offset,top:Math.min(zero,end),right:plotLeft+offset+thickness,bottom:Math.max(zero,end)}
+        if (end !== zero) ctx.fillRect(rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top)
+        if (wantsLabels && (value !== 0 || scale!.min <= 0 && scale!.max >= 0)) labelPoints.push({value,index,seriesIndex,zero,end,rect})
       })
     })
+    if (wantsLabels) paintBarDataLabels(ctx,spec,labelPoints,plot)
     if (spec.legend?.overlay) paintChartLegend(ctx, spec, worksheet, basePlot)
     ctx.restore()
     return
