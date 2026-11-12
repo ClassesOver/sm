@@ -24,7 +24,7 @@ from .slides import (
 )
 from .slides_render import validate_slide_edits
 
-_ALLOWED_KEYS = {'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
@@ -126,6 +126,30 @@ def _native_background_images(operation: dict[str, Any]) -> list[dict[str, Any]]
         if total > 8 * 1024 * 1024:
             raise ValueError('native_office_operations_invalid')
     return items
+
+
+def _native_background_ops(operation: dict[str, Any]) -> dict[str, list[Any]]:
+    """固定源背景面板：渐变（0/45/90° 或径向）、重置背景、隐藏背景图形；页面冲突与自有背景由桥接按真实文件复核。"""
+    gradients = operation.get('backgroundGradients', [])
+    resets = operation.get('backgroundResets', [])
+    graphics = operation.get('backgroundGraphics', [])
+    hex_color = re.compile(r'#[0-9A-Fa-f]{6}')
+    if (not isinstance(gradients, list) or len(gradients) > 20
+        or any(not isinstance(item, dict) or set(item) != {'slideIndices', 'from', 'to', 'angleDeg', 'radial'}
+               or not isinstance(item['from'], str) or not hex_color.fullmatch(item['from'])
+               or not isinstance(item['to'], str) or not hex_color.fullmatch(item['to'])
+               or not isinstance(item['radial'], bool) or isinstance(item['angleDeg'], bool) or item['angleDeg'] not in (0, 45, 90)
+               or (item['radial'] and item['angleDeg'] != 0)
+               or not isinstance(item['slideIndices'], list) or not item['slideIndices']
+               or any(not _slide_index(index) for index in item['slideIndices'])
+               for item in gradients)
+        or not isinstance(resets, list) or len(resets) > 500 or any(not _slide_index(index) for index in resets) or len(set(resets)) != len(resets)
+        or not isinstance(graphics, list) or len(graphics) > 500
+        or any(not isinstance(item, dict) or set(item) != {'slideIndex', 'hidden'} or not _slide_index(item['slideIndex'])
+               or not isinstance(item['hidden'], bool) for item in graphics)
+        or len({item['slideIndex'] for item in graphics}) != len(graphics)):
+        raise ValueError('native_office_operations_invalid')
+    return {'background_gradients': gradients, 'background_resets': resets, 'background_graphics': graphics}
 
 
 def _native_media_edits(operation: dict[str, Any]) -> tuple[list, list, list]:
@@ -618,7 +642,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
     return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'hidden_slides': hidden_slides, 'comment_edits': comment_edits, 'transitions': transitions, 'animations': animations,
-        'slide_layouts': layouts, 'backgrounds': backgrounds, 'background_images': _native_background_images(operation), 'text_boxes': text_boxes, 'deletions': deletions,
+        'slide_layouts': layouts, 'backgrounds': backgrounds, 'background_images': _native_background_images(operation), **_native_background_ops(operation), 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting, 'native_images': native_images,
         'picture_replacements': picture_replacements, 'picture_crops': picture_crops, 'picture_opacities': picture_opacities, 'chart_edits': chart_edits,
         'element_orders': _native_element_orders(operation), 'group_edits': _native_group_edits(operation), 'notes_edits': _native_notes_edits(operation), 'link_edits': _native_link_edits(operation), 'clipboard_pastes': _native_clipboard_pastes(operation)}

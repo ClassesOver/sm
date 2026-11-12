@@ -65,3 +65,38 @@ def test_background_image_applies_to_selected_slides_with_one_media_part():
 def test_invalid_background_images_are_rejected(operation):
     with pytest.raises(ValueError):
         patch_office('pptx', _deck(), [{'kind': 'editSlides', **operation}])
+
+
+def test_gradient_reset_and_hidden_graphics_roundtrip_through_the_canonical_op():
+    content = _deck()
+    edited = patch_office('pptx', content, [{'kind': 'editSlides',
+        'backgroundGradients': [{'slideIndices': [0, 1], 'from': '#FF0000', 'to': '#0000ff', 'angleDeg': 45, 'radial': False}],
+        'backgroundGraphics': [{'slideIndex': 2, 'hidden': True}]}])
+    slides = inspect_office('pptx', edited)['slides']
+    assert [slide['backgroundGradient'] for slide in slides[:2]] == [{'from': '#FF0000', 'to': '#0000FF', 'radial': False, 'angleDeg': 45}] * 2
+    assert [slide['backgroundGraphicsHidden'] for slide in slides] == [False, False, True]
+    with ZipFile(BytesIO(edited)) as archive:
+        assert '<a:lin ang="2700000"' in archive.read('ppt/slides/slide1.xml').decode()
+        assert 'showMasterSp="0"' in archive.read('ppt/slides/slide3.xml').decode()
+    reset = patch_office('pptx', edited, [{'kind': 'editSlides', 'backgroundResets': [0], 'backgroundGraphics': [{'slideIndex': 2, 'hidden': False}]}])
+    slides = inspect_office('pptx', reset)['slides']
+    assert slides[0]['backgroundOwn'] is False and slides[0]['backgroundGradient'] is None
+    assert slides[1]['backgroundGradient']['angleDeg'] == 45 and slides[2]['backgroundGraphicsHidden'] is False
+    texts = [[shape.text for shape in slide.shapes] for slide in Presentation(BytesIO(reset)).slides]
+    assert texts == [['第一页'], ['第二页'], ['第三页']]
+
+
+@pytest.mark.parametrize('operation', [
+    {'backgroundGradients': [{'slideIndices': [0], 'from': '#FF0000', 'to': '#0000FF', 'angleDeg': 30, 'radial': False}]},
+    {'backgroundGradients': [{'slideIndices': [0], 'from': '#FF0000', 'to': '#0000FF', 'angleDeg': 90, 'radial': True}]},
+    {'backgroundGradients': [{'slideIndices': [0], 'from': 'red', 'to': '#0000FF', 'angleDeg': 0, 'radial': False}]},
+    {'backgroundGradients': [{'slideIndices': [0], 'from': '#FF0000', 'to': '#0000FF', 'angleDeg': 0, 'radial': False}], 'backgroundResets': [0]},
+    {'backgroundGradients': [{'slideIndices': [0], 'from': '#FF0000', 'to': '#0000FF', 'angleDeg': 0, 'radial': False}], 'backgrounds': [{'slideIndex': 0, 'color': '#FFFFFF'}]},
+    {'backgroundResets': [0]},
+    {'backgroundResets': [0, 0]},
+    {'backgroundGraphics': [{'slideIndex': 0, 'hidden': 'yes'}]},
+    {'backgroundGraphics': [{'slideIndex': 0, 'hidden': True}, {'slideIndex': 0, 'hidden': False}]},
+])
+def test_invalid_background_ops_are_rejected(operation):
+    with pytest.raises(ValueError):
+        patch_office('pptx', _deck(), [{'kind': 'editSlides', **operation}])

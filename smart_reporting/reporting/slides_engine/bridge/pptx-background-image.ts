@@ -1,8 +1,10 @@
 /**
  * 固定源 FormatBackgroundPane 的图片填充（stretch / tile）与“应用到全部”：
- * 由未改动的 setSlideBackgroundImage 写入；同一张图片应用到多页时只落一个媒体部件，其余页复用。
+ * 由 pptx-ops 规范操作 setBackground(kind: image) 写入（含全幅底板改为透明）；同一张图片应用到多页时只落一个媒体部件，其余页复用。
  */
-import { setSlideBackgroundImage, type OpenedPptx } from '@genoffice/pptx-engine'
+import { slideDurableId, type OpenedPptx } from '@genoffice/pptx-engine'
+import '../packages/pptx-ops/src/ops/slide-ops.ts'
+import { lookup, type OpContext } from '../packages/pptx-ops/src/ops/registry.ts'
 import { assetBytes, type PictureAsset } from './pptx-images.ts'
 
 export type BackgroundImage = PictureAsset & { slideIndices: number[]; tile: boolean }
@@ -32,12 +34,15 @@ export function validateBackgroundImages(opened: OpenedPptx, input: unknown, con
 }
 
 export function applyBackgroundImages(opened: OpenedPptx, slides: readonly OpenedPptx['deck']['slides'][number][], items: BackgroundImage[]): void {
+  const def = lookup('setBackground')
+  const ctx: OpContext = { opened, parts: new Map(), touchedParts: new Set() }
   for (const item of items) {
     const bytes = assetBytes(item)
     let mediaPath: string | null = null
     for (const index of item.slideIndices) {
-      const slide = slides[index]!
-      mediaPath = setSlideBackgroundImage(opened, slide, mediaPath ? { mediaPath } : { bytes, ext: item.extension }, item.tile)
+      const op = { op: 'setBackground', target: { slide: slideDurableId(slides[index]!) }, kind: 'image', source: mediaPath ? { mediaPath } : { bytes, ext: item.extension }, tile: item.tile }
+      def.validate(op as never, ctx)
+      mediaPath = (def.apply(op as never, ctx).after as { mediaPath?: string } | undefined)?.mediaPath ?? null
       if (!mediaPath) throw Error('background_image_apply_failed')
     }
   }

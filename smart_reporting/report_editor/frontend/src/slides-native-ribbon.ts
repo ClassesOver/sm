@@ -182,6 +182,7 @@ const tabs: Tab[] = [
       { id: 'defaultSlideSize', label: 'Use for New Presentations', sourceActionId: 'saveDefaultNewSlideSize', unavailable: '当前仅支持上传和编辑演示文稿，尚无新建空白演示文稿入口。' },
       { id: 'slideOrientation', label: 'Slide Orientation', kind: 'select', sourceActionId: 'onSlideSize', options: ['landscape', 'portrait'] },
       { id: 'backgroundImage', label: 'Background Image', sourceActionId: 'onBackground' },
+      { id: 'formatBackground', label: 'Format Background', sourceActionId: 'onFormatBackground' },
     ] },
   ] },
   { id: 'transitions', label: 'Transitions', groups: [

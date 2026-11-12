@@ -584,6 +584,9 @@ class ReportSlidesEditorService:
         slide_layouts: list[dict[str, Any]] | None = None,
         backgrounds: list[dict[str, Any]] | None = None,
         background_images: list[dict[str, Any]] | None = None,
+        background_gradients: list[dict[str, Any]] | None = None,
+        background_resets: list[int] | None = None,
+        background_graphics: list[dict[str, Any]] | None = None,
         text_boxes: list[dict[str, Any]] | None = None,
         deletions: list[dict[str, Any]] | None = None,
         paragraph_formatting: list[dict[str, Any]] | None = None,
@@ -680,6 +683,12 @@ class ReportSlidesEditorService:
                     request["backgrounds"] = backgrounds
                 if background_images:
                     request["backgroundImages"] = background_images
+                if background_gradients:
+                    request["backgroundGradients"] = background_gradients
+                if background_resets:
+                    request["backgroundResets"] = background_resets
+                if background_graphics:
+                    request["backgroundGraphics"] = background_graphics
                 if text_boxes:
                     request["textBoxes"] = text_boxes
                 if deletions:
