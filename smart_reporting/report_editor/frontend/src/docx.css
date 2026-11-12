@@ -115,3 +115,23 @@
 .docx-native .docx-ribbon .docx-page-color-palette { grid-template-columns:repeat(10, 20px); }
 .docx-native .docx-ribbon .docx-page-color-palette .color-none { grid-column:1 / -1; }
 .docx-native .docx-ribbon .docx-page-color-palette [aria-pressed="true"] { outline:2px solid var(--office-accent); outline-offset:1px; }
+
+/* 设计 ▸ 水印：菜单沿用 layout-menu；对话框外壳用 --office-* token；纸面预览为文档内容色。 */
+.docx-native .docx-ribbon .docx-watermark-menu { min-width:150px; }
+.docx-watermark-dialog { width:min(420px,calc(100vw - 32px)); box-sizing:border-box; border:1px solid var(--office-border); border-radius:var(--radius-md); padding:20px; box-shadow:var(--shadow-popover); color:var(--office-ink); }
+.docx-watermark-dialog::backdrop { background:var(--color-scrim); }
+.docx-watermark-dialog h2 { margin:0 0 12px; font-size:var(--font-size-lg); }
+.docx-watermark-dialog fieldset { display:grid; gap:8px; margin:8px 0 0; padding:10px 12px; border:1px solid var(--office-border); border-radius:var(--office-radius); }
+.docx-watermark-dialog fieldset:disabled { opacity:var(--office-disabled-opacity); }
+.docx-watermark-dialog label { display:flex; align-items:center; gap:6px; color:var(--office-ink-2); font-size:var(--office-font-size); }
+.docx-watermark-dialog :is(input[name=text],select) { flex:1; min-height:var(--office-control-height); padding:0 8px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); font:inherit; }
+.docx-watermark-dialog input[name=transparency] { width:64px; min-height:var(--office-control-height); padding:0 6px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); }
+.docx-watermark-dialog .docx-watermark-layout { display:flex; gap:10px; align-items:center; color:var(--office-ink-2); }
+.docx-watermark-dialog [role=alert] { min-height:1em; margin:8px 0 0; color:var(--color-danger); }
+.docx-watermark-dialog .docx-watermark-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+.docx-watermark-dialog .docx-watermark-actions button { min-height:var(--office-control-height); padding:0 14px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:#fff; color:var(--office-ink); cursor:pointer; }
+.docx-watermark-dialog .docx-watermark-actions button[value=ok] { background:var(--office-accent); border-color:var(--office-accent); color:#fff; }
+.docx-watermark-dialog :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:1px; }
+.docx-native .doc-page[data-watermark] { position:relative; isolation:isolate; }
+.docx-native .doc-page[data-watermark]::before { content:attr(data-watermark); position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:-1;
+  color:var(--watermark-color); opacity:var(--watermark-opacity); transform:rotate(var(--watermark-rotate)); font-family:var(--watermark-font); font-weight:var(--watermark-weight); font-style:var(--watermark-style); font-size:96px; white-space:nowrap; }

@@ -63,6 +63,7 @@ import { normalizeDocxColumnWidthSources } from './docx-table-column-width'
 import { withDocxTableAlignmentDisplayIndents } from './docx-table-alignment-baseline'
 import { createDocxRibbon } from './docx-ribbon'
 import { docxPageColorModel, docxPageColorOperations, effectiveDocxPageColor, withDocxPageColor } from './docx-page-color'
+import { docxWatermarkModel, docxWatermarkOperations, effectiveDocxWatermark, withDocxWatermark } from './docx-watermark'
 import { createDocxViewCommands } from './docx-view'
 import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/renderer/parse-off-thread'
 import { blocksToPmDoc, pmDocOptions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/convert'
@@ -191,6 +192,9 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   // 固定源 Design ▸ Page Color：文档级非正文意图，随原生事务历史撤销/重做，按来源背景摘要绑定。
   const pageColorModel = docxPageColorModel((inspected.model as { pageColor?: unknown }).pageColor)
   docxPageColorOperations(draft.operations, pageColorModel)
+  // 固定源 Design ▸ Watermark：文档级非正文意图，按全部页眉部件摘要绑定来源。
+  const watermarkModel = docxWatermarkModel((inspected.model as { watermark?: unknown }).watermark)
+  docxWatermarkOperations(draft.operations, watermarkModel)
   const isNote = (op: { kind?: unknown }) => ['insertNote', 'updateNote', 'deleteNote'].includes(String(op.kind))
   const collectOperationsUnchecked = (current: DocxPmNode, sectionOps = sectionOperation(docxNativeOperationsOf(current)), hfOps = headerFooterOperations(docxNativeOperationsOf(current)), operationBaseline = baseline) => {
     if (!notesModel) {
@@ -221,7 +225,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     const comments = commentsModel ? normalizeDocxCommentText(baseline, creations.current, commentsModel) : { current: creations.current, operations: [] }
     if (!commentsModel && commentTextOperationsOf(current).length) throw new Error('当前来源未提供批注文字编辑能力')
     const revisions = normalizeDocxTextRevisions(baseline, comments.current, anchors, editor.schema)
-    const operations = [...crossReferences.operations, ...captions.operations, ...bookmarks.operations, ...toc.operations, ...threads.operations, ...replies.operations, ...creations.operations, ...comments.operations, ...revisions.operations, ...collectOperationsUnchecked(revisions.current, sectionOps, hfOps, revisions.baseline), ...docxPageColorOperations(docxNativeOperationsOf(current), pageColorModel)]
+    const operations = [...crossReferences.operations, ...captions.operations, ...bookmarks.operations, ...toc.operations, ...threads.operations, ...replies.operations, ...creations.operations, ...comments.operations, ...revisions.operations, ...collectOperationsUnchecked(revisions.current, sectionOps, hfOps, revisions.baseline), ...docxPageColorOperations(docxNativeOperationsOf(current), pageColorModel), ...docxWatermarkOperations(docxNativeOperationsOf(current), watermarkModel)]
     assertDocxBookmarksBatch(operations)
     assertDocxTocBatch(operations)
     assertDocxCrossReferencesBatch(operations)
@@ -336,6 +340,21 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const syncPageColor = () => {
     const color = effectiveDocxPageColor(nativeOperations(), pageColorModel)
     if (color) host.style.setProperty('--page-bg', `#${color}`); else host.style.removeProperty('--page-bg')
+    syncWatermark()
+  }
+  /** 画布纸面按生效文字水印预览（居中、半透明，斜式时旋转 −45°；来源为图片水印时不绘制预览）。 */
+  const syncWatermark = () => {
+    const spec = effectiveDocxWatermark(nativeOperations(), watermarkModel)
+    for (const page of host.querySelectorAll<HTMLElement>('.doc-page')) {
+      if (!spec) { delete page.dataset.watermark; continue }
+      page.dataset.watermark = spec.text
+      page.style.setProperty('--watermark-color', `#${spec.colorHex ?? 'C0C0C0'}`)
+      page.style.setProperty('--watermark-opacity', String(spec.opacity ?? 0.5))
+      page.style.setProperty('--watermark-rotate', spec.diagonal === false ? '0deg' : '-45deg')
+      page.style.setProperty('--watermark-font', `"${spec.fontFamily ?? 'Calibri'}", sans-serif`)
+      page.style.setProperty('--watermark-weight', spec.bold ? 'bold' : 'normal')
+      page.style.setProperty('--watermark-style', spec.italic ? 'italic' : 'normal')
+    }
   }
   const syncSection = () => {
     syncPageColor()
@@ -942,6 +961,15 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       if (saving || draft.saving || draft.closed || !context.editingEnabled) return
       commitDocxNativeOperations(editor, withDocxPageColor(nativeOperations(), pageColorModel, color))
       syncPageColor()
+    },
+  } : undefined, watermarkModel ? {
+    current: () => effectiveDocxWatermark(nativeOperations(), watermarkModel),
+    source: watermarkModel,
+    reason: () => saving || draft.saving || draft.closed || !context.editingEnabled ? '当前文档不可编辑或正在保存' : watermarkModel.editable ? null : watermarkModel.readOnlyReason ?? '此文档的水印不能修改',
+    apply: (spec: import('./docx-watermark').DocxWatermarkSpec | null) => {
+      if (saving || draft.saving || draft.closed || !context.editingEnabled) return
+      commitDocxNativeOperations(editor, withDocxWatermark(nativeOperations(), watermarkModel, spec))
+      syncWatermark()
     },
   } : undefined))
   editor.on('transaction', view.refresh)
