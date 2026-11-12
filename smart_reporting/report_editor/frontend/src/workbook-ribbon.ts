@@ -167,6 +167,7 @@ type RibbonCommand =
   | `page-fit:${'width' | 'height'}:${number}`
   | 'print-scale-open'
   | 'header-footer-open'
+  | 'insert-symbol'
   | 'refresh-all'
   | 'print-gridlines'
   | 'print-headings'
@@ -412,7 +413,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '字体', actions: [
       action('字体', 'font-family:Arial', 'font-family:Arial'), action('字号', 'font-size:12', 'font-size:12'),
       action('粗体', 'bold', 'bold'), action('斜体', 'italic', 'italic'), action('下划线', 'underline', 'underline'),
-      action('双下划线', 'underline:double', 'underline:double'), action('删除线', 'strike', 'strike'), action('上标', 'superscript'), action('下标', 'subscript'),
+      action('双下划线', 'underline:double', 'underline:double'), action('删除线', 'strike', 'strike'), action('上标', 'superscript', 'superscript'), action('下标', 'subscript', 'subscript'),
       action('字体颜色', 'font-color:#000000', 'font-color:#000000'), action('填充颜色', 'fill:#fff2cc', 'fill:#fff2cc'), action('边框', 'border:all', 'border:all'),
     ] },
     { title: '对齐方式', actions: [
@@ -462,7 +463,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '链接', actions: ['link-open'].map(id => action(id, id)) },
     { title: '批注', actions: [action('批注', 'note-open', 'note-open')] },
     { title: '文本', actions: [action('insert-textbox', 'insert-textbox'), action('header-footer-open', 'header-footer-open', 'header-footer-open')] },
-    { title: '符号', actions: ['insert-equation', 'insert-symbol'].map(id => action(id, id)) },
+    { title: '符号', actions: [action('insert-equation', 'insert-equation'), action('insert-symbol', 'insert-symbol', 'insert-symbol')] },
   ],
   'Page Layout': [
     { title: '主题', actions: ['theme', 'theme-colors', 'theme-fonts', 'theme-effects'].map(id => action(id, id)) },
