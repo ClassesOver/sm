@@ -9,9 +9,12 @@ import {fileURLToPath} from 'node:url'
 import {build} from 'esbuild'
 import {chromium} from 'playwright'
 const frontend=fileURLToPath(new URL('../',import.meta.url)),repo=fileURLToPath(new URL('../../../../',import.meta.url))
-const directory=process.env.PDF_DRAWING_FONT_DIRECTORY??'/tmp/pdf-drawing-font-browser'
-await mkdir(directory,{recursive:true})
-const source=spawnSync(join(repo,'.venv/bin/python'),[join(frontend,'smoke/pdf-drawing-font-source.py'),directory],{cwd:repo,env:{...process.env,PYTHONPATH:repo},encoding:'utf8'})
+const geometry=process.env.PDF_DRAWING_FONT_GEOMETRY??'default'
+assert.ok(['default','crop-userunit'].includes(geometry),'unsupported fixture geometry')
+const directory=process.env.PDF_DRAWING_FONT_DIRECTORY??(geometry==='crop-userunit'?'/tmp/pdf-drawing-font-crop-userunit-browser':'/tmp/pdf-drawing-font-browser')
+// Every run keeps its own evidence; reuse requires an explicitly new directory.
+await mkdir(directory,{recursive:false})
+const source=spawnSync(join(repo,'.venv/bin/python'),[join(frontend,'smoke/pdf-drawing-font-source.py'),directory,geometry],{cwd:repo,env:{...process.env,PYTHONPATH:repo},encoding:'utf8'})
 assert.equal(source.status,0,source.stdout+source.stderr)
 const native=JSON.parse(source.stdout.trim().split('\n').at(-1))
 await build({entryPoints:[join(frontend,'smoke/pdf-drawing-font-browser.mjs')],bundle:true,format:'esm',platform:'browser',outdir:directory,logLevel:'warning',external:['/reports/*']})
@@ -48,6 +51,10 @@ try{
  const checkpoints=[]
  for(const rotation of [0,90,180,270])for(const zoom of [.5,2]){
   const row=await page.evaluate(async({rotation,zoom})=>window.checkDrawing(rotation,zoom),{rotation,zoom})
+  assert.deepEqual(row.pageView,native.geometry.cropBox);assert.equal(row.userUnit,native.geometry.userUnit)
+  const [left,bottom,right,top]=native.geometry.cropBox
+  near([row.width,row.height],[(rotation%180?top-bottom:right-left)*row.userUnit*zoom,(rotation%180?right-left:top-bottom)*row.userUnit*zoom])
+  await page.setViewportSize({width:Math.max(1680,Math.ceil(row.width*2+64)),height:Math.max(940,Math.ceil(row.height+80))})
   await writeFile(join(directory,`saved-labels-${rotation}-${zoom}.png`),Buffer.from(row.labelOnlyPng,'base64'));delete row.labelOnlyPng
   await writeFile(join(directory,'latest-checkpoint.json'),JSON.stringify(row,null,2))
   assert.equal(row.fontSha256,fontSha256);assert.ok(row.loadedFaces.some(font=>font.status==='loaded'))
@@ -55,6 +62,7 @@ try{
   const point=(x,y)=>[va*x+vc*y+ve,vb*x+vd*y+vf]
   for(const [index,label]of row.labels.entries()){
    const nativeLabel=native.appearance[index], [a,b,c,d,e,f]=nativeLabel.tm
+   near([label.visibleStrokeWidth],[nativeLabel.strokeWidth*Math.hypot(va,vb)])
    assert.equal(label.label,nativeLabel.label)
    const origin=point(e,f),u=point(e+a,f+b),down=point(e-c,f-d)
    near(label.matrix,[u[0]-origin[0],u[1]-origin[1],down[0]-origin[0],down[1]-origin[1],...origin])
@@ -82,7 +90,7 @@ try{
  assert.ok(failedFontRequests>0);assert.equal(fallback.label,'Visible fallback');assert.ok(fallback.width>20)
  assert.ok(fallback.faces.some(font=>font.family==='PDF Standard Helvetica'&&font.status==='error'))
  await fallbackPage.screenshot({path:join(directory,'font-load-failure-fallback.png')});await fallbackPage.close()
- const result={ok:false,scope:'Actual native writer AP independently parsed by pypdf, actual PDF.js and paintDrawing component; no product save or revision registration in this probe; no antialias pixel identity claim.',browserVersion:browser.version(),fontSha256,sourceSha256:native.sourceSha256,savedSha256:native.savedSha256,checkpoints,fallback,failedFontRequests,requests,errors}
+ const result={ok:false,scope:'Actual native writer AP independently parsed by pypdf, actual PDF.js and paintDrawing component; no product save or revision registration in this probe; no antialias pixel identity claim.',geometry:native.geometry,browserVersion:browser.version(),fontSha256,sourceSha256:native.sourceSha256,savedSha256:native.savedSha256,checkpoints,fallback,failedFontRequests,requests,errors}
  await writeFile(join(directory,'summary.json'),JSON.stringify(result,null,2))
  const visual=spawnSync(join(repo,'.venv/bin/python'),[join(frontend,'smoke/pdf-drawing-font-verify.py'),directory],{cwd:repo,encoding:'utf8'})
  assert.equal(visual.status,0,visual.stdout+visual.stderr)

@@ -8,15 +8,20 @@ from io import BytesIO
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, ContentStream, DecodedStreamObject, NameObject
+from pypdf.generic import ArrayObject, ContentStream, DecodedStreamObject, NameObject, NumberObject, RectangleObject
 
 from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf
 
 
-def generate(directory: Path):
+def generate(directory: Path, geometry='default'):
+    assert geometry in ('default', 'crop-userunit'), geometry
     directory.mkdir(parents=True, exist_ok=True)
     writer = PdfWriter()
-    writer.add_blank_page(width=400, height=400)
+    cropped = geometry == 'crop-userunit'
+    page = writer.add_blank_page(width=500 if cropped else 400, height=600 if cropped else 400)
+    if cropped:
+        page.cropbox = RectangleObject([30, 40, 430, 440])
+        page[NameObject('/UserUnit')] = NumberObject(2)
     stream = BytesIO()
     writer.write(stream)
     source = stream.getvalue()
@@ -29,10 +34,25 @@ def generate(directory: Path):
         {**common, 'shape': 'measure', 'from': [70, 40], 'to': [70, 140], 'label': 'To AV 9.99 m'},
         {**common, 'shape': 'caret', 'point': [300.003, 90.007]},
     ]
+    if cropped:
+        # These remain PDF user-space coordinates. UserUnit is interpreted by
+        # the PDF renderer, not multiplied into native operation coordinates.
+        for operation in operations:
+            for key in ('from', 'to', 'point'):
+                if key in operation:
+                    x, y = operation[key]
+                    operation[key] = [x + 30, y + 40]
     edited = patch_pdf(source, operations)
     (directory / 'source.pdf').write_bytes(source)
     (directory / 'saved-ap.pdf').write_bytes(edited)
     reader = PdfReader(BytesIO(edited))
+    source_page = PdfReader(BytesIO(source)).pages[0]
+    source_geometry = {'variant': geometry, 'mediaBox': list(map(float, source_page.mediabox)),
+                       'cropBox': list(map(float, source_page.cropbox)),
+                       'userUnit': float(source_page.get('/UserUnit', 1))}
+    assert list(reader.pages[0].mediabox) == list(source_page.mediabox)
+    assert list(reader.pages[0].cropbox) == list(source_page.cropbox)
+    assert reader.pages[0].get('/UserUnit', 1) == source_page.get('/UserUnit', 1)
     annotations = [raw.get_object() for raw in reader.pages[0]['/Annots']]
     assert len(annotations) == len(operations)
     evidence = []
@@ -47,7 +67,10 @@ def generate(directory: Path):
             assert str(font['/BaseFont']) == '/Helvetica'
             assert label == operation['label']
             assert next(float(args[1]) for args, op in instructions if op == b'Tf') == 9
-            evidence.append({'shape': 'measure', 'label': label, 'tm': tm, 'font': '/Helvetica'})
+            stroke_width = next(float(args[0]) for args, op in instructions if op == b'w')
+            assert stroke_width == operation['width']
+            evidence.append({'shape': 'measure', 'label': label, 'tm': tm,
+                             'font': '/Helvetica', 'strokeWidth': stroke_width})
         else:
             assert str(annotation['/Subtype']) == '/Caret'
             vertices = [list(map(float, args)) for args, op in instructions if op in (b'm', b'l')]
@@ -75,10 +98,10 @@ def generate(directory: Path):
     diagnostic.write(directory / 'saved-labels.pdf')
     result = {'sourceSha256': hashlib.sha256(source).hexdigest(),
               'savedSha256': hashlib.sha256(edited).hexdigest(),
-              'operations': operations, 'appearance': evidence}
+              'geometry': source_geometry, 'operations': operations, 'appearance': evidence}
     (directory / 'native-ap.json').write_text(json.dumps(result, indent=2))
     return result
 
 
 if __name__ == '__main__':
-    print(json.dumps(generate(Path(sys.argv[1]))))
+    print(json.dumps(generate(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else 'default')))

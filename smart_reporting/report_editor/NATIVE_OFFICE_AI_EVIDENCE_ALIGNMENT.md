@@ -29,7 +29,7 @@
 1. XLSX AI 图表新增/编辑/删除仍未接入 AI 操作白名单及可信 chartPath 授权；手动图表 writer 已存在。同表多图仍缺明确目标选择。
 2. Word 完整段落/制表位对话框、复杂多级列表、嵌套表结构与复杂修订仍未对齐，见 [当前缺口](NATIVE_WORD_XLSX_CURRENT_GAPS.md)。本次只补阅读线程，不开放嵌套回复写入。
 3. 后续增量已补齐整稿演讲者备注阅读，当前对象选区不附带备注；图片视觉、解析器未返回的数据或外部数据源重算仍缺。复杂原生编辑仍按已有能力边界执行。
-4. PDF 保留最新已交付能力；四旋转×两缩放的草稿/保存 AP 字体专项已限定通过（32标签独立文字栅格边界最大差1px），见 [AP字体补证](NATIVE_PDF_DRAFT_AP_APPEARANCE_ACCEPTANCE.md)；CropBox/UserUnit实际浏览器、复杂表单及其他转换仍见 [剩余计划](NATIVE_PDF_REMAINING_PARALLEL_PLAN.md)。用户排除的 OCR 不加入范围。两个既有 PDF WIP stash 保持原样。
+4. PDF 保留最新已交付能力；四旋转×两缩放的草稿/保存 AP 字体专项已限定通过（32标签独立文字栅格边界最大差1px），见 [AP字体补证](NATIVE_PDF_DRAFT_AP_APPEARANCE_ACCEPTANCE.md)；后续已补CropBox/UserUnit限定组件浏览器并修复草稿线宽比例；页边长标签、复杂表单及其他转换仍见 [剩余计划](NATIVE_PDF_REMAINING_PARALLEL_PLAN.md)。用户排除的 OCR 不加入范围。两个既有 PDF WIP stash 保持原样。
 5. 真实 provider 与真实保存/下载已有分层证据，但生产数据库、浏览器真实 provider、显式采纳、新修订和下载的同一条链路仍未统一验收；本次不把 scripted 证据算作该项通过。
 
 未合并、部署或开启功能开关，未改发布签发链。
@@ -42,3 +42,6 @@
 [PDF字体与四旋转组件补证](NATIVE_PDF_DRAFT_AP_APPEARANCE_ACCEPTANCE.md) 已补固定字体资产、显式回退和缩放字宽稳定性；8场景、32标签及字体失败回退通过。本次没有扩充证书、OCR或复杂表单范围。
 
 最新依赖已按lockfile补齐；两个既有测试夹具类型问题已修且23项通过。完整tsc（Node heap 4GiB）、最终Vite50.16秒和全部JS预算通过。不会据此反推历史构建通过，仍不宣称生产数据库/真实provider整链验收。
+
+
+2026-11-12 PDF续批：非零CropBox/UserUnit2与默认来源各8个组件浏览器场景通过，修复草稿线宽/箭头头部未包含UserUnit的实际bug；73项定向、完整npm build/tsc和JS预算通过。见 [AP一致性验收末节](NATIVE_PDF_DRAFT_AP_APPEARANCE_ACCEPTANCE.md)。页边长标签仍可能裁切，普通测量路径尚无专项溢出提示，保留为开放缺口。

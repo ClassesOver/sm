@@ -63,3 +63,25 @@ SVG text固定9字体单位，起点0/0，start锚点、alphabetic基线、Helve
 本地首次运行发现忽略目录 `pdf_engine/dist/cli.mjs` 仍是11月10日旧包：水平AP BBox为 `[37,317,243,329]`，竖直为 `[67,37,73,143]`，实际裁切字形，故视觉检查失败。当前source已有 `measureLabelBounds` 修复；安装lockfile依赖并重建本地bundle后才取得上述成功，不把重建缓存冒充新增writer修复。失败旧输出及独立BBox记录保留于 `/tmp/pdf-drawing-font-old-bundle.pdf` / `.json`。
 
 本节是实际writer + PDF.js + 实际绘图组件专项，不新增完整产品保存/下载端到端证明；CropBox/UserUnit继续只有上文单元范围，未升级为本节实际浏览器覆盖。页面边缘裁切、外部客户端系统字体差异及其他字体仍保留限制。全局PDF.js默认字体选择策略未修改。
+
+
+## 2026-11-12 CropBox / UserUnit 与绘图线宽补齐
+
+本批补齐上一节仍缺的**限定组件浏览器场景**，并修复实际显示缺陷：`pdf-main` 传入的 scale 只是缩放倍率，旧 `paintDrawing` 以它计算线宽和箭头头部，遗漏 `/UserUnit`。UserUnit=2、zoom0.5、实际AP线宽1时，旧草稿线宽0.5，保存后为1；文字/坐标已经按viewport放大，导致同一绘图内部尺度不一致。前轮新增8项窄回归均先失败（其余41项通过），实际浏览器线宽对照也复现0.5≠1。
+
+现在以实际viewport的 V(1,0)−V(0,0) 距离取得PDF用户单位到显示坐标的比例，统一用于可见线宽、箭头头部及透明命中轮廓的粗线比例；命中最小16 CSS px与caret命中轮廓保持。保留旧第四个参数作为调用兼容，但不再把它当成用户单位比例。矩形、椭圆、手绘、多边形、测量线和箭头均覆盖；不改变原操作坐标、标注宽度数据、writer、AP或保存协议。
+
+### 实际来源与独立验证
+
+- 新 fixture `PDF_DRAWING_FONT_GEOMETRY=crop-userunit`：独立pypdf生成 MediaBox `[0,0,500,600]`、CropBox `[30,40,430,440]`、UserUnit=2。操作仍是PDF用户坐标，只按CropBox原点平移，不预乘UserUnit。真实引擎接受，输出由pypdf确认完整保留原MediaBox/CropBox/UserUnit。
+- `/tmp/pdf-crop-userunit-20261112/summary.json`：ok=true；0/90/180/270° × zoom0.5/2共8场景。实际PDF.js page.view与独立CropBox一致，viewport宽高与UserUnit、旋转、缩放一致。pypdf从实际AP读出w，逐项核对SVG可见测量线宽等于AP w × viewport单位长度；zoom0.5为1px、zoom2为4px。
+- 同一8场景的实际Tm、字体、caret顶点/填充均通过；32标签独立文字诊断栅格边界最大差1 CSS px，沿用前节独立union ROI与无触边检查，不声明抗锯齿或所有像素相同。字体失败回退仍可见；正常场景page/console/server错误为空。root独立复核JSON、实际PDF文件SHA，并目视90°/0.5倍并排图。
+- `/tmp/pdf-default-stroke-20261112/summary.json`：默认CropBox/UserUnit1再验8场景通过，32标签最大边界差1px，确认普通来源未回归。本轮两种来源合计16场景，不推广到所有PDF来源。
+- 证据目录已改为必须新建；复用已有目录会在生成前EEXIST退出。实际故障注入核对旧summary SHA不变，避免后续复跑覆盖旧证据。
+- 恢复工作区后，3文件73项定向通过：appearance49、canvas15、pending9。完整 `npm run build`（Node heap4GiB，含tsc）通过，Vite45.90秒；全部JS预算通过。日志 `/tmp/pdf-userunit-tests-20261112.log`、`/tmp/pdf-userunit-build-20261112.log`、`/tmp/pdf-userunit-budget-20261112.log`。没有重复完整项目测试。
+
+### 页边长标签仍开放
+
+独立真实探针 `/tmp/pdf-edge-label-20261112/summary.json`：同一CropBox/UserUnit2，页内测量线 `[330,200]→[410,200]`、64个W的标签，实际AP BBox为 `[327,197,917.248,217.379]`，超过可见页框右界430。引擎实际生成文件，appliedOperationIndices=[0]，没有跳过操作；此普通测量路径的reviewIssues为空。扩大AP BBox避免标注自身误裁，不会扩大页面CropBox；页边长标签仍会被可见页框裁切，本批没有移动/缩小标注或修改页面来掩盖它。需要后续明确的页边风险提示或用户可控排版，不能把本轮线宽/字体对齐计作该项完成。
+
+本批仍是实际writer + PDF.js +实际绘图组件验收；不新增完整产品保存/下载/生产宿主端到端证明，也不表示所有UserUnit相关编辑、测量标定或跨页行为均已验收。未改发布签发链、未部署或开启功能开关。

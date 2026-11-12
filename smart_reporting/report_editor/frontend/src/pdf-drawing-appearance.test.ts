@@ -40,3 +40,26 @@ it('sets browser kerning and ligature controls as CSS properties rather than ign
  expect(label.style.fontKerning).toBe('none');expect(label.style.fontVariantLigatures).toBe('none')
  expect(label.style.textRendering.toLowerCase()).toBe('geometricprecision')
 })
+
+for(const view of views){
+ it('scales visible strokes and arrow heads by actual UserUnit viewport at '+view.rotation+' degrees and '+view.zoom+' zoom',()=>{
+  const vp=viewport(view.rotation,view.zoom),group=document.createElementNS(ns,'g')
+  const geometry=[
+   {shape:'rect',rect:[80,80,180,180]}, {shape:'ellipse',rect:[80,80,180,180]},
+   {shape:'ink',paths:[[80,80,180,180]]}, {shape:'polygon',vertices:[[80,80],[180,80],[180,180]]},
+   {shape:'arrow',from:[80,80],to:[180,180]}, {shape:'measure',from:[80,80],to:[180,180],label:'1.00 m'},
+  ]
+  for(const shape of geometry){
+   const operation:NativeOperation={...base,...shape},original=structuredClone(operation)
+   paintDrawing(group,operation,vp,view.zoom)
+   // A 2-user-unit stroke on /UserUnit 2 is four physical points before zoom.
+   expect(Number(group.querySelector('[data-pdf-drawing]')!.getAttribute('stroke-width'))).toBeCloseTo(4*view.zoom,8)
+   expect(Number(group.querySelector('[data-pdf-shape-hit]')!.getAttribute('stroke-width'))).toBeGreaterThanOrEqual(16)
+   if(shape.shape==='arrow')for(const head of group.querySelectorAll('[data-pdf-arrow-head]')){
+    const x1=Number(head.getAttribute('x1')),y1=Number(head.getAttribute('y1')),x2=Number(head.getAttribute('x2')),y2=Number(head.getAttribute('y2'))
+    expect(Math.hypot(x2-x1,y2-y1)).toBeCloseTo(18*view.zoom,8)
+   }
+   expect(operation).toEqual(original)
+  }
+ })
+}

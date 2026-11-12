@@ -47,12 +47,12 @@ window.checkDrawing=async(rotation,zoom)=>{
   const box=label.getBBox(),matrix=label.transform.baseVal.consolidate().matrix
   const corners=[[box.x,box.y],[box.x+box.width,box.y],[box.x,box.y+box.height],[box.x+box.width,box.y+box.height]].map(([x,y])=>new DOMPoint(x,y).matrixTransform(matrix))
   const xs=corners.map(p=>p.x),ys=corners.map(p=>p.y)
-  return {label:label.textContent,matrix:[matrix.a,matrix.b,matrix.c,matrix.d,matrix.e,matrix.f],inkBox:[Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)],svgAdvance:label.getComputedTextLength(),assetAdvance,pdfAdvance,pdfCanvasFont,assetCanvasFont,fontSize:getComputedStyle(label).fontSize,family:getComputedStyle(label).fontFamily,kerning:getComputedStyle(label).fontKerning,ligatures:getComputedStyle(label).fontVariantLigatures}
+  return {label:label.textContent,matrix:[matrix.a,matrix.b,matrix.c,matrix.d,matrix.e,matrix.f],visibleStrokeWidth:Number(label.parentElement.querySelector('[data-pdf-drawing="measure"]').getAttribute('stroke-width')),inkBox:[Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)],svgAdvance:label.getComputedTextLength(),assetAdvance,pdfAdvance,pdfCanvasFont,assetCanvasFont,fontSize:getComputedStyle(label).fontSize,family:getComputedStyle(label).fontFamily,kerning:getComputedStyle(label).fontKerning,ligatures:getComputedStyle(label).fontVariantLigatures}
  })
  const caret=svg.querySelector('[data-pdf-drawing="caret"]')
  const fontAsset=await(await fetch('/reports/v1/editor/assets/pdfjs/standard_fonts/LiberationSans-Regular.ttf')).arrayBuffer()
  const fontSha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',fontAsset))].map(x=>x.toString(16).padStart(2,'0')).join('')
- return {rotation,zoom,width:viewport.width,height:viewport.height,viewport:viewport.transform,labels,labelOnlyPng:diagnostic.toDataURL('image/png').split(',')[1],caret:{path:caret.getAttribute('d'),fill:caret.getAttribute('fill'),stroke:caret.getAttribute('stroke')},pdfFont:{name:pdfFont.name,loadedName:pdfFont.loadedName,systemFontInfo:{css:pdfFont.systemFontInfo?.css,loadedName:pdfFont.systemFontInfo?.loadedName},fontExtraProperties:Object.keys(pdfFont)},fontSha256,loadedFaces:[...document.fonts].map(font=>({family:font.family,status:font.status})),evidence}
+ return {rotation,zoom,width:viewport.width,height:viewport.height,viewport:viewport.transform,pageView:page.view,userUnit:page.userUnit,labels,labelOnlyPng:diagnostic.toDataURL('image/png').split(',')[1],caret:{path:caret.getAttribute('d'),fill:caret.getAttribute('fill'),stroke:caret.getAttribute('stroke')},pdfFont:{name:pdfFont.name,loadedName:pdfFont.loadedName,systemFontInfo:{css:pdfFont.systemFontInfo?.css,loadedName:pdfFont.systemFontInfo?.loadedName},fontExtraProperties:Object.keys(pdfFont)},fontSha256,loadedFaces:[...document.fonts].map(font=>({family:font.family,status:font.status})),evidence}
 }
 window.drawingReady=true
 }
