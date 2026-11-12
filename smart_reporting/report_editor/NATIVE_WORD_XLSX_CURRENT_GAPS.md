@@ -10,6 +10,8 @@
 
 后续bar/column可信轴标题配对、隐藏标记、方向及top/right显示已通过读取和实际像素、带标题的AI保存下载重开，见 [轴标题专项](NATIVE_XLSX_AXIS_TITLE_CANVAS_ACCEPTANCE.md)。轴线/刻度/数值范围、次轴/组合与数据标签仍缺，不能把轴标题算作完整坐标轴能力。
 
+后续bar/column手动数值min/max、反向、零点与越界裁剪、null恢复本地自动范围已通过独立像素和实际候选保存重开，见 [数值范围专项](NATIVE_XLSX_VALUE_RANGE_CANVAS_ACCEPTANCE.md)。完整刻度/自动策略、对数计算、次轴/组合及数据标签仍未关闭。
+
 路径约定：`F=frontend/src/`（相对此文档）；`D=../reporting/doc_engine/`；`X=../reporting/workbook_engine/`；`U=/home/junge/pros/genoffice-source-full/`。源码路径均指实际文件，不指历史审计中已迁移的 `slides_engine` DOCX 路径。
 
 状态严格区分：

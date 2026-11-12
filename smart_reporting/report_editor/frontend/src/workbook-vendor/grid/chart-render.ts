@@ -12,8 +12,9 @@ import {
   SheetExtension,
   SpreadsheetExtensionRegistry,
 } from '@univerjs/engine-render'
-import { CHART_PALETTE, chartSeriesColor, paintChartLegend } from './chart-legend'
+import { CHART_PALETTE, chartSeriesColor, fitted, paintChartLegend } from './chart-legend'
 import { paintAxisTitles } from './chart-axis-titles'
+import { barValueFraction } from './chart-value-scale'
 
 const store = new Map<string, ReadonlyArray<ChartReadSpec>>()
 
@@ -141,15 +142,14 @@ function drawChart(
     // Preserve the category index of missing cells, including a longer later
     // series. Zero is a zero-length bar, never an invented minimum pixel size.
     const categoryCount = slots.reduce((count, values) => Math.max(count, values.length), 1)
-    let min = 0, max = 0
-    for (const values of slots) for (const value of values) if (value !== null) {
-      min = Math.min(min, value); max = Math.max(max, value)
+    const fraction = spec.valueScaleUnavailable ? undefined : barValueFraction(slots, spec.axes?.value.scaling)
+    if (!fraction) {
+      ctx.save(); ctx.beginPath(); ctx.rect(plotLeft,plotTop,plotWidth,plotHeight); ctx.clip()
+      ctx.fillStyle = '#1f2328'; ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'
+      ctx.fillText(fitted('此数值轴暂不支持预览，请下载原件查看',plotWidth-8,text=>ctx.measureText(text).width), plotLeft + 4, plotTop + 16)
+      ctx.restore()
+      ctx.restore(); return
     }
-    // Normalize before subtracting: finite endpoints can have an infinite raw
-    // span (e.g. -MAX_VALUE..MAX_VALUE), while their plotted ratio is finite.
-    const magnitude = Math.max(-min, max) || 1
-    const lo = min / magnitude, span = max / magnitude - lo || 1
-    const fraction = (value: number) => (value / magnitude - lo) / span
     const horizontal = spec.kind === 'bar'
     const band = (horizontal ? plotHeight : plotWidth) / categoryCount
     const thickness = band * 0.7 / Math.max(1, slots.length)
@@ -160,6 +160,7 @@ function drawChart(
         if (value === null || value === 0) return
         const offset = band * index + band * 0.15 + thickness * seriesIndex
         const end = horizontal ? plotLeft + plotWidth * fraction(value) : plotBottom - plotHeight * fraction(value)
+        if (end === zero) return
         if (horizontal) ctx.fillRect(Math.min(zero, end), plotTop + offset, Math.abs(end - zero), thickness)
         else ctx.fillRect(plotLeft + offset, Math.min(zero, end), thickness, Math.abs(end - zero))
       })

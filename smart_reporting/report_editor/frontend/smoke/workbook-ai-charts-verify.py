@@ -34,6 +34,12 @@ def verify(directory: Path):
         if axis_titles:
             assert xml.xpath('//c:catAx/c:title//a:t/text()', namespaces=ns) == [axis_titles['category']]
             assert xml.xpath('//c:valAx/c:title//a:t/text()', namespaces=ns) == [axis_titles['value']]
+        value_range = next((record['valueAxis'] for operation in saved_request['operations']
+            if operation['kind'] == 'applyChartEdits' for record in operation['edits'] if 'valueAxis' in record), None)
+        if value_range:
+            assert value_range == {'min': 5, 'max': 25}
+            assert xml.xpath('//c:valAx/c:scaling/c:min/@val', namespaces=ns) == ['5']
+            assert xml.xpath('//c:valAx/c:scaling/c:max/@val', namespaces=ns) == ['25']
     for output, count in ((source, 2), (edited, 2), (deleted, 1)):
         sheet = load_workbook(BytesIO(output)).active
         assert len(sheet._charts) == count
@@ -81,6 +87,19 @@ def verify(directory: Path):
                 value_ink = sum(max(rgb) < 100 for rgb in image.crop((x + 32, bottom - 56, right - 8, bottom - 32)).getdata())
                 assert category_ink >= 15 and value_ink >= 15, (category_ink, value_ink)
                 text_pixels[-1].update(categoryAxisTitleInk=category_ink, valueAxisTitleInk=value_ink)
+            if value_range:
+                frame = geometry['frames'][0]
+                plot_width = frame['width'] - 16 - (24 if axis_titles else 0)
+                ordered = sorted(bars, key=lambda bar: bar['y'])
+                for bar, fraction in zip(ordered, (0.25, 0.75)):
+                    assert abs(bar['width'] - plot_width * fraction) <= 2, (bar, plot_width)
+                auto_image = Image.open(directory / 'auto-range-preview.png').convert('RGB')
+                auto_geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](auto_image, ('#4472c4',))
+                auto_bars = sorted((r for r in auto_geometry['bars'] if r['width'] > 9 or r['height'] > 9), key=lambda bar: bar['y'])
+                assert len(auto_bars) == 2
+                for bar, fraction in zip(auto_bars, (0.5, 1)):
+                    assert abs(bar['width'] - plot_width * fraction) <= 2, (bar, plot_width)
+                text_pixels[-1]['manualRangeAndAutoResetPixels'] = True
     return {'ok': True, 'sourceSha256': hashlib.sha256(source).hexdigest(),
             'editedSha256': hashlib.sha256(edited).hexdigest(), 'deletedSha256': hashlib.sha256(deleted).hexdigest(),
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',

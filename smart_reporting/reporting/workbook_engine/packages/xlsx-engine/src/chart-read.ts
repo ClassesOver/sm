@@ -40,6 +40,12 @@ export interface ChartReadAxis {
   readonly title?: string | undefined
   readonly titleRef?: string | undefined
   readonly titleCache?: string | undefined
+  readonly scaling?: {
+    readonly min?: number | undefined
+    readonly max?: number | undefined
+    readonly reversed: boolean
+    readonly unsupported?: 'invalid' | 'logarithmic' | undefined
+  } | undefined
 }
 
 export interface ChartReadSpec {
@@ -53,6 +59,7 @@ export interface ChartReadSpec {
   readonly kind: ChartReadKind
   readonly title?: string | undefined
   readonly axes?: { readonly category: ChartReadAxis; readonly value: ChartReadAxis } | undefined
+  readonly valueScaleUnavailable?: true | undefined
   readonly legend?: {
     readonly position: 'right' | 'left' | 'top' | 'bottom' | 'top-right'
     readonly overlay: boolean
@@ -135,6 +142,28 @@ const titleOf = (xml: string): string | undefined => {
   return text.title ?? text.titleCache
 }
 
+function valueScaling(body: string): ChartReadAxis['scaling'] {
+  const block = body.match(/<c:scaling\b[^>]*>([\s\S]*?)<\/c:scaling>/)?.[1]
+  if (block === undefined) return undefined
+  let invalid = false
+  const number = (tag: string): number | undefined => {
+    const element = block.match(new RegExp(`<c:${tag}\\b([^>]*)`))
+    if (!element) return undefined
+    const raw = element[1]!.match(/\bval="([^"]*)"/)?.[1]?.trim() ?? ''
+    const value = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw) ? Number(raw) : NaN
+    if (!Number.isFinite(value)) { invalid = true; return undefined }
+    return value
+  }
+  const min = number('min'), max = number('max'), logBase = number('logBase')
+  const orientation = block.match(/<c:orientation\b[^>]*\bval="([^"]*)"/)?.[1] ?? 'minMax'
+  if (!['minMax', 'maxMin'].includes(orientation) || min !== undefined && max !== undefined && min >= max) invalid = true
+  if (logBase !== undefined && (logBase < 2 || logBase > 1000)) invalid = true
+  const unsupported = invalid ? 'invalid' : logBase !== undefined ? 'logarithmic' : undefined
+  if (min === undefined && max === undefined && orientation === 'minMax' && !unsupported) return undefined
+  return { reversed: orientation === 'maxMin', ...(min !== undefined ? {min} : {}), ...(max !== undefined ? {max} : {}),
+    ...(unsupported ? {unsupported} : {}) }
+}
+
 function axesOf(xml: string, kind: ChartReadKind): ChartReadSpec['axes'] {
   if (kind !== 'column' && kind !== 'bar') return undefined
   const plots = [...xml.matchAll(/<c:barChart\b[^>]*>([\s\S]*?)<\/c:barChart>/g)]
@@ -159,7 +188,8 @@ function axesOf(xml: string, kind: ChartReadKind): ChartReadSpec['axes'] {
     const hidden = !!deletion && !/\bval="(?:0|false)"/.test(deletion[1]!)
     const raw = prefix.match(/<c:axPos\b[^>]*\bval="([^"]*)"/)?.[1] ?? ''
     const positions = { l: 'left', r: 'right', t: 'top', b: 'bottom' } as const
-    return { id: axis.id!, hidden, ...titleText(axis.body),
+    const scaling = axis.kind === 'valAx' ? valueScaling(axis.body) : undefined
+    return { id: axis.id!, hidden, ...titleText(axis.body), ...(scaling ? {scaling} : {}),
       ...(Object.hasOwn(positions, raw) ? { position: positions[raw as keyof typeof positions] } : {}) }
   }
   return { category: project(category), value: project(value) }
@@ -271,13 +301,16 @@ export async function readCharts(
     if (kind === null) continue // combo/exotic types stay write-only for now
     const series = seriesOf(chartXml)
     if (series.length === 0) continue
+    const axes = axesOf(chartXml, kind)
+    const valueScaleUnavailable = !axes && (kind === 'bar' || kind === 'column') &&
+      [...chartXml.matchAll(/<c:valAx\b[^>]*>([\s\S]*?)<\/c:valAx>/g)].some(axis => valueScaling(axis[1]!) !== undefined)
     charts.push({
       chartPath,
       anchor: anchorOf(block),
       kind,
       ...(titleOf(chartXml) !== undefined ? { title: titleOf(chartXml) } : {}),
       ...(legendOf(chartXml) !== undefined ? { legend: legendOf(chartXml) } : {}),
-      ...(axesOf(chartXml, kind) !== undefined ? { axes: axesOf(chartXml, kind) } : {}),
+      ...(axes !== undefined ? { axes } : {}), ...(valueScaleUnavailable ? {valueScaleUnavailable:true as const} : {}),
       series,
     })
   }

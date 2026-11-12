@@ -51,3 +51,5 @@
 复现：workbook-chart-render-smoke.mjs设置WORKBOOK_CHART_RENDER_CASE=axis、新目录和冻结资源；AI保存脚本另设WORKBOOK_AI_CHARTS_AXIS_TITLES=1。两者沿用显式FONTCONFIG_FILE，输出目录不覆盖历史结果。
 
 仍缺轴线/刻度/数值及对数范围/显示单位、复杂样式/手动布局、次坐标轴/组合图、数据标签、跨表数值和完整字体度量。本次日期轴只有读取合同，不算日期刻度/布局通过；不把保守省略不可信配对算作支持。未合并部署或开启生产开关，原两个PDF WIP stash保持原样。
+
+后续线性手动数值范围、反向与裁剪已限定补齐，见 [数值范围专项](NATIVE_XLSX_VALUE_RANGE_CANVAS_ACCEPTANCE.md)；不追溯把本次轴标题验收算作完整刻度或对数支持。

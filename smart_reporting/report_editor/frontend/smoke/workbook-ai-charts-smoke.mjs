@@ -15,6 +15,7 @@ const directory=process.env.WORKBOOK_AI_CHARTS_DIRECTORY??'/tmp/workbook-ai-char
 const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../static')
 const port=Number(process.env.WORKBOOK_AI_CHARTS_PORT??4353),origin=`http://127.0.0.1:${port}`
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
+const manualRange=process.env.WORKBOOK_AI_CHARTS_VALUE_RANGE==='1'
 await mkdir(directory,{recursive:false})
 const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'))
 const server=spawn(join(repo,'.venv/bin/python'),[join(frontend,'smoke/workbook-ai-charts-server.py'),'--directory',directory,'--port',String(port)],{
@@ -86,7 +87,7 @@ try{
   await page.screenshot({path:join(directory,name+'-reopened.png'),fullPage:true})
   saves.push({name,payload,reopened})
  }
- stage='edit-candidate';await generate('仅修改 Sheet 的 xl/charts/chart1.xml，标题 Updated、横向条形图、底部图例；保留另一张同名图表'+(process.env.WORKBOOK_AI_CHARTS_AXIS_TITLES==='1'?'；添加轴标题：分类 Quarter、数值 Amount (USD)':''))
+ stage='edit-candidate';await generate('仅修改 Sheet 的 xl/charts/chart1.xml，标题 Updated、横向条形图、底部图例；保留另一张同名图表'+(process.env.WORKBOOK_AI_CHARTS_AXIS_TITLES==='1'?'；添加轴标题：分类 Quarter、数值 Amount (USD)':'')+(manualRange?'；数值范围5到25':''))
  assert.deepEqual(await operations(),manual)
  await panel.locator('.native-ai-accept').click();await waitKind('applyChartEdits',true)
  const adopted=await operations();assert.deepEqual(adopted.slice(0,manual.length),manual)
@@ -94,6 +95,21 @@ try{
  assert.deepEqual(await operations(),manual)
  await panel.locator('.native-ai-redo').click();await waitKind('applyChartEdits',true)
  assert.deepEqual(await operations(),adopted)
+ if(manualRange){
+  stage='reset-auto-range'
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
+  await page.screenshot({path:join(directory,'manual-range-preview.png'),fullPage:true})
+  await generate('仅修改 Sheet 的 xl/charts/chart1.xml，恢复自动范围')
+  await panel.locator('.native-ai-accept').click()
+  await page.waitForFunction(count=>Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:')).flatMap(([,value])=>JSON.parse(value).operations??[]).length===count,adopted.length+1)
+  await page.waitForFunction(()=>document.querySelector('.workbook-native-ai .native-ai-status')?.textContent?.includes('候选已加入草稿'))
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))
+  await page.screenshot({path:join(directory,'auto-range-preview.png'),fullPage:true})
+  const clear=(await operations()).at(-1).edits[0].valueAxis;assert.deepEqual(clear,{min:null,max:null})
+  await panel.locator('.native-ai-undo').click()
+  await page.waitForFunction(count=>Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:')).flatMap(([,value])=>JSON.parse(value).operations??[]).length===count,adopted.length)
+  assert.deepEqual(await operations(),adopted)
+ }
  stage='save-edit';await saveAndReopen('edited',4)
  stage='discard-delete';await generate('删除 Sheet 的 xl/charts/chart1.xml，保留 chart2')
  const beforeDelete=await operations();await panel.locator('.native-ai-discard').click()
@@ -110,7 +126,7 @@ try{
  assert.equal(sha(await readFile(join(staticDirectory,'.vite/manifest.json'))),sha(manifest))
  assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(httpErrors,[]);assert.deepEqual(assetErrors,[])
  const state=await(await page.request.get(origin+'/__smoke__/state')).json()
- assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,2);assert.equal(state.plannerCalls,3)
+ assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,2);assert.equal(state.plannerCalls,manualRange?4:3)
  const summary={ok:true,scope:'real UI/HTTP/grant/cookie/CSRF/Agno tools/writer/publication/download/reopen; ScriptedModel provider and scoped memory repository',browserVersion:browser.version(),fontPreflight,manifestSha256:sha(manifest),assets:Object.fromEntries(assets),manual,adopted,saves,independent,pageErrors,consoleErrors,httpErrors,assetErrors,state}
  await writeFile(join(directory,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok:true,directory,assets:assets.size,independent}))
 }catch(error){

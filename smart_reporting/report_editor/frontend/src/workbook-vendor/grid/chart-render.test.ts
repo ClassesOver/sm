@@ -193,3 +193,35 @@ describe('actual linked axis titles', () => {
   expect(result.ctx.clip).toHaveBeenCalledTimes(2)
  })
 })
+
+describe.each(['bar','column'] as const)('%s saved value bounds',kind=>{
+ const axes=(scaling:NonNullable<NonNullable<ChartReadSpec['axes']>['value']['scaling']>)=>({category:{id:1,hidden:false},value:{id:2,hidden:false,scaling}})
+ it('uses visible min/max and the clamped zero baseline',()=>{
+  const bars=render(kind,[[3,6]],{axes:axes({min:2,max:8,reversed:false})}).fills
+  expect(bars).toHaveLength(2)
+  const length=kind==='bar'?'width':'height',extent=kind==='bar'?384:184
+  expect(bars[0]![length]).toBeCloseTo(extent/6)
+  expect(bars[1]![length]).toBeCloseTo(extent*4/6)
+ })
+ it('clips values at both range ends and omits bars wholly outside',()=>{
+  const bars=render(kind,[[-5,3,12]],{axes:axes({min:2,max:8,reversed:false})}).fills
+  expect(bars).toHaveLength(2)
+  for(const bar of bars){expect(bar.x).toBeGreaterThanOrEqual(8);expect(bar.x+bar.width).toBeLessThanOrEqual(392);expect(bar.y).toBeGreaterThanOrEqual(8);expect(bar.y+bar.height).toBeLessThanOrEqual(192)}
+  expect(kind==='bar'?bars[1]!.width:bars[1]!.height).toBeCloseTo(kind==='bar'?384:184)
+ })
+ it('honors reverse orientation while retaining lengths',()=>{
+  const bars=render(kind,[[3,6]],{axes:axes({min:2,max:8,reversed:true})}).fills
+  if(kind==='bar'){expect(bars[0]!.x+bars[0]!.width).toBeCloseTo(392);expect(bars[1]!.x).toBeLessThan(bars[0]!.x)}
+  else {expect(bars[0]!.y).toBeCloseTo(8);expect(bars[1]!.y+bars[1]!.height).toBeGreaterThan(bars[0]!.y+bars[0]!.height)}
+ })
+ it('does not render an unsupported logarithmic axis as linear bars',()=>{
+  const result=render(kind,[[3,6]],{axes:axes({reversed:false,unsupported:'logarithmic'})})
+  expect(result.fills).toEqual([])
+  expect(result.texts.some(text=>text.text.includes('暂不支持'))).toBe(true)
+ })
+})
+
+it('does not apply automatic bounds when explicit scaling has no trustworthy axis pair',()=>{
+ const result=render('bar',[[3,6]],{valueScaleUnavailable:true})
+ expect(result.fills).toEqual([]);expect(result.texts.some(text=>text.text.includes('暂不支持'))).toBe(true)
+})

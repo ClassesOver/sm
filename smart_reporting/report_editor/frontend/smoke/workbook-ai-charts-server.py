@@ -58,6 +58,10 @@ async def create_app(directory: Path, port: int, *, source: bytes | None = None)
             operation = deletion() if '删除' in instruction else edit(title='Updated', chartType='bar', legend='bottom')
             if '轴标题' in instruction and operation['kind'] == 'applyChartEdits':
                 operation['arguments']['edits'][0]['axisTitles'] = {'category': 'Quarter', 'value': 'Amount (USD)'}
+            if '数值范围' in instruction and operation['kind'] == 'applyChartEdits':
+                operation['arguments']['edits'][0]['valueAxis'] = {'min': 5, 'max': 25}
+            if '恢复自动范围' in instruction and operation['kind'] == 'applyChartEdits':
+                operation['arguments']['edits'][0]['valueAxis'] = {'min': None, 'max': None}
             scripted = ScriptedModel(id='chart-browser', responses=[
                 call('read_sheet_features', {'sheetId': 'Sheet'}, 'features'),
                 call('load_guide', {'guides': ['charts']}, 'guide'),
