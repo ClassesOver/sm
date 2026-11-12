@@ -54,3 +54,6 @@
 
 
 2026-11-12 浏览器续批：测量标签页边风险已补真实UI标定/UndoRedo/预览告警/保存/下载/新修订重开闭环，独立pypdf/ReportLab回读与48份实际JS/CSS身份核验通过。原件不变、保存告警不阻断下载；真实路由与引擎、隔离内存修订仓储，不冒称生产DB。见 [页边风险提示浏览器补证](NATIVE_PDF_MEASURE_CROP_REVIEW_ACCEPTANCE.md)。
+
+
+2026-11-12 测量物理单位续批：修复跨UserUnit页面共享标定时长度翻倍/减半的问题。按PDF.js实际来源页单位归一化到物理pt，保持原始坐标/既有标签/默认Unit1行为；固定GenOffice源同样使用raw hypot，因此为本地一致性适配。24项定向、完整类型/构建/预算、双向重标定及实际保存下载重开通过，见 [跨页标定验收](NATIVE_PDF_MEASURE_USERUNIT_ACCEPTANCE.md)。制图比例不同仍需用户重新标定，不自动推断图纸比例。
