@@ -9,11 +9,14 @@ vi.mock('@univerjs/engine-render', () => ({
 import { setCharts } from './chart-render'
 
 type Rect = { x: number; y: number; width: number; height: number; color: string }
-function paint(kind: 'bar' | 'column', series: Array<Array<unknown>>) {
+function render(kind: 'bar' | 'column', series: Array<Array<unknown>>, extra: Partial<ChartReadSpec> = {}) {
   const fills: Rect[] = []
+  const texts: Array<{ text: string; x: number; y: number }> = []
   const ctx = {
     fillStyle: '', strokeStyle: '', lineWidth: 1,
-    save: vi.fn(), restore: vi.fn(), strokeRect: vi.fn(), fillText: vi.fn(),
+    save: vi.fn(), restore: vi.fn(), strokeRect: vi.fn(), beginPath: vi.fn(), rect: vi.fn(), clip: vi.fn(),
+    measureText: (text: string) => ({ width: text.length * 6 }),
+    fillText: (text: string, x: number, y: number) => texts.push({ text, x, y }),
     fillRect(x: number, y: number, width: number, height: number) {
       fills.push({ x, y, width, height, color: this.fillStyle })
     },
@@ -21,19 +24,21 @@ function paint(kind: 'bar' | 'column', series: Array<Array<unknown>>) {
   const specs: ChartReadSpec[] = [{ chartPath: 'xl/charts/chart1.xml', kind,
     anchor: { fromRow: 0, fromColumn: 0, toRow: 9, toColumn: 9 },
     series: series.map((_, index) => ({ valuesRef: String.fromCharCode(65 + index) + '1:' + String.fromCharCode(65 + index) + series[index]!.length })),
+    ...extra,
   }]
   setCharts('test-unit', 'test-sheet', specs)
   const extension = new registry.extensions[0]!()
   extension.draw(ctx, {}, {
-    worksheet: { getUnitId: () => 'test-unit', getSheetId: () => 'test-sheet',
+    worksheet: { getUnitId: () => 'test-unit', getSheetId: () => 'test-sheet', getName: () => 'Test',
       getCell: (row: number, column: number) => ({ v: series[column]?.[row] }) },
     getCellWithCoordByIndex: (row: number, column: number) => ({
       startX: column * 40, endX: (column + 1) * 40, startY: row * 20, endY: (row + 1) * 20,
     }),
   })
-  expect(ctx.restore).toHaveBeenCalledOnce()
-  return fills.filter(rect => rect.color !== '#ffffff')
+  expect(ctx.restore.mock.calls.length).toBe(ctx.save.mock.calls.length)
+  return { fills: fills.filter(rect => rect.color !== '#ffffff'), texts, ctx }
 }
+const paint = (kind: 'bar' | 'column', series: Array<Array<unknown>>) => render(kind, series).fills
 
 beforeEach(() => setCharts('test-unit', 'test-sheet', undefined))
 
@@ -95,5 +100,57 @@ describe.each(['bar', 'column'] as const)('%s actual registered canvas extension
     expect(bars.every(rect => [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite))).toBe(true)
     const extents = bars.map(rect => kind === 'bar' ? rect.width : rect.height)
     expect(extents[0]).toBeCloseTo(extents[1]!)
+  })
+})
+
+describe('actual bar/column legends', () => {
+  const series = [
+    { name: 'Revenue', valuesRef: 'A1:A2', color: '#126B3A', index: 3 },
+    { name: 'Cost', valuesRef: 'B1:B2', color: '#A02040', index: 8 },
+  ]
+  it.each(['top', 'bottom', 'left', 'right', 'top-right'] as const)('paints %s names and matching swatches outside the bars', position => {
+    const result = render('bar', [[3, 5], [1, 2]], { series, legend: { position, overlay: false, hiddenEntries: [] } })
+    expect(result.texts.map(item => item.text)).toEqual(['Revenue', 'Cost'])
+    const swatches = result.fills.filter(rect => rect.width === 8 && rect.height === 8)
+    const bars = result.fills.filter(rect => !swatches.includes(rect))
+    expect(swatches.map(rect => rect.color)).toEqual(['#126B3A', '#A02040'])
+    expect(bars).toHaveLength(4)
+    for (const swatch of swatches) for (const bar of bars) {
+      expect(swatch.x + swatch.width <= bar.x || bar.x + bar.width <= swatch.x ||
+        swatch.y + swatch.height <= bar.y || bar.y + bar.height <= swatch.y).toBe(true)
+    }
+  })
+  it('hides a canonical legend entry while retaining its plotted series', () => {
+    const result = render('column', [[3, 5], [1, 2]], { series: series.map((entry, index) => ({...entry, index})),
+      legend: { position: 'bottom', overlay: false, hiddenEntries: [0] } })
+    expect(result.texts.map(item => item.text)).toEqual(['Cost'])
+    expect(result.fills.filter(rect => rect.color === '#126B3A')).toHaveLength(2)
+  })
+  it('does not guess exception targets for noncanonical series identities', () => {
+    const result = render('column', [[3, 5], [1, 2]], { series,
+      legend: { position: 'bottom', overlay: false, hiddenEntries: [3] } })
+    expect(result.texts).toEqual([])
+    expect(result.fills).toHaveLength(4)
+  })
+  it('shows an omission marker for more entries than fit and clips text to the legend box', () => {
+    const entries = Array.from({length:20}, (_,index) => ({name:'Series '+index, valuesRef:'A1:A2'}))
+    const result = render('bar', [[3, 5]], {series:entries,legend:{position:'bottom',overlay:false,hiddenEntries:[]}})
+    expect(result.texts.at(-1)!.text).toBe('… +15')
+    expect(result.ctx.clip).toHaveBeenCalledOnce()
+    expect(result.texts.every(text => text.x + text.text.length * 6 <= 392)).toBe(true)
+  })
+  it('does not reserve space when absent and paints overlay legends after the bars', () => {
+    const normal = render('bar', [[3, 5], [1, 2]], { series })
+    const overlay = render('bar', [[3, 5], [1, 2]], { series,
+      legend: { position: 'right', overlay: true, hiddenEntries: [] } })
+    expect(overlay.fills.slice(0, 4)).toEqual(normal.fills)
+    expect(overlay.fills.slice(4)).toHaveLength(2)
+  })
+  it('shows source legends even when all data are missing and bounds long labels', () => {
+    const result = render('bar', [[null, null]], {series:[{name:'Very long '.repeat(40),valuesRef:'A1:A2'}],
+      legend:{position:'bottom',overlay:false,hiddenEntries:[]}})
+    expect(result.texts).toHaveLength(1)
+    expect(result.texts[0]!.text.endsWith('…')).toBe(true)
+    expect(result.texts[0]!.x + result.texts[0]!.text.length * 6).toBeLessThanOrEqual(392)
   })
 })

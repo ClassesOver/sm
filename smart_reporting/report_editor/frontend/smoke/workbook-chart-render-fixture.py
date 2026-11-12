@@ -30,7 +30,7 @@ def create():
         additions.append({'worksheetSheetName': 'Sheet', 'anchor': {
             'fromRow': row, 'fromColumn': 4, 'fromRowOffset': 0, 'fromColumnOffset': 0,
             'toRow': row + 8, 'toColumn': 12, 'toRowOffset': 0, 'toColumnOffset': 0},
-            'chart': {'chartType': kind, 'title': f'{kind} {index + 1}', 'series': series}})
+            'chart': {'chartType': kind, 'title': f'{kind} {index + 1}', 'legend': 'none', 'series': series}})
     output = patch_office('xlsx', stream.getvalue(), [{'kind': 'applyChartAdditions', 'additions': additions}])
     # Match actual missing sheet cells in the OOXML caches, rather than writing
     # invented zero values at those point indices.

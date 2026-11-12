@@ -4,6 +4,7 @@ import json
 import sys
 from io import BytesIO
 from pathlib import Path
+from runpy import run_path
 from zipfile import ZipFile
 
 from lxml import etree
@@ -59,6 +60,14 @@ def verify(directory: Path):
         grid_ink = sum(1 for r, g, b in image.crop((50, y - 23, 300, y - 3)).getdata() if max(r, g, b) < 100)
         assert title_ink >= 15 and grid_ink >= 40, (name, title_ink, grid_ink)
         text_pixels.append({'revision': name, 'titleInkPixels': title_ink, 'gridHeaderInkPixels': grid_ink})
+        if name == 'edited':
+            geometry = run_path(str(Path(__file__).with_name('canvas_chart_pixels.py')))['chart_pixels'](image, ('#4472c4',))
+            marks = geometry['bars']
+            swatches = [mark for mark in marks if 6 <= mark['width'] <= 9 and 6 <= mark['height'] <= 9]
+            bars = [mark for mark in marks if mark not in swatches]
+            assert len(swatches) == 1 and len(bars) == 2, (swatches, bars)
+            assert swatches[0]['y'] >= max(bar['y'] + bar['height'] for bar in bars) + 4
+            text_pixels[-1]['bottomLegendSwatches'] = len(swatches)
     return {'ok': True, 'sourceSha256': hashlib.sha256(source).hexdigest(),
             'editedSha256': hashlib.sha256(edited).hexdigest(), 'deletedSha256': hashlib.sha256(deleted).hexdigest(),
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',

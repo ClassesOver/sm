@@ -12,6 +12,7 @@ import {
   SheetExtension,
   SpreadsheetExtensionRegistry,
 } from '@univerjs/engine-render'
+import { CHART_PALETTE, chartSeriesColor, paintChartLegend } from './chart-legend'
 
 const store = new Map<string, ReadonlyArray<ChartReadSpec>>()
 
@@ -32,10 +33,11 @@ export function setCharts(
 
 const CHART_UKEY = 'sheets-web-chart'
 const EXTENSION_Z_INDEX = 32
-const PALETTE = ['#4472c4', '#ed7d31', '#a5a5a5', '#ffc000', '#5b9bd5', '#70ad47']
+const PALETTE = CHART_PALETTE
 
 interface SkeletonLike {
   worksheet?: {
+    getName?: () => string
     getUnitId?: () => string
     getSheetId?: () => string
     getCell(row: number, column: number): { v?: unknown } | null | undefined
@@ -120,17 +122,17 @@ function drawChart(
     return undefined
   })
   const flat = seriesValues.flat()
+  const basePlot = { top: y0 + (title ? 20 : 8), bottom: y1 - 8, left: x0 + 8, right: x1 - 8 }
+  const hasSeriesLegend = spec.kind === 'bar' || spec.kind === 'column'
+  const plot = hasSeriesLegend && !spec.legend?.overlay ? paintChartLegend(ctx, spec, worksheet, basePlot) : basePlot
+  const { top: plotTop, bottom: plotBottom, left: plotLeft, right: plotRight } = plot
+  const plotHeight = Math.max(4, plotBottom - plotTop)
+  const plotWidth = Math.max(4, plotRight - plotLeft)
   if (flat.length === 0) {
+    if (hasSeriesLegend && spec.legend?.overlay) paintChartLegend(ctx, spec, worksheet, basePlot)
     ctx.restore()
     return
   }
-
-  const plotTop = y0 + (title ? 20 : 8)
-  const plotBottom = y1 - 8
-  const plotLeft = x0 + 8
-  const plotRight = x1 - 8
-  const plotHeight = Math.max(4, plotBottom - plotTop)
-  const plotWidth = Math.max(4, plotRight - plotLeft)
 
   if (spec.kind === 'bar' || spec.kind === 'column') {
     const slots = spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef))
@@ -151,7 +153,7 @@ function drawChart(
     const thickness = band * 0.7 / Math.max(1, slots.length)
     const zero = horizontal ? plotLeft + plotWidth * fraction(0) : plotBottom - plotHeight * fraction(0)
     slots.forEach((values, seriesIndex) => {
-      ctx.fillStyle = PALETTE[seriesIndex % PALETTE.length]!
+      ctx.fillStyle = chartSeriesColor(spec.series[seriesIndex]!, seriesIndex)
       values.forEach((value, index) => {
         if (value === null || value === 0) return
         const offset = band * index + band * 0.15 + thickness * seriesIndex
@@ -160,6 +162,7 @@ function drawChart(
         else ctx.fillRect(plotLeft + offset, Math.min(zero, end), thickness, Math.abs(end - zero))
       })
     })
+    if (spec.legend?.overlay) paintChartLegend(ctx, spec, worksheet, basePlot)
     ctx.restore()
     return
   }
