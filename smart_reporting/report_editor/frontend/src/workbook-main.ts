@@ -69,7 +69,8 @@ import CoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
 import FindReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
 import SortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 import '@univerjs/preset-sheets-core/lib/index.css'
-import { formatAddress, parseRange, matchMarginPreset, readWorkbook, type WorkbookModel } from '@sheets-web/xlsx-engine'
+import { formatAddress, parseRange, matchMarginPreset, readWorkbook, readPackageSheetHyperlinks, cellHyperlinkState, type WorkbookModel } from '@sheets-web/xlsx-engine'
+import { createWorkbookLinkDialog, LINK_TEXT } from './workbook-link-dialog'
 import { createSparklineDialog } from './workbook-sparkline-dialog'
 import { createChartDesignDialog } from './workbook-chart-design-dialog'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
@@ -876,6 +877,50 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let pivotFilterDialog: ReturnType<(typeof import('./workbook-pivot-filters-dialog'))['createPivotFilterDialog']> | undefined
   let editableRangesDialog: ReturnType<(typeof import('./workbook-editable-ranges-dialog'))['createEditableRangesDialog']> | undefined
   let editableRangesContext: { bytes: Uint8Array; operations: WorkbookOperation[] } | undefined
+  // 固定源 Insert ▸ 链接（ExcelShell LinkDialog → set_hyperlink）：链接写在工作表 hyperlinks 与关系部件里，
+  // 当前状态来自草稿重放后的字节；写入以单元格当前链接为来源身份，追加到草稿后由浏览器内引擎重放。
+  let linkTarget: { sheetName: string; sheetId: string; row: number; column: number; current: string | null } | undefined
+  const openLinkDialog = async () => {
+    if (!editable()) throw new Error('工作簿正在加载或保存')
+    const active = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+    const anchor = active?.getSelection()?.getActiveRange()
+    if (!active || !anchor) throw new Error('请先选中一个单元格，再插入链接')
+    if (sheetProtected(active.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+    await persistence
+    const operations = await currentOperations()
+    const bytes = operations.length ? await applyWorkbookOperations(original, operations) : original
+    const row = anchor.getRow(), column = anchor.getColumn(), sheetName = active.getSheetName()
+    const current = cellHyperlinkState(await readPackageSheetHyperlinks(bytes, sheetName), row, column)
+    linkTarget = { sheetName, sheetId: active.getSheetId(), row, column, current }
+    linkDialog.open(current)
+  }
+  const applyLink = async (target: string | null) => {
+    const context = linkTarget
+    if (!editable() || !context) throw new Error('工作簿不可编辑，请重新打开链接')
+    if (target === context.current) return
+    await withWorkbookLocked(shell.editor, async () => {
+      await persistence
+      const before = await currentOperations()
+      const ref = formatAddress(context.row, context.column)
+      const operation = { kind: 'applySheetHyperlinks', sheetName: context.sheetName, edits: [{ ref, expectedTarget: context.current, target }] }
+      // 固定源 applyAiHyperlink / link-set：链接单元格为蓝色下划线（#0563C1）；删除链接时清除下划线与字体颜色（cl/ul 置空）。
+      // 作为同一步的仅样式单元格编辑写入，撤销/重做与链接一起进出历史。
+      const style = { kind: 'applyCellEdits', edits: [{ sheetName: context.sheetName, row: context.row, column: context.column, writeValue: false, cell: { value: null },
+        style: target === null ? { underline: false, fontColor: null } : { underline: true, underlineStyle: 'single', fontColor: '#0563C1' } }] }
+      const operations = [...before, operation as unknown as WorkbookOperation, style as unknown as WorkbookOperation]
+      captureGeneration++
+      try { await loadOperations(operations) }
+      catch (error) { await loadOperations(before); throw error }
+      if (nativeDraft) {
+        nativeDraft.setOperations(before as NativeOperation[])
+        nativeDraft.setOperations(operations as NativeOperation[])
+      } else draft.setOperations(operations)
+      gridChanged = false; dirty = true
+      shell.statusLabel.textContent = '有未保存修改'
+    }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
+    feedback.textContent = `${target === null ? LINK_TEXT.removed : LINK_TEXT.saved}修改尚未保存。`
+  }
+  const linkDialog = createWorkbookLinkDialog(shell.editor, applyLink)
   // 页面布局▸主题：状态来自当前重放字节的主题部件（含草稿中已应用的主题操作）。
   let themeSource: WorkbookThemeSource | undefined
   const applyTheme = async (kind: ThemeCommandKind, id: string) => {
@@ -1325,6 +1370,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           ribbon.refreshState?.()
           feedback.textContent = same ? '冻结已取消，修改尚未保存。' : '冻结窗格已更新，修改尚未保存。'
         } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'link-open') {
+        void openLinkDialog().catch(error => { feedback.textContent = (error as Error).message })
         return
       }
       if (command === 'insert-symbol') {
@@ -3004,6 +3053,6 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       epoch: () => mergeGeneration, persisted: () => persistence, operations: async () => await currentOperations() as NativeOperation[],
       setOperations: operations => nativeDraft?.setOperations(operations) })
   }, dispose() {
-    disposed = true; pivotControlOverlay?.dispose(); queriesDialog.dispose(); symbolDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
+    disposed = true; pivotControlOverlay?.dispose(); queriesDialog.dispose(); symbolDialog.dispose(); linkDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
   } }
 }

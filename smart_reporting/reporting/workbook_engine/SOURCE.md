@@ -503,3 +503,21 @@ ranges, overlap refusal and single-quote/spaced-attribute XML. Evidence logs:
 Updated built smoke requires the shifted source hidden column D to survive
 saving and rejects its former phantom width operation; new built execution is
 owned by root after the next unified build, not claimed by these narrow tests.
+
+## 2026-11-13 native cell hyperlinks (Insert ▸ Link)
+
+`src/hyperlinks.ts` ports the pinned GenOffice `packages/xlsx-gateway/src/gateway/xlsx-hyperlinks.ts`
+(`f8c17004`, SHA-256 `8dc34f1614d3002d996266ec40d153c6ff29ac850c13f3a24a70f8c5980ae452`). The editing logic
+(`applyHyperlinkEdits`, rel allocation/reclaim, empty-section removal, schema-order insertion) is unchanged;
+only its imports are adapted: `escapeRegExp`/`ensureRelationshipNamespace` come from this engine's `xml.ts`,
+and `nextFreeRelationshipId` is a verbatim copy of the pinned `xlsx-sheets.ts` helper. The pinned
+`apps/sheets/tests/xlsx-hyperlinks.test.ts` and `packages/xlsx-gateway/tests/hyperlink-reid-regex.test.ts`
+are copied as `tests/hyperlinks.test.ts` / `tests/hyperlink-reid-regex.test.ts` with only the import path changed.
+
+`src/hyperlink-write.ts` is the local adapter: it reads a sheet's cell links (range links, mixed r:id+location
+and unverifiable relationships are read-only with a reason), binds every edit to the cell's current target
+(`expectedTarget`), validates targets (http/https/mailto, or `#Sheet!A1` pointing at an existing sheet; the
+pinned `normalizeLinkTarget` also accepts these forms), applies the pinned writer and reads the final link set
+back before assembling the package. Bridge operation `applySheetHyperlinks {sheetName, edits}`; the Python
+native whitelist and `delivery/xlsx.py` operation kinds include it. Evidence:
+../../report_editor/NATIVE_XLSX_HYPERLINK_ACCEPTANCE.md.

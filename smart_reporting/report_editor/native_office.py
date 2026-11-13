@@ -31,7 +31,7 @@ _XLSX_FIELDS = {
     'applyChartAdditions': {'additions'}, 'applyChartDeletions': {'deletions'}, 'applyChartEdits': {'edits'},
     'applySheetEdits': {'plan'}, 'applyRowColumnOps': {'sheetName', 'ops'},
     'applyCellShift': {'sheetName', 'range', 'shift'},
-    'applyDvRules': {'rules'}, 'applyCfRules': {'rules'}, 'applySheetNotes': {'sheetName', 'notes'},
+    'applyDvRules': {'rules'}, 'applyCfRules': {'rules'}, 'applySheetNotes': {'sheetName', 'notes'}, 'applySheetHyperlinks': {'sheetName', 'edits'},
     'patchSheetNotes': {'sheetName', 'sourceIdentity', 'changes'},
     'applySheetFilter': {'sheetName', 'filter', 'hiddenRows', 'visibilityRange'},
     'appendSheetSparklines': {'sheetName', 'groups'},
