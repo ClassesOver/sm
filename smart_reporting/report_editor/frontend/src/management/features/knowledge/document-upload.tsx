@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Alert, Button, Card, Checkbox, Input, Select, Space } from 'antd'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
-import { ApiError, identity, request, scopeQuery } from '../../api/http'
+import { ApiError, request, scopeQuery } from '../../api/http'
 const idSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/)
 export const metadataSchema = z.object({ id: idSchema, title: z.string().trim().min(1).max(200), kind: z.enum(['rule_evidence', 'background']),
  validFrom: z.string().nullable(), validTo: z.string().nullable(), eventTime: z.string().nullable(),

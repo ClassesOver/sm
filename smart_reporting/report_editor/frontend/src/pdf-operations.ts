@@ -185,7 +185,12 @@ export const PDF_DRAWING_WIDTH = 2
 /** 引擎以 Helvetica 写测量标签：只接受可打印 ASCII，≤ 64 字符；单位因此须为英文（固定源默认 m）。 */
 export const PDF_MEASURE_LABEL = /^[\x20-\x7e]{1,64}$/
 /** 测量线长度（PDF pt）。 */
-export function pdfLineLength(from: number[], to: number[]) { return Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!) }
+// UserUnit scales default user space in units of 1/72 inch; calibration uses physical points.
+export function pdfLineLength(from: number[], to: number[], userUnit = 1) {
+  const length = Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!) * userUnit
+  if (!Number.isFinite(userUnit) || userUnit <= 0 || !Number.isFinite(length)) throw new Error('页面单位或测量长度无效')
+  return length
+}
 /** 固定源 DrawLayer.tsx DRAW_COLORS（默认红色）。 */
 export const PDF_DRAW_COLORS: { name: string; label: string; rgb: [number, number, number] }[] = [
   { name: 'red', label: '红色', rgb: [0.86, 0.22, 0.18] },
@@ -468,11 +473,11 @@ export class PdfPreviewReview {
 }
 
 /** Calibration is session-only; each saved Line carries its own immutable label. */
-export function pdfMeasurementOperation(pageId: string, points: number[][], box: PdfBox, color: [number, number, number], scale: MeasureScale): NativeOperation {
+export function pdfMeasurementOperation(pageId: string, points: number[][], box: PdfBox, color: [number, number, number], scale: MeasureScale, userUnit = 1): NativeOperation {
   if (!Number.isFinite(scale.unitsPerPt) || scale.unitsPerPt <= 0 || !/^[\x20-\x7e]{1,12}$/.test(scale.unit) || !scale.unit.trim()) throw new Error('标定比例无效；单位请使用 m、cm、mm、ft、in 等 ASCII 字符')
   const line = pdfDrawingOperation(pageId, 'arrow', points, box, color)
   const from = line.from as number[], to = line.to as number[]
-  const length = Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!) / scale.unitsPerPt
+  const physicalPoints = pdfLineLength(from, to, userUnit), length = physicalPoints / scale.unitsPerPt
   if (!Number.isFinite(length) || length >= 1e21) throw new Error('测量结果超出范围')
-  return pdfDrawingOperation(pageId, 'measure', [from, to], box, color, { label: formatLength(Math.hypot(to[0]! - from[0]!, to[1]! - from[1]!), scale) })
+  return pdfDrawingOperation(pageId, 'measure', [from, to], box, color, { label: formatLength(physicalPoints, scale) })
 }

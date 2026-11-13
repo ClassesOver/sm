@@ -49,7 +49,7 @@ const PDF_EXCLUSIVE_DRAFT_KINDS=['insertText','removeFormWidget',...PDF_OBJECT_D
 const PDF_REVIEW_KINDS=['replaceText',...PDF_EXCLUSIVE_DRAFT_KINDS]
 
 import { MARKUP_COLORS, quadToRect, selectionQuadsByPage } from './genoffice-pdf-annotations'
-import { PDF_MARKUP_TYPES, markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
+import { markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
 
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
@@ -602,7 +602,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   processNotes.disabled = response.pdfReviewAIEnabled !== true
   if (processNotes.disabled) processNotes.title = 'PDF AI 批注处理需要开启 AI 与正文编辑权限'
   commandGroup = ribbon.group('annotate', 'Markup')
-  const annotateMarkupGroup = commandGroup
   const select = button('选择文字', () => setMode('select'), false)
   for (const [type, label] of [['highlight', '高亮'], ['underline', '下划线'], ['squiggly', '波浪线'], ['strikeout', '删除线']] as const) selectionMarkupButton(type, label, `annotate.markup.${type}`)
   commandGroup.append(createMarkupPalette())
@@ -654,7 +653,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   annotateDrawGroup.append(redactTool, clearRedaction, applyRedaction)
   // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
   commandGroup = ribbon.group('annotate', 'Signature & Protection')
-  const signatureGroup = commandGroup
   const signButton = button('签名', () => openSignature(), true)
   sourceCommand(signButton, 'annotate.signature.sign'); signButton.dataset.pdfDrawShape = 'signature'
   signButton.title = '签名：手写或键入后在页面上拖出放置区域；这是可视签名，不是证书数字签名'
@@ -1132,10 +1130,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const measureActions = documentElement('div', 'pdf-link-actions'); measureActions.append(measureCancel, measureApply)
   measureDialog.append(measureTitle, measureHint, measureValueLabel, measureUnitLabel, measureError, measureActions); root.append(measureDialog)
   let measureScale: MeasureScale | undefined, measureRecalibrate = false
-  let measurePending: { page: PdfPageIdentity; operation: NativeOperation; snapshot: string; doc: PDFDocumentProxy | undefined } | undefined
-  function commitMeasure(page: PdfPageIdentity, line: NativeOperation, scale: MeasureScale, after?: () => void) {
+  let measurePending: { page: PdfPageIdentity; operation: NativeOperation; snapshot: string; doc: PDFDocumentProxy | undefined; userUnit: number } | undefined
+  function commitMeasure(page: PdfPageIdentity, line: NativeOperation, scale: MeasureScale, userUnit: number, after?: () => void) {
     const from = line.from as number[], to = line.to as number[]
-    const operation = pdfMeasurementOperation(page.pageId, [from, to], page.cropBox, line.color as [number,number,number], scale)
+    const operation = pdfMeasurementOperation(page.pageId, [from, to], page.cropBox, line.color as [number,number,number], scale, userUnit)
     pdfPageState(model.pages, [...draft.operations, operation])
     void append(operation).then(after).catch(showError)
   }
@@ -1145,11 +1143,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   measureApply.addEventListener('click', () => {
     try {
       if (!measurePending || !measureDialog.open || disposed || locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || measurePending.doc !== document || measurePending.snapshot !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请取消后重新绘制参考线')
-      const { page, operation } = measurePending
-      const scale = parseCalibration(measureValue.value.trim(), measureUnit.value, pdfLineLength(operation.from as number[], operation.to as number[]))
+      const { page, operation, userUnit } = measurePending
+      const scale = parseCalibration(measureValue.value.trim(), measureUnit.value, pdfLineLength(operation.from as number[], operation.to as number[], userUnit))
       if (!scale) throw new Error('请输入大于 0 的长度和不超过 12 个字符的单位')
       if (!/^[\x20-\x7e]+$/.test(scale.unit)) throw new Error('PDF 标签字体为 Helvetica，单位请使用英文字符（如 m、cm、ft）')
-      commitMeasure(page, operation, scale, () => { status.textContent = `测量比例已标定：1 ${scale.unit} = ${scale.unitsPerPt.toFixed(2)} pt（仅本次会话有效）` })
+      commitMeasure(page, operation, scale, userUnit, () => { status.textContent = `测量比例已标定：1 ${scale.unit} = ${scale.unitsPerPt.toFixed(2)} pt（仅本次会话有效）` })
       measureScale = scale; measureRecalibrate = false; measurePending = undefined; measureDialog.close()
     } catch (error) { measureError.textContent = error instanceof Error ? error.message : String(error) }
   })
@@ -1996,9 +1994,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           }
           if (drawShape === 'measure') {
             const line = pdfDrawingOperation(page.pageId, 'measure', points, page.cropBox, drawColor, { label: '0' })
-            if (measureScale && !measureRecalibrate) { commitMeasure(page, line, measureScale); return }
-            measurePending = { page, operation: line, snapshot: JSON.stringify(draft.operations), doc: document }; measureValue.value = ''; measureError.textContent = ''
-            measureHint.textContent = `参考线长 ${pdfLineLength(line.from as number[], line.to as number[]).toFixed(1)} pt；输入它代表的实际长度。`
+            if (measureScale && !measureRecalibrate) { commitMeasure(page, line, measureScale, original.userUnit); return }
+            measurePending = { page, operation: line, snapshot: JSON.stringify(draft.operations), doc: document, userUnit: original.userUnit }; measureValue.value = ''; measureError.textContent = ''
+            measureHint.textContent = `参考线长 ${pdfLineLength(line.from as number[], line.to as number[], original.userUnit).toFixed(1)} pt；输入它代表的实际长度。`
             measureDialog.showModal(); measureValue.focus()
             return
           }

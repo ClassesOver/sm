@@ -242,3 +242,69 @@ renderer-side `applyTint` / `rethemeStyles` recolouring is not copied: the nativ
 editor replays the `setThemePart` operation through the real workbook engine, so
 theme-provenance styles resolve exactly as a reopen would. LOCAL-ADAPTATIONS-SHA256
 records the adapted file.
+
+
+2026-11-12 numeric chart axes: `grid/chart-value-scale.ts` adapts
+`packages/xlsx-gateway/src/domain/chart-visual.ts::valueAxisScale` from pinned
+GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c` (5% headroom,
+1/2/5 major units and 1/2/2.5/5 negative-floor rounding). It keeps explicit
+endpoints and the native canvas's finite/clamped mapping. Local differences:
+finite fallback at overflowing/subnormal magnitudes; automatic all-negative
+upper bound stays zero even when the original rounds it above zero; dense
+saved units are sampled across the full domain before painting. The original
+source is executed independently by `smoke/workbook-chart-scale-source-oracle.mjs`.
+`grid/chart-value-axis.ts` is a canvas host adaptation of source axis roles and
+full-number labels, reusing Univer's existing numfmt for explicit formats.
+Labels, ticks, bars and zero baseline share one domain; the adapter reserves a
+separate band inside legend/title bands. LOCAL-ADAPTATIONS-SHA256 records both
+files. Category labels, full axis styling, source-linked cell format inheritance,
+logarithmic/secondary axes and chart families beyond bar/column remain outside
+this increment; see NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md.
+
+
+2026-11-12 category-axis increment: `grid/chart-category-axis.ts` adapts the
+pinned WorkbookVisuals.tsx rowSlot/catSlot/seriesSlot semantics. Horizontal
+minMax categories and their within-group series run bottom-up; maxMin reverses
+both, while column maxMin mirrors the horizontal category dimension. The
+adapter resolves bounded one-dimensional same-sheet category references from
+live cells, retaining blanks; external/unreadable references use indexed
+original caches. Unsupported source blocks are not flattened into fabricated
+ordinals. Category bands are reserved before the value axis is painted; labels
+use the final shared plot. Long labels are clipped/fitted and dense labels may
+be sampled; source wrapping/multi-level and full date-axis spacing remain open.
+The read-only original-source expression oracle checks 292 category/series
+positions. See NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md for original
+OOXML, final-pixel and save/download/reopen evidence. The adapted file's hash
+is recorded in LOCAL-ADAPTATIONS-SHA256.
+
+
+2026-11-12 value data labels: `grid/chart-data-labels.ts` adapts the pinned
+WorkbookVisuals.tsx showsLabel/labelFor/formatLabelValue semantics for explicit
+ordinary bar/column value labels (plot, series and indexed point settings;
+center/inEnd/outEnd; sign/reverse direction and number formats). It uses the
+existing Univer numfmt and final native bar rectangles. Local differences are
+explicit: no automatic labels are enabled when the source file has none; zero
+labels do not invent a nonzero bar; intentionally empty format sections remain
+empty; labels that cannot fit intact or collide are omitted; nonvalue/custom
+text/manual-layout settings are not guessed. More than 500 finite values skips
+this incremental label painter. Source-linked cell style resolution, txPr
+styling, custom offsets and nonbar/column families remain open.
+`grid/chart-legend.ts::fitted` now accepts an intact short label before checking
+whether a wider ellipsis fits; real A/B labels previously disappeared. Both
+local helper hashes are recorded. See NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md
+for original OOXML, independent colored-component/counter diagnostics and
+final screenshot/save/download/reopen evidence.
+
+
+2026-11-12 data-label typography: the native label painter now merges explicit
+plot/series/point size, RGB and bold properties individually (including b=0).
+The source point unit is converted by 4/3, matching the pinned chart-text-scale.ts
+PT_TO_PX constant; native grid transforms handle sheet zoom. Text is measured
+with the selected actual font and its ink ascent/descent before placement and
+collision checks. This fixes fixed-height placement for larger labels. The
+reader accepts one defRPr, or one endParaRPr fallback when defaults are absent;
+invalid size/weight and unresolved theme/transformed fills remain unsupported.
+Font family, italic and full rich-run/theme inheritance are not ported. See
+NATIVE_XLSX_DATA_LABEL_STYLE_ACCEPTANCE.md for actual source XML, passive font
+paint traces, foreground/background blend pixel proof and save/reopen evidence.
+The modified painter's local adaptation hash is refreshed.

@@ -1,8 +1,24 @@
 # Word / XLSX 当前缺口索引（非穷尽）
 
-更新：2026-11-11。此索引以更新时共享工作区的实际代码为准，替代早期矩阵的“当前状态”用途；不改写 `NATIVE_WORD_XLSX_PARITY_AUDIT.md`、`NATIVE_RIBBON_COMMAND_AUDIT.md` 的历史。固定源 `/home/junge/pros/genoffice-source-full` HEAD 已只读核对为 `f8c17004fb730df11f0f743164ffd8b4281bb38c`。
+更新：2026-11-12。此索引以更新时共享工作区的实际代码为准，替代早期矩阵的“当前状态”用途；不改写 `NATIVE_WORD_XLSX_PARITY_AUDIT.md`、`NATIVE_RIBBON_COMMAND_AUDIT.md` 的历史。固定源 `/home/junge/pros/genoffice-source-full` HEAD 已只读核对为 `f8c17004fb730df11f0f743164ffd8b4281bb38c`。
 
 **完整对齐仍未完成。本表非穷尽，不给完成百分比。** 本索引汇总实际代码及分层专项证据；Word 根批注新建与 XLSX 透视表创建/编辑已有真实浏览器保存、下载和重开证据；最新构建入口与资产连续性单独补验，具体范围以专属验收文档为准。既有专项未重复全测，不冒充本次重新验收。调查、按钮标签、永久禁用、manifest/hash 通过都不计功能交付。并行工作会改变状态，以下稳定符号比行号更适合作后续查找。
+
+2026-11-12 增量：XLSX AI 已有图表格式编辑/删除完成冻结目标身份、严格运行时格式校验、真实工具预览与显式采纳；45项专项和真实浏览器两次保存下载重开通过。后续bar方向/负值零线/空值分类已修并通过17项定向及截图像素，见 [画布增量](NATIVE_XLSX_BAR_CANVAS_ACCEPTANCE.md)；标题/网格文字已定位为验收环境字体解析问题并补预检和像素验证，见 [文字预检](NATIVE_XLSX_CANVAS_FONT_ENVIRONMENT.md)。AI 新建图表/替换数据、真实provider整链和复杂样式视觉对齐仍缺。见 [已有图表 AI 验收](NATIVE_XLSX_AI_EXISTING_CHART_ACCEPTANCE.md)。
+
+后续bar/column常见四侧/none图例、可信名称及显式RGB系列色已通过读取/画布与保存重开像素专项，见 [图例验收](NATIVE_XLSX_LEGEND_CANVAS_ACCEPTANCE.md)。非bar/column图例、复杂索引与手动布局、完整轴/标签等不计通过。
+
+后续bar/column可信轴标题配对、隐藏标记、方向及top/right显示已通过读取和实际像素、带标题的AI保存下载重开，见 [轴标题专项](NATIVE_XLSX_AXIS_TITLE_CANVAS_ACCEPTANCE.md)。轴线/刻度/数值范围、次轴/组合与数据标签仍缺，不能把轴标题算作完整坐标轴能力。
+
+后续bar/column手动数值min/max、反向、零点与越界裁剪、null恢复本地自动范围已通过独立像素和实际候选保存重开，见 [数值范围专项](NATIVE_XLSX_VALUE_RANGE_CANVAS_ACCEPTANCE.md)。完整刻度/自动策略、对数计算、次轴/组合及数据标签仍未关闭。
+
+后续 bar/column 数值轴自动留白、主刻度/数字格式、top/right 与隐藏/反向显示、共享零线已补，见 [数值轴专项](NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md)。原源算法750组差分（748一致、2组明确全负零上界修正）、57项前端和34项读取分批通过，真实截图与AI保存重开已验证。类别刻度/完整轴属性、源链接格式继承、对数/次轴与复杂图表仍缺；前述“自动/刻度仍缺”为各专项当时范围，此续批只关闭普通线性数值轴子集。
+
+后续 bar/column 单层类别名称、源 minMax/maxMin 分类与组内系列顺序、实时空槽和外表缓存、top/right/隐藏/长标签已补，见 [类别轴专项](NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md)。41项读取与75项前端分批通过，固定源排序表达式292个位置一致，最终构建的分类与相关浏览器/保存重开已验证。多级分类、日期比例、换行/旋转、完整轴属性、数据标签、对数/次轴及复杂图表仍开放；不把单层分类续批算完整图表。
+
+后续普通 bar/column 显式数值数据标签（plot/series/point开关与删除、中心/内端/外端、正负与反向、显式格式/空分段）已补，见 [数值标签专项](NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md)。50项读取和87项前端分批通过，八个真实标签场景、短分类修复和AI带标签保存重开已验证。标签字体/手动偏移/分类及占比内容、完整格式继承、非普通图表仍缺，不能把value标签子集算完整数据标签家族。
+
+后续普通value标签的显式字号/纯RGB/加粗、逐属性继承与取消加粗已补；全局标签模式/格式/位置编辑改为SAX直属节点写回，保留根字体与点级覆盖。76项引擎、90项前端、45项真实CLI AI专项通过，真实字体像素及带原样式保存重开验证见 [标签样式验收](NATIVE_XLSX_DATA_LABEL_STYLE_ACCEPTANCE.md)。字体族、复杂富文本/主题色/完整字体度量与标签家族仍开放。
 
 路径约定：`F=frontend/src/`（相对此文档）；`D=../reporting/doc_engine/`；`X=../reporting/workbook_engine/`；`U=/home/junge/pros/genoffice-source-full/`。源码路径均指实际文件，不指历史审计中已迁移的 `slides_engine` DOCX 路径。
 
@@ -93,3 +109,7 @@
 后续更新规则：以实际可执行入口、授权操作/草稿/保存/独立回读/明确修订重开及对应失败边界为关闭证据；视图导航核验不写草稿/历史/文件。完成子能力只移除对应缺口，保留完整 PrintDialog、复杂对象、外部宿主及兼容边界。需要完整 inventory 时再逐源 callback/gallery/context-menu 扩充本索引；本表没有穷尽所有静态标签，未列项目不能推定完成或不存在。
 
 2026-11-11 视图续批：标尺与导航页面的限定能力、最终冻结浏览器、独立XML回读及剩余边界见 [专项验收](NATIVE_WORD_RULER_PAGES_ACCEPTANCE.md)。本批最终tsc/全部JS预算通过；不能据此反推其它批次或所有Word场景均已验收。
+
+2026-11-12 标签主题色续批：普通数值标签接通实际主题关系与完整配色的无变换 schemeClr，保留原引用并跟随真实主题切换；47项定向、构建/预算、真实撤销重做与保存下载重开通过。169实际资源身份及独立下载XML/颜色混合像素已核；明暗透明度变换、字体族及复杂标签仍缺，见 [主题色验收](NATIVE_XLSX_DATA_LABEL_THEME_ACCEPTANCE.md)。
+
+2026-11-12 标签亮度续批：普通数值标签的RGB/已解析主题色接通常见lumMod→lumOff亮度组合，保存保留原变换。66项定向、1120组固定源实际执行对比、真实主题切换/撤销重做/下载重开与独立颜色像素通过；Python另6组浮点舍入差异已公开。透明度、其它变换链及完整标签家族仍缺，见 [亮度验收](NATIVE_XLSX_DATA_LABEL_LUMINANCE_ACCEPTANCE.md)。

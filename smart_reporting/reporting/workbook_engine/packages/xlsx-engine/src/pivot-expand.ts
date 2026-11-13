@@ -17,7 +17,6 @@ import {
   rebuildPivotOutput,
   type PivotAddition,
 } from './pivot-add'
-import { assertSafePivotPackage } from './pivot-source'
 import { assemblePackage, createBufferEntrySource } from './zip'
 
 export class PivotExpandError extends Error {}

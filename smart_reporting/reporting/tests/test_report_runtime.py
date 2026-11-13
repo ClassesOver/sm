@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import uuid
@@ -36,7 +37,7 @@ from smart_reporting.reporting.delivery.report_runtime.validation import (
     _temporary_pdf_path,
     _validation_directory,
 )
-from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_digest
+from smart_reporting.reporting.workspace import WorkspaceReportService, _report_runtime_package
 from smart_reporting.workspace import WorkspaceError
 
 
@@ -351,6 +352,11 @@ def test_render_markdown_returns_only_pdf_and_word_artifact_identity(
     assert not output.with_suffix(".html").exists()
 
 
+def test_report_runtime_package_digest_matches_archive_bytes() -> None:
+    content, digest = _report_runtime_package()
+    assert digest == hashlib.sha256(content).hexdigest()
+
+
 @pytest.mark.anyio
 async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoint(
     tmp_path: Path,
@@ -392,7 +398,7 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
     assert payload_path.endswith("-payload.json")
     assert payload == b'{"job":{}}'
     assert archive_path.startswith(".workspace-report-runtime-")
-    assert archive_path.endswith(f"-{_report_runtime_digest()}.zip")
+    assert archive_path.endswith(f"-{hashlib.sha256(archive).hexdigest()}.zip")
     assert workspace.deletes == [(thread, archive_path), (thread, payload_path)]
     with zipfile.ZipFile(BytesIO(archive)) as package:
         assert set(package.namelist()) == {
@@ -414,7 +420,7 @@ async def test_report_runtime_uploads_verified_package_for_fixed_python_entrypoi
     assert "from report_runtime.cli import main" in script
     assert "sys.path.insert(0" in script
     assert archive_path in script
-    assert _report_runtime_digest() in script
+    assert hashlib.sha256(archive).hexdigest() in script
     assert "报表运行时版本不匹配" in script
     assert "validate_pdf" in script
     assert payload_path in script
@@ -1237,19 +1243,6 @@ def test_cjk_soft_breaks_render_without_spaces(markdown, expected):
 
     parser = MarkdownIt("commonmark", {"html": False}).enable("table")
     assert parser.renderer.render(_join_cjk_soft_breaks(parser.parse(markdown)), parser.options, {}) == expected
-
-
-@pytest.mark.parametrize(("title", "expected"), [
-    # 回放：按宽度自然折行剩下单字孤行“…运营分析报 / 告”。
-    ("2025年瑞金医院综合运营分析报告", "2025年瑞金医院<br>综合运营分析报告"),
-    ("运营报告", "运营报告"),
-    ("2025年瑞金医院综合运营与财务预算执行情况分析报告", "2025年瑞金医院综合运营<br>与财务预算执行情况分析报告"),
-    ("<脚本>报告名称超过十五个字的测试标题啊", "&lt;脚本&gt;报告名称超过<br>十五个字的测试标题啊"),
-])
-def test_cover_title_breaks_into_balanced_lines(title, expected):
-    from smart_reporting.reporting.delivery.report_runtime.markdown import _balanced_cover_title
-
-    assert _balanced_cover_title(title) == expected
 
 
 def test_export_preserves_source_table_and_caption_positions():

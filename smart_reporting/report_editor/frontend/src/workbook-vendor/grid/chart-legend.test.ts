@@ -1,0 +1,24 @@
+import { expect, it } from 'vitest'
+import { chartLegendName, chartTextValue, fitted } from './chart-legend'
+
+it('resolves only same-sheet single-cell names, preserves literals and falls back to source caches', () => {
+ const worksheet={getName:()=>"Owner's Data!",getCell:()=>({v:'Live heading'})}
+ expect(chartLegendName({nameRef:"'Owner''s Data!'!$B$1",nameCache:'Stale',valuesRef:'B2:B3'},0,worksheet)).toBe('Live heading')
+ expect(chartLegendName({name:'Sheet1!B1',valuesRef:'B2:B3'},0,worksheet)).toBe('Sheet1!B1')
+ for(const nameRef of ['Other!B1',"'[book.xlsx]Sheet1'!B1",'INDIRECT("B1")','B1:B2']) {
+  expect(chartLegendName({nameRef,nameCache:'Cached heading',valuesRef:'B2:B3'},0,worksheet)).toBe('Cached heading')
+ }
+ expect(chartLegendName({nameRef:'Other!B1',valuesRef:'B2:B3'},1,worksheet)).toBe('系列 2')
+})
+
+it('does not resurrect a stale cache for a current same-sheet blank title cell',()=>{
+ const text={reference:'Sheet1!A1',cache:'STALE'}
+ for(const value of [undefined,null,'']) expect(chartTextValue(text,{getName:()=> 'Sheet1',getCell:()=>({v:value})})).toBe('')
+ expect(chartTextValue(text,{getName:()=> 'Other',getCell:()=>({v:'WRONG SHEET'})})).toBe('STALE')
+})
+
+it('keeps a short category glyph that fits even when an ellipsis would be wider',()=>{
+ const measure=(text:string)=>text==='…'?10:text.length*7
+ expect(fitted('A',8,measure)).toBe('A')
+ expect(fitted('Long category',8,measure)).toBe('')
+})

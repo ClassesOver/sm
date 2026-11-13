@@ -130,6 +130,14 @@ function isValidHexColor(hex: string): boolean {
   return /^#[0-9A-Fa-f]{6}$/.test(hex)
 }
 
+/// DrawingML's common lumMod then lumOff sequence uses HSL luminance.
+/// Caller validates percentages; round bytes like the fixed source, while cell
+/// tint retains its existing truncation behavior.
+export function applyDrawingMlLuminance(hex: string, multiplier: number, offset: number): string {
+  const [h, l, s] = rgbToHls(hex)
+  return hlsToRgb(h, Math.min(1, Math.max(0, l * multiplier + offset)), s, true)
+}
+
 function rgbToHls(hex: string): [number, number, number] {
   if (!isValidHexColor(hex)) return [0, 0, 0]
   const r = parseInt(hex.slice(1, 3), 16) / 255
@@ -148,7 +156,7 @@ function rgbToHls(hex: string): [number, number, number] {
   return [h / 6, l, s]
 }
 
-function hlsToRgb(h: number, l: number, s: number): string {
+function hlsToRgb(h: number, l: number, s: number, round = false): string {
   const channel = (t: number): number => {
     const q = l < 0.5 ? l * (1 + s) : l + s - l * s
     const p = 2 * l - q
@@ -161,7 +169,7 @@ function hlsToRgb(h: number, l: number, s: number): string {
     return p
   }
   const toHex = (v: number): string =>
-    Math.min(255, Math.floor(v * 255 + 1e-9))
+    Math.min(255, round ? Math.round(v * 255) : Math.floor(v * 255 + 1e-9))
       .toString(16)
       .padStart(2, '0')
       .toUpperCase()

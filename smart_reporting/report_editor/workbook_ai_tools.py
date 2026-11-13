@@ -16,6 +16,7 @@ from openpyxl.formula import Tokenizer
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 
 from .workbook_ai import WorkbookAIProposal
+from .workbook_ai_charts import validate_chart_candidates
 
 
 def _bounds(address: str) -> tuple[int, int, int, int]:
@@ -250,6 +251,7 @@ class WorkbookAIToolkit(Toolkit):
             'table': '原生applyTableAdditions/additions；applyTableEdits/edits每项worksheetSheetName,tableName，可含name,area,columnNames,style,totalsRow,bandedRows,headerRow,remove等；先read_sheet_features核对既有表格。',
             'structure': '原生applySheetEdits/plan、applyRowColumnOps/sheetName/ops、applyCellShift/sheetName/range/shift，仅整簿授权。',
             'pivot': '原生addPivot/addition、refreshPivotCaches/空arguments、applyPivotLayoutExpansions/updates、expandPivotOutputs/expansions；复用引擎验证来源和输出。',
+            'charts': '仅整簿授权；先read_sheet_features读取冻结草稿中charts的chartPath/title/kind/anchor/series引用。多图须按用户明确目标匹配，不能按数组顺序猜测，不明确时请求澄清而不提交。applyChartEdits.arguments.edits每项含真实唯一chartPath，可改title、chartType(column/bar/line/area/pie/doughnut)、legend、seriesColors、pointColors、dataLabels、dataLabelPosition、dataLabelFormat、axisTitles、grouping、gridlines、valueAxis、gapWidthPct、holeSizePct、explosionPct、pointExplosions；具体值由引擎预览核验。不允许series/seriesSet缓存替换或新增图表。applyChartDeletions.arguments.deletions每项含所属sheetName和chartPath。只生成候选，显式采纳后仍需保存。',
         }
         if any(guide not in catalog for guide in guides):
             raise ValueError('workbook_ai_guide_invalid')
@@ -314,6 +316,7 @@ class WorkbookAIToolkit(Toolkit):
             for translated in [self._translate(operation, merges)]
         ]})
         candidate = proposal.engine_operations()
+        validate_chart_candidates(self._model, candidate)
         if self._scope == 'range':
             for operation in candidate:
                 if operation['kind'] != 'applyCellEdits' or not operation.get('edits'):

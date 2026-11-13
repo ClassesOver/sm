@@ -394,29 +394,6 @@ def _cjk_date(match: re.Match[str], prefix: str, *, omit_year: bool = False) -> 
     return text + (f"{int(day)}日" if day else "")
 
 
-# 封面标题 28pt、最宽 150mm：每行约 15 个汉字。按宽度自然折行会剩下单字孤行
-# （“…运营分析报 / 告”），改为各行字数接近的均衡折行；不拆开数字和英文。
-_COVER_TITLE_LINE_CHARS = 15
-
-
-def _balanced_cover_title(title: str) -> str:
-    if len(title) <= _COVER_TITLE_LINE_CHARS:
-        return html.escape(title)
-    lines = -(-len(title) // _COVER_TITLE_LINE_CHARS)
-    width = -(-len(title) // lines)
-    pieces, start = [], 0
-    while len(title) - start > width:
-        end = start + width
-        while end > start + 1 and all(title[i].isascii() and title[i].isalnum() for i in (end - 1, end)):
-            end -= 1
-        if end == start + 1:  # 整行都是连续英文数字，无处可避，按宽度折行。
-            end = start + width
-        pieces.append(title[start:end])
-        start = end
-    pieces.append(title[start:])
-    return "<br>".join(html.escape(piece) for piece in pieces)
-
-
 APPENDIX_TABLES_SENTINEL = "REPORTING-APPENDIX-TABLES"
 APPENDIX_TABLES_TITLE = '<p class="report-appendix-title"><strong>附表</strong></p>'
 

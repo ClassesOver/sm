@@ -56,10 +56,6 @@ def _report_runtime_package() -> tuple[bytes, str]:
     return content, hashlib.sha256(content).hexdigest()
 
 
-def _report_runtime_digest() -> str:
-    return _report_runtime_package()[1]
-
-
 def _decode_chart_image(content: bytes) -> tuple[str, str, int, int, list[Any] | None]:
     digest = hashlib.sha256(content).hexdigest()
     with Image.open(io.BytesIO(content)) as image:

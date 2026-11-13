@@ -504,6 +504,66 @@ Updated built smoke requires the shifted source hidden column D to survive
 saving and rejects its former phantom width operation; new built execution is
 owned by root after the next unified build, not claimed by these narrow tests.
 
+
+2026-11-12 chart value-axis projection: `packages/xlsx-engine/src/chart-read.ts`
+now retains the plot-linked `c:valAx/c:majorUnit` (positive finite number) and
+XML-decoded `c:numFmt/@formatCode`, alongside the existing min/max/orientation.
+This is a local bounded reader adaptation, not a writer replacement or a claim
+of full chart axis support. The frontend uses the pinned chart-visual.ts scale
+and its existing Univer number formatter; see the editor's
+NATIVE_XLSX_VALUE_AXIS_CANVAS_ACCEPTANCE.md for source-oracle and final-pixel
+proof, intentional all-negative zero-top correction and unsupported properties.
+
+
+2026-11-12 category chart projection: the local chart reader retains bounded,
+indexed single-level strCache/numCache/strLit/numLit labels and the numeric
+category format, plus maxMin from the actual linked category axis. Sparse
+indices remain null slots; duplicate/out-of-range points, excessive counts and
+multi-level blocks return an explicitly empty projection rather than silently
+reindexing or inventing labels. No source chart/cache bytes are rewritten.
+See NATIVE_XLSX_CATEGORY_AXIS_CANVAS_ACCEPTANCE.md for the native adapter scope.
+
+
+2026-11-12 explicit data-label projection: chart-read.ts retains plot/series
+showVal/delete, canonical ctr/inEnd/outEnd positions, decoded label formats,
+indexed point overrides and non-General value-cache formats. Plot settings are
+bounded outside actual series blocks. Unsupported nonvalue flags, point text
+or manualLayout, unknown positions, duplicate point identities and malformed
+switches are marked unsupported rather than becoming raw value labels. This
+local read-only adapter does not rewrite source label/cache bytes or implement
+all label styles/layouts; see NATIVE_XLSX_DATA_LABEL_CANVAS_ACCEPTANCE.md.
+
+
+2026-11-12 label-font preservation: the local reader projects explicit txPr
+size (hundredths of pt), plain srgbClr and b, retaining missing-vs-false for
+property inheritance. The native chart writer's mode/detail setters now use
+SaxesParser direct-child byte spans instead of rebuilding all dLbls or matching
+a nested point's numFmt/dLblPos. Existing root font XML, point overrides and
+unknown children survive global edits; removing mode=none retains its existing
+explicit plot-block removal behavior. Tests preserve raw point formats with >,
+custom Unicode text and extension bytes. This fixes a local/shared legacy writer
+limitation rather than claiming an unmodified upstream port. Full chart XML
+prefix/schema normalization and complete label typography remain outside scope.
+
+2026-11-12 chart label theme projection: chart-label-theme.ts follows the unique
+internal workbook theme relationship and validates the actual complete palette.
+parseThemePalette has an opt-in strict mode without default slot substitution;
+existing cell callers keep their former behavior. chart-read resolves plain
+schemeClr at plot/series/point label levels through existing style-color helpers.
+Transforms and unresolved/ambiguous sources remain unsupported. Chart edits and
+theme replay preserve original scheme tokens; no color math or writer added.
+See report_editor/NATIVE_XLSX_DATA_LABEL_THEME_ACCEPTANCE.md for actual UI,
+downloaded OOXML and independent pixel evidence and remaining limitations.
+
+2026-11-12 chart label luminance: chart-label-color.ts uses existing SaxesParser
+and style-color HLS conversion for bounded lumMod then lumOff on explicit RGB
+or resolved scheme labels. DrawingML rounds color bytes like the fixed source;
+cell tint keeps its old truncation. Unknown/repeated/nested/reordered or mixed
+transforms stay unsupported. The original chart modifier bytes survive edits
+and theme replay. Fixed source code execution matched 1120 cases; independent
+Python rounding differences and a source comment discrepancy are retained.
+See report_editor/NATIVE_XLSX_DATA_LABEL_LUMINANCE_ACCEPTANCE.md for evidence.
+
 ## 2026-11-13 native cell hyperlinks (Insert ▸ Link)
 
 `src/hyperlinks.ts` ports the pinned GenOffice `packages/xlsx-gateway/src/gateway/xlsx-hyperlinks.ts`
