@@ -387,3 +387,13 @@ BAKE_SCALE 3, transform, land as replaceImage; crop shrinks the footprint to `cr
 written bitmap keeps the original matrix, baking is limited to page-owned images with a positive,
 unrotated, unmirrored matrix (`axisAligned`) that are also replaceable; the rect must equal the
 footprint (flip/opacity) or `cropRect(footprint, crop)` (crop). `bridge/existing-image-bake.test.ts`.
+
+## Existing image remove background (cutout) bake (2026-11-12)
+
+`transformExistingImage.bake` also accepts the pinned `ImageBakeOp` `{kind: 'cutout', tolerance}`
+(integer 0–100; the pinned `DEFAULT_CUTOUT_TOLERANCE` is 30). The bridge runs the unchanged vendored
+`removeBackground` from `src/renderer/cutout.ts` on the image's own displayed pixels (same BAKE_SCALE 3
+path as flip/opacity) and lands the result through the same replace path; the footprint must stay the
+same. The pinned algorithm samples border colours and compares channel distances symmetrically, so it
+runs on the BGRA rows as-is. `bridge/existing-image-cutout.test.ts`. No upstream vendor source changed;
+LOCAL-SHA256 has 192 entries.

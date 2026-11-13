@@ -1,10 +1,10 @@
 import type {NativeDraft,NativeOperation} from './native-draft'
 import type {PdfPageIdentity} from './pdf-operations'
-import {cropRect,type CropFractions} from './vendor/genoffice-pdf/renderer/image-bake'
+import {cropRect,DEFAULT_CUTOUT_TOLERANCE,type CropFractions} from './vendor/genoffice-pdf/renderer/image-bake'
 export const PDF_EXISTING_IMAGE_ALONE_REASON='已有图像编辑须单独保存，请先保存或撤销其他修改'
 export interface PdfExistingImage {pageId:string;pageIndex:number;rect:[number,number,number,number];imageId:string;expectedImageSha256:string;aboveText:boolean;editable:boolean;reason?:string;replaceable?:boolean;replaceReason?:string;bakeable?:boolean;bakeReason?:string}
-/** 固定源 image-bake 的三种像素编辑：由桥接取图像自身显示像素后烘焙并经 replaceImage 写回。 */
-export type PdfImageBake={kind:'flip';axis:'h'|'v'}|{kind:'opacity';alpha:number}|{kind:'crop';crop:CropFractions}
+/** 固定源 ImageBakeOp 的四种像素编辑：由桥接取图像自身显示像素后烘焙并经 replaceImage 写回。 */
+export type PdfImageBake={kind:'flip';axis:'h'|'v'}|{kind:'opacity';alpha:number}|{kind:'crop';crop:CropFractions}|{kind:'cutout';tolerance:number}
 /** 替换像素的上限与固定源插入图像一致：浏览器转 PNG、最长边 ≤2000px、编码 ≤6MB。 */
 export const PDF_REPLACEMENT_IMAGE_MAX_BASE64=6_000_000
 const pngBase64=(value:unknown):value is string=>typeof value==='string'&&value.startsWith('iVBORw0KGgo')&&value.length<=PDF_REPLACEMENT_IMAGE_MAX_BASE64&&/^[A-Za-z0-9+/]+={0,2}$/.test(value)
@@ -30,6 +30,7 @@ function validateBake(bake:unknown):asserts bake is PdfImageBake {
  if(!value||typeof value!=='object')throw Error('像素编辑参数无效')
  if(value.kind==='flip'){if(Object.keys(value).sort().join()!=='axis,kind'||!['h','v'].includes(String(value.axis)))throw Error('翻转方向无效');return}
  if(value.kind==='opacity'){const alpha=value.alpha;if(Object.keys(value).sort().join()!=='alpha,kind'||typeof alpha!=='number'||alpha<0||alpha>.99||Math.abs(Math.round(alpha*100)-alpha*100)>1e-9)throw Error('不透明度须为 0–99% 的整数百分比');return}
+ if(value.kind==='cutout'){const tolerance=value.tolerance;if(Object.keys(value).sort().join()!=='kind,tolerance'||!Number.isInteger(tolerance)||(tolerance as number)<0||(tolerance as number)>100)throw Error('去除背景的容差须为 0–100 的整数');return}
  if(value.kind==='crop'){const c=value.crop as Record<string,number>|undefined;if(Object.keys(value).sort().join()!=='crop,kind'||!c||Object.keys(c).sort().join()!=='b,l,r,t'||![c.l,c.t,c.r,c.b].every(fraction)||c.r!-c.l!<.01||c.b!-c.t!<.01||(c.r!-c.l!>=1&&c.b!-c.t!>=1))throw Error('裁剪范围无效：每边保留比例须在 0–100% 内，且至少裁去一部分');return}
  throw Error('像素编辑类型无效')
 }
@@ -74,12 +75,14 @@ export function bindPdfExistingImagePanel(options:{root:HTMLElement;draft:Native
  replaceRow.append(replacePick,replaceClear,replaceInfo,replaceFile);dialog.append(replaceRow)
  // 固定源图像浮动工具条：水平/垂直翻转、裁剪、透明度（像素烘焙后经 replaceImage 写回）
  const bakeKind=field('像素编辑',owner.createElement('select')) as HTMLSelectElement
- for(const [value,label] of [['','无'],['flip-h','水平翻转'],['flip-v','垂直翻转'],['crop','裁剪'],['opacity','透明度']])bakeKind.append(new Option(label,value))
+ for(const [value,label] of [['','无'],['flip-h','水平翻转'],['flip-v','垂直翻转'],['crop','裁剪'],['opacity','透明度'],['cutout','去除背景']])bakeKind.append(new Option(label,value))
  const cropRow=owner.createElement('div');cropRow.className='pdf-existing-image-crop'
  const cropInputs=['左','上','右','下'].map(name=>{const label=owner.createElement('label');label.textContent='裁去'+name+' %';const input=owner.createElement('input');input.type='number';input.min='0';input.max='99';input.step='1';input.value='0';input.setAttribute('aria-label','裁去'+name+'侧百分比');label.append(input);cropRow.append(label);return input})
  const opacityLabel=owner.createElement('label');opacityLabel.textContent='透明度 %';const opacityInput=owner.createElement('input');opacityInput.type='number';opacityInput.min='1';opacityInput.max='100';opacityInput.step='1';opacityInput.value='50';opacityInput.setAttribute('aria-label','图像透明度百分比');opacityLabel.append(opacityInput)
+ // 固定源 CutoutDialog：容差 0–100（默认 DEFAULT_CUTOUT_TOLERANCE），与边缘相连、接近边缘颜色的背景变为透明
+ const cutoutLabel=owner.createElement('label');cutoutLabel.textContent='去除背景容差';const cutoutInput=owner.createElement('input');cutoutInput.type='number';cutoutInput.min='0';cutoutInput.max='100';cutoutInput.step='1';cutoutInput.value=String(DEFAULT_CUTOUT_TOLERANCE);cutoutInput.setAttribute('aria-label','去除背景容差');cutoutLabel.append(cutoutInput)
  const bakeInfo=owner.createElement('p');bakeInfo.className='pdf-existing-image-replace-info'
- dialog.append(cropRow,opacityLabel,bakeInfo)
+ dialog.append(cropRow,opacityLabel,cutoutLabel,bakeInfo)
  const alert=owner.createElement('p');alert.setAttribute('role','alert')
  const confirm=owner.createElement('button');confirm.type='button';confirm.textContent='应用';confirm.dataset.pdfExistingImageConfirm=''
  const dismiss=owner.createElement('button');dismiss.type='button';dismiss.textContent='取消'
@@ -91,13 +94,14 @@ export function bindPdfExistingImagePanel(options:{root:HTMLElement;draft:Native
  function syncBake(){const image=choices[Number(select.value)],reason=image&&image.bakeable!==true?image.bakeReason??'此图像暂不支持裁剪、翻转与透明度':null
   if(reason&&bakeKind.value)bakeKind.value=''
   bakeKind.disabled=!!reason||replacement!==undefined;bakeKind.title=replacement!==undefined?'替换与像素编辑不能同批':reason??''
-  cropRow.hidden=bakeKind.value!=='crop';opacityLabel.hidden=bakeKind.value!=='opacity'
+  cropRow.hidden=bakeKind.value!=='crop';opacityLabel.hidden=bakeKind.value!=='opacity';cutoutLabel.hidden=bakeKind.value!=='cutout'
   for(const input of inputs)input.disabled=!!bakeKind.value
   if(bakeKind.value)fill()
-  bakeInfo.textContent=reason?reason:bakeKind.value?'像素编辑保持原位置与层级（裁剪会按保留比例缩小范围），不能同时移动；保存前请核对实际 PDF 预览。':''}
+  bakeInfo.textContent=reason?reason:bakeKind.value==='cutout'?'去除背景：与图像边缘相连、颜色接近边缘的区域变为透明；容差越大移除越多。保持原位置与层级，保存前请核对实际 PDF 预览。':bakeKind.value?'像素编辑保持原位置与层级（裁剪会按保留比例缩小范围），不能同时移动；保存前请核对实际 PDF 预览。':''}
  function currentBake():PdfImageBake|undefined{
   if(bakeKind.value==='flip-h'||bakeKind.value==='flip-v')return {kind:'flip',axis:bakeKind.value==='flip-h'?'h':'v'}
   if(bakeKind.value==='opacity'){const percent=Number(opacityInput.value);if(!Number.isInteger(percent)||percent<1||percent>100)throw Error('透明度须为 1–100 的整数百分比');return {kind:'opacity',alpha:(100-percent)/100}}
+  if(bakeKind.value==='cutout'){const tolerance=Number(cutoutInput.value);if(!Number.isInteger(tolerance)||tolerance<0||tolerance>100)throw Error('去除背景的容差须为 0–100 的整数');return {kind:'cutout',tolerance}}
   if(bakeKind.value==='crop'){const [l,t,r,b]=cropInputs.map(input=>Number(input.value));if(![l,t,r,b].every(value=>Number.isInteger(value)&&value>=0&&value<=99))throw Error('每侧裁去比例须为 0–99 的整数');return {kind:'crop',crop:{l:l!/100,t:t!/100,r:1-r!/100,b:1-b!/100}}}
   return undefined
  }
