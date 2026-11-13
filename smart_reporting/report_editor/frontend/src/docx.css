@@ -135,3 +135,14 @@
 .docx-native .doc-page[data-watermark] { position:relative; isolation:isolate; }
 .docx-native .doc-page[data-watermark]::before { content:attr(data-watermark); position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:-1;
   color:var(--watermark-color); opacity:var(--watermark-opacity); transform:rotate(var(--watermark-rotate)); font-family:var(--watermark-font); font-weight:var(--watermark-weight); font-style:var(--watermark-style); font-size:96px; white-space:nowrap; }
+/* 固定源 PageBorderDialog：.pb-* 版式沿用 vendor scoped.css；对话框外壳与按钮取 --office-* token，与水印对话框一致。 */
+.docx-page-border-dialog { box-sizing:border-box; border:1px solid var(--office-border); border-radius:var(--radius-md); padding:20px; box-shadow:var(--shadow-popover); color:var(--office-ink); }
+.docx-page-border-dialog::backdrop { background:var(--color-scrim); }
+.docx-page-border-dialog h2 { margin:0 0 12px; font-size:var(--font-size-lg); }
+.docx-page-border-dialog .fld { display:grid; gap:4px; color:var(--office-ink-2); font-size:var(--office-font-size); }
+.docx-page-border-dialog .fld :is(input:not([type=color]),select) { padding:0 6px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); font:inherit; }
+.docx-page-border-dialog .pb-options-toggle, .docx-page-border-dialog .modal-actions button { min-height:var(--office-control-height); padding:0 14px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:#fff; color:var(--office-ink); cursor:pointer; }
+.docx-page-border-dialog .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+.docx-page-border-dialog .modal-actions .btn-primary { background:var(--office-accent); border-color:var(--office-accent); color:#fff; }
+.docx-page-border-dialog .pb-check { display:flex; align-items:center; gap:6px; color:var(--office-ink-2); }
+.docx-page-border-dialog :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:1px; }

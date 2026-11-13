@@ -42,6 +42,7 @@ import { coverGroupMatchesProjection, coverGroupParas, isCoverEndNode, projectCo
 import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
+import { validDocxPageBorderValues } from './docx-page-borders'
 export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean; shadingEditable?: boolean; shadingReadOnlyReason?: string }
 import { safeParagraphStyle, type DocxStyleInfo } from './docx-styles'
 import { restoredDocxHeaderFooterOperations } from './docx-hf'
@@ -132,7 +133,7 @@ export function restoredDocxSectionOperations(operations: NativeOperation[], sec
     return restored ? [restored] : []
   })
 }
-export type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist'>> & { titlePg?: boolean; evenAndOddHeaders?: boolean; pageNumberFmt?: string | null; pageNumberStart?: number | null }
+export type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist' | 'pageBorder' | 'pageBorderProps'>> & { titlePg?: boolean; evenAndOddHeaders?: boolean; pageNumberFmt?: string | null; pageNumberStart?: number | null }
 export function restoredDocxSectionOperation(operations: NativeOperation[], section?: DocxSectionAnchor) {
   let values: SectionValues | undefined
   const numericLimits: Record<string, [number, number]> = { pageWidth: [1440, 31680], pageHeight: [1440, 31680],
@@ -143,7 +144,10 @@ export function restoredDocxSectionOperation(operations: NativeOperation[], sect
     const patch = operation.values
     if (Object.keys(operation).some(key => !['kind', 'sectionId', 'expectedSectionSha256', 'values'].includes(key))
       || !patch || typeof patch !== 'object' || Array.isArray(patch) || !Object.keys(patch).length) throw new Error('草稿页面设置无效')
+    // 固定源 Page Borders：pageBorder / pageBorderProps 整体按桥接同一规则校验
+    if (!validDocxPageBorderValues(patch as Record<string, unknown>)) throw new Error('草稿页面边框设置无效')
     for (const [key, value] of Object.entries(patch)) {
+      if (key === 'pageBorder' || key === 'pageBorderProps') continue
       if (key === 'orientation') { if (value !== 'portrait' && value !== 'landscape') throw new Error('草稿纸张方向无效') }
       else if (key === 'pageNumberFmt' || key === 'pageNumberStart') {
         if (!Object.hasOwn(section, key) || section[key] === undefined || section.pageNumberReadOnlyReason) throw new Error('草稿页码格式来源标记不可解释')
@@ -165,6 +169,7 @@ export function restoredDocxSectionOperation(operations: NativeOperation[], sect
     values = { ...values, ...patch }
   }
   if (!values || !section) return undefined
+  if (!validDocxPageBorderValues(values as Record<string, unknown>)) throw new Error('草稿页面边框设置无效')
   const settings = { ...section.settings, ...values }
   if (settings.marginLeft + settings.marginRight >= settings.pageWidth || settings.marginTop + settings.marginBottom >= settings.pageHeight) throw new Error('草稿页边距超出纸张大小')
   return { kind: 'setSectionLayout', sectionId: section.sectionId, expectedSectionSha256: section.expectedSectionSha256, values }
