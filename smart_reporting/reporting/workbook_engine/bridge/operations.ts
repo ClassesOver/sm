@@ -5,7 +5,7 @@ import {
   applyRowHeights, applyPageSetups, applyTableAdditions, applyTableEdits, workbookStyleEditSchema,
   refreshPivotCaches, applyPivotLayoutExpansions, expandPivotOutputs, sortRangeRows,
   applyDefinedNames, protectSheet, protectWorkbookStructure, setSheetEditableRanges, setThemePart,
-  readWorkbook, parseAddress, richRunSchema, applySheetOutline,
+  readWorkbook, parseAddress, richRunSchema, applySheetOutline, applySheetHyperlinks, HYPERLINK_TARGET_LIMIT, HYPERLINK_EDIT_LIMIT,
 } from '@sheets-web/xlsx-engine'
 import { applyChartAdditions } from '../packages/xlsx-engine/src/chart-add'
 import { applyChartDeletions } from '../packages/xlsx-engine/src/chart-delete'
@@ -200,6 +200,14 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await setSheetEditableRanges(bytes, parsed.sheetName, parsed.ranges); break
       }
       case 'protectWorkbookStructure': bytes = await protectWorkbookStructure(bytes, op.lockStructure); break
+      // 固定源 Insert ▸ Link（set_hyperlink → xlsx-hyperlinks.ts）：按单元格当前链接绑定来源，整批先验后写。
+      case 'applySheetHyperlinks': {
+        const target = z.string().min(1).max(HYPERLINK_TARGET_LIMIT).nullable()
+        const parsed = z.object({ kind: z.literal('applySheetHyperlinks'), sheetName: z.string().min(1).max(31),
+          edits: z.array(z.object({ ref: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}$/), expectedTarget: target, target }).strict()).min(1).max(HYPERLINK_EDIT_LIMIT),
+        }).strict().parse(op)
+        bytes = await applySheetHyperlinks(bytes, parsed.sheetName, parsed.edits); break
+      }
       case 'setThemePart': { const valid = setThemePartSchema.parse(op); bytes = await setThemePart(bytes, valid.themePath, valid.state); break }
       case 'sortRange': {
         bytes = await sortRangeRows(bytes, op.sheetName, op.spec)

@@ -73,3 +73,4 @@ export * from './outline'
 export { isPivotCacheDefinitionPath, pivotCacheReadsFromSheet, renameSheetInPivotCacheSource } from './pivot-cache-source'
 
 export type { SheetTableSource } from './table-source'
+export * from './hyperlink-write'
