@@ -6,6 +6,7 @@ import {inspectDocxCommentThreads,patchDocxCommentThreads,type CommentThreadOper
 import {isDocxTocOperation, patchDocxToc} from './docx-toc.ts'
 import { inspectTextRevisions, resolveTextRevisions, type TextRevisionOperation } from './docx-revisions.ts'
 import { XMLValidator } from 'fast-xml-parser'
+import { validatePageBorderValues, normalizedPageBorder } from './docx-page-borders.ts'
 import { tableAltTextAvailability, editTableAltText, verifyTableAltTextResult } from './docx-table-alt-text.ts'
 import { tableCellWrapAvailability, editTableCellWrap, verifyTableCellWrapResult } from './docx-table-cell-wrap.ts'
 import { tableAlignmentAvailability, editTableAlignment, verifyTableAlignmentResult } from './docx-table-alignment.ts'
@@ -1272,7 +1273,10 @@ if (request.kind === 'inspect') {
       const target = allSections.find(section => sectionIdOf(section) === op.sectionId)
       if (!target || op.expectedSectionSha256 !== hash(target.sectPrXml)) fail('section_anchor_invalid')
       const values = object(op.values)
-      keys(values, ['orientation', 'pageWidth', 'pageHeight', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'columns', 'headerDist', 'footerDist', 'titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart'])
+      keys(values, ['orientation', 'pageWidth', 'pageHeight', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft', 'columns', 'headerDist', 'footerDist', 'titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart', 'pageBorder', 'pageBorderProps'])
+      try { validatePageBorderValues(values) } catch { fail('page_border_invalid') }
+      // 页面边框按现有节序回读核对；同批插入分节符会改变节序，须分开保存。
+      if ('pageBorder' in values && request.operations.some(raw => object(raw).kind === 'insertSectionBreak')) fail('page_border_section_break_conflict')
       if (values.pageNumberFmt !== undefined || values.pageNumberStart !== undefined) {
         if (sectionPageNumber(target).pageNumberReadOnlyReason) fail('section_page_number_unsupported')
         if (values.pageNumberFmt !== undefined && values.pageNumberFmt !== null && !SECTION_PAGE_NUMBER_FORMATS.has(values.pageNumberFmt as string)) fail('section_layout_invalid')
@@ -2293,6 +2297,18 @@ if (request.kind === 'inspect') {
       for (const cell of state.cellValues.values()) {
         if (table?.rows[cell.row]?.[cell.column]?.paras.join('\n') !== cell.text) fail('cell_write_not_applied')
       }
+    }
+  }
+  const borderEdits = operations.filter(item => item.op.kind === 'setSectionLayout' && item.sectionValues && 'pageBorder' in item.sectionValues)
+  if (borderEdits.length) {
+    // 独立回读：每个被改的节，w:pgBorders 解析结果与请求逐项一致（固定引擎 readSections / readSectionSettings）。
+    const reparsed = await parseDocx(output), reread = readSections(reparsed)
+    if (reread.length !== allSections.length) fail('page_border_write_not_applied')
+    for (const item of borderEdits) {
+      const index = allSections.indexOf(item.section!)
+      const actual = index === allSections.length - 1 ? readSectionSettings(reparsed) : reread[index]!.settings
+      const expected = { ...sectionSettingsOf(item.section!), ...item.sectionValues } as SectionSettings
+      if (JSON.stringify(normalizedPageBorder(actual, true)) !== JSON.stringify(normalizedPageBorder(expected))) fail('page_border_write_not_applied')
     }
   }
   if (watermark !== undefined) {
