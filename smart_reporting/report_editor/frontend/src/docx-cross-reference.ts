@@ -64,7 +64,7 @@ export function createDocxCrossReferenceControls(options:Options){
  const insert=(bookmarkId:string)=>{if(reason())throw new Error(reason()!);if(!m)fail();if(options.collectOperations(editor.getJSON()).length)throw new Error('交叉引用需独立保存，请先保存或撤销其它修改')
   const {empty,$from}=editor.state.selection;if(!empty||$from.depth!==1)throw new Error('请把光标放在普通正文或标题段落中')
   const t=m!.targets.find(t=>t.blockIndex===$from.parent.attrs.docxIndex);if(!t||t.text!==$from.parent.textContent)fail()
-  const operations=checked([{kind:'insertCrossReference',sourceId:m!.sourceId,bookmarkId,targetId:t!.targetId,expectedParagraphSha256:t!.expectedParagraphSha256,offset:$from.parentOffset}],m!),op=operations[0],book=m!.bookmarks.find(b=>b.bookmarkId===bookmarkId)!
+  const operations=checked([{kind:'insertCrossReference',sourceId:m!.sourceId,bookmarkId,targetId:t!.targetId,expectedParagraphSha256:t!.expectedParagraphSha256,offset:$from.parentOffset}],m!),book=m!.bookmarks.find(b=>b.bookmarkId===bookmarkId)!
   const field=editor.schema.nodeFromJSON({type:nodeType,attrs:{bookmarkId,name:book.name,text:book.ranges[0].text}}),tr=closeHistory(editor.state.tr.insert($from.pos,field).setDocAttribute(intent,operations));options.collectOperations(tr.doc.toJSON());editor.view.dispatch(tr);if(!editor.state.doc.eq(tr.doc))fail();status.textContent='交叉引用已加入草稿，可撤销和重做';editor.view.focus()
  }
  const refresh=()=>{if(disposed)return;const blocked=reason(),list=panel.querySelector('[data-cross-reference-list]')!;list.replaceChildren();if(!m){status.textContent=blocked;return}

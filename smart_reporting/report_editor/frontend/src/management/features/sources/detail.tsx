@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Alert, Button, Card, Descriptions, Skeleton, Space, Tabs } from 'antd'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useScope } from '../scopes/context'

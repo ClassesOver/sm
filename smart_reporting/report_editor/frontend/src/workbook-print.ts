@@ -456,14 +456,13 @@ const cellStyleCss = (style: LogicalStyle | undefined, scalePercent: number, bor
 export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintSetup, context: SheetPrintContext = {}): string | null {
   const plan = planSheetPrint(source, setup)
   if (!plan) return null
-  const { paper, scale, areas, titleRows, titleColumns, pages } = plan
+  const { paper, scale, titleRows, titleColumns, pages } = plan
   const marginCss = `left:${setup.margins.left}in;top:${setup.margins.top}in;` +
     `width:${Math.max(paper.widthIn - setup.margins.left - setup.margins.right, 0.01)}in;` +
     `height:${Math.max(paper.heightIn - setup.margins.top - setup.margins.bottom, 0.01)}in`
   const scalePercent = scale / 100
   const now = context.now ?? new Date()
   const pageElements = pages.map((page, pageIndex) => {
-    const area = areas[page.area]!
     // Plan capacities are in unscaled content pt; rendering multiplies every
     // size by the scale so the table physically fits the printable area.
     const columnWidthPt = (column: number) => columnWidthPx(source, column) * PX_TO_PT * scalePercent

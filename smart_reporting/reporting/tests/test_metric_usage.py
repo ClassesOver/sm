@@ -22,7 +22,6 @@ from smart_reporting.reporting.profile.metric_usage import (
 )
 from smart_reporting.reporting.profile.models import EffectiveMetric
 from smart_reporting.reporting.tests.test_deterministic_analysis import analysis, context, semantic
-from smart_reporting.reporting.workflow.runtime.datasets import _analysis_context_payload
 from smart_reporting.reporting.workflow.runtime.models import AnalysisItem
 
 
@@ -59,19 +58,18 @@ def test_catalog_uses_all_confirmed_names_and_removes_the_requested_metric():
     assert "discharges_non" not in metrics
 
 
-def test_available_usage_groups_survive_actual_planner_projection():
+def test_available_usage_groups_survive_outline_shape_view():
     profile = hospital_profile()
     capabilities = CapabilitySet(effectiveProfileHash=profile.effective_profile_hash, capabilities=tuple(
         Capability(code=metric.code, kind="metric", available=metric.code != "actual_medical_income")
         for metric in profile.metrics
     ))
     view = build_outline_shape_view(profile, capabilities, (), (), ())
-    projected = _analysis_context_payload(view)
-    groups = {group["purpose"]: group["metricCodes"] for group in projected["metricUsageGroups"]}
+    groups = {group["purpose"]: group["metricCodes"] for group in view["metricUsageGroups"]}
     assert groups["收入多维分析"] == ["income_summary_total"]
     assert "actual_medical_income" not in groups["预算或预实对比"]
-    assert "discharges_non" not in str(projected)
-    assert projected["profile"]["metrics"][0]["purpose"] == "预算或预实对比"
+    assert "discharges_non" not in str(view)
+    assert view["profile"]["metrics"][0]["purpose"] == "预算或预实对比"
 
 
 def test_historical_metric_serialization_does_not_add_an_unconfirmed_purpose():

@@ -5,7 +5,7 @@ import {
   applyRowHeights, applyPageSetups, applyTableAdditions, applyTableEdits, workbookStyleEditSchema,
   refreshPivotCaches, applyPivotLayoutExpansions, expandPivotOutputs, sortRangeRows,
   applyDefinedNames, protectSheet, protectWorkbookStructure, setSheetEditableRanges, setThemePart,
-  readWorkbook, parseAddress, richRunSchema, applySheetOutline,
+  richRunSchema, applySheetOutline,
 } from '@sheets-web/xlsx-engine'
 import { applyChartAdditions } from '../packages/xlsx-engine/src/chart-add'
 import { applyChartDeletions } from '../packages/xlsx-engine/src/chart-delete'

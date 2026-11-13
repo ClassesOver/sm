@@ -310,12 +310,6 @@ function rewriteRowNumber(rowXml: string, newRow: number): string {
   return rowXml.replace(/\br="[0-9]+"/, () => `r="${newRow}"`)
 }
 
-function rewriteCellRows(rowInner: string, delta: number): string {
-  return rowInner.replace(/\br="([A-Z]{1,3})([0-9]+)"/g, (full, letters: string, row: string) =>
-    letters === undefined ? full : `r="${letters}${Number(row) + delta}"`,
-  )
-}
-
 /// Row insert/remove: rows renumber, deleted rows drop, cell addresses
 /// inside surviving rows follow their row.
 export function applyRowShift(worksheetXml: string, spec: ShiftSpec): string {

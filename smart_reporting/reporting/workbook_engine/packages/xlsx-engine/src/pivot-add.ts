@@ -24,8 +24,6 @@ import {
 import {
   escapeXmlAttribute as escapeAttribute,
   readSourceAreaGrid,
-  readSharedStrings,
-  readSourceAreaRows,
   assertSafePivotPackage,
   type SourceValue,
 } from './pivot-source'
@@ -510,33 +508,6 @@ function validateAddition(addition: PivotAddition, allowEmpty = false): void {
   ) {
     throw new PivotAddError(`Pivot "${addition.name}" has an out-of-range hidden item.`)
   }
-}
-
-/// One raw source row: value per cacheField, in fieldNames order.
-async function readSourceRows(
-  source: EntrySource,
-  workbookXml: string,
-  addition: PivotAddition,
-): Promise<SourceValue[][]> {
-  let worksheetPath: string
-  try {
-    const element = parseSheetElements(workbookXml).find(
-      (entry) => entry.name === addition.sourceSheetName,
-    )
-    if (element?.relationshipId === undefined) return []
-    worksheetPath = await resolveWorksheetPath(source, element.relationshipId)
-  } catch {
-    return [] // source unreadable: empty records, Excel refreshes on open
-  }
-  const worksheetXml = await source.readText(worksheetPath)
-  return readSourceAreaRows(
-    source,
-    worksheetXml,
-    addition.sourceArea.startRow,
-    addition.sourceArea.endRow,
-    addition.sourceArea.startColumn,
-    addition.sourceArea.endColumn,
-  )
 }
 
 function buildCacheRecordsXml(

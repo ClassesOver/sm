@@ -1,6 +1,6 @@
 import { allowedByValueFilter, matchesLabelFilter, type PivotFilterDef } from './pivot-filters'
 import { evaluatePivotFormula, parsePivotFormula } from './pivot-formula'
-import { groupValue, isValidGrouping, type PivotFieldGrouping } from './pivot-grouping'
+import { groupValue, type PivotFieldGrouping } from './pivot-grouping'
 
 // Pure model ported from genoffice domain/pivot-layout.ts. The local gateway
 // adapts its explicit PivotAddition shape around this sheet-independent model.

@@ -7,12 +7,103 @@ import pytest
 from loguru import logger
 
 from smart_reporting.reporting.contract import MeasureSemantic
+from smart_reporting.reporting.profile.models import EffectiveReportingProfile
 from smart_reporting.reporting.tests.test_reporting_fixed_phase_workflows import (
     _standard_analysis_state,
 )
 from smart_reporting.reporting.workflow.query_pipeline import QueryRequirement
 from smart_reporting.reporting.workflow.runtime.analysis_item_workflow import AnalysisItemWorkflow
-from smart_reporting.reporting.workflow.runtime.planning import _with_drilldown_projection
+
+
+# 仅用于构造历史范围/可加性用例，生产规划已由登记指标上下文接管。
+def _with_drilldown_projection(
+    requirements: tuple[QueryRequirement, ...],
+    profile: EffectiveReportingProfile,
+    *,
+    measure_semantics: tuple[MeasureSemantic, ...] | None = None,
+) -> tuple[QueryRequirement, ...]:
+    """把可加维度及指标固定范围字段加入物化粒度。
+
+    只处理单表 requirement；可加字段必须同时在该 requirement 的每个 measure
+    的冻结 ``additiveAcross`` 中，不能因缺少展示维度登记而丢失时间轴证据；固定范围字段来自
+    冻结语义 exclusiveScope，保留原有 SQL 范围过滤，仅投影常量以供补证复核。
+    超过既有 30 列契约时保持原计划，后续能力生成器如实判定不可用。
+    """
+
+    effective_semantics = (
+        getattr(profile, "measure_semantics", ())
+        if measure_semantics is None
+        else measure_semantics
+    )
+    profile_dimensions = getattr(profile, "dimensions", ())
+    if not effective_semantics:
+        return requirements
+    semantics = {item.field_ref.casefold(): item for item in effective_semantics}
+    projected: list[QueryRequirement] = []
+    for requirement in requirements:
+        if len(requirement.tables) != 1:
+            projected.append(requirement)
+            continue
+        table = requirement.tables[0]
+        table_name = table.table.casefold()
+        semantic_items: list[MeasureSemantic] = []
+        for measure in table.measure_columns:
+            matches = [
+                item
+                for ref, item in semantics.items()
+                if ref.startswith(f"{requirement.source_id.casefold()}.")
+                and ref.endswith(f".{measure.casefold()}")
+                and (
+                    ref.rsplit(".", 1)[0].endswith(f".{table_name}")
+                    or ref.rsplit(".", 1)[0].split(".", 1)[-1] == table_name
+                )
+            ]
+            if len(matches) != 1:
+                semantic_items = []
+                break
+            semantic_items.append(matches[0])
+        if not semantic_items:
+            projected.append(requirement)
+            continue
+        common_additive = set(semantic_items[0].additive_across)
+        for semantic in semantic_items[1:]:
+            common_additive.intersection_update(semantic.additive_across)
+        additions: list[str] = list(dict.fromkeys(
+            column for semantic in semantic_items for column in semantic.exclusive_scope
+        ))
+        for dimension in profile_dimensions:
+            candidates = [
+                ref.rsplit(".", 1)[-1]
+                for ref in dimension.field_refs
+                if ref.casefold().startswith(f"{requirement.source_id.casefold()}.")
+                and (
+                    ref.rsplit(".", 1)[0].casefold().endswith(f".{table_name}")
+                    or ref.rsplit(".", 1)[0].casefold().split(".", 1)[-1]
+                    == table_name
+                )
+                and ref.rsplit(".", 1)[-1].casefold() in common_additive
+            ]
+            if len(candidates) == 1:
+                additions.append(candidates[0].casefold())
+        # 保留源期间字段供事实层逐行核对时间轴别名；投影本身不证明同轴，
+        # 也不把未确认时间可加性的指标从 last 改成 sum。
+        additions.extend(sorted(common_additive))
+        projected_dimensions = tuple(
+            dict.fromkeys((*requirement.dimension_columns, *additions))
+        )
+        grain = tuple(dict.fromkeys((*requirement.grain_columns, *additions)))
+        if len(projected_dimensions) > 30 or len(grain) > 30:
+            projected.append(requirement)
+            continue
+        projected.append(
+            requirement.model_copy(
+                update={
+                    "dimension_columns": projected_dimensions,
+                    "grain_columns": grain,
+                }
+            )
+        )
+    return tuple(projected)
 
 
 def test_frozen_scope_fields_are_projected_even_without_profile_dimensions():

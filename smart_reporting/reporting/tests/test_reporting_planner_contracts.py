@@ -77,6 +77,7 @@ from smart_reporting.reporting.phase import (
     REPORTING_TASK_DEPENDENCY,
 )
 from smart_reporting.reporting.structured_output import ReportingStructuredOutputExecutor
+from smart_reporting.reporting.tests.test_standard_scope_projection import _with_drilldown_projection
 from smart_reporting.reporting.workflow.checkpoint import (
     AnalysisEvidence,
     FileIdentity,
@@ -137,8 +138,6 @@ from smart_reporting.reporting.workflow.runtime.planning import (
     _PLANNER_DISPLAY_NAMES,
     _outline_candidate,
     _outline_validation_issues,
-    _row_preserving_requirement_ids,
-    _validate_reporting_profile_schema,
 )
 from smart_reporting.reporting.workflow.runtime.publication import (
     _analysis_quality_warnings,
@@ -226,7 +225,7 @@ def test_b7_projection_adds_only_common_profile_additive_dimensions() -> None:
 
     # 生产流程的人工确认语义冻结在 SourceSchemaSnapshot，而不是回写静态
     # EffectiveProfile；投影必须显式使用最终快照语义。
-    projected = reporting_runtime._with_drilldown_projection(
+    projected = _with_drilldown_projection(
         (
             requirement,
             requirement.model_copy(update={"requirement_id": "req-2"}),
@@ -289,50 +288,6 @@ async def test_run_planner_maps_typed_context_hard_limit_without_message_matchin
     assert raised.value.code == "report_planner_context_budget_exceeded"
     assert raised.value.details == metrics
     assert raised.value.__cause__ is rejection
-
-
-def test_row_preserving_requirements_follow_effective_profile_without_legacy_fields() -> None:
-    requirement = type(
-        "Requirement",
-        (),
-        {"requirement_id": "r1", "tables": (type("Table", (), {"table": "custom.metrics"})(),)},
-    )()
-    profile = type("EffectiveProfile", (), {})()
-    profile.reconciliations = ()
-    assert _row_preserving_requirement_ids((requirement,), profile) == ()
-
-
-def test_reporting_profile_schema_validation_uses_replaced_profile_bindings() -> None:
-    profile = type(
-        "EffectiveProfile",
-        (),
-        {
-            "metrics": (type("Metric", (), {"field_ref": "custom.analytics.fact.amount"})(),),
-            "dimensions": (),
-            "scope_filters": (),
-            "measure_semantics": (),
-        },
-    )()
-    snapshot = type(
-        "Snapshot",
-        (),
-        {
-            "tables": (
-                type(
-                    "Table",
-                    (),
-                    {
-                        "source_id": "custom",
-                        "database": "analytics",
-                        "name": "fact",
-                        "columns": (type("Column", (), {"name": "amount"})(),),
-                    },
-                )(),
-            )
-        },
-    )()
-
-    _validate_reporting_profile_schema(profile, (snapshot,))
 
 
 def test_workflow_runtime_uses_package_boundaries() -> None:
