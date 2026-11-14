@@ -150,10 +150,14 @@ def is_blocked_column(name: str, blocked_columns: frozenset[str]) -> bool:
     受限列的重复副本会以改名后的列名出现在可预览列与派生导出中，绕过列级限制（计划 5.2）。
     """
 
-    if name in blocked_columns:
-        return True
-    match = _DUPLICATED_COLUMN_PATTERN.fullmatch(name)
-    return match is not None and match.group("base") in blocked_columns
+    # 原表头本身可含 Polars 后缀，重复后会生成多层别名；每层都继承受限策略。
+    while True:
+        if name in blocked_columns:
+            return True
+        match = _DUPLICATED_COLUMN_PATTERN.fullmatch(name)
+        if match is None:
+            return False
+        name = match.group("base")
 
 
 def safe_download_filename(file: TraceDatasetFile) -> str:
