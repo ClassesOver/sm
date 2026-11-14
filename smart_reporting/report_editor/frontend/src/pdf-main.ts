@@ -1,3 +1,4 @@
+import { bindPdfPageNavigation } from './pdf-page-navigation'
 import {bindPdfStampDialog} from './pdf-stamp-dialog'
 import {bindPdfStaticFill,staticFillsForDraft} from './pdf-static-fill'
 import {pendingStaticFillsForThumbnail,pdfStaticFillThumbnailPosition} from './pdf-static-fill-thumbnail'
@@ -1583,6 +1584,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
+  // Keep desktop reading shortcuts local to the explicitly focused canvas.
+  viewport.setAttribute('aria-keyshortcuts', 'PageUp PageDown Home End')
+  bindPdfPageNavigation(viewport, {
+    signal: abort.signal,
+    available: () => !disposed && !!document && readingReady && !locked && mode === 'select'
+      && !previewing && !printing && !previewDocument && !draft.saving && !draft.closed
+      && pendingMutations === 0 && !mutationBlocked?.() && !staticText?.incompleteReason() && !hasUnstagedText(),
+    pages: state, activePage: () => activeId, navigate: jumpToPageForIdentity,
+  })
   function jumpToPage(input: HTMLInputElement) {
     if (!document) return
     const pages = state(), requested = Number(input.value)
