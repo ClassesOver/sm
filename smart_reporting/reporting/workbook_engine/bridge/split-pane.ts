@@ -34,7 +34,7 @@ export async function removeSheetSplitPane(input: Uint8Array, op: unknown): Prom
   const view = xml.match(/<sheetView\b(?:[^>]*[^/>])?>[\s\S]*?<\/sheetView>/)
   if (!view || view.index === undefined || !/<pane\b/.test(view[0])) throw new Error('workbook_split_pane_missing')
   // 只移除第一个 sheetView 的 pane 及其按窗格限定的 selection；与 page-setup.ts setFrozenPane 的清理规则一致。
-  const cleaned = view[0].replace(/<pane\b[^>]*\/?>(?:[\s\S]*?<\/pane>)?/, '').replace(/<selection\b[^>]*\bpane="[^"]*"[^>]*\/?>/g, '')
+  const cleaned = view[0].replace(/<pane\b[^>]*\/?>(?:[\s\S]*?<\/pane>)?/, '').replace(/<selection\b[^>]*\bpane="[^"]*"[^>]*?(?:\/>|>[\s\S]*?<\/selection\s*>)/g, '')
   const next = xml.slice(0, view.index) + cleaned + xml.slice(view.index + view[0].length)
   const bytes = (await assemblePackage(input, {
     replaced: new Map([[path, next]]), added: new Map(), addedBinary: new Map(),

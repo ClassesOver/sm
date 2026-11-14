@@ -8,7 +8,7 @@
 import type { Editor } from '@tiptap/core'
 import { closeHistory } from '@tiptap/pm/history'
 import { NodeSelection, type EditorState } from '@tiptap/pm/state'
-import { TableMap, isInTable, selectedRect } from '@tiptap/pm/tables'
+import { isInTable, selectedRect } from '@tiptap/pm/tables'
 import { DOCX_CELL_BORDER_SIDES, docxCellBorderSideLine } from '../../../reporting/doc_engine/bridge/docx-cell-borders-spec'
 import { DOCX_TABLE_LOOK_KEYS, DOCX_TABLE_PRESETS, docxTablePresetRowFill, safeDocxTableStyleRequest, type DocxTableLook, type DocxTablePresetName, type DocxTableStyleRequest, type DocxTableStyleState } from '../../../reporting/doc_engine/bridge/docx-table-style-spec'
 import type { DocxPmNode } from './docx-operations'
@@ -144,11 +144,11 @@ export function applyDocxTableStyle(editor: Editor, baseline: DocxPmNode, anchor
   editor.view.focus()
   // 只改表格与单元格属性（setNodeMarkup），保留光标与选区
   let tr = closeHistory(editor.state.tr)
-  const map = TableMap.get(current.table)
-  for (let r = 0; r < (next.content?.length ?? 0); r++) for (let c = 0; c < (next.content![r]!.content?.length ?? 0); c++) {
-    const attrs = next.content![r]!.content![c]!.attrs, pos = current.pos + 1 + map.map[r * map.width + c]!
+  // JSON children are physical cells; a grid map repeats merged cells across slots.
+  current.table.forEach((row, rowOffset, r) => row.forEach((_cell, cellOffset, c) => {
+    const attrs = next.content![r]!.content![c]!.attrs, pos = current.pos + 2 + rowOffset + cellOffset
     if (!same(tr.doc.nodeAt(pos)!.attrs, attrs)) tr = tr.setNodeMarkup(pos, undefined, attrs)
-  }
+  }))
   tr = tr.setNodeMarkup(current.pos, undefined, next.attrs)
   if (!same(tr.doc.nodeAt(current.pos)!.toJSON(), next)) fail(MIXED)
   editor.view.dispatch(tr)
