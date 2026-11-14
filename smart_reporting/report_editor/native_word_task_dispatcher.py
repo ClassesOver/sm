@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from ..reporting.models import ReportingError
-from ..task_execution.models import TaskExecutionScope, TaskState
+from ..task_execution.models import AttemptOutcome, TaskExecutionScope, TaskState
 from ..task_execution.native_word_contracts import (
     NativeWordTaskInput,
     canonical_bytes,
     canonical_digest,
     word_finish_reference,
 )
+from ..task_execution.repository import TaskExecutionRepositoryError
 from ..task_execution.session import TaskSession
 from .native_word_ai import NativeWordAIProposal
 from .native_word_task_builder import NativeWordTaskInputBuilder, _session_identity
@@ -60,7 +61,12 @@ class WordTaskDispatcher:
             raise _invalid()
         value = await self.builder.build(scope=scope, server_session_reference=session_reference,
             instruction=instruction, expected_sha256=expected_sha256, operations=operations, selection=selection)
-        await self.repository.create_native_word_task(scope, instruction, value)
+        try:
+            await self.repository.create_native_word_task(scope, instruction, value)
+        except TaskExecutionRepositoryError as error:
+            if error.code in {'native_word_input_conflict', 'task_initial_instruction_conflict'}:
+                raise _invalid('native_ai_snapshot_changed') from None
+            raise
         return WordTaskReference(scope, canonical_digest(value.model_dump(mode='json', by_alias=True)), value)
 
     @staticmethod
@@ -106,91 +112,117 @@ class WordTaskDispatcher:
 
     async def execute(self, ref):
         self.require_available()
+        task = await self.repository.get_task_snapshot(ref.scope.external_run_id)
+        if task is None or task.scope != ref.scope:
+            raise _invalid()
+        if task.state is TaskState.COMPLETED:
+            return await self._completed_proposal(ref)
+        async with TaskSession(self.repository, ref.scope) as task_session:
+            return await self._execute_claim(ref, task_session)
+
+    async def _completed_proposal(self, ref):
+        receipt = await self.repository.get_completed_native_word_candidate(ref.scope,
+            expected_input_sha256=ref.input_sha256,
+            native_scope=ref.word_input.binding.scope.model_dump(mode='json', by_alias=True))
+        return NativeWordAIProposal.model_validate(receipt['proposal'])
+
+    async def _close_failed_claim(self, ref, task_session, error):
+        # Executing code may only close its own still-live claim. Unlike an
+        # authenticated editor's explicit cancel, local timeout/cancellation must
+        # never cancel a newer owner. DB failures mean unknown, not guessed failure.
+        try:
+            current = await self.repository.get_task_snapshot(ref.scope.external_run_id)
+            if (current is None or current.scope != ref.scope or current.state is not TaskState.ACTIVE
+                    or current.lease_owner != task_session.lease.owner
+                    or current.lease_epoch != task_session.lease.epoch):
+                return
+            receipt = await self.repository.recover_native_word_candidate(
+                **self._fence(ref, task_session, current))
+            if receipt is not None:
+                return  # committed candidate/uncertain acknowledgement: preserve recovery
+            local_cancel = isinstance(error, asyncio.CancelledError)
+            owner = asyncio.current_task()
+            local_cancel = local_cancel or (owner is not None and owner.cancelling())
+            await self.repository.close_and_decide(ref.scope.external_run_id, task_session.lease,
+                current.state_version, outcome=AttemptOutcome.CANCELLED if local_cancel else AttemptOutcome.ERROR,
+                agno_status='cancelled' if local_cancel else 'error',
+                error='word_task_cancelled' if local_cancel else 'word_task_transport_failed', create_next=False)
+        except Exception:
+            # Failed/ambiguous fence or database operation must not mask the actual
+            # failure, retry the model, or acquire authority via scope-only cancel.
+            return
+
+    async def _execute_claim(self, ref, task_session):
         task_id = ref.scope.external_run_id
-        bridge = None
         session_reference = ref.word_input.binding.server_session_reference
+        bridge = None
         try:
             task = await self.repository.get_task_snapshot(task_id)
-            if task is None or task.scope != ref.scope:
+            if task.state is TaskState.NEW:
+                task, _ = await self.repository.open_initial(task_id, task_session.lease, task.state_version)
+            elif task.state in {TaskState.ACTIVE, TaskState.SUSPENDED}:
+                task, _ = await self.repository.resume_current(task_id, task_session.lease, task.state_version)
+            elif task.state is not TaskState.FINISHING:
                 raise _invalid()
-            if task.state is TaskState.COMPLETED:
-                receipt = await self.repository.get_completed_native_word_candidate(ref.scope,
-                    expected_input_sha256=ref.input_sha256,
-                    native_scope=ref.word_input.binding.scope.model_dump(mode='json', by_alias=True))
-                return NativeWordAIProposal.model_validate(receipt['proposal'])
-            async with TaskSession(self.repository, ref.scope) as task_session:
-                task = await self.repository.get_task_snapshot(task_id)
-                if task.state is TaskState.NEW:
-                    task, _ = await self.repository.open_initial(task_id, task_session.lease, task.state_version)
-                elif task.state in {TaskState.ACTIVE, TaskState.SUSPENDED}:
-                    task, _ = await self.repository.resume_current(task_id, task_session.lease, task.state_version)
-                elif task.state is not TaskState.FINISHING:
-                    raise _invalid()
-                fence = self._fence(ref, task_session, task)
-                receipt = await self.repository.recover_native_word_candidate(**fence)
-                if receipt is None:
-                    await self._current_editor(ref, session_reference)
-                    session = await self.grants.lookup_registered_session(session_reference)
-                    principal = {'taskId': task_id,
-                        'scope': ref.word_input.binding.scope.model_dump(mode='json', by_alias=True),
-                        'inputSha256': ref.input_sha256, 'owner': task_session.lease.owner,
-                        'epoch': task_session.lease.epoch, 'runId': task.current_internal_run_id,
-                        'attempt': task.current_attempt_no, 'stateVersion': task.state_version}
-                    expires_at = min(datetime.now(UTC).timestamp() + 60,
-                                     session.expires_at.timestamp(), task.deadline_at.timestamp())
-                    ticket = self.codec.issue(principal, expires_at=expires_at)
-                    async def authorize():
-                        task_session.assert_alive()
-                        current = await self.repository.get_task_snapshot(task_id)
-                        if current is None or current.state_version != principal['stateVersion']:
-                            raise _invalid()
-                        await self.repository.read_native_word_input(**self._fence(ref, task_session, current))
-                        await self._current_editor(ref, session_reference)
-                        # Re-read the durable fence after all slower editor/source IO;
-                        # TaskSession.assert_alive alone is only a local lease snapshot.
-                        await self.repository.read_native_word_input(**self._fence(ref, task_session, current))
-                        task_session.assert_alive()
-                        return principal
-                    selected = ref.word_input.model_dump(mode='json', by_alias=True)['selectedParagraphs']
-                    bridge = WordTaskMcpBridge(selected=selected, principal=principal, authorize=authorize,
-                        codec=self.codec, enabled=True)
-                    # Transport owns exactly one existing harness/Agno run. It receives no
-                    # parent env, DB credentials, source path or signing secret.
-                    instruction = await self.repository.attempt_instruction(task_id, task.current_attempt_no)
-                    if hashlib.sha256(instruction.encode()).hexdigest() != ref.word_input.instruction_sha256:
-                        raise _invalid()
-                    final = await self.transport.run(server=bridge.server, ticket=ticket,
-                        task_id=task_id, instruction=instruction)
-                    parsed = await bridge.reconcile(final, ticket=ticket)
+            fence = self._fence(ref, task_session, task)
+            receipt = await self.repository.recover_native_word_candidate(**fence)
+            if receipt is None:
+                await self._current_editor(ref, session_reference)
+                session = await self.grants.lookup_registered_session(session_reference)
+                principal = {'taskId': task_id,
+                    'scope': ref.word_input.binding.scope.model_dump(mode='json', by_alias=True),
+                    'inputSha256': ref.input_sha256, 'owner': task_session.lease.owner,
+                    'epoch': task_session.lease.epoch, 'runId': task.current_internal_run_id,
+                    'attempt': task.current_attempt_no, 'stateVersion': task.state_version}
+                expires_at = min(datetime.now(UTC).timestamp() + 60,
+                                 session.expires_at.timestamp(), task.deadline_at.timestamp())
+                ticket = self.codec.issue(principal, expires_at=expires_at)
+                async def authorize():
                     task_session.assert_alive()
+                    current = await self.repository.get_task_snapshot(task_id)
+                    if current is None or current.state_version != principal['stateVersion']:
+                        raise _invalid()
+                    await self.repository.read_native_word_input(**self._fence(ref, task_session, current))
                     await self._current_editor(ref, session_reference)
-                    receipt = await self.repository.commit_native_word_candidate(
-                        proposal=parsed.model_dump(mode='json'),
-                        registered_proposal=bridge.registered_proposal,
-                        **self._fence(ref, task_session, task))
-                task = await self.repository.get_task_snapshot(task_id)
-                if task.state is not TaskState.FINISHING:
-                    task = await self.repository.request_finish(task_id, task_session.lease,
-                        task.state_version, word_finish_reference(receipt),
-                        result_text='Word candidate receipt registered; not accepted or saved.', retained_execution_ids=[])
-                await self.repository.finalize_finish(task_id, task_session.lease, task.state_version,
-                    agno_status='receipt-recovered' if bridge is None else 'completed')
-            receipt = await self.repository.get_completed_native_word_candidate(ref.scope,
-                expected_input_sha256=ref.input_sha256,
-                native_scope=ref.word_input.binding.scope.model_dump(mode='json', by_alias=True))
-            return NativeWordAIProposal.model_validate(receipt['proposal'])
-        except asyncio.CancelledError:
+                    # Re-read the durable fence after all slower editor/source IO;
+                    # TaskSession.assert_alive alone is only a local lease snapshot.
+                    await self.repository.read_native_word_input(**self._fence(ref, task_session, current))
+                    task_session.assert_alive()
+                    return principal
+                selected = ref.word_input.model_dump(mode='json', by_alias=True)['selectedParagraphs']
+                bridge = WordTaskMcpBridge(selected=selected, principal=principal, authorize=authorize,
+                    codec=self.codec, enabled=True)
+                # Transport owns exactly one existing harness/Agno run. It receives no
+                # parent env, DB credentials, source path or signing secret.
+                instruction = await self.repository.attempt_instruction(task_id, task.current_attempt_no)
+                if hashlib.sha256(instruction.encode()).hexdigest() != ref.word_input.instruction_sha256:
+                    raise _invalid()
+                final = await self.transport.run(server=bridge.server, ticket=ticket,
+                    task_id=task_id, instruction=instruction)
+                parsed = await bridge.reconcile(final, ticket=ticket)
+                task_session.assert_alive()
+                await self._current_editor(ref, session_reference)
+                receipt = await self.repository.commit_native_word_candidate(
+                    proposal=parsed.model_dump(mode='json'),
+                    registered_proposal=bridge.registered_proposal,
+                    **self._fence(ref, task_session, task))
+            task = await self.repository.get_task_snapshot(task_id)
+            if task.state is not TaskState.FINISHING:
+                task = await self.repository.request_finish(task_id, task_session.lease,
+                    task.state_version, word_finish_reference(receipt),
+                    result_text='Word candidate receipt registered; not accepted or saved.', retained_execution_ids=[])
+            await self.repository.finalize_finish(task_id, task_session.lease, task.state_version,
+                agno_status='receipt-recovered' if bridge is None else 'completed')
+
+            return await self._completed_proposal(ref)
+        except BaseException as error:
             if bridge is not None:
                 bridge.cancel()
-            await self.repository.cancel_and_reject(ref.scope)
-            raise
-        except Exception:
-            if bridge is not None:
-                bridge.cancel()
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
-                await self.repository.cancel_and_reject(ref.scope)
-                raise asyncio.CancelledError() from None
+            await self._close_failed_claim(ref, task_session, error)
+            if not isinstance(error, asyncio.CancelledError):
+                owner = asyncio.current_task()
+                if owner is not None and owner.cancelling():
+                    raise asyncio.CancelledError() from None
             raise
 
     async def cancel(self, ref):

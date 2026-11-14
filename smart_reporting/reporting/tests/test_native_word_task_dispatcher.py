@@ -159,3 +159,60 @@ async def test_accept_cancel_during_completed_lookup_is_domain_rejection_not_typ
         await ai.accept_edit(data.session, job.edit_id, expected_sha256='a' * 64, operations=[],
             snapshot_sha256=job.snapshot_sha256, server_session_reference='c' * 64)
     assert getattr(error.value, 'code', None) == 'native_ai_not_ready'
+
+
+@pytest.mark.anyio
+async def test_durable_same_request_changed_input_maps_to_snapshot_conflict():
+    from smart_reporting.reporting.tests.test_native_word_task_builder import inputs
+    from smart_reporting.task_execution.models import TaskExecutionScope
+    from smart_reporting.task_execution.repository import TaskExecutionRepositoryError
+
+    module = adapter()
+    data = inputs()
+    class Repository:
+        async def create_native_word_task(self, *args):
+            raise TaskExecutionRepositoryError('native_word_input_conflict', 'private stored input conflict')
+    dispatcher = module.WordTaskDispatcher(Repository(), data.grants, data.editor,
+        scope_factory=lambda context, task_id: TaskExecutionScope(task_id, 'user', 'thread', 'workspace', 'word'),
+        secret='s' * 32, enabled=True, transport=object())
+    with pytest.raises(Exception) as error:
+        await dispatcher.prepare(context=data.context, session_reference='c' * 64, instruction='Edit',
+            expected_sha256='a' * 64, operations=[], selection=[{'blockId': 'p1'}], request_id='same')
+    assert getattr(error.value, 'code', None) == 'native_ai_snapshot_changed'
+
+
+@pytest.mark.anyio
+async def test_capacity_is_rechecked_after_prepare_and_only_new_task_is_cancelled():
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from smart_reporting.report_editor.native_ai import NativeAIService, _NativeAIJob
+    from smart_reporting.reporting.tests.test_native_word_task_builder import inputs
+
+    data = inputs()
+    cancelled = []
+    class Dispatcher:
+        enabled = True
+        def require_available(self):
+            pass
+        async def prepare(self, **kwargs):
+            for index in range(32):
+                ai._jobs[str(index)] = _NativeAIJob(str(index), data.context.digest(), 'd' * 64,
+                    'user', datetime.now(UTC))
+            return SimpleNamespace(scope=SimpleNamespace(external_run_id='only-this-new-task'))
+        async def execute(self, ref):
+            import asyncio
+            await asyncio.Event().wait()
+        async def cancel(self, ref):
+            cancelled.append(ref.scope.external_run_id)
+    ai = NativeAIService(data.editor, planner=object(), enabled=True, word_task_dispatcher=Dispatcher())
+    try:
+        with pytest.raises(Exception) as error:
+            await ai.start_edit(data.session, instruction='Edit', expected_sha256='a' * 64,
+                operations=[], selection=[{'blockId': 'p1'}], client_request_id='capacity',
+                server_session_reference='c' * 64)
+        assert getattr(error.value, 'code', None) == 'native_ai_busy'
+        assert cancelled == ['only-this-new-task']
+        assert 'only-this-new-task' not in ai._jobs
+    finally:
+        await ai.aclose()

@@ -250,3 +250,170 @@ async def test_old_executor_cancel_after_pg_takeover_must_not_cancel_new_claim(c
     assert after.lease_owner == current.lease_owner
     assert after.lease_epoch == current.lease_epoch
     assert after.state_version == current.state_version
+
+
+async def restart_projection(chain):
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+    from smart_reporting.report_editor.service import token_hash
+
+    # New service/projection maps; persisted task and receipt remain sole authority.
+    ai = NativeAIService(chain.editor, planner=object(), enabled=True,
+        word_task_dispatcher=chain.ai.word_task_dispatcher)
+    raw_session = chain.client.cookies.get(NATIVE_SESSION_COOKIE)
+    session = await chain.editor.grants.lookup_session(raw_session)
+    payload = chain.payload
+    try:
+        result = await ai.start_edit(session, instruction=payload['instruction'],
+            expected_sha256=payload['expectedSha256'], operations=payload['operations'],
+            selection=payload['selection'], client_request_id=payload['clientRequestId'],
+            server_session_reference=token_hash(raw_session))
+        return await ai.wait_edit_status(session, result['editId'], wait_ms=20000)
+    finally:
+        await ai.aclose()
+
+
+async def test_completed_receipt_restores_new_service_without_provider_rerun(chain):
+    first = await started(chain)
+    done = await settled(chain, first['editId'])
+    assert done['status'] == 'succeeded', done
+    restored = await restart_projection(chain)
+    assert restored['editId'] == first['editId']
+    assert restored['status'] == 'succeeded' and restored['accepted'] is False
+    assert chain.transport.calls == 1
+
+
+async def test_failed_model_attempt_closes_and_cannot_rerun_same_request_after_restart(chain):
+    from smart_reporting.task_execution.models import AttemptOutcome, AttemptState
+
+    chain.transport.mode = 'mismatch'
+    first = await started(chain)
+    done = await settled(chain, first['editId'])
+    assert done['status'] == 'failed', done
+    task = await chain.repository.get_task_snapshot(first['editId'])
+    assert task.state is TaskState.SUSPENDED
+    attempt = await chain.repository.get_attempt(task.current_internal_run_id)
+    assert attempt.state is AttemptState.CLOSED and attempt.outcome is AttemptOutcome.ERROR
+    chain.transport.mode = 'valid'
+    restored = await restart_projection(chain)
+    assert restored['status'] == 'failed'
+    assert chain.transport.calls == 1
+
+
+@pytest.mark.parametrize('fault', ['commit_ack', 'request_finish'])
+async def test_persisted_receipt_after_uncertain_ack_or_finish_failure_recovers_without_provider(chain, monkeypatch, fault):
+    repository = chain.repository
+    method = 'commit_native_word_candidate' if fault == 'commit_ack' else 'request_finish'
+    original = getattr(repository, method)
+    injected = False
+    async def fail_once(*args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            if fault == 'commit_ack':
+                await original(*args, **kwargs)
+            raise RuntimeError('synthetic post-receipt failure')
+        return await original(*args, **kwargs)
+    monkeypatch.setattr(repository, method, fail_once)
+    first = await started(chain)
+    done = await settled(chain, first['editId'])
+    assert done['status'] == 'failed' and injected
+    restored = await restart_projection(chain)
+    assert restored['status'] == 'succeeded', restored
+    assert chain.transport.calls == 1
+    task = await repository.get_task_snapshot(first['editId'])
+    attempt = await repository.get_attempt(task.current_internal_run_id)
+    assert task.state is TaskState.COMPLETED
+    assert attempt.agno_status == 'receipt-recovered'
+
+
+async def test_cancel_request_during_prepare_cancels_only_its_late_task(chain, monkeypatch):
+    dispatcher = chain.ai.word_task_dispatcher
+    original = dispatcher.prepare
+    waiting, release = asyncio.Event(), asyncio.Event()
+    async def held_prepare(**kwargs):
+        result = await original(**kwargs)
+        waiting.set()
+        await release.wait()
+        return result
+    monkeypatch.setattr(dispatcher, 'prepare', held_prepare)
+    start = asyncio.create_task(started(chain))
+    try:
+        await asyncio.wait_for(waiting.wait(), 20)
+        response = await chain.client.post(chain.base + '/ai/cancel-request', headers=chain.headers,
+            json={'clientRequestId': chain.payload['clientRequestId']})
+        assert response.status_code == 200
+        release.set()
+        result = await start
+        assert result['status'] == 'cancelled' and chain.transport.calls == 0
+    finally:
+        release.set()
+        await asyncio.gather(start, return_exceptions=True)
+
+
+async def test_parallel_http_exact_retries_share_task_and_never_cancel_it(chain, monkeypatch):
+    dispatcher = chain.ai.word_task_dispatcher
+    original = dispatcher.prepare
+    ready, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+    cancelled = []
+    original_cancel = dispatcher.cancel
+    async def held_prepare(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            ready.set()
+        await release.wait()
+        return await original(**kwargs)
+    async def record_cancel(ref):
+        cancelled.append(ref.scope.external_run_id)
+        return await original_cancel(ref)
+    monkeypatch.setattr(dispatcher, 'prepare', held_prepare)
+    monkeypatch.setattr(dispatcher, 'cancel', record_cancel)
+    first, second = asyncio.create_task(started(chain)), asyncio.create_task(started(chain))
+    try:
+        await asyncio.wait_for(ready.wait(), 20)
+        release.set()
+        a, b = await asyncio.gather(first, second)
+        assert a['editId'] == b['editId']
+        done = await settled(chain, a['editId'])
+        assert done['status'] == 'succeeded', done
+        assert cancelled == [] and chain.transport.calls == 1
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+async def test_parallel_changed_request_returns409_without_cancelling_original_task(chain, monkeypatch):
+    dispatcher = chain.ai.word_task_dispatcher
+    original = dispatcher.prepare
+    prepared, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+    cancelled = []
+    original_cancel = dispatcher.cancel
+    async def held_prepare(**kwargs):
+        nonlocal calls
+        calls += 1
+        result = await original(**kwargs)
+        if calls == 1:
+            prepared.set()
+            await release.wait()
+        return result
+    async def record_cancel(ref):
+        cancelled.append(ref.scope.external_run_id)
+        return await original_cancel(ref)
+    monkeypatch.setattr(dispatcher, 'prepare', held_prepare)
+    monkeypatch.setattr(dispatcher, 'cancel', record_cancel)
+    first = asyncio.create_task(started(chain))
+    try:
+        await asyncio.wait_for(prepared.wait(), 20)
+        changed = await chain.client.post(chain.base + '/ai/start', headers=chain.headers,
+            json={**chain.payload, 'instruction': 'Changed content during prepare'})
+        assert changed.status_code == 409, changed.text
+        release.set()
+        result = await first
+        done = await settled(chain, result['editId'])
+        assert done['status'] == 'succeeded', done
+        assert cancelled == [] and chain.transport.calls == 1
+    finally:
+        release.set()
+        await asyncio.gather(first, return_exceptions=True)

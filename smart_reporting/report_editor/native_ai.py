@@ -306,6 +306,9 @@ class NativeAIService:
             if self._closed:
                 await self.word_task_dispatcher.cancel(word_reference)
                 raise _invalid('native_ai_closed', 'AI 候选服务已关闭。')
+            if sum(item.status == 'running' for item in self._jobs.values()) >= 32 or len(self._jobs) >= 128:
+                await self.word_task_dispatcher.cancel(word_reference)
+                raise _invalid('native_ai_busy', 'AI 候选任务繁忙，请稍后重试。')
         job = _NativeAIJob(
             word_reference.scope.external_run_id if word_reference else uuid4().hex,
             context.digest(),
