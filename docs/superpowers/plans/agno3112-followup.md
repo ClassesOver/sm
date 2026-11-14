@@ -13,11 +13,11 @@
 
 ## 2. 基线、已有成果与证据边界
 
-原始文档编辑工作区 HEAD 为 `1138887d`（#223）；PR #228 实际基于 `ca091c5720e0a6ba4b7137abe7f6d795bc7f1dfb`（#227），只提交文档。已读取该基线以及 #226 精确提交 `a9b55c65`；后续实现应先核对最新主分支、适用 AGENTS.md 和未提交修改，不能直接在旧代码树接入新接口。
+本次编辑工作区 HEAD 为 `1138887d`（#223），只提交文档。已读取远端 `ca091c57`（#227）以及 #226 精确提交 `a9b55c65`；后续实现应先核对最新主分支、适用 AGENTS.md 和未提交修改，不能直接在旧代码树接入新接口。
 
 - #226：Agno 3.1.12、Codex SDK/CLI 0.163.0 锁定，元数据客户端直接注入，协程级状态/租约/deadline 守卫与取消清理已交付。
 - 本轮独立导出 #226 源码，两个新增测试文件 31 passed、1 个第三方弃用 warning；复用本机依赖。不是全新依赖验证，不替代 PR 作者的117项证据。
-- 当前应用 `app.py` 的 `MCPConfig` 显式发布 `report_workflow.as_tool(name="run_reporting_workflow")`，并启用原生 `continue_run`/`cancel_run`；`default_tools=False`。`reporting_mcp/tools.py` 的 start/get/review/cancel 是未装配到生产 MCP 的旧适配层。两条代码路径需分别盘点，新能力入口必须替换实际应用装配，不能仅修改旧适配层。
+- 最新 MCP `tools.py` 仍以 start/get/review/cancel 驱动 `ReportWorkflowController`；需要新能力入口。
 - `AgentEventLog` 仍是128条进程内事件记录，不能当耐久文档日志；已有编辑器 SHA/版本冲突保护可复用，尚非协同合并。
 - 已有四格式原生编辑器、读写桥及修订保存能力；#227 不等于多 harness 同步或全格式完整验收。
 - DSH 官方提供 Session 控制/历史/follow 和实时流；实际接入版本、原生 A2A、真实取消/恢复仍需探针。
@@ -101,6 +101,8 @@ flowchart TD
 
 以下路径为复用候选；新增模块/测试名明确标“拟新增”，实施前核对最新树，避免创建重复服务。
 
+2026-11-14 推进优先级更新：先完善内部 harness；M0 拆分为内部源码/权限/工具合同基线和外部适配探针。完成直接相关的内部基线与回归后，可以独立修复现有内部助手并推进 M1 内部能力，不以 DSH、原外部插件、第二 harness 或其凭据可用为前置条件。下表中的 A 依赖对内部交付仅指内部基线；外部委托/direct 及多 harness 验收仍需各自真实探针。不得用内部定点修复宣称 M1、同步或整体产品完成。
+
 ### M0：基线与真实协议探针（对应N0）
 
 - [ ] 核对最新主分支、#226/#227实际归属、当前编辑器模型与既有修改；保存明确源码SHA。
@@ -113,7 +115,7 @@ flowchart TD
 
 ### M1：共享报告能力与助手执行（对应N1）
 
-修改面：app.py 的 MCPConfig/应用装配、reporting/agent.py 与 workflow/controller.py 的 facade 消费者、reporting_mcp/{contracts,tools,adapter,identity}.py、report_editor/{service,native_publication,workbook_api,slides_api}.py、reporting/trace/*_service.py、task_execution及应用装配。
+修改面：reporting_mcp/{contracts,tools,adapter,identity}.py、report_editor/{service,native_publication,workbook_api,slides_api}.py、reporting/trace/*_service.py、task_execution及应用装配。
 
 - [ ] 将受控读取/计算、文档对象读写、静态图、导出从workflow上下文解耦；优先抽取服务层，避免复制业务算法。
 - [ ] 基于Agno已有agent/tool/session装配内置助手；自主选择工具，支持用户补充、工具失败后的有限修复。
@@ -191,7 +193,7 @@ flowchart TD
 | 批次 | 交付 | 前置 |
 |---|---|---|
 | PR-A | M0探针与能力矩阵、服务解耦清单 | 最新基线 |
-| PR-B | M1共享能力、内置助手、委托/direct合同 | A |
+| PR-B | M1内部共享能力与内置助手；外部委托/direct可后续独立交付 | 内部基线与直接受影响合同；外部部分另依赖真实探针 |
 | PR-C | M2文档操作、耐久事件和恢复 | A，接口与B对齐 |
 | PR-D | M3 Word/正文+DSH委托真实闭环 | B+C |
 | PR-E | M4 XLSX+第二harness、并发协调 | D |
@@ -199,7 +201,7 @@ flowchart TD
 | PR-G | M6生命周期、性能、五格式导出 | D/E/F |
 | PR-H | M7最终删除、迁移及发布准备 | G及消费者证据 |
 
-每个批次交付实现、直接受影响测试、失败记录和边界说明。M0结束才能估算工期；现阶段不承诺缺乏探针依据的日期。阶段名称仅供研发拆分，不进入用户报告执行流程。
+每个批次交付实现、直接受影响测试、失败记录和边界说明。现有内部链路的独立缺陷修复可从最新 code 开 draft PR，不必等待外部探针；整体多 harness 工期仍待探针结果。现阶段不承诺缺乏探针依据的日期。阶段名称仅供研发拆分，不进入用户报告执行流程。
 
 ## 8. 必须保持的项目契约
 
@@ -215,4 +217,4 @@ flowchart TD
 
 完整完成需同时具备：内置助手自主执行；至少两个真实外部harness接入证据；委托与直接模式支持范围明确；用户/助手/harness文档双向同步；冲突、取消、断线及进程恢复正确；五格式保存/导出/独立回读；固定工作流退役；性能和权限边界可复核。
 
-下一步从M0开始：以最新主分支冻结基线，定位DSH插件与第二harness，跑最小真实探针，再实施共享能力和耐久文档操作。当前所有M0–M7 checkbox保留未完成，文档提交不代表产品能力交付。
+下一步优先推进内部 harness：冻结最新主分支与内部合同基线，修复已有助手能力缺口并补回归，再实施内部共享能力和耐久文档操作。DSH插件、第二harness和真实外部探针作为后续适配任务，不能阻塞内部独立交付。当前所有M0–M7 checkbox保留未完成，文档提交不代表产品能力交付。
