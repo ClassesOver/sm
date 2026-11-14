@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel } from './office-assistant-panel'
 /** 只读 PDF Agno 助手；写入仍走独立候选、预览与显式采纳链。 */
 import type { createNativeApi, NativePDFReadAction, NativePDFReadTask } from './native-api'
@@ -28,12 +29,12 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
   panel.append(title,help,input,start,cancel,close,status,output,evidence); root.append(panel)
   const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,onClose:()=>{if(busy)stop()}})
   let action: NativePDFReadAction = 'ask', generation=0, disposed=false, busy=false
-  let controller: AbortController | undefined, activeRequest: string | undefined
+  const tasks = new OfficeAssistantController({start:options.api.pdfAIStart,status:options.api.pdfAIStatus,cancelRequest:options.api.pdfAICancel,id:(task: NativePDFReadTask)=>task.taskId,running:(task: NativePDFReadTask)=>task.status==='running'})
   function update() { start.disabled=busy || action==='ask' && !input.value.trim(); cancel.disabled=!busy }
   function stop(message='任务已取消') {
-    const turn=++generation; controller?.abort(); busy=false
-    const requestId=activeRequest; activeRequest=undefined; status.textContent=message; update()
-    if (requestId) void options.api.pdfAICancel(requestId).catch(error=>{if(turn===generation && !disposed && !activeRequest) status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
+    const turn=++generation; progress.reset(); busy=false
+    status.textContent=message; update()
+    void tasks.cancel().catch(error=>{if(turn===generation && !disposed) status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
   }
   function display(result: NonNullable<NativePDFReadTask['result']>) {
     output.textContent=result.answer; evidence.replaceChildren()
@@ -62,18 +63,16 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
     if(disposed || busy || action==='ask' && !input.value.trim()) return
     const turn=++generation, operations=structuredClone(options.draft.operations), selection=structuredClone(options.selection())
     const snapshot=JSON.stringify({operations,selection})
-    const requestId=crypto.randomUUID();activeRequest=requestId;controller=new AbortController();busy=true
-    const signal=controller.signal;status.textContent='正在读取已核验 PDF';output.textContent='';evidence.replaceChildren();update()
+    const requestId=crypto.randomUUID();busy=true
+    status.textContent='正在读取已核验 PDF';output.textContent='';evidence.replaceChildren();update()
     try {
-      let task=await options.api.pdfAIStart({clientRequestId:requestId,action,instruction:input.value.trim(),expectedSha256:options.draft.identity.sourceSha256,operations,selection},signal)
-      progress.start(options.api.pdfAIEvents, task.taskId, signal, () => turn===generation && !disposed)
-      while(turn===generation && !disposed && task.status==='running') task=await options.api.pdfAIStatus(task.taskId,signal)
-      if(turn!==generation || disposed) return
+      const task=await tasks.run({clientRequestId:requestId,action,instruction:input.value.trim(),expectedSha256:options.draft.identity.sourceSha256,operations,selection},requestId,(started,signal)=>progress.start(options.api.pdfAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
+      if(!task || turn!==generation || disposed) return
       if(snapshot!==JSON.stringify({operations:options.draft.operations,selection:options.selection()})) { status.textContent='草稿或选区已变化，请重新阅读。';return }
       if(task.status==='completed' && task.result) { display(task.result);status.textContent='阅读完成，文档与草稿未修改。' }
       else status.textContent=task.error?.message ?? (task.status==='cancelled' ? '任务已取消' : 'PDF AI 未返回有效回答')
     } catch(error) { if(turn===generation && !disposed) status.textContent=error instanceof Error ? error.message : 'PDF AI 阅读失败' }
-    finally { if(turn===generation) { busy=false;activeRequest=undefined;update() } }
+    finally { if(turn===generation) { busy=false;tasks.release();progress.stop();update() } }
   }
   input.oninput=update;start.onclick=()=>{void run()};cancel.onclick=()=>stop()
   update()

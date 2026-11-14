@@ -7,6 +7,7 @@ import {projectDocxCellWrap,type DocxCellWrapAnchor} from './docx-table-cell-wra
 import type {TableCellWrapStep} from './docx-table-cell-wrap-core'
 import {openDocxCellWrapDialog,attachDocxCellWrapNavigation} from './docx-table-cell-wrap-controls'
 import { projectDocxTableAlignment, type DocxTableAlignmentAnchor } from './docx-table-alignment'
+import { applyDocxTableStyle, docxTableStyleActive, docxTableStyleUnavailable, isDocxTableStyleAction, docxTableStyleOptionsAt, openDocxTableStyleGallery } from './docx-table-style'
 import { openDocxTableAlignmentDialog, type DocxTableAlignment } from './docx-table-alignment-controls'
 import { projectDocxRowBreaks, type DocxRowBreakAnchor } from './docx-table-row-breaks'
 import type { TableRowBreakStep } from './docx-table-row-breaks-core'
@@ -54,7 +55,7 @@ export const TABLE_SELECTION_ACTIONS: Record<string, 'cell' | 'row' | 'column' |
 // nativeCoverPage 标记新增封面首段的预设段落规格（docx-cover-page.ts），同样不渲染、不入文件。
 export const NativeTableStructure = Extension.create({ name: 'nativeTableStructure', addGlobalAttributes: () => [
   { types: ['docParagraph', 'docHeading', 'docListItem'], attributes: { nativeClearFormatting: { default: null, rendered: false, keepOnSplit: false } } },
-  { types: ['docTable'], attributes: { nativeTableProperties: { default: null, rendered: false }, nativeTableStructure: { default: null, rendered: false }, nativeTableCellShape: { default: null, rendered: false }, nativeTableColumnWidths: { default: null, rendered: false }, nativeTableRowHeights: { default: null, rendered: false }, nativeTableAutoFit: { default: null, rendered: false }, nativeTableCellTextDirection: { default: null, rendered: false }, nativeTableCellAlignment: { default: null, rendered: false }, nativeTableCellParagraphProperties: { default: null, rendered: false }, nativeTableCellMargins: { default: null, rendered: false }, nativeTableCellWrap: { default: null, rendered: false }, nativeTableAltText: { default: null, rendered: false }, nativeTableCellMarginOverrides: { default: null, rendered: false }, nativeTableRowBreaks: { default: null, rendered: false }, nativeTableAlignment: { default: null, rendered: false }, nativeTableInsert: { default: null, rendered: false, keepOnSplit: false } } },
+  { types: ['docTable'], attributes: { nativeTableProperties: { default: null, rendered: false }, nativeTableStructure: { default: null, rendered: false }, nativeTableCellShape: { default: null, rendered: false }, nativeTableColumnWidths: { default: null, rendered: false }, nativeTableRowHeights: { default: null, rendered: false }, nativeTableAutoFit: { default: null, rendered: false }, nativeTableCellTextDirection: { default: null, rendered: false }, nativeTableCellAlignment: { default: null, rendered: false }, nativeTableCellParagraphProperties: { default: null, rendered: false }, nativeTableCellMargins: { default: null, rendered: false }, nativeTableCellWrap: { default: null, rendered: false }, nativeTableAltText: { default: null, rendered: false }, nativeTableCellMarginOverrides: { default: null, rendered: false }, nativeTableRowBreaks: { default: null, rendered: false }, nativeTableAlignment: { default: null, rendered: false }, nativeTableStyle: { default: null, rendered: false }, nativeTableInsert: { default: null, rendered: false, keepOnSplit: false } } },
   { types: ['docParagraph'], attributes: { nativeCoverPage: { default: null, rendered: false, keepOnSplit: false } } },
   // nativeSectionBreak 标记新增分节符的起始方式（docx-operations.ts sectionBreakNode），同样不渲染、不入文件。
   { types: ['docProtected'], attributes: { nativeSectionBreak: { default: null, rendered: false, keepOnSplit: false } } },
@@ -194,6 +195,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (rect.table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (rect.table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableCellMargins) throw new Error('默认边距修改后不能与同表其他结构修改混用，请先保存')
@@ -225,6 +227,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (rect.table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (rect.table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if(rect.table.attrs.nativeTableCellMargins)throw new Error('默认边距修改后不能与同表重复标题行混用，请先保存')
@@ -253,6 +256,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (rect.table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (rect.table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if (rect.table.attrs.nativeTableCellMargins) throw new Error('默认边距修改后不能与同表其他结构修改混用，请先保存')
@@ -300,6 +304,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMargins) throw new Error('默认边距修改后不能与同表其他结构修改混用，请先保存')
@@ -344,6 +349,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMargins) throw new Error('默认边距修改后不能与同表其他结构修改混用，请先保存')
@@ -396,6 +402,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMargins) throw new Error('默认边距修改后不能与同表其他结构修改混用，请先保存')
@@ -434,6 +441,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMargins) throw new Error('默认边距修改后不能与同表其他结构修改混用，请先保存')
@@ -477,6 +485,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMargins) throw new Error('默认边距修改后不能与同表对齐混用，请先保存')
@@ -514,6 +523,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     }
     if (table.attrs.nativeTableCellWrap) throw new Error('自动换行修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableAltText) throw new Error('标题/说明修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     const index = table.attrs.docxIndex, anchor = anchors.find(item => item.docxIndex === index) as (DocxAnchor & DocxTableAlignmentAnchor) | undefined
     const source = baseline.content?.find(node => node.type === 'docTable' && node.attrs?.docxIndex === index)
     if (!source || !anchor?.tableAlignmentEditable || !anchor.tableAlignmentSource) throw new Error(anchor?.tableAlignmentReadOnlyReason ?? '当前来源表格不支持整表对齐，请先保存新增表格')
@@ -554,6 +564,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     const source = baseline.content?.find(node => node.type === 'docTable' && node.attrs?.docxIndex === index)
     if (!source || !anchor?.rowBreakEditable || !anchor.rowBreakSource) throw new Error(anchor?.rowBreakReadOnlyReason ?? '当前来源表格不支持行跨页设置，请先保存新增表格')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表行跨页混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     const intent = table.attrs.nativeTableRowBreaks as { steps: TableRowBreakStep[] } | null, steps = intent?.steps ?? []
     if (intent && (Object.keys(intent).length !== 1 || !Array.isArray(steps) || !steps.length)) throw new Error('行跨页草稿字段无效')
     if (steps.length >= MAX_TABLE_STEPS) throw new Error('此表行跨页修改步骤过多，请先保存')
@@ -619,6 +630,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     const source = baseline.content?.find(node => node.type === 'docTable' && node.attrs?.docxIndex === index)
     if (!source || !anchor?.tableCellWrapEditable || !anchor.tableCellWrapSource) throw new Error(anchor?.tableCellWrapReadOnlyReason ?? '当前来源表格不支持自动换行，请先保存新增表格')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表自动换行混用，请先保存')
     const intent = table.attrs.nativeTableCellWrap as { steps: TableCellWrapStep[] } | null
     const steps = intent?.steps ?? []
@@ -665,6 +677,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     const source = baseline.content?.find(node => node.type === 'docTable' && node.attrs?.docxIndex === index)
     if (!source || !anchor?.tableCellMarginOverridesEditable || !anchor.tableCellMarginOverridesSource) throw new Error(anchor?.tableCellMarginOverridesReadOnlyReason ?? '当前来源表格不支持单元格边距，请先保存新增表格')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表单元格边距混用，请先保存')
     const intent = table.attrs.nativeTableCellMarginOverrides as { steps: TableCellMarginOverrideStep[] } | null
     const steps = intent?.steps ?? []
@@ -756,6 +769,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     const source = baseline.content?.find(node => node.type === 'docTable' && node.attrs?.docxIndex === index)
     if (!source || !anchor?.tableCellMarginsEditable) throw new Error(anchor?.tableCellMarginsReadOnlyReason ?? '当前来源表格不支持默认边距，请先保存新增表格')
     if (table.attrs.nativeTableAlignment) throw new Error('整表对齐修改后不能与同表其他修改混用，请先保存')
+    if (table.attrs.nativeTableStyle) throw new Error('表格样式修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableRowBreaks) throw new Error('行跨页修改后不能与同表其他修改混用，请先保存')
     if (table.attrs.nativeTableCellMarginOverrides) throw new Error('单元格边距修改后不能与同表默认边距混用，请先保存')
     const intent = table.attrs.nativeTableCellMargins as { margins: { top: number; right: number; bottom: number; left: number } } | null
@@ -778,10 +792,26 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
   }
   const isWidth = (action: string) => action === 'table-column-width' || action === 'table-distribute-columns'
   const isShape = (action: string) => action === 'table-merge-cells' || action === 'table-split-cells'
-  return {
-    active(action) { try { if (alignmentActions[action]) return alignmentActive(alignmentActions[action]); if (directionActions[action]) return directionActive(directionActions[action]); if (autoFitModes[action]) return autoFitTarget().table.attrs.tblAutoFit === autoFitModes[action]; return action==='table-repeat-header-rows' && headerTarget().active } catch { return false } },
-    reason(action) { try { if(TABLE_SELECTION_ACTIONS[action])selectionTarget();else if(action==='table-properties'){const reason=propertiesReason();if(reason)throw new Error(reason)}else if(action==='table-alt-text')altTextTarget();else if(action==='table-cell-wrap')wrapTarget();else if(action==='table-row-breaks')rowBreakTarget();else if(action==='table-alignment')tableAlignmentTarget();else if(action==='table-cell-margins')marginsTarget();else if(alignmentActions[action])alignmentTarget();else if(directionActions[action])directionTarget();else if(autoFitModes[action])autoFitTarget();else if(action==='table-row-height'||action==='table-distribute-rows')heightTarget();else if(isWidth(action))widthTarget();else if(isShape(action))shapeTarget(action);else if(action==='table-repeat-header-rows')headerTarget();else target(action); return null } catch (error) { return error instanceof Error && !/No cell|Not in a table/.test(error.message) ? error.message : '请先在表格单元格内定位' } },
+  const styleCommands: DocxTableCommands = {
+    active: action => docxTableStyleActive(editor, baseline, anchors, action),
+    reason: action => nestedInputActive() ? '嵌套表格当前支持文字编辑，请先在外层表格内定位后修改表格样式' : docxTableStyleUnavailable(editor, baseline, anchors, action),
     run(action) {
+      try {
+        if (action !== 'table-style-custom') { applyDocxTableStyle(editor, baseline, anchors, action); return }
+        const reason = styleCommands.reason(action)
+        if (reason) throw new Error(reason)
+        const gallery = docxTableStyleOptionsAt(editor, baseline, anchors)
+        openDocxTableStyleGallery(editor.view.dom.ownerDocument.body, gallery.options, gallery.styleId, styleId => {
+          try { applyDocxTableStyle(editor, baseline, anchors, action, styleId) } catch (error) { reportError(error) }
+        })
+      } catch (error) { reportError(error) }
+    },
+  }
+  const commands: DocxTableCommands = {
+    active(action) { if (isDocxTableStyleAction(action)) return styleCommands.active!(action); try { if (alignmentActions[action]) return alignmentActive(alignmentActions[action]); if (directionActions[action]) return directionActive(directionActions[action]); if (autoFitModes[action]) return autoFitTarget().table.attrs.tblAutoFit === autoFitModes[action]; return action==='table-repeat-header-rows' && headerTarget().active } catch { return false } },
+    reason(action) { if (isDocxTableStyleAction(action)) return styleCommands.reason(action); try { if(TABLE_SELECTION_ACTIONS[action])selectionTarget();else if(action==='table-properties'){const reason=propertiesReason();if(reason)throw new Error(reason)}else if(action==='table-alt-text')altTextTarget();else if(action==='table-cell-wrap')wrapTarget();else if(action==='table-row-breaks')rowBreakTarget();else if(action==='table-alignment')tableAlignmentTarget();else if(action==='table-cell-margins')marginsTarget();else if(alignmentActions[action])alignmentTarget();else if(directionActions[action])directionTarget();else if(autoFitModes[action])autoFitTarget();else if(action==='table-row-height'||action==='table-distribute-rows')heightTarget();else if(isWidth(action))widthTarget();else if(isShape(action))shapeTarget(action);else if(action==='table-repeat-header-rows')headerTarget();else target(action); return null } catch (error) { return error instanceof Error && !/No cell|Not in a table/.test(error.message) ? error.message : '请先在表格单元格内定位' } },
+    run(action) {
+      if (isDocxTableStyleAction(action)) { styleCommands.run(action); return }
       try {
         if(action!=='table-properties'&&!TABLE_SELECTION_ACTIONS[action]) { try { const rect=selectedRect(editor.state);if(rect.table.attrs.nativeTableProperties)throw new Error('完整表格属性修改后请先保存') } catch(error) { if(error instanceof Error&&error.message.includes('完整表格属性'))throw error } }
         if (TABLE_SELECTION_ACTIONS[action]) { selectTablePart(action); return }
@@ -832,4 +862,5 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
       } catch (error) { reportError(error) }
     },
   }
+  return commands
 }

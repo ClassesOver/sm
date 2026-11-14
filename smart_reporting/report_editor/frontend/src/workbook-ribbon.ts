@@ -179,6 +179,7 @@ type RibbonCommand =
   | 'header-footer-open'
   | 'insert-picture' | 'insert-equation' | 'insert-icons' | 'insert-symbol'
   | 'link-open'
+  | 'split-window'
   | 'refresh-all'
   | 'print-gridlines'
   | 'print-headings'
@@ -559,7 +560,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     ] },
     { title: '窗口', actions: [
       action('新建窗口', 'new-window'), action('全部重排', 'arrange-all'), action('冻结窗格', 'freeze-panes', 'freeze-panes'),
-      action('拆分窗口', 'split-window'), action('隐藏窗口', 'hide-window'), action('切换窗口', 'switch-window'),
+      action('拆分窗口', 'split-window', 'split-window'), action('隐藏窗口', 'hide-window'), action('切换窗口', 'switch-window'),
     ] },
   ],
   'Chart Design': [
@@ -590,12 +591,14 @@ const COMMAND_GLYPHS: Record<string, string> = {
   find: '🔍', replace: '⇄', 'pivot-open': '▥', 'pivot-edit': '▦', 'format-as-table': '▦', 'insert-chart:column': '📊',
 }
 
+/** 视图▸拆分窗口：固定源窗口组只有冻结窗格；网格无拆分视口，只能取消文件中已有的拆分窗格。 */
+export const SPLIT_WINDOW_UNAVAILABLE = '固定源未提供拆分窗口，网格无拆分视口；当前工作表没有可取消的拆分窗格'
+
 const disabledReasons: Record<string, string> = {
   'translate': '尚未接入基于选区的翻译操作',
   'background': '尚无工作表背景图片读取与回写',
   'new-window': '网页编辑器不管理桌面工作簿窗口',
   'arrange-all': '网页编辑器不管理桌面工作簿窗口',
-  'split-window': '尚无拆分视口及文件回写',
   // 固定源 Page Layout 主题组只有 Themes / Colors / Fonts 三个菜单，没有主题效果写入。
   'theme-effects': '固定源未提供主题效果写入',
   'hide-window': '网页编辑器不管理桌面工作簿窗口',
@@ -777,6 +780,8 @@ export function mountWorkbookRibbon(
     watchWindow?(): { active: boolean; available: boolean }
     queries?(): { available: boolean }
     formulaTrace?(): { active: boolean; available: boolean }
+    /// 视图▸拆分窗口：当前工作表（草稿重放后）是否有文件中的拆分窗格。
+    splitPane?(): { active: boolean }
     pageBreakPreview?(): { active: boolean; available: boolean; pending?: boolean; reason?: string }
     pageSetup?(): WorkbookPageSetupState | undefined
     /// 页面布局▸主题：当前主题名称与可用性（来自实际主题部件字节）。
@@ -900,6 +905,12 @@ export function mountWorkbookRibbon(
         button.title = !editable ? '当前工作簿不可编辑或正在保存' : protection?.sheet.protected ? PROTECTED_SHEET_REASON : !view.chart() ? '请先选择要操作的图表' : button.textContent ?? ''
       }
       if (protection?.sheet.protected && !button.disabled && !PROTECTED_SHEET_RIBBON.has(id)) { button.disabled = true; button.title = PROTECTED_SHEET_REASON }
+      if (id === 'split-window') {
+        const active = !!view.splitPane?.().active
+        button.disabled = !editable || !active || !!protection?.sheet.protected
+        button.setAttribute('aria-pressed', String(active))
+        button.title = !active ? SPLIT_WINDOW_UNAVAILABLE : !editable ? '当前工作簿不可编辑或正在保存' : protection?.sheet.protected ? PROTECTED_SHEET_REASON : '取消文件中的拆分窗格'
+      }
       if (id === 'error-checking') {
         const state = view.errorChecking?.()
         button.disabled = !state?.available || state.pending

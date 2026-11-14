@@ -7,7 +7,7 @@
   "packages/xlsx-engine/src/sheet-ops.ts": "60e3cc77fd4aef62559b94375d93329dae114ccf1925fba8bb5eb5b94b5f9113",
   "packages/xlsx-engine/src/sort-range.ts": "7b1b39a7f932584a5a7bd3bcb21d789686d360908aecb0c847ce311e7b7196a7",
   "packages/xlsx-engine/src/style-read.ts": "e86cc9dc6da0a06aca8d98c9b8abb8f98208b18582ccff92e0594500fbf6f13b",
-  "packages/xlsx-engine/src/workbook-read.ts": "38dc3a93dcd5e57e7ae46ace05eb4a8c3719d63133baef635487219df2c47029",
+  "packages/xlsx-engine/src/workbook-read.ts": "559de867792829645081f19014af5ef2f2d2d82923a0e36246578b6f7bab4fd4",
   "packages/xlsx-engine/tests/notes-structure.test.ts": "271c1f3ceaf8a2a86cda4314043e55ce537d1aef887e4a5826b3a1ee43502838",
   "packages/xlsx-engine/tests/notes.test.ts": "7e7543e9d6f34c8b08d02b8a5198b1633ec821e78e7fdfe06c34e1a7c3181841",
   "packages/xlsx-engine/tests/pivot-grouping.test.ts": "1d3e2f20ca433131fd8ba5c78ac22247cd7d7c489ec4031b690bad1987593345",

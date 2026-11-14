@@ -15,6 +15,7 @@ import {appendDesignRadioWidget,formRadioExtensionAvailability,type AppendRadioW
 import {replaceStyledText,type StyledReplaceTextOperation} from './replace-text-style'
 import {staticTextAvailability,insertStaticText} from './static-text'
 import { inspectSavedDrawings } from './saved-drawings'
+import { inspectSignatureFields, type SignatureFieldModel } from './signature-fields'
 import { inspectDesignWidgets, removeDesignWidgetWithReceipt } from './form-design'
 import {createDesignField,editDesignFieldRequired,formDesignCreateAvailability,type CreateFormFieldOperation,type EditFormFieldRequiredOperation} from './form-design-create'
 import {editDesignWidget,editDesignWidgetRects,arrangeDesignWidgets,formDesignPropertiesAvailability,type EditFormWidgetOperation,type EditFormWidgetRectsOperation,type ArrangeFormWidgetsOperation} from './form-design-properties'
@@ -123,7 +124,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mergePages'), ...identity, perSheet: z.number().int().min(2).max(16), direction: z.enum(['horizontal', 'vertical']), separator: z.boolean() }).strict(),
   z.object({ kind: z.literal('splitPages'), ...identity, perPage: z.union([z.literal(2), z.literal(4), z.literal(9)]) }).strict(),
   // 固定源 DrawLayer 的矩形/椭圆/箭头/手绘：PDF user space 坐标，写入引擎 drawings。
-  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'measure', 'ink', 'polygon', 'caret', 'link', 'image']), label: z.string().min(1).max(64).regex(/^[\x20-\x7e]+$/).optional(), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24) }).strict(),
+  z.object({ kind: z.literal('addDrawing'), ...page, shape: z.enum(['rect', 'ellipse', 'arrow', 'measure', 'ink', 'polygon', 'caret', 'link', 'image']), label: z.string().min(1).max(64).regex(/^[\x20-\x7e]+$/).optional(), image: z.string().min(8).max(6_000_000).optional(), url: z.string().max(2048).regex(/^(https?:\/\/[^\s]+|mailto:[^\s]+)$/i).optional(), destPage: z.number().int().min(1).max(10000).optional(), rect: rect.optional(), from: point.optional(), to: point.optional(), vertices: z.array(point).min(3).max(200).optional(), point: point.optional(), paths: z.array(z.array(z.number().finite()).min(4).max(4000)).min(1).max(20).optional(), color, width: z.number().finite().min(0.25).max(24), signatureField: z.object({ fieldId: z.string().regex(/^[a-f0-9]{64}$/), expectedFieldSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional() }).strict(),
   z.object({ kind: z.literal('addTextAnnotation'), ...page, localId: z.string().regex(/^[a-f0-9]{32}$/).optional(), rect, text: z.string().trim().min(1).max(10000), color: color.optional(), createdMs: z.number().int().min(0).max(253402300799999).optional() }).strict(),
   z.object({ kind: z.literal('setPageSize'), ...identity, preset: z.enum(['A3', 'A4', 'A5', 'Letter', 'Legal']) }).strict(),
   z.object({ kind: z.literal('cropPage'), ...page, rect }).strict(),
@@ -214,8 +215,9 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
   const formDesign = await inspectDesignWidgets(content)
+  const signatureFields = inspectSignatureFields(document, formFields, sourceHasXfa ? '含动态表单（XFA）的文档暂不支持放入签名字段' : document.isEncrypted || document.context.trailerInfo.Encrypt ? '加密文档暂不支持放入签名字段' : document.catalog.has(PDFName.of('Perms')) ? '文档有签名权限限制（Perms），暂不支持放入签名字段' : null)
   const staticFillModel=await inspectStaticFills(content)
-  return { sourceSha256, ...signatureModel, pageCount: pages.length, pages, formFields, staticFormFills:staticFillModel.staticFormFills, ...inspectPdfOutline(document,sourceSha256,removalLinks.protectedSource), existingImages:existingImageModel.existingImages, formDesignWidgets:formDesign.widgets, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { ...staticFillModel.capabilities, ...metadataCapability, ...batesAvailability(document), ...existingImageModel.capabilities, protectPdf: protectionAvailable, ...formCreateAvailability, ...formPropertiesAvailability, ...await formRadioExtensionAvailability(content), ...await formTextPropertiesAvailability(content), editFormFieldRequired: formDesign.widgets.some(widget => widget.removable), ...insertAvailability, maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), removeFormWidget:formDesign.widgets.some(widget => widget.removable || widget.radioRemovalEditable), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, ...signatureModel, pageCount: pages.length, pages, formFields, staticFormFills:staticFillModel.staticFormFills, signatureFields, ...inspectPdfOutline(document,sourceSha256,removalLinks.protectedSource), existingImages:existingImageModel.existingImages, formDesignWidgets:formDesign.widgets, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { ...staticFillModel.capabilities, ...metadataCapability, ...batesAvailability(document), ...existingImageModel.capabilities, protectPdf: protectionAvailable, ...formCreateAvailability, ...formPropertiesAvailability, ...await formRadioExtensionAvailability(content), ...await formTextPropertiesAvailability(content), editFormFieldRequired: formDesign.widgets.some(widget => widget.removable), ...insertAvailability, maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), removeFormWidget:formDesign.widgets.some(widget => widget.removable || widget.radioRemovalEditable), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 async function deterministicLayoutDates(source: Uint8Array, output: Uint8Array) {
@@ -475,6 +477,17 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   const noteEdits: NoteContentEdit[] = []
   const addedNoteDates: AddedNoteDate[] = []
   const removedIds = new Set<string>()
+  // 固定源 placeSignatureInField：可视签名（Ink / Stamp）放入未签署的签名字段，写入 formFieldName 关联。
+  const boundSignatureFields = new Set<string>()
+  const bindSignatureField = (op: { shape: string; signatureField?: { fieldId: string; expectedFieldSha256: string } }, pageIndex: number, bounds: [number, number, number, number]) => {
+    if (!op.signatureField) return undefined
+    const field = (model.signatureFields as SignatureFieldModel[]).find(item => item.fieldId === op.signatureField!.fieldId)
+    if (!field || field.expectedFieldSha256 !== op.signatureField.expectedFieldSha256 || !field.bindable || boundSignatureFields.has(field.fieldId)) throw new Error('pdf_signature_field_identity_invalid_or_readonly')
+    const widget = field.widgets[0]!, tolerance = 0.5
+    if (widget.pageIndex !== pageIndex || bounds[0] < widget.rect[0] - tolerance || bounds[1] < widget.rect[1] - tolerance || bounds[2] > widget.rect[2] + tolerance || bounds[3] > widget.rect[3] + tolerance) throw new Error('PDF 签名须位于所选签名字段的范围内')
+    boundSignatureFields.add(field.fieldId)
+    return field.name
+  }
   const deleted = new Set<string>()
   const touched = new Set<string>()
   let reordered = false
@@ -576,6 +589,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       const base = { pageIndex: target.index, color: op.color, width: op.width }
       if (op.image !== undefined && op.shape !== 'image') throw new Error('PDF 绘图参数无效')
       if (op.label !== undefined && op.shape !== 'measure') throw new Error('PDF 绘图参数无效')
+      if (op.signatureField && op.shape !== 'ink' && op.shape !== 'image') throw new Error('PDF 签名字段只接受手写或图像签名')
       if (op.shape === 'rect' || op.shape === 'ellipse') {
         if (!op.rect || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.image !== undefined) throw new Error('PDF 绘图参数无效')
         const [x1, y1, x2, y2] = op.rect
@@ -592,13 +606,14 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
         if (!op.vertices || op.rect || op.from || op.to || op.paths || op.point || op.url !== undefined || op.destPage !== undefined || op.vertices.some(vertex => !inside(...vertex))) throw new Error('PDF 多边形顶点无效')
         request.drawings.push({ ...base, kind: 'polygon', vertices: op.vertices })
       } else if (op.shape === 'image') {
+        const bound = op.rect ? bindSignatureField(op, target.index, op.rect) : undefined
         // 固定源 ImageDialogs 插入图像：PNG 位图写为 Stamp 批注。
         if (!op.rect || !op.image || op.from || op.to || op.paths || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined) throw new Error('PDF 图像参数无效')
         const bytes = Buffer.from(op.image, 'base64')
         if (bytes.toString('base64') !== op.image || !bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) throw new Error('PDF 图像须为 PNG')
         const [x1, y1, x2, y2] = op.rect
         if (x2 - x1 < 1 || y2 - y1 < 1 || !inside(x1, y1) || !inside(x2, y2)) throw new Error('PDF 图像范围无效')
-        request.drawings.push({ kind: 'image', pageIndex: target.index, image: op.image, rect: op.rect })
+        request.drawings.push({ kind: 'image', pageIndex: target.index, image: op.image, rect: op.rect, ...(bound ? { formFieldName: bound } : {}) })
       } else if (op.shape === 'link') {
         // 固定源 LinkDialog：外部 URL 或文档内页码二选一；仅允许 http/https/mailto。destPage 为来源页序号（引擎按删除/重排前页表解析）。
         if (!op.rect || op.image !== undefined || op.from || op.to || op.paths || op.vertices || op.point || (op.url === undefined) === (op.destPage === undefined)) throw new Error('PDF 链接目标无效')
@@ -615,7 +630,9 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
         request.drawings.push({ kind: 'caret', pageIndex: target.index, color: op.color, point: op.point })
       } else {
         if (!op.paths || op.rect || op.from || op.to || op.vertices || op.point || op.url !== undefined || op.destPage !== undefined || op.paths.some(path => path.length % 2 !== 0 || path.some((value, index) => index % 2 === 0 ? !inside(value, path[index + 1]!) : false))) throw new Error('PDF 手绘路径无效')
-        request.drawings.push({ ...base, kind: 'ink', paths: op.paths })
+        const xs = op.paths.flatMap(path => path.filter((_, index) => index % 2 === 0)), ys = op.paths.flatMap(path => path.filter((_, index) => index % 2 === 1))
+        const bound = bindSignatureField(op, target.index, [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)])
+        request.drawings.push({ ...base, kind: 'ink', paths: op.paths, ...(bound ? { formFieldName: bound } : {}) })
       }
       continue
     }

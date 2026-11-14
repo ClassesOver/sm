@@ -104,6 +104,7 @@ export function docxCellShadingUnavailable(editor: Editor, anchors: readonly Doc
   if (!depth) return '无法核验所选单元格来源'
   const table = selected.node(depth), map = TableMap.get(table), start = selected.start(depth)
   if (table.attrs.nativeTableStructure || table.attrs.nativeTableInsert) return '请先保存表格结构修改，再调整单元格底纹'
+  if (table.attrs.nativeTableStyle) return '表格样式修改后不能与同表其他修改混用，请先保存'
   const anchor = anchors.find(anchor => anchor.docxIndex === table.attrs.docxIndex)
   let reason: string | null = null
   const check = (pos: number) => {

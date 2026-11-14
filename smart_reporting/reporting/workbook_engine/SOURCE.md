@@ -762,3 +762,15 @@ row XF, column XF and default XF0. All pivot projection consumers now use the
 raw XML pattern matrix, including date eligibility and field classification.
 Ordinary grid import is unchanged. See
 ../../report_editor/NATIVE_XLSX_PIVOT_INHERITED_FORMATS_ACCEPTANCE_20261114.md.
+## 2026-11-14 split panes (View ▸ Split)
+
+The pinned GenOffice `ExcelShell.tsx` View ▸ Window group has only Freeze Panes; there is no split-window
+source to port, and Univer 0.25.1 has no split viewport. `src/workbook-read.ts` (registered in
+`UPSTREAM-PATCHES-SHA256.json`, hash updated) now honours `pane@state` (ECMA-376 default `split`): only
+`frozen`/`frozenSplit` panes yield `freeze` row/column counts; split panes, whose `xSplit`/`ySplit` are twips,
+are exposed read-only as `splitPane {xSplitTwips, ySplitTwips, topLeftCell?}` instead of being misread as a
+freeze of thousands of rows/columns. `bridge/split-pane.ts` is a local adapter: bridge operation
+`removeSheetSplitPane {sheetName, expected}` removes the first sheetView's split pane (and pane-scoped
+selections, same rule as `setFrozenPane`) only when the current pane equals `expected`, then reads back. The
+Python native whitelist and `delivery/xlsx.py` include it. Creating split panes is not implemented. Evidence:
+../../report_editor/NATIVE_XLSX_SPLIT_PANE_ACCEPTANCE.md.

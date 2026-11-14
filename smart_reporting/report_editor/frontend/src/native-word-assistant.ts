@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel } from './office-assistant-panel'
 /** Word 阅读与编辑候选分开；回答不会写入草稿。 */
 import { createElement, MessageCircle, FileText, ListChecks, Sparkles, X, CircleStop } from 'lucide'
@@ -31,13 +32,14 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
   panel.append(title,help,controls,scope,input,start,cancel,close,status,output,evidence);root.append(panel)
   const progress=mountNativeAIProgress(panel)
   const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,onClose:()=>{if(busy)stop()}})
-  let action: NativeWordReadAction='ask', generation=0,busy=false,disposed=false,activeRequest: string | undefined,controller: AbortController | undefined
+  const tasks = new OfficeAssistantController({start:options.api.wordAIStart,status:options.api.wordAIStatus,cancelRequest:options.api.wordAICancel,id:(task: NativeWordReadTask)=>task.taskId,running:(task: NativeWordReadTask)=>task.status==='running'})
+  let action: NativeWordReadAction='ask', generation=0,busy=false,disposed=false
   const selection=()=>scope.value==='selection' ? options.selection() : []
   function update() {start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy;for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}}
   function stop(message='任务已取消') {
-    const turn=++generation;controller?.abort();progress.reset();busy=false
-    const id=activeRequest;activeRequest=undefined;status.textContent=message;update()
-    if(id) void options.api.wordAICancel(id).catch(error=>{if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
+    const turn=++generation;progress.reset();busy=false
+    status.textContent=message;update()
+    void tasks.cancel().catch(error=>{if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
   }
   function display(result: NonNullable<NativeWordReadTask['result']>) {
     output.textContent=result.answer;evidence.replaceChildren()
@@ -61,19 +63,16 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
     if(scope.value==='selection' && !selection().length){status.textContent='选区无法可靠对应来源，请选择原有段落/单元格；表结构或新增段落变更后请先保存。';return}
     const turn=++generation,operations=structuredClone(options.draft.operations),selected=structuredClone(selection())
     const snapshot=JSON.stringify({operations,selection:selected}),requestId=crypto.randomUUID()
-    activeRequest=requestId;controller=new AbortController();const signal=controller.signal;busy=true;progress.reset();output.textContent='';evidence.replaceChildren();status.textContent='正在读取 Word 并运行 Agno 工具';update()
+    busy=true;progress.reset();output.textContent='';evidence.replaceChildren();status.textContent='正在读取 Word 并运行 Agno 工具';update()
     try {
-      let task=await options.api.wordAIStart({clientRequestId:requestId,action,instruction:input.value.trim(),expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},signal)
-      if(turn!==generation || disposed)return
-      progress.start(options.api.wordAIEvents,task.taskId,signal,()=>turn===generation && !disposed)
-      while(turn===generation && !disposed && task.status==='running')task=await options.api.wordAIStatus(task.taskId,signal)
-      if(turn!==generation || disposed)return
+      const task=await tasks.run({clientRequestId:requestId,action,instruction:input.value.trim(),expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},requestId,(started,signal)=>progress.start(options.api.wordAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
+      if(!task || turn!==generation || disposed)return
       options.flushPendingEdits()
       if(snapshot!==JSON.stringify({operations:options.draft.operations,selection:selection()})){progress.reset();status.textContent='草稿或选区已变化，请重新阅读。';return}
       if(task.status==='completed' && task.result){display(task.result);status.textContent='阅读完成，文档与草稿未修改。'}
       else status.textContent=task.error?.message ?? (task.status==='cancelled' ? '任务已取消' : 'Word AI 未返回有效回答')
     }catch(error){if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : 'Word AI 阅读失败'}
-    finally{if(turn===generation){busy=false;activeRequest=undefined;progress.stop();update()}}
+    finally{if(turn===generation){busy=false;tasks.release();progress.stop();update()}}
   }
   function open(preset: NativeWordReadAction='ask') {if(disposed)return;panelView.beforeOpen();if(busy)stop();action=preset;panel.hidden=false;update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true});if(preset!=='ask')void run()}
   input.oninput=update;scope.onchange=()=>{output.textContent='';evidence.replaceChildren();status.textContent=scope.value==='selection' && !selection().length ? '请先选择要阅读的内容。' : '';update()}
