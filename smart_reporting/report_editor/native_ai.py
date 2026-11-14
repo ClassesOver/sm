@@ -744,9 +744,9 @@ class NativeAIService:
 
 
 def create_native_ai_service(model: Any, editor: Any, *, enabled: bool = False) -> NativeAIService:
-    from ..reporting.agent import create_reporting_generator_agent
+    from ..office.structured_agents import create_structured_candidate_agent
 
-    agent = create_reporting_generator_agent(
+    agent = create_structured_candidate_agent(
         model=model,
         output_schema=NativeAIProposal,
         name="native-document-ai",

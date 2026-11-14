@@ -46,6 +46,10 @@ from ..integrations.model_config import (
     uses_dashscope_qwen_thinking_protocol,
 )
 from ..model_routing import build_model_profiles
+from ..office.structured_agents import (
+    STRUCTURED_CANDIDATE_INSTRUCTIONS,
+    create_structured_candidate_agent,
+)
 from ..runtime.observability import duration_ms as elapsed_ms
 from ..runtime.settings import AgentSettings
 from ..skills import (
@@ -128,7 +132,6 @@ from .phase import (
     reporting_visualization_usage_from_run_context,
 )
 from .presentation import completed_report_content as _completed_report_content
-from .structured_output.agno_compat import install_agno_structured_output_parser
 from .structured_output.policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
     REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
@@ -2646,12 +2649,7 @@ def create_reporting_generator_agent(
     均由 Reporting Workflow 完成，因此这里明确关闭工具、历史和 Agent 重试。
     """
 
-    install_agno_structured_output_parser()
-    instructions = [
-        "只返回一个严格满足 output_schema 的 JSON 对象，不得返回推理、解释、Markdown 或代码围栏。",
-        "所有必填顶层字段必须各出现一次；不得把 schema 顶层字段只写入其他字段。",
-        "长文本字段必须是合法 JSON 字符串，换行和引号必须按 JSON 转义。",
-    ]
+    instructions = list(STRUCTURED_CANDIDATE_INSTRUCTIONS)
     output_schema_name = getattr(output_schema, "__name__", "")
     if output_schema_name in {
         "VisualizationPlanDraft",
@@ -2721,25 +2719,13 @@ def create_reporting_generator_agent(
             "必须遵循受信 executionDirective：明确证据充足或禁止返工时只能返回 render；"
             "明确缺少必要证据并要求返工时只能返回 rework。"
         )
-    instructions.extend(stage_instructions)
-    return Agent(
-        id=name,
-        name=name,
-        role=role or "只返回 Reporting 固定阶段要求的结构化候选内容。",
+    return create_structured_candidate_agent(
         model=model,
         output_schema=output_schema,
-        instructions=instructions,
-        # 实际传输方式由结构化输出执行器根据路由后的模型能力选择；基础 Agent
-        # 保持原生模式，禁止 Agno 把完整 Schema 注入 system prompt。
-        structured_outputs=True,
-        use_json_mode=False,
-        tools=[],
-        add_history_to_context=False,
-        enable_session_summaries=False,
-        retries=0,
-        exponential_backoff=False,
-        markdown=False,
-        telemetry=False,
+        name=name,
+        role=role or "只返回 Reporting 固定阶段要求的结构化候选内容。",
+        stage_instructions=stage_instructions,
+        base_instructions=instructions,
     )
 
 

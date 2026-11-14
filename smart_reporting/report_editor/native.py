@@ -13,12 +13,12 @@ from loguru import logger
 from pydantic import ValidationError
 from .native_pdf_contract import PDF_CONFIRMATION_KINDS, pdf_review_issues
 
+from ..office.workspace_scope import WorkspaceScope
 from ..reporting.delivery.artifacts_v1 import ArtifactFile
 from ..reporting.delivery.docx_native import inspect_docx, patch_docx
 from ..reporting.delivery.office_engine import engine_dir, run_office_engine
 from ..reporting.delivery.pdf_native import inspect_pdf, patch_pdf, patch_pdf_with_receipt
 from ..reporting.models import ReportingError
-from ..reporting.workflow.scope import ReportingWorkflowScope
 from ..workspace import WorkspacePathConflict
 from ._file_identity import read_verified_file
 from .capabilities import EditorCapabilities
@@ -42,7 +42,7 @@ def bind_native_workspace(workspace: Any, scope: NativeScope) -> str:
     digest = native_digest(scope.model_dump(mode="json", by_alias=True))
     key = f"native-workspace-{digest}"
     workspace.registry.resolve(
-        ReportingWorkflowScope(
+        WorkspaceScope(
             run_id=f"native:{digest}",
             external_run_id=f"native:{digest}",
             session_id=f"native:{digest}",

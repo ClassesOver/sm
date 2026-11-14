@@ -9,6 +9,7 @@ from typing import Any
 
 from fastmcp.server.dependencies import get_access_token
 
+from ...office.workspace_scope import WorkspaceScope
 from ..models import ReportingError
 
 REPORT_WORKFLOW_SCOPE_DEPENDENCY = "AgentOS 报表工作流"
@@ -22,29 +23,8 @@ class ReportingScopeKeys:
     workspace_key: str
 
 
-@dataclass(frozen=True)
-class ReportingWorkflowScope:
-    run_id: str
-    external_run_id: str
-    session_id: str
-    caller_thread_id: str
-    user_id: str
-    database: str
-    company_id: str
-    thread_lease_key: str
-    workspace_key: str
-
-    def as_state(self) -> dict[str, str]:
-        return {
-            "externalRunId": self.external_run_id,
-            "sessionId": self.session_id,
-            "threadId": self.workspace_key,
-            "callerThreadId": self.caller_thread_id,
-            "userId": self.user_id,
-            "database": self.database,
-            "companyId": self.company_id,
-            "threadLeaseKey": self.thread_lease_key,
-        }
+# 作用域结构已迁至中立模块，报告工作流沿用同一类型。
+ReportingWorkflowScope = WorkspaceScope
 
 
 def digest_values(*values: str) -> str:
