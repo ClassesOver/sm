@@ -101,7 +101,50 @@ it.each([{ ids: ['a', 'b', 'c', 'd'], columns: 2 }, { ids: ['a', 'b', 'c'], colu
   const key = (key: string) => viewport.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true }))
   key('PageDown'); expect(navigate).toHaveBeenLastCalledWith(ids[columns]); expect(viewport.scrollTop).toBe(1000)
   const lastRow = Math.floor((ids.length - 1) / columns) * 1000
-  viewport.scrollTop = lastRow + 500; navigate.mockClear(); key('PageDown'); expect(navigate).not.toHaveBeenCalled(); expect(viewport.scrollTop).toBe(lastRow + 500)
+  viewport.scrollTop = lastRow + 500; window.dispatchEvent(new Event('wheel')); navigate.mockClear(); key('PageDown'); expect(navigate).not.toHaveBeenCalled(); expect(viewport.scrollTop).toBe(lastRow + 500)
   key('Home'); expect(navigate).toHaveBeenLastCalledWith('a'); expect(viewport.scrollTop).toBe(0)
   key('PageDown'); key('PageUp'); expect(navigate).toHaveBeenLastCalledWith('a'); expect(viewport.scrollTop).toBe(0)
+})
+it('advances rapid repeated keys by interruptible intent while DOM scroll is still behind', () => {
+  const viewport = document.createElement('div'); document.body.append(viewport)
+  const abort = new AbortController(); controllers.push(abort)
+  let reading = '1', layout = 'original'
+  const navigate = vi.fn(), binding = bindPdfPageNavigation(viewport, { signal: abort.signal, available: () => true,
+    pages: () => ['1','2','3','4','5'].map(pageId => ({ pageId })), readingPage: () => reading, navigationKey: () => layout, navigate })
+  const key = (key: string) => viewport.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true }))
+  key('PageDown'); key('PageDown'); key('PageDown'); expect(navigate.mock.calls.map(call => call[0])).toEqual(['2','3','4'])
+  reading = '2'; window.dispatchEvent(new Event('wheel')); key('PageDown'); expect(navigate).toHaveBeenLastCalledWith('3')
+  reading = '1'; layout = 'zoom'; key('PageDown'); expect(navigate).toHaveBeenLastCalledWith('2')
+  binding.recordNavigation('5'); key('PageUp'); expect(navigate).toHaveBeenLastCalledWith('4')
+  key('PageUp'); expect(navigate).toHaveBeenLastCalledWith('3')
+  binding.invalidate(); key('PageDown'); expect(navigate).toHaveBeenLastCalledWith('2')
+})
+it('maps an explicit right-page End target back to its reading row before paging up', () => {
+  const viewport = document.createElement('div'); document.body.append(viewport)
+  const abort = new AbortController(); controllers.push(abort); const navigate = vi.fn()
+  bindPdfPageNavigation(viewport, { signal: abort.signal, available: () => true,
+    pages: () => ['a','b','c','d'].map(pageId => ({ pageId })),
+    readingRows: () => [{pageId:'a',pageIds:['a','b']},{pageId:'c',pageIds:['c','d']}], readingPage: () => 'a', navigate })
+  for (const key of ['End','PageUp']) viewport.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true }))
+  expect(navigate.mock.calls.map(call => call[0])).toEqual(['d','a'])
+})
+it.each(['wheel','pointerdown','touchstart','blur','focusout'])('invalidates navigation intent on %s before reading the DOM again', type => {
+  const viewport = document.createElement('div'); document.body.append(viewport)
+  const abort = new AbortController(); controllers.push(abort); const navigate = vi.fn()
+  const binding = bindPdfPageNavigation(viewport, { signal: abort.signal, available: () => true,
+    pages: () => ['1','2','3'].map(pageId => ({ pageId })), readingPage: () => '1', navigate })
+  binding.recordNavigation('3')
+  ;(type === 'focusout' ? viewport : window).dispatchEvent(new Event(type))
+  viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', cancelable: true }))
+  expect(navigate).toHaveBeenLastCalledWith('2')
+})
+it.each([{key:'ArrowDown'}, {key:' '}, {key:' ',shiftKey:true}, {key:'End',ctrlKey:true}, {key:'Home',metaKey:true}])('lets native keyboard scrolling %j invalidate intent without consuming it', init => {
+  const viewport = document.createElement('div'); document.body.append(viewport)
+  const abort = new AbortController(); controllers.push(abort); let reading = '1'; const navigate = vi.fn()
+  bindPdfPageNavigation(viewport, { signal: abort.signal, available: () => true,
+    pages: () => ['1','2','3','4'].map(pageId => ({ pageId })), readingPage: () => reading, navigate })
+  viewport.dispatchEvent(new KeyboardEvent('keydown', {key:'PageDown',cancelable:true}))
+  const native = new KeyboardEvent('keydown', {...init,cancelable:true}); viewport.dispatchEvent(native); expect(native.defaultPrevented).toBe(false)
+  reading = '3'; viewport.dispatchEvent(new KeyboardEvent('keydown', {key:'PageDown',cancelable:true}))
+  expect(navigate.mock.calls.map(call => call[0])).toEqual(['2','4'])
 })
