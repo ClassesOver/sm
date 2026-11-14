@@ -37,8 +37,7 @@ async def test_classic_comments_http_exact_delete_add_and_nonblocking_download(t
     publication, _, downloads = await create_publication(tmp_path)
     publication.repository = Repository()
     publication.validator = AsyncMock(side_effect=RuntimeError('pptx_comments_validation_probe'))
-    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
-                                 report_editor=None, office_enabled=True, publication=publication)
+    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants, office_enabled=True, publication=publication)
     importer = NativeImportService(publication.workspace, publication.repository, publication.editor_grants)
     app = FastAPI()
     app.state.agentos_context = SimpleNamespace(settings=SimpleNamespace(workspace_hmac_secret=SECRET))

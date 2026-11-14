@@ -69,7 +69,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
                 return SimpleNamespace(status='saved', context=context)
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
-    editor = NativeEditorService(workspace, Repository(), grants, report_editor=None, pdf_enabled=True, pdf_text_enabled=False)
+    editor = NativeEditorService(workspace, Repository(), grants, pdf_enabled=True, pdf_text_enabled=False)
     gate = {'mode': 'normal', 'calls': 0, 'blockedEntered': False, 'blockedCancelled': False, 'readPayloads': []}
 
     async def planner(**kwargs):

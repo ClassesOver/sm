@@ -60,7 +60,7 @@ async def test_office_native_http_session_download_survives_disabled_editing(tmp
     from smart_reporting.reporting.tests.test_native_editor_api import Repository
     publication,old,downloads=await create_publication(tmp_path)
     repository=Repository();publication.repository=repository
-    editor=NativeEditorService(publication.workspace,repository,publication.editor_grants,report_editor=None,office_enabled=True,publication=publication)
+    editor=NativeEditorService(publication.workspace,repository,publication.editor_grants,office_enabled=True,publication=publication)
     stream=BytesIO()
     if format=='xlsx': book=Workbook();book.active['A1']='original';book.save(stream)
     else: deck=Presentation();slide=deck.slides.add_slide(deck.slide_layouts[6]);slide.shapes.add_textbox(Inches(1),Inches(1),Inches(2),Inches(1)).text='original';deck.save(stream)

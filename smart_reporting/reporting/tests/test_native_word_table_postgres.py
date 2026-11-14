@@ -134,7 +134,7 @@ async def test_word_structure_sql_failure_retry_concurrent_save_and_revision_cha
         publication.artifact_persistence = ReportArtifactPersistenceService(artifacts, publication.workspace)
         downloads = ReportDownloadHttpService(publication.download_grants, artifacts, workspace_service=publication.workspace)
     publication.validator = AsyncMock(side_effect=RuntimeError('public-test-only-review-failure'))
-    editor = NativeEditorService(publication.workspace, repo, publication.editor_grants, report_editor=None,
+    editor = NativeEditorService(publication.workspace, repo, publication.editor_grants,
                                  docx_enabled=True, publication=publication)
     importer = NativeImportService(publication.workspace, repo, publication.editor_grants)
     app = FastAPI()

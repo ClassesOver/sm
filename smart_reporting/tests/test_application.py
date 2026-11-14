@@ -11,25 +11,6 @@ from smart_reporting.runtime.database import SerializedAsyncPostgresDb
 from smart_reporting.runtime.settings import AgentSettings
 
 
-class FakeAgent:
-    id = "smart-reporting"
-
-
-class FakeWorkflow:
-    id = "enterprise-reporting-workflow-v1"
-
-
-class FakeCloseable:
-    def __init__(self, error=None):
-        self.close_calls = 0
-        self.error = error
-
-    async def aclose(self):
-        self.close_calls += 1
-        if self.error is not None:
-            raise self.error
-
-
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
@@ -52,13 +33,9 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     second_base = FastAPI()
     first_context = ApplicationContext(
         settings,
-        FakeAgent(),
-        FakeWorkflow(),
     )
     second_context = ApplicationContext(
         settings,
-        FakeAgent(),
-        FakeWorkflow(),
     )
 
     first_os, first_app = create_agentos_app(first_context, first_base)
@@ -70,13 +47,13 @@ def test_application_factory_keeps_instances_isolated(monkeypatch):
     assert created[0].values["on_route_conflict"] == "preserve_base_app"
     assert created[0].values["cors_allowed_origins"] == list(settings.cors_allowed_origins)
     assert created[0].values["db"] is None
-    assert created[0].values["agents"] == [first_context.report_agent]
+    # 报告工作流已退役：AgentOS 只承载数据库与路由，不再登记报告 agent/workflow/MCP 工具。
+    assert created[0].values["agents"] == []
     assert created[0].values["teams"] == []
-    assert created[0].values["workflows"] == [first_context.report_workflow]
+    assert created[0].values["workflows"] == []
     assert created[0].values["interfaces"] == []
     assert created[0].values["telemetry"] is False
-    assert created[0].values["mcp"] is False
-    assert created[0].values["mcp_auth"] is None
+    assert "mcp" not in created[0].values
 
 
 def test_application_passes_trace_database_to_agentos(monkeypatch):
@@ -94,8 +71,6 @@ def test_application_passes_trace_database_to_agentos(monkeypatch):
     settings = AgentSettings.from_environment({}, load_env_file=False)
     context = ApplicationContext(
         settings,
-        FakeAgent(),
-        FakeWorkflow(),
         database=database,
     )
 
@@ -127,8 +102,6 @@ async def test_application_initializes_database_before_serving(monkeypatch, init
     monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
-        FakeAgent(),
-        FakeWorkflow(),
         database=SimpleNamespace(async_db=FakeDatabase()),
     )
     create_agentos_app(context, FastAPI())
@@ -167,8 +140,6 @@ async def test_application_new_database_persists_sessions_and_runs(monkeypatch):
     monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
     context = ApplicationContext(
         AgentSettings.from_environment({}, load_env_file=False),
-        FakeAgent(),
-        FakeWorkflow(),
         database=SimpleNamespace(async_db=database),
     )
     create_agentos_app(context, FastAPI())
@@ -203,40 +174,7 @@ async def test_application_new_database_persists_sessions_and_runs(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_application_lifespan_closes_all_reporting_resources_after_error(monkeypatch):
-    captured = {}
-
-    class FakeAgentOS:
-        def __init__(self, **values):
-            captured.update(values)
-
-        def get_app(self):
-            return captured["base_app"]
-
-    monkeypatch.setattr("smart_reporting.runtime.application.AgentOS", FakeAgentOS)
-    runtime_error = RuntimeError("runtime close failed")
-    runtime = FakeCloseable(runtime_error)
-    lsp_manager = FakeCloseable()
-    context = ApplicationContext(
-        AgentSettings.from_environment({}, load_env_file=False),
-        FakeAgent(),
-        FakeWorkflow(),
-        reporting_code_mode_runtime=runtime,
-        reporting_lsp_process_manager=lsp_manager,
-    )
-
-    create_agentos_app(context, FastAPI())
-    with pytest.raises(RuntimeError, match="runtime close failed") as raised:
-        async with captured["lifespan"](FastAPI()):
-            pass
-
-    assert raised.value is runtime_error
-    assert runtime.close_calls == 1
-    assert lsp_manager.close_calls == 1
-
-
-@pytest.mark.anyio
-async def test_reporting_runtime_identity_log_contains_deployment_boundary(monkeypatch):
+async def test_runtime_identity_log_contains_deployment_boundary(monkeypatch):
     from smart_reporting import app as app_module
 
     records: list[str] = []
@@ -254,93 +192,32 @@ async def test_reporting_runtime_identity_log_contains_deployment_boundary(monke
         monkeypatch.setattr(app_module, "settings", type("Settings", (), {"workers": 2})())
         monkeypatch.setenv("REPORTING_BUILD_ID", "test-build")
 
-        await app_module._log_reporting_runtime_identity()
+        await app_module._log_runtime_identity()
     finally:
         loguru_logger.remove(sink_id)
 
     assert records == [
-        "reporting_runtime_started workflow_id=enterprise-reporting-workflow-v1 "
-        "build_id=test-build database_backend=postgresql reporting_schema=agentos_reporting workers=2"
+        "office_runtime_started build_id=test-build database_backend=postgresql workers=2"
     ]
 
 
-@pytest.mark.anyio
-async def test_default_application_exposes_explicit_context():
-    from agno.os.mcp import build_mcp_server
+def test_default_application_exposes_explicit_context_and_retires_report_editors():
+    from fastapi.testclient import TestClient
 
     from smart_reporting import app as app_module
 
     context = app_module.base_app.state.agentos_context
     assert context.settings is app_module.settings
-    assert not hasattr(context, "workspace_service")
-    assert context.report_agent is app_module.report_agent
-    assert context.report_workflow is app_module.report_workflow
     assert app_module.agent_os.db is app_module.agent_database.async_db
-    assert app_module.reporting_agent_template.id == "smart-reporting"
-    assert [agent.id for agent in app_module.agent_os.agents or []] == ["smart-reporting"]
-    assert [workflow.id for workflow in app_module.agent_os.workflows or []] == [
-        "enterprise-reporting-workflow-v1"
-    ]
-    assert str(app_module.base_app.url_path_for("reporting_dependency_diagnostics")) == (
-        "/diagnostics/reporting-dependencies"
-    )
-    tools = await build_mcp_server(app_module.agent_os).list_tools()
-    assert {tool.name for tool in tools} == {
-        "run_reporting_workflow",
-        "continue_run",
-        "cancel_run",
-    }
-
-@pytest.mark.anyio
-async def test_refresh_worker_stops_before_native_database_lifespan(monkeypatch):
-    from contextlib import asynccontextmanager
-
-    events = []
-    class FakeAgentOS:
-        def __init__(self, **values):
-            self.values = values
-        def get_app(self):
-            app = self.values['base_app']
-            @asynccontextmanager
-            async def native(app):
-                events.append('database_open')
-                try:
-                    yield
-                finally:
-                    events.append('database_close')
-            app.router.lifespan_context = native
-            return app
-    class Worker:
-        def __init__(self, **values):
-            self.values = values
-        async def start(self):
-            events.append('worker_start')
-        async def stop(self):
-            events.append('worker_stop')
-    monkeypatch.setattr('smart_reporting.runtime.application.AgentOS', FakeAgentOS)
-    monkeypatch.setattr('agno.os.job_queue.QueueWorker', Worker)
-    monkeypatch.setattr('agno.os.job_queue.resolve_queue_store', lambda *args: object())
-    refresh, adoption, recovery = object(), object(), object()
-    monkeypatch.setattr('smart_reporting.report_editor.recalculation.create_refresh_workflow', lambda *args, **kwargs: refresh)
-    monkeypatch.setattr('smart_reporting.report_editor.recalculation.create_policy_adoption_workflow', lambda *args, **kwargs: adoption)
-    monkeypatch.setattr('smart_reporting.report_editor.policy_recovery.create_policy_recovery_workflow', lambda *args, **kwargs: recovery)
-    editor = SimpleNamespace(recalculation_database=object(), recalculation_runtime=object(),
-        recalculation_queue_worker=None)
-    context = ApplicationContext(AgentSettings.from_environment({}, load_env_file=False),
-        FakeAgent(), FakeWorkflow(), recalculation_editor=editor)
-    agent_os, app = create_agentos_app(context, FastAPI())
-    with pytest.raises(RuntimeError, match='serving failure'):
-        async with app.router.lifespan_context(app):
-            worker = editor.recalculation_queue_worker
-            assert worker.values['config'].max_attempts == 1
-            assert worker.values['config'].deployment_id == 'report-editor-refresh'
-            assert worker.values['resolve_component']('workflow', 'unknown') is None
-            assert worker.values['resolve_component']('workflow', 'report-editor-refresh') is refresh
-            assert worker.values['resolve_component']('workflow', 'report-editor-policy-adoption') is adoption
-            assert worker.values['resolve_component']('workflow', 'report-editor-policy-recovery') is recovery
-            assert worker.values['resolve_component']('agent', 'report-editor-policy-adoption') is None
-            # 内部工作流不注册公共AgentOS路由，不扩大编辑器会话入口。
-            assert agent_os.values['workflows'] == [context.report_workflow]
-            raise RuntimeError('serving failure')
-    assert editor.recalculation_queue_worker is None
-    assert events == ['database_open', 'worker_start', 'worker_stop', 'database_close']
+    assert list(app_module.agent_os.agents or []) == []
+    assert list(app_module.agent_os.workflows or []) == []
+    client = TestClient(app_module.base_app)
+    for path in (
+        "/reports/v1/editor/open/grant",
+        "/reports/v1/editor/report/1/api/native/open",
+        "/reports/v1/slides/report/1",
+        "/reports/v1/workbooks/report/1/api/file",
+    ):
+        response = client.get(path)
+        assert response.status_code == 410
+        assert response.json()["error"] == "report_editor_retired"

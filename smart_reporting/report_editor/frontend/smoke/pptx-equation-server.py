@@ -65,7 +65,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
     publication.repository = Repository()
     publication.public_base_url = f'http://127.0.0.1:{port}'
     editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
-        report_editor=None, office_enabled=True, publication=publication)
+        office_enabled=True, publication=publication)
     importer = NativeImportService(publication.workspace, publication.repository, publication.editor_grants)
     requests, calls = [], []
     actual = slides.run_bridge

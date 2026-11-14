@@ -35,8 +35,7 @@ async def http_env(tmp_path, monkeypatch):
     monkeypatch.setenv('AGENT_REPORTING_DOC_ENGINE_DIR', str(ENGINE))
     publication, _, downloads = await create_publication(tmp_path)
     publication.repository = Repository()
-    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
-                                 report_editor=None, docx_enabled=True, publication=publication)
+    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants, docx_enabled=True, publication=publication)
     importer = NativeImportService(publication.workspace, publication.repository, publication.editor_grants)
     app = FastAPI()
     app.state.agentos_context = SimpleNamespace(settings=SimpleNamespace(workspace_hmac_secret=SECRET))

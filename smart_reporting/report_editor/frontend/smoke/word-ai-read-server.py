@@ -58,7 +58,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
             return None
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
-    editor = NativeEditorService(workspace, ScopedRepository(), grants, report_editor=None, docx_enabled=False)
+    editor = NativeEditorService(workspace, ScopedRepository(), grants, docx_enabled=False)
 
     async def planner(**kwargs):
         selected = kwargs['reader'].scope == 'selection'

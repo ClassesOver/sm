@@ -18,16 +18,13 @@ from ..reporting.delivery.docx_native import inspect_docx, patch_docx
 from ..reporting.delivery.office_engine import engine_dir, run_office_engine
 from ..reporting.delivery.pdf_native import inspect_pdf, patch_pdf, patch_pdf_with_receipt
 from ..reporting.models import ReportingError
-from ..workspace import WorkspacePathConflict
 from ._file_identity import read_verified_file
-from .capabilities import EditorCapabilities
 from .native_models import (
     NATIVE_ARTIFACT_MEDIA,
     NATIVE_MEDIA,
     NativeEditorContext,
     NativeFormat,
     NativeScope,
-    NativeSource,
     native_digest,
 )
 from .native_pdf_contract import PDF_CONFIRMATION_KINDS, pdf_review_issues
@@ -64,7 +61,6 @@ class NativeEditorService:
         repository: Any,
         grants: ReportEditorGrantService,
         *,
-        report_editor: Any,
         docx_enabled: bool = False,
         pdf_enabled: bool = False,
         office_enabled: bool = False,
@@ -72,7 +68,7 @@ class NativeEditorService:
         publication: Any = None,
     ):
         self.workspace, self.repository, self.grants = workspace, repository, grants
-        self.report_editor, self.publication = report_editor, publication
+        self.publication = publication
         self.docx_enabled, self.pdf_enabled = docx_enabled, pdf_enabled
         self.office_enabled = office_enabled
         self.pdf_text_enabled = pdf_text_enabled
@@ -92,100 +88,6 @@ class NativeEditorService:
             "native_download": True,
             "format": context.format,
             "scope": context.scope.model_dump(mode="json", by_alias=True),
-        }
-
-    async def open_report(
-        self, session: ReportEditorSession, *, format: NativeFormat, request_id: str
-    ) -> dict[str, Any]:
-        started = perf_counter()
-        self.require_enabled(format)
-        if format not in {"docx", "pdf"}:
-            raise ReportingError("native_format_invalid", "工作簿和幻灯片报告沿用现有编辑入口。")
-        if not EditorCapabilities.of(
-            session.capabilities
-        ).full or session.workflow_run_id.startswith("native:"):
-            raise ReportingError("native_permission_denied", "分享会话不能创建独立原生编辑分支。")
-        context = await self.report_editor.context_for_session(session)
-        if context.delivery_format not in {"document", format}:
-            raise ReportingError("native_format_invalid", "只能打开报告已选择的 Word/PDF 交付格式。")
-        try:
-            scope = NativeScope.model_validate(
-                {key: context.scope[key] for key in ("database", "companyId", "userId", "threadId")}
-            )
-            label = "word" if format == "docx" else "pdf"
-            raw = context.job["render"][label]
-            identity = ArtifactFile.model_validate({**raw, "mediaType": _MEDIA[format]})
-        except (KeyError, TypeError, ValidationError) as error:
-            raise ReportingError(
-                "native_source_missing", "当前报告修订没有该格式的已登记产物。"
-            ) from error
-        if identity.size > _MAX_FILE_BYTES:
-            raise ReportingError(
-                "native_file_too_large", "文件超过 24 MiB 在线编辑上限，请使用原下载链接。"
-            )
-        content = await read_verified_file(
-            self.report_editor.workspace,
-            context.scope,
-            identity.path,
-            size=identity.size,
-            sha256=identity.sha256,
-            error_code="native_source_changed",
-            format_name=format.upper(),
-        )
-        key = bind_native_workspace(self.workspace, scope)
-        # 稳定来源身份与requestId绑定副本路径，重试读取相同字节而非覆盖原件。
-        copy_id = native_digest(
-            {
-                "scope": scope.model_dump(),
-                "reportId": context.report_id,
-                "revision": context.revision,
-                "workflowRunId": context.workflow_run_id,
-                "source": identity.model_dump(mode="json"),
-                "requestId": request_id,
-            }
-        )
-        path = f"native/sources/{copy_id}/original.{format}"
-        try:
-            await self.workspace.awrite_bytes(key, path, content)
-        except WorkspacePathConflict:
-            pass
-        copied = identity.model_copy(update={"path": path})
-        await read_verified_file(
-            self.workspace,
-            {"threadId": key},
-            copied.path,
-            size=copied.size,
-            sha256=copied.sha256,
-            error_code="native_source_changed",
-            format_name=format.upper(),
-        )
-        source = NativeSource(
-            format=format,
-            origin="report",
-            sourceFile=copied,
-            reportId=context.report_id,
-            workflowRunId=context.workflow_run_id,
-            revision=context.revision,
-            reportContextSha256=context.digest(),
-        )
-        document = await self.repository.create_from_source(
-            source, scope=scope, request_id=request_id
-        )
-        revision = await self.repository.get_revision(document.document_id, 1, scope=scope)
-        if revision is None or revision.context is None:
-            raise ReportingError("native_document_not_found", "原生修订尚未登记。")
-        grant, expires = await self.grants.issue(
-            revision.context, capabilities=self.capabilities(revision.context)
-        )
-        logger.bind(
-            format=format, document_id=document.document_id, revision=revision.context.revision,
-            elapsed_ms=round((perf_counter() - started) * 1000, 1), outcome="success",
-        ).info("native_report_open")
-        return {
-            "documentId": document.document_id,
-            "revision": 1,
-            "parentRevision": None,
-            "editor": {"url": f"/reports/v1/native/open/{grant}", "expiresAt": expires.isoformat()},
         }
 
     async def context_for_session(self, session: ReportEditorSession) -> NativeEditorContext:

@@ -101,7 +101,6 @@ async def create_app(directory: Path, port: int):
         workspace,
         ScopedRepository(),
         grants,
-        report_editor=None,
         pdf_enabled=True,
         pdf_text_enabled=True,
     )

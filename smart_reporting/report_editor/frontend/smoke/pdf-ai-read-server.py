@@ -90,7 +90,6 @@ async def create_app(directory: Path, port: int, *, draft: bool = False) -> Fast
         workspace,
         ScopedRepository(),
         grants,
-        report_editor=None,
         pdf_enabled=draft,
         pdf_text_enabled=draft,
     )

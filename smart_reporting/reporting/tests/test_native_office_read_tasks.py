@@ -55,8 +55,7 @@ async def office_sample(request, tmp_path):
     await workspace.awrite_bytes(bind_native_workspace(workspace, scope), context.source_file.path, content)
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
     editor = NativeEditorService(workspace, SimpleNamespace(get_revision=AsyncMock(
-        return_value=SimpleNamespace(status='saved', context=context))), grants,
-        report_editor=None, office_enabled=True)
+        return_value=SimpleNamespace(status='saved', context=context))), grants, office_enabled=True)
     raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
     _, session = await grants.exchange(raw)
     model = inspect_office(kind, content)

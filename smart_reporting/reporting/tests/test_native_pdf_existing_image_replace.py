@@ -44,8 +44,7 @@ async def _fixture(tmp_path, content):
     await publication.workspace.awrite_bytes(key, 'native/source.pdf', content)
     context = NativeEditorContext(documentId='document', revision=1, scope=old.scope, format='pdf', origin='upload',
                                   sourceFile=ArtifactFile(path='native/source.pdf', size=len(content), sha256=hashlib.sha256(content).hexdigest(), mediaType='application/pdf'))
-    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
-                                 report_editor=None, pdf_enabled=True, pdf_text_enabled=False, publication=publication)
+    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants, pdf_enabled=True, pdf_text_enabled=False, publication=publication)
     return editor, context, downloads
 
 

@@ -101,7 +101,7 @@ async def build_services(engine, workspace_root):
         public_base_url="http://test",
     )
     editor = NativeEditorService(
-        workspace, native, grants, report_editor=None,
+        workspace, native, grants,
         docx_enabled=True, pdf_enabled=True, office_enabled=True,
         pdf_text_enabled=True, publication=publication,
     )

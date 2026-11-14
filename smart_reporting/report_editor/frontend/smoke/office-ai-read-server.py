@@ -67,7 +67,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
             return None
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
-    editor = NativeEditorService(workspace, ScopedRepository(), grants, report_editor=None, office_enabled=False)
+    editor = NativeEditorService(workspace, ScopedRepository(), grants, office_enabled=False)
 
     def tool(identity, name, arguments):
         return ModelResponse(tool_calls=[{'id': identity, 'type': 'function',

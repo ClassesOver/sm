@@ -88,7 +88,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
                 return SimpleNamespace(status='saved', context=context)
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
-    editor = NativeEditorService(workspace, Repository(), grants, report_editor=None, office_enabled=True)
+    editor = NativeEditorService(workspace, Repository(), grants, office_enabled=True)
 
     class Planner:
         async def plan_slides(self, prompt, *, deck, scope, current_order, preview, session_id, user_id):

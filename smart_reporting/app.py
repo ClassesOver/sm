@@ -2,7 +2,6 @@ from contextlib import nullcontext
 from os import getenv
 from pathlib import Path
 
-from agno.os.config import MCPConfig
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from loguru import logger as loguru_logger
@@ -27,7 +26,6 @@ from .http.request_limits import (
 )
 from .http.security import CapabilityError, verify_capability
 from .integrations.agno_function_arguments import install_agno_function_argument_decoder
-from .integrations.dingyi_process import DingyiProcessAdapter, mount_process_routes
 from .management.api import create_management_router
 from .management.auth import AdminAuthService
 from .management.business_documents import BusinessDocumentService
@@ -48,61 +46,39 @@ from .management.statistical_policies import StatisticalPolicyService
 from .management.statistical_policy_api import create_statistical_policy_router
 from .management.table_access_api import create_table_access_router
 from .management.version_options import create_version_options_router
+from .office.editor_grant_repository import SqlAlchemyReportEditorRepository
+from .office.editor_grants import ReportEditorGrantService
+from .office.model import create_office_model
 from .quality_warnings.api import create_quality_warning_router
 from .quality_warnings.repository import SqlAlchemyQualityWarningRepository
 from .quality_warnings.service import QualityWarningService
-from .report_editor import (
-    ReportEditorGrantService,
-    ReportEditorService,
-    ReportSlidesEditorService,
-    ReportSlidesImageService,
-    ReportWorkbookEditorService,
-    SqlAlchemyReportEditorRepository,
-    create_report_editor_ai_service,
-    create_report_editor_chart_ai_service,
-    create_report_editor_router,
-    create_report_editor_table_ai_service,
-    create_report_slides_ai_service,
-    create_report_slides_editor_router,
-    create_report_workbook_ai_service,
-    create_report_workbook_editor_router,
-)
-from .report_editor.data_revisions import ReportDataRevisionService
-from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
 from .report_editor.native import NativeEditorService
 from .report_editor.native_ai import create_native_ai_service
 from .report_editor.native_ai_api import create_native_ai_router
+from .report_editor.native_api import create_native_editor_router
+from .report_editor.native_import import NativeImportService
+from .report_editor.native_import_api import create_native_import_router
+from .report_editor.native_office_read_tasks import NativeOfficeReadService
 from .report_editor.native_pdf_ai import create_native_pdf_read_planner
 from .report_editor.native_pdf_ai_tasks import NativePDFReadService
-from .report_editor.native_office_read_tasks import NativeOfficeReadService
+from .report_editor.native_pdf_form_ai import AgnoNativePDFFormPlanner
+from .report_editor.native_pdf_form_ai_api import create_native_pdf_form_ai_router
+from .report_editor.native_pdf_form_ai_tasks import NativePDFFormService
+from .report_editor.native_pdf_review_ai import create_native_pdf_review_planner
+from .report_editor.native_pdf_review_ai_api import create_native_pdf_review_ai_router
+from .report_editor.native_pdf_review_ai_tasks import NativePDFReviewService
+from .report_editor.native_publication import NativePublicationService
+from .report_editor.native_readiness import native_readiness_checks
+from .report_editor.native_repository import NativeDocumentRepository
 from .report_editor.native_slides_read_ai import AgnoNativeSlidesReadPlanner
-from .report_editor.native_workbook_read_ai import AgnoNativeWorkbookReadPlanner
 from .report_editor.native_word_read_ai import AgnoNativeWordReadPlanner
 from .report_editor.native_word_read_tasks import NativeWordReadService
-from .report_editor.native_pdf_review_ai import create_native_pdf_review_planner
-from .report_editor.native_pdf_review_ai_tasks import NativePDFReviewService
-from .report_editor.native_pdf_review_ai_api import create_native_pdf_review_ai_router
-from .report_editor.native_pdf_form_ai import AgnoNativePDFFormPlanner
-from .report_editor.native_pdf_form_ai_tasks import NativePDFFormService
-from .report_editor.native_pdf_form_ai_api import create_native_pdf_form_ai_router
+from .report_editor.native_workbook_read_ai import AgnoNativeWorkbookReadPlanner
 from .report_editor.slides_native_ai import create_native_slides_ai_service
 from .report_editor.slides_native_ai_api import create_native_slides_ai_router
 from .report_editor.workbook_native_ai import create_native_workbook_ai_service
 from .report_editor.workbook_native_ai_api import create_native_workbook_ai_router
-from .report_editor.native_api import create_native_editor_router
-from .report_editor.native_import import NativeImportService
-from .report_editor.native_import_api import create_native_import_router
-from .report_editor.native_publication import NativePublicationService
-from .report_editor.native_readiness import native_readiness_checks
-from .report_editor.native_repository import NativeDocumentRepository
-from .report_editor.slides_chart_ai import ReportSlidesChartAIService
-from .office.model import create_office_model
-from .reporting.agent import create_report_agent
-from .reporting.bootstrap import create_report_runtime
 from .reporting.business_knowledge.originals import BusinessOriginalStore
-from .reporting.code_agent.lsp_process import ReportingLspProcessManager
-from .reporting.code_mode import create_reporting_code_mode_runtime
-from .reporting.data_source.starrocks import StarRocksSourceConfig
 from .reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
@@ -112,23 +88,14 @@ from .reporting.delivery.publishing import (
     create_report_download_router,
     install_report_download_access_log_filter,
 )
-from .reporting.diagnostics import (
-    ReportingDependencyDiagnostics,
-    create_reporting_dependency_diagnostics_router,
-)
 from .reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .reporting.metadata import ReportingMetadataClient
-from .reporting.workflow.controller import ReportWorkflowController
-from .reporting.workflow.repository import REPORTING_DB_SCHEMA
-from .reporting.workflow.runtime.standard_chart_proof import configure_render_proof_signing
-from .reporting_mcp.identity import CapabilityTokenVerifier
 from .runtime.application import ApplicationContext, create_agentos_app
 from .runtime.database import check_database, create_agent_database
-from .runtime.execution import ExecutionContext, configure_execution_tracing
+from .runtime.execution import configure_execution_tracing
 from .runtime.logging import configure_application_logging, configure_file_logging
 from .runtime.settings import AgentSettings
 from .runtime.system_configuration import load_system_configuration
-from .task_execution import DEFAULT_TERMINAL_TIMEOUT
 
 install_agno_function_argument_decoder()
 system_configuration = load_system_configuration(AgentSettings.from_environment())
@@ -143,6 +110,7 @@ configure_file_logging(
 validate_configured_tiktoken_cache()
 agent_database = create_agent_database(settings.database_url)
 configure_execution_tracing(agent_database, settings)
+# 历史报告产物与业务原件仍位于原宿主机工作区；Office 文件使用独立的 native 子目录。
 reporting_workspace_registry = ReportingWorkspaceRegistry(
     settings.reporting_host_workspace_root,
     secret=settings.workspace_hmac_secret,
@@ -151,15 +119,6 @@ native_workspace = ReportingWorkspaceRouter(ReportingWorkspaceRegistry(
     Path(settings.reporting_host_workspace_root) / "native",
     secret=settings.workspace_hmac_secret,
 ))
-# 标准渲染证明签名复用工作区密钥（按用途派生子密钥），使模板演进后旧证明仍可核验。
-configure_render_proof_signing(settings.workspace_hmac_secret)
-reporting_code_mode_runtime = create_reporting_code_mode_runtime(
-    reporting_workspace_registry.root,
-    analysis_concurrency=settings.report_analysis_concurrency,
-    section_concurrency=settings.report_section_concurrency,
-    timeout=DEFAULT_TERMINAL_TIMEOUT,
-)
-reporting_lsp_process_manager = ReportingLspProcessManager()
 report_download_repository = SqlAlchemyDownloadGrantRepository(agent_database.async_engine)
 report_editor_repository = SqlAlchemyReportEditorRepository(agent_database.async_engine)
 native_document_repository = NativeDocumentRepository(agent_database.async_engine)
@@ -171,11 +130,7 @@ quality_warning_repository = SqlAlchemyQualityWarningRepository(agent_database.a
 quality_warning_service = QualityWarningService(quality_warning_repository)
 report_artifact_repository = SqlAlchemyReportArtifactRepository(agent_database.async_engine)
 report_download_grants = ReportDownloadGrantService(report_download_repository)
-# 报告产物读取依赖 Reporting 宿主机工作区的有界读取接口。
-report_artifact_persistence = ReportArtifactPersistenceService(
-    report_artifact_repository,
-    ReportingWorkspaceRouter(reporting_workspace_registry),
-)
+# 已签发的历史报告下载链接继续有效，按原工作区有界读取。
 report_downloads = ReportDownloadHttpService(
     report_download_grants,
     report_artifact_repository,
@@ -188,18 +143,34 @@ native_downloads = ReportDownloadHttpService(
     report_download_grants, report_artifact_repository, workspace_service=native_workspace,
 )
 router = APIRouter()
+# 报告工作流与旧 Markdown/幻灯片/工作簿编辑器已退役，旧编辑链接统一返回 410。
+_RETIRED_EDITOR_PREFIXES = ("/reports/v1/editor", "/reports/v1/slides", "/reports/v1/workbooks")
 
 
-async def _log_reporting_runtime_identity() -> None:
-    """记录实际启动的 Reporting 版本和数据库边界，便于确认镜像是否已更新。"""
+def _retired_editor_response() -> JSONResponse:
+    return JSONResponse(
+        {"error": "report_editor_retired", "message": "旧报告编辑入口已停用，请在 Office 中打开文件。"},
+        status_code=410,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+for _prefix in _RETIRED_EDITOR_PREFIXES:
+    router.add_api_route(
+        f"{_prefix}/{{retired_path:path}}",
+        _retired_editor_response,
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        include_in_schema=False,
+    )
+
+
+async def _log_runtime_identity() -> None:
+    """记录实际启动的版本和数据库边界，便于确认镜像是否已更新。"""
 
     loguru_logger.info(
-        "reporting_runtime_started workflow_id={} build_id={} database_backend={} "
-        "reporting_schema={} workers={}",
-        "enterprise-reporting-workflow-v1",
+        "office_runtime_started build_id={} database_backend={} workers={}",
         getenv("REPORTING_BUILD_ID", "unknown"),
         agent_database.backend,
-        REPORTING_DB_SCHEMA,
         settings.workers,
     )
 
@@ -321,43 +292,6 @@ reporting_metadata_client = (
     if settings.report_metadata_url
     else None
 )
-reporting_agent_template, report_runtime = create_report_runtime(
-    ExecutionContext(
-        settings=settings,
-        database=agent_database.async_db,
-        trace_database=agent_database.sync_db,
-        reporting_workspace_registry=reporting_workspace_registry,
-        reporting_code_mode_runtime=reporting_code_mode_runtime,
-        reporting_lsp_process_manager=reporting_lsp_process_manager,
-    ),
-    settings,
-    download_grants=report_download_grants,
-    editor_grants=report_editor_grants,
-    artifact_persistence=report_artifact_persistence,
-    quality_warning_service=quality_warning_service,
-)
-report_design_templates = SqlAlchemyDesignTemplateRepository(agent_database.async_engine)
-report_editor = ReportEditorService(
-    state_repository=report_runtime.state_repository,
-    design_templates=report_design_templates,
-    workspace_registry=reporting_workspace_registry,
-    workspace=report_runtime.workspace_service,
-    report_tools=report_runtime.report_tools,
-    artifact_persistence=report_artifact_persistence,
-    download_grants=report_download_grants,
-    editor_grants=report_editor_grants,
-    public_base_url=settings.report_public_base_url,
-    export_timeout_seconds=settings.report_editor_export_timeout_seconds,
-    report_basis_service=report_runtime.report_basis_service,
-    business_evidence_service=report_runtime.business_evidence_service,
-    recalculation_runtime=report_runtime,
-    recalculation_database=agent_database.async_db,
-    recalculation_durable=True,
-    lineage_panel_enabled=settings.report_lineage_panel_enabled,
-    lineage_download_enabled=settings.report_lineage_download_enabled,
-    lineage_drilldown_enabled=settings.report_lineage_drilldown_enabled,
-    lineage_export_sources_enabled=settings.report_lineage_export_sources_enabled,
-)
 native_publication = NativePublicationService(
     native_document_repository, native_workspace, report_download_grants, report_editor_grants,
     artifact_persistence=native_artifact_persistence,
@@ -365,12 +299,12 @@ native_publication = NativePublicationService(
 )
 native_editor = NativeEditorService(
     native_workspace, native_document_repository, report_editor_grants,
-    report_editor=report_editor, publication=native_publication,
+    publication=native_publication,
     docx_enabled=settings.native_docx_enabled, pdf_enabled=settings.native_pdf_enabled,
     office_enabled=settings.native_upload_enabled,
     pdf_text_enabled=settings.native_pdf_text_enabled,
 )
-# Office 文件内 AI 独立按部署配置创建模型，不再借用报告运行时。
+# Office 文件内 AI 按部署配置独立创建模型。
 office_model = create_office_model(settings)
 native_ai = create_native_ai_service(
     office_model, native_editor, enabled=settings.native_ai_enabled,
@@ -404,95 +338,6 @@ native_pdf_form_ai = NativePDFFormService(
     enabled=settings.native_ai_enabled,
 )
 native_import = NativeImportService(native_workspace, native_document_repository, report_editor_grants)
-report_slides_editor = ReportSlidesEditorService(
-    state_repository=report_runtime.state_repository,
-    workspace_registry=reporting_workspace_registry,
-    workspace=report_runtime.workspace_service,
-    editor_grants=report_editor_grants,
-    artifact_persistence=report_artifact_persistence,
-    download_grants=report_download_grants,
-    public_base_url=settings.report_public_base_url,
-    report_editor=report_editor,
-)
-report_workbook_editor = ReportWorkbookEditorService(
-    state_repository=report_runtime.state_repository,
-    workspace_registry=reporting_workspace_registry,
-    workspace=report_runtime.workspace_service,
-    editor_grants=report_editor_grants,
-    artifact_persistence=report_artifact_persistence,
-    download_grants=report_download_grants,
-    public_base_url=settings.report_public_base_url,
-    report_editor=report_editor,
-)
-report_workbook_ai = create_report_workbook_ai_service(
-    reporting_agent_template.model, report_workbook_editor
-)
-report_slides_ai = create_report_slides_ai_service(
-    reporting_agent_template.model, report_slides_editor
-)
-report_slides_image_ai = ReportSlidesImageService(
-    report_slides_editor,
-    api_key=settings.openai_api_key,
-    base_url=settings.openai_base_url,
-    model=settings.report_slides_image_model,
-)
-report_editor_ai = create_report_editor_ai_service(reporting_agent_template.model)
-# 编辑器 AI 改图（AGENT_REPORT_EDITOR_CHART_AI_ENABLED，默认开启）：与可视化章节复用
-# 同一 code agent 工厂、CodeMode runtime、LSP、视觉审查与任务注册表；未配置
-# 视觉审查模型时服务构造仍成功，可用性接口按 vision_missing 提示不可用。
-report_editor_chart_ai = None
-if settings.report_editor_chart_ai_enabled:
-    from .reporting.workflow.runtime.code_generation import ReportingCodeGenerationRunner
-
-    report_editor_chart_ai = create_report_editor_chart_ai_service(
-        editor=report_editor,
-        workspace_registry=reporting_workspace_registry,
-        model=reporting_agent_template.model,
-        runner=ReportingCodeGenerationRunner(
-            report_runtime.visualization_code_agent_factory,
-            reporting_code_mode_runtime,
-            lsp_manager=reporting_lsp_process_manager,
-            registry=report_runtime.coding_task_registry,
-            vision_reviewer=report_runtime.vision_reviewer,
-        ),
-        hourly_limit=settings.report_editor_chart_ai_hourly_limit,
-        timeout_seconds=float(settings.report_editor_chart_ai_timeout_seconds),
-    )
-report_slides_chart_ai = (
-    ReportSlidesChartAIService(report_slides_editor, chart_ai=report_editor_chart_ai)
-    if report_editor_chart_ai is not None else None
-)
-report_data_revisions = ReportDataRevisionService(editor=report_editor, chart_service=report_editor_chart_ai)
-report_editor_table_ai = None
-if settings.report_editor_table_ai_enabled:
-    report_editor_table_ai = create_report_editor_table_ai_service(
-        editor=report_editor,
-        model=reporting_agent_template.model,
-        hourly_limit=settings.report_editor_table_ai_hourly_limit,
-        timeout_seconds=float(settings.report_editor_table_ai_timeout_seconds),
-    )
-report_workflow = report_runtime.workflow()
-dingyi_process = DingyiProcessAdapter(agent_database.sync_engine)
-report_workflow_controller = ReportWorkflowController(
-    report_runtime.workflow,
-    thread_ownership=report_runtime.state_repository,
-    terminal_cleanup=report_runtime.cleanup_terminal,
-    process_lifecycle=dingyi_process,
-)
-report_agent = create_report_agent(
-    reporting_agent_template, report_workflow_controller, settings=settings
-)
-reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
-    sources=tuple(
-        source
-        for source in (report_runtime.registry.sources.values() if report_runtime.registry is not None else ())
-        if isinstance(source, StarRocksSourceConfig)
-    ),
-    metadata_client=reporting_metadata_client,
-)
-router.include_router(
-    create_reporting_dependency_diagnostics_router(reporting_dependency_diagnostics)
-)
 
 
 def create_base_app(context: ApplicationContext) -> FastAPI:
@@ -502,21 +347,10 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.state.management_auth = management_auth
     management_settings = ManagementSettings.from_environment()
     application.state.management_settings = management_settings
-    application.include_router(create_management_router(management_auth, management_settings, report_runtime=report_runtime,
-        startup_settings=settings, system_configuration_state=system_configuration.state))
-    from .management.format_preferences import FormatPreferenceService
-    from .management.preference_approval import PreferenceApprovalService
-    from .management.preference_report_preflight import BoundPreferencePreflightService
-    from .management.preference_verification import PreferenceVerificationHandoffService
-    from .management.preference_verification_api import create_preference_verification_router
-    from .preferences.models import FormatPreferences
-
-    preferences = FormatPreferenceService(management_auth, FormatPreferences.from_delivery(settings.report_delivery_settings))
-    bound_preferences = BoundPreferencePreflightService(preferences=preferences,
-        editor=report_editor, grants=report_editor_grants)
-    preference_verification = PreferenceVerificationHandoffService(preferences=preferences, bound=bound_preferences)
-    application.state.preference_approval = PreferenceApprovalService(evidence=preference_verification.evidence)
-    application.include_router(create_preference_verification_router(preference_verification, management_settings))
+    application.include_router(create_management_router(
+        management_auth, management_settings,
+        startup_settings=settings, system_configuration_state=system_configuration.state,
+    ))
     try:
         source_vault = CredentialVault()
     except Exception:
@@ -533,8 +367,6 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     ))
     business_evidence = BusinessEvidenceService(business_documents, None)
     application.state.business_evidence = business_evidence
-    report_runtime.business_evidence_service = business_evidence
-    report_editor.trace.business_evidence_service = business_evidence
     application.include_router(create_business_evidence_router(business_evidence, management_settings))
     application.include_router(create_metrics_router(MetricService(management_scopes), management_settings))
     application.include_router(create_statistical_policy_router(
@@ -554,23 +386,6 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
-    application.include_router(
-        create_report_editor_router(
-            report_editor_grants,
-            editor=report_editor,
-            ai=report_editor_ai,
-            chart_ai=report_editor_chart_ai,
-            data_revisions=report_data_revisions,
-            table_ai=report_editor_table_ai,
-            native_editor=native_editor,
-            cookie_secure=bool(
-                settings.report_public_base_url
-                and settings.report_public_base_url.startswith("https://")
-            ),
-            allowed_origin=settings.report_public_base_url,
-            static_dir=settings.report_editor_static_dir,
-        )
-    )
     static_root = Path(
         settings.report_editor_static_dir
         or Path(__file__).with_name("report_editor") / "static"
@@ -604,44 +419,15 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
         allowed_origin=settings.report_public_base_url,
     ))
     application.include_router(create_native_import_router(native_import, enabled=settings.native_upload_enabled))
-    application.include_router(
-        create_report_slides_editor_router(
-            report_editor_grants,
-            slides=report_slides_editor,
-            slides_ai=report_slides_ai,
-            slides_images=report_slides_image_ai,
-            slides_charts=report_slides_chart_ai,
-            static_dir=static_root / "slides",
-            cookie_secure=bool(
-                settings.report_public_base_url
-                and settings.report_public_base_url.startswith("https://")
-            ),
-        )
-    )
-    application.include_router(
-        create_report_workbook_editor_router(
-            report_editor_grants,
-            workbooks=report_workbook_editor,
-            workbook_ai=report_workbook_ai,
-            static_dir=static_root,
-            cookie_secure=bool(
-                settings.report_public_base_url
-                and settings.report_public_base_url.startswith("https://")
-            ),
-        )
-    )
     application.include_router(create_quality_warning_router())
-    mount_process_routes(application, dingyi_process)
     application.router.add_event_handler("startup", _refresh_file_logging)
     application.router.add_event_handler("startup", business_ingestion_worker.start)
-    application.router.add_event_handler("startup", _log_reporting_runtime_identity)
+    application.router.add_event_handler("startup", _log_runtime_identity)
     application.router.add_event_handler("startup", install_report_download_access_log_filter)
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     application.router.add_event_handler("startup", report_editor_repository.create_schema)
     application.router.add_event_handler("startup", native_document_repository.create_schema)
-    application.router.add_event_handler("startup", report_design_templates.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
-    application.router.add_event_handler("shutdown", report_editor.aclose)
     application.router.add_event_handler("shutdown", business_ingestion_worker.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
@@ -652,34 +438,13 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("shutdown", native_pdf_form_ai.aclose)
     application.router.add_event_handler("shutdown", native_slides_ai.aclose)
     application.router.add_event_handler("shutdown", native_workbook_ai.aclose)
-    if report_editor_chart_ai is not None:
-        application.router.add_event_handler("shutdown", report_editor_chart_ai.aclose)
-    if report_editor_table_ai is not None:
-        application.router.add_event_handler("shutdown", report_editor_table_ai.aclose)
     return application
 
 
 application_context = ApplicationContext(
     settings,
-    report_agent,
-    report_workflow,
     database=agent_database,
-    recalculation_editor=report_editor,
     quality_warning_service=quality_warning_service,
-    mcp_config=MCPConfig(
-        tools=[
-            report_workflow.as_tool(
-                name="run_reporting_workflow",
-                description="运行企业智能运营报表工作流，返回官方 Run 状态和审核要求。",
-            )
-        ],
-        default_tools=False,
-        lifecycle_tools=True,
-        allowed_hosts=list(settings.reporting_mcp_allowed_hosts),
-    ),
-    mcp_auth=CapabilityTokenVerifier(settings.workspace_hmac_secret),
-    reporting_code_mode_runtime=reporting_code_mode_runtime,
-    reporting_lsp_process_manager=reporting_lsp_process_manager,
 )
 base_app = create_base_app(application_context)
 agent_os, app = create_agentos_app(application_context, base_app)

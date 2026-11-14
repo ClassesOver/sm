@@ -61,7 +61,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
                 return SimpleNamespace(status='saved', context=context)
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
-    editor = NativeEditorService(workspace, ScopedRepository(), grants, report_editor=None, docx_enabled=True)
+    editor = NativeEditorService(workspace, ScopedRepository(), grants, docx_enabled=True)
     planner_calls = []
 
     class Planner:

@@ -25,7 +25,7 @@ async def create_app(directory, port, static_root, selected_cases=('default', 'a
     repository = run_path(str(scripts / 'pdf-form-design-server.py'))['SaveRepository']()
     publication, _, downloads = await create_publication(directory / 'runtime')
     publication.repository = repository; publication.public_base_url = f'http://127.0.0.1:{port}'
-    editor = NativeEditorService(publication.workspace, repository, publication.editor_grants, report_editor=None, office_enabled=True, publication=publication)
+    editor = NativeEditorService(publication.workspace, repository, publication.editor_grants, office_enabled=True, publication=publication)
     importer = NativeImportService(publication.workspace, repository, publication.editor_grants)
     cases = {}
     for case, identity in sources.items():

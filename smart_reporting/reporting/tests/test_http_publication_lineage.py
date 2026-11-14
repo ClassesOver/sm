@@ -3194,8 +3194,7 @@ async def test_native_http_publication_keeps_download_on_optional_faults(tmp_pat
 
     publication, context, downloads = await create_publication(tmp_path)
     grants = publication.editor_grants
-    editor = NativeEditorService(publication.workspace, publication.repository, grants,
-        report_editor=None, docx_enabled=True, publication=publication)
+    editor = NativeEditorService(publication.workspace, publication.repository, grants, docx_enabled=True, publication=publication)
     # 本测试覆盖保存与签发，来源分支/仓储鉴权另由 native_editor_api 与真实PG测试验证。
     editor.context_for_session = AsyncMock(return_value=context)
     raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
@@ -3297,7 +3296,7 @@ async def test_native_office_postwrite_validation_failure_keeps_http_download(tm
     content=stream.getvalue();key=bind_native_workspace(publication.workspace,old.scope)
     path=f'native/source.{format}';await publication.workspace.awrite_bytes(key,path,content)
     context=NativeEditorContext(documentId='document',revision=1,origin='upload',format=format,scope=old.scope,sourceFile=ArtifactFile(path=path,mediaType=NATIVE_MEDIA[format],size=len(content),sha256=hashlib.sha256(content).hexdigest()))
-    editor=NativeEditorService(publication.workspace,publication.repository,publication.editor_grants,report_editor=None,office_enabled=True,publication=publication)
+    editor=NativeEditorService(publication.workspace,publication.repository,publication.editor_grants,office_enabled=True,publication=publication)
     editor.context_for_session=AsyncMock(return_value=context)
     raw,_=await publication.editor_grants.issue(context,capabilities=editor.capabilities(context));token,_=await publication.editor_grants.exchange(raw)
     monkeypatch.setattr(native_office,'inspect_office',lambda *_: (_ for _ in ()).throw(ValueError('structure unavailable')))

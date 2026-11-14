@@ -59,7 +59,6 @@ async def sample(tmp_path):
             get_revision=AsyncMock(return_value=SimpleNamespace(status="saved", context=context))
         ),
         grants,
-        report_editor=None,
         docx_enabled=True,
     )
     raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
@@ -715,7 +714,6 @@ async def pdf_sample(tmp_path):
             get_revision=AsyncMock(return_value=SimpleNamespace(status="saved", context=context))
         ),
         grants,
-        report_editor=None,
         pdf_enabled=True,
         pdf_text_enabled=True,
     )

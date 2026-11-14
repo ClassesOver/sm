@@ -121,7 +121,6 @@ async def extract_fixture(tmp_path):
         workspace,
         repository,
         publication.editor_grants,
-        report_editor=object(),
         pdf_enabled=True,
         publication=publication,
     )

@@ -21,7 +21,7 @@ from fastapi.responses import (
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
 
 from ..office.contract import SHA256_PATTERN
-from ..office.editor_grants import EDITOR_SESSION_COOKIE, ReportEditorGrantService
+from ..office.editor_grants import ReportEditorGrantService
 from ..reporting.delivery.docx_native import inspect_docx
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.pdf_native import (
@@ -57,12 +57,6 @@ class NativeImageBackgroundClip(BaseModel):
 class NativeImageBackgroundPayload(NativeImagePixelsPayload):
     clip: NativeImageBackgroundClip
     pxWidth: StrictInt = Field(ge=1, le=2400)
-
-
-class NativeOpenPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    format: Literal["docx", "pdf"]
-    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
 
 
 class NativeSavePayload(BaseModel):
@@ -224,21 +218,6 @@ def create_native_editor_router(
             if session.report_id != document_id or session.revision != revision:
                 raise ReportingError("native_permission_denied", "原生会话与请求版本不一致。")
             return session, await editor.context_for_session(session)
-        except ReportingError as error:
-            raise _error(error) from None
-
-    @router.post("/reports/v1/editor/{report_id}/{revision}/api/native/open")
-    async def open_from_report(
-        report_id: str, revision: int, request: Request, payload: NativeOpenPayload
-    ):
-        _csrf(request, grants, EDITOR_SESSION_COOKIE, allowed_origin)
-        try:
-            session = await grants.lookup_session(request.cookies.get(EDITOR_SESSION_COOKIE, ""))
-            if session.report_id != report_id or session.revision != revision:
-                raise ReportingError("native_permission_denied", "报告会话与请求版本不一致。")
-            return await editor.open_report(
-                session, format=payload.format, request_id=payload.request_id
-            )
         except ReportingError as error:
             raise _error(error) from None
 
