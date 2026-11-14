@@ -61,4 +61,3 @@ def test_derived_export_forces_nested_alias_mask(restricted_snapshot):
     assert nested in columns
     assert "public" not in columns
     assert mask == "***"
-
