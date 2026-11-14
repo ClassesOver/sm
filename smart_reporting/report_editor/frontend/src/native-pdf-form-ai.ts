@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import {bindOfficeAssistantPanel} from './office-assistant-panel'
 /** AI 仅填写明确授权的已有字段，候选须显式采纳到原生草稿。 */
 import {createElement,Sparkles,Check,CircleStop,X} from 'lucide'
@@ -27,26 +28,24 @@ export function bindNativePDFFormAI(root:HTMLElement,options:{api:PDFFormAIClien
  panel.append(title,help,fields,input,start,accept,cancel,close,status,output,details);root.append(panel)
  const panelView=bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,onClose:()=>stop()})
  const progress=mountNativeAIProgress(panel)
- let disposed=false,busy=false,accepting=false,generation=0,request:string|undefined,controller:AbortController|undefined,job:PDFFormAIJob|undefined,base:NativeOperation[]=[],snapshot=''
+ let disposed=false,busy=false,accepting=false,generation=0,request:string|undefined,job:PDFFormAIJob|undefined,base:NativeOperation[]=[],snapshot=''
+ const tasks = new OfficeAssistantController({start:options.api.pdfFormAIStart,status:options.api.pdfFormAIStatus,cancelRequest:options.api.pdfFormAICancel,id:(value: PDFFormAIJob)=>value.editId,running:(value: PDFFormAIJob)=>value.status==='running'})
  const selected=new Set<string>(),editable=()=>!disposed&&!options.draft.closed&&!options.draft.saving&&options.canEdit()
  const available=()=>options.fields().filter(field=>field.editable&&['text','checkbox','radio','choice'].includes(field.kind))
  const value=(field:PdfFormField)=>{const pending=options.draft.operations.findLast(op=>op.kind==='setFormValue'&&op.fieldId===field.fieldId);return pending?(field.kind==='checkbox'?pending.checked:pending.value):field.value}
  const text=(v:unknown)=>typeof v==='boolean'?(v?'已勾选':'未勾选'):v==null?'未填写':String(v)
  function capture(){const known=available();if(!selected.size||[...selected].some(id=>!known.some(f=>f.fieldId===id)))throw new Error('请选择有效字段；失效选区不会扩大为全部表单');return JSON.stringify({instruction:input.value.trim(),operations:options.draft.operations,fields:known.filter(f=>selected.has(f.fieldId)).map(f=>({...f,currentValue:value(f)}))})}
  function update(){start.disabled=busy||accepting||!editable()||!selected.size||!input.value.trim();accept.disabled=busy||accepting||!editable()||job?.status!=='succeeded'||!job.result;cancel.disabled=!request;fields.disabled=busy||accepting||!editable()}
- function stop(message='建议已取消') {const id=request,turn=++generation;request=undefined;controller?.abort();progress.reset();busy=false;job=undefined;output.textContent='';details.replaceChildren();status.textContent=message;update();if(id)void options.api.pdfFormAICancel(id).catch(error=>{if(turn===generation&&!disposed)status.textContent=error instanceof Error?error.message:'取消失败'})}
+ function stop(message='建议已取消') {const turn=++generation;request=undefined;progress.reset();busy=false;job=undefined;output.textContent='';details.replaceChildren();status.textContent=message;update();void tasks.cancel().catch(error=>{if(turn===generation&&!disposed)status.textContent=error instanceof Error?error.message:'取消失败'})}
  function renderFields(){list.replaceChildren();for(const field of available()){const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.dataset.pdfFormAiField=field.fieldId;check.checked=selected.has(field.fieldId);check.onchange=()=>{if(request)stop('授权字段已变化，请重新生成建议');if(check.checked)selected.add(field.fieldId);else selected.delete(field.fieldId);update()};label.append(check,document.createTextNode(field.name+'：'+text(value(field))));list.append(label)}}
  async function run(){
   if(busy||accepting||!editable()||!input.value.trim())return
   if(request)stop('开始新的填写建议')
   try{snapshot=capture()}catch(error){status.textContent=(error as Error).message;return}
-  const turn=++generation;base=structuredClone(options.draft.operations);const selection=[...selected].map(fieldId=>({fieldId}));request=crypto.randomUUID();controller=new AbortController();const signal=controller.signal;busy=true;job=undefined;output.textContent='';details.replaceChildren();status.textContent='正在读取授权字段并核验填写建议';update()
+  const turn=++generation;base=structuredClone(options.draft.operations);const selection=[...selected].map(fieldId=>({fieldId}));request=crypto.randomUUID();busy=true;job=undefined;output.textContent='';details.replaceChildren();status.textContent='正在读取授权字段并核验填写建议';update()
   try{
-   let result=await options.api.pdfFormAIStart({clientRequestId:request,expectedSha256:options.draft.identity.sourceSha256,operations:base,selection,instruction:input.value.trim()},signal)
-   if(turn!==generation||disposed)return
-   progress.start(options.api.pdfFormAIEvents,result.editId,signal,()=>turn===generation&&editable())
-   while(turn===generation&&!disposed&&result.status==='running')result=await options.api.pdfFormAIStatus(result.editId,signal)
-   if(turn!==generation||disposed)return
+   const result=await tasks.run({clientRequestId:request,expectedSha256:options.draft.identity.sourceSha256,operations:base,selection,instruction:input.value.trim()},request,(started,signal)=>progress.start(options.api.pdfFormAIEvents,started.editId,signal,()=>turn===generation&&editable()))
+   if(!result || turn!==generation||disposed)return
    if(!editable()||capture()!==snapshot)throw new Error('草稿或授权字段已变化，请重新生成建议')
    if(result.status!=='succeeded'||!result.result){status.textContent=result.error?.message??'未返回可采纳建议';return}
    if(result.result.proposal.changes.some(change=>!selected.has(change.fieldId)))throw new Error('候选包含未授权字段，请重新生成建议')
@@ -60,12 +59,13 @@ export function bindNativePDFFormAI(root:HTMLElement,options:{api:PDFFormAIClien
  async function apply(){
   if(busy||accepting||!editable()||job?.status!=='succeeded'||!job.result)return
   try{if(capture()!==snapshot)throw new Error('草稿或授权字段已变化，请重新生成建议')}catch(error){job=undefined;status.textContent=(error as Error).message;update();return}
-  const turn=generation,candidate=job,finishMutation=options.beginMutation?.();accepting=true;busy=true;controller=new AbortController();update();let staged=false
+  const turn=generation,candidate=job,finishMutation=options.beginMutation?.();accepting=true;busy=true;update();let staged=false
   try{
-   const result=await options.api.pdfFormAIAccept(candidate.editId,{expectedSha256:options.draft.identity.sourceSha256,operations:structuredClone(base),snapshotSha256:candidate.snapshotSha256??candidate.result?.snapshotSha256??''},controller.signal)
+   const result=await tasks.accept(signal=>options.api.pdfFormAIAccept(candidate.editId,{expectedSha256:options.draft.identity.sourceSha256,operations:structuredClone(base),snapshotSha256:candidate.snapshotSha256??candidate.result?.snapshotSha256??''},signal))
+   if(!result)return
    if(turn!==generation||disposed)return
    if(!editable()||capture()!==snapshot)throw new Error('草稿或授权字段已变化，请重新生成建议')
-   options.draft.setOperations(result.operations);staged=true;options.onDraftChange();job=undefined;request=undefined;await options.view.refresh()
+   options.draft.setOperations(result.operations);tasks.release();staged=true;options.onDraftChange();job=undefined;request=undefined;await options.view.refresh()
    if(turn!==generation||disposed)return
    renderFields();status.textContent='填写建议已进入草稿，请核对实际 PDF 预览并保存。'
   }catch(error){if(turn===generation&&!disposed)status.textContent=(staged?'建议已进入草稿，但预览刷新失败：':'')+(error instanceof Error?error.message:'采纳失败')}finally{accepting=false;if(turn===generation&&!disposed)busy=false;update();finishMutation?.()}
