@@ -12,6 +12,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
@@ -33,6 +34,7 @@ from sqlalchemy import (
     text,
     update,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 
 from .acceptance import AcceptanceContractError, normalize_acceptance_contract
@@ -48,8 +50,10 @@ from .models import (
     TaskState,
     utcnow,
 )
+from .native_word_contracts import normalize_word_input
+from .native_word_repository import NativeWordTaskRepositoryMixin
 
-TASK_SCHEMA_VERSION = "2.1.0"
+TASK_SCHEMA_VERSION = "2.2.0"
 TASK_EXECUTION_DB_SCHEMA = "agentos_coding"
 MAX_CONTINUATIONS = 20
 MAX_TERMINAL_OUTPUT_BYTES = 256 * 1024
@@ -176,7 +180,7 @@ def _execution_from_row(row: Any) -> TaskExecution:
     )
 
 
-class TaskExecutionRepository:
+class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
     def __init__(self, db: AsyncBaseDb):
         if db.db_engine.dialect.name != "postgresql":  # type: ignore[attr-defined]
             raise ValueError("任务执行仓储只支持 PostgreSQL。")
@@ -210,6 +214,16 @@ class TaskExecutionRepository:
             Column("lease_owner", String(128)),
             Column("lease_expires_at", DateTime(timezone=True)),
             Column("mutation_sequence", BigInteger, nullable=False, default=0),
+            Column("native_word_input", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
+            Column("native_word_input_sha256", String(64)),
+            Column("native_word_candidate_receipt", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
+            Column("native_word_candidate_sha256", String(64)),
+            CheckConstraint("(native_word_input IS NULL) = (native_word_input_sha256 IS NULL)",
+                            name="ck_coding_tasks_word_input_pair"),
+            CheckConstraint("(native_word_candidate_receipt IS NULL) = (native_word_candidate_sha256 IS NULL)",
+                            name="ck_coding_tasks_word_receipt_pair"),
+            CheckConstraint("native_word_candidate_receipt IS NULL OR native_word_input IS NOT NULL",
+                            name="ck_coding_tasks_word_receipt_input"),
             Column("acceptance_contract", JSON),
             Column("finish_payload", JSON),
             Column("finish_receipt", JSON),
@@ -433,6 +447,10 @@ class TaskExecutionRepository:
                 ("state_version", "BIGINT NOT NULL DEFAULT 0"),
                 ("lease_epoch", "BIGINT NOT NULL DEFAULT 0"),
                 ("instruction_sequence", "BIGINT NOT NULL DEFAULT 0"),
+                ("native_word_input", "JSONB"),
+                ("native_word_input_sha256", "VARCHAR(64)"),
+                ("native_word_candidate_receipt", "JSONB"),
+                ("native_word_candidate_sha256", "VARCHAR(64)"),
                 ("acceptance_contract", "JSONB"),
                 ("finish_receipt", "JSONB"),
                 ("predecessor_task_id", "VARCHAR(128)"),
@@ -465,6 +483,20 @@ class TaskExecutionRepository:
                             f"ADD COLUMN {identifier_preparer.quote(column_name)} {ddl}"
                         )
                     )
+        # Existing initialization holds the schema advisory transaction lock.
+        # Deployment requires a coordinated migration and old-worker shutdown;
+        # this is not a rolling-compatible authorization upgrade.
+        def check_names(sync_connection):
+            from sqlalchemy import inspect
+            return {item["name"] for item in inspect(sync_connection).get_check_constraints(
+                self.tasks.name, schema=self.metadata.schema)}
+
+        existing_checks = await connection.run_sync(check_names)
+        for constraint in self.tasks.constraints:
+            if isinstance(constraint, CheckConstraint) and constraint.name not in existing_checks:
+                await connection.execute(text(
+                    f"ALTER TABLE {qualified_tables[self.tasks.name]} ADD CONSTRAINT "
+                    f"{identifier_preparer.quote(constraint.name)} CHECK ({constraint.sqltext})"))
         await connection.execute(
             update(self.runs)
             .where(self.runs.c.updated_at.is_(None))
@@ -1210,7 +1242,16 @@ class TaskExecutionRepository:
         *,
         acceptance_contract: dict[str, Any] | None = None,
         max_instruction_bytes: int = MAX_INSTRUCTION_BYTES,
+        _native_word_input: dict[str, Any] | None = None,
     ) -> TaskSnapshot:
+        # Private typed creation seam, used only by create_native_word_task.
+        # Do not expose this argument in task HTTP/model tools.
+        word_payload = word_digest = None
+        if _native_word_input is not None:
+            try:
+                _parsed_word, word_payload, word_digest = normalize_word_input(_native_word_input)
+            except ValueError as error:
+                raise TaskExecutionRepositoryError("native_word_input_invalid", "Word任务输入无效。") from error
         await self.initialize()
         self._validate_instruction(
             "initial", initial_instruction, max_instruction_bytes=max_instruction_bytes
@@ -1220,6 +1261,13 @@ class TaskExecutionRepository:
         internal_run_id = self.internal_run_id(scope.external_run_id, 0)
         content_bytes = len(initial_instruction.encode("utf-8"))
         content_hash = hashlib.sha256(initial_instruction.encode()).hexdigest()
+        if word_payload is not None and (
+            _parsed_word.binding.task_id != scope.external_run_id
+            or _parsed_word.binding.scope.user_id != scope.owner_user_id
+            or _parsed_word.binding.scope.thread_id != scope.thread_id
+            or _parsed_word.instruction_sha256 != content_hash
+        ):
+            raise TaskExecutionRepositoryError("native_word_binding_mismatch", "Word任务绑定不一致。")
         try:
             async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
                 if predecessor_task_id is not None:
@@ -1252,6 +1300,8 @@ class TaskExecutionRepository:
                         agent_id=scope.executor_id,
                         sandbox_id=scope.sandbox_id,
                         status=TaskState.NEW,
+                        native_word_input=word_payload,
+                        native_word_input_sha256=word_digest,
                         state_version=1,
                         lease_epoch=0,
                         instruction_sequence=1,
@@ -1316,6 +1366,11 @@ class TaskExecutionRepository:
                 raise TaskExecutionRepositoryError(
                     "task_initial_instruction_conflict", "外部 run 的初始目标不一致。"
                 )
+            async with self.db.db_engine.connect() as connection:
+                stored_word = (await connection.execute(select(self.tasks.c.native_word_input_sha256)
+                    .where(self.tasks.c.external_run_id == scope.external_run_id))).scalar_one_or_none()
+            if stored_word != word_digest:
+                raise TaskExecutionRepositoryError("native_word_input_conflict", "Word任务输入不可修改。")
             return existing
         created = await self.get_task_snapshot(scope.external_run_id)
         assert created is not None
