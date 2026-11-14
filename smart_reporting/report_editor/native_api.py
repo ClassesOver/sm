@@ -20,16 +20,20 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
 
-from ..reporting.contract import SHA256_PATTERN
+from ..office.contract import SHA256_PATTERN
+from ..office.editor_grants import EDITOR_SESSION_COOKIE, ReportEditorGrantService
 from ..reporting.delivery.docx_native import inspect_docx
-from ..reporting.delivery.pdf_native import inspect_pdf, read_pdf_image_background, read_pdf_image_pixels, shrink_pdf
 from ..reporting.delivery.office_engine import run_office_engine
+from ..reporting.delivery.pdf_native import (
+    inspect_pdf,
+    read_pdf_image_background,
+    read_pdf_image_pixels,
+    shrink_pdf,
+)
 from ..reporting.models import ReportingError
-from ..office.editor_grants import EDITOR_SESSION_COOKIE
 from .native import NativeEditorService, bind_native_workspace
 from .native_mail_merge import decode_mail_merge_csv
 from .native_models import NATIVE_ARTIFACT_MEDIA, NativeScope
-from ..office.editor_grants import ReportEditorGrantService
 
 NATIVE_SESSION_COOKIE = "native_editor_session"
 

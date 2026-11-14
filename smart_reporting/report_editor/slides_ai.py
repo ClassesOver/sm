@@ -14,8 +14,8 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import Field
 
+from ..office.contract import StrictModel
 from ..office.editor_grants import ReportEditorSession
-from ..reporting.contract import StrictModel
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
     ReportingStructuredOutputExecutor,
@@ -262,10 +262,10 @@ class ReportSlidesAIService:
 
 
 def create_report_slides_ai_service(model: Any, slides: Any) -> ReportSlidesAIService:
-    # reporting.agent 冷启动会经 runtime 导入编辑器，在实际创建时再加载以免循环导入。
-    from ..reporting.agent import create_reporting_generator_agent
+    # 在实际创建时再加载 Agno Agent 依赖，避免模块导入期的循环引用。
+    from ..office.structured_agents import create_structured_candidate_agent
 
-    agent = create_reporting_generator_agent(
+    agent = create_structured_candidate_agent(
         model=model,
         output_schema=SlidesAIProposal,
         name="report-slides-ai-planner",

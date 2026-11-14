@@ -9,9 +9,10 @@ from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
 from markdown_it import MarkdownIt
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 
-from ..contract import SHA256_PATTERN, StrictModel, safe_relative_posix_path
+from ...office.artifacts import ArtifactFile as ArtifactFile
+from ..contract import SHA256_PATTERN, StrictModel
 from ..hospital_operation.delivery import SourcePolicy, SourceWarning
 from ..models import ReportingError
 from ..semantics.request_types import Identity
@@ -24,33 +25,6 @@ _TABLE_BLOCK = re.compile(
     r"^\[\[table:([^\]\r\n]+)\]\]\n(.*?)\n\n?\[\[/table:\1\]\]$",
     re.MULTILINE | re.DOTALL,
 )
-
-
-class ArtifactFile(StrictModel):
-    path: str = Field(min_length=1, max_length=512)
-    # mediaType 自 B1 起新增 json/csv：仅用于追溯 sidecar（traceIndex 等），
-    # 渲染/图表产物仍走原有六类。
-    media_type: Literal[
-        "text/markdown",
-        "image/png",
-        "image/jpeg",
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/json",
-        "text/csv",
-    ] = Field(alias="mediaType")
-    size: int = Field(ge=1, le=200 * 1024 * 1024)
-    sha256: str = Field(pattern=SHA256_PATTERN)
-
-    @field_validator("path")
-    @classmethod
-    def validate_relative_path(cls, value: str) -> str:
-        safe_relative_posix_path(
-            value, "产物路径必须位于工作区内", backslash_message="产物路径必须使用 POSIX 相对路径"
-        )
-        return value
 
 
 class ChartArtifact(ArtifactFile):

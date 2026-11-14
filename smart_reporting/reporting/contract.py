@@ -4,14 +4,11 @@ import hashlib
 import json
 import re
 from datetime import date
-from pathlib import PurePosixPath
 from typing import Annotated, Any, Literal
 
 from pydantic import (
     AwareDatetime,
-    BaseModel,
     BeforeValidator,
-    ConfigDict,
     Field,
     PositiveInt,
     field_serializer,
@@ -20,6 +17,8 @@ from pydantic import (
 )
 from sqlglot import exp, parse
 
+from ..office.contract import StrictModel as StrictModel
+from ..office.contract import safe_relative_posix_path as safe_relative_posix_path
 from .cumulative_policy import CumulativeSnapshotPolicy as CumulativeSnapshotPolicy
 from .hospital_operation.domains import DOMAIN_CODES
 from .models import ReportingError
@@ -90,10 +89,6 @@ def infer_delivery_format(prompt: str) -> DeliveryFormat:
     if len(formats) == 1:
         return formats.pop()
     return "pdf"
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
 
 class ReportPeriod(StrictModel):
@@ -895,22 +890,3 @@ def _find_connection_input(value: Any) -> set[str]:
         for item in value:
             found.update(_find_connection_input(item))
     return found
-
-
-def safe_relative_posix_path(
-    value: str, message: str, *, backslash_message: str | None = None
-) -> PurePosixPath:
-    """校验工作区相对 POSIX 路径：拒绝反斜杠、绝对路径、工作区根（"."）、“..”与目录形式。"""
-
-    if backslash_message is not None and "\\" in value:
-        raise ValueError(backslash_message)
-    path = PurePosixPath(value)
-    if (
-        "\\" in value
-        or path.is_absolute()
-        or not path.parts
-        or ".." in path.parts
-        or value.endswith("/")
-    ):
-        raise ValueError(message)
-    return path

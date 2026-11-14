@@ -37,7 +37,7 @@ from ..workspace import (
     validate_workspace_content,
 )
 from .models import ReportingError
-from .workflow.scope import ReportingWorkflowScope
+from ..office.workspace_scope import WorkspaceScope as ReportingWorkflowScope
 
 
 def validate_host_workspace_root(root: str | Path) -> Path:

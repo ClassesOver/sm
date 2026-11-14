@@ -9,8 +9,8 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
-from ..reporting.contract import SHA256_PATTERN
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..office.artifacts import ArtifactFile
+from ..office.contract import SHA256_PATTERN
 
 NativeFormat = Literal["docx", "pdf", "xlsx", "pptx"]
 NativeMedia = Literal[

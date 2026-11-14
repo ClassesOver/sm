@@ -5,16 +5,15 @@ from __future__ import annotations
 import hashlib
 import secrets
 import subprocess
-from .native_xlsx_threads import xlsx_thread_actor
 from time import perf_counter
 from typing import Any, Literal
 
 from loguru import logger
 from pydantic import ValidationError
-from .native_pdf_contract import PDF_CONFIRMATION_KINDS, pdf_review_issues
 
+from ..office.artifacts import ArtifactFile
+from ..office.editor_grants import ReportEditorGrantService, ReportEditorSession
 from ..office.workspace_scope import WorkspaceScope
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
 from ..reporting.delivery.docx_native import inspect_docx, patch_docx
 from ..reporting.delivery.office_engine import engine_dir, run_office_engine
 from ..reporting.delivery.pdf_native import inspect_pdf, patch_pdf, patch_pdf_with_receipt
@@ -31,7 +30,8 @@ from .native_models import (
     NativeSource,
     native_digest,
 )
-from ..office.editor_grants import ReportEditorGrantService, ReportEditorSession
+from .native_pdf_contract import PDF_CONFIRMATION_KINDS, pdf_review_issues
+from .native_xlsx_threads import xlsx_thread_actor
 
 _MAX_FILE_BYTES = 24 * 1024 * 1024
 _MEDIA = NATIVE_MEDIA

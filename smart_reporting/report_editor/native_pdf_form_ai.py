@@ -11,7 +11,7 @@ from typing import Any
 from agno.agent import Agent
 from pydantic import Field
 
-from ..reporting.contract import StrictModel
+from ..office.contract import StrictModel
 from ..reporting.models import ReportingError
 
 _SAFE_BASE = {

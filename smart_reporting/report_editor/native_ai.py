@@ -16,8 +16,8 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import Field, ValidationError
 
+from ..office.contract import StrictModel
 from ..office.editor_grants import ReportEditorSession
-from ..reporting.contract import StrictModel
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
     ReportingStructuredOutputExecutor,

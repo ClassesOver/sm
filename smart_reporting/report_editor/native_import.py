@@ -11,7 +11,7 @@ from zipfile import ZipFile
 from defusedxml import ElementTree
 from pypdf import PdfReader
 
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..office.artifacts import ArtifactFile
 from ..reporting.delivery.docx_native import inspect_docx
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.pdf_native import inspect_pdf

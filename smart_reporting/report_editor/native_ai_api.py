@@ -7,8 +7,8 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..office.contract import SHA256_PATTERN
 from ..office.editor_grants import ReportEditorGrantService
-from ..reporting.contract import SHA256_PATTERN
 from ..reporting.models import ReportingError
 from .native_ai import NativeAIService
 from .native_api import NATIVE_SESSION_COOKIE, _csrf, _error

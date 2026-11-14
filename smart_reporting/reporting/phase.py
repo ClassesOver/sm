@@ -9,6 +9,18 @@ from typing import Any, Literal
 
 from agno.run import RunContext
 
+from ..office.run_context import (
+    REPORTING_MODEL_ID_DEPENDENCY_KEY as REPORTING_MODEL_ID_DEPENDENCY_KEY,
+)
+from ..office.run_context import (
+    REPORTING_MODEL_TIER_DEPENDENCY_KEY as REPORTING_MODEL_TIER_DEPENDENCY_KEY,
+)
+from ..office.run_context import REPORTING_TASK_DEPENDENCY as REPORTING_TASK_DEPENDENCY
+from ..office.run_context import bind_reporting_run_context as bind_reporting_run_context
+from ..office.run_context import current_reporting_run_context as current_reporting_run_context
+from ..office.run_context import (
+    reporting_model_route_from_run_context as reporting_model_route_from_run_context,
+)
 from .models import ReportingError
 from .tools.capabilities import tools_for_task
 
@@ -30,8 +42,6 @@ REPORTING_ANALYSIS_INPUT_TOKEN_HARD_CAP = 256 * 1024
 
 REPORTING_PHASE_DEPENDENCY_KEY = "reportingPhase"
 REPORTING_TASK_KIND_DEPENDENCY_KEY = "reportingTaskKind"
-REPORTING_MODEL_TIER_DEPENDENCY_KEY = "reportingModelTier"
-REPORTING_MODEL_ID_DEPENDENCY_KEY = "reportingModelId"
 REPORTING_THINKING_EFFORT_DEPENDENCY_KEY = "reportingThinkingEffort"
 REPORTING_THINKING_BUDGET_DEPENDENCY_KEY = "reportingThinkingBudget"
 REPORTING_VISUALIZATION_TOOL_CALLS_DEPENDENCY_KEY = "reportingVisualizationToolCalls"
@@ -54,7 +64,6 @@ REPORTING_ANALYSIS_RECOVERY_DEPENDENCY_KEY = "analysisRecovery"
 REPORTING_ANALYSIS_FACT_TOOL_BUDGET_STATE_KEY = "agentos_reporting_analysis_fact_budget"
 # 单项分析按计划复杂度可提升到 8 次；4 次是缺少复杂度信息时的安全默认值。
 REPORTING_ANALYSIS_FACT_QUERY_LIMIT = 4
-REPORTING_TASK_DEPENDENCY = "AgentOS 任务执行"
 
 # 当前可视化章节 Agent 共用受信预算与脚本状态；图表提交和章节收口均在同一章节
 # 子工作流内完成，不再存在独立的全局 finalize Agent。
@@ -72,28 +81,10 @@ REPORTING_VISUALIZATION_EXPLORATION_TOOL_NAMES = frozenset(
 _REPORTING_PROJECTION_METRICS: ContextVar[dict[str, int] | None] = ContextVar(
     "reporting_projection_metrics", default=None
 )
-_REPORTING_RUN_CONTEXT: ContextVar[RunContext | None] = ContextVar(
-    "reporting_run_context", default=None
-)
 
 
 def _nonnegative_int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-
-@contextmanager
-def bind_reporting_run_context(run_context: RunContext) -> Iterator[None]:
-    """让模型投影与工具执行读取同一个 Agno RunContext，不复制业务状态。"""
-
-    token = _REPORTING_RUN_CONTEXT.set(run_context)
-    try:
-        yield
-    finally:
-        _REPORTING_RUN_CONTEXT.reset(token)
-
-
-def current_reporting_run_context() -> RunContext | None:
-    return _REPORTING_RUN_CONTEXT.get()
 
 
 def reporting_visual_inspection_mode_from_run_context(
@@ -496,26 +487,6 @@ def reporting_task_kind_from_run_context(
         }
         else None
     )
-
-
-def reporting_model_route_from_run_context(
-    run_context: RunContext | None,
-) -> tuple[str, str] | None:
-    """读取执行器签发的模型档位和 ID；缺失或不一致时保持默认模型。"""
-
-    dependencies = (
-        run_context.dependencies
-        if run_context is not None and isinstance(run_context.dependencies, Mapping)
-        else {}
-    )
-    binding = dependencies.get(REPORTING_TASK_DEPENDENCY)
-    if not isinstance(binding, Mapping):
-        return None
-    tier = binding.get(REPORTING_MODEL_TIER_DEPENDENCY_KEY)
-    model_id = binding.get(REPORTING_MODEL_ID_DEPENDENCY_KEY)
-    if tier not in {"fast", "standard", "strong"} or not isinstance(model_id, str) or not model_id:
-        return None
-    return tier, model_id
 
 
 def reporting_thinking_effort_from_run_context(
