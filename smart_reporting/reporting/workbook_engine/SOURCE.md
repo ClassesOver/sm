@@ -581,3 +581,10 @@ pinned `normalizeLinkTarget` also accepts these forms), applies the pinned write
 back before assembling the package. Bridge operation `applySheetHyperlinks {sheetName, edits}`; the Python
 native whitelist and `delivery/xlsx.py` operation kinds include it. Evidence:
 ../../report_editor/NATIVE_XLSX_HYPERLINK_ACCEPTANCE.md.
+
+## PR 224 review fixes
+
+Hyperlink readers and writers accept single- and double-quoted attributes.
+Relationship reclamation preserves references from untouched cells, and readback
+checks retain the target and availability of untouched links. Package-level
+regression covers removing one shared reference and then its single-quoted peer.

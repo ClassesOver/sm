@@ -30,7 +30,16 @@ describe('Word page borders (pinned PageBorderDialog + applySectionSettings)', (
     expect(pageBorderPropsOf(custom)).toEqual({ display: 'firstPage', offsetFrom: 'text', spacePt: 4, widthPt: 3, color: '1F4E79', sides: { top: side('single', 3, 4, { color: '1F4E79' }) } })
     expect(pageBorderPropsOf({ ...model, setting: 'none' })).toBeNull()
     const art = { ...model, art: 'apples', widthPt: 20, color: null }
-    expect(pageBorderPropsOf(art)!.sides!.top).toEqual({ val: 'apples', widthPt: 20, spacePt: 4, art: true, shadow: true })
+    expect(pageBorderPropsOf(art)!.sides!.top).toEqual({ val: 'apples', widthPt: 20, spacePt: 4, art: true })
+  })
+
+  it.each(['box', 'shadow', '3d'] as const)('accepts art after a colored %s border and preserves line preferences', setting => {
+    const model = { ...pageBorderModelOf({ pageBorder: true, pageBorderProps: shadow }), setting, art: 'apples', widthPt: 16 }
+    const props = pageBorderPropsOf(model)!
+    expect(validDocxPageBorderValues({ pageBorder: true, pageBorderProps: props })).toBe(true)
+    expect(props.color).toBeUndefined()
+    expect(props.sides!.top).toEqual({ val: 'apples', widthPt: 16, spacePt: 4, art: true })
+    expect(pageBorderPropsOf({ ...model, art: null, widthPt: 3 })!.sides!.top!.color).toBe('1F4E79')
   })
 
   it('validates like the bridge and builds per-section drafts that revert to the source', () => {

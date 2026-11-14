@@ -5,7 +5,8 @@
 // Ported from pinned GenOffice packages/xlsx-gateway/src/gateway/xlsx-hyperlinks.ts
 // (f8c17004, SHA-256 8dc34f16…ae452). Local adaptation: the two helpers below come
 // from this engine's xml.ts and a verbatim copy of xlsx-sheets.ts relationship-id
-// allocation; the editing logic is unchanged.
+// allocation. Local safety fix: attribute matching accepts either quote style
+// so shared relationships survive edits and single-quoted links can be removed.
 import { escapeRegExp } from './xml'
 
 export { ensureRelationshipNamespace } from './xml'
@@ -63,8 +64,8 @@ export function applyHyperlinkEdits(
 
   const relIdsInUse = (): Set<string> => {
     const used = new Set<string>()
-    for (const element of xml.matchAll(/<hyperlink\b[^>]*?\br:id="([^"]+)"/g)) {
-      if (element[1]) used.add(element[1])
+    for (const element of xml.matchAll(/<hyperlink\b[^>]*?\br:id\s*=\s*(["'])(.*?)\1/g)) {
+      if (element[2]) used.add(element[2])
     }
     return used
   }
@@ -108,10 +109,10 @@ export function applyHyperlinkEdits(
 
   for (const edit of edits) {
     const ref = toA1(edit.row, edit.column)
-    const existingPattern = new RegExp(`<hyperlink\\b[^>]*?\\bref="${ref}"[^>]*/>`)
+    const existingPattern = new RegExp(`<hyperlink\\b[^>]*?\\bref\\s*=\\s*(["'])${ref}\\1[^>]*/>`)
     const existing = existingPattern.exec(xml)?.[0]
     const existingRelId =
-      existing === undefined ? undefined : /\br:id="([^"]+)"/.exec(existing)?.[1]
+      existing === undefined ? undefined : /\br:id\s*=\s*(["'])(.*?)\1/.exec(existing)?.[2]
     if (existing !== undefined) {
       xml = xml.replace(existingPattern, '')
     }

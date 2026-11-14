@@ -36,6 +36,20 @@ describe('applySheetHyperlinks (local adapter over the pinned writer)', () => {
     expect(await has(cleared, 'xl/worksheets/_rels/sheet1.xml.rels')).toBe(true)
   })
 
+  it('preserves shared single-quoted relationships when another cell is removed', async () => {
+    const source = await createBlankWorkbook('Sheet1')
+    const linked = await applySheetHyperlinks(source, 'Sheet1', [{ ref: 'A1', expectedTarget: null, target: 'https://example.com' }])
+    const sheet = await text(linked, 'xl/worksheets/sheet1.xml')
+    const id = /r:id="([^"]+)"/.exec(sheet.match(/<hyperlink\s[^>]+>/)![0])![1]
+    const patched = sheet.replace('</hyperlinks>', `<hyperlink ref='B1' r:id='${id}'/></hyperlinks>`)
+    const bytes = (await assemblePackage(linked, { replaced: new Map([['xl/worksheets/sheet1.xml', patched]]), added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [], touchedEntries: ['xl/worksheets/sheet1.xml'] })).buffer
+    const output = await applySheetHyperlinks(bytes, 'Sheet1', [{ ref: 'A1', expectedTarget: 'https://example.com', target: null }])
+    expect(await readPackageSheetHyperlinks(output, 'Sheet1')).toEqual([{ ref: 'B1', target: 'https://example.com', readOnlyReason: null }])
+    expect(await text(output, 'xl/worksheets/_rels/sheet1.xml.rels')).toContain('https://example.com')
+    const cleared = await applySheetHyperlinks(output, 'Sheet1', [{ ref: 'B1', expectedTarget: 'https://example.com', target: null }])
+    expect(await readPackageSheetHyperlinks(cleared, 'Sheet1')).toEqual([])
+  })
+
   it('rejects stale identities, unchanged targets, unsafe or dangling targets and duplicate cells without writing', async () => {
     const source = await createBlankWorkbook('Sheet1')
     const linked = await applySheetHyperlinks(source, 'Sheet1', [{ ref: 'A1', expectedTarget: null, target: 'https://example.com' }])

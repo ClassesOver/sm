@@ -7,8 +7,13 @@
 import { formatAddress, parseAddress } from './cell-address'
 import { applyHyperlinkEdits, ensureRelationshipNamespace, HyperlinkEditError, type HyperlinkEdit } from './hyperlinks'
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
-import { readXmlAttribute } from './xml'
+import { escapeRegExp } from './xml'
 import { assemblePackage, createBufferEntrySource, type EntrySource } from './zip'
+
+// OOXML attributes may use either quote style.
+function readXmlAttribute(attributes: string, name: string): string | undefined {
+  return attributes.match(new RegExp(`(?:^|\\s)${escapeRegExp(name)}\\s*=\\s*(["'])(.*?)\\1`))?.[2]
+}
 
 const HYPERLINK_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink'
 const MAX_ROW = 1048575
@@ -173,7 +178,7 @@ export async function applySheetHyperlinks(sourceBytes: Uint8Array, sheetName: s
   const after = readSheetHyperlinks(worksheetXml, patch.relsXml)
   const expected = new Map(links.filter(link => !seen.has(link.ref)).map(link => [link.ref, link.target]))
   for (const edit of edits) if (edit.target !== null) expected.set(edit.ref, edit.target)
-  if (after.length !== expected.size || after.some(link => link.readOnlyReason === null && expected.get(link.ref) !== link.target) || after.some(link => !expected.has(link.ref))) {
+  if (after.length !== expected.size || after.some(link => expected.get(link.ref) !== link.target || (!seen.has(link.ref) && links.find(before => before.ref === link.ref)?.readOnlyReason !== link.readOnlyReason)) || after.some(link => !expected.has(link.ref))) {
     throw new HyperlinkEditError('链接写入后回读不一致，已放弃修改。')
   }
   const replaced = new Map<string, string>([[parts.worksheetPath, worksheetXml]])

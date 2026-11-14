@@ -71,8 +71,8 @@ export function pageBorderModelOf(section: Pick<SectionSettings, 'pageBorder' | 
 }
 
 function sideOf(m: PageBorderModel, side: PageBorderSideName): SideSpec {
-  return { val: m.art ?? m.val, widthPt: m.widthPt, spacePt: m.space[side], ...(m.color ? { color: m.color } : {}),
-    ...(m.art ? { art: true as const } : {}), ...(m.setting === 'shadow' ? { shadow: true as const } : {}), ...(m.setting === '3d' ? { frame: true as const } : {}) }
+  return { val: m.art ?? m.val, widthPt: m.widthPt, spacePt: m.space[side], ...(!m.art && m.color ? { color: m.color } : {}),
+    ...(m.art ? { art: true as const } : {}), ...(!m.art && m.setting === 'shadow' ? { shadow: true as const } : {}), ...(!m.art && m.setting === '3d' ? { frame: true as const } : {}) }
 }
 
 /** 固定源 pageBorderPropsOf：对话框结果；null 表示无边框。 */
@@ -83,7 +83,7 @@ export function pageBorderPropsOf(m: PageBorderModel): DocxPageBorderProps | nul
   for (const s of active) sides[s] = sideOf(m, s)
   return {
     ...(m.display !== 'all' ? { display: m.display } : {}), offsetFrom: m.offsetFrom, ...(m.zOrderBack ? { zOrder: 'back' as const } : {}),
-    spacePt: Math.max(...active.map(s => m.space[s])), widthPt: m.widthPt, ...(m.color ? { color: m.color } : {}), sides,
+    spacePt: Math.max(...active.map(s => m.space[s])), widthPt: m.widthPt, ...(!m.art && m.color ? { color: m.color } : {}), sides,
   }
 }
 
