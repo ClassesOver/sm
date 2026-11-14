@@ -103,4 +103,34 @@ describe('shared Office task control',()=>{
   await controller.cancel();expect(cancel).toHaveBeenCalledTimes(2);expect(cancel).toHaveBeenLastCalledWith('task')
  })
 
+ it('retries a failed late-start task cancellation and exposes retry failures',async()=>{
+  const started=deferred<Job>(),attempts:string[]=[]
+  const controller=new OfficeAssistantController({start:()=>started.promise,status:async()=>({id:'unused',status:'completed'}),cancel:async id=>{attempts.push(id);if(attempts.length<3)throw new Error(attempts.length===1?'late cancel offline':'retry offline')},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const running=controller.run({},'request');await controller.cancel();started.resolve({id:'late',status:'running'})
+  expect(await running).toBeUndefined();expect(attempts).toEqual(['late'])
+  await expect(controller.cancel()).rejects.toThrow('retry offline')
+  await controller.cancel();expect(attempts).toEqual(['late','late','late'])
+  await controller.cancel();expect(attempts).toEqual(['late','late','late'])
+ })
+ it('keeps failed late-start cleanup separate while a replacement run is busy',async()=>{
+  const started=deferred<Job>(),replacement=deferred<Job>(),cleanupStarted=deferred<void>(),attempts:string[]=[]
+  let rejectCleanup!:(error:Error)=>void
+  const controller=new OfficeAssistantController({start:(input:{name:string})=>input.name==='old'?started.promise:replacement.promise,status:async()=>({id:'unused',status:'completed'}),cancel:async id=>{attempts.push(id);if(id==='old'&&attempts.length===1){cleanupStarted.resolve();await new Promise<void>((_,reject)=>{rejectCleanup=reject})}},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const old=controller.run({name:'old'},'old-request');await controller.cancel()
+  const next=controller.run({name:'new'},'new-request');started.resolve({id:'old',status:'running'});await cleanupStarted.promise
+  rejectCleanup(new Error('old late cancel offline'));expect(await old).toBeUndefined()
+  await expect(controller.run({name:'third'},'third')).rejects.toThrow('office_task_busy')
+  replacement.resolve({id:'new',status:'completed'});expect(await next).toEqual({id:'new',status:'completed'})
+  await controller.cancel();expect(attempts).toEqual(['old','new','old'])
+ })
+ it('shares in-flight late-start cleanup across repeated cancellation and retries after failure',async()=>{
+  const started=deferred<Job>(),cleanupStarted=deferred<void>(),attempts:string[]=[]
+  let rejectCleanup!:(error:Error)=>void
+  const controller=new OfficeAssistantController({start:()=>started.promise,status:async()=>({id:'unused',status:'completed'}),cancel:async id=>{attempts.push(id);if(attempts.length===1){cleanupStarted.resolve();await new Promise<void>((_,reject)=>{rejectCleanup=reject})}},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const running=controller.run({},'request');await controller.cancel();started.resolve({id:'late',status:'running'});await cleanupStarted.promise
+  const first=controller.cancel(),second=controller.cancel(),outcomes=Promise.allSettled([first,second])
+  rejectCleanup(new Error('late cleanup offline'));expect(await running).toBeUndefined()
+  expect((await outcomes).map(result=>result.status)).toEqual(['rejected','rejected']);expect(attempts).toEqual(['late'])
+  await controller.cancel();expect(attempts).toEqual(['late','late'])
+ })
 })
