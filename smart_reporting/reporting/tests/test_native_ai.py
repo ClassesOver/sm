@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock
 import pytest
 from docx import Document
 
-from smart_reporting.report_editor.native import NativeEditorService, bind_native_workspace
-from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
 from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )
+from smart_reporting.report_editor.native import NativeEditorService, bind_native_workspace
+from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.delivery.docx_native import inspect_docx
 from smart_reporting.reporting.host_workspace import (

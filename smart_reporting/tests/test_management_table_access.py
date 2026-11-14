@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from smart_reporting.management.models import ManagementError, ManagementScope
-from smart_reporting.management.repository import catalog_versions, source_drafts
+from smart_reporting.management.repository import catalog_versions
 from smart_reporting.tests.management_fixtures import publish_dependencies
 from smart_reporting.tests.test_management_persistence import auth_context as auth_context
 from smart_reporting.tests.test_management_release_dependencies import (

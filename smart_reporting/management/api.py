@@ -15,7 +15,6 @@ from sqlalchemy import select
 from .auth import AdminAuthService
 from .models import AdminAccount, AdminSessionInvalid, ManagementError
 from .repository import audit_events
-from .scopes import ScopeService
 from .settings import ManagementSettings
 
 SESSION_COOKIE = "report_management_session"
@@ -190,10 +189,6 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
             "items": jsonable_encoder([dict(row) for row in rows[:limit]]),
             "nextCursor": rows[limit - 1]["id"] if len(rows) > limit else None,
         }
-
-    scopes = ScopeService(auth)
-
-
 
     router.include_router(protected)
     if startup_settings is not None:

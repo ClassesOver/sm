@@ -7,6 +7,10 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from smart_reporting.office.editor_grants import (
+    InMemoryReportEditorRepository,
+    ReportEditorGrantService,
+)
 from smart_reporting.report_editor.native_api import (
     NATIVE_SESSION_COOKIE,
     create_native_editor_router,
@@ -14,10 +18,6 @@ from smart_reporting.report_editor.native_api import (
 from smart_reporting.report_editor.native_models import (
     NATIVE_MEDIA,
     NativeEditorContext,
-)
-from smart_reporting.office.editor_grants import (
-    InMemoryReportEditorRepository,
-    ReportEditorGrantService,
 )
 
 
