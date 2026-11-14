@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto'
+import { normalizeTableStylePatch } from '../../../report_editor/frontend/src/docx-table-style-core'
+import * as legacyTableStyle from './docx-table-style-legacy'
+import type { ParsedDoc } from '@genoffice/docx-engine'
 /**
  * 固定源 Docs Ribbon ▸ Table Design（components/Ribbon.tsx TABLE_PRESETS / tableDesign 选项卡，
  * editor/table-properties.ts setTableLookOption / applyTablePreset）的原生写回：
@@ -10,12 +14,12 @@
  */
 import type { Block } from '@genoffice/docx-engine'
 import { XMLValidator } from 'fast-xml-parser'
-import { splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate.ts'
-import { docxCellShadingCapability, patchDocxCellShading } from './docx-cell-shading.ts'
-import { docxCellBordersCapability, patchDocxTableCellBorders } from './docx-cell-borders.ts'
-import { DOCX_TABLE_PRESETS, docxTablePresetRowFill, safeDocxTableStyleRequest, type DocxTableLook, type DocxTableStyleState } from './docx-table-style-spec.ts'
+import { splitXmlChildren, xmlSegments } from '../packages/docx-engine/src/generate'
+import { docxCellShadingCapability, patchDocxCellShading } from './docx-cell-shading'
+import { docxCellBordersCapability, patchDocxTableCellBorders } from './docx-cell-borders'
+import { DOCX_TABLE_PRESETS, docxTablePresetRowFill, safeDocxTableStyleRequest, type DocxTableLook, type DocxTableStyleState } from './docx-table-style-spec'
 
-export { DOCX_TABLE_PRESETS, type DocxTableLook, type DocxTablePreset, type DocxTablePresetName, type DocxTableStyleRequest, type DocxTableStyleState } from './docx-table-style-spec.ts'
+export { DOCX_TABLE_PRESETS, type DocxTableLook, type DocxTablePreset, type DocxTablePresetName, type DocxTableStyleRequest, type DocxTableStyleState } from './docx-table-style-spec'
 const LOOK_ATTRS = ['w:val', 'w:firstRow', 'w:lastRow', 'w:firstColumn', 'w:lastColumn', 'w:noHBand', 'w:noVBand']
 /** 与 generate.ts TBL_PR_ORDER 相同的 tblPr 子元素顺序。 */
 const TBL_PR_ORDER = ['w:tblStyle', 'w:tblpPr', 'w:tblOverlap', 'w:bidiVisual', 'w:tblStyleRowBandSize', 'w:tblStyleColBandSize', 'w:tblW', 'w:jc', 'w:tblCellSpacing', 'w:tblInd', 'w:tblBorders', 'w:shd', 'w:tblLayout', 'w:tblCellMar', 'w:tblLook', 'w:tblCaption', 'w:tblDescription']
@@ -31,7 +35,7 @@ function childrenOf(xml: string) {
   const open = openTag(xml)
   if (open.endsWith('/>')) return []
   const inner = xml.slice(open.length, xml.lastIndexOf('</')), parts = splitXmlChildren(inner)
-  if (inner.replace(/\s/g, '') !== parts.map(part => part.xml).join('').replace(/\s/g, '')) fail()
+  if (inner.replace(/<!--[\s\S]*?-->/g, '').replace(/\s/g, '') !== parts.map(part => part.xml).join('').replace(/<!--[\s\S]*?-->/g, '').replace(/\s/g, '')) fail()
   return parts
 }
 const leafOnly = (xml: string) => { if (!openTag(xml).endsWith('/>') && xml.slice(openTag(xml).length, xml.lastIndexOf('</')).trim()) fail() }
@@ -90,18 +94,26 @@ function sourceOf(block: Block) {
   if (look.length) { leafOnly(look[0]!.xml); const a = attrsOf(look[0]!.xml); if (Object.keys(a).some(key => !LOOK_ATTRS.includes(key)) || (a['w:val'] !== undefined && !/^[0-9A-Fa-f]{1,4}$/.test(a['w:val']))) fail() }
   if ((block.table as { tblStyleId?: string }).tblStyleId !== undefined && (block.table as { tblStyleId?: string }).tblStyleId !== styleId) fail()
   const rows = rowsOf(xml)
+  for (const row of rows) for (const cell of row) {
+    const props = childrenOf(xml.slice(cell.start, cell.end)).filter(child => child.name === 'w:tcPr')
+    if (props.length > 1) fail()
+    if (props.length) { const children = childrenOf(props[0]!.xml); for (const name of ['w:shd', 'w:tcBorders']) if (children.filter(child => child.name === name).length > 1) fail() }
+  }
   const presetEditable = rows.length > 0 && rows.length <= 100 && docxCellBordersCapability(xml).bordersEditable
     && rows.every(row => row.every(cell => docxCellShadingCapability(xml, xml.slice(cell.start, cell.end)).shadingEditable))
   return { xml, rows, state: { styleId, look: readLook(look[0]?.xml), presetEditable } satisfies DocxTableStyleState }
 }
 
-export function tableStyleAvailability(block: Block) {
-  try { const s = sourceOf(block); return { tableStyleEditable: true, tableStyleReadOnlyReason: null, tableStyleState: s.state } }
+export function tableStyleAvailability(block: Block, context?: Pick<ParsedDoc, 'styles' | 'protection'>) {
+  if (context?.protection?.enforced) return legacyTableStyle.tableStyleAvailability(block, context)
+  try { const s = sourceOf(block); return { tableStyleEditable: true, tableStyleReadOnlyReason: null, tableStyleState: s.state, tableStyleSource: {styleId: s.state.styleId, look: s.state.look}, ...(context ? {tableStyleOptions: [...context.styles.values()].filter(style => style.type === 'table' && style.styleId !== 'TableNormal').map(style => ({styleId:style.styleId,name:style.name}))} : {}) } }
   catch (error) { return { tableStyleEditable: false, tableStyleReadOnlyReason: error instanceof Error ? error.message : 'docx_table_style_unsupported' } }
 }
 
 /** tableStyles：styles.xml 中 table 类型样式的 id 集合。 */
-export function editTableStyle(block: Block, tableStyles: ReadonlySet<string>, raw: unknown) {
+export function editTableStyle(block: Block, tableStylesOrRaw: ReadonlySet<string> | unknown, rawOrContext: unknown) {
+  if (!(tableStylesOrRaw instanceof Set)) return legacyTableStyle.editTableStyle(block, tableStylesOrRaw, rawOrContext as Pick<ParsedDoc, 'styles' | 'protection'>)
+  const tableStyles = tableStylesOrRaw as ReadonlySet<string>, raw = rawOrContext
   const request = safeDocxTableStyleRequest(raw, tableStyles), look = request.look
   const s = sourceOf(block)
   let xml = s.xml, styleId = s.state.styleId
@@ -127,6 +139,18 @@ export function editTableStyle(block: Block, tableStyles: ReadonlySet<string>, r
 
 /** 保存后复读：表格字节与写入一致，样式引用与样式选项按请求生效。 */
 export function verifyTableStyleResult(block: Block, result: ReturnType<typeof editTableStyle>) {
+  if ('patch' in result) { legacyTableStyle.verifyTableStyleResult(block, result); return }
   const s = sourceOf(block)
   if (block.originalXml !== result.xml || s.state.styleId !== result.styleId || JSON.stringify(s.state.look) !== JSON.stringify(result.look)) fail('write_not_applied')
+}
+
+export function validateTableStyleOperation(block: Block, input: unknown, context: Pick<ParsedDoc, 'styles' | 'protection'>) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('invalid')
+  const op = input as Record<string, unknown>
+  if (Object.keys(op).some(key => !['kind','blockId','expectedObjectSha256','style','look','preset'].includes(key)) || op.kind !== 'setTableStyle' || typeof op.blockId !== 'string' || !op.blockId || op.expectedObjectSha256 !== createHash('sha256').update(block.originalXml ?? '').digest('hex')) fail('anchor_invalid')
+  const { kind, blockId, expectedObjectSha256, ...raw } = op
+  const patch = normalizeTableStylePatch(raw)
+  if (patch.preset || patch.style?.kind === 'preset') return legacyTableStyle.validateTableStyleOperation(block, input, context)
+  if (context.protection?.enforced) fail('protected')
+  return editTableStyle(block, new Set([...context.styles.values()].filter(style => style.type === 'table').map(style => style.styleId)), { ...(patch.style ? { styleId: patch.style.kind === 'document' ? patch.style.styleId : null } : {}), ...(patch.look ? {look:patch.look} : {}) })
 }

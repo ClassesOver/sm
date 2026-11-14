@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Editor, Mark, Node } from '@tiptap/core'
+import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
+import { NativeDocxEquations, createDocxEquations } from './docx-equations'
 import { docxOperations, type DocxAnchor } from './docx-operations'
 import {
   createDocxPainter, docxClipboardCopy, docxClipboardCut, docxClipboardPaste,
@@ -265,6 +267,26 @@ describe('粘贴协议（paste-actions.ts 读取路径 + replaceParagraph 类协
     editor.destroy()
   })
 
+  it.each(['selection', 'document', 'readonly', 'destroy', 'selection-return', 'readonly-return'] as const)('deferred text clipboard refuses stale %s state without writing', async change => {
+    const editor = makeEditor({ type: 'doc', content: [paragraphJson('报告正文')] })
+    editor.commands.setTextSelection(2)
+    let release: ((text: string) => void) | undefined
+    stubClipboard({ readText: () => new Promise<string>(resolve => { release = resolve }) })
+    const pasting = docxClipboardPaste(editor, 'text')
+    await vi.waitFor(() => expect(release).toBeDefined())
+    if (change === 'selection') editor.commands.setTextSelection(3)
+    if (change === 'document') editor.commands.insertContent('新')
+    if (change === 'readonly') editor.setEditable(false)
+    if (change === 'selection-return') { editor.commands.setTextSelection(3); editor.commands.setTextSelection(2) }
+    if (change === 'readonly-return') { editor.setEditable(false); editor.setEditable(true) }
+    if (change === 'destroy') editor.destroy()
+    const before = editor.getJSON(), selection = editor.state.selection
+    release!('粘贴文字')
+    await expect(pasting).rejects.toThrow(/变化|不可编辑/)
+    expect(editor.getJSON()).toEqual(before); expect(editor.state.selection.eq(selection)).toBe(true)
+    if (!editor.isDestroyed) editor.destroy()
+  })
+
   it.each([
     ['bad\ttext', '控制字符'],
     ['bad\u0007bell', '控制字符'],
@@ -427,6 +449,26 @@ describe('图片粘贴（paste-actions.ts 图片通道 + insertParagraphImage �
       { kind: 'replaceParagraph', blockId: 'block-0', expectedObjectSha256: 'hash-0', text: '报' },
     ])
     editor.destroy()
+  })
+
+  it('image splitting clears non-inheritable equation provenance on the new paragraph and keeps authored formatting', async () => {
+    stubImage()
+    const source = createDocxEquations({ sourceId: 'a'.repeat(64), targets: [{ targetId: 'body-0', blockIndex: 0, paragraphOrdinal: 0, container: 'body', text: '报告正文', expectedParagraphSha256: 'b'.repeat(64), formulas: [] }] })
+    const authored = { docxIndex: 0, align: 'center', indentLeft: 720, indentRight: 240, spaceBefore: 160, spaceAfter: 80, keepNext: true, keepLines: true, styleId: 'Body' }
+    const editor = new Editor({ extensions: [...editorExtensions, NativeDocxEquations], editorProps: { handleScrollToSelection: () => true }, content: source.annotate({ type: 'doc', content: [{ type: 'docParagraph', attrs: authored, content: [{ type: 'text', text: '报告正文' }] }] }) })
+    try {
+      const baseline = editor.getJSON()
+      expect(editor.state.doc.firstChild!.attrs).toMatchObject({ nativeEquationTarget: 'body-0', nativeEquationOffset: 0 })
+      editor.commands.setTextSelection(2)
+      await insertDocxImageFile(editor, makeImageBlob())
+      const left = editor.state.doc.child(0), image = editor.state.doc.child(1), right = editor.state.doc.child(2)
+      expect(left.textContent).toBe('报'); expect(image.attrs.genImage).toBeTruthy(); expect(right.textContent).toBe('告正文')
+      expect(left.attrs).toMatchObject({ ...authored, nativeEquationTarget: 'body-0', nativeEquationOffset: 0 })
+      expect(right.attrs).toMatchObject({ ...authored, docxIndex: null, nativeEquationTarget: null, nativeEquationId: null, nativeEquationOffset: null })
+      const operations = docxOperations(baseline, editor.getJSON(), [imageAnchor], undefined, editor.schema, undefined, undefined, { styles: new Map([['Body', { type: 'paragraph' }]]) })
+      expect(operations.map(operation => operation.kind)).toEqual(['insertParagraphImage', 'insertRichParagraph', 'replaceParagraph'])
+      editor.commands.undo(); expect(editor.getJSON()).toEqual(baseline)
+    } finally { editor.destroy() }
   })
 
   it('1240x960 位图按固定源 620px 内容宽缩放并保持纵横比', async () => {

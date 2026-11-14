@@ -50,11 +50,12 @@ export function bindNativeAI(container: HTMLElement, options: {
   const tasks = new OfficeAssistantController({start:options.api.aiStart,status:options.api.aiStatus,cancel:options.api.aiCancel,cancelRequest:options.api.aiCancelRequest,id:(value: NativeAIJob)=>value.editId,running:(value: NativeAIJob)=>value.status==='running'})
   let noteBeforeText: string | undefined
   let wordTarget: string | undefined
+  let presetScope: 'selection' | 'document' | undefined, presetStale=false
   let activeRequestId: string | undefined
-  const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection})
+  const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection,operations:options.draft.operations})
   const editable = () => !disposed && !options.draft.closed && !options.draft.saving && !options.locked?.()
   function update() {
-    start.disabled = !editable() || busy || accepting || !selection.length
+    start.disabled = !editable() || busy || accepting || !selection.length || presetStale
     accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded'
     cancel.disabled = disposed || !job && !busy
     options.onStateChange?.()
@@ -85,11 +86,12 @@ export function bindNativeAI(container: HTMLElement, options: {
     update()
   }
   start.onclick = async () => {
-    if (!editable() || busy || accepting || !selection.length || !input.value.trim()) return
+    if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) return
     try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
+    if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) {update();return}
     const turn = ++generation
     const instruction=input.value.trim(), selected=structuredClone(selection)
-    if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected})
+    if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected,operations:options.draft.operations})
     const target=wordTarget
     const requestId = crypto.randomUUID()
     activeRequestId = requestId
@@ -116,7 +118,9 @@ export function bindNativeAI(container: HTMLElement, options: {
   }
   accept.onclick = async () => {
     if (!editable() || busy || accepting || job?.status !== 'succeeded') return
-    if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
+    try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
+    if(!editable() || busy || accepting || presetStale) {update();return}
+    if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求、选区或草稿已变化，请重新生成建议。';update();return}
     const turn = generation
     const target=wordTarget
     accepting = true; busy = true; update()
@@ -159,7 +163,7 @@ export function bindNativeAI(container: HTMLElement, options: {
     if (disposed) return
     clearCandidate(); panel.hidden = true; status.textContent = '建议已取消'; update()
   }
-  body.onclick=()=>{clearCandidate();reviewMode=false;noteBeforeText=undefined;body.hidden=true;selection=structuredClone(documentSelection);input.value='';status.textContent='已切换到正文选区，请输入修改要求';update()}
+  body.onclick=()=>{clearCandidate();presetScope=undefined;presetStale=false;reviewMode=false;noteBeforeText=undefined;body.hidden=true;selection=structuredClone(documentSelection);input.value='';status.textContent='已切换到正文选区，请输入修改要求';update()}
   if(options.format==='docx')input.oninput=()=>{if(job || busy){clearCandidate();status.textContent='修改要求已变化，请重新生成建议。';update()}}
   update()
   return {
@@ -167,19 +171,27 @@ export function bindNativeAI(container: HTMLElement, options: {
     get accepting() { return accepting },
     open() { if(disposed)return;panelView?.beforeOpen();panel.hidden=false;panel.scrollIntoView?.({block:'nearest'}); input.focus({preventScroll:true}) },
     close,
+    openPreset(instruction:string, targets:{blockId:string;cellId?:string}[], scope:'selection'|'document') {
+      if(!editable() || options.format!=='docx' || !targets.length || targets.length>100)return
+      panelView?.beforeOpen();clearCandidate();presetScope=scope;presetStale=false;reviewMode=true;noteBeforeText=undefined;body.hidden=false
+      selection=structuredClone(targets);input.value=instruction;panel.hidden=false
+      status.textContent=`已授权${scope==='document'?'整篇正文':'选区'}的 ${targets.length} 个段落／单元格或整表；部分文字按整段／整格处理。请生成并核对候选，显式采纳后保存。`
+      update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true})
+    },
     openNotes(value: NativeAINoteSelection, instruction='', beforeText?:string) {
       if(!editable() || options.format==='pdf')return
-      panelView?.beforeOpen();clearCandidate();panel.hidden=false;reviewMode=true;noteBeforeText=beforeText;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
+      panelView?.beforeOpen();clearCandidate();presetScope=undefined;presetStale=false;panel.hidden=false;reviewMode=true;noteBeforeText=beforeText;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
       status.textContent=value.selectionKind==='note'?'仅授权当前脚注或尾注；编辑或删除需先核对候选，再显式采纳。':'仅授权当前段落插入脚注或尾注，不授权改写正文。与该段落相交的修改请先保存或撤销。'
       update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true})
     },
     openReview(value: NativeAIReviewSelection, instruction='') {
       if(!editable() || options.format==='pdf')return
-      panelView?.beforeOpen();clearCandidate();panel.hidden=false;reviewMode=true;noteBeforeText=undefined;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
+      panelView?.beforeOpen();clearCandidate();presetScope=undefined;presetStale=false;panel.hidden=false;reviewMode=true;noteBeforeText=undefined;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
       status.textContent='仅授权当前审阅目标；请输入要求并生成建议，核对后采纳到草稿。已有不兼容修改请先保存或撤销。'
       update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true})
     },
     setSelection(value: NativeAISelection[]) {
+      if(presetScope==='selection' && JSON.stringify(documentSelection)!==JSON.stringify(value)){clearCandidate();presetStale=true;status.textContent='Word 选区已变化，请重新点击审阅预设授权。';update()}
       documentSelection=structuredClone(value)
       if(reviewMode)return
       if(options.format==='docx' && JSON.stringify(selection)!==JSON.stringify(value) && (job || busy)) {clearCandidate();status.textContent='Word 选区已变化，请重新生成建议。'}

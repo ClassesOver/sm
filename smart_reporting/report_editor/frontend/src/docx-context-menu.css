@@ -1,0 +1,5 @@
+.docx-context-menu.ctx-menu { position:fixed; z-index:1200; width:240px; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow:auto; padding:4px; color:#242424; background:#fff; border:1px solid #d0d0d0; border-radius:6px; box-shadow:0 6px 24px #0003; font:13px/1.4 system-ui,sans-serif; }
+.docx-context-menu [role=group] + [role=group] { border-top:1px solid #e5e5e5; margin-top:4px; padding-top:4px; }
+.docx-context-menu .ctx-item { display:block; width:100%; min-height:30px; padding:5px 12px; border:0; border-radius:3px; background:transparent; color:inherit; font:inherit; text-align:left; white-space:normal; }
+.docx-context-menu .ctx-item:disabled { color:#8a8a8a; cursor:default; }
+.docx-context-menu .ctx-item:not(:disabled):hover,.docx-context-menu .ctx-item:focus-visible { background:#edf2ff; outline:2px solid #4874c4; outline-offset:-2px; }

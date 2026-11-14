@@ -12,7 +12,10 @@ export interface NativePdfSplitResult {
   parts: {index: number; pages: number[]; filename: string; result?: NativeSaveResponse; error?: {code: string; message: string}}[]
   validation: {ok: boolean; issues: {code: string; message?: string}[]}
 }
+export interface NativeWordFileRequest {requestId:string;expectedSha256:string;filename?:string}
+export interface NativeWordFileResult {documentId:string;revision:number;filename:string;editor:{url:string;openUrl:string;expiresAt:string}}
 export interface NativeContext {
+  displayName?: string | null
   documentId: string
   format: 'docx' | 'pdf' | 'xlsx' | 'pptx'
   revision: number
@@ -193,6 +196,8 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     return response
   }
   return {
+    newWord: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/new',payload)).json(),
+    saveWordAs: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/save-as',payload)).json(),
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
     imagePixels: async (target: {sourceSha256: string; pageId: string; imageId: string; expectedImageSha256: string}, signal?: AbortSignal): Promise<{sourceSha256:string;imageId:string;expectedImageSha256:string;pageId:string;image:string;width:number;height:number;sha256:string}> => (await request('image-pixels', target, signal)).json(),
     imageBackground: async (target: {sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};pxWidth:number}, signal?:AbortSignal): Promise<{sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};image:string;width:number;height:number;sha256:string}> => (await request('image-background',target,signal)).json(),
@@ -216,6 +221,10 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     protectPdf: async (payload: import('./pdf-protection').PdfProtectionRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('protect-pdf',payload,signal)).json(),
     externalPages: async (payload: import('./pdf-external-pages').PdfExternalPagesRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('external-pages',payload,signal)).json(),
     convertOffice: async (payload: import('./pdf-convert-office').PdfConvertOfficeRequest, signal?: AbortSignal): Promise<import('./pdf-convert-office').PdfConvertOfficeResult> => (await request('convert-office',payload,signal)).json(),
+    mailMergeExport: async (payload: import('./docx-mail-merge').MailMergeExportRequest, signal?: AbortSignal): Promise<{content:ArrayBuffer;sha256:string;size:number;sourceSha256:string;filename:string}> => {
+      const response=await request('mail-merge/export',payload,signal)
+      return {content:await response.arrayBuffer(),sha256:response.headers.get('X-Native-Export-Sha256')??'',size:Number(response.headers.get('X-Native-Export-Size')),sourceSha256:response.headers.get('X-Native-Source-Sha256')??'',filename:payload.mode==='labels'?'mail-merge-labels.docx':'mail-merge.zip'}
+    },
     exportImages: async (payload: import('./pdf-image-export').PdfImageExportRequest, signal?: AbortSignal): Promise<import('./pdf-image-export').PdfImageExportResult> => {
       const response=await request('export-images',payload,signal)
       return {content:await response.arrayBuffer(),sha256:response.headers.get('X-Native-Export-Sha256')??'',size:Number(response.headers.get('X-Native-Export-Size')),sourceSha256:response.headers.get('X-Native-Source-Sha256')??'',filename:'pdf-pages-'+payload.format+'.zip'}

@@ -12,3 +12,9 @@ export async function uploadDocxMailMergeSource(api:Pick<ReturnType<typeof creat
   return {...result.source,sourceBase64:base64}
 }
 export function mailMergeOperation(source:MailMergeSource,documentSha256:string){ return {kind:'mailMergeSingle' as const,documentSha256,sourceSha256:source.sourceSha256,sourceBase64:source.sourceBase64} }
+export type MailMergeExportLayout={stock:'avery5160'}|{stock:'custom';paper:'letter'|'a4';columns:number;rows:number}|{envelope:'size10'|'dl'|'c5'|'c6'}
+export interface MailMergeExportOptions {mode:'perRecord'|'labels'|'envelopes';namePattern:string;layout?:MailMergeExportLayout}
+export interface MailMergeExportRequest extends MailMergeExportOptions {documentSha256:string;sourceSha256:string;sourceBase64:string}
+export function mailMergeExportRequest(source:MailMergeSource,documentSha256:string,options:MailMergeExportOptions):MailMergeExportRequest {
+ return {...options,documentSha256,sourceSha256:source.sourceSha256,sourceBase64:source.sourceBase64}
+}

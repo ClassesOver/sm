@@ -31,7 +31,7 @@ it('uses source zoom limits and keeps original document content and physical dim
   f.view.run('页宽'); expect(f.view.zoom).toBe(100)
   expect(f.page.innerHTML).toBe(content)
   expect(f.page.style.width).toBe('')
-  expect(f.view.reason('Web 版式')).not.toBeNull()
+  expect(f.view.reason('Web 版式')).toBeNull()
   f.view.run('分页预览'); expect(f.preview).toHaveBeenCalledOnce()
 })
 it('keeps fit responsive until the user chooses a manual zoom and restores the original display on disposal', () => {
@@ -105,4 +105,129 @@ it('notifies geometry consumers only when the zoom actually changes', () => {
   f.view.run('放大')
   expect(onZoomChange).toHaveBeenCalledTimes(2)
   expect(f.root.dataset.docxZoom).toBe('110')
+})
+
+it('zooms modifier wheel gestures only inside the canvas, keeps the cursor anchor and cleans up the listener', () => {
+  const f = setup(); f.scroller.scrollTop = 200; f.scroller.scrollLeft = 100
+  vi.spyOn(f.page, 'getBoundingClientRect').mockImplementation(() => ({
+    x: -f.scroller.scrollLeft, y: -f.scroller.scrollTop,
+    left: -f.scroller.scrollLeft, top: -f.scroller.scrollTop,
+    width: 800 * f.view.zoom / 100, height: 1000 * f.view.zoom / 100,
+    right: 800 * f.view.zoom / 100 - f.scroller.scrollLeft,
+    bottom: 1000 * f.view.zoom / 100 - f.scroller.scrollTop, toJSON() {},
+  }))
+  const outside = new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -120 })
+  document.body.dispatchEvent(outside); expect(outside.defaultPrevented).toBe(false)
+  const ordinary = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 120 })
+  f.page.dispatchEvent(ordinary); expect(ordinary.defaultPrevented).toBe(false)
+  const notch = new WheelEvent('wheel', { bubbles: true, cancelable: true, metaKey: true, deltaY: -3, deltaMode: 1, clientX: 50, clientY: 60 })
+  f.page.dispatchEvent(notch)
+  expect(notch.defaultPrevented).toBe(true); expect(f.view.zoom).toBe(110)
+  expect(f.scroller.scrollTop).toBeCloseTo(226); expect(f.scroller.scrollLeft).toBeCloseTo(115)
+  const pinch = new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -0.5 })
+  f.page.dispatchEvent(pinch); expect(f.view.zoom).toBeCloseTo(110.3)
+  f.view.dispose()
+  const removed = new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: 120 })
+  f.page.dispatchEvent(removed); expect(removed.defaultPrevented).toBe(false)
+})
+
+it('provides web layout and returns to page or outline without modifying document content', () => {
+  let mode = 'page'
+  const outline = { run: (label: string) => { mode = label === '大纲' ? 'outline' : 'page' }, reason: () => null, get mode() { return mode } }
+  const f = setup({ outline }), original = f.page.innerHTML
+  expect(f.view.reason('Web 版式')).toBeNull()
+  f.view.run('Web 版式'); expect(f.view.active?.('Web 版式')).toBe(true)
+  expect(f.root.classList.contains('docx-view-web')).toBe(true)
+  expect(f.view.active?.('页面视图')).toBe(false)
+  f.view.run('大纲'); expect(f.view.active?.('大纲')).toBe(true)
+  expect(f.root.classList.contains('docx-view-web')).toBe(false)
+  f.view.run('Web 版式'); f.view.run('页面视图')
+  expect(f.view.active?.('页面视图')).toBe(true); expect(f.page.innerHTML).toBe(original)
+})
+
+it('enters readonly immersive reading at 100 percent and restores zoom and fit on Escape or disposal', () => {
+  let readOnly = false
+  const reading = { setActive: (value: boolean) => { readOnly = value } }
+  const f = setup({ reading }); f.view.run('整页'); expect(f.view.zoom).toBe(60)
+  expect(f.view.reason('阅读视图')).toBeNull(); f.view.run('阅读视图')
+  expect(readOnly).toBe(true); expect(f.view.zoom).toBe(100)
+  expect(f.root.querySelector<HTMLButtonElement>('.docx-read-exit')?.hidden).toBe(false)
+  f.view.run('放大'); expect(f.view.zoom).toBe(110)
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+  expect(readOnly).toBe(false); expect(f.view.zoom).toBe(60)
+  Object.defineProperty(f.scroller, 'clientHeight', { value: 1048 }); f.view.refresh(); expect(f.view.zoom).toBe(100)
+  f.view.run('阅读视图'); f.view.dispose(); expect(readOnly).toBe(false)
+})
+
+it('persists the explicit dark page choice using the source preference and respects authored page colors', () => {
+  localStorage.removeItem('aidocs.darkPage')
+  let pageColor: string | null = null
+  const f = setup({ themeDark: () => true, pageColor: () => pageColor })
+  expect(f.root.classList.contains('page-dark')).toBe(true)
+  expect(f.view.active?.('深色模式')).toBe(true)
+  f.view.run('深色模式'); expect(localStorage.getItem('aidocs.darkPage')).toBe('0')
+  expect(f.root.classList.contains('page-dark')).toBe(false)
+  f.view.run('深色模式'); expect(localStorage.getItem('aidocs.darkPage')).toBe('1')
+  pageColor = '#ffeeaa'; f.view.refresh(); expect(f.root.classList.contains('page-dark')).toBe(false)
+  expect(f.view.active?.('深色模式')).toBe(true)
+  f.view.dispose(); expect(f.root.classList.contains('page-dark')).toBe(false)
+  localStorage.removeItem('aidocs.darkPage')
+})
+
+
+it('requires a readonly integration for reading and restores inherited display classes on disposal', () => {
+  const f = setup()
+  expect(f.view.reason('阅读视图')).not.toBeNull()
+  f.view.run('阅读视图'); expect(f.root.querySelector<HTMLButtonElement>('.docx-read-exit')!.hidden).toBe(true)
+  f.view.run('Web 版式'); f.view.run('深色模式')
+  expect(f.root.classList.contains('docx-view-web')).toBe(true)
+  f.view.dispose(); expect(f.root.classList.contains('docx-view-web')).toBe(false)
+  expect(f.scroller.classList.contains('page-dark')).toBe(false)
+  localStorage.removeItem('aidocs.darkPage')
+})
+
+it('classifies a dense Cmd wheel stream as a single notch and rounds buttons after continuous pinch', () => {
+  const f = setup()
+  for (let i = 0; i < 8; i++) {
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, metaKey: true, deltaY: -20 })
+    Object.defineProperty(event, 'timeStamp', { value: i * 10 })
+    f.page.dispatchEvent(event)
+  }
+  expect(f.view.zoom).toBe(110)
+  f.page.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -0.5 }))
+  expect(f.view.zoom).toBeCloseTo(110.3)
+  f.view.run('放大'); expect(f.view.zoom).toBe(120)
+})
+
+it('keeps reading active when a context menu consumes Escape before it reaches the window', () => {
+  const f = setup({ reading: { setActive: () => {} } })
+  f.view.run('放大'); f.view.run('阅读视图')
+  const menu = document.createElement('div'); menu.setAttribute('role', 'menu'); f.root.append(menu)
+  menu.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); menu.remove() } })
+  const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+  menu.dispatchEvent(escape)
+  expect(escape.defaultPrevented).toBe(true)
+  expect(menu.isConnected).toBe(false)
+  expect(f.view.reading).toBe(true); expect(f.view.zoom).toBe(100)
+  f.page.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(f.view.reading).toBe(false); expect(f.view.zoom).toBe(110)
+})
+
+it.each([{ isComposing: true }, { keyCode: 229 }])('keeps reading active during IME Escape %j', flags => {
+  const f = setup({ reading: { setActive: () => {} } }); f.view.run('阅读视图')
+  f.page.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, ...flags }))
+  expect(f.view.reading).toBe(true)
+  f.page.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(f.view.reading).toBe(false)
+})
+
+it('lets a modal own Escape without exiting the underlying reading view', () => {
+  const f = setup({ reading: { setActive: () => {} } }); f.view.run('阅读视图')
+  const dialog = document.createElement('div'), input = document.createElement('input')
+  dialog.setAttribute('role', 'dialog'); dialog.append(input); document.body.append(dialog)
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  expect(f.view.reading).toBe(true)
+  dialog.remove()
+  f.page.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(f.view.reading).toBe(false)
 })

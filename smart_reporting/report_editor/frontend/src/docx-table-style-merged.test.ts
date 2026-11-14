@@ -42,3 +42,23 @@ for (const layout of ['colspan', 'rowspan', 'ordinary'] as const) for (const act
     else expect(editor.state.doc.child(0).attrs.tblStyleId).toBe('LightShading')
   })
 }
+
+it('source gallery retains document style and look on merged cells through save and replay', async () => {
+  const gallery = await import('./docx-table-style-controls')
+  const { normalizeDocxTableStyle, replayDocxTableStyle } = await import('./docx-table-style')
+  const editor = new Editor({ extensions: [Doc, Paragraph, Text, Table, Row, Cell, Roles, NativeTableStructure, UndoRedo], content: { type: 'doc', content: [{ type: 'docTable', attrs: { docxIndex: 1, tblStyleId: 'TableGrid', tblLook: look }, content: layouts.colspan }] }, editorProps: { handleScrollToSelection: () => true } })
+  editors.push(editor)
+  const baseline = editor.getJSON() as DocxPmNode
+  const anchor = { docxIndex: 1, blockId: 'table', expectedObjectSha256: 'sha', tableStyleEditable: true, tableStyleSource: { styleId: 'TableGrid', look }, tableStyleState: { styleId: 'TableGrid', look, presetEditable: false }, tableStyleOptions: styles }
+  editor.commands.setTextSelection(3)
+  expect(gallery.applyDocxTableStyle(editor, { style: { kind: 'document', styleId: 'LightShading' } }, [anchor])).toBe(true)
+  expect(gallery.toggleDocxTableStyleLook(editor, 'lastRow', [anchor])).toBe(true)
+  expect(editor.state.doc.child(0).attrs.tblStyleId).toBe('LightShading')
+  const normalized = normalizeDocxTableStyle(baseline, editor.getJSON(), [anchor], editor.schema)
+  expect(normalized.operations).toEqual([{ kind: 'setTableStyle', blockId: 'table', expectedObjectSha256: 'sha', styleId: 'LightShading', look: { ...look, lastRow: true } }])
+  expect(replayDocxTableStyle(baseline, normalized.operations, [anchor], editor.schema)).toEqual(editor.getJSON())
+  const controls = gallery.createDocxTableStyleControls({ editor, anchors: [anchor] })
+  expect((controls.element.querySelector('[data-table-style="blue-header"]') as HTMLButtonElement).disabled).toBe(true)
+  expect((controls.element.querySelector('[data-table-style="document:LightShading"]') as HTMLButtonElement).disabled).toBe(false)
+  controls.dispose()
+})

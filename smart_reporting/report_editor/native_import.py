@@ -117,7 +117,7 @@ class NativeImportService:
     def __init__(self, workspace: Any, repository: Any, grants: Any):
         self.workspace, self.repository, self.grants = workspace, repository, grants
 
-    async def import_file(self, scope: NativeScope, content: bytes, *, request_id: str, filename: str = '') -> dict[str, Any]:
+    async def import_file(self, scope: NativeScope, content: bytes, *, request_id: str, filename: str = '', display_name: str | None = None) -> dict[str, Any]:
         """scope 必须由宿主可信会话构造，不接收上传表单中的身份字段。"""
         if not isinstance(scope, NativeScope) or not isinstance(request_id, str) or not request_id or len(request_id) > 256:
             raise ReportingError('native_import_request_invalid', '文件导入请求身份无效。')
@@ -133,7 +133,7 @@ class NativeImportService:
             pass
         await read_verified_file(self.workspace, {'threadId': key}, path, size=identity.size,
             sha256=identity.sha256, error_code='native_import_source_changed', format_name=format.upper())
-        source = NativeSource(format=format, origin='upload', sourceFile=identity)
+        source = NativeSource(format=format, origin='upload', sourceFile=identity, displayName=display_name)
         document = await self.repository.create_from_source(source, scope=scope, request_id=request_id)
         revision = await self.repository.get_revision(document.document_id, 1, scope=scope)
         if revision is None or revision.context is None:

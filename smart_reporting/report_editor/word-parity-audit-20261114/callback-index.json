@@ -1,0 +1,6833 @@
+{
+  "meaning": "Lexical lookup index only; event occurrences are not feature counts or proof of parity.",
+  "files": [
+    {
+      "path": "apps/docs/src/main/docs-main.ts",
+      "callbacks": {
+        "onDelta": [
+          4577,
+          4578
+        ],
+        "onReasoningDelta": [
+          4581,
+          4582
+        ],
+        "onToolCall": [
+          4585,
+          4586
+        ],
+        "onActivity": [
+          4589
+        ],
+        "onStopReason": [
+          4590,
+          4592
+        ],
+        "onUsage": [
+          4594,
+          4595
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/main/zotero-wire.ts",
+      "callbacks": {
+        "onError": [
+          86,
+          87,
+          89
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/preload/index.ts",
+      "callbacks": {
+        "onLanguageChanged": [
+          27
+        ],
+        "onThemeChanged": [
+          36
+        ],
+        "onDocumentThemeChanged": [
+          45
+        ],
+        "onAutoSaveDefaultChanged": [
+          51
+        ],
+        "onAuthorNameChanged": [
+          57
+        ],
+        "onAiPanelPrefsChanged": [
+          66
+        ],
+        "onChromePressed": [
+          71
+        ],
+        "onZoteroRequest": [
+          77
+        ],
+        "onOpenDocx": [
+          106
+        ],
+        "onRenamedDocx": [
+          112
+        ],
+        "onTeardown": [
+          122
+        ],
+        "onContextMenuRequest": [
+          133
+        ],
+        "onMcpCommand": [
+          149
+        ],
+        "onViewImage": [
+          204
+        ],
+        "onAiSettingsChanged": [
+          211
+        ],
+        "onAiStream": [
+          252
+        ],
+        "onMenuCommand": [
+          257
+        ],
+        "onCloseCheck": [
+          263
+        ],
+        "onCloseSaveRequest": [
+          279
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/App.tsx",
+      "callbacks": {
+        "onAuthorNameChanged": [
+          592,
+          2118
+        ],
+        "onContextMenuRequest": [
+          1238
+        ],
+        "onViewImage": [
+          1252,
+          8913
+        ],
+        "onSelectionUpdate": [
+          1540
+        ],
+        "onFocus": [
+          1542
+        ],
+        "onUpdate": [
+          1543,
+          2188,
+          2192,
+          2195,
+          2205,
+          2209,
+          2212,
+          4031,
+          5716,
+          5761,
+          5785,
+          5795,
+          6007,
+          6011,
+          6014
+        ],
+        "onAiSettingsChanged": [
+          1812
+        ],
+        "onWheel": [
+          2050,
+          2064,
+          2065
+        ],
+        "onKey": [
+          2105,
+          2108,
+          2109,
+          7712,
+          7716,
+          7719
+        ],
+        "onTeardown": [
+          2144
+        ],
+        "onWriteProtectionLoaded": [
+          2373
+        ],
+        "onRenamedDocx": [
+          2401
+        ],
+        "onOpenDocx": [
+          2417
+        ],
+        "onZoteroRequest": [
+          2962
+        ],
+        "onFontsChanged": [
+          5768,
+          5789,
+          5790
+        ],
+        "onLoadingDone": [
+          5790,
+          5791,
+          5837
+        ],
+        "onDocUpdate": [
+          5793,
+          5797,
+          5839
+        ],
+        "onShrinkTr": [
+          5806,
+          5831,
+          5840
+        ],
+        "onCloseCheck": [
+          6073
+        ],
+        "onCloseSaveRequest": [
+          6080
+        ],
+        "onMenuCommand": [
+          6407
+        ],
+        "onDocClick": [
+          6664,
+          8458
+        ],
+        "onDocContextMenu": [
+          6698,
+          8459
+        ],
+        "onCommit": [
+          6835,
+          8524,
+          8590
+        ],
+        "onExit": [
+          6840
+        ],
+        "onHfAction": [
+          6924,
+          7637,
+          7637
+        ],
+        "onDocDoubleClick": [
+          7018,
+          8460
+        ],
+        "onListDialog": [
+          7517
+        ],
+        "onParagraphDialog": [
+          7518,
+          8908
+        ],
+        "onPasteDefaults": [
+          7519
+        ],
+        "onTableDialog": [
+          7520,
+          8928,
+          8928
+        ],
+        "onToggleTableGridlines": [
+          7528
+        ],
+        "onOpen": [
+          7529
+        ],
+        "onSave": [
+          7530,
+          8973
+        ],
+        "onSaveAs": [
+          7531
+        ],
+        "onConvert": [
+          7532
+        ],
+        "onNameWithAi": [
+          7538
+        ],
+        "onToggleAi": [
+          7539
+        ],
+        "onSection": [
+          7540,
+          8493
+        ],
+        "onPageBorderAll": [
+          7553
+        ],
+        "onPaperSizeAll": [
+          7564
+        ],
+        "onMirrorMargins": [
+          7581
+        ],
+        "onInsertSectionBreak": [
+          7586
+        ],
+        "onPageColor": [
+          7588
+        ],
+        "onWatermark": [
+          7592
+        ],
+        "onThemeFonts": [
+          7601
+        ],
+        "onThemeColors": [
+          7606
+        ],
+        "onInkTool": [
+          7611
+        ],
+        "onInkPresets": [
+          7612
+        ],
+        "onInkActivate": [
+          7613
+        ],
+        "onInkClearAll": [
+          7614
+        ],
+        "onInsertNote": [
+          7615
+        ],
+        "onAddSource": [
+          7616
+        ],
+        "onZoom": [
+          7622
+        ],
+        "onZoomFit": [
+          7623
+        ],
+        "onZoomDialog": [
+          7624
+        ],
+        "onDarkPage": [
+          7625
+        ],
+        "onAiPreset": [
+          7626,
+          8915
+        ],
+        "onHeader": [
+          7631
+        ],
+        "onPageNumFormat": [
+          7632
+        ],
+        "onInsertField": [
+          7633
+        ],
+        "onPickMergeDataSource": [
+          7634
+        ],
+        "onMergeMailings": [
+          7635
+        ],
+        "onFooter": [
+          7636
+        ],
+        "onHfEdit": [
+          7638
+        ],
+        "onShowMarks": [
+          7639
+        ],
+        "onShowRuler": [
+          7640
+        ],
+        "onShowNav": [
+          7641
+        ],
+        "onShowComments": [
+          7642
+        ],
+        "onToggleComments": [
+          7643
+        ],
+        "onNewComment": [
+          7644,
+          8910
+        ],
+        "onDeleteComment": [
+          7645
+        ],
+        "onDeleteAllComments": [
+          7646
+        ],
+        "onGotoComment": [
+          7648
+        ],
+        "onTrackChanges": [
+          7649
+        ],
+        "onSpellcheck": [
+          7650
+        ],
+        "onRevisionDisplay": [
+          7654
+        ],
+        "onAcceptRevision": [
+          7655
+        ],
+        "onRejectRevision": [
+          7656
+        ],
+        "onRevisionFilter": [
+          7657
+        ],
+        "onToggleReviewPane": [
+          7658
+        ],
+        "onGotoRevision": [
+          7659
+        ],
+        "onProtectDoc": [
+          7679
+        ],
+        "onCompare": [
+          7680
+        ],
+        "onViewMode": [
+          7681
+        ],
+        "onReadMode": [
+          7682
+        ],
+        "onShowGrid": [
+          7683
+        ],
+        "onSplitView": [
+          7684
+        ],
+        "onPagePreview": [
+          7685
+        ],
+        "onDown": [
+          7708,
+          7715,
+          7718
+        ],
+        "onChangeBar": [
+          7749
+        ],
+        "onCommentBalloon": [
+          7758
+        ],
+        "onCommentSelect": [
+          7762
+        ],
+        "onCommentReply": [
+          7763
+        ],
+        "onCommentResolve": [
+          7764
+        ],
+        "onCommentEdit": [
+          7765
+        ],
+        "onCommentDelete": [
+          7766
+        ],
+        "onClick": [
+          7815,
+          7824,
+          7833,
+          8458,
+          8675,
+          8694,
+          8759,
+          8769,
+          8783,
+          8799,
+          8810,
+          8818,
+          8826,
+          8832,
+          8844,
+          8851,
+          9294,
+          9295
+        ],
+        "onChange": [
+          7843,
+          8842,
+          9221,
+          9248,
+          9284
+        ],
+        "onTr": [
+          7937,
+          7941,
+          7943
+        ],
+        "onMpPick": [
+          7952,
+          8659
+        ],
+        "onFind": [
+          8252
+        ],
+        "onReplace": [
+          8256
+        ],
+        "onShowStylesPane": [
+          8299
+        ],
+        "onCommentsMode": [
+          8303
+        ],
+        "onBalloonMode": [
+          8312
+        ],
+        "onTrackChangesOptions": [
+          8313
+        ],
+        "onExpand": [
+          8352
+        ],
+        "onCollapse": [
+          8353
+        ],
+        "onQueueEditInstruction": [
+          8356
+        ],
+        "onQueueRemove": [
+          8357,
+          8418
+        ],
+        "onQueueClear": [
+          8358
+        ],
+        "onQueueFocus": [
+          8359
+        ],
+        "onQueueConsume": [
+          8360
+        ],
+        "onTrackChangesToggle": [
+          8368
+        ],
+        "onRevisions": [
+          8370
+        ],
+        "onRevisionSelect": [
+          8375
+        ],
+        "onRevisionRange": [
+          8376
+        ],
+        "onClose": [
+          8387,
+          8406,
+          8709,
+          8723,
+          8730,
+          8747,
+          8860,
+          8861,
+          8865,
+          8872,
+          8881,
+          8888,
+          8892,
+          8898,
+          8906,
+          8972,
+          8977,
+          8984,
+          9008,
+          9012,
+          9018,
+          9022,
+          9028,
+          9042,
+          9049,
+          9056,
+          9070,
+          9085,
+          9114,
+          9196,
+          9203,
+          9205,
+          9207,
+          9208
+        ],
+        "onSendNow": [
+          8415
+        ],
+        "onQueueAdd": [
+          8416
+        ],
+        "onQueueUpdate": [
+          8417
+        ],
+        "onScroll": [
+          8426
+        ],
+        "onDragOver": [
+          8432
+        ],
+        "onDragLeave": [
+          8437
+        ],
+        "onDrop": [
+          8441
+        ],
+        "onContextMenu": [
+          8459
+        ],
+        "onDoubleClick": [
+          8460
+        ],
+        "onTabStopsChange": [
+          8484
+        ],
+        "onIndentsChange": [
+          8488
+        ],
+        "onMarginsChange": [
+          8491
+        ],
+        "onEditingChange": [
+          8535,
+          8608
+        ],
+        "onEdit": [
+          8569,
+          8576,
+          8705
+        ],
+        "onDelete": [
+          8570,
+          8577,
+          8708,
+          8950
+        ],
+        "onAdd": [
+          8644
+        ],
+        "onRemove": [
+          8645
+        ],
+        "onPick": [
+          8659,
+          9274
+        ],
+        "onSubmitNew": [
+          8703
+        ],
+        "onReply": [
+          8704,
+          8946
+        ],
+        "onResolve": [
+          8706,
+          8951
+        ],
+        "onCancelNew": [
+          8707
+        ],
+        "onUpsert": [
+          8721
+        ],
+        "onNotice": [
+          8722
+        ],
+        "onSelect": [
+          8744
+        ],
+        "onAccept": [
+          8745
+        ],
+        "onReject": [
+          8746
+        ],
+        "onSubmit": [
+          8866,
+          8991,
+          9113,
+          9222,
+          9249
+        ],
+        "onInserted": [
+          8873
+        ],
+        "onApply": [
+          8880,
+          8887,
+          9034,
+          9048,
+          9055,
+          9065,
+          9080,
+          9234
+        ],
+        "onFontDialog": [
+          8907
+        ],
+        "onLink": [
+          8909
+        ],
+        "onRedact": [
+          8911
+        ],
+        "onUnredact": [
+          8912
+        ],
+        "onSaveImageAs": [
+          8914
+        ],
+        "onRestartNumbering": [
+          8919
+        ],
+        "onContinueNumbering": [
+          8920
+        ],
+        "onSetNumberingValue": [
+          8921
+        ],
+        "onAdjustListIndents": [
+          8922
+        ],
+        "onChangeListLevel": [
+          8923
+        ],
+        "onUpdateFields": [
+          8924
+        ],
+        "onEditField": [
+          8925
+        ],
+        "onOpenLink": [
+          8926
+        ],
+        "onRespell": [
+          8927
+        ],
+        "onRange": [
+          8940
+        ],
+        "onAll": [
+          8941
+        ],
+        "onToggle": [
+          8956
+        ],
+        "onCancel": [
+          8990,
+          9223,
+          9233,
+          9250
+        ],
+        "onExportPdf": [
+          9195
+        ],
+        "onMouseDown": [
+          9256
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/ai/AiPanel.tsx",
+      "callbacks": {
+        "onExpand": [
+          248,
+          342,
+          1402
+        ],
+        "onCollapse": [
+          250,
+          343,
+          1454,
+          1457
+        ],
+        "onQueueEditInstruction": [
+          255,
+          346,
+          1788
+        ],
+        "onQueueRemove": [
+          256,
+          347,
+          1789
+        ],
+        "onQueueClear": [
+          257,
+          348,
+          1224,
+          1790
+        ],
+        "onQueueFocus": [
+          259,
+          349,
+          1792
+        ],
+        "onQueueConsume": [
+          261,
+          350,
+          1231
+        ],
+        "onTrackChangesToggle": [
+          276,
+          358,
+          1339
+        ],
+        "onRevisions": [
+          279,
+          360,
+          1715,
+          1723
+        ],
+        "onRevisionSelect": [
+          283,
+          363,
+          1737
+        ],
+        "onRevisionRange": [
+          284,
+          364,
+          1760,
+          1771
+        ],
+        "onSettingsChanged": [
+          328
+        ],
+        "onAiSettingsChanged": [
+          328
+        ],
+        "onAttachmentsScroll": [
+          474,
+          1850
+        ],
+        "onResize": [
+          500,
+          501,
+          502
+        ],
+        "onProgress": [
+          739,
+          765,
+          768,
+          836,
+          836
+        ],
+        "onText": [
+          848
+        ],
+        "onToolStart": [
+          849,
+          879
+        ],
+        "onToolExecuted": [
+          850,
+          858
+        ],
+        "onTurnEnd": [
+          898
+        ],
+        "onUsage": [
+          904
+        ],
+        "onDone": [
+          909
+        ],
+        "onError": [
+          935
+        ],
+        "onNavigate": [
+          1046
+        ],
+        "onLogScroll": [
+          1064,
+          1467
+        ],
+        "onDrop": [
+          1309,
+          1425,
+          1425
+        ],
+        "onPasteFiles": [
+          1320,
+          1929,
+          1929
+        ],
+        "onMove": [
+          1365,
+          1375,
+          1385,
+          1442,
+          1804
+        ],
+        "onClick": [
+          1402,
+          1447,
+          1457,
+          1506,
+          1590,
+          1599,
+          1629,
+          1659,
+          1666,
+          1689,
+          1693,
+          1706,
+          1715,
+          1723,
+          1737,
+          1758,
+          1769,
+          1819,
+          1828,
+          1863,
+          1892,
+          1945,
+          2018,
+          2018,
+          2021,
+          2021,
+          2069,
+          2095
+        ],
+        "onDragOver": [
+          1415
+        ],
+        "onDragLeave": [
+          1422
+        ],
+        "onPointerDown": [
+          1429
+        ],
+        "onScroll": [
+          1467,
+          1850
+        ],
+        "onAsk": [
+          1572
+        ],
+        "onJumpBlock": [
+          1576
+        ],
+        "onInsert": [
+          1577
+        ],
+        "onEditInstruction": [
+          1788
+        ],
+        "onRemove": [
+          1789,
+          1800,
+          1812
+        ],
+        "onDiscardAll": [
+          1790
+        ],
+        "onSend": [
+          1791,
+          1927
+        ],
+        "onFocus": [
+          1792
+        ],
+        "onUpdate": [
+          1799
+        ],
+        "onClear": [
+          1801
+        ],
+        "onTogglePause": [
+          1803
+        ],
+        "onQueue": [
+          1807
+        ],
+        "onChange": [
+          1926
+        ],
+        "onStop": [
+          1928
+        ],
+        "onToggle": [
+          1938
+        ],
+        "onAddFile": [
+          1939
+        ],
+        "onManage": [
+          1940
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/ai/EditQueueCard.tsx",
+      "callbacks": {
+        "onEditInstruction": [
+          21,
+          36,
+          103
+        ],
+        "onRemove": [
+          22,
+          37,
+          148
+        ],
+        "onDiscardAll": [
+          23,
+          38,
+          180
+        ],
+        "onSend": [
+          24,
+          39,
+          195
+        ],
+        "onFocus": [
+          26,
+          40,
+          90
+        ],
+        "onClick": [
+          62,
+          89,
+          122,
+          128,
+          148,
+          173,
+          178,
+          191,
+          195
+        ],
+        "onChange": [
+          100
+        ],
+        "onBlur": [
+          101
+        ],
+        "onKeyDown": [
+          106
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/ai/MindMapCard.tsx",
+      "callbacks": {
+        "onAsk": [
+          29,
+          37,
+          396,
+          400
+        ],
+        "onJumpBlock": [
+          31,
+          37,
+          419,
+          425
+        ],
+        "onInsert": [
+          34,
+          37,
+          324,
+          331
+        ],
+        "onWheel": [
+          75,
+          90,
+          91
+        ],
+        "onPointerDown": [
+          102,
+          358,
+          358
+        ],
+        "onPointerMove": [
+          108,
+          359,
+          359
+        ],
+        "onPointerUp": [
+          114,
+          360,
+          360,
+          361
+        ],
+        "onClick": [
+          218,
+          260,
+          282,
+          304,
+          328,
+          396,
+          417,
+          467
+        ],
+        "onPointerCancel": [
+          361
+        ],
+        "onKeyDown": [
+          397,
+          421,
+          471
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/ai/doc-writer.ts",
+      "callbacks": {
+        "onProgress": [
+          40
+        ],
+        "onTransaction": [
+          110,
+          126,
+          159
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/ai/transport.ts",
+      "callbacks": {
+        "onStream": [
+          8
+        ],
+        "onAiStream": [
+          8
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/author-name.ts",
+      "callbacks": {
+        "onAuthorNameChanged": [
+          18
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/AiAskPopover.tsx",
+      "callbacks": {
+        "onSendNow": [
+          38,
+          99,
+          371
+        ],
+        "onQueueAdd": [
+          40,
+          100,
+          214,
+          217,
+          319,
+          382
+        ],
+        "onQueueUpdate": [
+          41,
+          101,
+          213,
+          217,
+          316,
+          358
+        ],
+        "onQueueRemove": [
+          42,
+          102,
+          348
+        ],
+        "onAnchorClick": [
+          169,
+          177,
+          178
+        ],
+        "onPointerDown": [
+          221,
+          225,
+          226
+        ],
+        "onKeyDown": [
+          276,
+          311
+        ],
+        "onClick": [
+          289,
+          332,
+          347,
+          357,
+          370,
+          381,
+          404
+        ],
+        "onChange": [
+          310
+        ],
+        "onMouseDown": [
+          403
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/AutoCorrectDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          29,
+          29,
+          31,
+          54,
+          87
+        ],
+        "onKeyDown": [
+          53,
+          53
+        ],
+        "onMouseDown": [
+          54
+        ],
+        "onChange": [
+          64,
+          79
+        ],
+        "onClick": [
+          86,
+          87
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/CommentsPanel.tsx",
+      "callbacks": {
+        "onSubmitNew": [
+          86,
+          100,
+          211
+        ],
+        "onReply": [
+          87,
+          102,
+          137
+        ],
+        "onEdit": [
+          88,
+          104,
+          154,
+          163
+        ],
+        "onResolve": [
+          89,
+          106,
+          262
+        ],
+        "onCancelNew": [
+          90,
+          107,
+          415,
+          450
+        ],
+        "onDelete": [
+          91,
+          108,
+          302
+        ],
+        "onClose": [
+          92,
+          109,
+          401
+        ],
+        "onKey": [
+          182,
+          186,
+          189
+        ],
+        "onChange": [
+          229,
+          377,
+          412
+        ],
+        "onKeyDown": [
+          230,
+          344,
+          378,
+          413
+        ],
+        "onClick": [
+          236,
+          237,
+          252,
+          259,
+          274,
+          288,
+          299,
+          336,
+          401,
+          430,
+          440,
+          450,
+          451,
+          461
+        ],
+        "onCardKey": [
+          313,
+          344
+        ],
+        "onPaste": [
+          417
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ComparePanel.tsx",
+      "callbacks": {
+        "onClose": [
+          14,
+          18,
+          48
+        ],
+        "onClick": [
+          48
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ContextMenu.tsx",
+      "callbacks": {
+        "onClose": [
+          87,
+          158,
+          239,
+          288,
+          291,
+          295,
+          298,
+          302,
+          305,
+          308
+        ],
+        "onFontDialog": [
+          88,
+          159,
+          467
+        ],
+        "onParagraphDialog": [
+          89,
+          160,
+          468
+        ],
+        "onLink": [
+          90,
+          161,
+          253,
+          847
+        ],
+        "onNewComment": [
+          91,
+          162,
+          849
+        ],
+        "onViewImage": [
+          92,
+          163,
+          460
+        ],
+        "onSaveImageAs": [
+          93,
+          164,
+          461
+        ],
+        "onAiPreset": [
+          94,
+          165,
+          729,
+          744
+        ],
+        "onRestartNumbering": [
+          96,
+          166,
+          680,
+          681
+        ],
+        "onContinueNumbering": [
+          97,
+          167,
+          684,
+          685
+        ],
+        "onSetNumberingValue": [
+          98,
+          168,
+          688,
+          689
+        ],
+        "onAdjustListIndents": [
+          99,
+          169,
+          692,
+          693
+        ],
+        "onChangeListLevel": [
+          100,
+          170,
+          697,
+          700,
+          711
+        ],
+        "onUpdateFields": [
+          102,
+          171,
+          657,
+          660
+        ],
+        "onEditField": [
+          104,
+          172,
+          667,
+          668
+        ],
+        "onOpenLink": [
+          106,
+          173,
+          837,
+          838
+        ],
+        "onRedact": [
+          108,
+          174,
+          768,
+          771
+        ],
+        "onUnredact": [
+          110,
+          175,
+          778,
+          782
+        ],
+        "onTableDialog": [
+          112,
+          176,
+          494,
+          495,
+          521,
+          522,
+          560,
+          560,
+          647,
+          652
+        ],
+        "onRespell": [
+          116,
+          178,
+          227,
+          230,
+          240
+        ],
+        "onRange": [
+          121,
+          873,
+          876
+        ],
+        "onAll": [
+          122,
+          882,
+          883
+        ],
+        "onReply": [
+          127,
+          855
+        ],
+        "onDelete": [
+          128,
+          859
+        ],
+        "onResolve": [
+          129,
+          863
+        ],
+        "onToggle": [
+          132,
+          889
+        ],
+        "onLinkRun": [
+          249,
+          833
+        ],
+        "onKey": [
+          290,
+          294,
+          301
+        ],
+        "onChromePressed": [
+          298
+        ],
+        "onPicture": [
+          355,
+          452,
+          464,
+          471,
+          657,
+          674,
+          723,
+          850,
+          867
+        ],
+        "onClick": [
+          372,
+          382,
+          382,
+          409,
+          415,
+          416,
+          423,
+          440,
+          445,
+          450,
+          455,
+          460,
+          461,
+          467,
+          468,
+          489,
+          495,
+          516,
+          522,
+          544,
+          554,
+          558,
+          566,
+          574,
+          583,
+          598,
+          617,
+          639,
+          650,
+          660,
+          664,
+          668,
+          681,
+          685,
+          689,
+          693,
+          711,
+          729,
+          743,
+          771,
+          782,
+          797,
+          814,
+          817,
+          820,
+          823,
+          835,
+          838,
+          840,
+          843,
+          847,
+          849,
+          855,
+          859,
+          863,
+          873,
+          876,
+          882,
+          883,
+          889
+        ],
+        "onMouseEnter": [
+          381
+        ],
+        "onContextMenu": [
+          400
+        ],
+        "onMouseLeave": [
+          418,
+          474,
+          502,
+          529,
+          568,
+          590,
+          609,
+          625,
+          695,
+          731,
+          789,
+          810
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/EquationModal.tsx",
+      "callbacks": {
+        "onClose": [
+          79,
+          83,
+          88,
+          114,
+          122,
+          154
+        ],
+        "onKeyDown": [
+          121,
+          121,
+          132
+        ],
+        "onMouseDown": [
+          122
+        ],
+        "onChange": [
+          130,
+          149
+        ],
+        "onClick": [
+          154,
+          157,
+          186,
+          201
+        ],
+        "onPick": [
+          169,
+          173,
+          188
+        ],
+        "onCustom": [
+          170,
+          174,
+          201
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/FieldDialog.tsx",
+      "callbacks": {
+        "onSubmit": [
+          8,
+          12,
+          20
+        ],
+        "onClose": [
+          9,
+          13,
+          16,
+          21,
+          28,
+          43
+        ],
+        "onKeyDown": [
+          27,
+          27,
+          39
+        ],
+        "onMouseDown": [
+          28
+        ],
+        "onChange": [
+          38
+        ],
+        "onClick": [
+          43,
+          46
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/FindPanel.tsx",
+      "callbacks": {
+        "onClose": [
+          56,
+          115,
+          313,
+          314
+        ],
+        "onUpdate": [
+          299,
+          302,
+          304
+        ],
+        "onClick": [
+          457,
+          464,
+          464,
+          488,
+          506,
+          540,
+          550,
+          572,
+          600,
+          608,
+          630,
+          712,
+          715,
+          721
+        ],
+        "onChange": [
+          522,
+          591,
+          655,
+          673,
+          696
+        ],
+        "onKeyDown": [
+          527,
+          592,
+          677,
+          700
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/FontDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          170,
+          170,
+          172,
+          228,
+          261,
+          490,
+          534
+        ],
+        "onPick": [
+          264,
+          290,
+          290,
+          340,
+          354,
+          438,
+          458
+        ],
+        "onChange": [
+          295,
+          297,
+          297,
+          302,
+          311,
+          311,
+          368,
+          412,
+          476
+        ],
+        "onKeyDown": [
+          489,
+          489
+        ],
+        "onMouseDown": [
+          490
+        ],
+        "onClick": [
+          502,
+          534,
+          537
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/HeaderFooterArea.tsx",
+      "callbacks": {
+        "onCommit": [
+          136,
+          152,
+          185,
+          186,
+          198,
+          198
+        ],
+        "onEditingChange": [
+          145,
+          160,
+          185,
+          186,
+          200,
+          204
+        ],
+        "onExit": [
+          199
+        ],
+        "onDoubleClick": [
+          249
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/InkOverlay.tsx",
+      "callbacks": {
+        "onAdd": [
+          33,
+          86,
+          191
+        ],
+        "onRemove": [
+          34,
+          87,
+          141,
+          144
+        ],
+        "onPointerDown": [
+          147,
+          213,
+          213
+        ],
+        "onPointerMove": [
+          162,
+          214,
+          214
+        ],
+        "onPointerUp": [
+          176,
+          215,
+          215,
+          216
+        ],
+        "onPointerCancel": [
+          216
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/LengthInput.tsx",
+      "callbacks": {
+        "onCommit": [
+          14,
+          30,
+          66
+        ],
+        "onEnter": [
+          24,
+          45,
+          113
+        ],
+        "onFocus": [
+          25,
+          46,
+          145,
+          145
+        ],
+        "onBlur": [
+          26,
+          47,
+          146,
+          148
+        ],
+        "onInput": [
+          97,
+          143,
+          143
+        ],
+        "onKeyDown": [
+          108,
+          144,
+          144
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ListDialogs.tsx",
+      "callbacks": {
+        "onClose": [
+          45,
+          52,
+          58,
+          64,
+          70,
+          243,
+          251,
+          263,
+          263,
+          318,
+          322,
+          358,
+          358,
+          408,
+          414,
+          449,
+          449,
+          534,
+          540,
+          551,
+          551,
+          605,
+          611,
+          642,
+          642
+        ],
+        "onOk": [
+          46,
+          53,
+          73,
+          264,
+          359,
+          450,
+          552,
+          643
+        ],
+        "onKeyDown": [
+          63,
+          63
+        ],
+        "onMouseDown": [
+          64
+        ],
+        "onClick": [
+          70,
+          73,
+          166,
+          461,
+          482,
+          655
+        ],
+        "onPick": [
+          85,
+          89,
+          102,
+          102,
+          134,
+          369,
+          515,
+          565,
+          591,
+          673,
+          743,
+          752,
+          761,
+          770
+        ],
+        "onChange": [
+          111,
+          114,
+          134,
+          147,
+          149,
+          160,
+          160,
+          166,
+          176,
+          176,
+          184,
+          184,
+          271,
+          281,
+          290,
+          302,
+          377,
+          493,
+          496,
+          501,
+          573,
+          580,
+          584,
+          691,
+          701,
+          774,
+          776
+        ],
+        "onMouseEnter": [
+          127
+        ],
+        "onApply": [
+          242,
+          250,
+          264,
+          317,
+          321,
+          334,
+          407,
+          413,
+          440,
+          533,
+          539,
+          553,
+          604,
+          610,
+          637
+        ],
+        "onCommit": [
+          350,
+          715,
+          730
+        ],
+        "onFile": [
+          427,
+          501
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/MailMergePanel.tsx",
+      "callbacks": {
+        "onPickSource": [
+          35,
+          49,
+          146
+        ],
+        "onInsertField": [
+          37,
+          50,
+          97
+        ],
+        "onMerge": [
+          39,
+          51,
+          106
+        ],
+        "onRecordIndex": [
+          42,
+          53,
+          174,
+          182
+        ],
+        "onClose": [
+          43,
+          54,
+          57,
+          135,
+          331
+        ],
+        "onKeyDown": [
+          134,
+          134
+        ],
+        "onMouseDown": [
+          135
+        ],
+        "onClick": [
+          146,
+          159,
+          174,
+          182,
+          320,
+          331
+        ],
+        "onChange": [
+          200,
+          209,
+          220,
+          229,
+          241,
+          250,
+          263,
+          275,
+          285,
+          298,
+          315
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/MarginDialog.tsx",
+      "callbacks": {
+        "onApply": [
+          38,
+          46,
+          59
+        ],
+        "onClose": [
+          39,
+          47,
+          54,
+          60,
+          94,
+          114
+        ],
+        "onCommit": [
+          83
+        ],
+        "onEnter": [
+          84
+        ],
+        "onKeyDown": [
+          93,
+          93
+        ],
+        "onMouseDown": [
+          94
+        ],
+        "onChange": [
+          105
+        ],
+        "onClick": [
+          114,
+          117
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/MultipageGrid.tsx",
+      "callbacks": {
+        "onPick": [
+          94,
+          101,
+          135,
+          166,
+          173,
+          186,
+          186
+        ],
+        "onMouseDown": [
+          131
+        ],
+        "onClick": [
+          137
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/NavPageThumbs.tsx",
+      "callbacks": {
+        "onPick": [
+          130,
+          137,
+          191,
+          325
+        ],
+        "onClick": [
+          191
+        ],
+        "onPage": [
+          292,
+          295,
+          296
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/NavPane.tsx",
+      "callbacks": {
+        "onClose": [
+          139,
+          149,
+          481,
+          650,
+          682,
+          697,
+          725,
+          738,
+          780
+        ],
+        "onResizeStart": [
+          164,
+          643
+        ],
+        "onSel": [
+          215,
+          219,
+          220,
+          223,
+          224
+        ],
+        "onUpdate": [
+          330,
+          333,
+          335
+        ],
+        "onQueryChange": [
+          354,
+          495,
+          502
+        ],
+        "onDragStart": [
+          427,
+          568,
+          568
+        ],
+        "onDragOver": [
+          432,
+          569,
+          569
+        ],
+        "onDrop": [
+          449,
+          570,
+          570
+        ],
+        "onClick": [
+          481,
+          520,
+          560,
+          578,
+          627,
+          731,
+          737,
+          739,
+          779
+        ],
+        "onChange": [
+          495
+        ],
+        "onKeyDown": [
+          496,
+          561
+        ],
+        "onDragLeave": [
+          532
+        ],
+        "onContextMenu": [
+          564,
+          750
+        ],
+        "onDragEnd": [
+          571
+        ],
+        "onPointerDown": [
+          643
+        ],
+        "onPromote": [
+          651,
+          683,
+          698,
+          754
+        ],
+        "onDemote": [
+          652,
+          684,
+          699,
+          755
+        ],
+        "onNewBefore": [
+          653,
+          685,
+          700,
+          757
+        ],
+        "onNewAfter": [
+          656,
+          686,
+          701,
+          758
+        ],
+        "onDelete": [
+          659,
+          687,
+          702,
+          759
+        ],
+        "onSelect": [
+          662,
+          688,
+          703,
+          763
+        ],
+        "onExpandAll": [
+          668,
+          689,
+          704,
+          765
+        ],
+        "onCollapseAll": [
+          669,
+          690,
+          705,
+          766
+        ],
+        "onShowLevels": [
+          670,
+          691,
+          706,
+          781
+        ],
+        "onMouseEnter": [
+          736,
+          768
+        ],
+        "onMouseLeave": [
+          767
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PageBorderDialog.tsx",
+      "callbacks": {
+        "onApply": [
+          339,
+          343,
+          382
+        ],
+        "onClose": [
+          340,
+          344,
+          347,
+          383,
+          404,
+          629
+        ],
+        "onClick": [
+          393,
+          424,
+          444,
+          464,
+          574,
+          629
+        ],
+        "onKeyDown": [
+          403,
+          403
+        ],
+        "onMouseDown": [
+          404
+        ],
+        "onSubmit": [
+          409
+        ],
+        "onChange": [
+          458,
+          479,
+          486,
+          500,
+          559,
+          590,
+          606,
+          620
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PageNoteAreas.tsx",
+      "callbacks": {
+        "onEdit": [
+          10,
+          17,
+          28,
+          49,
+          56,
+          71,
+          71,
+          89,
+          96,
+          113,
+          113
+        ],
+        "onDelete": [
+          11,
+          18,
+          36,
+          50,
+          57,
+          72,
+          72,
+          90,
+          97,
+          114,
+          114
+        ],
+        "onClick": [
+          28,
+          36
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PaginationPreview.tsx",
+      "callbacks": {
+        "onExportPdf": [
+          971,
+          1033,
+          1628
+        ],
+        "onClose": [
+          972,
+          1034,
+          1537,
+          1542,
+          1631
+        ],
+        "onKey": [
+          1534,
+          1540,
+          1541
+        ],
+        "onClick": [
+          1628,
+          1631
+        ],
+        "onCommit": [
+          1864,
+          2210
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PaperSizeDialog.tsx",
+      "callbacks": {
+        "onApply": [
+          18,
+          24,
+          49
+        ],
+        "onClose": [
+          19,
+          25,
+          34,
+          50,
+          78,
+          105
+        ],
+        "onCommit": [
+          67
+        ],
+        "onEnter": [
+          68
+        ],
+        "onKeyDown": [
+          77,
+          77
+        ],
+        "onMouseDown": [
+          78
+        ],
+        "onChange": [
+          89
+        ],
+        "onClick": [
+          105,
+          108
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ParagraphDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          105,
+          110,
+          117,
+          154,
+          182,
+          238,
+          410
+        ],
+        "onChange": [
+          190,
+          226,
+          310,
+          328,
+          367
+        ],
+        "onCommit": [
+          211,
+          384
+        ],
+        "onKeyDown": [
+          237,
+          237
+        ],
+        "onMouseDown": [
+          238
+        ],
+        "onClick": [
+          250,
+          410,
+          413
+        ],
+        "onPick": [
+          270,
+          279,
+          295,
+          352,
+          395
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PasswordDialog.tsx",
+      "callbacks": {
+        "onChange": [
+          23,
+          41,
+          58,
+          58
+        ],
+        "onSubmit": [
+          24,
+          42,
+          60,
+          67
+        ],
+        "onCancel": [
+          25,
+          43,
+          66
+        ],
+        "onKeyDown": [
+          59
+        ],
+        "onClick": [
+          66,
+          67
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PasswordInput.tsx",
+      "callbacks": {
+        "onChange": [
+          16,
+          26,
+          74,
+          74
+        ],
+        "onKeyDown": [
+          17,
+          27,
+          75,
+          75
+        ],
+        "onMouseDown": [
+          86
+        ],
+        "onClick": [
+          87
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PasteOptionsChip.tsx",
+      "callbacks": {
+        "onBeforeTransaction": [
+          90,
+          124,
+          127
+        ],
+        "onTransaction": [
+          93,
+          125,
+          128
+        ],
+        "onKey": [
+          161,
+          174,
+          177
+        ],
+        "onPointerDown": [
+          171,
+          175,
+          178
+        ],
+        "onClick": [
+          231,
+          244
+        ],
+        "onChange": [
+          255
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PasteSpecialDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          31,
+          31,
+          33,
+          52,
+          60,
+          86
+        ],
+        "onKeyDown": [
+          59,
+          59
+        ],
+        "onMouseDown": [
+          60
+        ],
+        "onChange": [
+          78
+        ],
+        "onDoubleClick": [
+          79
+        ],
+        "onClick": [
+          86,
+          89
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PictureDialogs.tsx",
+      "callbacks": {
+        "onApply": [
+          45,
+          49,
+          151,
+          260,
+          264,
+          336,
+          340
+        ],
+        "onCancel": [
+          46,
+          49,
+          137,
+          164,
+          230,
+          261,
+          264,
+          354,
+          444,
+          566
+        ],
+        "onTolerance": [
+          121,
+          221
+        ],
+        "onKeyDown": [
+          163,
+          163,
+          443,
+          443
+        ],
+        "onClick": [
+          164,
+          172,
+          230,
+          233,
+          444,
+          458,
+          566,
+          567
+        ],
+        "onChange": [
+          221
+        ],
+        "onKey": [
+          344,
+          350,
+          351
+        ],
+        "onMove": [
+          366,
+          391,
+          394
+        ],
+        "onUp": [
+          388,
+          392,
+          395
+        ],
+        "onMouseDown": [
+          551,
+          554
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PreferencesDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          7,
+          7,
+          9,
+          17,
+          38
+        ],
+        "onKeyDown": [
+          16,
+          16
+        ],
+        "onMouseDown": [
+          17
+        ],
+        "onChange": [
+          26
+        ],
+        "onClick": [
+          38
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PrintDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          48,
+          51,
+          98,
+          103,
+          172,
+          185,
+          329
+        ],
+        "onKey": [
+          95,
+          101,
+          102
+        ],
+        "onClick": [
+          185,
+          186,
+          200,
+          211,
+          329,
+          333
+        ],
+        "onChange": [
+          227,
+          246,
+          256,
+          266,
+          289,
+          298,
+          307,
+          318
+        ],
+        "onFocus": [
+          317
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/PromptModal.tsx",
+      "callbacks": {
+        "onSubmit": [
+          15,
+          24,
+          41
+        ],
+        "onClose": [
+          16,
+          25,
+          31,
+          42,
+          50,
+          80
+        ],
+        "onKeyDown": [
+          49,
+          49,
+          63,
+          73
+        ],
+        "onMouseDown": [
+          50
+        ],
+        "onChange": [
+          62,
+          72
+        ],
+        "onClick": [
+          80,
+          83
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ProtectDialog.tsx",
+      "callbacks": {
+        "onCancel": [
+          56,
+          64,
+          299
+        ],
+        "onApply": [
+          57,
+          65,
+          144
+        ],
+        "onEnter": [
+          150,
+          176,
+          190,
+          205,
+          219,
+          267,
+          281
+        ],
+        "onChange": [
+          172,
+          186,
+          201,
+          215,
+          230,
+          246,
+          263,
+          277,
+          291
+        ],
+        "onKeyDown": [
+          176,
+          190,
+          205,
+          219,
+          267,
+          281
+        ],
+        "onClick": [
+          299,
+          300
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ReviewingPane.tsx",
+      "callbacks": {
+        "onSelect": [
+          59,
+          66,
+          80,
+          89,
+          145,
+          159,
+          230,
+          230
+        ],
+        "onAccept": [
+          60,
+          67,
+          112,
+          146,
+          160,
+          231,
+          231
+        ],
+        "onReject": [
+          61,
+          68,
+          123,
+          147,
+          161,
+          232,
+          232
+        ],
+        "onKey": [
+          76,
+          90
+        ],
+        "onClick": [
+          89,
+          110,
+          121,
+          194
+        ],
+        "onKeyDown": [
+          90
+        ],
+        "onClose": [
+          148,
+          162,
+          194
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/Ribbon.tsx",
+      "callbacks": {
+        "onListDialog": [
+          271,
+          820,
+          4113,
+          4184,
+          4194,
+          4244
+        ],
+        "onParagraphDialog": [
+          281,
+          823,
+          4380,
+          4384
+        ],
+        "onPasteDefaults": [
+          283,
+          824,
+          3662,
+          3667
+        ],
+        "onTableDialog": [
+          285,
+          825,
+          3158,
+          3189,
+          3237,
+          3253,
+          3414
+        ],
+        "onToggleTableGridlines": [
+          288,
+          827,
+          3149
+        ],
+        "onFind": [
+          290,
+          828,
+          4520
+        ],
+        "onReplace": [
+          291,
+          829,
+          4529
+        ],
+        "onOpen": [
+          292,
+          832,
+          2328
+        ],
+        "onSave": [
+          293,
+          833,
+          2337
+        ],
+        "onSaveAs": [
+          294,
+          834,
+          2346
+        ],
+        "onConvert": [
+          295,
+          835,
+          2298
+        ],
+        "onNameWithAi": [
+          297,
+          836,
+          2356
+        ],
+        "onToggleAi": [
+          299,
+          838,
+          3448
+        ],
+        "onSection": [
+          301,
+          840,
+          4591,
+          4591,
+          4609,
+          4609
+        ],
+        "onInsertSectionBreak": [
+          304,
+          842,
+          4611,
+          4611
+        ],
+        "onPageBorderAll": [
+          306,
+          843,
+          4592,
+          4592
+        ],
+        "onPaperSizeAll": [
+          308,
+          844,
+          4612,
+          4612
+        ],
+        "onMirrorMargins": [
+          314,
+          846,
+          4614,
+          4614
+        ],
+        "onPageColor": [
+          316,
+          848,
+          4589,
+          4589
+        ],
+        "onWatermark": [
+          322,
+          853,
+          4597,
+          4597
+        ],
+        "onThemeFonts": [
+          324,
+          855,
+          4599,
+          4599
+        ],
+        "onThemeColors": [
+          326,
+          856,
+          4600,
+          4600
+        ],
+        "onInkTool": [
+          329,
+          858,
+          1024,
+          1025,
+          4555
+        ],
+        "onInkPresets": [
+          332,
+          861,
+          4558
+        ],
+        "onInkActivate": [
+          333,
+          862,
+          4559
+        ],
+        "onInkClearAll": [
+          335,
+          864,
+          4561
+        ],
+        "onInsertNote": [
+          337,
+          865,
+          4623,
+          4623
+        ],
+        "onAddSource": [
+          341,
+          868,
+          4626,
+          4626
+        ],
+        "onZoom": [
+          345,
+          871,
+          4687,
+          4687
+        ],
+        "onZoomFit": [
+          347,
+          872,
+          4688,
+          4688
+        ],
+        "onZoomDialog": [
+          348,
+          873,
+          4689,
+          4689
+        ],
+        "onDarkPage": [
+          350,
+          875,
+          4691,
+          4691
+        ],
+        "onAiPreset": [
+          351,
+          876,
+          3459,
+          3492,
+          3527,
+          3556,
+          4646,
+          4646
+        ],
+        "onHeader": [
+          355,
+          879,
+          4570,
+          4570
+        ],
+        "onPageNumFormat": [
+          356,
+          880,
+          4571,
+          4571
+        ],
+        "onInsertField": [
+          357,
+          881,
+          4572,
+          4572,
+          4637,
+          4637
+        ],
+        "onFooter": [
+          359,
+          886,
+          4574,
+          4574
+        ],
+        "onHfAction": [
+          362,
+          888,
+          2535
+        ],
+        "onHfEdit": [
+          364,
+          889,
+          4575,
+          4575
+        ],
+        "onShowMarks": [
+          366,
+          891,
+          4278
+        ],
+        "onShowRuler": [
+          368,
+          893,
+          4693,
+          4693
+        ],
+        "onShowNav": [
+          370,
+          895,
+          4695,
+          4695
+        ],
+        "onShowStylesPane": [
+          373,
+          897,
+          4499
+        ],
+        "onShowComments": [
+          378,
+          901,
+          4650,
+          4650
+        ],
+        "onToggleComments": [
+          381,
+          903,
+          2452
+        ],
+        "onCommentsMode": [
+          383,
+          905,
+          2478
+        ],
+        "onNewComment": [
+          386,
+          907,
+          4577,
+          4577,
+          4652,
+          4652
+        ],
+        "onDeleteComment": [
+          388,
+          909,
+          4654,
+          4654
+        ],
+        "onDeleteAllComments": [
+          389,
+          910,
+          4655,
+          4655
+        ],
+        "onGotoComment": [
+          390,
+          911,
+          4656,
+          4656
+        ],
+        "onTrackChanges": [
+          392,
+          913,
+          1042,
+          1044,
+          4658,
+          4658
+        ],
+        "onSpellcheck": [
+          395,
+          915,
+          4660,
+          4660
+        ],
+        "onRevisionDisplay": [
+          397,
+          917,
+          4662,
+          4662
+        ],
+        "onBalloonMode": [
+          399,
+          919,
+          4664,
+          4664
+        ],
+        "onTrackChangesOptions": [
+          400,
+          920,
+          4665,
+          4665
+        ],
+        "onAcceptRevision": [
+          402,
+          922,
+          4667,
+          4667
+        ],
+        "onRejectRevision": [
+          403,
+          923,
+          4668,
+          4668
+        ],
+        "onGotoRevision": [
+          404,
+          924,
+          4669,
+          4669
+        ],
+        "onRevisionFilter": [
+          406,
+          926,
+          4671,
+          4671
+        ],
+        "onToggleReviewPane": [
+          409,
+          929,
+          4674,
+          4674
+        ],
+        "onProtectDoc": [
+          417,
+          934,
+          4679,
+          4679
+        ],
+        "onCompare": [
+          418,
+          935,
+          4680,
+          4680
+        ],
+        "onPickMergeDataSource": [
+          422,
+          883,
+          4636
+        ],
+        "onMergeMailings": [
+          424,
+          884,
+          4638
+        ],
+        "onViewMode": [
+          428,
+          938,
+          4697,
+          4697
+        ],
+        "onReadMode": [
+          430,
+          940,
+          1037,
+          1040,
+          4699,
+          4699
+        ],
+        "onShowGrid": [
+          432,
+          942,
+          4701,
+          4701
+        ],
+        "onSplitView": [
+          434,
+          944,
+          4703,
+          4703
+        ],
+        "onPagePreview": [
+          435,
+          945,
+          4704,
+          4704
+        ],
+        "onClick": [
+          1011,
+          1152,
+          1167,
+          1179,
+          1761,
+          1852,
+          1873,
+          2246,
+          2263,
+          2279,
+          2296,
+          2319,
+          2326,
+          2335,
+          2344,
+          2354,
+          2373,
+          2390,
+          2405,
+          2420,
+          2434,
+          2452,
+          2465,
+          2476,
+          2494,
+          2513,
+          2547,
+          2575,
+          2644,
+          2700,
+          2711,
+          2722,
+          2733,
+          2741,
+          2751,
+          2759,
+          2809,
+          2884,
+          2898,
+          2908,
+          2932,
+          2974,
+          2991,
+          3021,
+          3030,
+          3044,
+          3082,
+          3114,
+          3127,
+          3149,
+          3156,
+          3174,
+          3187,
+          3204,
+          3218,
+          3222,
+          3226,
+          3230,
+          3237,
+          3249,
+          3253,
+          3260,
+          3301,
+          3318,
+          3334,
+          3345,
+          3370,
+          3382,
+          3398,
+          3412,
+          3431,
+          3448,
+          3459,
+          3491,
+          3527,
+          3556,
+          3591,
+          3619,
+          3631,
+          3640,
+          3644,
+          3648,
+          3655,
+          3665,
+          3687,
+          3696,
+          3706,
+          3750,
+          3788,
+          3835,
+          3850,
+          3863,
+          3872,
+          3882,
+          3891,
+          3894,
+          3895,
+          3896,
+          3897,
+          3902,
+          3905,
+          3918,
+          3932,
+          3940,
+          3952,
+          3969,
+          3989,
+          3998,
+          4011,
+          4024,
+          4060,
+          4069,
+          4084,
+          4095,
+          4112,
+          4128,
+          4137,
+          4152,
+          4165,
+          4183,
+          4193,
+          4209,
+          4226,
+          4243,
+          4259,
+          4268,
+          4278,
+          4289,
+          4298,
+          4307,
+          4316,
+          4328,
+          4337,
+          4350,
+          4364,
+          4372,
+          4377,
+          4382,
+          4399,
+          4423,
+          4432,
+          4435,
+          4438,
+          4441,
+          4444,
+          4447,
+          4469,
+          4484,
+          4499,
+          4520,
+          4529,
+          4538
+        ],
+        "onPick": [
+          1138,
+          2562,
+          2596,
+          2612,
+          2664,
+          2781,
+          2843,
+          3005,
+          3064,
+          3074,
+          3095,
+          4032,
+          4410
+        ],
+        "onFontTyped": [
+          1640,
+          3734
+        ],
+        "onFontKeyDown": [
+          1662,
+          3735
+        ],
+        "onComboBlur": [
+          1715,
+          3743,
+          3828
+        ],
+        "onPainterClick": [
+          2095,
+          3706
+        ],
+        "onPainterDoubleClick": [
+          2100,
+          3707
+        ],
+        "onKey": [
+          2111,
+          2134,
+          2135
+        ],
+        "onMouseDown": [
+          2162,
+          2208,
+          2215,
+          2309
+        ],
+        "onMouseUp": [
+          2168,
+          2209,
+          2216
+        ],
+        "onSelectionUpdate": [
+          2193,
+          2211,
+          2218
+        ],
+        "onKeyDown": [
+          2202,
+          2210,
+          2217,
+          3735,
+          3811
+        ],
+        "onDoubleClick": [
+          2313,
+          3707
+        ],
+        "onTabsDoubleClick": [
+          2313
+        ],
+        "onTabPress": [
+          2374,
+          2391,
+          2406,
+          2421,
+          2435
+        ],
+        "onAction": [
+          2535
+        ],
+        "onCommit": [
+          2861,
+          2871,
+          3281,
+          3292
+        ],
+        "onChange": [
+          2880,
+          3734,
+          3810
+        ],
+        "onClose": [
+          3677
+        ],
+        "onPointerDown": [
+          3725,
+          3799
+        ],
+        "onFocus": [
+          3739,
+          3824
+        ],
+        "onBlur": [
+          3743,
+          3828
+        ],
+        "onScroll": [
+          3762,
+          3762
+        ],
+        "onTool": [
+          4555
+        ],
+        "onPresets": [
+          4558
+        ],
+        "onActivate": [
+          4559
+        ],
+        "onClearAll": [
+          4561
+        ],
+        "onTableInserted": [
+          4580
+        ],
+        "onPickSource": [
+          4636
+        ],
+        "onMerge": [
+          4638
+        ],
+        "onApply": [
+          4712,
+          4722
+        ],
+        "onCancel": [
+          4716,
+          4726
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/Ruler.tsx",
+      "callbacks": {
+        "onTabStopsChange": [
+          388,
+          394,
+          475,
+          505,
+          512,
+          661,
+          664
+        ],
+        "onIndentsChange": [
+          389,
+          395,
+          570,
+          577,
+          582,
+          586,
+          802
+        ],
+        "onMarginsChange": [
+          390,
+          396,
+          596,
+          615,
+          624,
+          630,
+          800,
+          801
+        ],
+        "onMouseMove": [
+          485,
+          498,
+          517,
+          543,
+          549,
+          557
+        ],
+        "onMouseUp": [
+          497,
+          499,
+          518,
+          548,
+          550,
+          558
+        ],
+        "onMove": [
+          527,
+          545,
+          554
+        ],
+        "onDrop": [
+          528,
+          553
+        ],
+        "onMouseDown": [
+          690,
+          706,
+          789
+        ],
+        "onKeyDown": [
+          691,
+          707,
+          790
+        ],
+        "onClick": [
+          692,
+          708,
+          718,
+          724
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ShortcutsDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          11,
+          11,
+          13,
+          34,
+          64
+        ],
+        "onKeyDown": [
+          33,
+          33
+        ],
+        "onMouseDown": [
+          34
+        ],
+        "onChange": [
+          43
+        ],
+        "onClick": [
+          64
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/StyleDialog.tsx",
+      "callbacks": {
+        "onSubmit": [
+          107,
+          112,
+          154
+        ],
+        "onClose": [
+          108,
+          112,
+          114,
+          175,
+          350
+        ],
+        "onKeyDown": [
+          174,
+          174,
+          186
+        ],
+        "onMouseDown": [
+          175
+        ],
+        "onChange": [
+          185,
+          194,
+          210,
+          224,
+          237,
+          255,
+          262,
+          270,
+          280,
+          290,
+          315,
+          325,
+          332
+        ],
+        "onClick": [
+          350,
+          353
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/StylesPane.tsx",
+      "callbacks": {
+        "onUpsert": [
+          100,
+          117,
+          192,
+          198
+        ],
+        "onNotice": [
+          101,
+          118,
+          158,
+          170,
+          193,
+          201,
+          215
+        ],
+        "onClose": [
+          102,
+          119,
+          226,
+          397
+        ],
+        "onClick": [
+          226,
+          250,
+          259,
+          281,
+          301,
+          341,
+          350,
+          360,
+          372
+        ],
+        "onChange": [
+          271,
+          318
+        ],
+        "onMouseDown": [
+          280,
+          300,
+          328,
+          337
+        ],
+        "onContextMenu": [
+          302,
+          329
+        ],
+        "onSubmit": [
+          396
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/TableDialogs.tsx",
+      "callbacks": {
+        "onClose": [
+          25,
+          28,
+          33,
+          38,
+          45,
+          52,
+          58,
+          70,
+          82,
+          103,
+          103,
+          105,
+          127,
+          143,
+          143,
+          145,
+          177,
+          191,
+          191,
+          192,
+          218,
+          235,
+          235,
+          240
+        ],
+        "onOk": [
+          39,
+          46,
+          64,
+          105,
+          144,
+          192,
+          236
+        ],
+        "onKeyDown": [
+          57,
+          57
+        ],
+        "onMouseDown": [
+          58
+        ],
+        "onSubmit": [
+          62
+        ],
+        "onClick": [
+          70
+        ],
+        "onChange": [
+          95,
+          115,
+          155,
+          168,
+          202
+        ],
+        "onCommit": [
+          255
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/TablePropertiesDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          267,
+          272,
+          275,
+          391,
+          423,
+          747
+        ],
+        "onChange": [
+          397,
+          410,
+          458,
+          480,
+          502,
+          564,
+          577,
+          588,
+          597,
+          661,
+          674,
+          710,
+          725,
+          736
+        ],
+        "onCommit": [
+          410
+        ],
+        "onKeyDown": [
+          422,
+          422
+        ],
+        "onMouseDown": [
+          423
+        ],
+        "onClick": [
+          440,
+          602,
+          605,
+          626,
+          629,
+          747,
+          750
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/TrackChangesOptionsDialog.tsx",
+      "callbacks": {
+        "onApply": [
+          68,
+          73,
+          127
+        ],
+        "onClose": [
+          69,
+          73,
+          75,
+          128,
+          136,
+          238
+        ],
+        "onChange": [
+          82,
+          96,
+          122,
+          156,
+          212,
+          219
+        ],
+        "onKeyDown": [
+          135,
+          135
+        ],
+        "onMouseDown": [
+          136
+        ],
+        "onSubmit": [
+          141
+        ],
+        "onBlur": [
+          213
+        ],
+        "onClick": [
+          230,
+          238
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/WatermarkDialog.tsx",
+      "callbacks": {
+        "onApply": [
+          128,
+          134,
+          235
+        ],
+        "onClose": [
+          129,
+          135,
+          138,
+          236,
+          257,
+          451
+        ],
+        "onKeyDown": [
+          256,
+          256,
+          332
+        ],
+        "onMouseDown": [
+          257
+        ],
+        "onChange": [
+          268,
+          273,
+          293,
+          312,
+          320,
+          331,
+          343,
+          357,
+          376,
+          385,
+          398,
+          408,
+          421,
+          432,
+          441
+        ],
+        "onClick": [
+          278,
+          451,
+          454
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/WordCountDialog.tsx",
+      "callbacks": {
+        "onClose": [
+          31,
+          31,
+          33,
+          40,
+          55
+        ],
+        "onKeyDown": [
+          39,
+          39
+        ],
+        "onMouseDown": [
+          40
+        ],
+        "onClick": [
+          55
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ZoomDialog.tsx",
+      "callbacks": {
+        "onApply": [
+          14,
+          23,
+          45,
+          46
+        ],
+        "onClose": [
+          15,
+          23,
+          25,
+          47,
+          61,
+          102
+        ],
+        "onChange": [
+          51,
+          92
+        ],
+        "onKeyDown": [
+          60,
+          60
+        ],
+        "onMouseDown": [
+          61
+        ],
+        "onSubmit": [
+          66
+        ],
+        "onBlur": [
+          97
+        ],
+        "onClick": [
+          102
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/modal-keys.ts",
+      "callbacks": {
+        "onKeyDown": [
+          8,
+          32,
+          42
+        ],
+        "onClose": [
+          11,
+          26,
+          30,
+          36
+        ],
+        "onKey": [
+          23,
+          28,
+          29
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/pane-width.ts",
+      "callbacks": {
+        "onResizeStart": [
+          9,
+          27
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-color-palette.tsx",
+      "callbacks": {
+        "onPick": [
+          40,
+          44,
+          66,
+          66
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-design-tab.tsx",
+      "callbacks": {
+        "onPageColor": [
+          206,
+          227,
+          415
+        ],
+        "onSection": [
+          208,
+          229,
+          249,
+          480,
+          489
+        ],
+        "onPageBorderAll": [
+          210,
+          230,
+          246
+        ],
+        "onWatermark": [
+          216,
+          235,
+          441,
+          452,
+          528
+        ],
+        "onThemeFonts": [
+          218,
+          237,
+          269,
+          337
+        ],
+        "onThemeColors": [
+          219,
+          238,
+          270,
+          366
+        ],
+        "onClick": [
+          286,
+          297,
+          318,
+          336,
+          352,
+          365,
+          398,
+          426,
+          440,
+          448,
+          451,
+          466,
+          478,
+          488,
+          497
+        ],
+        "onPick": [
+          414
+        ],
+        "onApply": [
+          514,
+          528
+        ],
+        "onClose": [
+          515,
+          529
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-hf-tab.tsx",
+      "callbacks": {
+        "onAction": [
+          56,
+          61,
+          66,
+          78
+        ],
+        "onCommit": [
+          78
+        ],
+        "onEnter": [
+          79
+        ],
+        "onClick": [
+          85,
+          88,
+          109,
+          123,
+          137,
+          148,
+          152,
+          155,
+          156,
+          159,
+          177,
+          187,
+          190,
+          199,
+          217,
+          229,
+          246,
+          253,
+          281
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-insert-tab.tsx",
+      "callbacks": {
+        "onClose": [
+          144,
+          144,
+          195,
+          199,
+          240,
+          248,
+          248,
+          261,
+          264,
+          282,
+          290,
+          290,
+          352,
+          356,
+          423,
+          433,
+          437,
+          441,
+          449,
+          474,
+          483,
+          496,
+          496,
+          498,
+          585,
+          597,
+          605,
+          632,
+          1345,
+          1349,
+          1350,
+          1351,
+          1352,
+          1353
+        ],
+        "onMouseDown": [
+          199,
+          264,
+          356,
+          474,
+          605
+        ],
+        "onChange": [
+          207,
+          380,
+          389,
+          398,
+          405,
+          460,
+          613,
+          621
+        ],
+        "onKeyDown": [
+          211,
+          464,
+          473,
+          473,
+          604,
+          604,
+          623
+        ],
+        "onClick": [
+          213,
+          224,
+          232,
+          240,
+          273,
+          282,
+          370,
+          414,
+          415,
+          420,
+          423,
+          483,
+          486,
+          628,
+          632,
+          635,
+          721,
+          736,
+          748,
+          762,
+          773,
+          793,
+          819,
+          826,
+          848,
+          859,
+          871,
+          891,
+          923,
+          934,
+          946,
+          964,
+          987,
+          1003,
+          1035,
+          1055,
+          1076,
+          1101,
+          1109,
+          1117,
+          1138,
+          1158,
+          1169,
+          1177,
+          1192,
+          1203,
+          1211,
+          1226,
+          1248,
+          1257,
+          1265,
+          1289,
+          1303,
+          1319
+        ],
+        "onInserted": [
+          434,
+          438,
+          448,
+          939,
+          1346
+        ],
+        "onHeader": [
+          684,
+          1178,
+          1249,
+          1267
+        ],
+        "onFooter": [
+          686,
+          1212,
+          1249,
+          1266
+        ],
+        "onPageNumFormat": [
+          687,
+          1258
+        ],
+        "onInsertField": [
+          688,
+          1077
+        ],
+        "onHfEdit": [
+          689,
+          1170,
+          1204
+        ],
+        "onNewComment": [
+          691,
+          1138
+        ],
+        "onTableInserted": [
+          694,
+          708,
+          1346
+        ],
+        "onMouseLeave": [
+          805
+        ],
+        "onMouseEnter": [
+          818
+        ],
+        "onPick": [
+          1330
+        ],
+        "onCustom": [
+          1331
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-layout-tab.tsx",
+      "callbacks": {
+        "onSection": [
+          141,
+          160,
+          180,
+          239,
+          251,
+          500,
+          721
+        ],
+        "onInsertSectionBreak": [
+          144,
+          162,
+          560,
+          569,
+          578,
+          587
+        ],
+        "onPaperSizeAll": [
+          145,
+          163,
+          719
+        ],
+        "onMirrorMargins": [
+          151,
+          165,
+          189
+        ],
+        "onCommit": [
+          294
+        ],
+        "onEnter": [
+          295
+        ],
+        "onFocus": [
+          296,
+          321
+        ],
+        "onBlur": [
+          297,
+          322
+        ],
+        "onKeyDown": [
+          318
+        ],
+        "onClick": [
+          352,
+          374,
+          388,
+          398,
+          416,
+          428,
+          434,
+          446,
+          462,
+          470,
+          485,
+          499,
+          519,
+          531,
+          540,
+          549,
+          559,
+          568,
+          577,
+          586,
+          626,
+          638,
+          652,
+          667,
+          681
+        ],
+        "onApply": [
+          704,
+          715
+        ],
+        "onClose": [
+          708,
+          724
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-mailings-tab.tsx",
+      "callbacks": {
+        "onPickSource": [
+          28,
+          41,
+          147,
+          147
+        ],
+        "onInsertField": [
+          30,
+          42,
+          54,
+          148,
+          148
+        ],
+        "onMerge": [
+          32,
+          43,
+          149,
+          149
+        ],
+        "onClick": [
+          66,
+          86,
+          98,
+          117,
+          128
+        ],
+        "onRecordIndex": [
+          151
+        ],
+        "onClose": [
+          152
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-references-tab.tsx",
+      "callbacks": {
+        "onClose": [
+          167,
+          171,
+          206,
+          210,
+          232,
+          256,
+          260,
+          286,
+          290,
+          337,
+          723,
+          726,
+          734
+        ],
+        "onMouseDown": [
+          210,
+          290
+        ],
+        "onPick": [
+          219,
+          299
+        ],
+        "onChange": [
+          226,
+          306,
+          314,
+          320,
+          328,
+          333
+        ],
+        "onKeyDown": [
+          228
+        ],
+        "onClick": [
+          232,
+          235,
+          337,
+          340,
+          510,
+          521,
+          532,
+          544,
+          554,
+          557,
+          575,
+          586,
+          605,
+          616,
+          636,
+          647,
+          652,
+          666,
+          677,
+          689,
+          700,
+          708
+        ],
+        "onAdd": [
+          255,
+          259,
+          277,
+          726
+        ],
+        "onInsertNote": [
+          351,
+          366,
+          605,
+          616
+        ],
+        "onAddSource": [
+          355,
+          369,
+          726
+        ],
+        "onSubmit": [
+          733
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/components/ribbon-tabs.tsx",
+      "callbacks": {
+        "onHeader": [
+          750
+        ],
+        "onFooter": [
+          752
+        ],
+        "onPageNumFormat": [
+          754
+        ],
+        "onInsertField": [
+          756
+        ],
+        "onHfEdit": [
+          758
+        ],
+        "onNewComment": [
+          761,
+          783,
+          835,
+          1000
+        ],
+        "onTableInserted": [
+          766
+        ],
+        "onAiPreset": [
+          775,
+          829,
+          921,
+          922,
+          974,
+          978,
+          1088,
+          1291
+        ],
+        "onShowComments": [
+          780,
+          833,
+          1077
+        ],
+        "onDeleteComment": [
+          786,
+          837,
+          1025
+        ],
+        "onDeleteAllComments": [
+          787,
+          838,
+          1034,
+          1042
+        ],
+        "onGotoComment": [
+          788,
+          839,
+          1055,
+          1066
+        ],
+        "onTrackChanges": [
+          790,
+          841,
+          1122
+        ],
+        "onSpellcheck": [
+          793,
+          843,
+          936
+        ],
+        "onRevisionDisplay": [
+          795,
+          845,
+          1155
+        ],
+        "onBalloonMode": [
+          798,
+          847,
+          1203
+        ],
+        "onTrackChangesOptions": [
+          800,
+          848,
+          1215
+        ],
+        "onAcceptRevision": [
+          802,
+          850,
+          1237
+        ],
+        "onRejectRevision": [
+          803,
+          851,
+          1252
+        ],
+        "onGotoRevision": [
+          804,
+          852,
+          1258,
+          1269
+        ],
+        "onRevisionFilter": [
+          807,
+          854,
+          869,
+          1167,
+          1175
+        ],
+        "onToggleReviewPane": [
+          811,
+          857,
+          1280
+        ],
+        "onProtectDoc": [
+          820,
+          862,
+          1345
+        ],
+        "onCompare": [
+          821,
+          863,
+          1326
+        ],
+        "onPick": [
+          875,
+          879
+        ],
+        "onClick": [
+          884,
+          885,
+          886,
+          887,
+          893,
+          920,
+          936,
+          956,
+          971,
+          1000,
+          1012,
+          1024,
+          1033,
+          1041,
+          1055,
+          1066,
+          1077,
+          1088,
+          1122,
+          1134,
+          1154,
+          1166,
+          1174,
+          1185,
+          1202,
+          1214,
+          1229,
+          1244,
+          1258,
+          1269,
+          1280,
+          1291,
+          1326,
+          1345,
+          1423,
+          1437,
+          1451,
+          1462,
+          1473,
+          1484,
+          1502,
+          1513,
+          1524,
+          1536,
+          1547,
+          1558,
+          1569,
+          1587,
+          1606,
+          1617,
+          1628,
+          1646,
+          1657,
+          1668,
+          1681,
+          1779,
+          1793,
+          1818,
+          1855,
+          1877,
+          1895,
+          1910,
+          1921,
+          1939
+        ],
+        "onZoom": [
+          1369,
+          1393,
+          1513,
+          1524,
+          1536
+        ],
+        "onZoomFit": [
+          1370,
+          1394,
+          1547,
+          1558,
+          1569
+        ],
+        "onZoomDialog": [
+          1371,
+          1395,
+          1502
+        ],
+        "onDarkPage": [
+          1373,
+          1397,
+          1587
+        ],
+        "onShowRuler": [
+          1375,
+          1399,
+          1606
+        ],
+        "onShowNav": [
+          1377,
+          1401,
+          1628
+        ],
+        "onViewMode": [
+          1379,
+          1403,
+          1438,
+          1451,
+          1462
+        ],
+        "onReadMode": [
+          1381,
+          1405,
+          1439,
+          1473
+        ],
+        "onShowGrid": [
+          1383,
+          1407,
+          1617
+        ],
+        "onSplitView": [
+          1385,
+          1409,
+          1657
+        ],
+        "onPagePreview": [
+          1386,
+          1410,
+          1484
+        ],
+        "onTool": [
+          1706,
+          1726,
+          1750,
+          1758,
+          1768,
+          1779,
+          1793
+        ],
+        "onPresets": [
+          1709,
+          1729,
+          1744,
+          1747,
+          1756
+        ],
+        "onActivate": [
+          1710,
+          1730,
+          1749,
+          1757,
+          1767
+        ],
+        "onClearAll": [
+          1712,
+          1732,
+          1939
+        ],
+        "onChange": [
+          1887
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/RedactDialog.tsx",
+      "callbacks": {
+        "onSubmit": [
+          7,
+          19,
+          21,
+          53
+        ],
+        "onCancel": [
+          8,
+          19,
+          21,
+          27,
+          46
+        ],
+        "onMouseDown": [
+          26
+        ],
+        "onChange": [
+          42
+        ],
+        "onKeyDown": [
+          43,
+          43
+        ],
+        "onClick": [
+          46,
+          53
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/cjk-punct-shrink.ts",
+      "callbacks": {
+        "onFontsLoaded": [
+          415,
+          436,
+          477
+        ],
+        "onDocCss": [
+          422,
+          437,
+          438,
+          478,
+          479
+        ],
+        "onPhasedSettled": [
+          426,
+          439,
+          480
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/column-layout-recovery.ts",
+      "callbacks": {
+        "onRemove": [
+          42
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/decoration-extensions.ts",
+      "callbacks": {
+        "onFontsLoaded": [
+          540,
+          554,
+          608
+        ],
+        "onPhasedSettled": [
+          544,
+          555,
+          558,
+          559,
+          609,
+          610,
+          611
+        ],
+        "onWindowBlur": [
+          1273,
+          1278,
+          1279
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/extensions.ts",
+      "callbacks": {
+        "onBeforeCreate": [
+          1016
+        ],
+        "onCreate": [
+          1017
+        ],
+        "onFocusOut": [
+          3491,
+          3496
+        ],
+        "onMouseDown": [
+          5178,
+          5221,
+          5226
+        ],
+        "onDoubleClick": [
+          5196,
+          5222,
+          5227
+        ],
+        "onDocumentMouseDown": [
+          5203,
+          5223,
+          5228
+        ],
+        "onKeyDown": [
+          5213,
+          5224,
+          5229
+        ],
+        "onFocus": [
+          5653
+        ],
+        "onTransaction": [
+          5654
+        ],
+        "onPreview": [
+          5812,
+          5821,
+          5853
+        ],
+        "onMove": [
+          5848,
+          5856,
+          5878,
+          5973,
+          5982,
+          6029,
+          6176,
+          6182,
+          6221,
+          6314,
+          6335,
+          6365,
+          6431,
+          6436,
+          6456,
+          6921,
+          6950,
+          7045
+        ],
+        "onUp": [
+          5855,
+          5857,
+          5879,
+          5981,
+          5983,
+          6030,
+          6181,
+          6183,
+          6222,
+          6334,
+          6336,
+          6366,
+          6435,
+          6437,
+          6457,
+          6949,
+          6951,
+          7046
+        ],
+        "onHandleDown": [
+          6052,
+          6087
+        ],
+        "onPage": [
+          6664,
+          6667,
+          6668,
+          6676
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/hf-editor.ts",
+      "callbacks": {
+        "onCommit": [
+          622,
+          677,
+          702
+        ],
+        "onExit": [
+          623,
+          703
+        ],
+        "onFocus": [
+          656
+        ],
+        "onTransaction": [
+          657
+        ],
+        "onCommitEvent": [
+          675,
+          698,
+          707
+        ],
+        "onFocusOut": [
+          680,
+          697,
+          706
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/hf-float-edit.ts",
+      "callbacks": {
+        "onHandleDown": [
+          161,
+          293
+        ],
+        "onMove": [
+          240,
+          249,
+          280
+        ],
+        "onUp": [
+          248,
+          250,
+          281
+        ],
+        "onMouseDown": [
+          334,
+          378,
+          387
+        ],
+        "onDblClick": [
+          363,
+          379,
+          388
+        ],
+        "onHover": [
+          369,
+          380,
+          389
+        ],
+        "onKey": [
+          374,
+          381,
+          390
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/justify-shrink.ts",
+      "callbacks": {
+        "onFontsLoaded": [
+          264,
+          283,
+          326
+        ],
+        "onDocCss": [
+          269,
+          284,
+          285,
+          327,
+          328
+        ],
+        "onPhasedSettled": [
+          273,
+          286,
+          329
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/margin-annotations.ts",
+      "callbacks": {
+        "onChangeBar": [
+          77,
+          956,
+          958
+        ],
+        "onCommentBalloon": [
+          79,
+          817
+        ],
+        "onCommentSelect": [
+          81,
+          834
+        ],
+        "onCommentReply": [
+          83,
+          91,
+          341,
+          802,
+          802
+        ],
+        "onCommentResolve": [
+          84,
+          91,
+          202,
+          207,
+          803,
+          803
+        ],
+        "onCommentEdit": [
+          85,
+          91,
+          211,
+          218,
+          294,
+          309,
+          804,
+          804
+        ],
+        "onCommentDelete": [
+          86,
+          91,
+          211,
+          225,
+          231,
+          805,
+          805
+        ],
+        "onJump": [
+          94,
+          103,
+          266,
+          363
+        ],
+        "onClick": [
+          162,
+          172,
+          177,
+          185
+        ],
+        "onDocDown": [
+          233,
+          239,
+          245
+        ],
+        "onReply": [
+          341,
+          342,
+          357
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/multi-select.ts",
+      "callbacks": {
+        "onGestureEnd": [
+          331,
+          406
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/note-dom.ts",
+      "callbacks": {
+        "onEdit": [
+          140,
+          166
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/pagination-gaps.ts",
+      "callbacks": {
+        "onRemove": [
+          79
+        ],
+        "onPage": [
+          2181,
+          2182,
+          2183
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/para-flags.ts",
+      "callbacks": {
+        "onOff": [
+          68,
+          73,
+          74,
+          75,
+          76
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/protected-render.ts",
+      "callbacks": {
+        "onPage": [
+          2231,
+          2234,
+          2240,
+          2260,
+          2262
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/selection-bar.ts",
+      "callbacks": {
+        "onBar": [
+          66,
+          164,
+          172
+        ],
+        "onMove": [
+          160,
+          221,
+          227
+        ],
+        "onLeave": [
+          166,
+          222,
+          225,
+          228
+        ],
+        "onDown": [
+          168,
+          220,
+          226
+        ],
+        "onDragMove": [
+          197,
+          201,
+          216
+        ],
+        "onDragEnd": [
+          198,
+          214,
+          217,
+          224
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/shape-draw.ts",
+      "callbacks": {
+        "onInserted": [
+          110,
+          224
+        ],
+        "onMouseDown": [
+          229,
+          269,
+          279
+        ],
+        "onWinMove": [
+          236,
+          239,
+          270
+        ],
+        "onWinUp": [
+          237,
+          245,
+          271
+        ],
+        "onKey": [
+          255,
+          272,
+          273,
+          280,
+          281
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/spell-replace.ts",
+      "callbacks": {
+        "onTransaction": [
+          100,
+          104,
+          107
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/streaming-tail-guard.ts",
+      "callbacks": {
+        "onSettled": [
+          114,
+          115,
+          117
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/table-handle.ts",
+      "callbacks": {
+        "onMouseMove": [
+          180,
+          440,
+          462
+        ],
+        "onClick": [
+          205,
+          446
+        ],
+        "onDragStart": [
+          216,
+          447
+        ],
+        "onMouseDown": [
+          234,
+          445
+        ],
+        "onMove": [
+          253,
+          261,
+          289,
+          346,
+          351,
+          416
+        ],
+        "onUp": [
+          254,
+          265,
+          290,
+          347,
+          352,
+          355,
+          417
+        ],
+        "onResizeDown": [
+          296,
+          451
+        ],
+        "onKey": [
+          348,
+          371,
+          418
+        ],
+        "onScroll": [
+          435,
+          452,
+          464
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/editor/table-row-drag.ts",
+      "callbacks": {
+        "onMouseMove": [
+          173,
+          178,
+          182
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/file-actions.ts",
+      "callbacks": {
+        "onWriteProtectionLoaded": [
+          266,
+          599,
+          724,
+          1375
+        ],
+        "onError": [
+          1074,
+          1179
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/i18n/locale.tsx",
+      "callbacks": {
+        "onLanguageChanged": [
+          83
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/main.tsx",
+      "callbacks": {
+        "onThemeChanged": [
+          61
+        ],
+        "onDocumentThemeChanged": [
+          62
+        ],
+        "onAiPanelPrefsChanged": [
+          67
+        ],
+        "onAuthorNameChanged": [
+          72
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/mcp-bridge.ts",
+      "callbacks": {
+        "onError": [
+          191
+        ],
+        "onMcpCommand": [
+          239,
+          242
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/pagination-slices.ts",
+      "callbacks": {
+        "onRowFill": [
+          2128,
+          2299,
+          2348,
+          2357
+        ],
+        "onRowSplit": [
+          2129,
+          2242,
+          2277,
+          2301
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/renderer/ui-theme.ts",
+      "callbacks": {
+        "onDocumentThemeChanged": [
+          34
+        ],
+        "onThemeChanged": [
+          35,
+          54
+        ]
+      }
+    },
+    {
+      "path": "apps/docs/src/shared/ipc.ts",
+      "callbacks": {
+        "onLanguageChanged": [
+          416
+        ],
+        "onThemeChanged": [
+          424
+        ],
+        "onDocumentThemeChanged": [
+          428
+        ],
+        "onAutoSaveDefaultChanged": [
+          431
+        ],
+        "onAuthorNameChanged": [
+          434
+        ],
+        "onAiPanelPrefsChanged": [
+          438
+        ],
+        "onChromePressed": [
+          441
+        ],
+        "onZoteroRequest": [
+          444
+        ],
+        "onOpenDocx": [
+          473
+        ],
+        "onRenamedDocx": [
+          475
+        ],
+        "onTeardown": [
+          496
+        ],
+        "onContextMenuRequest": [
+          512
+        ],
+        "onMcpCommand": [
+          548
+        ],
+        "onAiSettingsChanged": [
+          564
+        ],
+        "onViewImage": [
+          631
+        ],
+        "onAiStream": [
+          633,
+          722
+        ],
+        "onMenuCommand": [
+          724
+        ],
+        "onCloseCheck": [
+          726
+        ],
+        "onCloseSaveRequest": [
+          729
+        ]
+      }
+    },
+    {
+      "path": "packages/agent-core/src/electron-transport.ts",
+      "callbacks": {
+        "onStream": [
+          53,
+          103
+        ],
+        "onError": [
+          94,
+          125
+        ],
+        "onDelta": [
+          109
+        ],
+        "onReasoning": [
+          112
+        ],
+        "onToolCall": [
+          115
+        ],
+        "onUsage": [
+          118
+        ],
+        "onStopReason": [
+          121
+        ],
+        "onDone": [
+          122
+        ]
+      }
+    },
+    {
+      "path": "packages/agent-core/src/loop.ts",
+      "callbacks": {
+        "onText": [
+          38,
+          993,
+          1095
+        ],
+        "onToolExecuted": [
+          39,
+          41,
+          922,
+          1196,
+          1227,
+          1259
+        ],
+        "onToolStart": [
+          40,
+          922,
+          1203
+        ],
+        "onTurnEnd": [
+          43,
+          923,
+          1093,
+          1354
+        ],
+        "onUsage": [
+          45,
+          1018,
+          1022
+        ],
+        "onDone": [
+          46,
+          661,
+          800,
+          856,
+          863,
+          923,
+          937,
+          971,
+          1028,
+          1117,
+          1124,
+          1286
+        ],
+        "onError": [
+          47,
+          801,
+          900,
+          915,
+          1033,
+          1061,
+          1070,
+          1294,
+          1307,
+          1316,
+          1336
+        ],
+        "onAbort": [
+          388,
+          392,
+          395,
+          399
+        ],
+        "onDelta": [
+          793,
+          984,
+          995
+        ],
+        "onToolCall": [
+          797,
+          1010
+        ],
+        "onReasoning": [
+          1002
+        ],
+        "onStopReason": [
+          1014
+        ]
+      }
+    },
+    {
+      "path": "packages/agent-core/src/stream-text.ts",
+      "callbacks": {
+        "onProgress": [
+          24,
+          95
+        ],
+        "onAbort": [
+          39,
+          56,
+          74,
+          80,
+          125,
+          126
+        ],
+        "onDelta": [
+          86
+        ],
+        "onToolCall": [
+          100
+        ],
+        "onStopReason": [
+          101
+        ],
+        "onDone": [
+          104
+        ],
+        "onError": [
+          120
+        ]
+      }
+    },
+    {
+      "path": "packages/agent-core/src/types.ts",
+      "callbacks": {
+        "onDelta": [
+          124
+        ],
+        "onReasoning": [
+          126
+        ],
+        "onToolCall": [
+          128
+        ],
+        "onPhase": [
+          130
+        ],
+        "onStopReason": [
+          132
+        ],
+        "onUsage": [
+          134
+        ],
+        "onDone": [
+          135,
+          140
+        ],
+        "onError": [
+          136
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/codex-app-server.ts",
+      "callbacks": {
+        "onOverflow": [
+          89,
+          92,
+          98,
+          118,
+          149
+        ],
+        "onLine": [
+          91,
+          97,
+          109,
+          111,
+          386,
+          512
+        ],
+        "onClose": [
+          377,
+          555
+        ],
+        "onNotification": [
+          432,
+          868,
+          901
+        ],
+        "onAbort": [
+          887,
+          897,
+          935
+        ],
+        "onActivity": [
+          904,
+          1021,
+          1023
+        ],
+        "onReasoningDelta": [
+          914
+        ],
+        "onDelta": [
+          997,
+          1040
+        ],
+        "onToolCall": [
+          998,
+          1043
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/media-protocols.ts",
+      "callbacks": {
+        "onOverflow": [
+          153,
+          1040
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/native-admission.ts",
+      "callbacks": {
+        "onAbort": [
+          184,
+          186,
+          188,
+          194
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/protocols/anthropic.ts",
+      "callbacks": {
+        "onDelta": [
+          88,
+          279
+        ],
+        "onToolCall": [
+          104,
+          333
+        ],
+        "onStopReason": [
+          106,
+          346
+        ],
+        "onUsage": [
+          110,
+          348
+        ],
+        "onBytes": [
+          178,
+          228,
+          231,
+          234,
+          250
+        ],
+        "onActivity": [
+          180
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/protocols/gemini.ts",
+      "callbacks": {
+        "onDelta": [
+          140,
+          292
+        ],
+        "onToolCall": [
+          147,
+          298
+        ],
+        "onStopReason": [
+          158,
+          314
+        ],
+        "onUsage": [
+          159,
+          316
+        ],
+        "onBytes": [
+          203,
+          249,
+          252,
+          255,
+          266
+        ],
+        "onActivity": [
+          205
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/protocols/openai-compatible.ts",
+      "callbacks": {
+        "onReasoningDelta": [
+          103,
+          343
+        ],
+        "onDelta": [
+          111,
+          350
+        ],
+        "onToolCall": [
+          132,
+          286
+        ],
+        "onStopReason": [
+          134,
+          412
+        ],
+        "onUsage": [
+          143,
+          413
+        ],
+        "onBytes": [
+          215,
+          260,
+          263,
+          266,
+          298
+        ],
+        "onActivity": [
+          217
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/protocols/openai-responses.ts",
+      "callbacks": {
+        "onReasoningDelta": [
+          203,
+          336
+        ],
+        "onDelta": [
+          212,
+          330
+        ],
+        "onToolCall": [
+          235
+        ],
+        "onStopReason": [
+          237
+        ],
+        "onUsage": [
+          239
+        ],
+        "onBytes": [
+          282,
+          296,
+          299,
+          302,
+          314
+        ],
+        "onActivity": [
+          284
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/protocols/shared.ts",
+      "callbacks": {
+        "onBytes": [
+          43,
+          52,
+          70,
+          107,
+          118,
+          178,
+          187,
+          340,
+          344
+        ],
+        "onOverflow": [
+          45,
+          54
+        ],
+        "onDelta": [
+          255
+        ],
+        "onToolCall": [
+          256
+        ],
+        "onReasoningDelta": [
+          258
+        ],
+        "onStopReason": [
+          260
+        ],
+        "onUsage": [
+          262
+        ],
+        "onActivity": [
+          264
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/trace.ts",
+      "callbacks": {
+        "onDelta": [
+          27,
+          60
+        ],
+        "onReasoningDelta": [
+          28,
+          63
+        ],
+        "onToolCall": [
+          29,
+          66
+        ],
+        "onStopReason": [
+          30,
+          69
+        ],
+        "onUsage": [
+          31,
+          72
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-provider/src/watchdog.ts",
+      "callbacks": {
+        "onParentAbort": [
+          76,
+          78,
+          91
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-search/src/genoffice-auth.ts",
+      "callbacks": {
+        "onAbort": [
+          261,
+          267,
+          270
+        ],
+        "onEvent": [
+          434,
+          436
+        ]
+      }
+    },
+    {
+      "path": "packages/ai-search/src/gsk.ts",
+      "callbacks": {
+        "onChange": [
+          182,
+          189
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/generate.ts",
+      "callbacks": {
+        "onOffXml": [
+          3505,
+          3621,
+          3622,
+          3626,
+          3628
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/parse-package.ts",
+      "callbacks": {
+        "onOffOf": [
+          16,
+          326
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/parse-props.ts",
+      "callbacks": {
+        "onOffOf": [
+          17,
+          61,
+          61,
+          304,
+          304,
+          685,
+          688
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/parse-styles.ts",
+      "callbacks": {
+        "onOffOf": [
+          14,
+          213,
+          214,
+          215,
+          216,
+          223,
+          252,
+          253,
+          254,
+          329,
+          330,
+          332,
+          617,
+          618,
+          715,
+          717,
+          721,
+          723,
+          727,
+          731,
+          749,
+          750,
+          759,
+          760,
+          790,
+          794,
+          798,
+          802,
+          807,
+          813,
+          815,
+          821
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/parse-xml-text.ts",
+      "callbacks": {
+        "onOffOf": [
+          52,
+          61
+        ],
+        "onOffTagIn": [
+          68
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/parse.ts",
+      "callbacks": {
+        "onOffOf": [
+          132,
+          2090,
+          4093,
+          4151,
+          4153,
+          4155,
+          4157,
+          4161,
+          4164,
+          4169,
+          4177,
+          4179,
+          5068,
+          5068,
+          5107,
+          5120,
+          5122,
+          5137,
+          5160,
+          5161,
+          5167,
+          5167,
+          5175,
+          5220,
+          5222,
+          5226,
+          5248,
+          5249
+        ],
+        "onCellRun": [
+          6404,
+          6453,
+          6507,
+          6510,
+          6536
+        ],
+        "onTextRun": [
+          6406,
+          6454
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/patch.ts",
+      "callbacks": {
+        "onOffTagIn": [
+          3146
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/resolve-props.ts",
+      "callbacks": {
+        "onOffOf": [
+          11,
+          312,
+          353,
+          599,
+          700,
+          702,
+          706,
+          721,
+          723,
+          724,
+          728,
+          729,
+          782,
+          783
+        ]
+      }
+    },
+    {
+      "path": "packages/docx-engine/src/section.ts",
+      "callbacks": {
+        "onOffTagIn": [
+          9,
+          203,
+          592
+        ],
+        "onOffAttr": [
+          63,
+          122,
+          123
+        ]
+      }
+    },
+    {
+      "path": "packages/electron-utils/src/abort-on-destroyed.ts",
+      "callbacks": {
+        "onDestroyed": [
+          23,
+          24,
+          25
+        ]
+      }
+    },
+    {
+      "path": "packages/electron-utils/src/disk-watch.ts",
+      "callbacks": {
+        "onChanged": [
+          46,
+          69
+        ],
+        "onTick": [
+          63,
+          83
+        ]
+      }
+    },
+    {
+      "path": "packages/html2docx/src/convert.ts",
+      "callbacks": {
+        "onProgress": [
+          13,
+          171
+        ],
+        "onIr": [
+          19,
+          169,
+          320,
+          322
+        ],
+        "onAbort": [
+          149,
+          150,
+          153,
+          157
+        ]
+      }
+    },
+    {
+      "path": "packages/html2docx/src/drivers/electron.ts",
+      "callbacks": {
+        "onCdpMessage": [
+          48,
+          59
+        ]
+      }
+    },
+    {
+      "path": "packages/i18n/src/index.ts",
+      "callbacks": {
+        "onUiLangChange": [
+          206
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/AiComposer.tsx",
+      "callbacks": {
+        "onChange": [
+          33,
+          65,
+          107,
+          107
+        ],
+        "onSend": [
+          34,
+          66,
+          111,
+          150
+        ],
+        "onQueue": [
+          35,
+          68,
+          102,
+          112,
+          112
+        ],
+        "onStop": [
+          37,
+          71,
+          115,
+          140
+        ],
+        "onPasteFiles": [
+          38,
+          73,
+          121,
+          123
+        ],
+        "onPasteText": [
+          39,
+          75,
+          127
+        ],
+        "onKeyDown": [
+          108
+        ],
+        "onPaste": [
+          118
+        ],
+        "onClick": [
+          140,
+          150
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/AiModelPicker.tsx",
+      "callbacks": {
+        "onSettingsChanged": [
+          19,
+          61
+        ],
+        "onKeyDown": [
+          116
+        ],
+        "onClick": [
+          128,
+          171,
+          193
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/AiPanelSideButton.tsx",
+      "callbacks": {
+        "onMove": [
+          9,
+          12,
+          21
+        ],
+        "onClick": [
+          35
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/AiQueueStrip.tsx",
+      "callbacks": {
+        "onTogglePause": [
+          35,
+          45,
+          146,
+          150
+        ],
+        "onUpdate": [
+          36,
+          46,
+          118
+        ],
+        "onMove": [
+          37,
+          48,
+          87,
+          106,
+          129,
+          177
+        ],
+        "onRemove": [
+          38,
+          49,
+          226
+        ],
+        "onClear": [
+          39,
+          50,
+          161
+        ],
+        "onRowKeyDown": [
+          125,
+          179
+        ],
+        "onClick": [
+          139,
+          150,
+          161,
+          214,
+          226
+        ],
+        "onKeyDown": [
+          179,
+          194
+        ],
+        "onPointerDown": [
+          180
+        ],
+        "onChange": [
+          192
+        ],
+        "onBlur": [
+          193
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/AiSkillsMenu.tsx",
+      "callbacks": {
+        "onToggle": [
+          25,
+          33,
+          178
+        ],
+        "onAddFile": [
+          26,
+          35,
+          66,
+          116,
+          132
+        ],
+        "onManage": [
+          27,
+          37,
+          210,
+          217
+        ],
+        "onClick": [
+          91,
+          114,
+          123,
+          136,
+          178,
+          215,
+          257
+        ],
+        "onChange": [
+          157
+        ],
+        "onKeyDown": [
+          158
+        ],
+        "onRemove": [
+          236,
+          240,
+          246,
+          253,
+          257
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/Markdown.tsx",
+      "callbacks": {
+        "onNavigate": [
+          17,
+          84
+        ],
+        "onClick": [
+          82
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/auto-save-pref.ts",
+      "callbacks": {
+        "onAutoSaveDefaultChanged": [
+          11,
+          83
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/color-picker.tsx",
+      "callbacks": {
+        "onPick": [
+          131,
+          147,
+          266,
+          280,
+          327
+        ],
+        "onChange": [
+          132,
+          327
+        ],
+        "onPointerDown": [
+          133
+        ],
+        "onMouseDown": [
+          263,
+          279
+        ],
+        "onFocus": [
+          264
+        ],
+        "onKeyDown": [
+          265
+        ],
+        "onClick": [
+          266,
+          280
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/dropdown.tsx",
+      "callbacks": {
+        "onPick": [
+          65,
+          76,
+          133
+        ],
+        "onKeyDown": [
+          143,
+          194,
+          194,
+          231,
+          231
+        ],
+        "onClick": [
+          193,
+          260
+        ],
+        "onBlur": [
+          195,
+          232,
+          245
+        ],
+        "onChange": [
+          230
+        ],
+        "onMouseEnter": [
+          253
+        ],
+        "onMouseDown": [
+          259
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/file-nav.ts",
+      "callbacks": {
+        "onNavigate": [
+          45
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/find-panel.tsx",
+      "callbacks": {
+        "onDocChanged": [
+          32,
+          131
+        ],
+        "onClose": [
+          44,
+          50,
+          141,
+          142
+        ],
+        "onChange": [
+          193,
+          270
+        ],
+        "onKeyDown": [
+          198,
+          271
+        ],
+        "onClick": [
+          209,
+          222,
+          237,
+          247,
+          257,
+          276,
+          279
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/image-dialogs.tsx",
+      "callbacks": {
+        "onApply": [
+          113,
+          120,
+          224,
+          378,
+          387,
+          446,
+          450
+        ],
+        "onCancel": [
+          114,
+          121,
+          210,
+          237,
+          269,
+          379,
+          388,
+          453,
+          538,
+          629
+        ],
+        "onTolerance": [
+          193,
+          263
+        ],
+        "onKeyDown": [
+          236,
+          236,
+          537,
+          537,
+          547,
+          619
+        ],
+        "onClick": [
+          237,
+          245,
+          269,
+          275,
+          538,
+          546,
+          629,
+          636
+        ],
+        "onChange": [
+          263
+        ],
+        "onHandleKeyDown": [
+          477,
+          619
+        ],
+        "onMove": [
+          498,
+          523,
+          526
+        ],
+        "onUp": [
+          520,
+          524,
+          527
+        ],
+        "onMouseDown": [
+          601,
+          618
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/image-viewer-focus.ts",
+      "callbacks": {
+        "onKeyDown": [
+          6,
+          58,
+          76
+        ],
+        "onBlur": [
+          6,
+          70,
+          76
+        ],
+        "onClose": [
+          18,
+          52,
+          56,
+          62
+        ],
+        "onKey": [
+          48,
+          54,
+          55
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/image-viewer.tsx",
+      "callbacks": {
+        "onClose": [
+          53,
+          60,
+          129,
+          190,
+          245
+        ],
+        "onSave": [
+          54,
+          61,
+          230,
+          235
+        ],
+        "onLoad": [
+          73,
+          259
+        ],
+        "onResize": [
+          94,
+          95,
+          96
+        ],
+        "onKey": [
+          114,
+          124,
+          125
+        ],
+        "onWheel": [
+          131,
+          192,
+          192
+        ],
+        "onMouseDown": [
+          136,
+          260,
+          260
+        ],
+        "onMove": [
+          144,
+          152,
+          155
+        ],
+        "onUp": [
+          148,
+          153,
+          156
+        ],
+        "onClick": [
+          162,
+          172,
+          172,
+          189,
+          194,
+          261
+        ],
+        "onKeyDown": [
+          187,
+          187
+        ],
+        "onBlur": [
+          188,
+          188
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/modal-keys.ts",
+      "callbacks": {
+        "onKeyDown": [
+          5,
+          34,
+          44
+        ],
+        "onClose": [
+          12,
+          38
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/popover-dismiss.ts",
+      "callbacks": {
+        "onChromePressed": [
+          19,
+          33
+        ],
+        "onMouseDown": [
+          52
+        ],
+        "onPress": [
+          68,
+          81,
+          82,
+          91,
+          92
+        ],
+        "onBlur": [
+          77,
+          83,
+          93
+        ],
+        "onKey": [
+          78,
+          84,
+          94,
+          113,
+          116,
+          117
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/ribbon-collapse.tsx",
+      "callbacks": {
+        "onTabPress": [
+          16,
+          109,
+          166,
+          170,
+          228
+        ],
+        "onTabsDoubleClick": [
+          111,
+          178,
+          229
+        ],
+        "onKey": [
+          191,
+          202,
+          203
+        ],
+        "onMouseDown": [
+          273,
+          291
+        ],
+        "onClick": [
+          274,
+          292
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/screentip.ts",
+      "callbacks": {
+        "onPointerOver": [
+          153,
+          175,
+          185
+        ],
+        "onFocusIn": [
+          154,
+          178,
+          188
+        ],
+        "onFocusOut": [
+          155,
+          179,
+          189
+        ],
+        "onKeyDown": [
+          158,
+          180,
+          190
+        ],
+        "onPointerOut": [
+          162,
+          176,
+          186
+        ],
+        "onPointerDown": [
+          168,
+          177,
+          187
+        ],
+        "onHide": [
+          173,
+          181,
+          182,
+          183,
+          191,
+          192,
+          193
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/scroll-window.ts",
+      "callbacks": {
+        "onScroll": [
+          28,
+          36
+        ]
+      }
+    },
+    {
+      "path": "packages/ui/src/use-redact-label.ts",
+      "callbacks": {
+        "onKeyDown": [
+          36,
+          56,
+          78
+        ],
+        "onSubmit": [
+          43,
+          62,
+          68
+        ],
+        "onCancel": [
+          44,
+          65,
+          68
+        ]
+      }
+    }
+  ]
+}
