@@ -136,7 +136,9 @@ class _TaskRepository:
         self.tasks[external_run_id] = task
         return task
 
-    async def cancel_and_reject(self, scope: TaskExecutionScope) -> None:
+    async def cancel_and_reject(
+        self, scope: TaskExecutionScope, *, lease: Lease | None = None
+    ) -> None:
         task = self.tasks[scope.external_run_id]
         self.tasks[scope.external_run_id] = replace(task, state=TaskState.CANCELLED)
 

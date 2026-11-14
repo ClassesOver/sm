@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from threading import Lock
@@ -24,10 +25,12 @@ from ...task_execution import (
     TASK_EXECUTION_DEPENDENCY,
     TaskExecutionKernel,
     TaskExecutionRepository,
+    TaskExecutionRepositoryError,
     TaskExecutionScope,
     TaskSession,
     TaskState,
 )
+from ...task_execution.models import Lease, utcnow
 from ..code_agent.metrics import (
     bounded_request_params_snapshot,
     planner_coding_reasoning_tokens,
@@ -76,6 +79,8 @@ from .orchestration import record_step_model_metrics
 
 ReportTaskExecutor = Callable[["ReportingTaskInvocation"], Awaitable[Any]]
 MAX_REPORT_INSTRUCTION_BYTES = 512 * 1024
+TASK_RUNTIME_POLL_SECONDS = 1.0
+TASK_RUNTIME_SNAPSHOT_TIMEOUT_SECONDS = 5.0
 
 
 
@@ -618,7 +623,9 @@ class ReportingTaskCoordinator:
                     capture_reporting_projection_metrics() as projection_metrics,
                     bind_reporting_run_context(task_run_context),
                 ):
-                    output = await executor(
+                    output = await self._run_executor(
+                        session,
+                        executor,
                         ReportingTaskInvocation(
                             instruction=instruction,
                             run_context=task_run_context,
@@ -646,7 +653,10 @@ class ReportingTaskCoordinator:
                     projection_metrics=projection_metrics,
                 )
             except BaseException as error:
-                if isinstance(error, anyio.get_cancelled_exc_class()):
+                if isinstance(error, anyio.get_cancelled_exc_class()) or (
+                    isinstance(error, TaskExecutionRepositoryError)
+                    and error.code == "task_cancelled"
+                ):
                     task_outcome = "cancelled"
                 if reporting_task_kind == "analysis_item" and isinstance(error, Exception):
                     attach_retry_usage(
@@ -664,7 +674,7 @@ class ReportingTaskCoordinator:
                             **reporting_visualization_usage_from_run_context(task_run_context)
                         ),
                     )
-                await complete_cleanup(self._cancel_and_cleanup(scope, session.lease.epoch))
+                await complete_cleanup(self._cancel_and_cleanup(scope, session.lease))
                 raise
             finally:
                 if model_metrics_settlement is not None:
@@ -681,11 +691,81 @@ class ReportingTaskCoordinator:
         await self.repository.cancel_and_reject(scope)
         await self.execution_cleanup.cleanup_disconnect(scope, task.lease_epoch)
 
-    async def _cancel_and_cleanup(self, scope: TaskExecutionScope, lease_epoch: int) -> None:
+    async def _assert_runtime_alive(self, session: TaskSession) -> None:
+        session.assert_alive()
         try:
-            await self.repository.cancel_and_reject(scope)
+            async with asyncio.timeout(TASK_RUNTIME_SNAPSHOT_TIMEOUT_SECONDS):
+                task = await self.repository.get_task_snapshot(session.scope.external_run_id)
+        except TimeoutError as error:
+            raise TaskExecutionRepositoryError(
+                "task_runtime_check_timeout", "读取报表任务运行状态超时。"
+            ) from error
+        if task is None:
+            raise ReportingError("report_worker_task_missing", "报表分析任务不存在。")
+        if task.scope != session.scope:
+            raise ReportingError("report_worker_task_scope_mismatch", "报表任务与请求作用域不一致。")
+        if task.state is TaskState.CANCELLED:
+            raise TaskExecutionRepositoryError("task_cancelled", "报表任务已取消。")
+        if task.state in {TaskState.COMPLETED, TaskState.FAILED}:
+            raise TaskExecutionRepositoryError("task_not_active", "报表任务已结束。")
+        if task.lease_epoch != session.lease.epoch or (
+            task.lease_owner is not None and task.lease_owner != session.lease.owner
+        ):
+            raise TaskExecutionRepositoryError("task_lease_lost", "任务租约已被其他实例接管。")
+        if task.deadline_at <= utcnow():
+            raise TaskExecutionRepositoryError("task_deadline_exceeded", "报表任务已超时。")
+        session.assert_alive()
+
+    async def _watch_runtime(self, session: TaskSession) -> None:
+        while True:
+            await self._assert_runtime_alive(session)
+            await asyncio.sleep(TASK_RUNTIME_POLL_SECONDS)
+
+    async def _run_executor(
+        self,
+        session: TaskSession,
+        executor: ReportTaskExecutor,
+        invocation: ReportingTaskInvocation,
+    ) -> Any:
+        await self._assert_runtime_alive(session)
+        # 子任务继承已绑定的 ContextVar，指标字典与 RunContext 仍是原对象。
+        running = asyncio.ensure_future(executor(invocation))
+        watching = asyncio.create_task(self._watch_runtime(session), name="report-task-runtime-guard")
+        try:
+            done, _ = await asyncio.wait((running, watching), return_when=asyncio.FIRST_COMPLETED)
+            if watching in done:
+                await watching
+            output = await running
+            await self._assert_runtime_alive(session)
+            return output
         finally:
-            await self.execution_cleanup.cleanup_disconnect(scope, lease_epoch)
+            # 包含外层取消和监视器故障；必须等 executor 的异步 finally 完成才清理 epoch。
+            for task in (running, watching):
+                if not task.done():
+                    task.cancel()
+            cleanup = asyncio.gather(running, watching, return_exceptions=True)
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # 正常返回的收尾窗口也可能收到取消；等完子任务后必须继续传播。
+                await complete_cleanup(cleanup)
+                raise
+
+    async def _cancel_and_cleanup(self, scope: TaskExecutionScope, lease: Lease) -> None:
+        try:
+            try:
+                await self.repository.cancel_and_reject(scope, lease=lease)
+            except TaskExecutionRepositoryError as error:
+                if error.code != "task_lease_lost":
+                    raise
+                # 旧 worker 只能回收自己的执行资源，不取消已接管的新任务。
+                logger.debug(
+                    "report_worker_cleanup_lease_lost task_id={} epoch={}",
+                    scope.external_run_id,
+                    lease.epoch,
+                )
+        finally:
+            await self.execution_cleanup.cleanup_disconnect(scope, lease.epoch)
 
     @staticmethod
     def _finish_receipt(

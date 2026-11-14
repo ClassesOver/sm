@@ -1907,7 +1907,9 @@ class TaskExecutionRepository:
         assert snapshot is not None
         return snapshot
 
-    async def cancel_and_reject(self, scope: TaskExecutionScope) -> TaskSnapshot:
+    async def cancel_and_reject(
+        self, scope: TaskExecutionScope, *, lease: Lease | None = None
+    ) -> TaskSnapshot:
         await self.initialize()
         now = utcnow()
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
@@ -1931,6 +1933,26 @@ class TaskExecutionRepository:
                 raise TaskExecutionRepositoryError("task_scope_mismatch", "执行任务范围不匹配。")
             if value["status"] in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
                 return self._task_snapshot(task)
+            lease_conditions = (
+                [self.tasks.c.lease_owner == lease.owner, self.tasks.c.lease_epoch == lease.epoch]
+                if lease is not None else []
+            )
+            result = await connection.execute(
+                update(self.tasks)
+                .where(self.tasks.c.external_run_id == scope.external_run_id, *lease_conditions)
+                .values(
+                    status=TaskState.CANCELLED,
+                    state_version=self.tasks.c.state_version + 1,
+                    lease_epoch=self.tasks.c.lease_epoch + 1,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    updated_at=now,
+                    completed_at=now,
+                )
+            )
+            if result.rowcount != 1:
+                # 租约接管与取消竞争时回滚整个事务，包括 attempt 和待处理指令。
+                raise TaskExecutionRepositoryError("task_lease_lost", "任务租约已发生变化。")
             await connection.execute(
                 update(self.runs)
                 .where(self.runs.c.internal_run_id == value["current_internal_run_id"])
@@ -1953,19 +1975,6 @@ class TaskExecutionRepository:
                     updated_at=now,
                 )
             )
-            await connection.execute(
-                update(self.tasks)
-                .where(self.tasks.c.external_run_id == scope.external_run_id)
-                .values(
-                    status=TaskState.CANCELLED,
-                    state_version=self.tasks.c.state_version + 1,
-                    lease_epoch=self.tasks.c.lease_epoch + 1,
-                    lease_owner=None,
-                    lease_expires_at=None,
-                    updated_at=now,
-                    completed_at=now,
-                )
-            )
         snapshot = await self.get_task_snapshot(scope.external_run_id)
         assert snapshot is not None
         return snapshot
@@ -1983,7 +1992,7 @@ class TaskExecutionRepository:
                         self.tasks.c.owner_user_id == scope.owner_user_id,
                         self.tasks.c.thread_id == scope.thread_id,
                         self.tasks.c.sandbox_id == scope.sandbox_id,
-                        self.tasks.c.executor_id == scope.executor_id,
+                        self.tasks.c.agent_id == scope.executor_id,
                         self.tasks.c.lease_epoch == current_epoch,
                         self.tasks.c.status.in_(
                             [TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]
@@ -1994,6 +2003,24 @@ class TaskExecutionRepository:
             if task is None:
                 raise TaskExecutionRepositoryError("task_cas_conflict", "任务 epoch 已发生变化。")
             value = task._mapping
+            result = await connection.execute(
+                update(self.tasks)
+                .where(
+                    self.tasks.c.external_run_id == scope.external_run_id,
+                    self.tasks.c.lease_epoch == current_epoch,
+                )
+                .values(
+                    status=TaskState.FAILED,
+                    result_text="workspace_mutation_indeterminate",
+                    state_version=self.tasks.c.state_version + 1,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    updated_at=now,
+                    completed_at=now,
+                )
+            )
+            if result.rowcount != 1:
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务 epoch 已发生变化。")
             await connection.execute(
                 update(self.runs)
                 .where(self.runs.c.internal_run_id == value["current_internal_run_id"])
@@ -2016,19 +2043,6 @@ class TaskExecutionRepository:
                     status=InstructionState.REJECTED,
                     rejection_code="workspace_mutation_indeterminate",
                     updated_at=now,
-                )
-            )
-            await connection.execute(
-                update(self.tasks)
-                .where(self.tasks.c.external_run_id == scope.external_run_id)
-                .values(
-                    status=TaskState.FAILED,
-                    result_text="workspace_mutation_indeterminate",
-                    state_version=self.tasks.c.state_version + 1,
-                    lease_owner=None,
-                    lease_expires_at=None,
-                    updated_at=now,
-                    completed_at=now,
                 )
             )
         snapshot = await self.get_task_snapshot(scope.external_run_id)
