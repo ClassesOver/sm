@@ -1,0 +1,93 @@
+[
+  {
+    "sourceSymbol": "installWorkbookVisuals",
+    "status": "partial",
+    "localCounterpart": "workbook-vendor/grid/chart-render.ts:setCharts; workbook-pictures.tsx:installWorkbookPictures; grid/sparkline-render.ts",
+    "capabilityEvidence": "visuals.md V01–V39",
+    "remaining": "Charts/pictures/sparklines have native paths; shapes/in-cell images/OLE and mixed arrangements absent; do not equate Canvas to source SVG/DOM."
+  },
+  {
+    "sourceSymbol": "installPictureTransfer",
+    "status": "missing",
+    "localCounterpart": "workbook-pictures.tsx; workbook-main.ts:openOrdinaryPicture (file-input only)",
+    "capabilityEvidence": "visuals.md V31",
+    "remaining": "Source clipboard/drop picture transfer and source screenshot-to-image native journal are not wired into the inspected workbook host."
+  },
+  {
+    "sourceSymbol": "installCellImagePreview",
+    "status": "missing",
+    "localCounterpart": "workbook-pictures.tsx over-grid pictures only; workbook-read.ts plain cell projection",
+    "capabilityEvidence": "visuals.md V32",
+    "remaining": "Source in-cell image preview/extraction and embed-over-grid conversion have no inspected local counterpart."
+  },
+  {
+    "sourceSymbol": "installPageBreakPreview",
+    "status": "done_bounded",
+    "localCounterpart": "workbook-page-break-controller.ts:createPageBreakPreviewController; workbook-page-break-preview.ts:installPageBreakOverlay; workbook-main.ts:1082",
+    "capabilityEvidence": "visuals.md V36; existing page-break acceptance",
+    "remaining": "Overlay/controller/pageSetup journal exist; exact pointer/print pagination equivalence remains bounded by existing evidence."
+  },
+  {
+    "sourceSymbol": "registerCellFontAliases",
+    "status": "unverified",
+    "localCounterpart": "grid/sync.ts:createWorkbook and style-map.ts:font projection; global font resources",
+    "capabilityEvidence": "visuals.md V45",
+    "remaining": "Local font projection/font resources do not establish source per-family rewriting, async readiness and per-glyph fallback equality. Needs font corpus/actual canvas comparison."
+  },
+  {
+    "sourceSymbol": "installSheetsMcpBridge",
+    "status": "missing",
+    "localCounterpart": "workbook-main.ts native editor initialization; no inspected authenticated visible-grid MCP execution bridge",
+    "capabilityEvidence": "host.md mcp-visible-grid",
+    "remaining": "Source renderer installs execute/receipt/ready bridge; generic connector/document-control tools do not implement this repo XLSX execution path."
+  },
+  {
+    "sourceSymbol": "installCfFormulaFold",
+    "status": "unverified",
+    "localCounterpart": "workbook-conditional-formatting.ts native resources; same writer source",
+    "remaining": "CF source wrapper folds registered formula ranges/windows for performance. Local full-rule/eager resources do not establish equivalent folding/caching; ordinary CF formulas are not automatically missing.",
+    "capabilityEvidence": "core.md/visuals.md; exact source import from registry"
+  },
+  {
+    "sourceSymbol": "installCrossHighlight",
+    "status": "done_bounded",
+    "localCounterpart": "workbook-cross-highlight.ts:installCrossHighlight; workbook-main.ts:383",
+    "remaining": "Explicit native overlay/preferences/theme integration; exact DPI/selection corpus remains bounded.",
+    "capabilityEvidence": "core.md/visuals.md; exact source import from registry"
+  },
+  {
+    "sourceSymbol": "installFilteredCopyHook",
+    "status": "unverified",
+    "localCounterpart": "workbook-filters.ts:withWorkbookFilters; official clipboard",
+    "remaining": "Source excludes raw-hidden rows inside source filter range. Local imports criteria into filter resources, so exact visible-only/raw-hidden clipboard cases need vectors; normal copy is not missing.",
+    "capabilityEvidence": "core.md/visuals.md; exact source import from registry"
+  },
+  {
+    "sourceSymbol": "installFindRevealFix",
+    "status": "partial",
+    "localCounterpart": "workbook-find-replace.ts; workbook-goto-reveal.ts; grid/sync.ts:openFindReplace",
+    "remaining": "Find and reveal hosts exist; source-specific reveal fix/scroll synchronization is not established by facade calls.",
+    "capabilityEvidence": "core.md/visuals.md; exact source import from registry"
+  },
+  {
+    "sourceSymbol": "installOutlineGutter",
+    "status": "done_bounded",
+    "localCounterpart": "workbook-outline-gutter.ts:installOutlineGutter; workbook-main.ts:3326",
+    "remaining": "Explicit bounded gutter/outline operations and save path; full source pointer/scroll combinations not certified.",
+    "capabilityEvidence": "core.md/visuals.md; exact source import from registry"
+  },
+  {
+    "sourceSymbol": "installTsvClipboardFix",
+    "status": "unverified",
+    "localCounterpart": "workbook-clipboard.ts official dispatch; workbook-paste-special.ts",
+    "remaining": "Source reconstructs plain TSV with booleans TRUE/FALSE and quoted embedded tabs/newlines/quotes. No concrete local wrapper established; clipboard runtime contents require comparison.",
+    "capabilityEvidence": "core.md/visuals.md; exact source import from registry"
+  },
+  {
+    "sourceSymbol": "installWheelZoomSteps",
+    "status": "missing",
+    "localCounterpart": "workbook zoom controls and official Univer wheel; no native source stepper wired",
+    "remaining": "Source classifies notch versus pinch and steps mouse10points ahead of default Univer while preserving continuous pinch. That correction is absent from inspected workbook host; ordinary zoom remains implemented and Windows symptom not executed.",
+    "capabilityEvidence": "core.md/visuals.md; exact source import from registry"
+  }
+]

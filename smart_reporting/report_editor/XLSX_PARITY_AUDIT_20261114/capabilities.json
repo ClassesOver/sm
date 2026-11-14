@@ -1,0 +1,1300 @@
+{
+  "boundary": "Capability-family records can overlap across domains; counts are not unique features or completion percentages. AI DSL and IPC are separate inventories.",
+  "domains": {
+    "core": {
+      "done_bounded": 26,
+      "missing": 5,
+      "partial": 10,
+      "unverified": 5,
+      "source_boundary": 2
+    },
+    "data": {
+      "done_bounded": 31,
+      "missing": 6,
+      "unverified": 4,
+      "partial": 8,
+      "source_boundary": 3
+    },
+    "visuals": {
+      "done_bounded": 15,
+      "partial": 13,
+      "source_boundary": 4,
+      "missing": 9,
+      "unverified": 4
+    },
+    "storage": {
+      "missing": 5,
+      "partial": 4,
+      "done_bounded": 1,
+      "unverified": 1,
+      "source_boundary": 1,
+      "host_boundary": 1
+    }
+  },
+  "records": [
+    {
+      "id": "C01",
+      "domain": "core",
+      "family": "Grid values/formulas basic edit + load/save projection",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Grid values/formulas basic edit + load/save projection | done_bounded | S/univer-sync.ts:loadSnapshotIntoUniver (grid projection), S/App.tsx grid mutation/save wiring | F/workbook-vendor/core/univer-data.ts:buildWorkbookData; F/workbook-vendor/grid/sync.ts:loadWorkbookData; F/workbook-main.ts:loadOperations/currentOperations | Native grid edits projected into declarative package operations. This row covers plain values/formulas only; rich cells below, calculation elsewhere. | F/workbook-native-recovery.test.ts plain edits/save failure/undo/redo assertions; F/workbook-hydration-realstack.test.ts present |"
+    },
+    {
+      "id": "C02",
+      "domain": "core",
+      "family": "Rich cell runs, run formatting and paragraph layout",
+      "status": "missing",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Rich cell runs, run formatting and paragraph layout | missing | S/univer-sync.ts:toRichTextDocument (5836), load projection (5180), replay (4352), rich plain-text extraction (8204) | E/workbook-read.ts:readSharedStrings/parseWorksheetCells; F/workbook-vendor/core/univer-data.ts:UniverCellData/buildWorkbookData | Demonstrated model difference: local reader joins all `<t>` children into one string; projection has v/t/f/s and no p/runs, whereas source builds styled p documents. Source rich/bidi/run font handling cannot be claimed. Untouched original XML preservation is separate from rendering/edit parity. | Reader/projection inspected; F/workbook-symbol-dialog.test.ts rejects rich targets; F/workbook-native-recovery.test.ts rejects rich Replace payloads |"
+    },
+    {
+      "id": "C03",
+      "domain": "core",
+      "family": "Plain number/font/fill/border/alignment/rotation/indent/wrap formatting",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Plain number/font/fill/border/alignment/rotation/indent/wrap formatting | done_bounded | S/ExcelShell.tsx Home; S/ribbon-actions.ts:runRibbonCommand; S/format-cells.ts | F/workbook-ribbon.ts:applyWorkbookRibbonCommand; F/workbook-format.ts; F/workbook-vendor/core/style-map.ts | Dedicated native styles and package save. Complex inherited-source styles can be readonly; not a general rich-run editor. | F/workbook-format.test.ts independently mixed fields, actual facade target, pattern validation, explicit resets; F/workbook-indent-clipboard.test.ts |"
+    },
+    {
+      "id": "C04",
+      "domain": "core",
+      "family": "Format Cells six-tab modal and atomic application",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Format Cells six-tab modal and atomic application | done_bounded | S/FormatCellsDialog.tsx:FormatCellsDialog; S/format-cells.ts:draftFromSelection | F/workbook-format-cells-host.ts:createFormatCellsDialog; F/vendor/genoffice-sheets-format/FormatCellsDialog.tsx; F/workbook-format-cells.ts:selectedFormatCellsDraft/formatCellsOperation | Source dialog is ported and whole batch validated. Local guard rejects incompletely projected inherited styles; budget 500 ops/10MiB. Locked/hidden flags persist, but protection runtime remains separately bounded. | F/workbook-format-cells.test.ts six-tab ZIP batch, mixed fields, target/budget, border geometry, recovery; host tests |"
+    },
+    {
+      "id": "C05",
+      "domain": "core",
+      "family": "Format painter single/double/Esc",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Format painter single/double/Esc | done_bounded | S/App.tsx:installFormatPainter; S/ExcelShell.tsx painter controls | F/workbook-format-painter.ts; F/workbook-main.ts painter wiring | Single/double toggle and Escape are explicitly implemented, not assumed from Univer. | F/workbook-format-painter.test.ts actual command service/Escape + ribbon pressed state |"
+    },
+    {
+      "id": "C06",
+      "domain": "core",
+      "family": "Cell style preset gallery",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Cell style preset gallery | done_bounded | S/ExcelShell.tsx Home style gallery; S/ribbon-actions.ts cell-style dispatch | F/workbook-cell-style-presets.ts:CELL_STYLE_PRESETS/applyWorkbookCellStyle; F/workbook-ribbon.ts gallery | Named presets expand into bounded styles. Imported arbitrary named-cell-style catalogs and every visual fallback not independently proven. | F/workbook-cell-style-presets.test.ts existing assertions |"
+    },
+    {
+      "id": "C07",
+      "domain": "core",
+      "family": "Clear contents/formats/all",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Clear contents/formats/all | done_bounded | S/ribbon-actions.ts clear command branches; S/ExcelShell.tsx clear menu | F/workbook-ribbon.ts:applyWorkbookRibbonCommand; F/workbook-main.ts clear-selection integration | Explicit style reset/value edits go through save diff. Delete-key Excel-specific clear semantics is separate keyboard row. | F/workbook-clear.test.ts |"
+    },
+    {
+      "id": "C08",
+      "domain": "core",
+      "family": "Merge cells/center/across/unmerge",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Merge cells/center/across/unmerge | done_bounded | S/ExcelShell.tsx merge menu; S/ribbon-actions.ts merge dispatch | F/workbook-ribbon.ts:applyWorkbookRibbonCommand; F/workbook-grid-operations.ts:gridMergeChanges | Four entry modes and final merge snapshot diff exist; no universal claim for rich/array/visual-bearing merged ranges. | F/workbook-grid-operations.test.ts captures last unmerge, ordering-insensitive equality/undo; ribbon assertions |"
+    },
+    {
+      "id": "C09",
+      "domain": "core",
+      "family": "Copy/cut/paste ordinary clipboard",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Copy/cut/paste ordinary clipboard | partial | S/App.tsx:installClipboardAnchorTile/installCopyMaterialize; S/clipboard-tsv.ts, filtered-copy.ts | F/workbook-clipboard.ts:CLIPBOARD_COMMANDS; F/workbook-main.ts official clipboard dispatch | Basic commands wired. Source additionally materializes lazy selections, skips filtered rows and fixes anchor tiling. Target full-file loader differs; exact visible-only copy/anchor tiling behavior remains unverified, not established merely by same Univer. | F/workbook-indent-clipboard.test.ts; no PC clipboard GUI run |"
+    },
+    {
+      "id": "C10",
+      "domain": "core",
+      "family": "Paste Special full dialog/operations/transposition/link",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Paste Special full dialog/operations/transposition/link | done_bounded | S/PasteSpecialDialog.tsx; S/paste-special.ts:pasteSpecialAvailability/applyPasteSpecial | F/workbook-paste-special.ts:createWorkbookPasteSpecial; F/workbook-vendor/grid/paste-special.ts | Full types, arithmetic, skip blanks, transpose/link host exists, captured target/busy guard and Ctrl+Alt+V. Source intentionally disables comments/validation-only paste (UNSUPPORTED_TYPES); these are source boundaries, not local gaps. Rich input limited by rich-model row. | F/workbook-paste-special-real.test.ts actual shared formulas, numeric operations, transpose, growth, target race; dialog tests |"
+    },
+    {
+      "id": "C11",
+      "domain": "core",
+      "family": "Insert/delete cells with shifts",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Insert/delete cells with shifts | done_bounded | S/InsertDeleteCellsDialog.tsx; S/insert-delete-cells.ts:decideCellsAction | F/workbook-cell-shift.ts; F/workbook-cell-shift-raw-style.ts; F/workbook-main.ts cellsDialog | Explicit direction/whole-axis choices journal through engine. Unsupported dependency combinations guarded; not silently equal to unrestricted Excel. | F/workbook-cell-shift.test.ts; raw-style + main-cell-shift tests |"
+    },
+    {
+      "id": "C12",
+      "domain": "core",
+      "family": "Row/column insert/delete and geometry",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Row/column insert/delete and geometry | done_bounded | S/workbook-ops.ts structural operations; S/ExcelShell.tsx cells format menu | F/workbook-grid-operations.ts:structuralMutation; F/workbook-axis-size.ts; F/workbook-main.ts structural preflight | Operations/size/hide save explicit native units. Existing pivot-source dependencies can refuse edits rather than update caches; source-equivalent breadth of all dependency migration not established. | grid-operations, axis-size, geometry-hidden and native-recovery existing assertions |"
+    },
+    {
+      "id": "C13",
+      "domain": "core",
+      "family": "Autofit measurement and display corrections",
+      "status": "unverified",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Autofit measurement and display corrections | unverified | S/App.tsx:installMultiRowAutofit; S/autofit-*.ts; wrap-row-height-batch.ts, thick-border-fix.ts | F/workbook-ribbon.ts autofit commands; F/workbook-main.ts runtime preset initialization | Source has additional selected-row doubleclick, wrap budget/line-pitch/overflow/render fixes. Local basic facade calls do not prove these corrections; dedicated comparative vectors/GUI needed. | No comparative run; source initialization inspected |"
+    },
+    {
+      "id": "C14",
+      "domain": "core",
+      "family": "Sheet tabs add/remove/rename/reorder/hide/show/color",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Sheet tabs add/remove/rename/reorder/hide/show/color | done_bounded | S/SheetTabContextMenu.tsx, sheet-tab-actions.ts, very-hidden-sheets.ts | F/workbook-grid-operations.ts:planGridSheets; F/workbook-main.ts sheet plans; E/sheet-ops.ts | Basic sheet operation journal and locked-structure guard exist. Very-hidden-specific visibility and source custom tab context menu exact interaction are unverified. | grid-operations + engine sheet-ops tests, existing only |"
+    },
+    {
+      "id": "C15",
+      "domain": "core",
+      "family": "Find/Replace",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Find/Replace | partial | S/FindReplacePanel.tsx, find-replace-session.ts, sparse-find.ts/lazy-find.ts | F/workbook-find-replace.ts; F/workbook-main.ts native facade dispatch/preflight | Official find/replace supports native snapshots and save. Source custom panel/session/search scope and sparse/lazy-specific behavior not fully inspected; rich replacement explicitly refused locally. | F/workbook-native-recovery.test.ts multi-sheet replacements/history, forbidden rich/foreign/over-budget payloads |"
+    },
+    {
+      "id": "C16",
+      "domain": "core",
+      "family": "Fill down/right/series/flash",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Fill down/right/series/flash | partial | S/FillSeriesDialog.tsx; fill-series.ts/fill-series-apply.ts; S/App.tsx:installCtrlDragFill | F/workbook-fill-series.ts; F/workbook-flash-fill.ts; F/workbook-ribbon.ts fill commands | Dialog/series implementation exists. Ctrl-drag copy-vs-series correction and full PC pointer behavior are not verified. Flash/data transformations also covered by data agent. | Existing fill-series/ribbon tests; no pointer GUI |"
+    },
+    {
+      "id": "C17",
+      "domain": "core",
+      "family": "Conditional formatting complete supported snapshot edit",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Conditional formatting complete supported snapshot edit | done_bounded | S/App.tsx CF plugin + S/univer-sync.ts resources; cf-thresholds.ts/cf-formula-fold.ts | F/workbook-conditional-formatting.ts:withWorkbookConditionalFormatting/workbookConditionalFormattingOperations/validateConditionalFormattingEdit | Ordered full wire rules, stopIfTrue, disjoint ranges, formula/scale/bar styles captured. Local supported schema blocks unsupported/timePeriod/linked/incomplete sources. Need compare source gateway supported types before calling such refusals a parity gap. | conditional-formatting.test.ts full snapshots, unsupported/linked guard/default color preservation/offscreen range; main-calculation assertions |"
+    },
+    {
+      "id": "C18",
+      "domain": "core",
+      "family": "CF structural reference migration",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| CF structural reference migration | done_bounded | S/workbook-ops.ts structural edits / source gateway CF writes | F/workbook-cf-structure-plan.ts; F/workbook-cf-sheet-removal.ts; E/conditional-formatting*.ts | Dedicated row/column/cell shift/sheet-removal work is newer than old parity doc; guarded unsupported formulas/extensions preserved. All structural combinations not claimed. | CF structure/cell-shift/sheet-edits/sheet-removal engine tests and frontend plan tests present |"
+    },
+    {
+      "id": "C19",
+      "domain": "core",
+      "family": "CF Excel display/performance correction patches",
+      "status": "unverified",
+      "evidenceFile": "core.md",
+      "sourceRow": "| CF Excel display/performance correction patches | unverified | S/App.tsx:installCfFormulaFold/installCfDisplayKeyCompare; cf-empty-fast-path.ts/cf-thresholds.ts | F/workbook-main.ts CF resource setup | Same CF plugin does not prove duplicate/unique values compare display strings like source, exact thresholds or formula-fold performance. | Source install calls inspected; no comparative runtime vectors |"
+    },
+    {
+      "id": "C20",
+      "domain": "core",
+      "family": "Data validation supported rules/full snapshot",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Data validation supported rules/full snapshot | done_bounded | S/App.tsx validation plugin; S/ExcelShell.tsx validation commands | F/workbook-data-validation.ts:withWorkbookDataValidations/validateDataValidationEdit/workbookDataValidationOperations | Full native snapshots preserved; unsupported multi-select rules blocked, partial source snapshot not installed. Source gateway support must be checked before labeling multi-select as a gap. | workbook-data-validation.test.ts snapshots/removal/budget/multi-select rejection |"
+    },
+    {
+      "id": "C21",
+      "domain": "core",
+      "family": "DV reference migration/names",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| DV reference migration/names | done_bounded | S/workbook-ops.ts and gateway validation structure | F/workbook-data-validation-structure.ts; F/workbook-data-validation-names.ts; F/workbook-dv-sheet-removal.ts | Specific range/name/structural/sheet-removal guards and operations exist; dependency source identity checked. | Corresponding frontend + engine validation tests present |"
+    },
+    {
+      "id": "C22",
+      "domain": "core",
+      "family": "DV dropdown/input message/invalid marker visual behavior",
+      "status": "unverified",
+      "evidenceFile": "core.md",
+      "sourceRow": "| DV dropdown/input message/invalid marker visual behavior | unverified | S/App.tsx:installActiveCellDataValidationChrome/installInvalidDataMarkerSuppression; data-validation-dropdown.tsx | F/workbook-main.ts data validation preset integration | Source explicitly suppresses invalid markers until Circle Invalid Data and attaches active-cell dropdown/message. Shared package registration is insufficient to establish local visual/keyboard parity. | No comparative GUI run |"
+    },
+    {
+      "id": "C23",
+      "domain": "core",
+      "family": "Tables create/name/resize/convert",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Tables create/name/resize/convert | done_bounded | S/table-design-actions.ts:handleTableDesignCommand/createTable/renameTable/resizeTable/convertToRange; table-design.ts | F/workbook-table-create.ts:installTableCreate/inferTableRegion; F/workbook-table-design.ts:installTableDesign; F/workbook-table-resize.ts; workbook-table-convert.ts | Explicit atomic target/source preflight and own mutations exist. Local rename rewrites cell formulas, DV and defined names, with rollback. Complex unsupported table sources are bounded; source totals movement/free-row nuances need vectors for full parity. | table-create/resize/convert/design existing tests; design actual service rollback/history tests inspected |"
+    },
+    {
+      "id": "C24",
+      "domain": "core",
+      "family": "Table totals/header/filter buttons and options",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Table totals/header/filter buttons and options | done_bounded | S/table-design.ts:TABLE_OPTION_KEYS/totalsFunctionFor; S/table-design-actions.ts totals/header/option branches | F/workbook-table-totals.ts; workbook-table-header-row.ts; workbook-table-filter-button.ts; workbook-table-style-edit.ts | Separate toggles, table-preserving range mutations and source-option flags; not an empty Table Design tab despite static group actions array. Runtime builds controls dynamically. | Corresponding table tests present; F/workbook-ribbon.ts dynamic table control state/render inspected |"
+    },
+    {
+      "id": "C25",
+      "domain": "core",
+      "family": "Table built-in/custom style render + persistence",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Table built-in/custom style render + persistence | done_bounded | S/table-styles.ts, S/table-design-actions.ts style branch | F/workbook-table-styles.ts:installNativeTableStyleRendering; F/workbook-table-style-edit.ts | Built-in selection + existing custom source rendering; creating arbitrary new custom styles not demonstrated nor automatically required by source. | table-custom-style/table-styles/table-style-edit + E/table-style-read tests present |"
+    },
+    {
+      "id": "C26",
+      "domain": "core",
+      "family": "Legacy notes text CRUD/navigation/show-toggle",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Legacy notes text CRUD/navigation/show-toggle | done_bounded | S/ExcelShell.tsx Notes; S/ribbon-actions.ts note commands | F/workbook-notes.ts:adjacentNote/createNoteDialog/workbookNoteOperations; F/workbook-main.ts note commands | Native note projection/save/structure supported with source-identity and protected-sheet guards. Ribbon Comments group labels still route these legacy notes rather than source threads. | F/workbook-main-notes.test.ts; workbook-notes.test.ts; E/notes/notes-structure tests |"
+    },
+    {
+      "id": "C27",
+      "domain": "core",
+      "family": "Notes show-all and thread-to-note conversion",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Notes show-all and thread-to-note conversion | partial | S/ExcelShell.tsx:note-show-all/notes-convert menu; S/ribbon-actions.ts note conversion branches | F/workbook-ribbon.ts Review actions; F/workbook-notes.ts; workbook-threaded-comments-host.tsx | Source distinct commands show-all/notes-convert absent from complete local Review registry and current note/thread UI controllers do not provide conversion. Existing pictures/threads elsewhere must not conceal these remaining menu behaviors. | Review registry/test explicitly enumerates controls; no conversion assertions inspected |"
+    },
+    {
+      "id": "C28",
+      "domain": "core",
+      "family": "Note pictures insert/list/jump/remove/hover",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Note pictures insert/list/jump/remove/hover | done_bounded | S/NotePicturesPane.tsx; note-picture-actions.ts; S/App.tsx note popup card | F/workbook-note-pictures.ts; workbook-note-pictures-host.ts; F/workbook-main.ts:notePictures + captureNotes/commitNotePicture | Supplemental “图片批注” button implements pane and transaction path; picture notes are not missing despite absent ribbon entry. | Note-picture related tests/acceptance available; code host insertion/save inspected, no rerun |"
+    },
+    {
+      "id": "C29",
+      "domain": "core",
+      "family": "Threaded comments model/save/replies/edit/delete/resolve",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Threaded comments model/save/replies/edit/delete/resolve | done_bounded | S/threaded-comments.ts:ThreadStore/threadPane; S/ThreadedCommentsPane.tsx | F/workbook-threaded-comments.ts:ThreadStore/ThreadPaneController; F/workbook-threaded-comments-pane.tsx; F/workbook-main.ts:threadsView commit; E/thread-read.ts/threads.ts | Real distinct threads exist in supplemental host; authorized actor required; model reload only after committed operation, sourceIdentity + expectedThreadId. Original old parity table saying threads missing is stale. No general user identity fabrication. | workbook-threaded-comments.test.ts authorized actor/failed commit/readonly sources; source/store/controller implementation inspected |"
+    },
+    {
+      "id": "C30",
+      "domain": "core",
+      "family": "Threaded comment ribbon navigation integration",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Threaded comment ribbon navigation integration | partial | S/ExcelShell.tsx Review comment-new/delete/prev/next/comments-pane-toggle; S/threaded-comment-actions.ts | F/workbook-ribbon.ts Review maps note-*; F/workbook-threaded-comments-host.tsx supplemental new/show controls | Source Comments ribbon commands are replaced by legacy-note actions. Supplemental pane offers threads but does not reproduce previous/next/current-thread deletion ribbon routes. This is integration gap, not a missing thread subsystem. | Complete local Review registry/test + host inspected |"
+    },
+    {
+      "id": "C31",
+      "domain": "core",
+      "family": "Thread corner marker/hover/view permissions",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Thread corner marker/hover/view permissions | done_bounded | S/App.tsx:installThreadedCommentAffordances; S/threaded-comment-marker.ts | F/workbook-threaded-comment-marker.ts:installThreadedCommentAffordances; F/workbook-threaded-comments-host.tsx | Marker/hover installed. Local theme callback hardcodes light, whereas source uses active dark theme. Dark marker/hover styling is a specific residual parity concern; not tested here. | Source App callback and local host directly compared |"
+    },
+    {
+      "id": "C32",
+      "domain": "core",
+      "family": "Spelling/F7/toggle/ignore/change",
+      "status": "missing",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Spelling/F7/toggle/ignore/change | missing | S/ExcelShell.tsx Review spell-check/spellcheck-toggle; S/App.tsx spellDialogOpen; S/SpellingDialog.tsx; S/spell-check.ts | F/workbook-ribbon.ts Review; F/workbook-ribbon.test.ts Review inventory | Source spelling dialog and preference toggle are explicitly excluded from local Review registry; existing test asserts both absent. No XLSX spelling implementation represented by legacy note controls. | Explicit test assertions at 714-715; no tests run |"
+    },
+    {
+      "id": "C33",
+      "domain": "core",
+      "family": "Translate selection via AI language menu",
+      "status": "missing",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Translate selection via AI language menu | missing | S/ExcelShell.tsx:TRANSLATE_LANGUAGES/onAiRun(appTranslatePrompt) | F/workbook-ribbon.ts:disabledReasons.translate | Source is an enabled language menu feeding selection translation AI; local button is explicitly disabled, not a source-disabled control. Shared AI service alone does not close this entry-point gap. | Source menu + local disabled reason + Review test |"
+    },
+    {
+      "id": "C34",
+      "domain": "core",
+      "family": "Workbook statistics",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Workbook statistics | done_bounded | S/ExcelShell.tsx workbook-statistics; S/status-bar-stats.ts/statusbar-file-stats.ts | F/workbook-statistics.ts; F/workbook-main.ts workbook-statistics route | Modal exists. Exact source footer aggregation over lazy/hidden datasets not established by this modal. | Workbook-statistics tests present; footer detailed parity unverified |"
+    },
+    {
+      "id": "C35",
+      "domain": "core",
+      "family": "Sheet protection enable/disable passwords/permissions",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Sheet protection enable/disable passwords/permissions | partial | S/ProtectSheetDialog.tsx:ProtectSheetDialog; S/App.tsx:protectActiveSheet/unprotectActiveSheet; S/sheet-protection.ts | F/workbook-protection.ts:planProtection/assertProtectionRespected; E/protection.ts:applySheetProtection | Local offers passwordless default protection; refuses removal of password/hash protection. Source dialog supports password hash check and allow permission flags. Local protected sheet treats cells readonly except explicitly allowed ranges; unlocked xf flags not projected for editing. Demonstrated real gap, documented in local implementation header. | workbook-protection.test.ts guards/order; E/protection*.test.ts; actual local writer inspected |"
+    },
+    {
+      "id": "C36",
+      "domain": "core",
+      "family": "Workbook structure lock",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Workbook structure lock | done_bounded | S/ribbon-actions.ts workbook-protect; S/App.tsx protection getter | E/protection.ts:applyWorkbookProtection; F/workbook-protection.ts structure guard | Passwordless structure lock and block add/remove/rename/reorder/hide are implemented. Password-protected structure unlock remains refused locally; no source password UI inferred here without checking gateway implementation. | Local writer and frontend tests inspected |"
+    },
+    {
+      "id": "C37",
+      "domain": "core",
+      "family": "Allow Edit Ranges",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Allow Edit Ranges | partial | S/AllowEditRangesDialog.tsx; S/App.tsx:applyActiveProtectedRanges (6498+) | F/workbook-editable-ranges.ts:createEditableRangesPlan/editableRangeContains; workbook-editable-ranges-dialog.ts:createEditableRangesDialog; E/protection.ts:setSheetEditableRanges | Plain named/multi-area ranges have real CRUD and value/formula permissions, with per-written-cell checks/save guards. Source supports per-range optional password hashing; local dialog deliberately creates no password, restricted ranges readonly. Not wholly missing. | workbook-editable-ranges.test.ts union coverage/concrete payload/save enforcement; desktop/dialog tests present |"
+    },
+    {
+      "id": "C38",
+      "domain": "core",
+      "family": "Workbook-open encryption/password prompt/change",
+      "status": "missing",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Workbook-open encryption/password prompt/change | missing | S/EncryptedWorkbookPasswordDialog.tsx; S/ChangeWorkbookPasswordDialog.tsx; S/App.tsx:passwordRequired/open loop (5355), workbook-change-password/save flow (5411) | E/zip.ts ZIP entry loader; F/workbook-main.ts loadOperations/load source; F/workbook-ribbon.test.ts | Source has actual encrypted-open retry/cancel and change-existing-password flow. Local model loads ZIP through readWorkbook; no corresponding encrypted file state/password prompt path in inspected load flow, and test explicitly asserts change-password entry absent. Native container decryption host end-to-end not implemented here. Source only shows Change Password when passwordProtected; do not invent generic encrypt-new-workbook requirement. | Existing explicit ribbon absence assertion; no decryption runtime test |"
+    },
+    {
+      "id": "C39",
+      "domain": "core",
+      "family": "AI withholding/redaction marks + selected menu",
+      "status": "missing",
+      "evidenceFile": "core.md",
+      "sourceRow": "| AI withholding/redaction marks + selected menu | missing | S/redact-actions.ts:redactIntentFor; S/redact-menu.ts:installRedactMenu; S/App.tsx redaction dialog/index/mark-save wiring | F/workbook-main.ts load/context setup; F/workbook-ai-read-context.ts:captureWorkbookReadContext; smart_reporting/report_editor/native_workbook_read_ai.py:NativeWorkbookReadTools.__init__ | Confirmed semantic difference: source withholding marks keep underlying values/calculation but alter AI view; local reader model joins standard values and local NativeWorkbookReadTools deep-copies every scoped cell value/formula without consulting gxRedactions or derived-cell withholding. Selection authorization exists and is separate. No actual user document was submitted/tested. Source is not destructive PDF-style redaction. | Source semantics/App integration, local reader/projection/capture and Python frozen-scope builder directly inspected; AI shard corroborates no redaction transform |"
+    },
+    {
+      "id": "C40",
+      "domain": "core",
+      "family": "Draft recovery and retry identity",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Draft recovery and retry identity | partial | S/RecoveryDialog.tsx:RecoveryDialog; S/edit-journal.ts; S/App.tsx recovery prompt | F/workbook-main.ts loadOperations(nativeDraft.operations) + restored status; F/workbook-native-recovery.test.ts | Local native drafts automatically restore and retain retry identity, source-bound stale draft rejection exists. Source desktop recovery explicitly offers Restore/Discard with filename and autosave time; local shown flow auto-restores and lacks equivalent choice. Functional recovery exists; exact dialog is a host adaptation gap, not data loss claim. | Recovery test actual restoration/failure retry/structural order/unsupported operations/source identity inspected |"
+    },
+    {
+      "id": "C41",
+      "domain": "core",
+      "family": "View gridlines/headings/formula bar/RTL/cross-highlight/zoom",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| View gridlines/headings/formula bar/RTL/cross-highlight/zoom | done_bounded | S/ExcelShell.tsx View show/zoom groups; S/ZoomDialog.tsx | F/workbook-view.ts:withWorkbookView; workbook-headings.ts; workbook-formula-bar-view.ts; workbook-rtl.ts; workbook-cross-highlight.ts; workbook-zoom-dialog.ts/workbook-zoom-selection.ts | Each has explicit host and projection; zoom/dialog target handling and saved view differ from arbitrary desktop window management. General grid bidi/rich text corrections unverified. | View/headings/formula bar/RTL/cross-highlight/zoom tests present, no new run |"
+    },
+    {
+      "id": "C42",
+      "domain": "core",
+      "family": "Freeze panes selection/top row/first col/unfreeze",
+      "status": "done_bounded",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Freeze panes selection/top row/first col/unfreeze | done_bounded | S/ExcelShell.tsx View Window group freeze-here/freeze-top-row/freeze-first-col/unfreeze | F/workbook-ribbon.ts freeze menu; F/workbook-vendor/grid/sync.ts freeze load/readback | Real four choices; F/workbook-freeze-hydration-realstack.test.ts existing. | Freeze hydration assertions present |"
+    },
+    {
+      "id": "C43",
+      "domain": "core",
+      "family": "New/arrange/split/hide/switch desktop windows",
+      "status": "source_boundary",
+      "evidenceFile": "core.md",
+      "sourceRow": "| New/arrange/split/hide/switch desktop windows | source_boundary | S/ExcelShell.tsx View Window group contains ONLY freeze menu | F/workbook-ribbon.ts:disabledReasons new-window/arrange-all/split-window/hide-window/switch-window | Disabled target entries are extra Excel labels; pinned source does not expose these window controls. Do not count five parity gaps or claim source implements split-window state. | Direct complete source View group inspection (3368-3376), target disabled map |"
+    },
+    {
+      "id": "C44",
+      "domain": "core",
+      "family": "Normal/page-break preview and custom/page-layout views",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Normal/page-break preview and custom/page-layout views | partial | S/ExcelShell.tsx View workbook views; S/page-break-preview.tsx | F/workbook-page-break-preview.tsx; F/workbook-ribbon.ts normal-view/toggle-page-break-preview | Normal/page-break preview implemented and print shard owns detail. Source custom views/new desktop views must be established from actual source, not Excel feature list; no requirement inferred. | Existing page-break-preview/structure tests; print shard verification |"
+    },
+    {
+      "id": "C45",
+      "domain": "core",
+      "family": "PC Excel supplemental navigation and selection shortcuts",
+      "status": "partial",
+      "evidenceFile": "core.md",
+      "sourceRow": "| PC Excel supplemental navigation and selection shortcuts | partial | S/excel-shortcuts.ts:registerExcelShortcuts/currentRegion/extendedRange/farCorner; S/App.tsx registrations (2465) | F/workbook-main.ts runtime initialization + F/workbook-function-shortcuts.ts/F/workbook-outline-shortcuts.ts | Source registers Ctrl+PgUp/PgDn, Ctrl+Home/End, Home, Ctrl/Shift+Space, insert/delete shortcuts, Home/End selection extension, current-region, digit style aliases, Ctrl+Shift+Enter beyond Univer defaults. Local inspected initialization adds narrower function/outline/paste shortcuts, not equivalent explicit source registry. Exact per-key behavior needs PC comparative interaction testing; do not infer all missing from dependency. | Source supplemental registry and local imports/init inspected; local ribbon-keyboard tests cover ribbon navigation only |"
+    },
+    {
+      "id": "C46",
+      "domain": "core",
+      "family": "PC data-edge arrows, editor word jumps, selection collapse, wrap guard",
+      "status": "unverified",
+      "evidenceFile": "core.md",
+      "sourceRow": "| PC data-edge arrows, editor word jumps, selection collapse, wrap guard | unverified | S/App.tsx:registerExcelJumpNav/registerEditorWordJump/installArrowCollapse/installSelectionWrapGuard; S/excel-jump-nav.ts | F/workbook-main.ts core preset use | Source has precise correction semantics around formula-empty cells, multiselect arrows, sheet-edge stops and in-cell editing. No direct comparative tests inspected locally. A shared Univer version is not parity evidence. | Source register calls inspected; no runtime verification |"
+    },
+    {
+      "id": "C47",
+      "domain": "core",
+      "family": "Context menus, count-input Enter, submenu reopen, Ctrl-drag fill",
+      "status": "unverified",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Context menus, count-input Enter, submenu reopen, Ctrl-drag fill | unverified | S/App.tsx:installCellContextMenu/installMenuInputEnter/installContextSubmenuReopenFix/installCtrlDragFill | F/workbook-main.ts official context menus and custom paste integration | Source correction modules implement behavior beyond labels. Main local wiring needs source-by-source behavioral checks; absence of module filenames is not used as proof of missing features. | No comparative interaction run |"
+    },
+    {
+      "id": "C48",
+      "domain": "core",
+      "family": "Worksheet background-image editing",
+      "status": "source_boundary",
+      "evidenceFile": "core.md",
+      "sourceRow": "| Worksheet background-image editing | source_boundary | ExcelShell Page Layout + strict workbookPageSetupStateSchema/setPageSetupSchema/xlsx-page-setup.ts; see addendum above | workbook-ribbon.ts:disabledReasons.background | Fixed source has no exposed worksheet background-image edit/save route. Existing part preservation is a separate question. |"
+    },
+    {
+      "id": "D01",
+      "domain": "data",
+      "family": "F01 Insert Function catalog, search/categories/history",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F01 Insert Function catalog, search/categories/history | done_bounded | S/function-catalog.ts:buildFunctionCatalog; S/InsertFunctionFlow.tsx | L/workbook-function-catalog.ts:buildFunctionCatalog; workbook-function-flow.tsx:InsertFunctionFlow; workbook-function-history.ts | Live registry descriptions, category order, syntax/parameter metadata and fallback catalog exist. Catalog presence does not prove every described function has a working executor. | static; function GUI runners exist |"
+    },
+    {
+      "id": "D02",
+      "domain": "data",
+      "family": "F02 Function argument editor, nested calls, preview and in-workbook range picking",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F02 Function argument editor, nested calls, preview and in-workbook range picking | done_bounded | S/function-arguments-runtime.ts; S/FunctionArgumentsDialog.tsx | L/workbook-function-runtime.ts:createWorkbookFunctionHost; workbook-function-arguments-dialog.tsx | Existing formula/editor state, per-target identity, preview queue and selection range picking are implemented. | static; existing insert-function GUI evidence, not rerun |"
+    },
+    {
+      "id": "D03",
+      "domain": "data",
+      "family": "F03 External workbook range picker from Function Arguments",
+      "status": "missing",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F03 External workbook range picker from Function Arguments | missing | S/function-arguments-runtime.ts:createFunctionArgumentsHost (external target/range host); S/App.tsx external-pick wiring | L/workbook-function-runtime.ts:createWorkbookFunctionHost.pickExternalRange | Local can list existing external link targets, but `pickExternalRange` explicitly throws “当前浏览器尚未提供外部工作簿范围选择宿主”. An actual authorized external workbook/range picking host remains absent. This is separate from shipped External Links panel. | explicit current code refusal |"
+    },
+    {
+      "id": "D04",
+      "domain": "data",
+      "family": "F04 CELL filename, RATE fallback, MINIFS/MAXIFS empty-set, criteria compare cache overrides",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F04 CELL filename, RATE fallback, MINIFS/MAXIFS empty-set, criteria compare cache overrides | done_bounded | S/cell-function.ts; S/rate-function.ts; S/ifs-empty-set.ts; S/criteria-compare-cache.ts:installCriteriaCompareCacheFix | L/workbook-function-overrides.ts:installWorkbookFunctionOverrides; workbook-function-cell.ts; workbook-function-rate.ts; workbook-function-ifs.ts; workbook-function-criteria.ts | All four installers are wired after workbook load; lifecycle ownership/disposal is present. RATE root domain and empty-set fixes are bounded source semantics, not universal numerical equivalence. | static + NATIVE_XLSX_RATE_ACCEPTANCE.md, CELL_FILENAME and CRITERIA_CACHE acceptance records |"
+    },
+    {
+      "id": "D05",
+      "domain": "data",
+      "family": "F05 Builtin function numerical equivalence: Financial, Date & Time, Math, Statistical, Lookup, Database, Text, Logical, Information, Engineering, Cube, Compatibility, Web, Array, Other",
+      "status": "unverified",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F05 Builtin function numerical equivalence: Financial, Date & Time, Math, Statistical, Lookup, Database, Text, Logical, Information, Engineering, Cube, Compatibility, Web, Array, Other | unverified | S/function-catalog.ts:CATEGORY_BY_TYPE; S/function-registry-probe.ts:installSupportedFunctionProbe; S/formula-functions.ts:extractFunctionNames | L/workbook-function-catalog.ts:CATEGORY_BY_TYPE; installed Univer 0.25.1; workbook-function-overrides.ts | Category exposure is established, but no complete source/local executor-name and result matrix was run or exhaustively compared. Do not mark all Cube/Web/Array functions missing merely from their names, or mark all categories done from catalog rows. Specific local numerical overrides are F04. | static category inventory only; full executor/results matrix pending |"
+    },
+    {
+      "id": "D06",
+      "domain": "data",
+      "family": "F06 `_xlfn.` / `_xlws.` storage marker normalization and writeback",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F06 `_xlfn.` / `_xlws.` storage marker normalization and writeback | done_bounded | S/formula-functions.ts:canonicalFunctionName/extractFunctionNames; G/gateway/future-functions.ts | E/future-functions.ts:withoutFutureFunctionMarkers; E/workbook-read.ts:parseWorksheetCells; E/workbook-write.ts | Token-aware marker decode exists, protects strings/quoted names/escaped structured brackets; writer still restores required markers. | static + NATIVE_XLSX_FUTURE_MARKER_READER_ACCEPTANCE.md (ZIP reader/writer evidence) |"
+    },
+    {
+      "id": "D07",
+      "domain": "data",
+      "family": "F07 General cached-result fallback for unsupported or unresolved imported formulas",
+      "status": "missing",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F07 General cached-result fallback for unsupported or unresolved imported formulas | missing | S/formula-cached-fallback.ts:installCachedValueFallbackInterceptor; S/function-registry-probe.ts:installSupportedFunctionProbe | E/workbook-read.ts:parseWorksheetCells; L/workbook-vendor/core/univer-data.ts:univerCellOf | For explicit `<f>…</f>`, local reader emits `value:null` and continues without reading `<v>`; projection emits formula only. No general supported-function probe/cached fallback installer found in main. Thus imported unsupported-function caches are unavailable to that fallback path. External links have their own specialized preserved cache projection (D07) and do not close this general gap. | direct reader/projection inspection; no runtime reproduction claimed |"
+    },
+    {
+      "id": "D08",
+      "domain": "data",
+      "family": "F08 Shared formula follower expansion/materialization",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F08 Shared formula follower expansion/materialization | done_bounded | N/shared_formulas.rs:SharedFormulas.expand/translate_shared_formula; S/shared-formula-index.ts | E/shared-formulas.ts; E/workbook-read.ts:parseWorksheetCells; E/workbook-write.ts:applyCellEdits; L/workbook-vendor/core/session-core.ts:diffToEdits | Explicit shared followers now project as ordinary formulas with relative/$ offsets; a value/formula edit detaches its entire group before rewriting any member. Style-only/unrelated edits retain shared XML. Literal/structured/name/3D/range token guards tested; malformed groups reject instead of becoming constants. Eager model only, no streaming/group-sidecar claim; F07 cached fallback and F09 arrays remain separate. | NATIVE_XLSX_SHARED_FORMULA_ACCEPTANCE_20261114.md: RED→GREEN, 115 engine /126 frontend directed tests, real Univer recalc/undo/redo/save/reopen, 3 independent openpyxl/ZIP artifacts; no desktop Excel/full app browser run |"
+    },
+    {
+      "id": "D09",
+      "domain": "data",
+      "family": "F09 Legacy array formula master/range, dynamic spill, error/null/string cached typing",
+      "status": "unverified",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F09 Legacy array formula master/range, dynamic spill, error/null/string cached typing | unverified | S/formula-null-result.ts; S/formula-values.ts; source tests array-formula-master-save/array-formulas/cached-formula-string-type; source sidecar/gateway | E/workbook-read.ts:ModelCell/parseWorksheetCells; E/workbook-write.ts; L/workbook-vendor/grid/shared-formula-journal.ts | Model does not expose array master/ref ownership as a dedicated field, but no complete writer/structural path comparison was completed. Need fixtures distinguishing untouched retention, editing master, editing follower, dynamic spill resize and typed caches; do not label all array formulas generically broken. F07 remains an independent omission; F08 now has bounded shared-cell acceptance. | static model constraint; per-case runtime/file matrix pending |"
+    },
+    {
+      "id": "D10",
+      "domain": "data",
+      "family": "F10 Automatic/manual calculation, Calculate Now/Sheet, Show Formulas",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F10 Automatic/manual calculation, Calculate Now/Sheet, Show Formulas | done_bounded | S/calc-options.ts; S/formula-view.ts; S/ribbon-actions.ts:handleRibbonCommand | L/workbook-calculation.ts:installCalculation; workbook-main.ts calculation command branch | Automatic/manual command gating, force/workbook/sheet recalc and per-sheet show-formula rendering exist. Manual option is editor state as source, not a claim that workbook calcPr state persists. | static + formula-bar/function acceptance records |"
+    },
+    {
+      "id": "D11",
+      "domain": "data",
+      "family": "F11 Formula settle before save/export; current cache refresh",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F11 Formula settle before save/export; current cache refresh | partial | S/formula-settle.ts:settleFormulas; S/csv-export.ts:handleExportCsv; source save-actions.ts | L/workbook-main.ts:flush/current save path; E/workbook-write.ts | Local waits for `onCalculationResultApplied(30_000)` in flush, but source CSV export flow absent (D03); complete fresh formula-cache persistence across ordinary/volatile/unsupported/shared/array formulas not established. Recalc UI explicitly says calculation results are not saved as edits. General cache limitation F07 applies. | static; full save-cache oracle unverified |"
+    },
+    {
+      "id": "D12",
+      "domain": "data",
+      "family": "F12 Formula closure/large workbook lazy recalc/stream holds",
+      "status": "unverified",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F12 Formula closure/large workbook lazy recalc/stream holds | unverified | S/formula-closure.ts:computeFormulaClosure/closureFetchRanges/recalcReadRanges; S/formula-stream-hold.ts; S/formula-cost.ts | L/workbook-main.ts eager local projection; workbook-formula-trace.ts reuses pure closure analysis | Local formula reference collectors do not establish source streaming/cache/late-cycle orchestration. Need scale/stream lifecycle parity audit rather than a vague “complex formulas” gap. | source helpers inspected; orchestration comparison incomplete |"
+    },
+    {
+      "id": "D13",
+      "domain": "data",
+      "family": "F13 Formula precedents/dependents arrows and clear",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F13 Formula precedents/dependents arrows and clear | done_bounded | S/trace-arrows.tsx:collectPrecedents/collectDependents/installTraceArrows | L/workbook-formula-trace.ts:planFormulaTrace/installFormulaTraceOverlay; workbook-formula-trace-controller.ts | Loaded same-workbook formula-reference collector and arrows exist with generation/selection checks. Defined names/external refs and lazy offscreen dependency completeness are not inferred. | static + NATIVE_XLSX_FORMULA_TRACE_ACCEPTANCE.md |"
+    },
+    {
+      "id": "D14",
+      "domain": "data",
+      "family": "F14 Error Checking",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F14 Error Checking | done_bounded | S/ribbon-actions.ts ERROR_VALUE_PATTERN/error branch; S/error-checking.ts:runStreamedErrorCheck | L/workbook-error-checking.ts:createWorkbookErrorChecking | Scans current sheet's loaded error values, cycles selection and reveals next error; local exact error set avoids prefix false matches. This is error navigation, not formula lint/evaluate stepper. Source streamed sidecar scan not equivalent to local eager path at scale. | static + NATIVE_XLSX_ERROR_CHECKING_ACCEPTANCE.md |"
+    },
+    {
+      "id": "D15",
+      "domain": "data",
+      "family": "F15 Watch Window",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| F15 Watch Window | done_bounded | S/WatchWindowPanel.tsx | L/workbook-watch-window.ts:createWorkbookWatchWindow | Watch UI and current-workbook subscriptions exist. Cross-file watch persistence or Excel-level watch semantics were not claimed by source evidence. | static + NATIVE_XLSX_WATCH_WINDOW_ACCEPTANCE.md |"
+    },
+    {
+      "id": "D16",
+      "domain": "data",
+      "family": "N01 Defined names create/edit/delete; workbook/sheet scopes; create from selection",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| N01 Defined names create/edit/delete; workbook/sheet scopes; create from selection | done_bounded | S/NameManagerDialog.tsx:NameManagerDialog; S/data-tools-actions.ts:handleCreateNamesFromSelection | L/workbook-defined-names.ts:applyDefinedNameAction/definedNamesPlan/createNameManagerDialog; workbook-defined-name-scope.ts:installDefinedNameScopes | Live names and scope-aware formula resolution/writeback exist. Scope immutable after creation matches source. Internal builtins/unprojected names are separately guarded. | static + defined-name removal probes/records |"
+    },
+    {
+      "id": "D17",
+      "domain": "data",
+      "family": "N02 Defined-name removal/sheet deletion interactions",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| N02 Defined-name removal/sheet deletion interactions | done_bounded | S/sheet-rename-fix.ts and G/gateway/xlsx-defined-names.ts | L/workbook-defined-name-removal.ts:assertDefinedNameSheetRemoval; workbook-defined-name-scope.ts | Local explicitly checks owned and referenced scope removal, keeping unsupported/unprojected names safe. This is a bounded preservation contract, not arbitrary name-expression equivalence. | static; built smoke source files present, no rerun |"
+    },
+    {
+      "id": "D18",
+      "domain": "data",
+      "family": "N03 Find/replace builtin navigation and mutation preflight",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| N03 Find/replace builtin navigation and mutation preflight | partial | S/FindReplacePanel.tsx:FindReplacePanel; S/find-replace-session.ts | L/workbook-find-replace.ts:validateWorkbookReplacement/workbookReplacementCommand; workbook-vendor/grid/sync.ts; workbook-main.ts official find preset | Official 0.25.1 preset is installed and replacements preflight scope/budget. Rich-text replacements explicitly rejected; source custom draggable panel, live IME-safe searches, session-matched Find All results and its detailed options were not migrated as that component. Exact stock UI equivalent coverage remains unverified, so panel absence alone is not proof every option is missing. | static; no full source/custom-vs-stock interaction matrix |"
+    },
+    {
+      "id": "D19",
+      "domain": "data",
+      "family": "N04 Name Box, Go To, cross-sheet A1/range/whole axis/scoped names, scroll/focus",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| N04 Name Box, Go To, cross-sheet A1/range/whole axis/scoped names, scroll/focus | done_bounded | S/goto.ts:resolveGoToRef/isA1Reference; S/GoToDialog.tsx; S/data-tools-actions.ts:goToReference | L/workbook-goto.ts:resolveGoToRef/createGoToDialog; workbook-goto-reveal.ts; workbook-main.ts | Source A1 parsing and bounded references ported; focus handoff and reveal below freeze implemented. Formula-valued names such as OFFSET are deliberately not Go To targets in source too. | static + NATIVE_XLSX_GOTO_SCROLL_ACCEPTANCE.md |"
+    },
+    {
+      "id": "D20",
+      "domain": "data",
+      "family": "D01 CSV/TSV/text import to selection",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D01 CSV/TSV/text import to selection | partial | S/data-tools-actions.ts:handleImportCsv/importCsvText; G/gateway/csv-import.ts:decodeCsvBuffer | L/workbook-import-csv.ts:openWorkbookCsvImport/importCsvIntoSelection; workbook-vendor/grid/csv-import.ts | 32 MiB, 50k cells, numeric conversion and UTF encodings exist; current local decoder fallback is fixed `gb18030`, whereas source uses `CSV_CHARSET_BY_LANG[getLang()]`. Chinese-localized path bounded done; full locale legacy encoding selection is a concrete remaining delta. | static + docs/parity/2026-11-11-workbook-csv-import.md historical browser/save record |"
+    },
+    {
+      "id": "D21",
+      "domain": "data",
+      "family": "D02 CSV open-as-workbook / original CSV session Save behavior",
+      "status": "missing",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D02 CSV open-as-workbook / original CSV session Save behavior | missing | S/App.tsx CSV session; apps/sheets/src/main/sheets-main.ts:prepareWorkbookForOpen/openWorkbookSession; G/csv-import.ts | L/workbook-import-csv.ts; P/workbook.py native XLSX revision route | Root/storage review resolved the handoff: local imports CSV into an existing XLSX selection, without standalone CSV/TSV identity/save-back. Same work package as storage S11; do not double-count implementation effort. | current static host tracing, storage.md S11 |"
+    },
+    {
+      "id": "D22",
+      "domain": "data",
+      "family": "D03 Export active sheet to CSV display text",
+      "status": "missing",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D03 Export active sheet to CSV display text | missing | S/csv-export.ts:serializeActiveSheetCsv/handleExportCsv/withoutFormulaView | L/workbook-main.ts; workbook-ribbon.ts | No local native CSV export command/serializer/download found. Source waits calculation, serializes display values, applies formats and RFC quoting; source formula-view is suppressed while reading values. Existing XLSX save/download is not this capability. | source implementation + local command/identifier search |"
+    },
+    {
+      "id": "D23",
+      "domain": "data",
+      "family": "D04 Merge workbooks",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D04 Merge workbooks | done_bounded | S/merge-workbooks.ts:mergeSourcesIntoCurrent/mergeWorkbooksIntoCurrent/dedupeSheetName | L/workbook-merge.ts:createWorkbookMergePlan/openWorkbookMergeAction/dedupeMergedSheetName | Source copy-as-values sheet merge equivalent exists with stable sheet names, atomic draft load/rollback; local source formulas require usable caches, preserves bounded styles. 20 files/32 MiB each/64 MiB total/100k cells are explicit local bounds. Whole unrelated graphs/charts/pivots/macros migration not implied by source merge. | static; merge acceptance records in docs/parity (root may consolidate) |"
+    },
+    {
+      "id": "D24",
+      "domain": "data",
+      "family": "D05 Queries & Connections metadata, destination navigation",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D05 Queries & Connections metadata, destination navigation | done_bounded | S/QueriesDialog.tsx:QueriesDialog; source grid query reader | L/workbook-queries.ts:createWorkbookQueriesDialog; workbook-queries-reader.ts:readWorkbookQueries/canonicalPart | PowerQuery/Web/text/database/other metadata list, connection-only entries and loaded destination navigation implemented; sanitized sources and hidden credentials. Readonly dialog does not imply source has no separate refresh flow (D06). | static + docs/parity/2026-11-11-workbook-queries.md |"
+    },
+    {
+      "id": "D25",
+      "domain": "data",
+      "family": "D06 Refresh supported web query connection",
+      "status": "missing",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D06 Refresh supported web query connection | missing | S/App.tsx:refreshQueryConnection (`query-refresh:<id>`); G/gateway/xlsx-connection-refresh.ts:refreshableQueriesOf/connectionSourceOf/planTableRefresh | L/workbook-queries.ts readonly note; workbook-main.ts `queries-open` and pivot-only `refresh-all` | Pinned source has a distinct web connection refresh action via desktop host. It writes fetched typed rows into fixed writable target, preserves ListObject header/totals, clears stale trailing rows and reports clipping. Local has metadata only and no fetch/plan/refresh action. This is a real source gap despite readonly QueriesDialog. | explicit source flow and local search; runtime pending |"
+    },
+    {
+      "id": "D26",
+      "domain": "data",
+      "family": "D07 External Links list/Update/Break/retarget/Locate",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D07 External Links list/Update/Break/retarget/Locate | partial | S/ExternalLinksPanel.tsx; S/external-links-flow.ts:updateExternalLinksFlow/breakExternalLinkFlow; G/gateway/xlsx-external-links.ts | L/workbook-external-links.ts:createWorkbookExternalLinks; workbook-external-links-host.ts:calculateExternalUpdates/evaluateExternalFormula/installExternalFormulaCaches; E/external-links.ts:applyExternalLinkOperation | Shipped: non-probing list, authorized XLSX retarget, update supported scalar/range expressions via Univer, typed caches, Break with renumber/removal, Undo/Redo/draft/save. Browser Locate shows authorized file/SHA, source OS reveal is host substitution. Do NOT repeat stale “Update/Break/redirect missing”. Remaining concrete update domain: source formulas requiring uncomputed source formulas, shared/array/dataTable refs, external names/3D, shape-dependent functions and array/errors are skipped; bindings require reauthorization after new revision. Break rejects unsupported reference owners. | static + NATIVE_XLSX_EXTERNAL_LINKS_SOURCE_ACCEPTANCE_20261113.md; r1 browser full control path save failed422, continuation reconstructed equivalent draft saved/downloaded/reopened; preserve this two-stage evidence limit |"
+    },
+    {
+      "id": "D27",
+      "domain": "data",
+      "family": "D08 Arbitrary Power Query/M evaluation, DB connection refresh, query destination auto-growth",
+      "status": "source_boundary",
+      "evidenceFile": "data.md",
+      "sourceRow": "| D08 Arbitrary Power Query/M evaluation, DB connection refresh, query destination auto-growth | source_boundary | S/QueriesDialog.tsx comments; G/gateway/xlsx-connection-refresh.ts:planTableRefresh; S/App.tsx:refreshQueryConnection clipping | L/workbook-queries.ts readonly | Pinned source's found live refresh is bounded web-table refresh into fixed existing range. No full PowerQuery or generic DB execution established; source explicitly says destination growth out of scope. Do not charge these as proven local misses. | inspected pinned source boundary |"
+    },
+    {
+      "id": "D28",
+      "domain": "data",
+      "family": "T01 Asc/desc and three-level Custom Sort",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T01 Asc/desc and three-level Custom Sort | done_bounded | S/ribbon-actions.ts:sort/sort-custom; S/ExcelShell.tsx:SortDialog; S/App.tsx:sortColumnOptions | L/workbook-sort-dialog.ts:createSortDialog/sortOrderRules; workbook-main.ts sort dispatch | Three levels, header flag, first26 column choices, official sort command and mutation save diff present. These are source UI bounds. | static; real-stack numeric sort record in vendor SOURCE.md |"
+    },
+    {
+      "id": "D29",
+      "domain": "data",
+      "family": "T02 Relative formulas/shared groups after sort",
+      "status": "missing",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T02 Relative formulas/shared groups after sort | missing | S/sort-formula-refs.ts:installSortFormulaRefs/sortFormulaPatches | L/workbook-main.ts official sort command; no corresponding installer found | Source explicitly patches moved formulas with row-relative offsets and materializes affected shared groups, integrating undo. Local calls stock sort without that interceptor. Remaining behavior: D2 `=B2*C2` moved to D21 must become `=B21*C21`; shared followers must preserve visible pre-sort expression then offset. | source implementation + exhaustive local identifier search; no runtime defect reproduction |"
+    },
+    {
+      "id": "D30",
+      "domain": "data",
+      "family": "T03 Filter toggle/clear/reapply; values/custom/date group persistence",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T03 Filter toggle/clear/reapply; values/custom/date group persistence | done_bounded | S/ribbon-actions.ts filter branches; source large-filter state | L/workbook-filters.ts:withWorkbookFilters/workbookFilterOperations; workbook-main.ts filter branches | Official filter preset and persisted criteria/hidden rows exist. Imported unsupported filters are guarded. Scale-specific large streaming source filter completeness is separate unverified orchestration (F12). | static; advanced filter records |"
+    },
+    {
+      "id": "D31",
+      "domain": "data",
+      "family": "T04 Advanced Filter two conditions per field, AND/OR",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T04 Advanced Filter two conditions per field, AND/OR | done_bounded | S/AdvancedFilterDialog.tsx:buildCustomFilters; S/data-tools-actions.ts:handleApplyAdvancedFilter | L/workbook-advanced-filter.ts:installAdvancedFilter; workbook-advanced-filter-preflight.ts | Source's minimal custom-filter dialog implemented with existing filter state, atomic rollback, snapshot/generation checks, Undo/Redo and real save. This is not Excel arbitrary criteria-range/copy-to/unique-records Advanced Filter; source does not establish those extra modes. | static + NATIVE_XLSX_ADVANCED_FILTER_ACCEPTANCE.md and smoke .md final03/PC records |"
+    },
+    {
+      "id": "D32",
+      "domain": "data",
+      "family": "T05 Remove duplicates",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T05 Remove duplicates | done_bounded | S/ribbon-actions.ts remove-duplicates; S/dedupe.ts:dedupeRows | L/workbook-dedupe.ts:planWorkbookDedupe/createDedupeDialog; workbook-vendor/core/dedupe.ts | Whole-row case-insensitive compare, optional header, first occurrence preserved, tail cleared, moved formulas become values. Local2000 cell budget explicit. Arbitrary comparison-column checkbox feature not present in source dialog. | static + NATIVE_XLSX_DEDUPE_ACCEPTANCE.md |"
+    },
+    {
+      "id": "D33",
+      "domain": "data",
+      "family": "T06 Text to Columns",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T06 Text to Columns | done_bounded | S/ribbon-actions.ts:text-to-columns | L/workbook-text-to-columns.ts:planWorkbookTextToColumns | Delimiter split of selected single column exists; local bounded to2000 result cells and rejects formula/rich/merged/occupied destination. No source fixed-width wizard established. | static; runtime pending current tree |"
+    },
+    {
+      "id": "D34",
+      "domain": "data",
+      "family": "T07 Flash Fill",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T07 Flash Fill | done_bounded | S/ribbon-actions.ts:flash-fill; G/domain/flash-fill.ts | L/workbook-flash-fill.ts:planWorkbookFlashFill | Source bounded field concatenation inference, up to6 columns left and1000 row probe, only empty target filling. Substring/case transforms absent in local/source inferred template contract, not generic missing Excel parity. | static |"
+    },
+    {
+      "id": "D35",
+      "domain": "data",
+      "family": "T08 Row/column outlines, group/ungroup, levels/gutter/detail, summary direction, shortcuts",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T08 Row/column outlines, group/ungroup, levels/gutter/detail, summary direction, shortcuts | done_bounded | S/data-tools-actions.ts:handleOutline; S/outline-actions.ts; S/outline-gutter.ts | L/workbook-outline.ts:applyWorkbookOutline/toggleWorkbookOutlineGroup/showWorkbookOutlineLevel; workbook-outline-gutter.ts; workbook-outline-shortcuts.ts | Local axis metadata, groups, collapse/expand, summaryBelow/Right, gutter and shortcuts all present; saves outline state alongside filter-aware hidden state. | static; outline GUI runner + subtotal/filter evidence |"
+    },
+    {
+      "id": "D36",
+      "domain": "data",
+      "family": "T09 Subtotal",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T09 Subtotal | done_bounded | S/SubtotalDialog.tsx:SubtotalConfig; S/data-tools-actions.ts:handleCreateSubtotal | L/workbook-subtotal.ts:planSubtotal/installSubtotal; workbook-subtotal-preflight.ts | Source one grouping column, one value column, sum/count/average, adjacent groups, SUBTOTAL formulas and outline is implemented atomically; local200 groups bound. Multiple subtotal value columns/nested replace-existing variants not established by pinned source dialog. | static + NATIVE_XLSX_SUBTOTAL_ACCEPTANCE.md; smoke final build historical exit0/save3/independent readback |"
+    },
+    {
+      "id": "D37",
+      "domain": "data",
+      "family": "T10 Consolidate",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| T10 Consolidate | done_bounded | S/consolidate.ts:buildPositionMatrix/buildLabelMatrix; S/data-tools-actions.ts:handleCreateConsolidate | L/workbook-consolidate.ts:applyConsolidate/parseConsolidateReference | Sum/count/average/max/min by position and supported left labels, same-workbook references, formulas and overlap checks; max/min left-label disabled consistent source bounded algorithm. External workbook consolidation/top-label/create-link Excel variants not established. | static + consolidate built smoke record |"
+    },
+    {
+      "id": "D38",
+      "domain": "data",
+      "family": "W01 Goal Seek",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| W01 Goal Seek | done_bounded | S/goal-seek.ts; S/GoalSeekDialog.tsx | L/workbook-goal-seek.ts:installGoalSeek; workbook-goal-seek-dialog.ts | One target formula cell and one mutable numeric input, asynchronous recalc, rollback/cancellation and undo implemented. Arbitrary Solver optimization not implied. | static; analysis smoke runner exists, no new run |"
+    },
+    {
+      "id": "D39",
+      "domain": "data",
+      "family": "W02 One/two-variable Data Table",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| W02 One/two-variable Data Table | done_bounded | S/data-table.ts:planDataTable/MAX_DATA_TABLE_CELLS; S/DataTableDialog.tsx | L/workbook-data-table.ts:planDataTable/installDataTable | Column,row,grid substitution and10k results limit; writes static result values, restores input cells, one undo. Source itself does not store live Excel TABLE array formulas. | static |"
+    },
+    {
+      "id": "D40",
+      "domain": "data",
+      "family": "W03 Live TABLE formulas/Scenario Manager/Solver",
+      "status": "source_boundary",
+      "evidenceFile": "data.md",
+      "sourceRow": "| W03 Live TABLE formulas/Scenario Manager/Solver | source_boundary | S/data-table.ts file header (no TABLE executor/journal array channel); source renderer/DSL tree | L/workbook-data-table.ts static values | Live TABLE refresh is explicitly absent source. No Scenario Manager or Solver executable source entry found in pinned tree/commands inspected. These are source boundaries, not confirmed local migration backlog. | explicit source TABLE boundary; negative source tree/command inspection for Scenario/Solver |"
+    },
+    {
+      "id": "D41",
+      "domain": "data",
+      "family": "P01 Create/edit pivot, row/column axes, multi-values, named table source",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P01 Create/edit pivot, row/column axes, multi-values, named table source | done_bounded | S/pivot-actions.ts:handleCreatePivot; G/domain/pivot-layout.ts:buildPivotLayout; G/gateway/xlsx-pivot-add.ts | L/workbook-pivot.ts:createPivotPlan/editPivotPlan/additionFor; workbook-pivot-pane.tsx | Real table/cache/records/output graph, multi-row/column axes and multi-values now implemented; dynamic table source and source rename tracking exist. Local10k rows/200 cols/8 values/at least1 row axis bounds explicit. Older WORKBOOK_PIVOT introductory “single value with columns” and “fixed range only” prose is superseded by current code/status. | static + NATIVE_XLSX_PIVOT_PROTECTION_STATUS.md subsequent table-source records |"
+    },
+    {
+      "id": "D42",
+      "domain": "data",
+      "family": "P02 Report filters, date/range grouping, calculated fields, label/value filters, manual members",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P02 Report filters, date/range grouping, calculated fields, label/value filters, manual members | done_bounded | S/PivotFieldPane.tsx:FieldSettingsDialog/ValueFilterFields; G/domain/pivot-layout.ts:buildPivotLayout | L/workbook-pivot-pane.tsx:pivotPaneModel/pivotPaneConfig; workbook-pivot.ts; E/pivot-layout.ts | All implemented for owned/reconstructable pivot state, with standard group caches where representable and private compatibility metadata otherwise. Source fields/grouping/filter rules bounded. Do not keep generic “report filters/grouping/calculated fields missing”. | static + pivot protection status and plan records |"
+    },
+    {
+      "id": "D43",
+      "domain": "data",
+      "family": "P03 Additional pivot aggregation modes",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P03 Additional pivot aggregation modes | done_bounded | S/PivotFieldPane.tsx:AGG_OPTIONS (11 enabled); G/domain/pivot-layout.ts:aggregate; G/domain/pivot-value-modes.ts | L/vendor/genoffice-sheets-pivot/PivotFieldPane.tsx:AGG_OPTIONS; L/workbook-pivot.ts:readWorkbookPivots; E/pivot-value-modes.ts; E/pivot-layout.ts; E/pivot-add.ts | Added product,countNums,stdDev,stdDevp,var,varp across computation, shared type/captions, owned-state schema, OOXML subtotal, foreign reader and UI. Source numeric coercion/empty semantics retained; sample n<2 is null (Excel error differs). Calculated fields remain sum-only. ShowAs/base fields P04 stay open; P05 has subsequent bounded caption acceptance. | NATIVE_XLSX_PIVOT_AGGREGATIONS_ACCEPTANCE_20261114.md: 66 engine /109 unique frontend directed tests, 600 fixed-source comparisons, 6 real browser downloads/reopen modes + independent statistics/openpyxl/XML readback; isolated host harness |"
+    },
+    {
+      "id": "D44",
+      "domain": "data",
+      "family": "P04 Additional pivot Show Values As/base field/base item",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P04 Additional pivot Show Values As/base field/base item | partial | S/PivotFieldPane.tsx:SHOW_AS_OPTIONS/ValueSettingsDialog; G/domain/pivot-layout.ts; G/domain/pivot-value-modes.ts; MS-XLSX CT_DataField | L/workbook-pivot.ts; L/workbook-pivot-pane.tsx; L/workbook-pivot-dialog.ts; E/pivot-layout.ts; E/pivot-add.ts; E/pivot-show-as.ts; E/pivot-base-read.ts | All14 modes plus normal now compute/persist with base field/item labels and indexes, native percent spelling and six canonical x14 modes (no core showDataAs alongside x14). Foreign item indirection/display order preserved; group reset/ties/hidden members and grouped/1904 picker supported. Explicit General writes id0 and survives foreign refresh. Still guarded/unimplemented: raw foreign d/e cache base-item projection and unverifiable running order; unspecified legacy foreign format inheritance not exhaustively aligned. Previous/next sentinels and OLAP sourceField remain source/host boundaries. | NATIVE_XLSX_PIVOT_BASE_MODES_ACCEPTANCE_20261114.md:93 engine/110 frontend,strict TS,1600 source numeric matrices,9 actual browser downloads/reopens + independent openpyxl/XML; P04 remains partial due explicit foreign projection/format limits |"
+    },
+    {
+      "id": "D45",
+      "domain": "data",
+      "family": "P05 Custom pivot value caption",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P05 Custom pivot value caption | done_bounded | S/PivotFieldPane.tsx:ValueSettingsDialog `name`; S/pivot-actions.ts:pivotEditInitial; G/domain/pivot-layout.ts:buildPivotLayout value `name` | L/workbook-pivot-pane.tsx:pivotPaneConfig; L/workbook-pivot.ts:readWorkbookPivots; E/pivot-layout.ts; E/pivot-add.ts | Custom name now propagates from enabled pane input through config, layout/definition, owned state, dataField XML and foreign reader. Refresh/edit retain name; blank input restores default. Repeated captions follow fixed-source numeric suffix behavior, not a claim of universal collision disambiguation. | NATIVE_XLSX_PIVOT_CAPTIONS_ACCEPTANCE_20261114.md: RED3→GREEN,35 engine/75 frontend, strict TS, real browser custom/reset downloads and independent openpyxl/XML; full server chain not run |"
+    },
+    {
+      "id": "D46",
+      "domain": "data",
+      "family": "P06 Refresh current formula-based pivot source",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P06 Refresh current formula-based pivot source | partial | S/pivot-actions.ts:handleRefreshPivot/handleRefreshAllPivots (reads current runtime source) | L/workbook-pivot.ts:refreshWorkbookPivotsPlan | Literal source growth/shrink refresh exists. Local rejects ANY source formula including raw self-closing shared followers because it cannot establish fresh result. Remaining source parity: obtain settled live formula results and feed typed current values without accepting stale cached workbook data. | explicit current refusal + source refresh flow |"
+    },
+    {
+      "id": "D47",
+      "domain": "data",
+      "family": "P07 Import externally-authored advanced pivots, aggregates/display modes, unknown controls",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P07 Import externally-authored advanced pivots, aggregates/display modes, unknown controls | partial | G/gateway/xlsx-pivot.ts:parsePivotDefinition; G/domain/pivot-engine.ts:recomputePivotData/growPivotDefinition; S/pivot-actions.ts | L/workbook-pivot.ts:readWorkbookPivots `unsupported`/readonlyReason | Basic external OOXML pivots can edit. Without owned state, local refuses report fields, fieldGroup/formulas, pivot filters/hidden members, unsupported formats, malformed or unrepresentable ShowAs/base references. All11 aggregates and14 regular ShowAs modes now have importer mappings; raw date/error base-cache projection and unverifiable running order remain guarded. Source engine actually reads/recomputes advanced definitions; source itself still has compact/outline/blank-line auto-growth boundaries. Need individual importer mappings, not a broad “complex pivot” label. | direct reader condition and source engine comparison |"
+    },
+    {
+      "id": "D48",
+      "domain": "data",
+      "family": "P08 Shared cache isolation, table binding/rename/field rename protection",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P08 Shared cache isolation, table binding/rename/field rename protection | done_bounded | G/gateway/xlsx-pivot-expand.ts; S/pivot-source.ts; source structural/table operations | E/pivot-expand.ts; L/workbook-table-pivot-source.ts; workbook-pivot.ts; workbook-table-headers.ts | Owned/reconstructable shared cache edit clones cache/records preserving sibling; table name case/rename and field rename handled with dependent guards. Not a claim for arbitrary external grouped/OLAP caches. | static + pivot status historical readback/browser records |"
+    },
+    {
+      "id": "D49",
+      "domain": "data",
+      "family": "P09 Slicer member and timeline range filter UI",
+      "status": "done_bounded",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P09 Slicer member and timeline range filter UI | done_bounded | S/SlicerPanel.tsx:SlicerFieldPicker/SlicerPanels; S/TimelinePanel.tsx; S/pivot-actions.ts:handleOpenSlicerPicker/handleOpenTimelinePicker | L/workbook-pivot-filters.ts; workbook-pivot-filters-dialog.ts; workbook-pivot-controls.ts; E/pivot-controls.ts; E/pivot-add.ts | Row/column/report-filter dimensions now project members and eligible dates. Page selection persists through pageFilters, full selection clears it, modal/overlay restore selection; native cache and timeline refresh use page indexes. Refresh retains surviving selected members; zero intersection remains explicit refusal. Grouped fields and unknown native controls remain guarded. | NATIVE_XLSX_PIVOT_PAGE_CONTROLS_ACCEPTANCE_20261114.md:66 unique frontend/67 engine, strict TS,3 actual browser downloads/reopen + independent openpyxl/native XML; no desktop Excel/full server/provider claim |"
+    },
+    {
+      "id": "D50",
+      "domain": "data",
+      "family": "P10 Native slicer/timeline OOXML persistence",
+      "status": "source_boundary",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P10 Native slicer/timeline OOXML persistence | source_boundary | S/SlicerPanel.tsx TODO(OOXML persistence); S/TimelinePanel.tsx header | E/pivot-controls.ts:upsertPivotControl/syncOwnedPivotControls/readPivotControls/removePivotControl; L/workbook-pivot-controls.ts:installPivotControlOverlay | Pinned source controls exist in session only; only hidden members/output persist. Therefore missing native control persistence cannot be called a source migration gap. Local additionally writes owned native parts/caches/relationships/drawing anchors and supports canvas edit geometry. Unknown external/native/OLAP controls remain readonly. | explicit pinned source TODO + local implementation; historical pivot status ZIP/browser checks; desktop Excel compatibility unverified |"
+    },
+    {
+      "id": "D51",
+      "domain": "data",
+      "family": "P11 Native Excel application behavior of owned controls/groupings",
+      "status": "unverified",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P11 Native Excel application behavior of owned controls/groupings | unverified | P10 source boundary; no native source claim | E/pivot-controls.ts; E/pivot-grouping.ts | Independent XML/openpyxl and browser evidence does not prove real desktop Excel interaction/repair-free open across control/grouping variants. This is verification work, not an absent local implementation. | pivot status explicitly says desktop Excel not tested |"
+    },
+    {
+      "id": "V01",
+      "domain": "visuals",
+      "family": "V01 Chart families insert/read/edit",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V01 Chart families insert/read/edit | done_bounded | `E/chart-add.ts`, `chart-read.ts`, `chart-edit.ts`; `F/workbook-chart-add.ts` | `G/gateway/xlsx-drawing-add.ts`, `xlsx-chart.ts`; `S/visual-actions.ts` | Column/bar/line/area/pie/doughnut/scatter/radar/bar+line combo have explicit paths. Existence is not full rendering parity; family details below. | C; H chart insert/selection acceptance |"
+    },
+    {
+      "id": "V02",
+      "domain": "visuals",
+      "family": "V02 Chart object select/move/resize/delete",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V02 Chart object select/move/resize/delete | done_bounded | `F/workbook-chart-selection.ts`, `workbook-chart-object-interaction.ts`; `E/chart-anchor.ts`, `chart-delete.ts` | `S/WorkbookVisuals.tsx:ChartVisual,isEditableChart`; `G/gateway/xlsx-drawing-edit.ts` | Bounded chart anchor ownership/geometry and cascading delete implemented; mixed chart/image/shape arrangement not covered. | C; historical geometry acceptance available |"
+    },
+    {
+      "id": "V03",
+      "domain": "visuals",
+      "family": "V03 Format pane dynamic series/point controls",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V03 Format pane dynamic series/point controls | done_bounded | `F/workbook-chart-format-pane.tsx:createWorkbookChartFormatPane`, `workbook-chart-element-hit.ts` | `S/ChartPanels.tsx:ChartFormatPane,chartFamily` | Core listed source controls present; local chooser exposes up to 1000 points. Selection-to-control and surgical edit paths implemented. Renderer fidelity of chosen settings remains separate. | C; H `NATIVE_XLSX_CHART_FORMAT_SOURCE_ACCEPTANCE_20261113.md` referenced |"
+    },
+    {
+      "id": "V04",
+      "domain": "visuals",
+      "family": "V04 Select Data and combo plot/axis editing",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V04 Select Data and combo plot/axis editing | done_bounded | `F/workbook-chart-data-dialog.ts`; `E/chart-edit.ts` | `S/ChartPanels.tsx:SelectDataDialog`; `G/domain/chart-visual.ts:transposeChartSeries,comboSeriesSetDefaults` | Series replace/repoint/add/remove/reorder/switch, combo plot/secondary axis exist. Exotic family restrictions below. | C; historical Select Data/combo acceptance |"
+    },
+    {
+      "id": "V05",
+      "domain": "visuals",
+      "family": "V05 Recommended charts",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V05 Recommended charts | done_bounded | `F/workbook-recommended-charts-dialog.tsx`; `E/chart-recommend.ts` | `S/RecommendedChartsDialog.tsx`; `G/domain/chart-recommend.ts` | Source-derived recommendation controls/previews exist; no fresh native insertion execution in this audit. | C/I; historical recommended acceptance |"
+    },
+    {
+      "id": "V06",
+      "domain": "visuals",
+      "family": "V06 Chart preset/layout/color actions",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V06 Chart preset/layout/color actions | done_bounded | `F/workbook-chart-presets.ts:chartPresetEdit,chartPresetMenuOptions`, `workbook-chart-design-dialog.ts` | `S/WorkbookVisuals.tsx:ChartEditor`; source ribbon/app chart edits | Basic editable type/title/colors/layout path exists; full source contextual ribbon registry reviewed by root. | C/I |"
+    },
+    {
+      "id": "V07",
+      "domain": "visuals",
+      "family": "V07 Line/Radar series line stroke",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V07 Line/Radar series line stroke | done_bounded | `F/workbook-vendor/grid/chart-render.ts:seriesStroke,nearStroke,drawChart`; `E/chart-read.ts:sourceLine` | `S/WorkbookVisuals.tsx:lineStroke,LineChart,RadarChart` | Current uncommitted work already honors independent line color/width/noFill/zero, defaults Line 3 / Radar 2.5, width-aware line/radar hits. Do not reopen as missing. Area/combo and marker gaps remain distinct. | C+H new 20261114 acceptance: final directed 174 tests; targeted browser pixel/mouse evidence with explicit fixture limits |"
+    },
+    {
+      "id": "V08",
+      "domain": "visuals",
+      "family": "V08 Scatter first-series label fallback",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V08 Scatter first-series label fallback | done_bounded | `E/chart-read.ts`; `chart-edit.ts`; `F/workbook-chart-format-pane.tsx`, `workbook-chart-design-dialog.ts` | `N/visuals/charts.rs:root/first-series labels`, `S/WorkbookVisuals.tsx:ScatterChart` | Current uncommitted fallback delivered; root absent/none falls back only first series; value-only effective rendering; off conditionally rejected to preserve source overrides. Not a missing fallback. | C+H new Scatter acceptance: bounded engine/UI/browser and independent downloaded XML readback, no production-chain claim |"
+    },
+    {
+      "id": "V09",
+      "domain": "visuals",
+      "family": "V09 Source grouping render (stacked / percent stacked)",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V09 Source grouping render (stacked / percent stacked) | partial | `F/workbook-vendor/grid/chart-render.ts:drawChart` | `S/WorkbookVisuals.tsx:BarChart,LineChart,AreaChart` | Ordinary multi-series bar/column now honors positive stacked/percentStacked lanes, totals/domains, percent ticks, raw centered labels and point identity; see ../NATIVE_XLSX_STACKED_BAR_ACCEPTANCE_20261114.md (175 tests + four native Canvas/download scenes). Line/Area/Combo grouping remains open; full manual-domain/axis combinations unverified. | bounded continuation evidence; historical whole-family absence superseded |"
+    },
+    {
+      "id": "V10",
+      "domain": "visuals",
+      "family": "V10 Line markers (visibility/shape/colors)",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V10 Line markers (visibility/shape/colors) | partial | `F/workbook-vendor/grid/chart-render.ts:drawChart` line branch; `E/chart-read.ts:marker` | `S/WorkbookVisuals.tsx:LineChart,MarkerGlyph` | Local draws a filled 2.5px circle for every line point, even `marker:none`; source suppresses none/unset unless plot flag on, cycles automatic glyphs and renders explicit glyphs, aligns marker color with line stroke. Local reader lacks plot-level `lineMarkers` projection. | C confirmed |"
+    },
+    {
+      "id": "V11",
+      "domain": "visuals",
+      "family": "V11 Scatter marker style",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V11 Scatter marker style | partial | `F/workbook-vendor/grid/chart-render.ts` scatter branch | `S/WorkbookVisuals.tsx:ScatterChart` | Both source/local use circles and respect marker none; arbitrary scatter marker glyphs are NOT a pinned feature. Confirmed style difference: source radius 4 (selected 6), opacity .85, series fill and selected green stroke; local radius 2.5, opaque point color and no corresponding source point-highlight stroke. | C explicit glyph assumption corrected |"
+    },
+    {
+      "id": "V12",
+      "domain": "visuals",
+      "family": "V12 Blank line modes",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V12 Blank line modes | partial | `F/workbook-vendor/grid/chart-render.ts:numberSlotsOf,drawChart`; `E/chart-read.ts` | `S/WorkbookVisuals.tsx:lineSegments,LineChart,BarChart` | Local always breaks contiguous line runs on null; source gap/span/zero (default zero) semantics differ. Local reader does not project `dispBlanksAs`/source blanks flags. Combo also breaks nulls irrespective source mode. | C confirmed |"
+    },
+    {
+      "id": "V13",
+      "domain": "visuals",
+      "family": "V13 Unequal-length line series normalization",
+      "status": "source_boundary",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V13 Unequal-length line series normalization | source_boundary | `F/workbook-vendor/grid/chart-render.ts` line point x calculation | `S/WorkbookVisuals.tsx:LineChart` | Both normalize connecting line x by each series own length. Source category ticks use primary count, but that does not justify calling local per-series normalization a missing capability. | C explicit contradiction checked |"
+    },
+    {
+      "id": "V14",
+      "domain": "visuals",
+      "family": "V14 Combo line style/labels/hits",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V14 Combo line style/labels/hits | partial | `F/workbook-vendor/grid/chart-render.ts` combo branch | `S/WorkbookVisuals.tsx:BarChart` combo line structures | Local hardcodes line width 1.5 and `chartPointColor(...,0)`, ignoring independent lineColor/width/noFill; no source marker glyph rendering; combo branch returns without data labels or trendline rendering, and registers point hits but no line segment series hit. Source combo path uses lineStroke, width, markers, blank modes, labels, trendlines. | C confirmed |"
+    },
+    {
+      "id": "V15",
+      "domain": "visuals",
+      "family": "V15 Radar visual semantics",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V15 Radar visual semantics | partial | `F/workbook-vendor/grid/chart-render.ts` radar branch | `S/WorkbookVisuals.tsx:RadarChart` | Local adds point circles and all-series `paintLineDataLabels`; source polygon-only geometry and first-series value labels. Source category labels truncate to 8 characters; local uses full labels. Recent outline fix does not close these independent differences. Source itself caps 3–12 spokes and auto-scales; do not demand arbitrary spokes/value-axis bounds as pinned parity. | C confirmed |"
+    },
+    {
+      "id": "V16",
+      "domain": "visuals",
+      "family": "V16 Area rendering",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V16 Area rendering | partial | `F/workbook-vendor/grid/chart-render.ts` area branch | `S/WorkbookVisuals.tsx:AreaChart` | Local fill .35/outline 1.5 versus source .75 stacked/.35 ordinary with 2/2.5 outlines; local area fills descend to plot bottom, while source ordinary fill uses the zero baseline when negative data exists. Grouping, blank/stack semantics and selected-series rendering differ. Source area outlines themselves use fill/series colors; **independent area lineColor is not a pinned feature**. | C confirmed |"
+    },
+    {
+      "id": "V17",
+      "domain": "visuals",
+      "family": "V17 Linear trendline rendering",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V17 Linear trendline rendering | missing | No trendline field in `E/chart-read.ts`; no draw path in `F/workbook-vendor/grid/chart-render.ts` | `S/WorkbookVisuals.tsx:TrendLine,LineChart,BarChart` | Imported `series.trendline==='linear'` draws source dashed regression line; local does not project or paint it. Do not broaden to polynomial/exponential/error-bars absent source proof. | C confirmed |"
+    },
+    {
+      "id": "V18",
+      "domain": "visuals",
+      "family": "V18 Legend line swatches, scatter/radar legend",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V18 Legend line swatches, scatter/radar legend | partial | `F/workbook-vendor/grid/chart-legend.ts:paintChartLegend`; `chart-render.ts:hasSeriesLegend` | `S/WorkbookVisuals.tsx:SeriesLegend,legendUsesLineSwatches,legendSwatchColor,ChartVisual` | Local swatches use fill colors even when line stroke differs. Scatter/radar excluded entirely from local legend call; source general nonpie legend includes their series when enabled. Local existing position/hidden entries/overlay/name logic remains real progress. | C confirmed |"
+    },
+    {
+      "id": "V19",
+      "domain": "visuals",
+      "family": "V19 Chart area/text/theme fidelity",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V19 Chart area/text/theme fidelity | partial | `F/workbook-vendor/grid/chart-render.ts:drawChart`, axis/legend modules; `E/chart-read.ts` | `S/WorkbookVisuals.tsx:ChartVisual,useChartTextBox,chartTextStyle`; `chart-text-scale.ts` | Frame hardcoded white/gray, title hardcoded 11px system-ui left alignment, labels/fonts largely fixed; source chartAreaFill/derived ink and scale-aware chart/axis text runs/rotations/formatting aren't fully represented. Existing axis/label read support is bounded, not absent. | C confirmed family gap; full field-by-field font inventory unverified |"
+    },
+    {
+      "id": "V20",
+      "domain": "visuals",
+      "family": "V20 Chart axes/data labels basic",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V20 Chart axes/data labels basic | done_bounded | `F/workbook-vendor/grid/chart-value-axis.ts`, `chart-category-axis.ts`, `chart-scatter-axis.ts`, `chart-axis-titles.ts`, `chart-data-labels.ts`, `chart-pie-data-labels.ts` | `S/WorkbookVisuals.tsx:BarChart,LineChart,ScatterChart,PieChart,AxisTitleTexts` | Existing bounded number formats, negative/zero data, axis/tick/title, point/series label formatting and pie labels must not be called missing wholesale. Remaining family discrepancies V09–V19, exact category text/layout, imported special fields need further comparison. | C; historical family acceptance inventory, no fresh pass |"
+    },
+    {
+      "id": "V21",
+      "domain": "visuals",
+      "family": "V21 Unsupported 3D/exotic combos",
+      "status": "source_boundary",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V21 Unsupported 3D/exotic combos | source_boundary | `E/chart-read.ts`, `chart-edit.ts` guards | `G/domain/chart-visual.ts:chartSupportsSeriesReplace,isComboChartTypes`; `S/ChartPanels.tsx` | Source deliberately only replaces supported single-plot families or exactly bar+line; 3D, three-family/scatter/exotic combos fail closed. Their absence is not a confirmed source parity gap. | C |"
+    },
+    {
+      "id": "V22",
+      "domain": "visuals",
+      "family": "V22 Live chart refs/cross-sheet recomputation",
+      "status": "unverified",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V22 Live chart refs/cross-sheet recomputation | unverified | `F/workbook-vendor/grid/chart-render.ts:numberSlotsOf,textsOf`; `workbook-vendor/grid/sync.ts` | `S/WorkbookVisuals.tsx:rangeReader`; source chart sync/action flows | Local renderer strips sheet qualifier and reads its current worksheet. Same-sheet live reads exist. Cross-sheet cached projection/refresh and formula readiness must be traced end-to-end before asserting dynamic parity; source handles ref-aware reads/sync. Static helper gives a concrete risk, not a browser failure. | C/I |"
+    },
+    {
+      "id": "V23",
+      "domain": "visuals",
+      "family": "V23 Ordinary raster picture insert/import/edit",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V23 Ordinary raster picture insert/import/edit | done_bounded | `F/workbook-pictures.tsx:controlledWorkbookPicture,installWorkbookPictures`; `workbook-picture-edits.ts:captureWorkbookPictureEdits`; `E/pictures.ts` | `S/visual-actions.ts:handleInsertPicture,handleInsertPictureFile`; `S/WorkbookVisuals.tsx:ImageVisual` | PNG/JPEG insert bounded 6MiB; one/two-cell internal-media pictures import; geometry/delete transactions bound to media/source identity. Local pictures aren't wholly missing. | C; existing native/built-reopen smoke files present, no rerun |"
+    },
+    {
+      "id": "V24",
+      "domain": "visuals",
+      "family": "V24 Image crop/opacity/rotation/flip display/edit",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V24 Image crop/opacity/rotation/flip display/edit | partial | `E/pictures.ts:pictureGeometryReadOnlyReason`; `F/workbook-picture-edits.ts:neutral`; `installWorkbookPictures` | `N/visuals/drawing.rs:blip_crop,apply picture transform`; `S/WorkbookVisuals.tsx:ImagePicture` | Local cropped/rotated/flipped imported picture geometry explicitly read-only because transforms aren't displayed; local rejects new nonneutral transforms. Source renders crop, opacity, rotation and flips and provides arrange rotation/flip. Cropping UI itself is not established by source; do not invent it. | C confirmed |"
+    },
+    {
+      "id": "V25",
+      "domain": "visuals",
+      "family": "V25 Additional media formats / absolute anchors / groups",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V25 Additional media formats / absolute anchors / groups | partial | `E/pictures.ts:readWorkbookPictures`; `F/workbook-pictures.tsx:installWorkbookPictures` | `N/visuals/drawing.rs:absoluteAnchor,expand group`; `S/workbook-media.ts:workbookMediaDataUrl` | Local rejects absoluteAnchor, only direct pic children, controlled noteImageInfo media; source reads absolute anchors, flattens nested grouped visuals and converts metafiles via docx-engine. Local no EMF/WMF conversion; unsupported input isn't equivalent to source read-only rendering. | C confirmed |"
+    },
+    {
+      "id": "V26",
+      "domain": "visuals",
+      "family": "V26 Shape insertion / textbox / free draw gesture",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V26 Shape insertion / textbox / free draw gesture | missing | No workbook shape operation/renderer found (`F/workbook-main.ts` picture-only insertion) | `S/visual-actions.ts:startShapeDraw,insertShapeAtAnchor,handleInsertShape`; `shape-draw.ts:startSheetShapeDraw` | Add gallery preset/textbox shapes at selection, draw gestures and session journaling/save. Does not imply arbitrary freehand drawing source support. | C+I repository workbook search |"
+    },
+    {
+      "id": "V27",
+      "domain": "visuals",
+      "family": "V27 Imported and session shape rendering/text",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V27 Imported and session shape rendering/text | missing | Local workbook render store contains charts/pictures, no ShapeVisual equivalent | `N/visuals/drawing.rs`; `S/WorkbookVisuals.tsx:ShapeVisual,EditableShapeVisual` | Render source preset/custom SVG shape, gradient/picture fills, strokes/dashes/caps, transforms; text runs/paragraphs/bullets/anchors/overflow; edit session shape text/fill/line and file anchors where source allows. | C+I |"
+    },
+    {
+      "id": "V28",
+      "domain": "visuals",
+      "family": "V28 Shape text editing permissions",
+      "status": "source_boundary",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V28 Shape text editing permissions | source_boundary | n/a | `S/WorkbookVisuals.tsx:isEditableShape,isEditableFileVisual` | Source inline text edit applies only added-shape IDs; imported shapes may move/delete via drawing identity. Do not demand source-equivalent arbitrary imported rich-text editor without further source proof. | C |"
+    },
+    {
+      "id": "V29",
+      "domain": "visuals",
+      "family": "V29 General visual arrange / clipboard",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V29 General visual arrange / clipboard | missing | Chart-specific object geometry + picture native geometry only | `S/visual-arrange-actions.ts:handleVisualCommand`; `visual-arrange.ts` | Source multi-select mixed visuals; z front/back/one-step; align ≥2/distribute ≥3 using rotated AABBs; rotate 90°/flip; cut/copy/paste with undo and anchored placement. No general local workbook implementation found. | C+I |"
+    },
+    {
+      "id": "V30",
+      "domain": "visuals",
+      "family": "V30 Visual alt text / hyperlink / size-placement",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V30 Visual alt text / hyperlink / size-placement | missing | No workbook visual dialog path found | `S/VisualDialogs.tsx:AltTextDialog,HyperlinkDialog,SizeDialog`; `visual-arrange-actions.ts` | Source altText, hyperlink removal/addition, physical dimensions/aspect lock/rotation, anchor editAs commits. Local picture drag/resize does not supply these properties. | C+I |"
+    },
+    {
+      "id": "V31",
+      "domain": "visuals",
+      "family": "V31 Picture paste/drop/screenshot",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V31 Picture paste/drop/screenshot | missing | `F/workbook-pictures.tsx:createWorkbookPictures` exposes file picker only | `S/picture-paste.ts:installPictureTransfer`; `visual-actions.ts:handleInsertScreenshot` | Source clipboard image paste/drop-at-pointer and desktop capture insertion have explicit paths; local workbook controls do not expose equivalent picture paste/drop or screenshot. Native desktop capture is also host boundary. | C+I |"
+    },
+    {
+      "id": "V32",
+      "domain": "visuals",
+      "family": "V32 In-cell pictures / over-grid conversion / preview",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V32 In-cell pictures / over-grid conversion / preview | missing | No local workbook cell-image renderer/add operation found | `S/WorkbookVisuals.tsx:installCellImages,CellImage`; `visual-arrange-actions.ts:embedVisualInCell`; `cell-image-preview.ts`; `G/gateway/xlsx-cell-image-add.ts` | Import/render rich in-cell image, cell preview, convert floating picture to in-cell media. Image notes are separate and already implemented; don't substitute them. | C+I; exact native cell metadata read boundary not fetched |"
+    },
+    {
+      "id": "V33",
+      "domain": "visuals",
+      "family": "V33 OLE frame/preview",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V33 OLE frame/preview | missing | No local workbook OLE visual path found | `S/WorkbookVisuals.tsx:OleVisual`; `S/ole-visual.ts:oleRenderKind,oleCaption,oleFrameStyle` | Source bounded media/icon/caption/frame display absent locally. Source does not promise activate/edit embedded Office apps. | C+I |"
+    },
+    {
+      "id": "V34",
+      "domain": "visuals",
+      "family": "V34 OLE activation, vector equations",
+      "status": "source_boundary",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V34 OLE activation, vector equations | source_boundary | n/a | `S/ole-visual.ts`; `S/EquationDialog.tsx` | Source OLE is bounded visual display; equation insertion raster PNG, not editable XLSX OMML. Neither should be counted as a missing pinned capability. | C |"
+    },
+    {
+      "id": "V35",
+      "domain": "visuals",
+      "family": "V35 Equation / Icons dialogs",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V35 Equation / Icons dialogs | done_bounded | `F/workbook-picture-equation.tsx:EquationDialog`; `workbook-picture-icons.tsx:IconsDialog`; `workbook-main.ts:openOrdinaryPicture` | `S/EquationDialog.tsx`; `S/IconsDialog.tsx` | Source-style presets/live preview/rasterization/icon choice inserted through bounded PNG path with host guards. Shared lifecycle/download/restart acceptance not freshly verified. | C |"
+    },
+    {
+      "id": "V36",
+      "domain": "visuals",
+      "family": "V36 Page setup / print area/title rows+columns / manual breaks",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V36 Page setup / print area/title rows+columns / manual breaks | done_bounded | `F/workbook-print.ts:planSheetPrint`, `workbook-print-scale.ts`, `workbook-page-break-*`; `E/page-setup.ts` | `S/print-settings.ts:effectivePageSetup`; `page-layout-actions.ts:handlePageLayoutCommand`; `print-paginate.ts` | Implemented orientation/paper/margins/percent/fit, area/scopes, repeated rows/columns, manual breaks, gridlines/headings, hidden axes and page break preview. Source repeat-title cap 21 rows/columns is itself bounded; exact all-parameter preservation still unverified. | C; historical print scale/dialog/page-break documents |"
+    },
+    {
+      "id": "V37",
+      "domain": "visuals",
+      "family": "V37 Header/footer text/fields/variants/pictures",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V37 Header/footer text/fields/variants/pictures | done_bounded | `F/workbook-print.ts:buildSheetPrintHtml,pictureDataUrl`; `workbook-print-header-footer.ts`; `E/header-footer-pictures.ts`; `workbook-main.ts` print capture | `S/print-settings.ts:decodeHeaderFooter`; `page-layout-actions.ts:loadHeaderFooterPictures`; `print-html.ts` | Local now includes first/even/odd variants and embedded HF pictures: old comment at workbook-print.ts:19 claiming HF pictures deliberately unrendered is stale and contradicted by live code. Do not count all HF pictures missing. Metafile support/readiness still separate below. | C; existing HF pictures tests present, no execution |"
+    },
+    {
+      "id": "V38",
+      "domain": "visuals",
+      "family": "V38 Cell formatting/borders/merges print",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V38 Cell formatting/borders/merges print | done_bounded | `F/workbook-print.ts:buildSheetPrintHtml` | `S/print-html.ts:buildSheetPrintDocument` | Existing formatted cells, numeric display, merge spans, border ownership/width and printed gridlines; cross-page clipped merges and unsupported number formats remain declared limitations requiring pairwise source review. | C+H print rendering acceptance |"
+    },
+    {
+      "id": "V39",
+      "domain": "visuals",
+      "family": "V39 Floating visuals in print and used-range extension",
+      "status": "missing",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V39 Floating visuals in print and used-range extension | missing | `F/workbook-print.ts:SheetPrintSource,usedRange,buildSheetPrintHtml`; `workbook-print-preview.ts` capture | `S/print-visuals.ts:snapshotPrintVisuals`; `page-layout-actions.ts:sheetPrintDocument`; `print-html.ts` drawing-expanded used range | Local print HTML receives no anchored charts/images/shapes, and used range is cell-derived. Source snapshots float DOM with matching CSS/variables, strips controls, crops/positions by page and expands used range for drawings. This affects preview, print and browser PDF together. | C confirmed |"
+    },
+    {
+      "id": "V40",
+      "domain": "visuals",
+      "family": "V40 Print media/font/resource readiness",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V40 Print media/font/resource readiness | partial | `F/workbook-print.ts:printDocument,pictureDataUrl` | `S/print-visuals.ts:settleVisualNodes`; `page-layout-actions.ts:settledVisualFrames,loadHeaderFooterPictures`; source Electron printing utilities | Local directly invokes iframe.print after write/close, with no image.decode/load or font readiness barrier; embedded HF images may load asynchronously. Source explicitly waits visual nodes and resolves media (including metafiles); Electron final print loading behavior belongs to host/root audit. No fresh observed missing-image failure claimed. | C static missing barrier; actual race manifestation unverified |"
+    },
+    {
+      "id": "V41",
+      "domain": "visuals",
+      "family": "V41 External media in print",
+      "status": "unverified",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V41 External media in print | unverified | `E/pictures.ts` rejects external image rels; print source only embedded HF bytes | `S/workbook-media.ts:useWorkbookMediaUrl` calls `desktopApi.readWorkbookMedia`; `page-layout-actions.ts:loadHeaderFooterPictures` | Confirmed local external ordinary picture rejection. Source renderer fetches by session/visual identity, **not arbitrary external URL itself**. Native/main readWorkbookMedia external relationship policy was not traced here; cannot claim pinned external network images print successfully. Root host inventory must resolve. | C/I; explicitly unknown source boundary |"
+    },
+    {
+      "id": "V42",
+      "domain": "visuals",
+      "family": "V42 Print dialog/scope/page range/preview",
+      "status": "done_bounded",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V42 Print dialog/scope/page range/preview | done_bounded | `F/workbook-print-preview.ts:printInputsForScope,printJobPageRange,createWorkbookPrintPreviewDialog` | `S/PrintDialog.tsx`; `page-layout-actions.ts:createPrintPreviewHost` | Active/selection/visible-workbook scope, page range, preview pagination/zoom/refresh and immediate settings exist. Printer/copies/collate delegated to browser explicitly. Source interactive workbook job only snapshots active sheet visuals (`isActive`), unlike headless workbook PDF which activates every sheet; don't claim interactive pinned all-sheet visuals. | C |"
+    },
+    {
+      "id": "V43",
+      "domain": "visuals",
+      "family": "V43 Desktop printing / direct PDF export",
+      "status": "partial",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V43 Desktop printing / direct PDF export | partial | `F/workbook-print.ts:printDocument`; preview PDF button calls same browser print path | `S/page-layout-actions.ts:createPrintPreviewHost,handleExportPdf`; `apps/sheets/src/main/print-options.ts` | Local browser print is valid bounded implementation, but no app-owned printer enumeration, deviceName/copies/collate, print job result/cancel, direct exportPdf destination/path or headless outPath pipeline. Source desktop API owns these. Mark environment/host boundary, not broken browser controls. | C; root owns global host API |"
+    },
+    {
+      "id": "V44",
+      "domain": "visuals",
+      "family": "V44 Formula settlement before print",
+      "status": "unverified",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V44 Formula settlement before print | unverified | `F/workbook-main.ts` print capture and draft snapshot | `S/page-layout-actions.ts:loadWorkbookForPrint,settleFormulas,openPrintPreviewHost` | Source preloads full workbook within budget and settles formula engine before capture. Root confirmed local capture awaits getFormula().onCalculationResultApplied(30000) before snapshot/currentOperations/readModel. Do not list formula settlement as absent. Comparative timeout/failed-calculation/large-workbook capture correctness remains unverified; source additionally preloads within budget. | C/I |"
+    },
+    {
+      "id": "V45",
+      "domain": "visuals",
+      "family": "V45 Exact chart/UI pixel parity",
+      "status": "unverified",
+      "evidenceFile": "visuals.md",
+      "sourceRow": "| V45 Exact chart/UI pixel parity | unverified | All Canvas modules vs source SVG/DOM | `S/WorkbookVisuals.tsx` | Bounded structural/behavioral implementation doesn't establish identical fonts/metrics, selection highlights, hover/popovers, legend placement, all chart sizes/theme/DPI or every fixture. No full corpus/browser comparison performed. | I; no fresh claim |"
+    },
+    {
+      "id": "S01",
+      "domain": "storage",
+      "family": "S01 Disk-backed indexed worksheet reads",
+      "status": "missing",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S01 Disk-backed indexed worksheet reads | missing | N/lib.rs:WorkbookSessions.open_with_locale/WorkbookSession.ensure_parser/read_range; N/worksheet.rs:index_worksheet/flush_chunk | E/workbook-read.ts:readWorkbook/parseWorksheetCells; E/zip.ts:createBufferEntrySource; L/workbook-vendor/core/univer-data.ts:buildWorkbookData | Source creates per-sheet parsers on demand, runs background index threads when supported, writes256-row chunk JSON to session cache, and serves requested ranges from the index. Local loads whole compressed bytes and materializes every declared worksheet XML/full cell model before grid projection. No disk-backed256-row range service or viewport streaming host exists in this native web path. This is a scale/architecture gap, not proof every large workbook fails. | direct source/local control flow; no load benchmark |"
+    },
+    {
+      "id": "S02",
+      "domain": "storage",
+      "family": "S02 Package resource limits",
+      "status": "partial",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S02 Package resource limits | partial | N/archive.rs:MAX_ENTRY_COUNT/MAX_EXTRACTED_ENTRY_BYTES/validate_entries/read_entries_to_dir; N/lib.rs:MAX_RANGE_CELLS/MAX_FORMULA_CELLS; M/recovery-policy.ts | E/zip.ts:XLSX_ZIP_LIMITS/inventoryXlsx/assemblePackage; P/native_office.py:_content | Both source and local cap ZIP entries at10000; do NOT list entry-count parity as missing. Local inventory/assembly enforces256MiB aggregate uncompressed bytes; native_office input additionally caps compressed bytes at24MiB. Source archive comment explicitly states no archive-wide size limit at that layer, but extracted edited entries cap500MiB, range reads100k cells, formula index100k cells, recovery worksheet64MiB. Main/runtime/memory/OS bounds still exist; no claim source accepts arbitrarily large workbooks. Local `createBufferEntrySource` checks part count/CRC, while aggregate256MiB is enforced by inventory/assembly, not necessarily before every read. | constants and enforcement sites inspected; no anti-bomb/load stress test |"
+    },
+    {
+      "id": "S03",
+      "domain": "storage",
+      "family": "S03 Stream-copy save of untouched compressed entries",
+      "status": "missing",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S03 Stream-copy save of untouched compressed entries | missing | N/archive.rs:save_archive (`raw_copy_file_rename`); G/xlsx-package-io.ts:saveWorkbookViaSidecar/createSidecarEntrySource | E/zip.ts:assemblePackage/assertOnlyTouchedEntriesChanged | Source raw-copies untouched compressed ZIP entries and extracts/replaces selected editable parts. Local JSZip rebuilds/recompresses whole archive at DEFLATE level6 and computes before/after inventories. Local can preserve uncompressed part bytes and detect changed unrelated parts; it does not preserve original compressed ZIP representations or source's bounded-memory full-archive copy strategy. Byte-identical entire ZIP is not a valid local expectation. | direct Rust save loop and JSZip assembler comparison |"
+    },
+    {
+      "id": "S04",
+      "domain": "storage",
+      "family": "S04 Streaming cell patches on >500MiB worksheet parts",
+      "status": "missing",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S04 Streaming cell patches on >500MiB worksheet parts | missing | N/stream_patch.rs:StreamPatchProgram/read_patch_program/stream_patch_entry; G/xlsx-package-io.ts:saveWorkbookViaSidecar | E/workbook-write.ts:applyCellEdits; E/zip.ts:assemblePackage | Source supports per-cell serialized upserts into streamed worksheet entries too large for a V8 string. Row buffering cap64MiB, serialized cell4MiB, patch cells4million, IO chunk256KiB. Local whole-part text mutation + aggregate256MiB assembly cannot expose that source path. This capability is per-cell patching, not arbitrary huge-part chart/style/structural rewrite. | explicit source streaming module contract and local absence |"
+    },
+    {
+      "id": "S05",
+      "domain": "storage",
+      "family": "S05 Save edit transfer chunking / IPC backpressure",
+      "status": "partial",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S05 Save edit transfer chunking / IPC backpressure | partial | M/save-edits-transfer.ts:SaveEditsTransferStore; apps/sheets/src/shared/ipc-channels.ts:MAX_SAVE_EDITS/MAX_SAVE_EDITS_TOTAL | L/workbook-edit-budget.ts:WORKBOOK_MAX_CELL_EDITS; L/native-draft.ts:NativeDraft; P/native_api.py:native_save | Source can upload ordered chunks, validates session/seq/count,4 open transfers and120s idle expiry; total up to10million versus per-message1million edits. Local native editor keeps1million edit budget and sends identity-bound full operation JSON over web save. No equivalent resumable/ordered edit-transfer store found. IPC-specific mechanics are host differences; the user-facing remaining capability is large edits beyond local operation/request/memory bounds without a single serialization spike. Raising a constant alone would not implement it. | source transfer store and local budget/protocol inspected; web server/proxy body ceilings unverified |"
+    },
+    {
+      "id": "S06",
+      "domain": "storage",
+      "family": "S06 Frozen source identity and immutable revision saves",
+      "status": "done_bounded",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S06 Frozen source identity and immutable revision saves | done_bounded | M/sheets-main.ts:openWorkbookSession/snapshotWorkbook/writeWorkbookTo; G/xlsx-package-io.ts:saveWorkbookViaSidecar | P/workbook.py:ReportWorkbookEditorService.save_revision; P/native_publication.py publication path; P/native_api.py save expected SHA; L/native-draft.ts identity | Source snapshot is copied before sidecar open; subsequent reads/save use snapshot and digest, avoiding live-file races. Local keeps source SHA/scope/document/revision identity, verifies source before patch, writes a new hash/revision artifact with overwrite=False, hashes actual output before issuing links, and keeps draft identity. This is a bounded web-host equivalent for edit-base identity, not source desktop filesystem behavior. | direct source/local identity flow; existing acceptance records not rerun |"
+    },
+    {
+      "id": "S07",
+      "domain": "storage",
+      "family": "S07 Atomic replace and power-loss durability",
+      "status": "unverified",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S07 Atomic replace and power-loss durability | unverified | G/xlsx-package-io.ts:promoteFileAtomically/copyOverLockedTarget; packages/electron-utils/src/atomic-write.ts:atomicWriteFile; N/archive.rs:sync_best_effort | smart_reporting/reporting/delivery/xlsx.py:patch_workbook; P/workbook.py:save_revision; P/native_publication.py revision publication/workspace.awrite_bytes | Source writes a completed same-directory temp, best-effort sync and rename; retries Windows locks, may fallback copy/in-place with preserved backup/temp. Thus even source does not promise every fallback is atomic or power-loss durable. Local patch uses temporary input/output then publishes new immutable revision, not replacement of the user's OS path. Workspace storage implementation's crash/atomicity semantics were not traced in this shard. Do not report “no atomic save” merely from using JSZip, nor claim fsync-equivalent durability from output hashes. | source promotion/fallback inspected; local workspace backend crash semantics unverified |"
+    },
+    {
+      "id": "S08",
+      "domain": "storage",
+      "family": "S08 Crash recovery/autosave",
+      "status": "partial",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S08 Crash recovery/autosave | partial | M/sheets-main.ts:recoveryDir/recoveryPathFor/prepareWorkbookForOpen/writeWorkbookTo; M/recovery-policy.ts:allowsAutomaticWorkbookRecovery; S/App.tsx30s recovery tick | L/native-draft.ts:NativeDraft.persist/restore/saveCompleted; L/workbook-main.ts draft replay | Source writes actual recovery XLSX every30s through save pipeline, offers Restore/Discard on next open, tracks unsaved-new recovery names and deletes recovery on successful save. Source disables automatic recovery for worksheet XML>64MiB. Local persists identity-bound operation JSON and pending request in localStorage, restores on matching source, clears after registered save; storage failure remains visible and edits remain in-page. No background actual-XLSX recovery copy/restore picker exists locally. Browser JSON recovery is delivered but differs in storage capacity, recoverability after storage removal and independence from a surviving original source. | direct implementation; no crash experiment |"
+    },
+    {
+      "id": "S09",
+      "domain": "storage",
+      "family": "S09 Session cancellation, cleanup and worker boundary",
+      "status": "partial",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S09 Session cancellation, cleanup and worker boundary | partial | N/lib.rs:WorkbookSession.close/CacheDirectory; M/xlsx-sidecar-client.ts:CANCELLABLE_READS/close and process queue; M/sheets-main.ts:createSessionSnapshotDirectory; M/temp-files.ts | L/workbook-main.ts disposal/generation/selection listeners; smart_reporting/reporting/delivery/xlsx.py:_invoke; smart_reporting/reporting/delivery/office_engine.py:run_office_engine (outer engine execution) | Source cancels pending range/formula/media/find work, wakes/joins indexing threads, removes disk chunks and sweeps abandoned per-process snapshots. Local disposes UI/services and rejects stale callbacks, while backend invokes finite CLI jobs using temporary directories through a dedicated thread pool (default1–4workers, configurable concurrency). It has no long-lived indexed workbook process/session cache requiring identical cleanup. Source sidecar lifetime behavior is host-specific; cancellation of a running backend CLI task/resource isolation under request abort needs separate verification. | source cleanup inspected; local full request-abort/worker isolation unverified |"
+    },
+    {
+      "id": "S10",
+      "domain": "storage",
+      "family": "S10 Legacy XLS, ODS/OTS, SpreadsheetML2003 conversion",
+      "status": "missing",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S10 Legacy XLS, ODS/OTS, SpreadsheetML2003 conversion | missing | M/sheets-main.ts:prepareWorkbookForOpen/promptOdsImport; N/convert.rs:convert_to_xlsx; N/spreadsheetml.rs:probe/convert_to_xlsx; N/odf.rs:translate_formula | E/workbook-read.ts:readWorkbook accepts XLSX ZIP; P/workbook.py report XLSX context; P/native_office.py:_content | Source actual converter uses calamine plus BIFF style/drawing readers, translates ODF formulas safely or keeps cached result, and recognizes SpreadsheetML by content when legacy parser fails. Main exposes xls/ods/ots conversion into temp XLSX and first-save-as flow. Local native report workbook path accepts existing XLSX and lacks these format converter/confirmation/open host paths. CSV selection import is a different delivered capability; it does not close these file formats. | direct source converter and local format-specific entry; no import fixtures run |"
+    },
+    {
+      "id": "S11",
+      "domain": "storage",
+      "family": "S11 Standalone CSV/TSV file identity and Save behavior",
+      "status": "missing",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S11 Standalone CSV/TSV file identity and Save behavior | missing | M/sheets-main.ts:prepareWorkbookForOpen/openWorkbookSession; G/csv-import.ts:csvToXlsxBufferForOpen; renderer csv-export.ts:handleExportCsv | L/workbook-import-csv.ts:openWorkbookCsvImport; P/workbook.py:save_revision | Source opens ≤32MiB CSV/TSV as converted XLSX: CSV keeps original CSV identity and Save writes display values back with loss warnings; TSV first Save As goes to XLSX. Local imports into selection of an existing XLSX, then saves XLSX revision. No standalone CSV/TSV document identity/save-back route found in native workbook host. Native CSV display export is separately missing in data.md; count duplicate work once. | source open/save comments+flow and local route inspection |"
+    },
+    {
+      "id": "S12",
+      "domain": "storage",
+      "family": "S12 Conversion fidelity / LibreOffice execution",
+      "status": "source_boundary",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S12 Conversion fidelity / LibreOffice execution | source_boundary | N/convert.rs module contract/convert_to_xlsx; N/spreadsheetml.rs; M/sheets-main.ts ODF warning | E/workbook-read.ts XLSX route; outer document conversion services not audited | Source converter creates fresh XLSX, not byte-preserving legacy edits; charts and CF omitted, ODF styles beyond supported dates/geometry/images not universally retained, unsafe ODF formulas become values. LibreOffice is mentioned for producer quirks and fixture generation; no production `soffice` execution was found in inspected Sheets main/native conversion code. Do not invent a required installed LibreOffice conversion service or demand full xls/ods byte fidelity as source parity. Local `smart_reporting/reporting/delivery/office_engine.py:libreoffice_to_pdf` does run an optional LibreOffice subprocess for PDF rendering with isolated profile; this is not legacy-sheet-to-editable-XLSX import. Broader repository conversion/tool integrations remain unverified. | source implementations/comments, targeted executable-call search |"
+    },
+    {
+      "id": "S13",
+      "domain": "storage",
+      "family": "S13 `.xlsm` identity and VBA package preservation",
+      "status": "host_boundary",
+      "evidenceFile": "storage.md",
+      "sourceRow": "| S13 `.xlsm` identity and VBA package preservation | host_boundary | M/sheets-main.ts:WORKBOOK_EXTS/writeWorkbookTo (3871+) preserves xlsm extension, VBA entries and macro-enabled content types | P/native_import.py:_REJECTED_EXTENSIONS and macro content-type checks (34/65/87) | Local import deliberately rejects .xlsm/macro parts. Full source package-preservation parity is open; preserving VBA bytes is distinct from executing VBA. Do not remove validation or enable execution as an automatic parity fix. Needs a separately designed controlled import/preservation boundary. | explicit source/local import/save contract inspection; no macro file executed or imported |"
+    },
+    {
+      "id": "D52",
+      "domain": "data",
+      "family": "P12 Source scalar fidelity and formatted dimension projection",
+      "status": "partial",
+      "evidenceFile": "data.md",
+      "sourceRow": "| P12 Source scalar fidelity and formatted dimension projection | partial | S/workbook-ops.ts:readPivotSourceGrid; G/domain/pivot-layout.ts:numericValue; G/gateway/xlsx-pivot-add.ts | E/pivot-source.ts; E/pivot-source-format.ts; E/pivot-add.ts; E/pivot-controls.ts; L/workbook-pivot.ts; workbook-pivot-filters.ts; workbook-pivot-dialog.ts | Boolean source/cache fidelity fixed. New host pivots project cell/row/column inherited formats for ordinary dimensions, including zero-padded identifiers and 1900/1904 dates; layout/records/filter/base/native timeline identities agree, measures stay numeric. Unmarked legacy/foreign states retain raw identities. Calculated-field dependency/display separation, formatted numeric headers and legacy automatic migration remain open; grouped numeric inputs preserved. | NATIVE_XLSX_PIVOT_SOURCE_BOOLEANS_ACCEPTANCE_20261114.md plus NATIVE_XLSX_PIVOT_DIMENSION_FORMATS_ACCEPTANCE_20261114.md plus inherited-format follow-up (52 frontend/22 engine,4 browser files):104 frontend/114 engine, strict TS,4 browser downloads + independent source worksheet/cache/table/native timeline XML/openpyxl; P12 remains partial |"
+    }
+  ]
+}
