@@ -1,39 +1,40 @@
 /** Source-bound existing content image geometry; this never inserts a stamp. */
 import {createHash} from 'node:crypto'
-import {PDFDocument} from 'pdf-lib'
+import {PDFDocument,PDFName} from 'pdf-lib'
 import {z} from 'zod'
 import {inspectTextObjects} from '../src/main/text-edit'
 import {staticTextAvailability} from './static-text'
-import {applyExistingImageReplace,applyExistingImageReplaceBgra,applyExistingImageTransform,decodePngBgra,listExistingEngineImages,renderExistingImageBgra,renderPageBackgroundBgra,type ExistingEngineImage} from './existing-image-engine'
+import {applyExistingImageLayer,applyExistingImageDelete,applyExistingImageReplace,applyExistingImageReplaceBgra,applyExistingImageTransform,decodePngBgra,listExistingEngineImages,renderExistingImageBgra,renderPageBackgroundBgra,type ExistingEngineImage} from './existing-image-engine'
 import {cropRect,flipPixels,multiplyAlpha} from '../src/renderer/image-bake'
 import {removeBackground} from '../src/renderer/cutout'
 import {encodeRgbaPng} from '../vendor/pdf2docx/src/extract/png'
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex')
 const rectSchema=z.tuple([z.number().finite(),z.number().finite(),z.number().finite(),z.number().finite()])
-const operationSchema=z.object({kind:z.literal('transformExistingImage'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string(),imageId:z.string().regex(/^[a-f0-9]{64}$/),expectedImageSha256:z.string().regex(/^[a-f0-9]{64}$/),rect:rectSchema,image:z.string().min(8).max(6_000_000).optional(),bake:z.discriminatedUnion('kind',[
+const operationSchema=z.object({kind:z.literal('transformExistingImage'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string(),imageId:z.string().regex(/^[a-f0-9]{64}$/),expectedImageSha256:z.string().regex(/^[a-f0-9]{64}$/),rect:rectSchema,remove:z.literal(true).optional(),layer:z.enum(['belowText','aboveText']).optional(),image:z.string().min(8).max(6_000_000).optional(),bake:z.discriminatedUnion('kind',[
  z.object({kind:z.literal('flip'),axis:z.enum(['h','v'])}).strict(),
  z.object({kind:z.literal('opacity'),alpha:z.number().min(0).max(.99).refine(value=>Math.abs(Math.round(value*100)-value*100)<1e-9)}).strict(),
  // 固定源 ImageBakeOp cutout：容差 0–100（DEFAULT_CUTOUT_TOLERANCE=30），边缘连通的背景像素 alpha 置 0。
  z.object({kind:z.literal('cutout'),tolerance:z.number().int().min(0).max(100)}).strict(),
  z.object({kind:z.literal('crop'),crop:z.object({l:z.number().min(0).max(1),t:z.number().min(0).max(1),r:z.number().min(0).max(1),b:z.number().min(0).max(1)}).strict().refine(c=>c.r-c.l>=.01&&c.b-c.t>=.01&&(c.r-c.l<1||c.b-c.t<1))}).strict(),
  z.object({kind:z.literal('rotate'),quarterTurns:z.union([z.literal(1),z.literal(3)])}).strict(),
-]).optional()}).strict().refine(op=>op.image===undefined||op.bake===undefined)
+]).optional()}).strict().refine(op=>(op.image===undefined||op.bake===undefined)&&(!op.remove||op.image===undefined&&op.bake===undefined&&op.layer===undefined)&&(!op.layer||op.image===undefined&&op.bake===undefined&&!op.remove))
 /** 固定源 App.tsx BAKE_SCALE：烘焙像素按页面尺寸 3 倍取样，结果保持印刷清晰度。 */
 const BAKE_SCALE=3
 export type ExistingImageOperation=z.infer<typeof operationSchema>
-export interface ExistingImageRef {pageId:string;pageIndex:number;rect:[number,number,number,number];aboveText:boolean;imageId:string;expectedImageSha256:string;editable:boolean;reason?:string;replaceable:boolean;replaceReason?:string;bakeable:boolean;bakeReason?:string}
+export interface ExistingImageRef {pageId:string;pageIndex:number;rect:[number,number,number,number];aboveText:boolean;imageId:string;expectedImageSha256:string;editable:boolean;reason?:string;removable:boolean;removalReason?:string;layerable:boolean;layerReason?:string;replaceable:boolean;replaceReason?:string;bakeable:boolean;bakeReason?:string}
 const near=(a:readonly number[],b:readonly number[],tol=2)=>a.every((v,i)=>Math.abs(v-b[i])<=tol)
 const rotatedImageRect=(rect:readonly number[])=>{const cx=(rect[0]!+rect[2]!)/2,cy=(rect[1]!+rect[3]!)/2,w=rect[2]!-rect[0]!,h=rect[3]!-rect[1]!;return [cx-h/2,cy-w/2,cx+h/2,cy+w/2].map(value=>Math.round(value*1000)/1000)}
-function references(sourceSha256:string,images:ExistingEngineImage[],allowed:boolean):ExistingImageRef[]{
+function references(sourceSha256:string,images:ExistingEngineImage[],allowed:boolean,document:PDFDocument):ExistingImageRef[]{
  return images.map((image,index)=>{
   const ambiguous=images.some((other,otherIndex)=>index!==otherIndex&&image.pageIndex===other.pageIndex&&near(image.rect,other.rect))
   const editable=allowed&&image.exclusive&&!ambiguous
   // PDFium 的 SetBitmap 改写图像流本身：同一像素流被其他位置引用（含其他页）时替换会连带改变它们，必须拒绝。
   const shared=images.some((other,otherIndex)=>index!==otherIndex&&other.pixelsSha256===image.pixelsSha256)
   const replaceable=editable&&!shared
+  const box=document.getPage(image.pageIndex).getCropBox(),inside=image.rect.every(Number.isFinite)&&image.rect[0]>=box.x&&image.rect[1]>=box.y&&image.rect[2]<=box.x+box.width&&image.rect[3]<=box.y+box.height,staticFills=document.catalog.has(PDFName.of('GenOfficeStaticFormFills')),removable=editable&&image.pageOwned&&inside&&!staticFills,layerable=removable&&image.layerable
   // 固定源烘焙（裁剪/翻转/透明度）取显示方向像素后经 replaceImage 写回且不动矩阵：只对页面直属、无旋转无镜像的图像结果方向一致。
   const bakeable=replaceable&&image.axisAligned
-  return {pageId:'sha256:'+sourceSha256+':page:'+image.pageIndex,pageIndex:image.pageIndex,rect:image.rect,aboveText:image.aboveText,imageId:hash(JSON.stringify({sourceSha256,index,pageIndex:image.pageIndex,rect:image.rect,fingerprint:image.fingerprint})),expectedImageSha256:image.fingerprint,editable,...(!editable?{reason:ambiguous?'图像位置重叠，不能唯一定位原对象':!image.exclusive?'图像位于共享模板，暂不能单独编辑':'来源结构暂不支持编辑已有图像'}:{}),replaceable,...(!replaceable?{replaceReason:!editable?'此图像不能编辑':'同一图像数据被多处引用，替换会改变其他位置，暂不支持替换'}:{}),bakeable,...(!bakeable?{bakeReason:!replaceable?(!editable?'此图像不能编辑':'同一图像数据被多处引用，裁剪或翻转会改变其他位置'):'图像带旋转、镜像或位于模板内，暂不支持裁剪、翻转与透明度'}:{})}
+  return {pageId:'sha256:'+sourceSha256+':page:'+image.pageIndex,pageIndex:image.pageIndex,rect:image.rect,aboveText:image.aboveText,imageId:hash(JSON.stringify({sourceSha256,index,pageIndex:image.pageIndex,rect:image.rect,fingerprint:image.fingerprint})),expectedImageSha256:image.fingerprint,editable,removable,layerable,...(!layerable?{layerReason:!removable?'当前图像或关联记录暂不能切换层级':'页面缺少直属文字、含模板或引擎不能精确排序'}:{}),...(!removable?{removalReason:!editable?'当前图像不能安全编辑或删除':!image.pageOwned?'模板内图像暂不能删除':staticFills?'来源含静态填表记录，请使用静态填写删除入口':'图像超出来源裁切范围，暂不能删除'}:{}),...(!editable?{reason:ambiguous?'图像位置重叠，不能唯一定位原对象':!image.exclusive?'图像位于共享模板，暂不能单独编辑':'来源结构暂不支持编辑已有图像'}:{}),replaceable,...(!replaceable?{replaceReason:!editable?'此图像不能编辑':'同一图像数据被多处引用，替换会改变其他位置，暂不支持替换'}:{}),bakeable,...(!bakeable?{bakeReason:!replaceable?(!editable?'此图像不能编辑':'同一图像数据被多处引用，裁剪或翻转会改变其他位置'):'图像带旋转、镜像或位于模板内，暂不支持裁剪、翻转与透明度'}:{})}
  })
 }
 export async function inspectExistingImages(content:Uint8Array){
@@ -41,7 +42,7 @@ export async function inspectExistingImages(content:Uint8Array){
  const allowed=availability.insertText,sourceSha256=hash(content)
  let images:ExistingEngineImage[]
  try{images=await listExistingEngineImages(content)}catch{return {existingImages:[],capabilities:{editExistingImage:false,editExistingImageReason:'来源图像对象暂不能安全识别，暂不支持编辑已有图像'}}}
- const existingImages=references(sourceSha256,images,allowed)
+ const existingImages=references(sourceSha256,images,allowed,document)
  const editExistingImage=allowed&&existingImages.some(image=>image.editable)
  const reason=!allowed?availability.insertTextReason?.replace('插入静态文字','编辑已有图像'):!images.length?'来源没有可编辑的已有图像':!editExistingImage?existingImages[0]?.reason:null
  return {existingImages,capabilities:{editExistingImage,editExistingImageReason:reason??null}}
@@ -77,6 +78,8 @@ export async function transformExistingImage(content:Uint8Array,input:unknown,ex
  const target=model.existingImages.find(image=>image.imageId===operation.imageId&&image.pageId===operation.pageId)
  if(!target||target.expectedImageSha256!==operation.expectedImageSha256)throw Error('PDF 已有图像身份无效或已过期')
  if(!target.editable)throw Error(target.reason??'来源不能编辑已有图像')
+ if(operation.layer&&(!target.layerable||!near(operation.rect,target.rect,1e-7)||target.aboveText===(operation.layer==='aboveText')))throw Error(!target.layerable?target.layerReason??'此图像不能切换层级':!near(operation.rect,target.rect,1e-7)?'层级切换不能同时移动或缩放图像':'图像已处于所选文字层级')
+ if(operation.remove&&(!target.removable||!near(operation.rect,target.rect,1e-7)))throw Error(!target.removable?target.removalReason??'此图像不能删除':'删除须绑定原图像范围，不能同时移动或缩放')
  if(operation.image!==undefined&&!target.replaceable)throw Error(target.replaceReason??'此图像暂不支持替换')
  if(operation.bake&&!target.bakeable)throw Error(target.bakeReason??'此图像暂不支持裁剪、翻转与透明度')
  // 烘焙不与移动同批：翻转/透明度保持原范围，裁剪的新范围必须正是固定源 cropRect(原范围, 保留比例)。
@@ -89,7 +92,9 @@ export async function transformExistingImage(content:Uint8Array,input:unknown,ex
  const replacement=operation.image===undefined?undefined:(()=>{try{const decoded=decodePngBgra(operation.image!);return {width:decoded.width,height:decoded.height}}catch(error){throw Error('替换图像须为可解码的 PNG：'+(error instanceof Error?error.message:String(error)))}})()
  let bytes=content,skippedOperations:ReturnType<typeof skip>[]=[],baked:{width:number;height:number}|undefined
  try{
-  if(operation.bake){
+  if(operation.layer)bytes=await applyExistingImageLayer(content,target.pageIndex,target.rect,operation.layer)
+  else if(operation.remove)bytes=await applyExistingImageDelete(content,target.pageIndex,target.rect)
+  else if(operation.bake){
    // 固定源 bakeSourcePng → transformPngPixels/cropImagePng → replaceImage：取图像自身的显示像素，在像素上烘焙后写回。
    const source=await renderExistingImageBgra(content,target.pageIndex,target.rect,BAKE_SCALE),bake=operation.bake
    const image={data:new Uint8ClampedArray(source.bgra.buffer,source.bgra.byteOffset,source.bgra.length),width:source.width,height:source.height}
@@ -120,9 +125,9 @@ export async function transformExistingImage(content:Uint8Array,input:unknown,ex
   try{
    const output=await listExistingEngineImages(bytes),before=await listExistingEngineImages(content)
    const targetIndex=model.existingImages.indexOf(target)
-   const remaining=[...output],expected=before.map((image,index)=>({...image,rect:index===targetIndex?operation.rect:image.rect}))
+   const remaining=[...output],expected=before.flatMap((image,index)=>operation.remove&&index===targetIndex?[]:[{...image,rect:index===targetIndex?operation.rect:image.rect,aboveText:operation.layer&&index===targetIndex?operation.layer==='aboveText':image.aboveText}])
    // 替换的目标按新像素尺寸与位置复核（PDFium 会把 alpha 拆成 SMask 并重新编码，不能比较原始字节）；其他图像逐像素不变。
-   for(const [index,image] of expected.entries()){const i=remaining.findIndex(item=>item.pageIndex===image.pageIndex&&near(item.rect,image.rect,.05)&&((replacement??baked)&&index===targetIndex?item.width===(replacement??baked)!.width&&item.height===(replacement??baked)!.height:item.pixelsSha256===image.pixelsSha256));if(i<0)throw Error((replacement??baked)&&index===targetIndex?'替换图像像素尺寸或范围复核不一致':'图像对象范围复核不一致');remaining.splice(i,1)}
+   for(const [index,image] of expected.entries()){const i=remaining.findIndex(item=>item.pageIndex===image.pageIndex&&near(item.rect,image.rect,.05)&&(!operation.layer||item.aboveText===image.aboveText)&&((replacement??baked)&&index===targetIndex?item.width===(replacement??baked)!.width&&item.height===(replacement??baked)!.height:item.pixelsSha256===image.pixelsSha256));if(i<0)throw Error((replacement??baked)&&index===targetIndex?'替换图像像素尺寸或范围复核不一致':'图像对象范围复核不一致');remaining.splice(i,1)}
    if(remaining.length)throw Error('图像对象数量复核不一致')
    const oldText=await inspectTextObjects(content),newText=await inspectTextObjects(bytes)
    if(oldText.length!==newText.length||oldText.some((runs,i)=>runs.length!==newText[i].length||runs.some((run,j)=>run.text!==newText[i][j].text||!near(run.rect,newText[i][j].rect,.05))))throw Error('原始正文复核不一致')

@@ -2,6 +2,7 @@ import type { NativeDraft, NativeOperation } from './native-draft'
 
 export interface PdfDesignWidget {
   fieldName:string;widgetId:string;widgetIdentity:string;expectedWidgetSha256:string
+  copyEditable?:boolean;copyReason?:string|null
   designEditable?:boolean;designReason?:string|null;fieldKind?:string;dateFormat?:string;required?:boolean;radioOptions?:string[];radioValue?:string|null;radioChecked?:boolean
   radioRenameEditable?:boolean;radioRenameReason?:string|null
   radioRemovalEditable?:boolean;radioRemovalReason?:string|null

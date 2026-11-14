@@ -1,5 +1,5 @@
 """需核对真实 PDF 的编辑种类与必须保留实际产物的执行回执。"""
-PDF_CONFIRMATION_KINDS=frozenset({'setStaticFill','removeStaticFill','setMetadata','addBates','replaceText','insertText','transformExistingImage','createFormField','editFormFieldRequired','editFormWidget','editFormWidgetRects','arrangeFormWidgets','appendRadioWidget','editFormTextProperties'})
+PDF_CONFIRMATION_KINDS=frozenset({'setStaticFill','removeStaticFill','setMetadata','addBates','replaceText','insertText','moveText','transformExistingImage','createFormField','editFormFieldRequired','editFormWidget','editFormWidgetRects','arrangeFormWidgets','appendRadioWidget','editFormTextProperties'})
 PDF_RECEIPT_KINDS=PDF_CONFIRMATION_KINDS|{'addDrawing','externalPages','removeFormWidget','setFormValue','setOutline'}
 
 

@@ -1,3 +1,4 @@
+import {radioCopyMatches,type RadioCopyRow} from '../../../reporting/pdf_engine/bridge/form-copy-radio'
 import {createPdfFormRadioRows} from './pdf-form-radio-rows'
 import {createPdfFormSettingsPanel} from './pdf-form-settings-panel'
 import type {NativeDraft,NativeOperation} from './native-draft'
@@ -7,7 +8,7 @@ export const PDF_FORM_CREATE_ALONE_REASON='表单字段设计须单独保存，�
 export const PDF_FORM_DATE_FORMATS=['yyyy-mm-dd','mm/dd/yyyy','dd/mm/yyyy','yyyy/mm/dd'] as const
 export interface PdfFormCreateModel {sourceSha256:string;pages:{pageId:string;index?:number;rotation?:number;cropBox:{x:number;y:number;width:number;height:number}}[];capabilities?:{createFormField?:boolean;createFormFieldReason?:string|null;editFormFieldRequired?:boolean;editFormWidget?:boolean;editFormWidgetReason?:string|null;arrangeFormWidgets?:boolean;arrangeFormWidgetsReason?:string|null};formDesignWidgets?:PdfDesignWidget[]}
 export type PdfFormKind='text'|'checkbox'|'date'|'choice'|'radio'|'signature'
-export interface PdfFormCreation {pageId:string;fieldName:string;fieldKind:PdfFormKind;rect:[number,number,number,number];required:boolean;checked?:boolean;value?:string;options?:string[];dateFormat?:typeof PDF_FORM_DATE_FORMATS[number];multiLine?:boolean;maxLen?:number;fontSize?:number;textAlignment?:'left'|'center'|'right';radioWidgets?:{pageId:string;rect:[number,number,number,number];exportValue:string;checked?:boolean}[]}
+export interface PdfFormCreation {pageId:string;fieldName:string;fieldKind:PdfFormKind;rect:[number,number,number,number];required:boolean;copyFrom?:PdfFormWidgetTarget;checked?:boolean;value?:string;options?:string[];dateFormat?:typeof PDF_FORM_DATE_FORMATS[number];multiLine?:boolean;maxLen?:number;fontSize?:number;textAlignment?:'left'|'center'|'right';radioWidgets?:{pageId:string;rect:[number,number,number,number];exportValue:string;checked?:boolean}[]}
 export interface PdfFormWidgetTarget {fieldName:string;widgetId:string;widgetIdentity:string;expectedWidgetSha256:string}
 const targetKeys=['fieldName','widgetId','widgetIdentity','expectedWidgetSha256']
 const sha=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)
@@ -32,11 +33,18 @@ function validateRename(oldName:string,newName:unknown,rect:unknown,required:unk
 function validateChoiceOptions(options:unknown,rect:unknown,required:unknown,newName:unknown):asserts options is string[]{if(!Array.isArray(options)||options.length<1||options.length>100||options.some(v=>!printable(v,200)||!v)||new Set(options).size!==options.length||rect!==undefined||required!==undefined||newName!==undefined)throw Error('下拉选项须唯一且限200字符以内可打印 ASCII，须单独保存')}
 export function validatePdfFormCreation(operations:NativeOperation[]){
  const relevant=operations.filter(op=>['createFormField','editFormFieldRequired','editFormWidget','editFormWidgetRects','arrangeFormWidgets'].includes(op.kind));if(!relevant.length)return
+ if(operations.length>1&&operations.every(op=>op.kind==='createFormField')){
+  if(operations.length>500)throw Error('字段创建超过500项操作预算')
+  const names:string[]=[]
+  for(const op of operations){validatePdfFormCreation([op]);const name=String(op.fieldName);if(names.some(other=>other===name||other.startsWith(name+'.')||name.startsWith(other+'.')))throw Error('字段名称重复或与待保存字段前缀冲突');names.push(name)}
+  return
+ }
  if(operations.length!==1)throw Error(PDF_FORM_CREATE_ALONE_REASON)
  const op=relevant[0];if(!sha(op.sourceSha256))throw Error('表单字段设计来源身份无效')
  if(op.kind==='createFormField'){
-  const value=op as unknown as PdfFormCreation,base=['kind','sourceSha256','pageId','fieldName','fieldKind','rect','required'],text=['value','multiLine','maxLen','fontSize','textAlignment'],extra=value.fieldKind==='signature'?[]:value.fieldKind==='checkbox'?['checked']:value.fieldKind==='choice'?['options','value']:value.fieldKind==='radio'?['radioWidgets']:value.fieldKind==='date'?[...text,'dateFormat']:text
+  const value=op as unknown as PdfFormCreation,base=['kind','sourceSha256','pageId','fieldName','fieldKind','rect','required',...(value.copyFrom!==undefined?['copyFrom']:[])],text=['value','multiLine','maxLen','fontSize','textAlignment'],extra=value.copyFrom!==undefined?(value.fieldKind==='radio'?['radioWidgets']:[]):value.fieldKind==='signature'?[]:value.fieldKind==='checkbox'?['checked']:value.fieldKind==='choice'?['options','value']:value.fieldKind==='radio'?['radioWidgets']:value.fieldKind==='date'?[...text,'dateFormat']:text
   if(Object.keys(op).some(k=>![...base,...extra].includes(k))||typeof value.required!=='boolean'||typeof value.fieldName!=='string'||value.fieldName.length>256||value.fieldName.split('.').length>16||value.fieldName.split('.').some(part=>!/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(part))||value.fieldKind==='signature'&&value.fieldName.includes('.')||!['text','checkbox','date','choice','radio','signature'].includes(value.fieldKind)||typeof value.pageId!=='string'||!value.pageId||!rectValid(value.rect))throw Error('新建字段名称、类型或区域无效')
+  if(value.copyFrom!==undefined){if(!targetValid(value.copyFrom)||Object.keys(value.copyFrom).some(k=>!targetKeys.includes(k))||!['text','checkbox','choice','date','radio','signature'].includes(value.fieldKind))throw Error('复制来源身份或字段类型无效');if(value.fieldKind!=='radio')return}
   if(value.checked!==undefined&&typeof value.checked!=='boolean'||value.value!==undefined&&!printable(value.value)||value.multiLine!==undefined&&typeof value.multiLine!=='boolean'||value.maxLen!==undefined&&(!Number.isInteger(value.maxLen)||value.maxLen<0||value.maxLen>4000)||value.fontSize!==undefined&&(!Number.isFinite(value.fontSize)||value.fontSize<6||value.fontSize>72)||value.textAlignment!==undefined&&!['left','center','right'].includes(value.textAlignment)||value.dateFormat!==undefined&&!PDF_FORM_DATE_FORMATS.includes(value.dateFormat)||value.maxLen&&value.value&&value.value.length>value.maxLen)throw Error('字段属性或字符集无效；初始值当前限可打印 ASCII')
   if(value.fieldKind==='choice'&&(!Array.isArray(value.options)||value.options.length<1||value.options.length>100||value.options.some(v=>!printable(v,200)||!v)||new Set(value.options).size!==value.options.length||value.value!==undefined&&!value.options.includes(value.value)))throw Error('下拉选项须唯一且初始值须在选项中')
   if(value.fieldKind==='radio'){const rows=value.radioWidgets;if(!Array.isArray(rows)||rows.length<2||rows.length>64||rows.some(w=>!w||Object.keys(w).some(k=>!['pageId','rect','exportValue','checked'].includes(k))||typeof w.pageId!=='string'||!rectValid(w.rect)||!printable(w.exportValue,128)||!w.exportValue||w.checked!==undefined&&typeof w.checked!=='boolean')||new Set(rows.map(w=>w.exportValue)).size!==rows.length||rows.filter(w=>w.checked).length>1||rows[0].pageId!==value.pageId||JSON.stringify(rows[0].rect)!==JSON.stringify(value.rect))throw Error('单选组至少两个独立选项，初始只能选中一个')}
@@ -51,17 +59,41 @@ export function validatePdfFormCreation(operations:NativeOperation[]){
  }
 }
 export function stagePdfFormCreation(model:PdfFormCreateModel,operations:NativeOperation[],input:PdfFormCreation):NativeOperation[]{
- requireEmpty(operations);if(model.capabilities?.createFormField!==true)throw Error(model.capabilities?.createFormFieldReason||'当前来源不能安全新建字段')
- const next=[{kind:'createFormField',sourceSha256:model.sourceSha256,...input}];validatePdfFormCreation(next);if(next[0].sourceSha256!==model.sourceSha256)throw Error('字段来源身份已变化')
- inside(model,input.pageId,input.rect);if(model.formDesignWidgets?.some(w=>w.fieldName===input.fieldName||w.fieldName.startsWith(input.fieldName+'.')||input.fieldName.startsWith(w.fieldName+'.')))throw Error('字段名称重复或与已有字段前缀冲突')
- for(const w of input.radioWidgets??[])inside(model,w.pageId,w.rect)
+ if(operations.some(op=>op.kind!=='createFormField'))throw Error(PDF_FORM_CREATE_ALONE_REASON)
+ if(model.capabilities?.createFormField!==true)throw Error(model.capabilities?.createFormFieldReason||'当前来源不能安全新建字段')
+ const next=[...structuredClone(operations),{kind:'createFormField',sourceSha256:model.sourceSha256,...input}]
+ validatePdfFormCreation(next)
+ for(const op of next){
+  if(op.sourceSha256!==model.sourceSha256)throw Error('字段来源身份已变化')
+  const value=op as unknown as PdfFormCreation
+  inside(model,value.pageId,value.rect)
+  if(value.copyFrom){
+   const w=currentTarget(model,value.copyFrom),group=model.formDesignWidgets?.filter(v=>v.fieldName===w.fieldName)??[],sameParent=(name:string)=>name.split('.').slice(0,-1).join('.')
+   if(w.copyEditable!==true||value.fieldKind!==w.fieldKind||value.required!==(w.required??false)||sameParent(value.fieldName)!==sameParent(w.fieldName))throw Error('原字段复制模板已变化；保存后再编辑属性')
+   if(value.fieldKind==='radio'){
+    const rows:RadioCopyRow[]=group.map((member,i)=>({pageId:model.pages.find((p,n)=>(p.index??n)===member.pageIndex)?.pageId??'',rect:member.rect,exportValue:member.radioOptions?.[i]??'',checked:member.radioChecked===true}))
+    if(group[0]!==w||group.some(member=>!member.copyEditable||member.fieldKind!=='radio'||member.required!==w.required||JSON.stringify(member.radioOptions)!==JSON.stringify(w.radioOptions))||!value.radioWidgets||!radioCopyMatches(rows,value.radioWidgets,value.pageId,value.rect,model.pages.map(p=>p.pageId)))throw Error('单选副本须完整保留来源选项、选择与布局，每页成员须一起平移且页间偏移保持')
+   }else if(group.length!==1||Math.abs(value.rect[2]-value.rect[0]-(w.rect[2]-w.rect[0]))>1e-7||Math.abs(value.rect[3]-value.rect[1]-(w.rect[3]-w.rect[1]))>1e-7)throw Error('原字段副本须保留原尺寸，保存后再编辑')
+  }
+  if(model.formDesignWidgets?.some(w=>w.fieldName===value.fieldName||w.fieldName.startsWith(value.fieldName+'.')||value.fieldName.startsWith(w.fieldName+'.')))throw Error('字段名称重复或与已有字段前缀冲突')
+  for(const widget of value.radioWidgets??[])inside(model,widget.pageId,widget.rect)
+ }
  return next
 }
 export function validateRestoredPdfFormCreation(model:PdfFormCreateModel,operations:NativeOperation[]){
  if(!operations.some(op=>op.kind==='createFormField'))return
- validatePdfFormCreation(operations);const {kind,sourceSha256,...input}=operations[0]
- if(sourceSha256!==model.sourceSha256)throw Error('字段来源身份已变化')
- stagePdfFormCreation(model,[],input as unknown as PdfFormCreation)
+ validatePdfFormCreation(operations)
+ for(const op of operations){const {kind,sourceSha256,...input}=op;if(sourceSha256!==model.sourceSha256)throw Error('字段来源身份已变化');stagePdfFormCreation(model,[],input as unknown as PdfFormCreation)}
+}
+export function replacePdfFormCreation(model:PdfFormCreateModel,operations:NativeOperation[],fieldName:string,input:PdfFormCreation){
+ if(!operations.every(op=>op.kind==='createFormField')||operations.filter(op=>op.fieldName===fieldName).length!==1||input.fieldName!==fieldName)throw Error('待保存字段身份已变化')
+ const next=operations.map(op=>op.fieldName===fieldName?{kind:'createFormField',sourceSha256:model.sourceSha256,...input}:op)
+ validateRestoredPdfFormCreation(model,next);return structuredClone(next)
+}
+export function removePdfFormCreation(model:PdfFormCreateModel,operations:NativeOperation[],fieldName:string){
+ validateRestoredPdfFormCreation(model,operations)
+ if(!operations.every(op=>op.kind==='createFormField')||operations.filter(op=>op.fieldName===fieldName).length!==1)throw Error('待保存字段身份已变化')
+ return structuredClone(operations.filter(op=>op.fieldName!==fieldName))
 }
 export function stagePdfFormRequired(model:PdfFormCreateModel,operations:NativeOperation[],identity:string,required:boolean):NativeOperation[]{
  requireEmpty(operations);const matches=model.formDesignWidgets?.filter(w=>w.widgetIdentity===identity&&w.removable)??[];if(model.capabilities?.editFormFieldRequired!==true||matches.length!==1)throw Error('字段身份已变化或暂不能编辑属性');const w=matches[0],next=[{kind:'editFormFieldRequired',sourceSha256:model.sourceSha256,fieldName:w.fieldName,widgetId:w.widgetId,widgetIdentity:w.widgetIdentity,expectedWidgetSha256:w.expectedWidgetSha256,required}];validatePdfFormCreation(next);return next
@@ -96,12 +128,12 @@ export function bindPdfFormCreatePanel(options:{root:HTMLElement;draft:NativeDra
  function input(label:string,type='text',parent:HTMLElement=body,caption=label){const l=doc.createElement('label'),e=doc.createElement('input');l.textContent=caption;e.type=type;e.setAttribute('aria-label',label);l.append(e);parent.append(l);return e}
  function select(label:string,values:readonly string[]){const l=doc.createElement('label'),e=doc.createElement('select');l.textContent=label;e.setAttribute('aria-label',label);for(const value of values){const option=doc.createElement('option');option.value=value;option.textContent=({left:'左对齐',center:'居中',right:'右对齐',centerH:'水平居中',top:'顶端对齐',centerV:'垂直居中',bottom:'底端对齐',distributeH:'横向分布',distributeV:'纵向分布',sameWidth:'相同宽度',sameHeight:'相同高度',sameSize:'相同大小'} as Record<string,string>)[value]??value;e.append(option)}l.append(e);body.append(l);return e}
  function textarea(label:string,parent:HTMLElement=body,caption=label){const l=doc.createElement('label'),e=doc.createElement('textarea');l.textContent=caption;e.setAttribute('aria-label',label);l.append(e);parent.append(l);return e}
- function disabled(){return disposed||options.draft.closed||options.draft.saving||options.draft.dirty||!!options.unavailable()}
+ function disabled(){const creating=!['properties','required','arrange'].includes(mode)&&options.draft.operations.every(op=>op.kind==='createFormField');return disposed||options.draft.closed||options.draft.saving||options.draft.dirty&&!creating||!!options.unavailable()}
  function target(w:PdfDesignWidget):PdfFormWidgetTarget{return {fieldName:w.fieldName,widgetId:w.widgetId,widgetIdentity:w.widgetIdentity,expectedWidgetSha256:w.expectedWidgetSha256}}
  function coords(rect:[number,number,number,number],prefix='',parent:HTMLElement=body){const values=[rect[0],rect[1],rect[2]-rect[0],rect[3]-rect[1]],controls=['左下角 X','左下角 Y','宽度','高度'].map((label,i)=>{const e=input(prefix+label,'number',parent,label);e.step='any';e.value=String(values[i]);return e});return()=>{const[x,y,w,h]=controls.map(e=>e.value.trim()===''?NaN:Number(e.value));return [x,y,x+w,y+h] as [number,number,number,number]}}
  async function stage(build:()=>NativeOperation[]){if(disposed||panel.hidden)return;let staged=false;try{if(disabled())throw Error(options.unavailable()||PDF_FORM_CREATE_ALONE_REASON);if(options.model().sourceSha256!==options.draft.identity.sourceSha256)throw Error('PDF 来源已变化，请重新打开修订');options.draft.setOperations(build());staged=true;render();await options.refresh();if(!disposed){render();status.textContent='字段设计已加入草稿，请核对实际 PDF 预览后保存'}}catch(e){if(!disposed){if(staged||renderedKey!==key())render();status.textContent=(staged?'字段设计已加入草稿，草稿已保留；':'')+(e instanceof Error?e.message:String(e))}}}
  function render(){if(disposed)return;ui.render(()=>{renderBody();const m=options.model();body.disabled=disabled()||(mode==='properties'?m.capabilities?.editFormWidget!==true:mode==='required'?m.capabilities?.editFormFieldRequired!==true:mode==='arrange'?m.capabilities?.arrangeFormWidgets!==true:m.capabilities?.createFormField!==true)})}
- function renderBody(){if(disposed)return;renderedKey=key();body.replaceChildren();status.textContent=options.unavailable()??(options.draft.dirty?'已有字段设计草稿，请核对预览后保存':'');const m=options.model()
+ function renderBody(){if(disposed)return;renderedKey=key();body.replaceChildren();status.textContent=options.unavailable()??(options.draft.dirty?'已有字段设计草稿；可继续新建字段后统一核对预览和保存':'');const m=options.model()
   if(mode==='required'||mode==='properties'){
    for(const w of m.formDesignWidgets??[]){const row=doc.createElement('fieldset'),label=doc.createElement('legend');row.dataset.pdfFormWidget=w.widgetIdentity;row.disabled=disabled()||!(mode==='properties'?designable(w)&&m.capabilities?.editFormWidget:w.removable&&m.capabilities?.editFormFieldRequired);label.textContent=w.fieldName+' · '+w.widgetId;const required=input(w.fieldName+(w.fieldKind==='radio'?' 整组必填':' 必填'),'checkbox',row,w.fieldKind==='radio'?'整组必填':'必填');required.checked=w.required??false;if(w.fieldKind==='radio'){required.disabled=disabled()||!canSetRadioRequired(m,w);required.title=w.radioRequiredReason||'必填作用于整个单选组，须单独保存'}const name=mode==='properties'?input(w.fieldName+' '+w.widgetId+' 新字段名称','text',row,'新字段名称'):undefined;if(name){name.value=w.fieldName;name.dataset.pdfFormWidgetName=w.widgetIdentity;name.disabled=disabled()||!canRename(m,w);if(w.fieldKind==='radio')name.title=w.radioRenameReason||'改名应用于整个单选组，保留所有按钮及选中值'}const choice=mode==='properties'&&w.fieldKind==='choice'?textarea(w.fieldName+' '+w.widgetId+' 下拉选项（每行一个）',row,'下拉选项（每行一个）'):undefined;if(choice){choice.value=(w.choiceOptions??[]).join('\n');choice.dataset.pdfFormChoiceOptions=w.widgetIdentity;choice.disabled=disabled()||w.choiceOptionsEditable!==true;if(w.choiceOptionsReason)choice.title=w.choiceOptionsReason}const rectangle=mode==='properties'?coords(w.rect,w.fieldName+' '+w.widgetId+' ',row):undefined,apply=doc.createElement('button');apply.type='button';apply.textContent=mode==='properties'?'应用控件属性':'应用必填属性';apply.disabled=disabled()||!(mode==='properties'?designable(w)&&m.capabilities?.editFormWidget:w.removable&&m.capabilities?.editFormFieldRequired);if(mode==='properties')apply.dataset.pdfFormPropertiesApply=w.widgetIdentity;else apply.dataset.pdfFormRequiredApply=w.widgetIdentity;apply.onclick=()=>{void stage(()=>{if(mode!=='properties')return stagePdfFormRequired(options.model(),options.draft.operations,w.widgetIdentity,required.checked);const rect=rectangle!(),properties={...(JSON.stringify(rect)!==JSON.stringify(w.rect)?{rect}:{}),...(required.checked!==(w.required??false)?{required:required.checked}:{}),...(name!.value!==w.fieldName?{newFieldName:name!.value}:{}),...(choice&&!choice.disabled&&choice.value!==(w.choiceOptions??[]).join('\n')?{choiceOptions:choice.value.split(/\r?\n/)}:{})};if(!Object.keys(properties).length)throw Error('请至少修改一项控件属性');return stagePdfFormWidgetProperties(options.model(),options.draft.operations,target(w),properties)})};row.prepend(label);row.append(apply);body.append(row)}return
   }

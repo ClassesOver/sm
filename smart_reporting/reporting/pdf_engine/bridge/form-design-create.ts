@@ -1,4 +1,5 @@
 /** Source-bound Form Design creation and required-property edit, using pinned primitives. */
+import {copyDesignField,type FormCopySource} from './form-source-copy'
 import {createHash} from 'node:crypto'
 import {PDFDocument,PDFArray,PDFDict,PDFName,PDFNumber,PDFRef,PDFRawStream,decodePDFRawStream,PDFTextField,PDFCheckBox,PDFRadioGroup,PDFDropdown} from 'pdf-lib'
 import {applyFormFields,applyFormWidgetEdits} from '../src/main/save-pdf'
@@ -7,7 +8,7 @@ import {replyReferences} from './note-replies'
 import {FORM_DATE_FORMATS,inspectDesignDateActions} from './form-design-actions'
 import type {FormFieldInput} from '../src/shared/ipc'
 const hash=(input:Uint8Array|string)=>createHash('sha256').update(input).digest('hex')
-export interface CreateFormFieldOperation {kind:'createFormField';sourceSha256:string;pageId:string;fieldName:string;fieldKind:'text'|'checkbox'|'date'|'choice'|'radio'|'signature';rect:[number,number,number,number];required:boolean;checked?:boolean;value?:string;options?:string[];dateFormat?:typeof FORM_DATE_FORMATS[number];multiLine?:boolean;maxLen?:number;fontSize?:number;textAlignment?:'left'|'center'|'right';radioWidgets?:{pageId:string;rect:[number,number,number,number];exportValue:string;checked?:boolean}[]}
+export interface CreateFormFieldOperation {kind:'createFormField';sourceSha256:string;pageId:string;fieldName:string;fieldKind:'text'|'checkbox'|'date'|'choice'|'radio'|'signature';rect:[number,number,number,number];required:boolean;copyFrom?:FormCopySource;checked?:boolean;value?:string;options?:string[];dateFormat?:typeof FORM_DATE_FORMATS[number];multiLine?:boolean;maxLen?:number;fontSize?:number;textAlignment?:'left'|'center'|'right';radioWidgets?:{pageId:string;rect:[number,number,number,number];exportValue:string;checked?:boolean}[]}
 export interface EditFormFieldRequiredOperation {kind:'editFormFieldRequired';sourceSha256:string;fieldName:string;widgetId:string;widgetIdentity:string;expectedWidgetSha256:string;required:boolean}
 export async function formDesignCreateAvailability(source:Uint8Array|PDFDocument){
  try{
@@ -46,8 +47,9 @@ export function receipt(content:Uint8Array,bytes:Uint8Array,op:{kind:string},rea
 const printable=(v:unknown,max=4000)=>typeof v==='string'&&v.length<=max&&/^[ -~]*$/.test(v)
 export function validDesignFieldName(value:unknown):value is string{return typeof value==='string'&&value.length<=256&&value.split('.').length<=16&&value.split('.').every(part=>/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/.test(part))}
 export function validateDesignCreation(op:CreateFormFieldOperation){
- const base=['kind','sourceSha256','pageId','fieldName','fieldKind','rect','required'],text=['value','fontSize','textAlignment','multiLine','maxLen'],allowed=op.fieldKind==='signature'?[]:op.fieldKind==='checkbox'?['checked']:op.fieldKind==='radio'?['radioWidgets']:op.fieldKind==='choice'?['options','value']:op.fieldKind==='date'?[...text,'dateFormat']:text
+ const base=['kind','sourceSha256','pageId','fieldName','fieldKind','rect','required',...(op.copyFrom!==undefined?['copyFrom']:[])],text=['value','fontSize','textAlignment','multiLine','maxLen'],allowed=op.copyFrom!==undefined?(op.fieldKind==='radio'?['radioWidgets']:[]):op.fieldKind==='signature'?[]:op.fieldKind==='checkbox'?['checked']:op.fieldKind==='radio'?['radioWidgets']:op.fieldKind==='choice'?['options','value']:op.fieldKind==='date'?[...text,'dateFormat']:text
  if(Object.keys(op).some(k=>![...base,...allowed].includes(k))||op.kind!=='createFormField'||!['text','checkbox','date','choice','radio','signature'].includes(op.fieldKind)||typeof op.required!=='boolean'||!validDesignFieldName(op.fieldName)||op.fieldKind==='signature'&&op.fieldName.includes('.'))throw Error('pdf_form_create_invalid')
+ if(op.copyFrom!==undefined){if(!op.copyFrom||!['text','checkbox','choice','date','radio','signature'].includes(op.fieldKind))throw Error('pdf_form_copy_invalid');if(op.fieldKind!=='radio')return}
  if(op.checked!==undefined&&typeof op.checked!=='boolean'||op.value!==undefined&&!printable(op.value)||op.multiLine!==undefined&&typeof op.multiLine!=='boolean'||op.maxLen!==undefined&&(!Number.isInteger(op.maxLen)||op.maxLen<0||op.maxLen>4000)||op.fontSize!==undefined&&(!Number.isFinite(op.fontSize)||op.fontSize<6||op.fontSize>72)||op.textAlignment!==undefined&&!['left','center','right'].includes(op.textAlignment)||op.dateFormat!==undefined&&!FORM_DATE_FORMATS.includes(op.dateFormat)||op.maxLen&&op.value&&op.value.length>op.maxLen)throw Error('pdf_form_create_properties_invalid')
  if(op.fieldKind==='choice'&&(!Array.isArray(op.options)||op.options.length<1||op.options.length>100||op.options.some(v=>!printable(v,200)||!v)||new Set(op.options).size!==op.options.length||op.value!==undefined&&!op.options.includes(op.value)))throw Error('pdf_form_create_options_invalid')
  if(op.fieldKind==='radio'){const list=op.radioWidgets;if(!Array.isArray(list)||list.length<2||list.length>64||list.some(w=>!w||Object.keys(w).some(k=>!['pageId','rect','exportValue','checked'].includes(k))||!printable(w.exportValue,128)||!w.exportValue||w.checked!==undefined&&typeof w.checked!=='boolean')||new Set(list.map(w=>w.exportValue)).size!==list.length||list.filter(w=>w.checked).length>1||list[0].pageId!==op.pageId||JSON.stringify(list[0].rect)!==JSON.stringify(op.rect))throw Error('pdf_form_create_radio_invalid')}
@@ -70,6 +72,7 @@ function discardNewHierarchyAliases(d:PDFDocument,before:Set<string>){
 function fieldTreeSnapshot(d:PDFDocument){return [String(d.getForm().acroForm.dict.get(PDFName.of('Fields'))),d.getForm().acroForm.getAllFields().filter(([field])=>!field.dict.has(PDFName.of('FT'))).map(([field,ref])=>[String(ref),field.dict.toString()])]}
 export async function createDesignField(content:Uint8Array,expectedSha256:string,op:CreateFormFieldOperation){
  validSource(content,expectedSha256,op.sourceSha256);validateDesignCreation(op)
+ if(op.copyFrom!==undefined)return copyDesignField(content,expectedSha256,op)
  const d=await PDFDocument.load(content,{updateMetadata:false}),availability=await formDesignCreateAvailability(content);if(!availability.createFormField)throw Error(availability.createFormFieldReason||'pdf_form_create_source_unsupported')
  const index=designRectPage(d,expectedSha256,op.pageId,op.rect)
  if(d.getForm().getFields().some(f=>f.getName()===op.fieldName||f.getName().startsWith(op.fieldName+'.')||op.fieldName.startsWith(f.getName()+'.')))throw Error('pdf_form_create_duplicate_or_prefix_name')
