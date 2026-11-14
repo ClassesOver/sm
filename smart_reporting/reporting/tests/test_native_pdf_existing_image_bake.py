@@ -65,30 +65,57 @@ def _close(pixel, expected, tolerance=16):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('bake, check', [
+@pytest.mark.parametrize('bake, check, expected_size', [
     ({'kind': 'flip', 'axis': 'h'}, lambda image: (_close(image.getpixel((image.width // 4, image.height // 4)), (0, 200, 0, 255)),
-                                                  _close(image.getpixel((3 * image.width // 4, image.height // 4)), (255, 0, 0, 255)))),
-    ({'kind': 'crop', 'crop': {'l': 0, 't': 0, 'r': .5, 'b': .5}}, lambda image: _close(image.getpixel((image.width - 2, image.height - 2)), (255, 0, 0, 255))),
+                                                  _close(image.getpixel((3 * image.width // 4, image.height // 4)), (255, 0, 0, 255))), (300, 240)),
+    ({'kind': 'crop', 'crop': {'l': 0, 't': 0, 'r': .5, 'b': .5}}, lambda image: _close(image.getpixel((image.width - 2, image.height - 2)), (255, 0, 0, 255)), (150, 120)),
+    ({'kind': 'rotate', 'quarterTurns': 1}, lambda image: (_close(image.getpixel((image.width // 4, image.height // 4)), (0, 0, 255, 255)),
+                                                           _close(image.getpixel((3 * image.width // 4, image.height // 4)), (255, 0, 0, 255))), (240, 300)),
+    ({'kind': 'rotate', 'quarterTurns': 3}, lambda image: (_close(image.getpixel((image.width // 4, image.height // 4)), (0, 200, 0, 255)),
+                                                           _close(image.getpixel((3 * image.width // 4, image.height // 4)), (255, 255, 255, 255))), (240, 300)),
 ])
-async def test_confirmed_bake_saves_and_downloads_real_bytes(tmp_path, bake, check):
+async def test_confirmed_bake_saves_and_downloads_real_bytes(tmp_path, bake, check, expected_size):
     content = _source()
     editor, context, downloads = await _fixture(tmp_path, content)
     model = (await editor.preview(context, expected_sha256=context.source_file.sha256, operations=[]))['model']
     target = next(image for image in model['existingImages'] if image['rect'] == [60, 90, 160, 170])
     assert target['bakeable'] is True
     x1, y1, x2, y2 = target['rect']
-    rect = [x1, y2 - .5 * (y2 - y1), x1 + .5 * (x2 - x1), y2] if bake['kind'] == 'crop' else target['rect']
+    if bake['kind'] == 'crop':
+        rect = [x1, y2 - .5 * (y2 - y1), x1 + .5 * (x2 - x1), y2]
+    elif bake['kind'] == 'rotate':
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        rect = [cx - (y2 - y1) / 2, cy - (x2 - x1) / 2, cx + (y2 - y1) / 2, cy + (x2 - x1) / 2]
+    else:
+        rect = target['rect']
     operations = [{'kind': 'transformExistingImage', 'sourceSha256': context.source_file.sha256, 'pageId': target['pageId'],
                    'imageId': target['imageId'], 'expectedImageSha256': target['expectedImageSha256'], 'rect': rect, 'bake': bake}]
     saved, preview = await _save(editor, context, downloads, operations, bake['kind'])
     image, sizes = _target_image(saved)
     assert (4, 4) in sizes, '另一张图像保持原样'
-    assert image.size == ((150, 120) if bake['kind'] == 'crop' else (300, 240))
+    assert image.size == expected_size
     check(image)
     assert 'Body text stays' in PdfReader(BytesIO(saved)).pages[0].extract_text()
     reopened = (await editor.preview(context, expected_sha256=context.source_file.sha256, operations=operations))['previewDigest']
     assert reopened == preview['previewDigest'], '同一草稿的预览摘要可复现'
     assert (await editor.workspace.afile_bytes(bind_native_workspace(editor.workspace, context.scope), context.source_file.path))[0] == content
+
+
+@pytest.mark.anyio
+async def test_rotation_requires_an_identity_verified_bakeable_target(tmp_path):
+    content = _source()
+    editor, context, _ = await _fixture(tmp_path, content)
+    model = (await editor.preview(context, expected_sha256=context.source_file.sha256, operations=[]))['model']
+    target = next(image for image in model['existingImages'] if image['rect'] == [60, 90, 160, 170])
+    assert target['bakeable'] is True
+    cx, cy = 110, 130
+    operation = {'kind': 'transformExistingImage', 'sourceSha256': context.source_file.sha256, 'pageId': target['pageId'],
+                 'imageId': target['imageId'], 'expectedImageSha256': target['expectedImageSha256'],
+                 'rect': [70, 80, 150, 180], 'bake': {'kind': 'rotate', 'quarterTurns': 1}}
+    assert (cx, cy) == ((operation['rect'][0] + operation['rect'][2]) / 2, (operation['rect'][1] + operation['rect'][3]) / 2)
+    changed = {**operation, 'rect': target['rect']}
+    with pytest.raises(ReportingError):
+        await editor.preview(context, expected_sha256=context.source_file.sha256, operations=[changed])
 
 
 @pytest.mark.anyio

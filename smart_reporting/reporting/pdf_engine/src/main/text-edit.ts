@@ -2733,7 +2733,12 @@ export function inspectTextObjects(bytes: Uint8Array) {
               }
               fonts.set(item.font, font)
             }
-            return { text: item.text, rect: item.bounds, objectPath: [item.index, ...item.ordinals], ...font, fontSize: renderedEm(m, item.obj) }
+            const colorPtr = m._malloc(16)
+            let fillColor: [number, number, number] | undefined
+            try {
+              if (m._FPDFPageObj_GetFillColor(item.obj, colorPtr, colorPtr + 4, colorPtr + 8, colorPtr + 12) && m.HEAPU8[colorPtr + 12] === 255 && [0, 2, 4, 6].includes(m._FPDFTextObj_GetTextRenderMode(item.obj))) fillColor = [m.HEAPU8[colorPtr]!, m.HEAPU8[colorPtr + 4]!, m.HEAPU8[colorPtr + 8]!]
+            } finally { m._free(colorPtr) }
+            return { text: item.text, rect: item.bounds, objectPath: [item.index, ...item.ordinals], ...font, fontSize: renderedEm(m, item.obj), ...(fillColor ? { fillColor } : {}) }
           }))
         } finally {
           m._FPDFText_ClosePage(textPage)

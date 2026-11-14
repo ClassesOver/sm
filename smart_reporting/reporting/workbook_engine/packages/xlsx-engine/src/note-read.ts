@@ -36,14 +36,14 @@ function targetPath(sheetPath: string, target: string): string {
   if (!path.startsWith('xl/')) throw new Error('批注关系越界')
   return path
 }
-export async function readSheetNotes(source: EntrySource, path: string): Promise<NoteSource> {
+export async function readSheetNotes(source: EntrySource, path: string, options: { allowPictures?: boolean; allowThreads?: boolean } = {}): Promise<NoteSource> {
   const result: NoteSource = { notes: [], sourceIdentity: '', commentXml: new Map(), shapeXml: new Map(), authors: [] }
   try {
     const sheet = await source.readText(path)
     const relsPath = path.replace(/\/([^/]+)$/, '/_rels/$1.rels')
     const rels = await source.has(relsPath) ? await source.readText(relsPath) : ''
     if (/<(?:\w+:)?sheetProtection\b/.test(sheet)) throw new Error('受保护工作表暂不支持批注编辑')
-    if (/threadedComment|person\b|persons\b/i.test(rels + sheet)) throw new Error('线程批注不属于 legacy notes，暂不支持编辑')
+    if (!options.allowThreads && /threadedComment|person\b|persons\b/i.test(rels + sheet)) throw new Error('线程批注不属于 legacy notes，暂不支持编辑')
     const relationships = [...rels.matchAll(/<Relationship\b[^>]*\/?\s*>/g)].map(m => m[0])
     const notes = relationships.filter(r => readXmlAttribute(r, 'Type') === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments')
     const vml = relationships.filter(r => readXmlAttribute(r, 'Type') === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing')
@@ -58,7 +58,7 @@ export async function readSheetNotes(source: EntrySource, path: string): Promise
       result.vmlXml = await source.readText(result.vmlPath)
       const legacy = sheet.match(/<legacyDrawing\b[^>]*\/?\s*>/)?.[0]
       if (!legacy || readXmlAttribute(legacy, 'r:id') !== readXmlAttribute(vml[0], 'Id')) throw new Error('VML 与工作表关联不一致')
-      if (await source.has(result.vmlPath.replace(/\/([^/]+)$/, '/_rels/$1.rels'))) throw new Error('含图片或外部对象的 VML 暂不能保真编辑')
+      if (!options.allowPictures && await source.has(result.vmlPath.replace(/\/([^/]+)$/, '/_rels/$1.rels'))) throw new Error('含图片或外部对象的 VML 暂不能保真编辑')
     }
     if (!!notes.length !== !!vml.length || /<legacyDrawing\b/.test(sheet) !== !!vml.length) throw new Error('批注与 VML 来源不完整')
     const xml = result.commentsXml ?? ''
@@ -90,11 +90,11 @@ export async function readSheetNotes(source: EntrySource, path: string): Promise
     for (const shape of noteShapes(drawing)) {
       if (!/ObjectType=["']Note["']/.test(shape)) continue // Untargeted simple legacy objects remain byte-for-byte.
       const key = shapeKey(shape)
-      if (!key || result.shapeXml.has(key) || !result.commentXml.has(key) || /<(?:\w+:)?(?:imagedata|image|group)\b/i.test(shape)) throw new Error('混合图形或复杂 VML 暂不能保真编辑')
+      if (!key || result.shapeXml.has(key) || !result.commentXml.has(key) || !options.allowPictures && /<(?:\w+:)?(?:imagedata|image|group)\b/i.test(shape)) throw new Error('混合图形或复杂 VML 暂不能保真编辑')
       result.shapeXml.set(key, shape)
     }
     if (/<(?:[\w.-]+:)?shape\b[^>]*\/>/.test(drawing)) throw new Error('自闭合 VML 对象暂不能保真编辑')
-    if (result.commentXml.size !== result.shapeXml.size || /<(?:\w+:)?(?:group|imagedata|image)\b/i.test(drawing)) throw new Error('批注与 VML 图形不匹配')
+    if (result.commentXml.size !== result.shapeXml.size || /<(?:\w+:)?group\b/i.test(drawing) || !options.allowPictures && /<(?:\w+:)?(?:imagedata|image)\b/i.test(drawing)) throw new Error('批注与 VML 图形不匹配')
     if (drawing && !/<(?:[\w.-]+:)?shapetype\b[^>]*\bid="[^"]+"/.test(drawing)) throw new Error('VML 批注图形类型缺失')
     result.sourceIdentity = sha256Hex(JSON.stringify([path, rels, xml, drawing]))
   } catch (error) { result.readOnlyReason = (error as Error).message }

@@ -52,7 +52,7 @@ export function createDocxFindReplace(options: { editor: Editor; root: HTMLEleme
   const panel = document.createElement('section')
   panel.className = 'find-panel docx-find-replace'; panel.hidden = true
   panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', '查找和替换')
-  panel.innerHTML = '<div class="find-tabs"><button type="button" data-find-tab="find" class="find-tab">查找</button><button type="button" data-find-tab="replace" class="find-tab">替换</button><button type="button" data-find-action="close" aria-label="关闭查找">关闭</button></div><div class="find-row"><input class="find-input" data-find-query aria-label="查找内容"><button type="button" data-find-action="previous" aria-label="上一个匹配">↑</button><button type="button" data-find-action="next" aria-label="下一个匹配">↓</button><span class="find-count" data-find-count></span></div><div class="find-row" data-replace-row><input class="find-input" data-find-replacement aria-label="替换为"><button type="button" data-find-action="replace">替换当前</button><button type="button" data-find-action="replace-all">全部替换</button></div><div class="find-options"><label><input type="checkbox" data-find-option="matchCase">区分大小写</label><label><input type="checkbox" data-find-option="wholeWord">全字匹配</label><label><input type="checkbox" data-find-option="matchWidth">区分全半角</label><select data-find-mode aria-label="查找模式"><option value="literal">普通文字</option><option value="wildcard">Word 通配符</option><option value="regex">正则表达式</option></select></div><p role="status" data-find-status></p><div class="find-results" data-find-results></div><p class="find-results-note">搜索当前正文和表格；受保护对象、页眉页脚不在此搜索范围。段落拆分及复杂结构替换尚未支持。</p>'
+  panel.innerHTML = '<div class="find-tabs"><div role="tablist" aria-label="查找方式"><button type="button" role="tab" data-find-tab="find" class="find-tab">查找</button><button type="button" role="tab" data-find-tab="replace" class="find-tab">替换</button></div><button type="button" data-find-action="close" aria-label="关闭查找">关闭</button></div><div class="find-row"><label>查找内容<input class="find-input" data-find-query aria-label="查找内容"></label><button type="button" data-find-action="previous" aria-label="上一个匹配">↑</button><button type="button" data-find-action="next" aria-label="下一个匹配">↓</button><span class="find-count" data-find-count></span></div><div class="find-row" data-replace-row><label>替换为<input class="find-input" data-find-replacement aria-label="替换为"></label><button type="button" data-find-action="replace">替换当前</button><button type="button" data-find-action="replace-all">全部替换</button></div><div class="find-options"><label><input type="checkbox" data-find-option="matchCase">区分大小写</label><label><input type="checkbox" data-find-option="wholeWord">全字匹配</label><label><input type="checkbox" data-find-option="matchWidth">区分全半角</label><select data-find-mode aria-label="查找模式"><option value="literal">普通文字</option><option value="wildcard">Word 通配符</option><option value="regex">正则表达式</option></select></div><p role="status" data-find-status></p><div class="find-results" data-find-results></div><p class="find-results-note">搜索当前正文和表格；受保护对象、页眉页脚不在此搜索范围。段落拆分及复杂结构替换尚未支持。</p>'
   root.append(panel)
   const query = panel.querySelector<HTMLInputElement>('[data-find-query]')!
   const replacement = panel.querySelector<HTMLInputElement>('[data-find-replacement]')!
@@ -75,15 +75,21 @@ export function createDocxFindReplace(options: { editor: Editor; root: HTMLEleme
     replacement.disabled = locked
   }
   const paint = () => {
+    const restoreResultFocus = results.contains(document.activeElement)
     count.textContent = matches.length ? `${active + 1}/${matches.length}` : '0/0'
     results.replaceChildren()
     matches.slice(0, RESULTS_LIST_CAP).forEach((match, index) => {
       const button = document.createElement('button'); button.type = 'button'; button.className = `find-result${index === active ? ' on' : ''}`
       const context = matchContext(match); button.textContent = `${index + 1}. ${context.before}${context.hit}${context.after}`
+      if (index === active) button.setAttribute('aria-current', 'true')
       button.addEventListener('click', () => navigate(index)); results.append(button)
     })
     if (matches.length > RESULTS_LIST_CAP) { const note = document.createElement('p'); note.textContent = `仅列出前 ${RESULTS_LIST_CAP} 条；可用上一个/下一个导航全部结果`; results.append(note) }
     highlight(); refreshLock()
+    if (restoreResultFocus) {
+      const current = results.querySelector<HTMLButtonElement>('.find-result.on')
+      current?.focus({ preventScroll: true }); current?.scrollIntoView?.({ block: 'nearest' })
+    }
   }
   const scan = (reset = false) => {
     if (disposed) return
@@ -102,6 +108,13 @@ export function createDocxFindReplace(options: { editor: Editor; root: HTMLEleme
     const { node } = editor.view.domAtPos(match.from)
     ;(node instanceof HTMLElement ? node : node.parentElement)?.scrollIntoView?.({ block: 'center' })
     paint()
+    // 仅滚动结果列表，避免输入框导航时把整个面板滚离当前字段。
+    const current = results.querySelector<HTMLButtonElement>('.find-result.on')
+    if (current) {
+      const item = current.getBoundingClientRect(), list = results.getBoundingClientRect()
+      if (item.top < list.top + 4) results.scrollTop += item.top - list.top - 4
+      else if (item.bottom > list.bottom - 4) results.scrollTop += item.bottom - list.bottom + 4
+    }
   }
   const replace = (all: boolean) => {
     if (isLocked() || !editor.isEditable) { status.textContent = '当前修订只读、已关闭或正在保存，不能替换'; return false }
@@ -136,7 +149,10 @@ export function createDocxFindReplace(options: { editor: Editor; root: HTMLEleme
   const open = (mode: 'find' | 'replace') => {
     panel.hidden = false
     panel.querySelector<HTMLElement>('[data-replace-row]')!.hidden = mode !== 'replace'
-    for (const tab of panel.querySelectorAll<HTMLButtonElement>('[data-find-tab]')) tab.classList.toggle('on', tab.dataset.findTab === mode)
+    for (const tab of panel.querySelectorAll<HTMLButtonElement>('[data-find-tab]')) {
+      const selected = tab.dataset.findTab === mode
+      tab.classList.toggle('on', selected); tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1
+    }
     scan(); query.focus(); query.select()
   }
   panel.addEventListener('input', event => { if (event.target !== replacement) scan(true) })
@@ -154,11 +170,19 @@ export function createDocxFindReplace(options: { editor: Editor; root: HTMLEleme
     }
   })
   panel.addEventListener('keydown', event => {
+    if (event.isComposing) return
+    const tab = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-find-tab]')
+    if (tab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault()
+      const mode = event.key === 'Home' ? 'find' : event.key === 'End' ? 'replace' : tab.dataset.findTab === 'find' ? 'replace' : 'find'
+      open(mode); panel.querySelector<HTMLButtonElement>(`[data-find-tab="${mode}"]`)!.focus()
+      return
+    }
     if (event.key === 'Escape') { event.preventDefault(); close() }
     if (event.key === 'Enter' && event.target === query) { event.preventDefault(); navigate(active + (event.shiftKey ? -1 : 1)) }
   })
   const shortcut = (event: KeyboardEvent) => {
-    if (!(event.ctrlKey || event.metaKey) || event.altKey || !['f', 'h'].includes(event.key.toLowerCase())) return
+    if (event.isComposing || !(event.ctrlKey || event.metaKey) || event.altKey || !['f', 'h'].includes(event.key.toLowerCase())) return
     event.preventDefault(); event.stopPropagation(); open(event.key.toLowerCase() === 'h' ? 'replace' : 'find')
   }
   root.addEventListener('keydown', shortcut, true)

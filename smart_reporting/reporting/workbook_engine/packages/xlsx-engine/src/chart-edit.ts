@@ -13,6 +13,8 @@ export class ChartEditError extends Error {}
 export type ChartTargetType = 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut'
 
 export interface ChartSeriesSetEntry {
+  readonly plot?: 'barChart' | 'lineChart' | undefined
+  readonly secondaryAxis?: boolean | undefined
   readonly name: string
   readonly values: readonly number[]
   readonly valuesRef?: string | undefined
@@ -97,6 +99,131 @@ const TARGET_PLOTS: Record<ChartTargetType, PlotElement> = {
 const SYNTH_CAT_AXIS_ID = '900000001'
 const SYNTH_VAL_AXIS_ID = '900000002'
 
+interface PlotMatch {
+  readonly family: string
+  readonly inner: string
+  readonly whole: string
+  readonly index: number
+}
+
+const PLOT_FAMILIES =
+  'barChart|lineChart|areaChart|bar3DChart|line3DChart|area3DChart|pieChart|pie3DChart|doughnutChart|scatterChart|radarChart'
+
+/// Every plot group element of the chart part, in document order.
+function matchPlots(chartXml: string): PlotMatch[] {
+  const pattern = new RegExp(`<c:(${PLOT_FAMILIES})>([\\s\\S]*?)</c:\\1>`, 'g')
+  return [...chartXml.matchAll(pattern)].map((match) => ({
+    family: match[1] ?? '',
+    inner: match[2] ?? '',
+    whole: match[0],
+    index: match.index ?? 0,
+  }))
+}
+
+interface AxisMatch {
+  readonly kind: 'cat' | 'val'
+  readonly xml: string
+  readonly id: string | undefined
+  readonly crossAx: string | undefined
+  /// c:delete val="1" — scales its series but is not drawn.
+  readonly hidden: boolean
+  /// Value axis drawn on the right / crossing at max — the secondary scale.
+  readonly right: boolean
+}
+
+/// Every paired-open axis element of the scoped XML, in document order.
+/// (Self-closing axes carry no axId and no formatting — nothing to manage.)
+function matchAxes(scopedXml: string): AxisMatch[] {
+  const pattern = /<c:(catAx|dateAx|valAx)>([\s\S]*?)<\/c:\1>/g
+  return [...scopedXml.matchAll(pattern)].map((match) => {
+    const tag = match[1] ?? ''
+    const inner = match[2] ?? ''
+    return {
+      kind: tag === 'valAx' ? ('val' as const) : ('cat' as const),
+      xml: match[0],
+      id: /<c:axId val="([0-9]+)"\/>/.exec(inner)?.[1],
+      crossAx: /<c:crossAx val="([0-9]+)"\/>/.exec(inner)?.[1],
+      hidden: /<c:delete val="1"\/>/.test(inner),
+      right:
+        tag === 'valAx' &&
+        (/<c:axPos val="r"\/>/.test(inner) || /<c:crosses val="max"\/>/.test(inner)),
+    }
+  })
+}
+
+interface AxisPairSelection {
+  readonly primaryCat: AxisMatch | undefined
+  readonly primaryVal: AxisMatch | undefined
+  readonly secondaryVal: AxisMatch | undefined
+  readonly secondaryCat: AxisMatch | undefined
+  /// Axes outside the two managed pairs — a rebuild fails closed on them.
+  readonly leftovers: readonly AxisMatch[]
+}
+
+/// Splits a plotArea's axes into the primary pair (left value axis and the
+/// category axis crossing it), the secondary pair, and anything else.
+function classifyAxes(axes: readonly AxisMatch[]): AxisPairSelection {
+  const vals = axes.filter((axis) => axis.kind === 'val')
+  const cats = axes.filter((axis) => axis.kind === 'cat')
+  const primaryVal = vals.find((axis) => !axis.right && axis.id !== undefined) ?? vals[0]
+  const primaryCat =
+    primaryVal === undefined
+      ? undefined
+      : (cats.find((axis) => axis.crossAx === primaryVal.id) ?? cats[0])
+  const rest = axes.filter((axis) => axis !== primaryCat && axis !== primaryVal)
+  const secondaryVal = rest.find((axis) => axis.kind === 'val' && axis.right)
+  const secondaryCat =
+    secondaryVal === undefined
+      ? undefined
+      : (rest.find((axis) => axis.kind === 'cat' && axis.crossAx === secondaryVal.id) ??
+        rest.find((axis) => axis.kind === 'cat'))
+  const leftovers = rest.filter((axis) => axis !== secondaryVal && axis !== secondaryCat)
+  return { primaryCat, primaryVal, secondaryVal, secondaryCat, leftovers }
+}
+
+/// Fresh axIds above every id the plotArea already uses.
+function nextAxisIds(plotAreaInner: string, count: number): string[] {
+  let max = 0
+  for (const found of plotAreaInner.matchAll(/<c:axId val="([0-9]+)"\/>/g)) {
+    const value = Number(found[1])
+    if (Number.isFinite(value) && value > max) max = value
+  }
+  return Array.from({ length: count }, (_, index) => String(max + 1 + index))
+}
+
+/// Secondary pair synthesized when tagged series need one the file lacks —
+/// Insert Chart's shape (hidden category axis, right value axis at max).
+function hiddenCatAxisXml(catId: string, valId: string): string {
+  return (
+    `<c:catAx><c:axId val="${catId}"/>` +
+    '<c:scaling><c:orientation val="minMax"/></c:scaling>' +
+    `<c:delete val="1"/><c:axPos val="b"/><c:crossAx val="${valId}"/></c:catAx>`
+  )
+}
+
+function rightValAxisXml(valId: string, catId: string): string {
+  return (
+    `<c:valAx><c:axId val="${valId}"/>` +
+    '<c:scaling><c:orientation val="minMax"/></c:scaling>' +
+    `<c:delete val="0"/><c:axPos val="r"/><c:crossAx val="${catId}"/><c:crosses val="max"/></c:valAx>`
+  )
+}
+
+/// The plotArea children this rebuild owns removed (plots and axes); the
+/// layout element and any dTable/spPr tail stay in `rest`.
+function plotAreaRemainder(
+  plotAreaInner: string,
+  plots: readonly PlotMatch[],
+  axes: readonly AxisMatch[],
+): { readonly layout: string; readonly rest: string } {
+  let rest = plotAreaInner
+  for (const plot of plots) rest = rest.replace(plot.whole, '')
+  for (const axis of axes) rest = rest.replace(axis.xml, '')
+  rest = rest.replace(/<c:(?:catAx|dateAx|valAx|serAx)\/>/g, '')
+  const layout = /<c:layout\/>|<c:layout>[\s\S]*?<\/c:layout>/.exec(rest)?.[0] ?? ''
+  return { layout, rest: layout === '' ? rest : rest.replace(layout, '') }
+}
+
 function escapeXmlText(input: string): string {
   return input.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
@@ -114,10 +241,139 @@ function assertHexColor(color: string): string {
 
 /// Single-plot matcher for the label-capable family (used by several edits).
 const LABELABLE_PLOT_PATTERN =
-  /<c:(barChart|lineChart|areaChart|pieChart|doughnutChart)>([\s\S]*?)(<\/c:\1>)/
+  /<c:(barChart|lineChart|areaChart|pieChart|doughnutChart)\b[^>]*(?<!\/)>([\s\S]*?)(<\/c:\1>)/
+const SCATTER_PLOT_PATTERN = /<c:scatterChart\b[^>]*(?<!\/)>[\s\S]*?<\/c:scatterChart>/
+
+/** 只暂换元素QName，编辑后恢复来源前缀；不重序列化来源XML。 */
+function chartEditNamespaces(source: string): {xml: string; restore: (xml: string) => string} {
+  const chart = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+  const drawing = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+  const parser = new SaxesParser({xmlns: true})
+  const replacements: Array<{start: number; end: number; text: string}> = []
+  const opaque: Array<{token: string; xml: string}> = []
+  let marker = '__chartEditOpaque_'
+  while (source.includes(marker)) marker += '_'
+  let depth = 0, opaqueStart: number | undefined, opaqueDepth = 0, opaqueName: string | undefined
+  let chartPrefix = '', drawingPrefix = 'a'
+  const rootBindings = new Map<string, string>()
+  let drawingSeen = false
+  const retain = (start: number, end: number, name?: string) => {
+    const token = name ? `<${name} ${marker}${opaque.length}__=""/>` : `${marker}${opaque.length}__`
+    replacements.push({start, end, text: token})
+    opaque.push({token, xml: source.slice(start, end)})
+  }
+  parser.on('doctype', () => {throw new ChartEditError('图表编辑不支持DOCTYPE。')})
+  parser.on('opentag', node => {
+    const start = source.lastIndexOf('<', parser.position - 1)
+    if (depth++ === 0) {
+      if (node.uri !== chart || node.local !== 'chartSpace') throw new ChartEditError('来源不是OOXML图表部件。')
+      chartPrefix = node.prefix
+      for (const attr of Object.values(node.attributes)) {
+        if (attr.uri === 'http://www.w3.org/2000/xmlns/') rootBindings.set(attr.name === 'xmlns' ? '' : attr.local, attr.value)
+      }
+      const binding = [...rootBindings].find(([prefix, uri]) => prefix && uri === drawing)
+      drawingPrefix = rootBindings.get('a') === drawing ? 'a' : binding?.[0] ?? 'a'
+      drawingSeen = binding !== undefined
+      while (drawingPrefix === chartPrefix || (rootBindings.has(drawingPrefix) && rootBindings.get(drawingPrefix) !== drawing)) drawingPrefix += '_'
+    }
+    if (opaqueStart !== undefined) return
+    if (node.uri === drawing && !drawingSeen) {
+      if (node.prefix && node.prefix !== chartPrefix) drawingPrefix = node.prefix
+      drawingSeen = true
+    }
+    const canonical = node.uri === chart ? 'c' : node.uri === drawing ? 'a' : undefined
+    // 扩展保持原始词法；全部同URI元素（含实际编辑目标的别名）参与编辑。
+    if (!canonical || (node.uri === chart && node.local === 'extLst')) {
+      opaqueStart = start
+      opaqueDepth = depth
+      opaqueName = canonical ? `${canonical}:${node.local}` : undefined
+      return
+    }
+    replacements.push({start: start + 1, end: start + 1 + node.name.length, text: `${canonical}:${node.local}`})
+  })
+  parser.on('closetag', node => {
+    if (opaqueStart !== undefined) {
+      if (depth === opaqueDepth) {retain(opaqueStart, parser.position, opaqueName); opaqueStart = undefined}
+    } else if (!node.isSelfClosing) {
+      const start = source.lastIndexOf('</', parser.position - 1) + 2
+      replacements.push({start, end: start + node.name.length, text: `${node.uri === chart ? 'c' : 'a'}:${node.local}`})
+    }
+    depth--
+  })
+  parser.on('comment', () => {
+    if (opaqueStart === undefined) retain(source.lastIndexOf('<!--', parser.position), parser.position)
+  })
+  parser.on('cdata', () => {
+    if (opaqueStart === undefined) retain(source.lastIndexOf('<![CDATA[', parser.position), parser.position)
+  })
+  parser.on('processinginstruction', () => {
+    if (opaqueStart === undefined) retain(source.lastIndexOf('<?', parser.position), parser.position)
+  })
+  try {parser.write(source).close()} catch (error) {
+    throw error instanceof ChartEditError ? error : new ChartEditError(`图表命名空间无法解析：${String(error)}`)
+  }
+  let xml = source
+  for (const item of replacements.sort((a, b) => b.start - a.start)) xml = spliceAt(xml, item.start, item.end - item.start, item.text)
+  return {xml, restore: edited => {
+    if (edited === xml) return source
+    // 按当前局部绑定恢复主前缀，避免默认namespace被遮蔽后改变元素URI。
+    const output = new SaxesParser({xmlns: false})
+    const scopes: Array<Map<string, string>> = [], names: string[] = []
+    const patches: Array<{start: number; end: number; text: string}> = []
+    output.on('opentag', node => {
+      const scope = new Map(scopes.at(-1)), start = edited.lastIndexOf('<', output.position - 1)
+      for (const [name, value] of Object.entries(node.attributes)) {
+        if (name === 'xmlns') scope.set('', value)
+        else if (name.startsWith('xmlns:')) scope.set(name.slice(6), value)
+      }
+      const opaqueNode = Object.keys(node.attributes).some(name => name.startsWith(marker))
+      const canonical = opaqueNode ? undefined : /^([ca]):(.+)$/.exec(node.name)
+      let restoredName = node.name
+      if (canonical) {
+        const uri = canonical[1] === 'c' ? chart : drawing
+        const preferred = canonical[1] === 'c' ? chartPrefix : drawingPrefix
+        let prefix = scope.get(preferred) === uri ? preferred : [...scope].find(([_prefix, bound]) => bound === uri)?.[0]
+        let declaration = ''
+        if (prefix === undefined) {
+          prefix = preferred || canonical[1]!
+          while (scope.has(prefix)) prefix += '_'
+          declaration = ` xmlns:${prefix}="${uri}"`
+          scope.set(prefix, uri)
+        }
+        restoredName = `${prefix ? prefix + ':' : ''}${canonical[2]}`
+        patches.push({start: start + 1, end: start + 1 + node.name.length, text: restoredName + declaration})
+      }
+      scopes.push(scope)
+      names.push(restoredName)
+    })
+    output.on('closetag', node => {
+      const name = names.pop()!
+      scopes.pop()
+      if (!node.isSelfClosing && name !== node.name) {
+        const start = edited.lastIndexOf('</', output.position - 1) + 2
+        patches.push({start, end: start + node.name.length, text: name})
+      }
+    })
+    output.write(edited).close()
+    let restored = edited
+    for (const patch of patches.sort((a, b) => b.start - a.start)) restored = spliceAt(restored, patch.start, patch.end - patch.start, patch.text)
+    for (const item of opaque) {
+      restored = restored.replaceAll(item.token, () => item.xml)
+    }
+    try {new SaxesParser({xmlns: true}).write(restored).close()} catch (error) {
+      throw new ChartEditError(`编辑后的图表XML无效：${String(error)}`)
+    }
+    return restored
+  }}
+}
 
 export function applyChartEdit(chartXml: string, edit: ChartEditLean): string {
-  let xml = chartXml
+  if (edit.axisTitles !== undefined || edit.gridlines !== undefined || edit.valueAxis !== undefined) {
+    const scatter = editScatterAxes(chartXml, edit)
+    if (scatter !== undefined) return applyChartEdit(scatter, { ...edit, axisTitles: undefined, gridlines: undefined, valueAxis: undefined })
+  }
+  const namespaces = chartEditNamespaces(chartXml)
+  let xml = namespaces.xml
   if (edit.chartType !== undefined) xml = convertChartType(xml, edit.chartType)
   if (edit.title !== undefined) xml = setChartTitle(xml, edit.title)
   // Full replacement first: the index-keyed edits below target the new set.
@@ -161,11 +417,108 @@ export function applyChartEdit(chartXml: string, edit: ChartEditLean): string {
       xml = setSeriesData(xml, entry)
     }
   }
-  return xml
+  return namespaces.restore(xml)
 }
 
 function spliceAt(xml: string, at: number, length: number, replacement: string): string {
   return xml.slice(0, at) + replacement + xml.slice(at + length)
+}
+
+/** Scatter 的两个 valAx 以 plot axId 定位；只替换目标子节点的原始字节。 */
+function editScatterAxes(source: string, edit: ChartEditLean): string | undefined {
+  const chartUri = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+  const drawingUri = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+  type Node = { local: string; uri: string; prefix: string; val?: string | undefined; start: number; end: number; openEnd: number; scope: Map<string, string>; children: Node[] }
+  const parser = new SaxesParser({ xmlns: true }), stack: Node[] = [], roots: Node[] = []
+  parser.on('doctype', () => { throw new ChartEditError('图表编辑不支持DOCTYPE。') })
+  parser.on('opentag', tag => {
+    let scope = stack.at(-1)?.scope ?? new Map<string, string>()
+    const declarations = Object.values(tag.attributes).filter(attr => attr.uri === 'http://www.w3.org/2000/xmlns/')
+    if (declarations.length) {
+      scope = new Map(scope)
+      for (const attr of declarations) scope.set(attr.name === 'xmlns' ? '' : attr.local, attr.value)
+    }
+    const start = source.lastIndexOf('<', parser.position - 1)
+    const node: Node = { local: tag.local, uri: tag.uri, prefix: tag.prefix, val: Object.values(tag.attributes).find(attr => !attr.uri && attr.local === 'val')?.value,
+      start, end: parser.position, openEnd: parser.position, scope, children: [] }
+    ;(stack.at(-1)?.children ?? roots).push(node)
+    stack.push(node)
+  })
+  parser.on('closetag', () => {
+    const node = stack.pop()!
+    node.end = parser.position
+  })
+  try { parser.write(source).close() } catch (error) {
+    throw error instanceof ChartEditError ? error : new ChartEditError(`Scatter axis XML cannot be parsed: ${String(error)}`)
+  }
+  const children = (node: Node | undefined, name: string) => node?.children.filter(child => child.uri === chartUri && child.local === name) ?? []
+  const area = children(children(roots[0], 'chart')[0], 'plotArea')[0]
+  const scatter = children(area, 'scatterChart')
+  if (!scatter.length) return undefined
+  const fail = () => { throw new ChartEditError('Scatter axes require one plot, two unique axId values and reciprocal crossAx identities.') }
+  if (scatter.length !== 1 || area!.children.filter(node => node.uri === chartUri && /Chart$/.test(node.local)).length !== 1) fail()
+  const id = (node: Node, name: string) => {
+    const entries = children(node, name), raw = entries[0]?.val
+    const value = raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : NaN
+    if (entries.length !== 1 || !Number.isInteger(value) || value < 0 || value > 4294967295) return fail()
+    return value
+  }
+  const ids = children(scatter[0], 'axId').map(node => {
+    const value = node.val !== undefined && /^\d+$/.test(node.val) ? Number(node.val) : NaN
+    if (!Number.isInteger(value) || value < 0 || value > 4294967295) return fail()
+    return value
+  })
+  if (ids.length !== 2 || ids[0] === ids[1]) fail()
+  const axes = area!.children.filter(node => node.uri === chartUri && ['valAx', 'catAx', 'dateAx'].includes(node.local) && ids.includes(id(node, 'axId')))
+  const x = axes.find(node => id(node, 'axId') === ids[0]), y = axes.find(node => id(node, 'axId') === ids[1])
+  if (axes.length !== 2 || x?.local !== 'valAx' || y?.local !== 'valAx' || id(x, 'crossAx') !== ids[1] || id(y, 'crossAx') !== ids[0]) fail()
+  const patches: Array<{ start: number; length: number; text: string; priority: number }> = []
+  const qualified = (node: Node, local: string) => {
+    const prefix = node.scope.get(node.prefix) === chartUri ? node.prefix : [...node.scope].find(([, uri]) => uri === chartUri)?.[0]
+    if (prefix === undefined) return fail()
+    return `${prefix ? prefix + ':' : ''}${local}`
+  }
+  const replaceChild = (parent: Node, name: string, text: string, after: readonly string[]) => {
+    const existing = children(parent, name)
+    const priority = ['logBase', 'orientation', 'max', 'min', 'axPos', 'majorGridlines', 'minorGridlines', 'title'].indexOf(name)
+    if (existing.length > 1) fail()
+    if (existing[0]) patches.push({ start: existing[0].start, length: existing[0].end - existing[0].start, text, priority })
+    else if (text) {
+      const previous = parent.children.filter(node => node.uri === chartUri && after.includes(node.local)).at(-1)
+      patches.push({ start: previous?.end ?? parent.openEnd, length: 0, text, priority })
+    }
+  }
+  for (const [node, value] of [[x!, edit.axisTitles?.category], [y!, edit.axisTitles?.value]] as const) {
+    if (value === undefined) continue
+    let text = ''
+    if (value !== null) {
+      let prefix = [...node.scope].find(([key, uri]) => key && uri === drawingUri)?.[0] ?? 'a'
+      while (node.scope.has(prefix) && node.scope.get(prefix) !== drawingUri) prefix += '_'
+      text = builtTitle(escapeXmlText(value)).replace(/(<\/?)c:/g, `$1${node.prefix ? node.prefix + ':' : ''}`).replace(/(<\/?)a:/g, `$1${prefix}:`)
+      if (node.scope.get(prefix) !== drawingUri) text = text.replace('>', ` xmlns:${prefix}="${drawingUri}">`)
+    }
+    replaceChild(node, 'title', text, ['axPos', 'majorGridlines', 'minorGridlines'])
+  }
+  if (edit.gridlines !== undefined) replaceChild(y!, 'majorGridlines', edit.gridlines ? `<${qualified(y!, 'majorGridlines')}/>` : '', ['axPos'])
+  if (edit.valueAxis !== undefined) {
+    const scalings = children(y, 'scaling'), scaling = scalings[0]
+    if (scalings.length !== 1 || !scaling) throw new ChartEditError('Scatter value axis has no editable scaling element.')
+    const open = source.slice(scaling.start, scaling.openEnd)
+    if (/\/>$/.test(open)) {
+      const bounds = (['max', 'min'] as const).flatMap(bound => {
+        const value = edit.valueAxis![bound]
+        return value === undefined || value === null ? [] : [`<${qualified(scaling, bound)} val="${value}"/>`]
+      }).join('')
+      if (bounds) patches.push({ start: scaling.start, length: scaling.end - scaling.start, text: `${open.slice(0, -2)}>${bounds}</${qualified(scaling, 'scaling')}>`, priority: 0 })
+    } else for (const bound of ['max', 'min'] as const) {
+      const value = edit.valueAxis[bound]
+      if (value !== undefined) replaceChild(scaling, bound, value === null ? '' : `<${qualified(scaling, bound)} val="${value}"/>`, bound === 'max' ? ['logBase', 'orientation'] : ['logBase', 'orientation', 'max'])
+    }
+  }
+  let result = source
+  // 相邻新元素共享插入点时，逆 schema 顺序应用原字节补丁。
+  for (const patch of patches.sort((a, b) => b.start - a.start || b.priority - a.priority)) result = spliceAt(result, patch.start, patch.length, patch.text)
+  return result
 }
 
 function builtTitle(escapedText: string): string {
@@ -437,21 +790,19 @@ function replaceSeries(
   chartXml: string,
   entries: readonly ChartSeriesSetEntry[],
 ): string {
-  const plotPattern =
-    /<c:(barChart|lineChart|areaChart|bar3DChart|line3DChart|area3DChart|pieChart|pie3DChart|doughnutChart|scatterChart|radarChart)>([\s\S]*?)<\/c:\1>/g
-  const plots = [...chartXml.matchAll(plotPattern)]
+  const plots = matchPlots(chartXml)
   const plotMatch = plots[0]
-  if (!plotMatch?.[1] || plotMatch[2] === undefined || plotMatch.index === undefined) {
+  if (!plotMatch) {
     throw new ChartEditError('This chart type does not support series replacement.')
   }
-  if (plots.length > 1) {
-    throw new ChartEditError('Combo charts cannot have their series replaced.')
+  if (plots.length > 1 || entries.some((entry) => entry.plot !== undefined)) {
+    return replaceComboSeries(chartXml, plots, entries)
   }
-  const plot = plotMatch[1]
+  const plot = plotMatch.family
   if (!REPLACEABLE_PLOTS.includes(plot)) {
     throw new ChartEditError(`Replacing series on a ${plot} is not supported.`)
   }
-  const inner = plotMatch[2]
+  const inner = plotMatch.inner
   const firstSer = inner.search(/<c:ser>/)
   if (firstSer === -1) throw new ChartEditError('This chart has no series.')
   const built = entries
@@ -462,11 +813,138 @@ function replaceSeries(
     )
     .join('')
   const nextInner =
-    inner.slice(0, firstSer) + built + inner.slice(firstSer).replace(/<c:ser>[\s\S]*?<\/c:ser>/g, '')
+    inner.slice(0, firstSer) +
+    built +
+    inner.slice(firstSer).replace(/<c:ser>[\s\S]*?<\/c:ser>/g, '')
   return (
     chartXml.slice(0, plotMatch.index) +
     `<c:${plot}>${nextInner}</c:${plot}>` +
-    chartXml.slice(plotMatch.index + plotMatch[0].length)
+    chartXml.slice(plotMatch.index + plotMatch.whole.length)
+  )
+}
+
+/// Combo series replacement: series are grouped by their tagged family and
+/// axis set into <c:barChart>/<c:lineChart> elements (c:idx/order stay
+/// global in the dialog's row order), the primary axis pair survives
+/// verbatim, and the secondary pair is kept, synthesized, or dropped to
+/// match the tags.
+function replaceComboSeries(
+  chartXml: string,
+  plots: readonly PlotMatch[],
+  entries: readonly ChartSeriesSetEntry[],
+): string {
+  for (const plot of plots) {
+    if (plot.family !== 'barChart' && plot.family !== 'lineChart') {
+      throw new ChartEditError('Only bar + line combos support series replacement.')
+    }
+  }
+  const plotAreaMatch = /<c:plotArea>([\s\S]*?)<\/c:plotArea>/.exec(chartXml)
+  if (!plotAreaMatch || plotAreaMatch[1] === undefined) {
+    throw new ChartEditError('Chart part has no plot area.')
+  }
+  const plotAreaInner = plotAreaMatch[1]
+  // A series axis (3D charts) references its own scale; this rebuild cannot
+  // re-point it, so fail closed rather than orphan it.
+  if (/<c:serAx[>/]/.test(plotAreaInner)) {
+    throw new ChartEditError('This chart has series axes this edit cannot rebuild.')
+  }
+  const axes = matchAxes(plotAreaInner)
+  const { primaryCat, primaryVal, secondaryVal, secondaryCat, leftovers } = classifyAxes(axes)
+  if (!primaryCat || !primaryVal || primaryCat.id === undefined || primaryVal.id === undefined) {
+    throw new ChartEditError('Combo chart is missing its primary axes.')
+  }
+  if (leftovers.length > 0) {
+    throw new ChartEditError('This chart has more axes than this edit can rebuild.')
+  }
+  // Untagged entries default to the first group's family.
+  const defaultFamily: 'barChart' | 'lineChart' =
+    plots[0]?.family === 'lineChart' ? 'lineChart' : 'barChart'
+  const wantsSecondary = entries.some((entry) => entry.secondaryAxis === true)
+  let secondaryValId: string | undefined
+  let secondaryCatId: string | undefined
+  let secondaryValXml = ''
+  let secondaryCatXml = ''
+  if (wantsSecondary) {
+    if (
+      secondaryVal &&
+      secondaryCat &&
+      secondaryVal.id !== undefined &&
+      secondaryCat.id !== undefined
+    ) {
+      secondaryValId = secondaryVal.id
+      secondaryCatId = secondaryCat.id
+      secondaryValXml = secondaryVal.xml
+      secondaryCatXml = secondaryCat.xml
+    } else {
+      ;[secondaryCatId, secondaryValId] = nextAxisIds(plotAreaInner, 2) as [string, string]
+      secondaryCatXml = hiddenCatAxisXml(secondaryCatId, secondaryValId)
+      secondaryValXml = rightValAxisXml(secondaryValId, secondaryCatId)
+    }
+  }
+  // Group order: primary groups before secondary, bars before lines.
+  const groupKeys: { family: 'barChart' | 'lineChart'; secondary: boolean }[] = []
+  for (const secondary of [false, true]) {
+    for (const family of ['barChart', 'lineChart'] as const) {
+      if (
+        entries.some(
+          (entry) =>
+            (entry.plot ?? defaultFamily) === family &&
+            (entry.secondaryAxis === true) === secondary,
+        )
+      ) {
+        groupKeys.push({ family, secondary })
+      }
+    }
+  }
+  // Per-family plot settings (grouping, gap width, labels) carry over from
+  // the last existing group of that family.
+  const familyInner = (family: string): string => {
+    let inner = ''
+    for (const plot of plots) if (plot.family === family) inner = plot.inner
+    return inner
+  }
+  const builtGroups = groupKeys
+    .map((group) => {
+      const sers = entries
+        .map((entry, index) => ({ entry, index }))
+        .filter(
+          ({ entry }) =>
+            (entry.plot ?? defaultFamily) === group.family &&
+            (entry.secondaryAxis === true) === group.secondary,
+        )
+        .map(({ entry, index }) => buildSeriesReplacement(entry, index))
+        .join('')
+      const inner = familyInner(group.family)
+      const labels = /<\/c:ser>(<c:dLbls>[\s\S]*?<\/c:dLbls>)/.exec(inner)?.[1] ?? ''
+      const grouping =
+        /<c:grouping val="([^"]*)"\/>/.exec(inner)?.[1] ??
+        (group.family === 'barChart' ? 'clustered' : 'standard')
+      const catId = group.secondary ? secondaryCatId : primaryCat.id
+      const valId = group.secondary ? secondaryValId : primaryVal.id
+      if (group.family === 'barChart') {
+        const barDir = /<c:barDir val="([^"]*)"\/>/.exec(inner)?.[1] ?? 'col'
+        const gapWidth = /<c:gapWidth val="[^"]*"\/>/.exec(inner)?.[0] ?? ''
+        const overlap = /<c:overlap val="[^"]*"\/>/.exec(inner)?.[0] ?? ''
+        return (
+          `<c:barChart><c:barDir val="${barDir}"/><c:grouping val="${grouping}"/>` +
+          `<c:varyColors val="0"/>${sers}${labels}${gapWidth}${overlap}` +
+          `<c:axId val="${catId}"/><c:axId val="${valId}"/></c:barChart>`
+        )
+      }
+      const marker = /<c:marker val="[^"]*"\/>/.exec(inner)?.[0] ?? '<c:marker val="1"/>'
+      return (
+        `<c:lineChart><c:grouping val="${grouping}"/><c:varyColors val="0"/>` +
+        `${sers}${labels}${marker}<c:axId val="${catId}"/><c:axId val="${valId}"/></c:lineChart>`
+      )
+    })
+    .join('')
+  const { layout, rest } = plotAreaRemainder(plotAreaInner, plots, axes)
+  const axesXml =
+    primaryCat.xml + primaryVal.xml + (wantsSecondary ? `${secondaryValXml}${secondaryCatXml}` : '')
+  return (
+    chartXml.slice(0, plotAreaMatch.index) +
+    `<c:plotArea>${layout}${builtGroups}${axesXml}${rest}</c:plotArea>` +
+    chartXml.slice(plotAreaMatch.index + plotAreaMatch[0].length)
   )
 }
 
@@ -583,11 +1061,24 @@ function setLabelChildren(body: string, updates: Record<string,string>): string 
 }
 
 function plotLabelBlock(inner: string): {start:number;length:number;open:string;body:string} | undefined {
-  const afterSeries = inner.lastIndexOf('</c:ser>') + '</c:ser>'.length
-  const found = inner.slice(afterSeries).match(/^\s*(<c:dLbls\b[^>]*\/>|<c:dLbls\b[^>]*>([\s\S]*?)<\/c:dLbls>)/)
-  if (!found) return undefined
-  const block = found[1]!
-  return {start:afterSeries+found[0].length-block.length,length:block.length,open:block.match(/^<c:dLbls\b[^>]*>/)![0].replace(/\/>$/,'>'),body:found[2] ?? ''}
+  const parser = new SaxesParser({fragment:true})
+  let depth = 0, current: {start:number;end:number;open:string} | undefined
+  let found: {start:number;length:number;open:string;body:string} | undefined
+  parser.on('opentag',tag=>{
+    if (depth++ === 0 && tag.name === 'c:dLbls' && !found) {
+      const start = inner.lastIndexOf('<',parser.position-1)
+      current = {start,end:parser.position,open:inner.slice(start,parser.position)}
+    }
+  })
+  parser.on('closetag',tag=>{
+    if (--depth === 0 && current) {
+      found = {start:current.start,length:parser.position-current.start,open:current.open.replace(/\/>$/,'>'),
+        body:tag.isSelfClosing ? '' : inner.slice(current.end,inner.lastIndexOf('</',parser.position-1))}
+      current = undefined
+    }
+  })
+  parser.write(inner).close()
+  return found
 }
 
 /// Plot-level data labels: what every slice/bar/point shows. 'none' removes
@@ -596,6 +1087,34 @@ function setDataLabels(
   chartXml: string,
   mode: NonNullable<ChartEditLean['dataLabels']>,
 ): string {
+  const scatterMatch = chartXml.match(SCATTER_PLOT_PATTERN)
+  if (scatterMatch) {
+    if (mode !== 'none' && mode !== 'value') {
+      throw new ChartEditError('Scatter charts support only value data labels.')
+    }
+    const openEnd = scatterMatch[0].indexOf('>') + 1
+    const inner = scatterMatch[0].slice(openEnd, -'</c:scatterChart>'.length)
+    const existing = plotLabelBlock(inner)
+    let next = existing ? spliceAt(inner,existing.start,existing.length,'') : inner
+    if (mode === 'value') {
+      const body = setLabelChildren(existing?.body ?? '', {
+        delete:'',showLegendKey:'<c:showLegendKey val="0"/>',showVal:'<c:showVal val="1"/>',
+        showCatName:'<c:showCatName val="0"/>',showSerName:'<c:showSerName val="0"/>',
+        showPercent:'<c:showPercent val="0"/>',showBubbleSize:'<c:showBubbleSize val="0"/>',
+      })
+      const labels = (existing?.open ?? '<c:dLbls>')+body+'</c:dLbls>'
+      if (existing) next = spliceAt(inner,existing.start,existing.length,labels)
+      else {
+        const lastSeriesEnd = next.lastIndexOf('</c:ser>')
+        if (lastSeriesEnd === -1) throw new ChartEditError('This chart has no series to label.')
+        const insertAt = lastSeriesEnd + '</c:ser>'.length
+        next = next.slice(0,insertAt)+labels+next.slice(insertAt)
+      }
+    }
+    return chartXml.replace(SCATTER_PLOT_PATTERN,full=>
+      `${full.slice(0,openEnd)}${next}</c:scatterChart>`,
+    )
+  }
   const plotMatch = chartXml.match(LABELABLE_PLOT_PATTERN)
   if (!plotMatch?.[1] || plotMatch[2] === undefined) {
     throw new ChartEditError('This chart type does not support data labels.')
@@ -620,7 +1139,7 @@ function setDataLabels(
   }
   return chartXml.replace(
     LABELABLE_PLOT_PATTERN,
-    (_full, plot: string, _inner: string, close: string) => `<c:${plot}>${next}${close}`,
+    (full, _plot: string, _inner: string, close: string) => `${full.slice(0, full.indexOf('>') + 1)}${next}${close}`,
   )
 }
 
@@ -663,8 +1182,8 @@ function setDataLabelDetail(
       '<c:showBubbleSize val="0"/></c:dLbls>'
     next = inner.slice(0, at) + created + inner.slice(at)
   }
-  return chartXml.replace(LABELABLE_PLOT_PATTERN, (_full, plot: string, _i: string, close: string) =>
-    `<c:${plot}>${next}${close}`,
+  return chartXml.replace(LABELABLE_PLOT_PATTERN, (full, _plot: string, _i: string, close: string) =>
+    `${full.slice(0, full.indexOf('>') + 1)}${next}${close}`,
   )
 }
 
@@ -867,24 +1386,25 @@ function setChartTitle(chartXml: string, title: string): string {
   const xml = chartXml.replace(/<c:autoTitleDeleted val="1"\/>/, '<c:autoTitleDeleted val="0"/>')
   const plotAreaAt = xml.search(/<c:plotArea[\s>]/)
   const scope = plotAreaAt === -1 ? xml : xml.slice(0, plotAreaAt)
-  const titleElement = scope.match(/<c:title>[\s\S]*?<\/c:title>/)
+  const titleElement = scope.match(/<c:title\b[^>]*(?<!\/)>[\s\S]*?<\/c:title>/)
   if (titleElement) {
     let isFirstRun = true
     const rewritten = titleElement[0].replace(
-      /(<a:t>)[\s\S]*?(<\/a:t>)|<a:t\/>/g,
+      /(<a:t\b[^>]*(?<!\/)>)[\s\S]*?(<\/a:t>)|<a:t\b[^>]*\/>/g,
       (full, open: string | undefined, close: string | undefined) => {
         const text = isFirstRun ? escaped : ''
         isFirstRun = false
-        return `${open ?? '<a:t>'}${text}${close ?? '</a:t>'}`
+        return `${open ?? full.replace(/\/>$/, '>')}${text}${close ?? '</a:t>'}`
       },
     )
     if (isFirstRun) {
       // A title without any text run (e.g. formula-linked): replace whole tx.
-      return xml.replace(/<c:title>[\s\S]*?<\/c:title>/, () => builtTitle(escaped))
+      const opening = titleElement[0].slice(0, titleElement[0].indexOf('>') + 1)
+      return xml.replace(titleElement[0], () => builtTitle(escaped).replace('<c:title>', () => opening))
     }
-    return xml.replace(/<c:title>[\s\S]*?<\/c:title>/, () => rewritten)
+    return xml.replace(titleElement[0], () => rewritten)
   }
-  const chartOpen = xml.match(/<c:chart>/)
+  const chartOpen = xml.match(/<c:chart\b[^>]*(?<!\/)>/)
   if (!chartOpen) throw new ChartEditError('Chart part has no c:chart element.')
   const insertAt = (chartOpen.index ?? 0) + chartOpen[0].length
   const autoTitle = /<c:autoTitleDeleted /.test(xml) ? '' : '<c:autoTitleDeleted val="0"/>'
@@ -896,30 +1416,33 @@ function setChartTitle(chartXml: string, title: string): string {
 /// keeping series and dropping type-specific leftovers. Axis↔pie conversions
 /// also remove or synthesize the axis pair, since pie plots reference none.
 function convertChartType(chartXml: string, target: ChartTargetType): string {
-  const plotPattern =
-    /<c:(barChart|lineChart|areaChart|bar3DChart|line3DChart|area3DChart|pieChart|pie3DChart|doughnutChart|scatterChart|radarChart)>([\s\S]*?)<\/c:\1>/g
-  const plots = [...chartXml.matchAll(plotPattern)]
+  const plots = matchPlots(chartXml)
   const plotMatch = plots[0]
-  if (!plotMatch?.[1] || plotMatch[2] === undefined) {
+  if (!plotMatch) {
     throw new ChartEditError('This chart type cannot be converted.')
   }
-  if (plots.length > 1) {
-    throw new ChartEditError('Combo charts cannot be converted.')
+  const combo = plots.length > 1
+  if (combo) {
+    for (const plot of plots) {
+      if (plot.family !== 'barChart' && plot.family !== 'lineChart' && plot.family !== 'areaChart') {
+        throw new ChartEditError('Only bar, line, and area combos can be converted.')
+      }
+    }
   }
-  const current = plotMatch[1] as string
-  if (!(CONVERTIBLE_PLOTS as readonly string[]).includes(current)) {
+  const current = plotMatch.family
+  if (!combo && !(CONVERTIBLE_PLOTS as readonly string[]).includes(current)) {
     throw new ChartEditError(`Converting a ${current} is not supported.`)
   }
-  const inner = plotMatch[2]
+  const inner = combo ? plots.map((plot) => plot.inner).join('') : plotMatch.inner
   const targetElement = TARGET_PLOTS[target]
-  const currentIsPie = current === 'pieChart' || current === 'doughnutChart'
+  const currentIsPie = !combo && (current === 'pieChart' || current === 'doughnutChart')
   const targetIsPie = targetElement === 'pieChart' || targetElement === 'doughnutChart'
 
-  if (current === 'barChart' && targetElement === 'barChart') {
+  if (!combo && current === 'barChart' && targetElement === 'barChart') {
     const direction = target === 'column' ? 'col' : 'bar'
     return chartXml.replace(/<c:barDir val="[^"]*"\/>/, () => `<c:barDir val="${direction}"/>`)
   }
-  if (targetElement === current) return chartXml
+  if (!combo && targetElement === current) return chartXml
 
   const series = [...inner.matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)].map((match) =>
     sanitizeSeries(match[0], targetIsPie),
@@ -947,24 +1470,59 @@ function convertChartType(chartXml: string, target: ChartTargetType): string {
   if (targetIsPie) {
     parts.push('<c:firstSliceAng val="0"/>')
     if (targetElement === 'doughnutChart') parts.push('<c:holeSize val="50"/>')
-    const plotReplaced = chartXml.replace(
-      plotMatch[0],
-      () => `<c:${targetElement}>${parts.join('')}</c:${targetElement}>`,
-    )
+    const replacement = `<c:${targetElement}>${parts.join('')}</c:${targetElement}>`
+    let plotReplaced = chartXml
+    for (const plot of [...plots].sort((a, b) => b.index - a.index)) {
+      plotReplaced =
+        plotReplaced.slice(0, plot.index) + plotReplaced.slice(plot.index + plot.whole.length)
+    }
+    const firstPlot = Math.min(...plots.map((plot) => plot.index))
+    plotReplaced = plotReplaced.slice(0, firstPlot) + replacement + plotReplaced.slice(firstPlot)
     return plotReplaced.replace(
       /<c:(catAx|valAx|dateAx|serAx)>[\s\S]*?<\/c:\1>|<c:(?:catAx|valAx|dateAx|serAx)\/>/g,
       '',
     )
   }
-  if (!currentIsPie) {
+  if (!currentIsPie && !combo) {
     const axisIds = [...inner.matchAll(/<c:axId val="[0-9]+"\/>/g)].map((match) => match[0])
     if (axisIds.length === 0) {
       throw new ChartEditError('This chart has no axes to convert.')
     }
     parts.push(...axisIds)
     return chartXml.replace(
-      plotMatch[0],
+      plotMatch.whole,
       () => `<c:${targetElement}>${parts.join('')}</c:${targetElement}>`,
+    )
+  }
+  if (combo) {
+    const plotAreaMatch = /<c:plotArea>([\s\S]*?)<\/c:plotArea>/.exec(chartXml)
+    if (!plotAreaMatch || plotAreaMatch[1] === undefined) {
+      throw new ChartEditError('Chart part has no plot area.')
+    }
+    if (/<c:serAx[>/]/.test(plotAreaMatch[1])) {
+      throw new ChartEditError('This combo has series axes this conversion cannot keep.')
+    }
+    const axes = matchAxes(plotAreaMatch[1])
+    const { primaryCat, primaryVal, leftovers } = classifyAxes(axes)
+    if (
+      !primaryCat ||
+      !primaryVal ||
+      primaryCat.id === undefined ||
+      primaryVal.id === undefined ||
+      leftovers.length > 0
+    ) {
+      throw new ChartEditError('This combo has axes this conversion cannot keep.')
+    }
+    parts.push(`<c:axId val="${primaryCat.id}"/>`, `<c:axId val="${primaryVal.id}"/>`)
+    const { layout, rest } = plotAreaRemainder(plotAreaMatch[1], plots, axes)
+    const keptAxes =
+      primaryCat.xml.replace(/<c:crossAx val="[0-9]+"\/>/, `<c:crossAx val="${primaryVal.id}"/>`) +
+      primaryVal.xml.replace(/<c:crossAx val="[0-9]+"\/>/, `<c:crossAx val="${primaryCat.id}"/>`)
+    return (
+      chartXml.slice(0, plotAreaMatch.index) +
+      `<c:plotArea>${layout}<c:${targetElement}>${parts.join('')}</c:${targetElement}>` +
+      `${keptAxes}${rest}</c:plotArea>` +
+      chartXml.slice(plotAreaMatch.index + plotAreaMatch[0].length)
     )
   }
   // Pie → axis chart: the plot gains a synthesized category/value axis pair
@@ -982,7 +1540,7 @@ function convertChartType(chartXml: string, target: ChartTargetType): string {
     `<c:delete val="0"/><c:axPos val="${valPos}"/><c:majorGridlines/>` +
     `<c:crossAx val="${SYNTH_CAT_AXIS_ID}"/></c:valAx>`
   return chartXml.replace(
-    plotMatch[0],
+    plotMatch.whole,
     () => `<c:${targetElement}>${parts.join('')}</c:${targetElement}>${axes}`,
   )
 }
@@ -1009,7 +1567,7 @@ function setSeriesColor(chartXml: string, seriesIndex: number, color: string): s
   // Document position, not c:idx: numbering series by document order keeps
   // edits aligned with what the UI showed as N even when c:idx is shuffled.
   let position = -1
-  const result = chartXml.replace(/<c:ser>[\s\S]*?<\/c:ser>/g, (serXml) => {
+  const result = chartXml.replace(/<c:ser\b[^>]*(?<!\/)>[\s\S]*?<\/c:ser>/g, (serXml) => {
     position += 1
     if (position !== seriesIndex) return serXml
     found = true

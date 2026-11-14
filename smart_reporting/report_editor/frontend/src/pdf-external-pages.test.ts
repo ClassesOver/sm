@@ -24,6 +24,11 @@ it('uploads actual PDF bytes with dual SHA and parent-based insertion index whil
   expect(f.submit.mock.calls[0]![0].externalSha256).toBe('32668d4a39f36d2256034e98f9e0251856db576aaac80b7e03a77bedef990392')
   expect(f.root.textContent).toContain('验收未通过');expect(f.root.textContent).toContain('尚待验收')
 })
+it('honors an explicit insertion position including the beginning of the document',async()=>{
+  const f=fixture();f.view.open('insert',0);f.upload();f.apply.click()
+  await vi.waitFor(()=>expect(f.submit).toHaveBeenCalledTimes(1))
+  expect(f.submit.mock.calls[0]![0].afterPage).toBe(0)
+})
 it('replacement submits selected parent pages and retries preserve request identity',async()=>{
   const f=fixture();f.submit.mockRejectedValueOnce(new Error('temporary'))
   f.view.open('replace');f.upload();f.root.querySelector<HTMLInputElement>('[aria-label="替换父 PDF 页码"]')!.value='3,1'

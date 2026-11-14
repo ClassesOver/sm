@@ -32,7 +32,7 @@ export interface LogicalStyle {
   fontColor?: string | undefined
   vertAlign?: 'baseline' | 'subscript' | 'superscript' | undefined
   fillColor?: string | undefined
-  hAlign?: 'left' | 'center' | 'right' | 'justify' | undefined
+  hAlign?: 'left' | 'center' | 'right' | 'justify' | 'distributed' | undefined
   vAlign?: 'top' | 'middle' | 'bottom' | undefined
   textRotation?: number | undefined
   /// OOXML alignment indent steps (0-250); projected as Univer left padding.
@@ -112,7 +112,7 @@ export function logicalStyleOf(
         ? 'center'
         : alignment.horizontal === 'right'
           ? 'right'
-          : alignment.horizontal === 'justify' || alignment.horizontal === 'distributed'
+          : alignment.horizontal === 'distributed' ? 'distributed' : alignment.horizontal === 'justify'
             ? 'justify'
             : 'left'
   }
@@ -182,7 +182,7 @@ const HORIZ_FROM_UNIVER: Record<number, LogicalStyle['hAlign']> = {
   3: 'right',
   4: 'justify',
   5: 'justify',
-  6: 'justify',
+  6: 'distributed',
 }
 const VERT_FROM_UNIVER: Record<number, LogicalStyle['vAlign']> = {
   1: 'top',
@@ -206,7 +206,7 @@ export function toUniverStyle(style: LogicalStyle): UniverStyleData {
   if (style.fillColor !== undefined) out.bg = { rgb: style.fillColor }
   if (style.hAlign !== undefined) {
     out.ht =
-      style.hAlign === 'left' ? 1 : style.hAlign === 'center' ? 2 : style.hAlign === 'right' ? 3 : 4
+      style.hAlign === 'left' ? 1 : style.hAlign === 'center' ? 2 : style.hAlign === 'right' ? 3 : style.hAlign === 'distributed' ? 6 : 4
   }
   if (style.vAlign !== undefined) {
     out.vt = style.vAlign === 'top' ? 1 : style.vAlign === 'middle' ? 2 : 3

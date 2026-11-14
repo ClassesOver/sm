@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { auditOfficeDesktopLayout } from './office-desktop-layout.mjs'
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
@@ -10,7 +11,7 @@ const frontend = process.cwd()
 const repo = new URL('../../../', `file://${frontend}/`).pathname
 const port = Number(process.env.WORKBOOK_SMOKE_PORT ?? 4189)
 const smokeCase = process.env.WORKBOOK_SMOKE_CASE ?? 'format-autosum'
-if (!['format-autosum', 'sort', 'row-column', 'draft-recovery', 'structural-undo', 'rotation'].includes(smokeCase)) throw new Error(`Unknown workbook smoke case: ${smokeCase}`)
+if (!['format-autosum', 'sort', 'row-column', 'draft-recovery', 'structural-undo', 'rotation', 'rules'].includes(smokeCase)) throw new Error(`Unknown workbook smoke case: ${smokeCase}`)
 const baseUrl = `http://127.0.0.1:${port}`
 const runPython = input => {
   const result = spawnSync(process.env.WORKBOOK_SMOKE_PYTHON ?? `${repo}/.venv/bin/python`, ['-c', `
@@ -18,13 +19,22 @@ import base64, json, sys
 from io import BytesIO
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font
+from openpyxl.styles import PatternFill
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.formatting.rule import CellIsRule
 from openpyxl.workbook.defined_name import DefinedName
 payload = json.load(sys.stdin)
 if payload['mode'] == 'create':
     book = Workbook()
     sheet = book.active
     sheet.title = 'Summary'
-    if payload['scenario'] == 'rotation':
+    if payload['scenario'] == 'rules':
+        sheet['A1'] = 20; sheet['A2'] = 200; sheet['B1'] = '=SUM(A1:A2)'
+        sheet['B1'].number_format = '0.00'
+        validation = DataValidation(type='whole', operator='between', formula1=0, formula2=100, allow_blank=True)
+        sheet.add_data_validation(validation); validation.add('A1:A10')
+        sheet.conditional_formatting.add('A1:A10', CellIsRule(operator='greaterThan', formula=['100'], fill=PatternFill('solid', fgColor='FFFF6666')))
+    elif payload['scenario'] == 'rotation':
         sheet['A1'] = 'Rotated source'
         sheet['A1'].alignment = Alignment(textRotation=135, horizontal='center', wrap_text=True, indent=2)
         sheet['A1'].font = Font(name='Calibri', size=14, bold=True, italic=True, color='194361')
@@ -65,6 +75,15 @@ elif payload['mode'] == 'patch':
 elif payload['mode'] == 'inspect':
     book = load_workbook(BytesIO(base64.b64decode(payload['bytes'])), data_only=False)
     sheet = book['Summary']
+    if payload['scenario'] == 'rules':
+        validation = sheet.data_validations.dataValidation[0]
+        cf = list(sheet.conditional_formatting)[0]
+        rule = sheet.conditional_formatting[cf][0]
+        print(json.dumps({'values':[sheet['A1'].value,sheet['A2'].value], 'formula':sheet['B1'].value, 'numberFormat':sheet['B1'].number_format,
+            'dvCount':len(sheet.data_validations.dataValidation), 'dvType':validation.type, 'dvOperator':validation.operator or 'between', 'dvFormula1':validation.formula1, 'dvFormula2':validation.formula2, 'dvRange':str(validation.sqref),
+            'cfCount':len(sheet.conditional_formatting), 'cfType':rule.type, 'cfOperator':rule.operator, 'cfFormula':rule.formula, 'cfRange':str(cf.sqref), 'fill':rule.dxf.fill.fgColor.rgb if rule.dxf.fill.patternType == 'solid' else rule.dxf.fill.bgColor.rgb,
+            'fontColor':rule.dxf.font.color.rgb if rule.dxf.font and rule.dxf.font.color and rule.dxf.font.color.type == 'rgb' else None}))
+        sys.exit(0)
     if payload['scenario'] == 'rotation':
         print(json.dumps({'rotation':sheet['A1'].alignment.textRotation,'horizontal':sheet['A1'].alignment.horizontal,'wrap':sheet['A1'].alignment.wrap_text,'indent':sheet['A1'].alignment.indent,
             'bold':sheet['A1'].font.bold,'italic':sheet['A1'].font.italic,'fontSize':sheet['A1'].font.sz,'formula':sheet['B1'].value,'formulaRotation':sheet['B1'].alignment.textRotation,'formulaNumberFormat':sheet['B1'].number_format,
@@ -91,6 +110,8 @@ let savedBytes
 let savePayload
 const saveAttempts = []
 const builtDirectory = process.env.WORKBOOK_SMOKE_BUILD_DIR
+const builtManifest = builtDirectory ? join(resolve(frontend,builtDirectory),'.vite/manifest.json') : null
+const builtManifestSha256 = builtManifest ? createHash('sha256').update(await readFile(builtManifest)).digest('hex') : null
 const server = spawn('./node_modules/.bin/vite', [
   ...(builtDirectory ? ['preview', '--outDir', builtDirectory] : []),
   '--host', '127.0.0.1', '--port', String(port), '--strictPort',
@@ -149,7 +170,29 @@ try {
     .map(selector => { const element = document.querySelector(selector); const rect = element?.getBoundingClientRect(); return [selector, rect ? { width: rect.width, height: rect.height, display: getComputedStyle(element).display } : null] })))
   if (!geometry['.workbook-grid']?.width || !geometry['.workbook-grid']?.height) throw new Error(JSON.stringify({ geometry, pageErrors, failedResponses }))
   if (!await page.locator('.workbook-grid canvas').count()) throw new Error(JSON.stringify({ url: page.url(), body: await page.locator('body').innerText(), pageErrors, failedResponses }))
-  if (smokeCase === 'rotation') {
+  if (smokeCase === 'rules') {
+    await page.waitForFunction(() => document.querySelector('#report-editor')?.getAttribute('aria-busy') === 'false')
+    await page.locator('[data-ribbon-tab="Data"]').click()
+    await page.locator('[data-ribbon-command="dv-open"]').click()
+    const panel = page.locator('[data-u-comp=sidebar][aria-expanded=true]')
+    await panel.getByText('整数 介于 0 和 100 之间', { exact:true }).click()
+    await panel.locator('input:visible').last().fill('150')
+    await panel.locator('input:visible').last().press('Tab')
+    await panel.getByRole('button', { name:'确认', exact:true }).click()
+    await panel.getByText('整数 介于 0 和 150 之间', { exact:true }).waitFor()
+    await page.keyboard.press('Escape')
+    await page.locator('[data-ribbon-tab="Home"]').click()
+    await page.locator('[data-ribbon-command="cf-open"]').click()
+    await panel.getByText('大于100', { exact:true }).click()
+    await panel.locator('input:visible').last().fill('175')
+    await panel.getByRole('button', { name:'确认', exact:true }).click()
+    await panel.getByText('大于175', { exact:true }).waitFor()
+    await page.keyboard.press('Escape')
+    await page.waitForFunction(() => Object.keys(localStorage).filter(key => key.startsWith('native-editor-draft:')).some(key => {
+      const operations = JSON.parse(localStorage.getItem(key)).operations
+      return operations.some(op => op.kind === 'replaceSheetDataValidations') && operations.some(op => op.kind === 'replaceSheetConditionalFormats')
+    }))
+  } else if (smokeCase === 'rotation') {
     const persistedRotation = angle => page.waitForFunction(({ expected, fallback }) => Object.keys(localStorage).filter(key => key.startsWith('native-editor-draft:')).some(key => {
       const edits = JSON.parse(localStorage.getItem(key)).operations.flatMap(op => op.kind === 'applyCellEdits' ? op.edits : [])
       return (edits.filter(edit => edit.row === 0 && edit.column === 0 && edit.style?.textRotation !== undefined).at(-1)?.style.textRotation ?? fallback) === expected
@@ -251,7 +294,11 @@ try {
   }
   await page.locator('[data-action="save"]').click()
   await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent === '已保存修订 2', null, { timeout: 30000 })
-  if (smokeCase === 'rotation') {
+  if (smokeCase === 'rules') {
+    assert.deepEqual(savePayload.operations.map(op => op.kind).sort(), ['replaceSheetConditionalFormats','replaceSheetDataValidations'])
+    const cfStyle = savePayload.operations.find(op => op.kind === 'replaceSheetConditionalFormats').rules[0].rule.style
+    assert.equal(cfStyle.cl, undefined, '仅修改条件格式阈值不应保存框架默认文字色')
+  } else if (smokeCase === 'rotation') {
     assert.ok(savePayload.operations.some(op => op.kind === 'applyCellEdits' && op.edits.some(edit => edit.row === 0 && edit.column === 0 && edit.style?.textRotation === 0)), JSON.stringify(savePayload))
     assert.ok(savePayload.operations.flatMap(op => op.kind === 'applyCellEdits' ? op.edits : []).every(edit => edit.row === 0 && edit.column === 0 && !edit.writeValue && Object.keys(edit.style).every(key => key === 'textRotation')), JSON.stringify(savePayload))
   } else if (smokeCase === 'structural-undo') {
@@ -283,7 +330,18 @@ try {
   const downloaded = Buffer.from(download.bytes)
   assert.equal(createHash('sha256').update(downloaded).digest('hex'), createHash('sha256').update(savedBytes).digest('hex'))
   const reopened = JSON.parse(runPython({ mode: 'inspect', scenario: smokeCase, bytes: downloaded.toString('base64') }))
-  if (smokeCase === 'rotation') {
+  if (smokeCase === 'rules') {
+    assert.deepEqual(reopened, { values:[20,200], formula:'=SUM(A1:A2)', numberFormat:'0.00', dvCount:1, dvType:'whole', dvOperator:'between', dvFormula1:'0', dvFormula2:'150', dvRange:'A1:A10', cfCount:1, cfType:'cellIs', cfOperator:'greaterThan', cfFormula:['175'], cfRange:'A1:A10', fill:'FFFF6666', fontColor:null })
+    await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?revision=2`)
+    await page.waitForFunction(() => document.querySelector('#report-editor')?.getAttribute('aria-busy') === 'false', null, { timeout:60000 })
+    await page.locator('[data-ribbon-tab="Data"]').click()
+    await page.locator('[data-ribbon-command="dv-open"]').click()
+    await page.getByText('整数 介于 0 和 150 之间', { exact:true }).waitFor()
+    await page.keyboard.press('Escape')
+    await page.locator('[data-ribbon-tab="Home"]').click()
+    await page.locator('[data-ribbon-command="cf-open"]').click()
+    await page.getByText('大于175', { exact:true }).waitFor()
+  } else if (smokeCase === 'rotation') {
     assert.deepEqual(reopened, { rotation:0,horizontal:'center',wrap:true,indent:2,bold:true,italic:true,fontSize:14,formula:'=1+1',formulaRotation:90,formulaNumberFormat:'0.00',untouchedRotation:255,definedName:'Summary!$A$1',merges:['D1:E2'] })
     await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?revision=2`)
     await page.waitForFunction(() => document.querySelectorAll('.workbook-grid canvas').length >= 1, null, { timeout:60000 })
@@ -299,7 +357,8 @@ try {
     assert.equal(await page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('native-editor-draft:'))), false)
   }
   assert.deepEqual(pageErrors, [])
-  const evidence = { ok: true, scenario: smokeCase, productionBuild: !!builtDirectory, browserVersion: browser.version(), sourceSha256:sourceSha, downloadedSha256:createHash('sha256').update(downloaded).digest('hex'), operations:savePayload.operations, operationKinds: savePayload.operations.map(operation => operation.kind), downloadedBytes: downloaded.length, reopened, desktopVerified:false }
+  if (builtManifest) assert.equal(createHash('sha256').update(await readFile(builtManifest)).digest('hex'),builtManifestSha256,'测试期间生产构建发生变化')
+  const evidence = { ok: true, scenario: smokeCase, productionBuild: !!builtDirectory, manifestSha256:builtManifestSha256, browserVersion: browser.version(), sourceSha256:sourceSha, downloadedSha256:createHash('sha256').update(downloaded).digest('hex'), operations:savePayload.operations, operationKinds: savePayload.operations.map(operation => operation.kind), downloadedBytes: downloaded.length, reopened, desktopVerified:false }
   if (process.env.WORKBOOK_SMOKE_EVIDENCE_DIR) { await mkdir(process.env.WORKBOOK_SMOKE_EVIDENCE_DIR,{recursive:true}); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/source.xlsx`,sourceBytes); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/downloaded.xlsx`,downloaded); await writeFile(`${process.env.WORKBOOK_SMOKE_EVIDENCE_DIR}/evidence.json`,JSON.stringify(evidence,null,2)) }
   console.log(JSON.stringify(evidence))
 } finally {

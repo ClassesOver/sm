@@ -70,7 +70,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
         raise ReportingError("report_slides_edit_invalid", "页面背景内容无效。")
     if len({item["slideIndex"] for item in backgrounds}) != len(backgrounds):
         raise ReportingError("report_slides_edit_invalid", "同一页面只能设置一次背景。")
-    optional = {"fontSize", "fontFamily", "color", "bold", "rotation", "field", "italic", "outline", "wordArt"}
+    optional = {"fontSize", "fontFamily", "color", "bold", "rotation", "field", "italic", "outline", "wordArt", "equation"}
     if (
         not isinstance(text_boxes, list) or len(text_boxes) > _MAX_STRUCTURE_EDITS
         or any(
@@ -94,7 +94,7 @@ def _validate_structure_edits(payload: dict[str, Any]) -> tuple[list[Any], list[
             or ("bold" in item and not isinstance(item["bold"], bool))
             or ("rotation" in item and not _number(item["rotation"], -360, 360))
             or ("field" in item and item["field"] not in {"slidenum", "datetime1"})
-            or any(key in item and not isinstance(item[key], bool) for key in ("italic", "wordArt"))
+            or any(key in item and not isinstance(item[key], bool) for key in ("italic", "wordArt", "equation"))
             or ("outline" in item and (not isinstance(item["outline"], dict) or set(item["outline"]) != {"color", "widthEmu"}
                 or not isinstance(item["outline"]["color"], str) or not _HEX_COLOR.match(item["outline"]["color"])
                 or not isinstance(item["outline"]["widthEmu"], int) or isinstance(item["outline"]["widthEmu"], bool) or not 1 <= item["outline"]["widthEmu"] <= 254000))
@@ -139,7 +139,9 @@ class ReportSlidesEditorService:
         artifact_persistence: Any = None,
         download_grants: Any = None,
         public_base_url: str = "",
+        report_editor: Any = None,
     ) -> None:
+        self.report_editor = report_editor
         self.state_repository = state_repository
         self.workspace_registry = workspace_registry
         self.workspace = workspace
@@ -151,12 +153,15 @@ class ReportSlidesEditorService:
     async def context_for_session(self, session: ReportEditorSession) -> ReportEditorContext:
         return await self._context_for_capability(session, "pptx_editor")
 
+    async def refresh_context_for_session(self, session: ReportEditorSession) -> ReportEditorContext:
+        return await self._context_for_capability(session, "pptx_editor", verify_file=False)
+
     async def download_for_session(self, session: ReportEditorSession) -> tuple[ReportEditorContext, bytes]:
         context = await self._context_for_capability(session, "pptx_download")
         return context, await self._read_verified_pptx(context)
 
     async def _context_for_capability(
-        self, session: ReportEditorSession, capability: str
+        self, session: ReportEditorSession, capability: str, *, verify_file: bool = True
     ) -> ReportEditorContext:
         capabilities = session.capabilities
         if not isinstance(capabilities, dict) or capabilities.get(capability) is not True:
@@ -187,13 +192,14 @@ class ReportSlidesEditorService:
         if scope.workspace_key != context.scope.get("threadId"):
             raise ReportingError("report_slides_scope_mismatch", "幻灯片工作区作用域不一致。")
         self.workspace_registry.resolve(scope)
-        current = await self.workspace.ahash_file(scope.workspace_key, context.pptx_path)
-        if (
-            current.get("missing")
-            or current.get("size") != context.pptx_size
-            or current.get("sha256") != context.pptx_sha256
-        ):
-            raise ReportingError("report_slides_identity_changed", "PPTX 文件身份已变化。")
+        if verify_file:
+            current = await self.workspace.ahash_file(scope.workspace_key, context.pptx_path)
+            if (
+                current.get("missing")
+                or current.get("size") != context.pptx_size
+                or current.get("sha256") != context.pptx_sha256
+            ):
+                raise ReportingError("report_slides_identity_changed", "PPTX 文件身份已变化。")
         return context
 
     async def deck_for_session(self, session: ReportEditorSession) -> dict[str, Any]:
@@ -416,6 +422,10 @@ class ReportSlidesEditorService:
                 "message": "PPTX 已生成，但预览渲染失败。",
             })
         next_job["validation"] = {"ok": not validation_issues, "issues": validation_issues}
+        from .office_refresh import saved_source_pointer
+        pointer = await saved_source_pointer(self, context, validation_issues)
+        if pointer is not None:
+            next_job['officeRefreshSource'] = pointer
         next_context = ReportEditorContext(
             reportId=context.report_id,
             revision=next_revision,
@@ -514,6 +524,7 @@ class ReportSlidesEditorService:
         return {
             "reportId": context.report_id,
             "revision": next_revision,
+            "revisionRegistered": context_persisted,
             "pptx": {
                 "path": revision_path,
                 "size": len(revised),
@@ -568,12 +579,18 @@ class ReportSlidesEditorService:
         slide_size: dict[str, int] | None = None,
         images: list[dict[str, Any]] | None = None,
         native_images: list[dict[str, Any]] | None = None,
+        zoom_insertions: list[dict[str, Any]] | None = None,
+        media_insertions: list[dict[str, Any]] | None = None,
+        model_insertions: list[dict[str, Any]] | None = None,
+        model_views: list[dict[str, Any]] | None = None,
         picture_replacements: list[dict[str, Any]] | None = None,
         picture_crops: list[dict[str, Any]] | None = None,
         picture_opacities: list[dict[str, Any]] | None = None,
         element_orders: list[dict[str, Any]] | None = None,
         group_edits: list[dict[str, Any]] | None = None,
         notes_edits: list[dict[str, Any]] | None = None,
+        master_text_edits: list[dict[str, Any]] | None = None,
+        master_element_edits: list[dict[str, Any]] | None = None,
         link_edits: list[dict[str, Any]] | None = None,
         clipboard_pastes: list[dict[str, Any]] | None = None,
         chart_edits: list[dict[str, Any]] | None = None,
@@ -584,6 +601,8 @@ class ReportSlidesEditorService:
         slide_layouts: list[dict[str, Any]] | None = None,
         backgrounds: list[dict[str, Any]] | None = None,
         background_images: list[dict[str, Any]] | None = None,
+        custom_shows: list[dict[str, Any]] | None = None,
+        background_image_reuses: list[dict[str, Any]] | None = None,
         background_gradients: list[dict[str, Any]] | None = None,
         background_resets: list[int] | None = None,
         background_graphics: list[dict[str, Any]] | None = None,
@@ -620,6 +639,10 @@ class ReportSlidesEditorService:
                     request["headerFooter"] = header_footer
                 if table_structures:
                     request["tableStructures"] = table_structures
+                if master_text_edits:
+                    request["masterTextEdits"] = master_text_edits
+                if master_element_edits:
+                    request["masterElementEdits"] = master_element_edits
                 if table_styles:
                     request["tableStyles"] = table_styles
                 if table_cells:
@@ -649,6 +672,14 @@ class ReportSlidesEditorService:
                     ]
                 if native_images:
                     request["nativeImages"] = native_images
+                if zoom_insertions:
+                    request["zoomInsertions"] = zoom_insertions
+                if model_insertions:
+                    request["modelInsertions"] = model_insertions
+                if model_views:
+                    request["modelViews"] = model_views
+                if media_insertions:
+                    request["mediaInsertions"] = media_insertions
                 if picture_replacements:
                     request["pictureReplacements"] = picture_replacements
                 if group_edits:
@@ -681,6 +712,10 @@ class ReportSlidesEditorService:
                     request["slideLayouts"] = slide_layouts
                 if backgrounds:
                     request["backgrounds"] = backgrounds
+                if custom_shows is not None:
+                    request["customShows"] = custom_shows
+                if background_image_reuses:
+                    request["backgroundImageReuses"] = background_image_reuses
                 if background_images:
                     request["backgroundImages"] = background_images
                 if background_gradients:

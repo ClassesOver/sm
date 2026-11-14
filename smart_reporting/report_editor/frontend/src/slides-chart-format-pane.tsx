@@ -21,6 +21,10 @@ export function SlidesFormatColorWell({ point, value, label, disabled, onPick }:
   const [popup] = useState(() => {
     const element = document.createElement('div'); element.className = 'slides-chart-point-palette'
     element.dataset.chartFormatPalette = ''; element.setAttribute('popover', 'manual'); element.setAttribute('role', 'dialog'); element.setAttribute('aria-label', label)
+    // 在 Portal 注册 React 委托前安装冒泡守卫，也尊重目标控件刚消费的按键；固定源图库保持原样。
+    element.addEventListener('keydown', event => {
+      if ((event.isComposing || event.keyCode === 229 || event.defaultPrevented) && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(event.key)) event.stopImmediatePropagation()
+    })
     return element
   })
   useLayoutEffect(() => {
@@ -33,7 +37,7 @@ export function SlidesFormatColorWell({ point, value, label, disabled, onPick }:
     const position = () => { const rect = button.getBoundingClientRect(); return [rect.left, rect.top, innerWidth, innerHeight, scrollX, scrollY].join(',') }
     const openedPosition = position()
     const outside = (event: Event) => { if (event.target instanceof Node && !popup.contains(event.target) && !button.contains(event.target)) setOpen(false) }
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setOpen(false); button.focus({ preventScroll: true }) } }
+    const escape = (event: KeyboardEvent) => { if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if (event.key === 'Escape') { event.preventDefault(); setOpen(false); button.focus({ preventScroll: true }) } }
     const move = (event: Event) => { if (!(event.target instanceof Node && popup.contains(event.target)) && position() !== openedPosition) setOpen(false) }
     window.addEventListener('pointerdown', outside, true); window.addEventListener('keydown', escape)
     window.addEventListener('resize', move); window.addEventListener('scroll', move, true)
@@ -46,12 +50,12 @@ export function SlidesFormatColorWell({ point, value, label, disabled, onPick }:
   }, [open, disabled, popup])
   return <span className="fp-color-well-wrap">
     <button ref={trigger} type="button" className="fp-color-well" data-chart-format-well={point} aria-label={label} aria-haspopup="dialog" aria-expanded={open} disabled={disabled}
-      onClick={() => setOpen(value => !value)} onKeyDown={event => { if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) } }}>
+      onClick={() => setOpen(value => !value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true) } }}>
       <span className="fp-color-well-swatch" style={{ background: value }} />
       <span className="fp-color-well-caret" aria-hidden="true"><svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5.5 9.25 12 15.75l6.5-6.5" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" /></svg></span>
     </button>
     {open && !disabled && createPortal(<ColorPicker value={value} strings={{ themeColors: '主题颜色', standardColors: '标准色', moreColors: '更多颜色…' }}
-      onPick={hex => { if (hex) onPick(hex); setOpen(false) }}
+      onPick={hex => { const restoreFocus = popup.contains(document.activeElement); if (hex) onPick(hex); setOpen(false); if (restoreFocus) trigger.current?.focus({ preventScroll: true }) }}
       moreInputProps={{ 'aria-label': label, 'data-chart-format-custom': point,
         onPointerDown: event => armColorInput(event.currentTarget), onChange: event => onPick(event.currentTarget.value) } as InputHTMLAttributes<HTMLInputElement>} />, popup)}
   </span>
@@ -85,12 +89,13 @@ export function createSlidesChartFormatPane(onConfirm: (points: ChartPointColors
       if (Object.keys(pending).length) timer = setTimeout(flush, 200)
     }
     flushSync(() => root.render(current ? <Fragment key={current.target}>
-      <div className="chart-format-heading">设置图表格式</div>
+      <header><h3 className="chart-format-heading">设置图表格式</h3></header>
+      <div className="chart-format-body">
       <div className="fp-section">填充与线条</div>
       {reason ? <p role="status">{reason}</p> : <>
         <div className="fp-section">数据点颜色</div>
-        {current.series.map((series, si) => <Fragment key={si}>
-          {current.series.length > 1 && <div className="fp-chart-series">{series.name || `系列 ${si + 1}`}</div>}
+        {current.series.map((series, si) => <fieldset key={si}>
+          <legend className="fp-chart-series">{series.name || `系列 ${si + 1}`}</legend>
           {series.values.map((_, pi) => {
             const category = current.categories[pi] || `#${pi + 1}`
             const override = Object.hasOwn(pending[si] ?? {}, pi) ? pending[si]![pi] : current.pointColors[si]?.[pi]
@@ -100,9 +105,10 @@ export function createSlidesChartFormatPane(onConfirm: (points: ChartPointColors
               <button type="button" className="chart-point-reset" data-chart-format-reset={`${si}:${pi}`} disabled={locked || !override} onClick={() => pick(si, pi, null)} aria-label={`恢复系列 ${si + 1} ${category} 配色`}>恢复</button>
             </div>
           })}
-        </Fragment>)}
+        </fieldset>)}
       </>}
-      <p role="status" className="chart-format-error">{error}</p>
+      <p role="alert" className="chart-format-error">{error}</p>
+      </div>
     </Fragment> : null))
   }
   return {

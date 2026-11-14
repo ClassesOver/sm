@@ -396,4 +396,12 @@ footprint (flip/opacity) or `cropRect(footprint, crop)` (crop). `bridge/existing
 path as flip/opacity) and lands the result through the same replace path; the footprint must stay the
 same. The pinned algorithm samples border colours and compares channel distances symmetrically, so it
 runs on the BGRA rows as-is. `bridge/existing-image-cutout.test.ts`. No upstream vendor source changed;
-LOCAL-SHA256 has 192 entries.
+LOCAL-SHA256 has 205 entries after integration.
+
+2026-11-13 Bates：vendor/bates/bates.ts 复用固定源 renderer/bates.ts，仅本地类型/geometry导入和归属注释变化；geometry.ts 与 types.ts 分别是 annotations.ts 的 PageGeom/normRot/viewToPdf 及 shared/ipc.ts 的 TextInsertInput 摘录。SOURCE-SHA256记录原完整文件身份，不能把摘录说成整个原文件原样复制。vendor/bates/protocol.ts、bridge/bates.ts 与宿主是本地身份/协议适配；复用正常 SavePdfRequest.textInserts，按应用时页面身份编号，写后复核仅告警。
+
+## 数字签名只读面板（2026-11-13）
+
+迁入固定源 `src/main/pdf-signatures.ts` 与 renderer `SignaturesDialog.tsx`。源 SHA 保留在 SOURCE-SHA256；本地读取器改动仅包括：不以可转义的原始 /ByteRange 标记过滤；列出已赋值但缺少 ByteRange 的无效字段；精确核对 ByteRange 排除区与真实 Contents；限制 detached SubFilter；签署者证书同时匹配 issuer DER 与 serial；安全整数范围；摘要/签名未通过不标记 signingTimeSigned；不可读取来源显式报告。
+
+bridge/signatures.ts 返回 basic-integrity-only，所有结果 trusted=false，绝不以服务端 TLS 根证书代替组织/用户文档信任策略。没有完整 PKI、证书用途、撤销、AATL/EUTL 或可信时间戳验证；没有新建证书签名。原生 inspect 返回数字签名清单与范围说明，不改写原件，读取失败只返回明确问题。node-forge 精确固定为源 lock 的 1.4.1；测试用独立 OpenSSL CMS 生成数据，不启用应用签名服务。

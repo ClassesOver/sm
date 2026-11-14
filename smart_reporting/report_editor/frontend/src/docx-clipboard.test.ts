@@ -280,16 +280,16 @@ describe('粘贴协议（paste-actions.ts 读取路径 + replaceParagraph 类协
     editor.destroy()
   })
 
-  it('富文本剪贴板在默认与保留源格式模式下明确拒绝，仅保留文本放行', async () => {
+  it('未注册原生富文本能力的编辑器明确拒绝HTML，仅保留文本仍放行', async () => {
     const editor = makeEditor({ type: 'doc', content: [paragraphJson('报告正文')] })
     stubClipboard({
       readText: async () => '富文本里的文字',
       read: () => [{ types: ['text/html', 'text/plain'], getType: async (type: string) => ({ text: async () => (type === 'text/html' ? '<b>富文本里的文字</b>' : '富文本里的文字') }) }],
     })
     editor.commands.setTextSelection(2)
-    await expect(docxClipboardPaste(editor)).rejects.toThrow('无法精确映射到 DOCX 保存协议')
-    await expect(docxClipboardPaste(editor, 'source')).rejects.toThrow('无法精确映射到 DOCX 保存协议')
-    await expect(docxClipboardPaste(editor, 'merge')).rejects.toThrow('无法精确映射到 DOCX 保存协议')
+    await expect(docxClipboardPaste(editor)).rejects.toThrow('当前编辑器没有原生富文本粘贴能力')
+    await expect(docxClipboardPaste(editor, 'source')).rejects.toThrow('当前编辑器没有原生富文本粘贴能力')
+    await expect(docxClipboardPaste(editor, 'merge')).rejects.toThrow('当前编辑器没有原生富文本粘贴能力')
     await docxClipboardPaste(editor, 'text')
     expect((editor.getJSON() as { content: { content?: { text?: string }[] }[] }).content[0].content?.map(run => run.text).join('')).toBe('报富文本里的文字告正文')
     editor.destroy()

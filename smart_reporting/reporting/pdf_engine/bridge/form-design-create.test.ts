@@ -19,7 +19,7 @@ test('keeps existing fields and edits only the exact required flag without fallb
 })
 test('rejects forged source duplicate names geometry and unsafe sources',async()=>{
  const bytes=await fixture(),operation=op(bytes)
- for(const extra of [{sourceSha256:'0'.repeat(64)},{pageId:'bad'},{fieldName:'a..b'},{fieldName:'  '},{fieldKind:'signature'},{rect:[0,0,0,0]},{rect:[-2,0,20,20]},{checked:true}])await assert.rejects(createDesignField(bytes,hash(bytes),{...operation,...extra}))
+ for(const extra of [{sourceSha256:'0'.repeat(64)},{pageId:'bad'},{fieldName:'a..b'},{fieldName:'  '},{fieldKind:'signature',value:'not allowed'},{rect:[0,0,0,0]},{rect:[-2,0,20,20]},{checked:true}])await assert.rejects(createDesignField(bytes,hash(bytes),{...operation,...extra}))
  const first=await createDesignField(bytes,hash(bytes),operation);await assert.rejects(createDesignField(first.bytes,hash(first.bytes),op(first.bytes)))
  for(const mode of ['signature','xfa','unit','action']){const d=await PDFDocument.load(bytes);if(mode==='signature')d.catalog.set(PDFName.of('Perms'),d.context.obj({}));if(mode==='xfa')d.getForm().acroForm.dict.set(PDFName.of('XFA'),d.context.obj([]));if(mode==='unit')d.getPage(0).node.set(PDFName.of('UserUnit'),PDFNumber.of(2));if(mode==='action')d.catalog.set(PDFName.of('OpenAction'),d.context.obj({S:'JavaScript'}));const content=await d.save();assert.equal((await formDesignCreateAvailability(content)).createFormField,false);await assert.rejects(createDesignField(content,hash(content),op(content)))}
 })

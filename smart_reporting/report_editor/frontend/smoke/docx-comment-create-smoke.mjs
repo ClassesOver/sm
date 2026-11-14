@@ -7,8 +7,10 @@ import {spawnSync} from 'node:child_process'
 import {dirname,resolve,extname} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {chromium} from 'playwright'
+import {inspectCommentComposer} from './office-docx-comment-create-layout.mjs'
 const frontend=resolve(dirname(fileURLToPath(import.meta.url)),'..'),repo=resolve(frontend,'../../..'),staticRoot=resolve(frontend,'../static')
 const entryOnly=process.env.DOCX_COMMENT_CREATE_ENTRY_ONLY==='1'
+const checkLayout=process.env.DOCX_COMMENT_CREATE_LAYOUT==='1',layout={cases:[],failures:[]}
 const output=process.env.DOCX_COMMENT_CREATE_EVIDENCE??'/tmp/word-comment-create-browser-20261111',port=Number(process.env.DOCX_COMMENT_CREATE_PORT??4308)
 const sha=b=>createHash('sha256').update(b).digest('hex'),manifestSha256=sha(await readFile(resolve(staticRoot,'.vite/manifest.json')))
 assert.equal(manifestSha256,process.env.DOCX_EXPECTED_MANIFEST_SHA256);await mkdir(output,{recursive:true})
@@ -58,7 +60,7 @@ await new Promise((done,reject)=>{server.once('error',reject);server.listen(port
 try{
  browser=await chromium.launch({headless:true,...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE?{executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE}:{})});page=await browser.newPage({viewport:{width:1600,height:1100}})
  page.on('pageerror',e=>pageErrors.push(e.message));page.on('console',m=>{if(m.type()==='error')consoleErrors.push(m.text())})
- page.on('response',r=>{const path=new URL(r.url()).pathname;if(r.status()>=400)failedResponses.push({path,status:r.status()});if(r.ok()&&path.endsWith('.js'))identities.push(r.body().then(async bytes=>{const disk=await readFile(resolve(staticRoot,path.replace(/^\/reports\/v1\/editor\/assets\//,'')));assert.equal(sha(bytes),sha(disk),path);chunks.set(path,{path,size:bytes.length,sha256:sha(bytes)})}))})
+ page.on('response',r=>{const path=new URL(r.url()).pathname;if(r.status()>=400)failedResponses.push({path,status:r.status()});if(r.status()===200&&/\.(?:m?js|css)$/.test(path))identities.push(r.body().then(async bytes=>{const disk=await readFile(resolve(staticRoot,path.replace(/^\/reports\/v1\/editor\/assets\//,'')));assert.equal(sha(bytes),sha(disk),path);chunks.set(path,{path,size:bytes.length,sha256:sha(bytes)})}))})
  await page.route('**/favicon.ico',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg"/>'}))
  const mediaType='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
  await page.route('**/reports/v1/native/fixture-comment-create/*/api/**',async route=>{
@@ -75,14 +77,33 @@ try{
   }
   throw new Error('unexpected new comment API '+path)
  })
- await page.route('**/new-comment-download.docx',route=>route.fulfill({body:Buffer.from(revisions[2].bytes,'base64'),contentType:mediaType}))
+ await page.route('**/new-comment-download.docx',route=>route.fulfill({body:Buffer.from(revisions[2].bytes,'base64'),contentType:mediaType,headers:{'Content-Disposition':'attachment; filename="new-comments.docx"'}}))
  await page.route(/\/reports\/v1\/native\/fixture-comment-create\/\d+$/,async route=>route.fulfill({body:await readFile(resolve(staticRoot,'native.html')),contentType:'text/html'}))
  const open=async revision=>{await page.goto(base+pathBase+revision);await page.locator('.docx-source-home').waitFor({timeout:60000})}
  const draft=()=>page.evaluate(()=>{const k=Object.keys(localStorage).find(k=>k.startsWith('native-editor-draft:v1:'));return k?JSON.parse(localStorage.getItem(k)).operations:[]})
  const selection=()=>page.locator('.tiptap').evaluate(el=>{el.editor.commands.setTextSelection({from:3,to:9})})
  const newComment=async tab=>{await selection();await page.locator('[data-tab-id="'+tab+'"]').click();const button=page.locator(tab==='review'?'[data-action=comment-create]':'[data-action=insert-new-comment]');assert.equal(await button.locator('svg').count(),1);assert.ok(await button.locator('svg path').count()>0);await button.click();assert.equal(await page.locator('[data-new-comment-selection]').textContent(),'chor t');return page.getByRole('textbox',{name:'新批注文字',exact:true})}
  await open(1)
- if(entryOnly){
+ if(process.env.DOCX_COMMENT_CREATE_FOCUS_DEBUG==='1'){
+  const trace=[]
+  await page.exposeFunction('captureCommentFocus',value=>trace.push(value))
+  await page.evaluate(()=>{
+   const focus=HTMLElement.prototype.focus
+   HTMLElement.prototype.focus=function(...args){window.captureCommentFocus({tag:this.tagName,action:this.getAttribute('data-action'),text:this.textContent?.slice(0,50),connected:this.isConnected});return focus.apply(this,args)}
+  })
+  const input=await newComment('review');await input.fill('长批注\n'.repeat(40));await page.setViewportSize({width:390,height:320})
+  const geometry=()=>input.evaluate(node=>{
+   const r=node.getBoundingClientRect(),body=node.closest('.docx-comment-create-body')
+   return {rect:{top:r.top,bottom:r.bottom,height:r.height},scroll:body.scrollTop,client:body.clientHeight,selection:[node.selectionStart,node.selectionEnd],focused:node===document.activeElement,
+    edges:[[r.x+3,r.y+3],[r.right-3,r.y+3],[r.x+3,r.bottom-3],[r.right-3,r.bottom-3]].map(([x,y])=>{const hit=document.elementFromPoint(x,y);return {hit:node.contains(hit),tag:hit?.tagName,class:hit?.className}})}
+  })
+  await input.scrollIntoViewIfNeeded();await input.focus();await page.keyboard.press('Tab');await page.keyboard.press('Shift+Tab')
+  const before=await geometry();await input.evaluate(node=>node.scrollIntoView({block:'nearest'}));const after=await geometry()
+  await page.locator('[data-new-comment-cancel]').click()
+  const active=await page.evaluate(()=>({tag:document.activeElement?.tagName,action:document.activeElement?.getAttribute('data-action'),tab:document.activeElement?.getAttribute('data-tab-id')}))
+  await writeFile(resolve(output,'focus-debug.json'),JSON.stringify({before,after,active,trace},null,2))
+  console.log(JSON.stringify({debug:true,before,after,active,trace}))
+ }else if(entryOnly){
   const bodyBefore=await page.locator('.tiptap').innerHTML(),entries=[]
   const expectedPaths=['M 2.99 3.91 h 10.01 v 6.83 h -5.46 L 4.81 13.46 v -2.73 h -1.82 z','M 5.27 6.18 h 5.46 M 5.27 8.46 h 3.64']
   for(const tab of ['review','insert']){
@@ -109,8 +130,16 @@ try{
   await writeFile(resolve(output,'evidence.json'),JSON.stringify(evidence,null,2))
   console.log(JSON.stringify({ok:true,mode:evidence.mode,output,manifestSha256,nodeBridgeSha256,javascriptCount:chunks.size,entries,zeroEdits:true,saveRequests:0,exportRequests:0}))
  }else{
- let input=await newComment('review');await input.fill('取消的输入');await page.locator('[data-new-comment-cancel]').click();assert.deepEqual(await draft(),[])
+ let input=await newComment('review');await input.fill('取消的输入\n'+('长批注文字用于换行与滚动检查。'.repeat(24)))
+ if(checkLayout)await inspectCommentComposer(page,{output,phase:'editing',evidence:layout,draft})
+ await page.locator('[data-new-comment-cancel]').click();assert.deepEqual(await draft(),[])
+ if(checkLayout&&process.env.DOCX_COMMENT_CREATE_LAYOUT_BASELINE!=='1'){
+  assert.ok(await page.locator('[data-action=comment-create]').evaluate(node=>node===document.activeElement))
+  input=await newComment('review');await input.fill('标题取消的输入');await page.getByRole('button',{name:'取消并关闭新建批注',exact:true}).click()
+  assert.deepEqual(await draft(),[]);assert.ok(await page.locator('[data-action=comment-create]').evaluate(node=>node===document.activeElement))
+ }
  input=await newComment('insert');await input.fill('历史恢复的新批注😀');await page.locator('[data-new-comment-submit]').click();assert.equal((await draft()).length,1)
+ if(checkLayout)await inspectCommentComposer(page,{output,phase:'drafted',evidence:layout,draft})
  await page.locator('.tiptap').evaluate(el=>el.editor.commands.undo());assert.deepEqual(await draft(),[]);await page.locator('.tiptap').evaluate(el=>el.editor.commands.redo());assert.equal((await draft()).length,1)
  await page.screenshot({path:resolve(output,'new-comment-history.png'),fullPage:true})
  await page.reload();await page.locator('.docx-source-home').waitFor({timeout:60000});assert.equal((await draft())[0].text,'历史恢复的新批注😀')
@@ -118,7 +147,9 @@ try{
  await page.screenshot({path:resolve(output,'new-comment-unblurred.png'),fullPage:true})
  await page.locator('[data-action=save]').dispatchEvent('click');await page.waitForFunction(()=>document.querySelector('.save-state-label')?.textContent.includes('已保存修订 2'),null,{timeout:60000})
  assert.equal(await input.isDisabled(),true);assert.equal(await page.getByText('新批注版式验收待复核',{exact:true}).count(),1);assert.equal(await page.getByRole('link',{name:'下载 Word',exact:true}).count(),1)
- const downloaded=Buffer.from(await page.evaluate(async()=>Array.from(new Uint8Array(await(await fetch('/new-comment-download.docx')).arrayBuffer()))));assert.equal(sha(downloaded),revisions[2].model.sourceSha256)
+ if(checkLayout){await inspectCommentComposer(page,{output,phase:'locked',evidence:layout,draft});if(process.env.DOCX_COMMENT_CREATE_LAYOUT_BASELINE!=='1')assert.deepEqual(layout.failures,[])}
+ const downloadPromise=page.waitForEvent('download');await page.getByRole('link',{name:'下载 Word',exact:true}).click()
+ const download=await downloadPromise,downloaded=await readFile(await download.path());assert.equal(sha(downloaded),revisions[2].model.sourceSha256);assert.equal(downloaded.length,Buffer.from(revisions[2].bytes,'base64').length)
  await writeFile(resolve(output,'downloaded.docx'),downloaded)
  const verified=engine({mode:'verify',source:resolve(output,'revision-1.docx'),bytes:downloaded.toString('base64'),expected:['历史恢复的新批注😀','保存前未失焦的新批注😀']})
  await page.screenshot({path:resolve(output,'new-comment-delivery.png'),fullPage:true});await open(2)
@@ -127,7 +158,8 @@ try{
  await page.screenshot({path:resolve(output,'new-comment-revision-2.png'),fullPage:true})
  assert.equal(engine({mode:'stale',source:resolve(output,'revision-2.docx'),operations:payload.operations}).rejected,true);assert.equal(sha(await readFile(resolve(output,'revision-1.docx'))),sourceSha256)
  await page.waitForLoadState('networkidle');await Promise.all(identities);assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(failedResponses,[])
- const evidence={ok:true,mode:'built-browser-comment-create',apiRoutesAreFixtures:true,realPythonNodeBridge:true,browserVersion:browser.version(),port,manifestSha256,nodeBridgeSha256,sourceSha256,outputSha256:revisions[2].model.sourceSha256,verified,payload,requests,runtimeJavaScript:[...chunks.values()],pageErrors,consoleErrors,failedResponses}
+ assert.equal(sha(await readFile(resolve(staticRoot,'.vite/manifest.json'))),manifestSha256)
+ const evidence={ok:true,mode:'built-browser-comment-create',apiRoutesAreFixtures:true,realPythonNodeBridge:true,browserVersion:browser.version(),port,manifestSha256,nodeBridgeSha256,sourceSha256,outputSha256:revisions[2].model.sourceSha256,outputSize:downloaded.length,verified,payload,layout,requests,runtimeJavaScript:[...chunks.values()],pageErrors,consoleErrors,failedResponses}
  await writeFile(resolve(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({ok:true,output,manifestSha256,nodeBridgeSha256,javascriptCount:chunks.size,verified}))
  }
 }catch(error){await page?.screenshot({path:resolve(output,'failure.png'),fullPage:true}).catch(()=>{});await writeFile(resolve(output,'failure.json'),JSON.stringify({error:error.message,stack:error.stack,saved:!!payload,pageErrors,consoleErrors,failedResponses},null,2));throw error}

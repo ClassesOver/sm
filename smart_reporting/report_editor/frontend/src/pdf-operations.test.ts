@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { NativeDraft } from './native-draft'
-import { deletePdfPage, movePdfPage, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, PdfPreviewReview, stickyNoteRect } from './pdf-operations'
+import { deletePdfPage, movePdfPage, movePdfPageTo, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, pdfImagePlacementOperation, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, PdfPreviewReview, stickyNoteRect } from './pdf-operations'
 
 const pages = [0, 1, 2].map(index => ({ pageId: `source:page:${index}`, index, mediaBox: { x: 0, y: 0, width: 300, height: 400 }, cropBox: { x: 20, y: 30, width: 200, height: 300 }, rotation: index * 90 }))
 
@@ -40,6 +40,13 @@ describe('PDF immutable source operations', () => {
     expect(pdfPageState(pages, deleted).map(page => page.pageId)).toEqual([pages[2].pageId, pages[1].pageId])
     expect(deleted.filter(op => op.kind === 'reorderPages')).toHaveLength(1)
     expect(pages[0].rotation).toBe(0)
+  })
+  it('moves a thumbnail page to the drop target position by stable source identity', () => {
+    const operations = movePdfPageTo(pages, [{ kind: 'rotatePage', pageId: pages[2].pageId, delta: 90 }], pages[0].pageId, pages[2].pageId)
+    expect(pdfPageState(pages, operations).map(page => page.pageId)).toEqual([pages[1].pageId, pages[2].pageId, pages[0].pageId])
+    expect(operations).toContainEqual({ kind: 'rotatePage', pageId: pages[2].pageId, delta: 90 })
+    expect(operations.filter(operation => operation.kind === 'reorderPages')).toHaveLength(1)
+    expect(movePdfPageTo(pages, operations, 'foreign', pages[0].pageId)).toEqual(operations)
   })
   it('reverses the current visible page order while retaining source identities and edits', () => {
     const moved = movePdfPage(pages, [], pages[2].pageId, -1)
@@ -86,6 +93,19 @@ describe('PDF immutable source operations', () => {
     expect(stickyNoteRect([219, 31], box)).toEqual([200, 30, 220, 48])
     expect(() => stickyNoteRect([1, 1], { x: 0, y: 0, width: 10, height: 10 })).toThrow(/批注/)
     expect(() => pdfRectFromClient({ width: 200, height: 300, convertToPdfPoint: (x, y) => [x, y] }, { left: 0, top: 0, width: 200, height: 300 }, [0, 0], [0, 0], box)).toThrow(/范围/)
+  })
+  it('places a clicked image at the fixed-source size and maps its centered rect through the PDF viewport', () => {
+    const viewport = { width: 400, height: 600, convertToPdfPoint: (x: number, y: number) => [20 + x / 2, 330 - y / 2] }
+    expect(pdfImagePlacementOperation(pages[0].pageId, viewport, pages[0].cropBox, { width: 100, height: 50 }, 2, [300, 350], { left: 100, top: 50 }, 'iVBORw0KGgoAAA==', [0.86, 0.22, 0.18]))
+      .toEqual({ kind: 'addDrawing', pageId: pages[0].pageId, shape: 'image', rect: [82.5, 161.25, 157.5, 198.75], color: [0.86, 0.22, 0.18], width: 2, image: 'iVBORw0KGgoAAA==' })
+    const rotated = { width: 600, height: 400, convertToPdfPoint: (x: number, y: number) => [20 + y / 2, 30 + x / 2] }
+    expect(pdfImagePlacementOperation(pages[0].pageId, rotated, pages[0].cropBox, { width: 100, height: 50 }, 2, [400, 250], { left: 100, top: 50 }, 'iVBORw0KGgoAAA==', [0.86, 0.22, 0.18]))
+      .toMatchObject({ pageId: pages[0].pageId, shape: 'image', rect: [101.25, 142.5, 138.75, 217.5] })
+  })
+  it('keeps signature images on the smaller fixed-source signing scale', () => {
+    const viewport = { width: 600, height: 800, convertToPdfPoint: (x: number, y: number) => [x / 2, 400 - y / 2] }
+    expect(pdfImagePlacementOperation(pages[0].pageId, viewport, { x: 0, y: 0, width: 300, height: 400 }, { width: 100, height: 50 }, 2, [300, 400], { left: 0, top: 0 }, 'iVBORw0KGgoAAA==', [0.15, 0.15, 0.15], 'signature'))
+      .toMatchObject({ pageId: pages[0].pageId, shape: 'image', rect: [100, 175, 200, 225] })
   })
 })
 

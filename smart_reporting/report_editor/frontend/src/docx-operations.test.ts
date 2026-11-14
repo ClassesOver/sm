@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { docxOperations, replayDocxOperations, safeDocxLink, type DocxAnchor, type DocxPmNode } from './docx-operations'
+import { docxOperations, replayDocxOperations, safeDocxLink, docxPageBorderSectionOperations, type DocxAnchor, type DocxPmNode } from './docx-operations'
 
 const para = (id: number | null, text: string) => ({ type: 'docParagraph', attrs: { docxIndex: id }, content: text ? [{ type: 'text', text }] : [] })
 const anchors: DocxAnchor[] = [{ docxIndex: 0, blockId: 'a', expectedObjectSha256: 'hash-a', editable: true }, { docxIndex: 1, blockId: 'b', expectedObjectSha256: 'hash-b', editable: false }]
@@ -204,6 +204,26 @@ it('carries an anchored section layout and validates its source identity before 
   expect(operations).toEqual([section])
   expect(docxOperations(base, replayDocxOperations(base, operations, anchors, source), anchors, section)).toEqual(operations)
   expect(() => replayDocxOperations(base, operations, anchors)).toThrow(/节身份/)
+})
+
+it('applies page borders to selected sections atomically while preserving each section layout draft', () => {
+  const sections = ['a', 'b'].map(id => ({ sectionId: `section-${id}`, expectedSectionSha256: `hash-${id}`, settings: {
+    orientation: 'portrait' as const, pageWidth: 12240, pageHeight: 15840, marginTop: 1440, marginRight: 1440,
+    marginBottom: 1440, marginLeft: 1440, columns: 1, pageBorder: false,
+  } }))
+  const existing = [{ kind: 'setSectionLayout', sectionId: 'section-b', expectedSectionSha256: 'hash-b', values: { marginLeft: 900 } }]
+  const props = { offsetFrom: 'text' as const, spacePt: 8, widthPt: 2, sides: { top: { val: 'double', widthPt: 2, spacePt: 8, color: '008000' } } }
+  const changed = docxPageBorderSectionOperations(existing, sections, [0, 1], props)
+  expect(changed).toEqual([
+    { kind: 'setSectionLayout', sectionId: 'section-a', expectedSectionSha256: 'hash-a', values: { pageBorder: true, pageBorderProps: props } },
+    { kind: 'setSectionLayout', sectionId: 'section-b', expectedSectionSha256: 'hash-b', values: { marginLeft: 900, pageBorder: true, pageBorderProps: props } },
+  ])
+  expect(docxPageBorderSectionOperations(changed, sections, [1], null)[1]).toEqual({
+    kind: 'setSectionLayout', sectionId: 'section-b', expectedSectionSha256: 'hash-b',
+    values: { marginLeft: 900, pageBorder: false, pageBorderProps: null },
+  })
+  expect(() => docxPageBorderSectionOperations(existing, sections, [0, 2], props)).toThrow(/节身份/)
+  expect(existing).toEqual([{ kind: 'setSectionLayout', sectionId: 'section-b', expectedSectionSha256: 'hash-b', values: { marginLeft: 900 } }])
 })
 
 it('maps arbitrary paragraph before/after values to source-bound spacing and replays explicit zero', () => {

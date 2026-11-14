@@ -1,0 +1,12 @@
+{
+  "upstreamCommit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "upstreamFile": "apps/pdf/src/renderer/FormDesignLayer.tsx",
+  "upstreamSha256": "e97b59aebe74e207f30e22e7bf5036a2d4e66bda1d0da8a7608d4d32da586710",
+  "adaptations": [
+    "existing annotation geometry and local IPC type imports",
+    "local pending field type only",
+    "minimum 8 points matches native contract",
+    "keyboard focus and selection accessibility"
+  ],
+  "scope": "Full source component retained; host capabilities constrained by native identity and operation support."
+}

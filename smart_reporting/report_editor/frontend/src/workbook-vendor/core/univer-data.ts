@@ -15,6 +15,8 @@ import {
 } from '@sheets-web/xlsx-engine'
 import { CellValueType } from '@univerjs/core'
 import { logicalStyleOf, toUniverStyle, type LogicalStyle } from './style-map'
+import {columnWidthToPixels,rowHeightToPixels} from '@sheets-web/xlsx-engine/geometry'
+export {columnWidthToPixels,rowHeightToPixels} from '@sheets-web/xlsx-engine/geometry'
 
 export const MINIMUM_SHEET_ROW_COUNT = 1000
 export const MINIMUM_SHEET_COLUMN_COUNT = 26
@@ -32,9 +34,12 @@ export interface UniverCellData {
 export interface UniverSheetData {
   id: string
   name: string
+  hidden?: 1
   custom?: Record<string, unknown>
   rowCount: number
   columnCount: number
+  defaultColumnWidth: number
+  defaultRowHeight: number
   cellData: Record<number, Record<number, UniverCellData>>
   mergeData?: Array<{ startRow: number; startColumn: number; endRow: number; endColumn: number }>
   columnData?: Record<number, UniverColumnData>
@@ -68,17 +73,6 @@ export interface UniverWorkbookData {
   /// engine so grid formulas can reference them
   definedNames?: ReadonlyArray<{ name: string; refersTo: string; scopeSheetId?: string | undefined }>
 }
-/// OOXML column width (chars) → pixels, the MDW approximation the desktop
-/// app also uses for display (7px per width unit + padding).
-export function columnWidthToPixels(width: number): number {
-  return Math.max(8, Math.round(width * 7 + 5))
-}
-
-/// Row height is in points; Univer wants pixels at 96dpi.
-export function rowHeightToPixels(points: number): number {
-  return Math.max(2, Math.round((points * 96) / 72))
-}
-
 export function buildWorkbookData(
   model: WorkbookModel,
   workbookId: string,
@@ -161,9 +155,12 @@ export function buildWorkbookData(
     sheets[id] = {
       id,
       name: sheet.name,
+      ...(sheet.hidden ? { hidden: 1 as const } : {}),
       custom: {genofficeOutline: {summaryBelow: sheet.outlineSummaryBelow ?? true, summaryRight: sheet.outlineSummaryRight ?? true}},
       rowCount: Math.min(1048576, Math.max(MINIMUM_SHEET_ROW_COUNT, maximumRow + 100)),
       columnCount: Math.min(16384, Math.max(MINIMUM_SHEET_COLUMN_COUNT, maximumColumn + 10)),
+      defaultColumnWidth: sheet.defaultColumnWidthPx ?? columnWidthToPixels(8.43),
+      defaultRowHeight: sheet.defaultRowHeightPx ?? rowHeightToPixels(15),
       cellData,
       ...(merges.length > 0 ? { mergeData: merges } : {}),
       ...(Object.keys(columnData).length > 0 ? { columnData } : {}),

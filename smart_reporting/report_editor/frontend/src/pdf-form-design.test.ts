@@ -57,3 +57,68 @@ it('unsupported fields stay disabled and preview failure retains the staged draf
   f.root.querySelector<HTMLButtonElement>('[data-pdf-form-widget-remove]')!.click();await Promise.resolve();await Promise.resolve()
   expect(f.draft.operations).toHaveLength(1);expect(f.root.textContent).toContain('草稿已保留');expect(f.root.textContent).toContain('预览失败')
 })
+
+it('opens on the close control and returns focus to the opener without changing the draft',()=>{
+  const f=fixture(),opener=document.createElement('button');f.root.prepend(opener);opener.focus();f.panel.open()
+  const close=f.panel.element.querySelector<HTMLButtonElement>('header button')!
+  expect(close).not.toBeNull();expect(document.activeElement).toBe(close)
+  close.click();expect(f.panel.element.hidden).toBe(true);expect(document.activeElement).toBe(opener)
+  expect(f.draft.operations).toEqual([])
+})
+
+it('Escape closes but composition Escape keeps the panel and focus',()=>{
+  const f=fixture(),opener=document.createElement('button');f.root.prepend(opener);opener.focus();f.panel.open()
+  const button=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-widget-remove]')!;button.focus()
+  button.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',isComposing:true,bubbles:true,cancelable:true}))
+  expect(f.panel.element.hidden).toBe(false);expect(document.activeElement).toBe(button)
+  const escape=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});button.dispatchEvent(escape)
+  expect(f.panel.element.hidden).toBe(true);expect(escape.defaultPrevented).toBe(true);expect(document.activeElement).toBe(opener)
+})
+
+it.each(['composing','legacy229','consumed'])('preserves field design and focus for %s Escape',mode=>{
+  const f=fixture(),opener=document.createElement('button');f.root.prepend(opener);opener.focus();f.panel.open()
+  const button=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-widget-remove]')!;button.focus()
+  if(mode==='consumed')button.addEventListener('keydown',event=>event.preventDefault(),{once:true})
+  const event=new KeyboardEvent('keydown',{key:'Escape',isComposing:mode==='composing',keyCode:mode==='legacy229'?229:0,bubbles:true,cancelable:true})
+  button.dispatchEvent(event)
+  expect(f.panel.element.hidden).toBe(false);expect(document.activeElement).toBe(button)
+  expect(f.draft.operations).toEqual([]);expect(f.refresh).not.toHaveBeenCalled()
+  if(mode!=='consumed')expect(event.defaultPrevented).toBe(false)
+  button.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+  expect(f.panel.element.hidden).toBe(true);expect(document.activeElement).toBe(opener)
+})
+
+it('refresh retains the focused widget and falls back to close only when it becomes unavailable',()=>{
+  const f=fixture();f.panel.open();f.root.querySelector<HTMLButtonElement>('[data-pdf-form-widget-remove]')!.focus()
+  f.panel.refresh();expect(document.activeElement).toBe(f.root.querySelector('[data-pdf-form-widget-remove]'))
+  f.setReason('只读修订');f.panel.refresh()
+  expect(f.root.querySelector<HTMLButtonElement>('[data-pdf-form-widget-remove]')!.disabled).toBe(true)
+  expect(document.activeElement).toBe(f.panel.element.querySelector('header button'))
+  expect(f.draft.operations).toEqual([])
+})
+
+it('refresh and async staging never steal external focus',async()=>{
+  const f=fixture(),outside=document.createElement('button');f.root.append(outside);f.panel.open()
+  let complete!:()=>void;f.refresh.mockImplementation(()=>new Promise<void>(resolve=>{complete=resolve}))
+  f.root.querySelector<HTMLButtonElement>('[data-pdf-form-widget-remove]')!.click()
+  outside.focus();complete();await Promise.resolve();f.panel.refresh()
+  expect(document.activeElement).toBe(outside);expect(f.draft.operations).toHaveLength(1)
+})
+
+it('identifies each action by field and page while keeping unsupported reasons separate',()=>{
+  const f=fixture(),source=model(),widget=source.formDesignWidgets![0]!
+  f.setModel({...source,formDesignWidgets:[widget,{...widget,widgetId:'8R',widgetIdentity:'d'.repeat(64),pageIndex:1,removable:false,removalReason:'共享控件'}]});f.panel.open()
+  const buttons=f.root.querySelectorAll('[data-pdf-form-widget-remove]')
+  expect(buttons[0].getAttribute('aria-label')).toBe('删除字段：customer（第1页，7R）')
+  expect(buttons[1].getAttribute('aria-label')).toBe('删除字段：customer（第2页，8R）')
+  expect(f.panel.element.querySelector('.pdf-form-design-reason')?.textContent).toBe('共享控件')
+})
+
+it('does not restore focus to a hidden or removed opener',()=>{
+  for(const mode of ['hidden','removed']){
+    const f=fixture(),opener=document.createElement('button');f.root.prepend(opener);opener.focus();f.panel.open()
+    if(mode==='hidden')opener.hidden=true;else opener.remove()
+    const focus=vi.spyOn(opener,'focus');f.panel.element.querySelector<HTMLButtonElement>('button')!.click()
+    expect(focus).not.toHaveBeenCalled();expect(f.panel.element.hidden).toBe(true)
+  }
+})

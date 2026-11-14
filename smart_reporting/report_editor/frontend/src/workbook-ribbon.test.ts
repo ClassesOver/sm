@@ -3,6 +3,30 @@ import { applyWorkbookRibbonCommand, mountWorkbookRibbon, type WorkbookPageSetup
 
 afterEach(() => { document.body.replaceChildren() })
 
+it.each([['Data', 'merge-workbooks'], ['Chart Design', 'chart-delete']] as const)('dispatches the existing %s %s command from its real Ribbon button', (tab, command) => {
+  const onCommand = vi.fn(); let editable = true
+  const ribbon = mountWorkbookRibbon(document.body, onCommand, { editable: () => editable, rotation: () => 0 })
+  document.querySelector<HTMLButtonElement>(`[data-ribbon-tab="${tab}"]`)!.click()
+  const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${command}"]`)!
+  expect(button.disabled).toBe(false)
+  button.click(); expect(onCommand).toHaveBeenCalledExactlyOnceWith(command)
+  editable = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  button.click(); expect(onCommand).toHaveBeenCalledTimes(1)
+  ribbon.dispose()
+})
+
+it('opens actual recommended charts and disables insertion for read-only or protected sheets', () => {
+  const command = vi.fn(); let editable = true, protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }) })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
+  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="recommended-charts-open"]')!
+  expect(button.disabled).toBe(false); button.click(); expect(command).toHaveBeenCalledExactlyOnceWith('recommended-charts-open')
+  protectedSheet = true; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  protectedSheet = false; editable = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('opens pivot filters and editable-range management only on editable unprotected sheets', () => {
   const command = vi.fn(); let protectedSheet = false, editable = true
   const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0,
@@ -494,7 +518,7 @@ it('renders GenOffice Data Tools in source order with explicit native writeback 
   mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
   const groups = [...document.querySelectorAll<HTMLElement>('.workbook-ribbon-group')]
-  const groupFor = (title: string) => groups.find(group => group.querySelector('h3')?.textContent === title)
+  const groupFor = (title: string) => groups.find(group => group.querySelector('h2')?.textContent === title)
   const dataTools = groupFor('数据工具')!
   const ids = [...dataTools.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => button.dataset.ribbonCommand)
@@ -662,7 +686,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
   const groups = [...document.querySelectorAll<HTMLElement>('.workbook-ribbon-group')]
-  expect(groups.map(group => group.querySelector('h3')?.textContent)).toEqual([
+  expect(groups.map(group => group.querySelector('h2')?.textContent)).toEqual([
     '校对', '语言', '批注', '注释', '保护',
   ])
   const idsByGroup = groups.map(group => [...group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]

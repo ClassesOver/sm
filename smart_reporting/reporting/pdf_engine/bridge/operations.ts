@@ -1,3 +1,10 @@
+import {setStaticFillSchema,removeStaticFillSchema,inspectStaticFills,prepareStaticFills,reviewStaticFills} from './static-form-fill'
+import {inspectDigitalSignatures} from './signatures'
+import {metadataAvailability,freezeMetadataDate,reviewMetadataOutput} from './metadata'
+import {validateMetadataOperation,type MetadataValues} from '../vendor/metadata/protocol'
+import {batesAvailability,prepareBates,reviewBatesOutput} from './bates'
+import type {BatesConfig} from '../vendor/bates/bates'
+import {inspectPdfOutline,outlineWriteRequest,reviewPdfOutline} from './outline'
 import {reviewMeasureLabelClipping} from './measure-label-review'
 import {prepareMixedPng,reviewMixedPngStamp,type MixedPngImage} from './mixed-png'
 import {validateMixedLinkTarget,assertMixedLinkSource,reviewMixedLink} from './mixed-links'
@@ -10,7 +17,7 @@ import {staticTextAvailability,insertStaticText} from './static-text'
 import { inspectSavedDrawings } from './saved-drawings'
 import { inspectDesignWidgets, removeDesignWidgetWithReceipt } from './form-design'
 import {createDesignField,editDesignFieldRequired,formDesignCreateAvailability,type CreateFormFieldOperation,type EditFormFieldRequiredOperation} from './form-design-create'
-import {editDesignWidget,arrangeDesignWidgets,formDesignPropertiesAvailability,type EditFormWidgetOperation,type ArrangeFormWidgetsOperation} from './form-design-properties'
+import {editDesignWidget,editDesignWidgetRects,arrangeDesignWidgets,formDesignPropertiesAvailability,type EditFormWidgetOperation,type EditFormWidgetRectsOperation,type ArrangeFormWidgetsOperation} from './form-design-properties'
 import {patchExternalPages} from './external-pages'
 import {inspectExistingImages,transformExistingImage,type ExistingImageOperation} from './existing-image'
 import { assertRedactionAnnotationSafety, flattenLayoutAnnotations } from './layout-preservation'
@@ -93,6 +100,10 @@ const stampText = z.string().max(200)
 const watermarkConfig = z.object({ text: z.string().trim().min(1).max(200), angle: z.number().min(-90).max(90), opacity: z.number().min(0.05).max(1), color: hexColor, sizeRatio: z.number().min(0.04).max(0.22) }).strict()
 const headerFooterConfig = z.object({ headerLeft: stampText, headerCenter: stampText, headerRight: stampText, footerLeft: stampText, footerCenter: stampText, footerRight: stampText, pageNumber: z.boolean(), startAt: z.number().int().min(1).max(100000), fontSize: z.number().min(4).max(72), color: hexColor }).strict()
 const operation = z.discriminatedUnion('kind', [
+  setStaticFillSchema,removeStaticFillSchema,
+  z.object({kind:z.literal('setMetadata'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),modifiedMs:z.number().int().min(0).max(8640000000000000),metadata:z.custom<MetadataValues>()}).strict(),
+  z.object({kind:z.literal('addBates'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),config:z.custom<BatesConfig>(),entries:z.array(z.object({pageId:z.string().min(1),ordinal:z.number().int().min(0),origin:point,rotate:z.union([z.literal(0),z.literal(90),z.literal(180),z.literal(270)]),lineXOffsets:z.tuple([z.number().finite().max(0).min(-100000)])}).strict()).min(1).max(2000)}).strict(),
+  z.object({kind:z.literal('setOutline'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),tree:z.array(z.unknown()).max(2000)}).strict(),
   z.object({kind:z.literal('insertText'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string().min(1),origin:point,text:z.string().min(1).max(1000).refine(value=>value.trim().length>0&&!/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(value.replaceAll(String.fromCharCode(10),''))),fontSize:z.number().finite().min(6).max(72),color,align:z.enum(['left','center','right']),font:z.enum(['arial','times','courier']).optional(),bold:z.boolean().optional(),italic:z.boolean().optional(),lineLeading:z.number().finite().positive().optional()}).strict(),
   z.object({ kind:z.literal('removeFormWidget'), sourceSha256:z.string().regex(/^[a-f0-9]{64}$/), fieldName:z.string().min(1).max(256), widgetId:z.string().regex(/^\d+R\d*$/), widgetIdentity:z.string().regex(/^[a-f0-9]{64}$/), expectedWidgetSha256:z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('setStamps'), ...identity, watermark: watermarkConfig.nullable(), headerFooter: headerFooterConfig.nullable(), images: z.array(z.string().min(8).max(8_000_000)).min(1).max(1000), stamps: z.array(z.object({ pageId: z.string().min(1), image: z.number().int().min(0), rect, opacity: z.number().min(0).max(1).optional() }).strict()).min(1).max(20000) }).strict(),
@@ -125,6 +136,8 @@ const operationsSchema = z.array(operation).max(500)
 
 export async function inspectPdf(content: Uint8Array, includeText = false) {
   const document = await PDFDocument.load(content, { updateMetadata: false })
+  const signatureModel=await inspectDigitalSignatures(content)
+  const metadataCapability=metadataAvailability(document)
   const sourceSha256 = sha256(content)
   const insertAvailability = staticTextAvailability(document)
   const protectionAvailable = !document.isEncrypted && !document.context.trailerInfo.Encrypt && !document.catalog.has(PDFName.of('Perms')) && !document.catalog.has(PDFName.of('AcroForm'))
@@ -197,11 +210,12 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
         return { notes, notesReadSafe: true }
       } catch { return { notes: [], notesReadSafe: false } }
     })(),
-    mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle,
+    mediaBox: page.getMediaBox(), cropBox: page.getCropBox(), rotation: page.getRotation().angle, userUnit:page.node.lookupMaybe(PDFName.of('UserUnit'),PDFNumber)?.asNumber()??1,
   }))
   if (pages.length === 0) throw new Error('PDF 没有可编辑页面')
   const formDesign = await inspectDesignWidgets(content)
-  return { sourceSha256, pageCount: pages.length, pages, formFields, existingImages:existingImageModel.existingImages, formDesignWidgets:formDesign.widgets, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { ...existingImageModel.capabilities, protectPdf: protectionAvailable, ...formCreateAvailability, ...formPropertiesAvailability, ...await formRadioExtensionAvailability(content), ...await formTextPropertiesAvailability(content), editFormFieldRequired: formDesign.widgets.some(widget => widget.removable), ...insertAvailability, maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), removeFormWidget:formDesign.widgets.some(widget => widget.removable || widget.radioRemovalEditable), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  const staticFillModel=await inspectStaticFills(content)
+  return { sourceSha256, ...signatureModel, pageCount: pages.length, pages, formFields, staticFormFills:staticFillModel.staticFormFills, ...inspectPdfOutline(document,sourceSha256,removalLinks.protectedSource), existingImages:existingImageModel.existingImages, formDesignWidgets:formDesign.widgets, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { ...staticFillModel.capabilities, ...metadataCapability, ...batesAvailability(document), ...existingImageModel.capabilities, protectPdf: protectionAvailable, ...formCreateAvailability, ...formPropertiesAvailability, ...await formRadioExtensionAvailability(content), ...await formTextPropertiesAvailability(content), editFormFieldRequired: formDesign.widgets.some(widget => widget.removable), ...insertAvailability, maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), removeFormWidget:formDesign.widgets.some(widget => widget.removable || widget.radioRemovalEditable), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 async function deterministicLayoutDates(source: Uint8Array, output: Uint8Array) {
@@ -219,7 +233,7 @@ async function deterministicLayoutDates(source: Uint8Array, output: Uint8Array) 
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
   if(Array.isArray(rawOperations)){
-    const exclusive=rawOperations.find(op=>op&&typeof op==='object'&&['externalPages','createFormField','editFormFieldRequired','editFormWidget','arrangeFormWidgets','appendRadioWidget','editFormTextProperties','transformExistingImage'].includes(op.kind))
+    const exclusive=rawOperations.find(op=>op&&typeof op==='object'&&['externalPages','createFormField','editFormFieldRequired','editFormWidget','editFormWidgetRects','arrangeFormWidgets','appendRadioWidget','editFormTextProperties','transformExistingImage'].includes(op.kind))
     if(exclusive){
       if(rawOperations.length!==1)throw Error('外部页面操作或表单设计须单独保存')
       if(exclusive.kind==='externalPages')return patchExternalPages(content,exclusive,expectedSha256)
@@ -228,6 +242,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
       if(exclusive.kind==='appendRadioWidget')return appendDesignRadioWidget(content,expectedSha256,exclusive as AppendRadioWidgetOperation)
       if(exclusive.kind==='createFormField')return createDesignField(content,expectedSha256,exclusive as CreateFormFieldOperation)
       if(exclusive.kind==='editFormWidget')return editDesignWidget(content,expectedSha256,exclusive as EditFormWidgetOperation)
+      if(exclusive.kind==='editFormWidgetRects')return editDesignWidgetRects(content,expectedSha256,exclusive as EditFormWidgetRectsOperation)
       if(exclusive.kind==='arrangeFormWidgets')return arrangeDesignWidgets(content,expectedSha256,exclusive as ArrangeFormWidgetsOperation)
       return editDesignFieldRequired(content,expectedSha256,exclusive as EditFormFieldRequiredOperation)
     }
@@ -492,9 +507,9 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   }
   for (const op of ops) {
     if (op.kind === 'mergePages' || op.kind === 'splitPages') throw new Error('页面排版须单独处理')
-    if (op.kind === 'setFormValue') continue
+    if (op.kind === 'setFormValue' || op.kind === 'setStaticFill' || op.kind === 'removeStaticFill') continue
     if (op.sourceSha256 !== undefined && op.sourceSha256 !== model.sourceSha256) throw new Error('PDF 操作来源摘要不匹配')
-    if (op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment' || op.kind === 'insertBlankPage' || op.kind === 'setStamps') continue
+    if (op.kind === 'setMetadata' || op.kind === 'addBates' || op.kind === 'setOutline' || op.kind === 'setPageSize' || op.kind === 'addAttachment' || op.kind === 'removeAttachment' || op.kind === 'insertBlankPage' || op.kind === 'setStamps') continue
     if (op.kind === 'reorderPages') {
       if (reordered || new Set(op.pageIds).size !== op.pageIds.length || op.pageIds.some((id) => !byId.has(id) && !blankIndex.has(id))) throw new Error('PDF 页面排序无效')
       reordered = true
@@ -669,14 +684,43 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   if (request.pageOrder && (request.pageOrder.length !== survivors.length + blankIndex.size || request.pageOrder.some((index) => index < model.pages.length && deleted.has(model.pages[index]!.pageId)))) throw new Error('PDF 排序必须完整包含保留页面')
   // 未重排时空白页按插入顺序追加在末尾；后续裁切/批注定位统一使用这一最终顺序。
   const finalOrder = request.pageOrder ?? [...survivors.map(page => page.index), ...blankIndex.values()]
+  const metadataOps=ops.filter(op=>op.kind==='setMetadata')
+  if(metadataOps.length>1)throw Error('文档属性不能重复设置')
+  if(metadataOps.length){
+    if(!model.capabilities.editMetadata)throw Error(model.capabilities.editMetadataReason??'来源文档属性仅可查看')
+    validateMetadataOperation(metadataOps[0],model.sourceSha256);request.metadata=metadataOps[0]!.metadata
+  }
+  const outlineOps=ops.filter(op=>op.kind==='setOutline')
+  if(outlineOps.length>1)throw Error('书签树替换不能重复')
+  if(outlineOps.length){
+    if(!model.outlineEditable)throw Error(model.outlineReason??'来源书签不能编辑')
+    request.outline=outlineWriteRequest(outlineOps[0]!.tree,model.pages,blankIndex,deleted)
+  }
   const prepared = hasText ? await prepareTextEdits(content, model.pages, ops) : { edits: [], indices: [], skipped: [] as SkippedOperation[] }
+  const batesOps=ops.filter(op=>op.kind==='addBates')
+  if(batesOps.length&&!model.capabilities.bates)throw Error(model.capabilities.batesReason??'来源不能添加 Bates 编号')
+  const batesPlans=prepareBates(ops,model.sourceSha256,model.pages,blankIndex,deleted)
+  request.textInserts=batesPlans.map(plan=>plan.input)
   request.textEdits = prepared.edits
   const skippedOperations = [...prepared.skipped]
   const remaining = ops.filter((_, index) => !skippedOperations.some(item => item.operationIndex === index))
   let bytes = await removeSourceMarkups(content, model.sourceSha256, removals, noteEdits)
+  const staticPlan=await prepareStaticFills(bytes,ops as Record<string,unknown>[],model.sourceSha256,request.rotations??[])
+  bytes=staticPlan.bytes
+  if(staticPlan.records.length||model.staticFormFills.length||ops.some(op=>op.kind==='removeStaticFill'))request.staticFormFills=staticPlan.records.filter(record=>!redactions.some(redaction=>redaction.pageIndex===record.pageIndex&&Math.min(record.rect[2],redaction.rect[2])>Math.max(record.rect[0],redaction.rect[0])&&Math.min(record.rect[3],redaction.rect[3])>Math.max(record.rect[1],redaction.rect[1])))
   const annotationBaseBytes = bytes
-  if (remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['redact', 'editNote', 'removeNote', 'removeMarkup', 'removeDrawing', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
-    const result = await applySaveRequest(bytes, request)
+  if (request.staticFormFills!==undefined || remaining.some(op => !(op.kind === 'addTextAnnotation' && op.localId && deferredIds.has(op.localId)) && !['redact', 'editNote', 'removeNote', 'removeMarkup', 'removeDrawing', 'cropPage', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind))) {
+    let result:Awaited<ReturnType<typeof applySaveRequest>>
+    try{result=await applySaveRequest(bytes,request)}catch(error){
+      if(!ops.some(op=>op.kind==='setStaticFill'||op.kind==='removeStaticFill'))throw error
+      // PDFium 已返回实际图像内容字节；后续 metadata/其他写入失败不能丢弃它。
+      const appliedOperationIndices=ops.flatMap((op,index)=>op.kind==='setStaticFill'||op.kind==='removeStaticFill'?[index]:[])
+      const skippedOperations=ops.flatMap((op,index)=>appliedOperationIndices.includes(index)?[]:[{operationIndex:index,kind:op.kind,...('pageId' in op?{pageId:op.pageId}:{}),reason:'pdf_static_fill_followup_write_failed_generated_bytes_retained: '+String(error)}])
+      const reviewIssues=[{operationIndex:appliedOperationIndices[0]??0,kind:'setStaticFill',fieldName:'',code:'pdf_static_fill_metadata_write_failed',message:'静态填写内容已生成，但后续元数据或其他修改写入失败；实际 PDF 已保留，静态填写可能无法再次编辑，请人工核对：'+String(error)}]
+      const outputSha256=sha256(bytes)
+      return {bytes,sourceSha256:model.sourceSha256,sha256:outputSha256,size:bytes.length,appliedOperationIndices,skippedOperations,reviewIssues,previewDigest:sha256(Buffer.from(JSON.stringify({sourceSha256:model.sourceSha256,operations:ops,outputSha256,appliedOperationIndices,skippedOperations,reviewIssues})))}
+    }
+    for(const skipped of result.skippedTextInserts){const plan=batesPlans[skipped.editIndex];if(plan)skippedOperations.push({operationIndex:plan.operationIndex,kind:'addBates',pageId:plan.pageId,reason:'pdf_bates_insert_skipped: '+skipped.reason})}
     if (result.skippedTextEdits.length) {
       for (const index of prepared.indices) skippedOperations.push({ operationIndex: index, kind: 'replaceText', pageId: (ops[index] as {pageId:string}).pageId, reason: 'pdf_text_combined_edit_failed_original_retained' })
       request.textEdits = []
@@ -742,6 +786,12 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     if (!field || field.value !== expected) throw new Error('PDF 表单字段写回后复读不一致')
   }
   const reviewIssues: {operationIndex:number;kind:string;code:string;fieldName:string;message:string;details?:unknown}[] = []
+  if(metadataOps.length){
+    try{bytes=await freezeMetadataDate(bytes,metadataOps[0]!)}catch(error){reviewIssues.push({operationIndex:ops.indexOf(metadataOps[0]!),kind:'setMetadata',fieldName:'',code:'pdf_metadata_date_review_failed',message:'文档属性修改时间复核失败，实际生成文件已保留：'+String(error)})}
+    reviewIssues.push(...await reviewMetadataOutput(bytes,metadataOps[0]!,ops.indexOf(metadataOps[0]!)))
+  }
+  reviewIssues.push(...await reviewBatesOutput(bytes,batesPlans,finalOrder))
+  if(request.staticFormFills!==undefined)reviewIssues.push(...await reviewStaticFills(bytes,request.staticFormFills.flatMap(record=>{const pageIndex=finalOrder.indexOf(record.pageIndex);return pageIndex<0?[]:[{...record,pageIndex}]}),ops as Record<string,unknown>[]))
   // Advisory crop review must never invalidate confirmation of identical output.
   const measureCropIssues=await reviewMeasureLabelClipping(bytes,ops.flatMap((op,operationIndex)=>op.kind==='addDrawing'&&op.shape==='measure'&&appliedOperationIndices.includes(operationIndex)?[{operationIndex,pageIndex:finalOrder.indexOf(byId.get(op.pageId)?.index??-1),from:op.from!,to:op.to!,label:op.label!}]:[]))
   let formReviewDocument: PDFDocument | undefined
@@ -755,10 +805,11 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
         message:'字段“'+op.name+'”的文字裁切风险复核失败；实际生成文件已保留，请人工核对：'+String(error)})
     }
   }
+  if(request.outline)reviewIssues.push(...await reviewPdfOutline(bytes,request.outline,finalOrder,model.sourceSha256,ops.indexOf(outlineOps[0]!)))
   const outputIdentity = hasText ? (await inspectNativeText(bytes, sha256(bytes))).map(page => page.map(({ objectId, ...object }) => object)) : null
   const resizedIdentity = sizeOp ? { sha256: sha256(bytes), pages: (await inspectPdf(bytes)).pages } : null
   const resources = hasText ? await textResourcesIdentity() : null
-  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, reviewIssues, pendingNoteMapping, pendingMarkupMapping, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['redact', 'addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'removeDrawing', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
+  const previewDigest = sha256(Buffer.from(JSON.stringify({ sourceSha256: model.sourceSha256, operations: ops, appliedOperationIndices, skippedOperations, reviewIssues, pendingNoteMapping, pendingMarkupMapping, outputIdentity, savedFormFields, resources, resizedIdentity, ...(ops.some(op => ['setStaticFill', 'removeStaticFill', 'setMetadata', 'addBates', 'setOutline', 'redact', 'addMarkup', 'addDrawing', 'setStamps', 'removeMarkup', 'removeDrawing', 'editNote', 'removeNote', 'addTextAnnotation', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(op.kind)) ? { markupOutputSha256: sha256(bytes) } : {}) })))
   return { bytes, sourceSha256: model.sourceSha256, sha256: sha256(bytes), size: bytes.length, skippedOperations, appliedOperationIndices, reviewIssues: [...reviewIssues, ...measureCropIssues], pendingNoteMapping, pendingMarkupMapping, previewDigest }
 }
 

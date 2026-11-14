@@ -1,0 +1,3 @@
+import {expect,it} from 'vitest'
+import {hitChartElement,narrowChartElement,setChartElementRegions} from './workbook-chart-element-hit'
+it('uses drawn element identities and narrows series to a point without reusing replaced chart geometry',()=>{const chart={chartPath:'one'} as import('@sheets-web/xlsx-engine').ChartReadSpec;setChartElementRegions('u','s',chart,[{element:{kind:'point',seriesIndex:1,pointIndex:4},contains:(x,y)=>x===2&&y===3}]);const hit=hitChartElement('u','s',chart,2,3);expect(narrowChartElement(undefined,hit)).toEqual({kind:'series',seriesIndex:1});expect(narrowChartElement({kind:'series',seriesIndex:1},hit)).toEqual({kind:'point',seriesIndex:1,pointIndex:4});expect(hitChartElement('u','s',{...chart},2,3)).toEqual({kind:'chart'})})

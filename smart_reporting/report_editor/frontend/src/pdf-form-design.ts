@@ -2,7 +2,7 @@ import type { NativeDraft, NativeOperation } from './native-draft'
 
 export interface PdfDesignWidget {
   fieldName:string;widgetId:string;widgetIdentity:string;expectedWidgetSha256:string
-  designEditable?:boolean;designReason?:string|null;fieldKind?:string;dateFormat?:string;required?:boolean;radioOptions?:string[];radioValue?:string|null
+  designEditable?:boolean;designReason?:string|null;fieldKind?:string;dateFormat?:string;required?:boolean;radioOptions?:string[];radioValue?:string|null;radioChecked?:boolean
   radioRenameEditable?:boolean;radioRenameReason?:string|null
   radioRemovalEditable?:boolean;radioRemovalReason?:string|null
   radioRequiredEditable?:boolean;radioRequiredReason?:string|null
@@ -51,29 +51,48 @@ export function bindPdfFormDesignPanel(options:{
 }) {
   const owner=options.root.ownerDocument
   const panel=owner.createElement('section');panel.className='pdf-form-design-panel';panel.hidden=true;panel.setAttribute('aria-label','表单字段设计')
+  const header=owner.createElement('header')
   const heading=owner.createElement('h3');heading.textContent='表单字段设计'
   const hint=owner.createElement('p');hint.textContent='支持删除安全的独立单控件字段，或安全单选组中未选中且非默认的单个按钮（至少保留一个）。每次删除须单独保存；可撤销，原修订保留。删除不保证擦除旧字段值。'
   const close=owner.createElement('button');close.type='button';close.textContent='关闭字段设计'
   const status=owner.createElement('p');status.setAttribute('role','status')
   const list=owner.createElement('ul')
-  panel.append(heading,hint,close,status,list);options.root.append(panel)
-  let disposed=false
-  close.addEventListener('click',()=>{panel.hidden=true})
+  header.append(heading,close);panel.append(header,hint,status,list);options.root.append(panel)
+  let disposed=false,opener:HTMLElement|null=null
+  function hide(){
+    panel.hidden=true
+    const target=opener?.isConnected&&!opener.matches(':disabled')&&!opener.closest('[hidden],[inert]')?opener:options.root.querySelector<HTMLElement>('[data-pdf-ribbon-tab][aria-selected="true"]')
+    target?.focus({preventScroll:true})
+  }
+  close.addEventListener('click',hide)
+  panel.addEventListener('keydown',event=>{
+    if(event.key==='Escape'&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();event.stopPropagation();hide()}
+  })
   function render() {
     if(disposed)return
+    const focused=owner.activeElement
+    const focusedIdentity=list.contains(focused)?(focused as HTMLElement).dataset.pdfFormWidgetRemove:undefined
     list.replaceChildren()
-    const model=options.model(),reason=options.unavailable()
-    status.textContent=reason??(options.draft.operations.some(op=>op.kind==='removeFormWidget')?'字段删除已加入草稿，请核对实际预览后保存':options.draft.dirty?PDF_FORM_DESIGN_ALONE_REASON:'')
+    const model=options.model(),unavailable=options.unavailable()
+    status.textContent=unavailable??(options.draft.operations.some(op=>op.kind==='removeFormWidget')?'字段删除已加入草稿，请核对实际预览后保存':options.draft.dirty?PDF_FORM_DESIGN_ALONE_REASON:'')
     const widgets=model.formDesignWidgets??[]
     if(!widgets.length){const empty=owner.createElement('li');empty.textContent='没有可读取的表单控件';list.append(empty)}
     for(const widget of widgets){
-      const row=owner.createElement('li'),label=owner.createElement('span'),button=owner.createElement('button')
+      const row=owner.createElement('li'),label=owner.createElement('div'),name=owner.createElement('strong'),meta=owner.createElement('span'),button=owner.createElement('button')
+      label.className='pdf-form-design-field';name.textContent=widget.fieldName
+      meta.className='pdf-form-design-meta';meta.textContent=`第${widget.pageIndex+1}页 · ${widget.widgetId}`
       const reason=widget.fieldKind==='radio'?widget.radioRemovalReason:widget.removalReason
-      label.textContent=`${widget.fieldName} · ${widget.widgetId}（第${widget.pageIndex+1}页）${reason?'：'+reason:''}`
+      label.append(name,meta)
+      if(reason){const detail=owner.createElement('span');detail.className='pdf-form-design-reason';detail.textContent=reason;label.append(detail)}
       button.type='button';button.textContent=widget.fieldKind==='radio'?'删除单选按钮':'删除字段';button.dataset.pdfFormWidgetRemove=widget.widgetIdentity
-      button.disabled=!!reason||options.draft.closed||options.draft.saving||options.draft.dirty||!canRemove(model,widget)||model.capabilities?.removeFormWidget!==true
+      button.setAttribute('aria-label',`${button.textContent}：${widget.fieldName}（第${widget.pageIndex+1}页，${widget.widgetId}）`)
+      button.disabled=!!unavailable||!!reason||options.draft.closed||options.draft.saving||options.draft.dirty||!canRemove(model,widget)||model.capabilities?.removeFormWidget!==true
       button.addEventListener('click',()=>{void stage(widget.widgetIdentity)})
       row.append(label,button);list.append(row)
+    }
+    if(focusedIdentity&&!panel.hidden){
+      const target=Array.from(list.querySelectorAll<HTMLButtonElement>('button')).find(button=>button.dataset.pdfFormWidgetRemove===focusedIdentity&&!button.disabled)
+      ;(target??close).focus({preventScroll:true})
     }
   }
   async function stage(widgetIdentity:string) {
@@ -91,5 +110,5 @@ export function bindPdfFormDesignPanel(options:{
       if(!disposed){render();status.textContent=`${staged?'字段删除已加入草稿，草稿已保留；':''}${error instanceof Error?error.message:String(error)}`}
     }
   }
-  return {element:panel,open(){if(!disposed){panel.hidden=false;render()}},refresh:render,dispose(){if(disposed)return;disposed=true;panel.remove()}}
+  return {element:panel,open(){if(!disposed){if(!panel.contains(owner.activeElement))opener=owner.activeElement as HTMLElement|null;panel.hidden=false;render();close.focus({preventScroll:true})}},refresh:render,dispose(){if(disposed)return;disposed=true;panel.remove()}}
 }

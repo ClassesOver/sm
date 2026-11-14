@@ -3,7 +3,7 @@ import { buttonClasses } from './button'
 
 /** 混合初值保持indeterminate，只有明确操作才提交布尔值。 */
 export function openDocxRowBreaksDialog(root: HTMLElement, initial: boolean | null, top: number, bottom: number, apply: (allowBreak: boolean | undefined) => void) {
-  const modal = createModal({ root, label: '行跨页', closeLabel: '关闭行跨页', onRequestClose: () => modal.remove(), content: `
+  const modal = createModal({ root, label: '行跨页', cardClass: 'docx-table-property-dialog', closeLabel: '关闭行跨页', onRequestClose: () => modal.remove(), content: `
     <h2>行跨页</h2><form><p>第 ${top + 1}${bottom > top + 1 ? `–${bottom}` : ''} 行</p>
       <label><input type="checkbox" data-action="allow-break">允许行内跨页</label>
       ${initial === null ? '<p>多个值：所选行的跨页设置不同，未操作时保持原值。</p>' : ''}

@@ -106,7 +106,8 @@ it('wires the clipboard group to the official Univer commands with read-only-saf
     button(id).click()
   }
   expect(command.mock.calls.map(call => call[0])).toEqual(['paste', 'cut', 'copy', 'indent-step:increase', 'indent-step:decrease'])
-  expect([...pasteSpecial.options].slice(1).map(option => option.value)).toEqual(PASTE_SPECIAL_CHOICES.map(choice => choice.value))
+  expect([...pasteSpecial.options].slice(1).map(option => option.value)).toEqual([...PASTE_SPECIAL_CHOICES.map(choice => choice.value),'paste-special-open'])
+  pasteSpecial.value='paste-special-open';pasteSpecial.dispatchEvent(new Event('change'));expect(command).toHaveBeenLastCalledWith('paste-special-open')
   pasteSpecial.value = 'paste-special:value'; pasteSpecial.dispatchEvent(new Event('change'))
   expect(command).toHaveBeenLastCalledWith('paste-special:value')
   expect(pasteSpecial.value).toBe('')

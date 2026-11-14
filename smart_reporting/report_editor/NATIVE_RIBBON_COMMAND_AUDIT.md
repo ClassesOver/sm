@@ -1,5 +1,7 @@
 # Native Ribbon command audit — PR #190
 
+> 2026-11-13 状态更正：本文保留原 PR 审计快照，不作为当前待办清单。Word 普通／多级列表库和设置编号值、XLSX 推荐图表／多图选择／限定拖动缩放、PDF 书签／Bates／四项属性、PPTX 普通／排序／大纲／阅读视图及拼写翻译预设已有专项交付，不再列为全缺。当前范围限制与分层验收见[四格式已交付子能力与剩余边界](NATIVE_GENOFFICE_FOUR_FORMAT_SCOPE.md#已交付子能力与剩余边界2026-11-13-更正)；原始来源、失败及构建记录保留。
+
 Audit date: 2026-11-05. Baseline PR head: `0017ff7a22cb7931eb8dc387b0eb98b14601d933`, base `d0a683c11a9b4c068c8d91fcf385fd7f040c17b9`. Findings below include the current uncommitted custom-size implementation. They are a bounded source/adapter audit, not a certificate that all four formats have complete command parity or that browser acceptance passed.
 
 ## Primary sources and method

@@ -1,3 +1,4 @@
+import {fillPdfRadioRows} from './pdf-form-radio-row-input.mjs'
 // Frozen production assets; real grant/cookie/CSRF, packed engine, publication and download.
 import assert from 'node:assert/strict'
 import {spawn,spawnSync} from 'node:child_process'
@@ -94,7 +95,7 @@ try{
  await panel.getByRole('textbox',{name:'初始值',exact:true}).fill('Two');await panel.getByRole('checkbox',{name:'必填',exact:true}).check()
  await stageCreation('choice','choice',5)
  stage='radio-create';await openDesign('addRadioGroup');await panel.getByRole('textbox',{name:'字段名称',exact:true}).fill('customer_radio')
- await panel.getByRole('textbox',{name:'单选按钮（每行：选项,X,Y,宽度,高度,勾选true或false）',exact:true}).fill(['Yes,30,90,20,20,true','No,80,90,20,20,false'].join(String.fromCharCode(10)))
+ await fillPdfRadioRows(panel,['Yes,30,90,20,20,true','No,80,90,20,20,false'].join(String.fromCharCode(10)))
  await panel.getByRole('checkbox',{name:'必填',exact:true}).check();await stageCreation('radio','radio',6)
  stage='fill-real-fields';await page.locator('[data-pdf-ribbon-tab="fillForm"]').click()
  const dateInput=page.locator('.pdf-form-field input[aria-label="customer_date"]'),choiceInput=page.locator('.pdf-form-field select[aria-label="customer_choice"]'),radioInput=page.locator('.pdf-form-field select[aria-label="customer_radio"]')

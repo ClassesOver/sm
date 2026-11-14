@@ -17,6 +17,13 @@ it('dispatches source Shift+F3 from grid focus and releases its handler', () => 
   expect(command).toHaveBeenCalledOnce()
   handle.dispose(); press(host); expect(command).toHaveBeenCalledOnce()
 })
+it('legacy输入法按键不启动函数窗口，普通快捷键仍有效', () => {
+  document.body.innerHTML = '<main><div id="workbook-grid"><canvas tabindex="0"></canvas></div></main>'
+  const command = vi.fn(), host = document.querySelector('main')!, grid = host.querySelector('canvas')!
+  dispose = installFunctionShortcuts(host, () => true, command).dispose
+  expect(press(grid, { keyCode: 229 }).defaultPrevented).toBe(false); expect(command).not.toHaveBeenCalled()
+  press(grid); expect(command).toHaveBeenCalledOnce()
+})
 it('preserves native fields, chrome, modals, handled events and read-only state', () => {
   document.body.innerHTML = '<main><input><textarea></textarea><select></select><div contenteditable="true"></div><div data-u-comp="formula-bar"><span></span></div></main>'
   const host = document.querySelector('main')!, command = vi.fn()

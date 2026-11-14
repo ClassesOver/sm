@@ -1267,6 +1267,9 @@ def _table_body_for_id(markdown: str, table_id: str) -> str | None:
 def _parse_table_grid(body: str) -> list[list[str]]:
     from markdown_it import MarkdownIt
 
+    from ..preferences.markdown_adapter import strip_table_preferences
+
+    body = strip_table_preferences(body + '\n\n')
     tokens = MarkdownIt().enable("table").parse(body)
     rows: list[list[str]] = []
     in_table = False

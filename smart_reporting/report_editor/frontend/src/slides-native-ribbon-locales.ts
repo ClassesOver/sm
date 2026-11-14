@@ -1,4 +1,11 @@
+import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
+
 const simplifiedChineseLabels: Record<string, string> = {
+  mediaPlay:'播放媒体',mediaPause:'暂停媒体',mediaStop:'停止媒体',
+  'Outline View': '大纲视图', 'Reading View': '阅读视图',
+  // 固定源 ribbon/zh.ts：可见选项单独翻译，保留 select 的原始协议值。
+  WordArt: '艺术字', circle: '圆形', 'Choose translation language…': '选择翻译语言…',
+  '16:9': '宽屏 (16:9)', '4:3': '标准 (4:3)', A4: 'A4 纸 (210 × 297 毫米)', A3: 'A3 纸 (297 × 420 毫米)',
   'Chart Styles': '图表样式', 'Chart Colors and Styles': '配色与样式', 'Chart Point Colors': '单点配色',
   'Switch Row/Column': '交换行列',
   'Chart Elements': '图表元素',
@@ -21,7 +28,7 @@ const simplifiedChineseLabels: Record<string, string> = {
 }
 
 export function slidesRibbonLabel(label: string, language: string): string {
-  return language.toLowerCase().startsWith('zh') ? simplifiedChineseLabels[label] ?? label : label
+  return language.toLowerCase().startsWith('zh') ? simplifiedChineseLabels[label] ?? SLIDES_AI_TRANSLATE_TARGETS.find(item => item.label === label)?.name ?? label : label
 }
 
 // 固定源 layout-names.ts / ribbon/zh.ts 的六种内建版式；类型来自 builtin-layouts.ts。

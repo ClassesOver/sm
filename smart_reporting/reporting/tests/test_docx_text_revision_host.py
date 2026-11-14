@@ -96,6 +96,60 @@ def test_same_snapshot_merge_and_shifted_output_index():
         assert body[2].get(f'{{{W}}}rsidR') == 'AABBCCDD'
 
 
+def test_recorded_text_revision_uses_authorized_user_and_reopens_real_package():
+    original = '<w:p w:rsidR="AABBCCDD"><w:r><w:rPr><w:b/></w:rPr><w:t>前旧后</w:t></w:r></w:p>'
+    content = rewrite(source(), lambda name, data: data.replace(PARA.encode(), original.encode()) if name == 'word/document.xml' else data)
+    block = anchor(content)
+    operation = {'kind': 'recordTextRevision', 'blockId': block['blockId'], 'expectedObjectSha256': block['expectedObjectSha256'], 'from': 1, 'to': 2, 'text': '新'}
+    result = docx_native.patch_docx(content, [operation], revision_author='authenticated-user-17')
+    with ZipFile(BytesIO(result)) as archive:
+        assert archive.testzip() is None
+        paragraph = etree.fromstring(archive.read('word/document.xml')).find('w:body', NS)[1]
+        inserted = paragraph.find('w:ins', NS)
+        deleted = paragraph.find('w:del', NS)
+        assert inserted is not None and inserted.get(f'{{{W}}}author') == 'authenticated-user-17'
+        assert deleted is not None and deleted.get(f'{{{W}}}author') == 'authenticated-user-17'
+        assert inserted.get(f'{{{W}}}date') and inserted.get(f'{{{W}}}date') == deleted.get(f'{{{W}}}date')
+        assert ''.join(inserted.itertext()) == '新'
+        assert ''.join(deleted.itertext()) == '旧'
+        assert paragraph.get(f'{{{W}}}rsidR') == 'AABBCCDD'
+        assert len({inserted.get(f'{{{W}}}id'), deleted.get(f'{{{W}}}id')}) == 2
+        reopened = docx_native.inspect_docx(result)['blocks'][1]
+        assert sorted((item['type'], item['sourceRange']['text'], item['author']) for item in reopened['reviewTargets']) == [('deletion', '旧', 'authenticated-user-17'), ('insertion', '新', 'authenticated-user-17')]
+    with pytest.raises(ValueError):
+        docx_native.patch_docx(content, [{**operation, 'author': 'forged'}], revision_author='authenticated-user-17')
+    deletion = {**operation, 'from': 1, 'to': 3, 'text': ''}
+    removed = docx_native.patch_docx(content, [deletion], revision_author='authenticated-user-17')
+    with ZipFile(BytesIO(removed)) as archive:
+        paragraph = etree.fromstring(archive.read('word/document.xml')).find('w:body', NS)[1]
+        assert paragraph.find('w:ins', NS) is None
+        deleted = paragraph.find('w:del', NS)
+        assert deleted is not None and deleted.get(f'{{{W}}}author') == 'authenticated-user-17'
+        assert ''.join(deleted.itertext()) == '旧后'
+
+
+def test_track_revisions_setting_toggles_and_reopens_without_changing_other_parts():
+    content = source()
+    model = docx_native.inspect_docx(content)
+    assert model['trackRevisions'] is False
+    operation = {'kind': 'setTrackRevisions', 'sourceSha256': model['sourceSha256'], 'enabled': True}
+    enabled = docx_native.patch_docx(content, [operation])
+    assert docx_native.inspect_docx(enabled)['trackRevisions'] is True
+    with ZipFile(BytesIO(content)) as before, ZipFile(BytesIO(enabled)) as after:
+        for name in before.namelist():
+            if name not in {'word/settings.xml', 'docProps/core.xml'}:
+                assert before.read(name) == after.read(name), name
+        settings = etree.fromstring(after.read('word/settings.xml'))
+        assert len(settings.xpath('./w:trackRevisions', namespaces=NS)) == 1
+        assert len(settings.xpath('./w:doNotTrackMoves', namespaces=NS)) == len(etree.fromstring(before.read('word/settings.xml')).xpath('./w:doNotTrackMoves', namespaces=NS))
+    enabled_model = docx_native.inspect_docx(enabled)
+    disabled = docx_native.patch_docx(enabled, [{'kind': 'setTrackRevisions', 'sourceSha256': enabled_model['sourceSha256'], 'enabled': False}])
+    assert docx_native.inspect_docx(disabled)['trackRevisions'] is False
+    with ZipFile(BytesIO(disabled)) as archive:
+        settings = etree.fromstring(archive.read('word/settings.xml'))
+        assert not settings.xpath('./w:trackRevisions', namespaces=NS)
+
+
 @pytest.mark.parametrize('mutate', [
     lambda op: {**op, 'expectedObjectSha256': '0' * 64},
     lambda op: {**op, 'revisionId': 'foreign'},
@@ -137,6 +191,7 @@ def test_same_paragraph_conflicts_rejected(kind, values):
 @pytest.mark.parametrize('location', ['document', 'body', 'protected'])
 def test_document_scope_and_protection_never_authorize_revision(location):
     content = source()
+    source_block = anchor(content)
     def transform(name, data):
         if location == 'protected' and name == 'word/settings.xml':
             return data.replace(b'</w:settings>', b'<w:documentProtection w:enforcement="1" w:edit="readOnly"/></w:settings>')
@@ -147,9 +202,16 @@ def test_document_scope_and_protection_never_authorize_revision(location):
                 return data.replace(b'<w:body>', b'<w:body xmlns:w="urn:foreign">')
         return data
     content = rewrite(content, transform)
+    if location != 'protected':
+        inspect_reason = 'docx_equation_namespace' if location == 'document' else 'docx_comment_source_namespace_rebound'
+        with pytest.raises(ValueError, match=inspect_reason):
+            docx_native.inspect_docx(content)
+        with pytest.raises(ValueError, match='docx_revision_anchor_invalid'):
+            docx_native.patch_docx(content, [{'kind': 'resolveTextRevision', 'blockId': source_block['blockId'], 'expectedObjectSha256': source_block['expectedObjectSha256'], 'revisionId': 'forged', 'action': 'accept'}])
+        return
     block = anchor(content)
     assert block['reviewTargets'] == []
-    assert block['revisionReadOnlyReason'] == ('docx_revision_protected' if location == 'protected' else 'docx_revision_namespace_unsupported')
+    assert block['revisionReadOnlyReason'] == 'docx_revision_protected'
     with pytest.raises(ValueError):
         docx_native.patch_docx(content, [{'kind': 'resolveTextRevision', 'blockId': block['blockId'], 'expectedObjectSha256': block['expectedObjectSha256'], 'revisionId': 'forged', 'action': 'accept'}])
 

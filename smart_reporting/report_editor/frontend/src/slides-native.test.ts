@@ -405,8 +405,8 @@ it('commits custom dimensions atomically and restores them through history and r
   const { shell, view } = await openDraft(draft, api)
   shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
   const dialog = shell.editor.querySelector<HTMLDialogElement>('dialog')!
-  const width = dialog.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!
-  const height = dialog.querySelector<HTMLInputElement>('[aria-label="Slide Height"]')!
+  const width = dialog.querySelector<HTMLInputElement>('[aria-label="幻灯片宽度"]')!
+  const height = dialog.querySelector<HTMLInputElement>('[aria-label="幻灯片高度"]')!
   width.value = '0'; height.value = '20'
   dialog.querySelector<HTMLButtonElement>('[data-command="applyCustomSlideSize"]')!.click()
   expect(dialog.querySelector('[role="alert"]')!.textContent).toContain('1–56')
@@ -423,8 +423,8 @@ it('commits custom dimensions atomically and restores them through history and r
   const recovered = new NativeDraft(draftIdentity, store)
   const reopened = await openDraft(recovered, api)
   reopened.shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
-  expect(reopened.shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!.value).toBe('30.5')
-  expect(reopened.shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Height"]')!.value).toBe('20')
+  expect(reopened.shell.editor.querySelector<HTMLInputElement>('[aria-label="幻灯片宽度"]')!.value).toBe('30.5')
+  expect(reopened.shell.editor.querySelector<HTMLInputElement>('[aria-label="幻灯片高度"]')!.value).toBe('20')
   reopened.view.dispose()
   expect(reopened.shell.editor.querySelector('dialog')).toBeNull()
 })
@@ -434,7 +434,7 @@ it('cancels custom dimensions without edits and explains unavailable new-documen
   const api = { preview: vi.fn(async () => ({ model: deck })), renderTree: vi.fn(async () => ({ slides: [] })) }
   const { shell, view } = await openDraft(draft, api)
   shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
-  shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!.value = '42'
+  shell.editor.querySelector<HTMLInputElement>('[aria-label="幻灯片宽度"]')!.value = '42'
   shell.editor.querySelector<HTMLButtonElement>('[data-command="cancelCustomSlideSize"]')!.click()
   expect(draft.operations).toEqual([])
   const defaults = shell.editor.querySelector<HTMLButtonElement>('[data-command="defaultSlideSize"]')!
@@ -455,8 +455,8 @@ it('refreshes preset and orientation state immediately after applying portrait c
   expect(preset.value).toBe('A4')
   expect(orientation.value).toBe('landscape')
   shell.editor.querySelector<HTMLButtonElement>('[data-command="customSlideSize"]')!.click()
-  shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!.value = '20'
-  shell.editor.querySelector<HTMLInputElement>('[aria-label="Slide Height"]')!.value = '30.5'
+  shell.editor.querySelector<HTMLInputElement>('[aria-label="幻灯片宽度"]')!.value = '20'
+  shell.editor.querySelector<HTMLInputElement>('[aria-label="幻灯片高度"]')!.value = '30.5'
   shell.editor.querySelector<HTMLButtonElement>('[data-command="applyCustomSlideSize"]')!.click()
   expect(draft.operations[0]).toMatchObject({ slideSize: { cx: 7200000, cy: 10980000 } })
   expect(preset.value).toBe('')

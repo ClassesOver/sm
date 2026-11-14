@@ -1,3 +1,4 @@
+import { SaxesParser } from 'saxes'
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { createBufferEntrySource, assemblePackage, type EntrySource, type MutationPlan } from './zip'
 import { relationships, removePartOverrides } from './sheet-removal-parts'
@@ -24,17 +25,64 @@ function targetPath(owner: string, target: string): string {
 }
 
 function removeRelationship(xml: string, id: string): string {
-  const matches = [...xml.matchAll(/<Relationship\b[^>]*(?:\/>|>[\s\S]*?<\/Relationship>)/g)]
-  const match = matches.filter(item => new RegExp(`\\bId="${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`).test(item[0]))
-  if (match.length !== 1) throw new Error('图表关系身份不唯一')
-  return xml.replace(match[0]![0], '')
+  const parser = new SaxesParser({ xmlns: true }), spans: { start: number; end: number }[] = []
+  let depth = 0, start = 0, removing = false
+  parser.on('doctype', () => { throw new Error('图表关系不支持DOCTYPE') })
+  parser.on('opentag', tag => {
+    depth++
+    if (depth !== 2 || tag.local !== 'Relationship' || !['http://schemas.openxmlformats.org/package/2006/relationships', 'http://purl.oclc.org/ooxml/package/relationships'].includes(tag.uri)) return
+    removing = Object.values(tag.attributes).some(attr => !attr.uri && attr.local === 'Id' && attr.value === id)
+    if (removing) start = xml.lastIndexOf('<', parser.position - 1)
+  })
+  parser.on('closetag', () => { if (depth === 2 && removing) { spans.push({ start, end: parser.position });removing = false }depth-- })
+  parser.write(xml).close()
+  if (spans.length !== 1) throw new Error('图表关系身份不唯一')
+  return xml.slice(0, spans[0]!.start) + xml.slice(spans[0]!.end)
 }
 
 function removeAnchor(xml: string, relId: string): string {
-  const anchors = [...xml.matchAll(/<xdr:(?:twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[^>]*>[\s\S]*?<\/xdr:(?:twoCellAnchor|oneCellAnchor|absoluteAnchor)>/g)]
-  const matching = anchors.filter(item => /<xdr:graphicFrame\b[\s\S]*?<c:chart\b[^>]*\br:id="([^"]+)"/.exec(item[0])?.[1] === relId)
-  if (matching.length !== 1) throw new Error('图表锚点身份不唯一或不完整')
-  return xml.replace(matching[0]![0], '')
+  const xdr = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+  const drawing = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+  const chart = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
+  const officeRel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+  const parser = new SaxesParser({ xmlns: true }), stack: { uri: string; local: string }[] = []
+  const matches: { start: number; end: number }[] = []
+  let anchor: { start: number; frames: number; charts: number; targets: number; safe: boolean } | undefined
+  parser.on('doctype', () => { throw new Error('图表绘图不支持DOCTYPE') })
+  parser.on('opentag', tag => {
+    stack.push({ uri: tag.uri, local: tag.local })
+    const depth = stack.length
+    if (depth === 1 && (tag.uri !== xdr || tag.local !== 'wsDr')) throw new Error('图表绘图根元素无效')
+    if (depth === 2 && tag.uri === xdr && ['twoCellAnchor', 'oneCellAnchor', 'absoluteAnchor'].includes(tag.local))
+      anchor = { start: xml.lastIndexOf('<', parser.position - 1), frames: 0, charts: 0, targets: 0, safe: true }
+    if (!anchor) return
+    if (depth === 3) {
+      if (tag.uri !== xdr || !['from', 'to', 'pos', 'ext', 'graphicFrame', 'clientData'].includes(tag.local)) anchor.safe = false
+      if (tag.uri === xdr && tag.local === 'graphicFrame') anchor.frames++
+    }
+    if (tag.uri === chart && tag.local === 'chart') {
+      anchor.charts++
+      const expected = [[xdr, 'graphicFrame'], [drawing, 'graphic'], [drawing, 'graphicData'], [chart, 'chart']]
+      const owned = depth === 6 && expected.every(([uri, local], index) => stack[index + 2]?.uri === uri && stack[index + 2]?.local === local)
+      if (Object.values(tag.attributes).some(attr => attr.uri === officeRel && attr.local === 'id' && attr.value === relId)) {
+        anchor.targets++
+        if (!owned) anchor.safe = false
+      }
+    }
+  })
+  parser.on('closetag', () => {
+    if (stack.length === 2 && anchor) {
+      if (anchor.targets) {
+        if (!anchor.safe || anchor.frames !== 1 || anchor.charts !== 1 || anchor.targets !== 1) throw new Error('图表锚点含其他对象或身份不完整')
+        matches.push({ start: anchor.start, end: parser.position })
+      }
+      anchor = undefined
+    }
+    stack.pop()
+  })
+  parser.write(xml).close()
+  if (matches.length !== 1) throw new Error('图表锚点身份不唯一或不完整')
+  return xml.slice(0, matches[0]!.start) + xml.slice(matches[0]!.end)
 }
 
 async function deleteOne(source: EntrySource, operation: ChartDeletion) {
@@ -51,13 +99,11 @@ async function deleteOne(source: EntrySource, operation: ChartDeletion) {
   if (!await source.has(drawingPath)) throw new Error('绘图部件缺失')
   const drawingRelsPath = relsPath(drawingPath)
   if (!await source.has(drawingRelsPath)) throw new Error('绘图关系缺失')
-  const drawingRelsXml = await source.readText(drawingRelsPath)
+  const drawingRelsXml = await source.readText(drawingRelsPath, { preservePrefixes: true })
   const chartLinks = relationships(drawingRelsXml, drawingRelsPath).filter(link => link.type === CHART_REL && !link.external && targetPath(drawingPath, link.target) === operation.chartPath)
   if (chartLinks.length !== 1) throw new Error('图表不属于当前工作表或图表关系不唯一')
   const chartRelId = chartLinks[0]!.id
-  const drawingXml = await source.readText(drawingPath)
-  const graphicFrames = [...drawingXml.matchAll(/<xdr:graphicFrame\b[\s\S]*?<\/xdr:graphicFrame>/g)]
-  if (graphicFrames.filter(item => item[0].includes(`r:id="${chartRelId}"`)).length !== 1) throw new Error('图表锚点身份不唯一')
+  const drawingXml = await source.readText(drawingPath, { preservePrefixes: true })
 
   for (const rels of (await source.paths()).filter(path => path.endsWith('.rels'))) {
     const owner = rels === '_rels/.rels' ? '' : rels.replace(/(^|\/)\_rels\/([^/]+)\.rels$/, '$1$2')
@@ -69,7 +115,7 @@ async function deleteOne(source: EntrySource, operation: ChartDeletion) {
 
   const drawingAfter = removeAnchor(drawingXml, chartRelId)
   const relsAfter = removeRelationship(drawingRelsXml, chartRelId)
-  const contentTypes = await source.readText('[Content_Types].xml')
+  const contentTypes = await source.readText('[Content_Types].xml', { preservePrefixes: true })
   return { drawingPath, drawingAfter, drawingRelsPath, relsAfter, chartRelId, contentTypes: removePartOverrides(contentTypes, new Set([operation.chartPath])), chartPath: operation.chartPath }
 }
 

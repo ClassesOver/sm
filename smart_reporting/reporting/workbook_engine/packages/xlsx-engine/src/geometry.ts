@@ -6,6 +6,10 @@
 import { createBufferEntrySource } from './zip'
 import { escapeXmlText } from './xml'
 
+/** 与表格SDK共用既有显示约定：字符列宽和磅行高转换为96dpi像素。 */
+export function columnWidthToPixels(width:number):number{return Math.max(8,Math.round(width*7+5))}
+export function rowHeightToPixels(points:number):number{return Math.max(2,Math.round(points*96/72))}
+
 export interface ColumnWidthEntry {
   /// 0-based column index
   readonly index: number

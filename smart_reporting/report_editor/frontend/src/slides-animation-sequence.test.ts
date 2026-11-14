@@ -64,3 +64,12 @@ describe('PPTX animation sequence (pinned animation-actions.ts)', () => {
     for (const items of bad) expect(() => validateSequence(items, source, elements), JSON.stringify(items)).toThrow()
   })
 })
+
+it('媒体三动作使用零持续时间，只能绑定实际音视频对象',()=>{
+ for(const effect of ['mediaPlay','mediaPause','mediaStop'] as const){
+  expect(defaultAnimationDuration(effect)).toBe(0)
+  const items=[{elementId:'media',effect,trigger:'onClick' as const,durationMs:0,delayMs:0}]
+  expect(validateSequence(items,[],[{id:'media',type:'picture',mediaKind:'video',paragraphs:0}])).toEqual(items)
+  expect(()=>validateSequence(items,[],[{id:'media',type:'shape',paragraphs:0}])).toThrow()
+ }
+})

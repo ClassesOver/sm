@@ -86,7 +86,7 @@ export function createDocxNavigationSearch(options: { editor: Editor; onQueryCha
     else if (button.dataset.navigationSearchAction === 'previous') step(-1)
     else if (button.dataset.navigationSearchAction === 'clear') { input.value = ''; refresh(true); input.focus({ preventScroll: true }) }
   }
-  const keydown = (event: KeyboardEvent) => { if (event.target === input && event.key === 'Enter') { event.preventDefault(); step(event.shiftKey ? -1 : 1) } }
+  const keydown = (event: KeyboardEvent) => { if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if (event.target === input && event.key === 'Enter') { event.preventDefault(); step(event.shiftKey ? -1 : 1) } }
   input.addEventListener('input', onInput); element.addEventListener('click', click); element.addEventListener('keydown', keydown)
   return { element, refresh, setVisible(value: boolean) { if (disposed) return; visible = value; if (!visible) abort() }, dispose() {
     if (disposed) return

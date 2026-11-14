@@ -64,7 +64,9 @@ elif payload['mode'] == 'inspect':
         'leftIndentTwips': indent_paragraph.paragraph_format.left_indent.twips if indent_paragraph.paragraph_format.left_indent else 0,
         'rightIndentTwips': indent_paragraph.paragraph_format.right_indent.twips if indent_paragraph.paragraph_format.right_indent else 0,
         'runs': [{'text': r.text, 'bold': r.bold, 'italic': r.italic, 'underline': r.underline,
-            'fontFamily': r.font.name, 'fontSize': r.font.size.pt if r.font.size else None,
+            'fontFamily': r.font.name,
+            'eastAsiaFont': r._element.rPr.rFonts.get(qn('w:eastAsia')) if r._element.rPr is not None and r._element.rPr.rFonts is not None else None,
+            'fontSize': r.font.size.pt if r.font.size else None,
             'color': str(r.font.color.rgb) if r.font.color.rgb else None} for r in paragraph.runs]}, ensure_ascii=False))
 `], { cwd: repo, env: { ...process.env, PYTHONPATH: repo }, input: JSON.stringify(input), encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
   if (result.status !== 0) throw new Error(result.stderr || `python exited ${result.status}`)
@@ -77,7 +79,7 @@ try {
   const sourceSha = sha256(sourceBytes)
   const sourceInspection = JSON.parse(runPython({ mode: 'inspect', bytes: sourceBytes.toString('base64') }))
   let savedBytes, savedInspection, savePayload
-  server = spawn('./node_modules/.bin/vite', ['--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+  server = spawn('./node_modules/.bin/vite', [...(process.env.NATIVE_GUI_PREVIEW === '1' ? ['preview'] : []), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
   let ready = false
   for (let attempt = 0; attempt < 100; attempt++) {
     try { if ((await fetch(`${baseUrl}/reports/v1/editor/assets/native.html`)).ok) { ready = true; break } } catch {}
@@ -152,6 +154,8 @@ try {
   await home.locator('[data-source-action="toggle-space-before"]').click()
   await home.locator('[data-source-action="toggle-space-after"]').click()
   await home.locator('[data-action="bullets"]').click()
+  assert.equal(await editor.locator('.doc-li-bullet').filter({ hasText: '经营收入100万元' }).count(), 1,
+    '项目符号未应用：' + await page.locator('.docx-notice').innerText())
   await home.locator('[data-action="add-paragraph"]').click()
   await editor.locator('p').filter({ hasText: '删除此段落' }).click()
   await home.locator('[data-action="delete-paragraph"]').click()
@@ -162,6 +166,8 @@ try {
   await page.locator('.symbol-cell').getByText('¥', { exact: true }).click()
   await page.locator('[data-tab-id="home"]').click()
   await home.locator('[data-action="numbering"]').click()
+  assert.equal(await editor.locator('.doc-li-ordered').filter({ hasText: '保留此段落¥' }).count(), 1,
+    '编号未应用：' + await page.locator('.docx-notice').innerText())
   await editor.locator('p').filter({ hasText: '缩进段落' }).click()
   await home.locator('[data-action="indent-increase"]').click()
   await page.locator('[data-tab-id="layout"]').click()
@@ -233,7 +239,7 @@ try {
   const reopened = JSON.parse(runPython({ mode: 'inspect', bytes: downloaded.toString('base64') }))
   assert.deepEqual(reopened.paragraphs, ['经营收入100万元', '新段落', '保留此段落¥', '缩进段落'])
   assert.deepEqual(reopened.runs, [{ text: '经营收入100万元', bold: true, italic: true, underline: true,
-    fontFamily: 'Microsoft YaHei', fontSize: 17, color: 'AABBCC' }])
+    fontFamily: null, eastAsiaFont: 'Microsoft YaHei', fontSize: 17, color: 'AABBCC' }])
   assert.equal(reopened.model.sourceSha256, sha256(downloaded))
   assert.equal(reopened.alignment, 'CENTER (1)')
   assert.deepEqual(reopened.spacing, { beforeTwips: 240, afterTwips: 240, lineSpacing: 2 })

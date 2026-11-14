@@ -1,4 +1,4 @@
-import {afterEach,expect,it} from 'vitest'
+import {afterEach,expect,it,vi} from 'vitest'
 import {Editor,Node} from '@tiptap/core'
 import {UndoRedo} from '@tiptap/extensions'
 import {NativeDraft} from './native-draft'
@@ -74,4 +74,32 @@ it('keeps nonempty input attached to first root when switching is rejected',()=>
  expect(input.value).toBe('尚未提交的第一根回复');expect(f.errors).toHaveLength(1)
  f.controls.flush()
  expect(f.draft.operations[0]).toMatchObject({targetId,text:'尚未提交的第一根回复'})
+})
+
+it('title cancel discards only local reply input and returns focus to the reply entry',()=>{
+ const f=fixture(),opener=document.body.appendChild(document.createElement('button'))
+ opener.focus();f.controls.openFor(targetId)
+ const input=f.root.querySelector<HTMLTextAreaElement>('[data-comment-reply-text]')!
+ input.value='已加入草稿';f.controls.flush();f.controls.openFor(targetId);input.value='仅本地输入'
+ f.root.querySelector<HTMLButtonElement>('[aria-label="取消并关闭批注回复"]')!.click()
+ expect(f.root.querySelector<HTMLElement>('.docx-comment-reply')!.hidden).toBe(true)
+ expect(document.activeElement).toBe(opener);expect(input.value).toBe('')
+ expect(f.draft.operations).toHaveLength(1);expect(f.draft.operations[0]).toMatchObject({text:'已加入草稿'})
+})
+it('exposes parent and reply drafts as named keyboard regions and recovers focus after undo empties the list',()=>{
+ const f=fixture();f.controls.openFor(targetId)
+ const parent=f.root.querySelector<HTMLElement>('[data-comment-reply-parent]')!,list=f.root.querySelector<HTMLElement>('[data-comment-reply-list]')!,input=f.root.querySelector<HTMLTextAreaElement>('textarea')!
+ expect(parent.getAttribute('role')).toBe('region');expect(parent.tabIndex).toBe(0)
+ expect(list.getAttribute('aria-label')).toBe('待保存的批注回复');expect(list.hidden).toBe(true)
+ input.value='第一条回复\n换行';f.controls.flush();expect(list.hidden).toBe(false)
+ expect(list.querySelector('time')?.dateTime).toBe('2026-11-11T01:02:03Z')
+ expect(list.querySelector('p')?.textContent).toBe('第一条回复\n换行')
+ list.focus();f.editor.commands.undo();expect(list.hidden).toBe(true);expect(document.activeElement).toBe(input)
+ f.editor.commands.redo();openerFocus();f.editor.commands.undo();expect(document.activeElement?.textContent).toBe('外部入口')
+ function openerFocus(){const button=document.body.appendChild(document.createElement('button'));button.textContent='外部入口';button.focus()}
+})
+it('scrolls the reply input into view whenever keyboard navigation returns to it',()=>{
+ const f=fixture(),input=f.root.querySelector<HTMLTextAreaElement>('textarea')!,scroll=vi.fn();input.scrollIntoView=scroll
+ f.controls.openFor(targetId);expect(scroll).toHaveBeenCalledWith({block:'nearest'})
+ input.blur();scroll.mockClear();input.focus();expect(scroll).toHaveBeenCalledWith({block:'nearest'})
 })

@@ -38,6 +38,7 @@ export interface AlignmentInfo {
 }
 
 export interface XfInfo {
+  protection?: { locked: boolean; hidden: boolean } | undefined
   numFmtId: number
   fontId: number
   fillId: number
@@ -112,6 +113,14 @@ export function parseStylesheet(stylesXml: string): Stylesheet {
     fillId: Number(readCoreAttribute(xf, 'fillId') ?? 0),
     borderId: Number(readCoreAttribute(xf, 'borderId') ?? 0),
     alignment: parseAlignment(xf),
+    ...(() => {
+      const protection = extractElements(xf, 'protection')[0]
+      if (!protection) return {}
+      return { protection: {
+        locked: !['0', 'false'].includes(readCoreAttribute(protection, 'locked') ?? '1'),
+        hidden: ['1', 'true'].includes(readCoreAttribute(protection, 'hidden') ?? '0'),
+      } }
+    })(),
   }))
   return { numFmts, fonts, fills, borders, cellXfs }
 }

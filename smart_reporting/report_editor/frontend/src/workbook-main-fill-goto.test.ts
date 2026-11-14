@@ -29,6 +29,7 @@ vi.mock('./workbook-ribbon', () => ({
   mountWorkbookRibbon: (_host: unknown, callback: unknown) => { grid.ribbon = callback; return { dispose() {}, refreshState() {} } },
   applyWorkbookRibbonCommand: grid.apply,
 }))
+vi.mock('./workbook-vendor/grid/paste-special',async original=>{const actual=await original<typeof import('./workbook-vendor/grid/paste-special')>();return {...actual,readPasteSpecialSource:async()=>({kind:'text' as const,rows:[['7']]})}})
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
 vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
@@ -1053,4 +1054,36 @@ it('ignores stale Go To reveal failures after a newer navigation', async () => {
     expect(current.shell.editor.querySelector('.workbook-feedback')?.textContent).toBe('已定位到 C10，目标已显示。')
     expect(grid.api.getActiveWorkbook().getActiveRange().getA1Notation()).toContain('C10')
   } finally { current.view?.dispose(); factory.mockRestore() }
+})
+
+it('full Paste Special writes through the existing draft and save chain, with cancel and readonly protection',async()=>{
+ const originalClipboard=Object.getOwnPropertyDescriptor(navigator,'clipboard')
+ const source=await fixture(),draft=new NativeDraft(identity,store());let downloaded:Uint8Array|undefined
+ Object.defineProperty(navigator,'clipboard',{configurable:true,value:{read:async()=>[{types:['text/plain'],getType:async()=>({text:async()=> '7'})}]}})
+ const current=await open(source,draft,async request=>{downloaded=await applyWorkbookOperations(source,request.operations);return {revision:2,revisionRegistered:true,artifacts:{xlsx:{downloadUrl:'/p.xlsx'}},validation:{issues:[]}}})
+ try{
+  sheet().getRange('D4').activate();grid.ribbon('paste-special-open');await vi.waitFor(()=>expect(document.querySelector<HTMLElement>('.workbook-paste-special-overlay')!.hidden).toBe(false))
+  const dialog=document.querySelector<HTMLElement>('.workbook-paste-special-overlay')!;[...dialog.querySelectorAll<HTMLInputElement>('.workbook-paste-special-flags input')][1]!.click();dialog.querySelector<HTMLButtonElement>('[data-paste-special-apply]')!.click()
+  await vi.waitFor(()=>expect(sheet().getRange('D4').getValue()).toBe(7));await vi.waitFor(()=>expect(draft.operations.some(op=>op.kind==='applyCellEdits')).toBe(true))
+  grid.ribbon('undo');await vi.waitFor(()=>expect(sheet().getRange('D4').getValue()).toBeNull());grid.ribbon('redo');await vi.waitFor(()=>expect(sheet().getRange('D4').getValue()).toBe(7))
+  const previous=JSON.stringify(draft.operations);grid.ribbon('paste-special-open');await vi.waitFor(()=>expect(dialog.hidden).toBe(false));dialog.querySelector<HTMLButtonElement>('.modal-close')!.click();expect(JSON.stringify(draft.operations)).toBe(previous)
+  current.shell.save.click();await vi.waitFor(()=>expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'));expect((await readWorkbook(downloaded!)).sheets[0]!.cells.D4!.value).toBe(7)
+  grid.ribbon('paste-special-open');expect(dialog.hidden).toBe(true)
+ }finally{current.view?.dispose();if(originalClipboard)Object.defineProperty(navigator,'clipboard',originalClipboard);else Reflect.deleteProperty(navigator,'clipboard')}
+})
+
+it('full Paste Special never writes through readonly or protected target guards',async()=>{
+ const source=await fixture()
+ for(const protectedSheet of [false,true]){
+  const draft=new NativeDraft(identity,store()),current=await open(protectedSheet?await protectSheet(source,'Sheet1',true):source,draft,async()=>({}),protectedSheet)
+  try{
+   const before=grid.api.getActiveWorkbook().getSnapshot();sheet().getRange('D4').activate();grid.ribbon('paste-special-open')
+   const dialog=document.querySelector<HTMLElement>('.workbook-paste-special-overlay')!
+   if(!protectedSheet){expect(dialog.hidden).toBe(true)}else{
+    await vi.waitFor(()=>expect(dialog.hidden).toBe(false));[...dialog.querySelectorAll<HTMLInputElement>('.workbook-paste-special-flags input')][1]!.click();dialog.querySelector<HTMLButtonElement>('[data-paste-special-apply]')!.click()
+    await vi.waitFor(()=>expect(dialog.querySelector('[role=alert]')!.textContent).not.toBe(''));expect(dialog.hidden).toBe(false)
+   }
+   expect(sheet().getRange('D4').getValue()).toBeNull();expect(draft.operations).toEqual([]);expect(grid.api.getActiveWorkbook().getSnapshot().sheets).toEqual(before.sheets)
+  }finally{current.view?.dispose()}
+ }
 })

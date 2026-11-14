@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url'
 import {setTimeout as delay} from 'node:timers/promises'
 import {chromium} from 'playwright'
 import {probeCanvasTextRendering} from './canvas-font-preflight.mjs'
+import {checkChartDescriptions} from './workbook-chart-descriptions-checks.mjs'
 
 const frontend=fileURLToPath(new URL('../',import.meta.url)),repo=fileURLToPath(new URL('../../../../',import.meta.url))
 const directory=process.env.WORKBOOK_CHART_RENDER_DIRECTORY??'/tmp/workbook-chart-render-browser-20261112'
@@ -15,13 +16,15 @@ const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../
 const port=Number(process.env.WORKBOOK_CHART_RENDER_PORT??4354),origin=`http://127.0.0.1:${port}`
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
 const smokeCase=process.env.WORKBOOK_CHART_RENDER_CASE??'geometry'
-assert(['geometry','legend','axis','scale','ticks','category','labels','label-style','label-theme','label-luminance'].includes(smokeCase),'Unknown chart render case')
+assert(['geometry','legend','axis','scale','ticks','category','labels','label-style','label-theme','label-luminance','title','anchor','anchor-types','fill'].includes(smokeCase),'Unknown chart render case')
 const legend=smokeCase==='legend',axis=smokeCase==='axis',scale=smokeCase==='scale',ticks=smokeCase==='ticks',category=smokeCase==='category',labels=smokeCase==='labels'
 const luminance=smokeCase==='label-luminance',themeCase=smokeCase==='label-theme'||luminance,typography=smokeCase==='label-style'||themeCase
 const initialThemeColor=luminance?'#e6b9b8':'#c0504d',changedThemeColor=luminance?'#f6c6ad':'#e97132',seriesColor=luminance?'#3de13d':'#90ee90'
+const title=smokeCase==='title',anchor=smokeCase==='anchor'||smokeCase==='anchor-types',anchorTypes=smokeCase==='anchor-types'
+const fill=smokeCase==='fill'
 await mkdir(directory,{recursive:false})
-const fixture=join(frontend,typography?'smoke/workbook-chart-label-style-fixture.py':labels?'smoke/workbook-chart-labels-fixture.py':category?'smoke/workbook-chart-category-fixture.py':ticks?'smoke/workbook-chart-ticks-fixture.py':scale?'smoke/workbook-chart-scale-fixture.py':axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
-const created=spawnSync(python,[fixture,'create',join(directory,'input.xlsx')],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
+const fixture=join(frontend,typography?'smoke/workbook-chart-label-style-fixture.py':labels?'smoke/workbook-chart-labels-fixture.py':category?'smoke/workbook-chart-category-fixture.py':ticks?'smoke/workbook-chart-ticks-fixture.py':fill?'smoke/workbook-chart-fill-fixture.py':anchor?'smoke/workbook-chart-anchor-fixture.py':title?'smoke/workbook-chart-title-fixture.py':scale?'smoke/workbook-chart-scale-fixture.py':axis?'smoke/workbook-chart-axis-fixture.py':legend?'smoke/workbook-chart-legend-fixture.py':'smoke/workbook-chart-render-fixture.py'),python=join(repo,'.venv/bin/python')
+const created=spawnSync(python,[fixture,anchorTypes?'create-types':'create',join(directory,'input.xlsx')],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
 assert.equal(created.status,0,created.stdout+created.stderr)
 const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'))
 const server=spawn(python,[join(frontend,'smoke/workbook-ai-charts-server.py'),'--directory',directory,'--port',String(port),'--source',join(directory,'input.xlsx')],{
@@ -41,8 +44,9 @@ try{
  const fontPreflight=await probeCanvasTextRendering(browser)
  await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
  assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
- page=await browser.newPage({viewport:{width:1560,height:scale||ticks||category||labels||typography?1850:legend||axis?1550:1400}})
- if(legend||axis||scale||ticks||category||labels||typography)await page.addInitScript(()=>{
+ const context=await browser.newContext({viewport:{width:1560,height:scale||ticks||category||labels||typography||fill?1850:legend||axis?1550:1400}})
+ page=await context.newPage()
+ if(legend||axis||scale||ticks||category||labels||typography||title||fill)await page.addInitScript(()=>{
   window.__legendTexts=[]
   window.__valueTickTexts=[]
   window.__categoryTexts=[]
@@ -87,7 +91,19 @@ try{
  const evidence=await page.evaluate(()=>({charts:[...window.__sheetsWebCharts.store.values()].flat(),legendTexts:window.__legendTexts??[],valueTickTexts:window.__valueTickTexts??[],categoryTexts:window.__categoryTexts??[],labelStylePaints:window.__labelStylePaints??[],labelStyleFrames:window.__labelStyleFrames??[]}))
  await writeFile(join(directory,'model.json'),JSON.stringify(evidence,null,2))
  await page.screenshot({path:join(directory,'charts.png'),fullPage:true})
- assert.deepEqual(evidence.charts.map(c=>c.kind),typography?Array(6).fill('bar'):labels?['bar','column','bar','bar','bar','bar','bar','bar']:category?['bar','column','bar','column','bar','bar']:scale||ticks?['bar','column','bar','bar','bar','bar']:axis?['column','bar','column','bar']:legend?Array(5).fill('bar'):['bar','column','bar'])
+ assert.deepEqual(evidence.charts.map(c=>c.kind),typography?Array(6).fill('bar'):labels?['bar','column','bar','bar','bar','bar','bar','bar']:category?['bar','column','bar','column','bar','bar']:fill?['column','bar','pie','doughnut','column','column']:title||anchor?Array(3).fill('column'):scale||ticks?['bar','column','bar','bar','bar','bar']:axis?['column','bar','column','bar']:legend?Array(5).fill('bar'):['bar','column','bar'])
+ if(fill){
+  assert.equal(evidence.charts[0].series[0].color,'#136B4A')
+  assert.deepEqual(evidence.charts[0].series[0].pointColors,{'2':'#A02040'})
+  assert.equal(evidence.charts[1].series[0].pointColors[0],'transparent')
+  assert.equal(evidence.charts[4].series[0].colorPreviewUnavailable,true)
+  assert.equal(evidence.charts[5].series[0].color,'#2F5597')
+  assert(evidence.legendTexts.some(text=>text.includes('填充暂不支持预览')))
+ }
+ if(title){
+  assert(evidence.legendTexts.includes('Quarterly revenue and cost comparison across regions 2026'),'Wide chart must retain the full title')
+  assert(evidence.legendTexts.some(text=>text.startsWith('很')&&text.endsWith('…')),'Narrow chart must show a measured ellipsis')
+ }
  if(legend){
   assert(evidence.legendTexts.includes('Live Revenue'));assert(evidence.legendTexts.includes('Costs & tax'))
   assert(!evidence.legendTexts.includes('STALE'))
@@ -162,15 +178,22 @@ try{
   await page.screenshot({path:join(directory,'charts.png'),fullPage:true})
  }
  stage='independent-pixels'
- const verified=spawnSync(python,[fixture,'verify',directory],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
+ const verified=spawnSync(python,[fixture,anchorTypes?'verify-types':'verify',directory],{cwd:repo,encoding:'utf8',env:{...process.env,PYTHONPATH:repo}})
  assert.equal(verified.status,0,verified.stdout+verified.stderr)
  const independent=JSON.parse(verified.stdout)
+ let chartDescriptions
+ if(process.env.WORKBOOK_CHART_DESCRIPTIONS_UI==='1'){
+  stage='chart-descriptions-ui'
+  chartDescriptions=await checkChartDescriptions(page,directory,evidence.charts)
+ }
  await Promise.all(checks);assert(assets.size>0)
  assert.equal(sha(await readFile(join(staticDirectory,'.vite/manifest.json'))),sha(manifest))
  assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(httpErrors,[]);assert.deepEqual(assetErrors,[])
  const state=await(await page.request.get(origin+'/__smoke__/state')).json()
  assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,themeCase?1:0);assert.equal(state.plannerCalls,0)
- const summary={ok:true,browserVersion:browser.version(),fontPreflight,manifestSha256:sha(manifest),assets:Object.fromEntries(assets),sourceSha256:info.sourceSha256,independent,pageErrors,consoleErrors,httpErrors,assetErrors,state}
+ assert.equal(sha(await readFile(join(directory,'source.xlsx'))),info.sourceSha256)
+ assert.equal(sha(await readFile(join(directory,'input.xlsx'))),info.sourceSha256)
+ const summary={ok:true,browserVersion:browser.version(),fontPreflight,manifestSha256:sha(manifest),assets:Object.fromEntries(assets),sourceSha256:info.sourceSha256,independent,chartDescriptions,pageErrors,consoleErrors,httpErrors,assetErrors,state}
  await writeFile(join(directory,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok:true,directory,assets:assets.size,independent}))
 }catch(error){
  await writeFile(join(directory,'failure.json'),JSON.stringify({stage,error:String(error),stack:error.stack,pageErrors,consoleErrors,httpErrors,assetErrors,serverLog},null,2))

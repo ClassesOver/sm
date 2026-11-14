@@ -97,7 +97,8 @@ export function bindPdfReplacementStyle(root:HTMLElement){
  const owner=root.ownerDocument,section=owner.createElement('fieldset'),legend=owner.createElement('legend')
  section.className='pdf-replacement-style';legend.textContent='文字样式（整对象）';section.append(legend)
  const hint=owner.createElement('p');hint.textContent='支持水平文字的字体、粗斜体与手动多行。保留原字体时粗体可能使用描边合成；恢复常规体请显式选择字体。缺字替代或越界会在实际 PDF 预览中提示。';section.append(hint)
- function label(name:string,input:HTMLElement){const row=owner.createElement('label');row.textContent=name;input.setAttribute('aria-label','替换文字'+name);row.append(input);section.append(row);return input}
+ const fieldsGrid=owner.createElement('div');fieldsGrid.className='pdf-text-style-fields';section.append(fieldsGrid)
+ function label(name:string,input:HTMLElement){const row=owner.createElement('label'),caption=owner.createElement('span');caption.textContent=name;input.setAttribute('aria-label','替换文字'+name);row.append(caption,input);fieldsGrid.append(row);return input}
  const font=label('字体',owner.createElement('select')) as HTMLSelectElement
  for(const [value,name]of [['','保留原字体'],['arial','Arial / Liberation Sans'],['times','Times / Liberation Serif'],['courier','Courier / Liberation Mono']]){const option=owner.createElement('option');option.value=value!;option.textContent=name!;font.append(option)}
  const size=label('字号',owner.createElement('input')) as HTMLInputElement;size.type='number';size.min='6';size.max='72';size.step='any';size.placeholder='保留原字号'
@@ -108,6 +109,7 @@ export function bindPdfReplacementStyle(root:HTMLElement){
  const align=label('对齐',owner.createElement('select')) as HTMLSelectElement
  for(const [value,name]of [['','保留基线（左对齐）'],['left','左对齐'],['center','基线居中'],['right','基线右对齐']]){const option=owner.createElement('option');option.value=value!;option.textContent=name!;align.append(option)}
  const leading=label('行距',owner.createElement('input')) as HTMLInputElement;leading.type='number';leading.min='0';leading.step='any';leading.placeholder='自动（字号 × 1.2）'
+ for(const input of [bold,italic,applyColor])input.parentElement!.classList.add('pdf-text-style-check')
  root.append(section);const selection=bindPdfTextSelectionStyles(root);let disabled=false
  const wholeEvents=[[font,'font','change'],[size,'size','input'],[size,'size','change'],[bold,'bold','change'],[italic,'italic','change'],[applyColor,'color','change'],[color,'color','input'],[color,'color','change']] as const
  const clearWhole=(event:Event)=>{const binding=wholeEvents.find(([control,,type])=>control===event.target&&type===event.type);if(binding)selection.clearFields([binding[1]])};section.addEventListener('input',clearWhole);section.addEventListener('change',clearWhole)

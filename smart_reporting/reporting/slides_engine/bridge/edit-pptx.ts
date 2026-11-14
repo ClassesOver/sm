@@ -1,6 +1,13 @@
+import {readModelSources,validateModels,applyModels,type ModelInsertion,type ModelViewEdit} from './pptx-model3d.ts'
+import { pictureInsertionName } from './pptx-images.ts'
+import {inspectCustomShows,prepareCustomShows,applyCustomShows,type CustomShow} from './pptx-custom-shows.ts'
+import { validateMediaInsertions, applyMediaInsertions, type MediaInsertion } from './pptx-media.ts'
+import { inspectMasterTextParts, validateMasterTextEdits, applyMasterTextEdits, type MasterTextEdit } from './pptx-master-text.ts'
+import { validateMasterElementEdits, applyMasterElementEdits, type MasterElementEdit } from './pptx-master-elements.ts'
 import { inspectChartReadData } from './pptx-chart-read.ts'
 import {inspectSlideNotes,prepareNotesEdits,applyNotesEdits,type NotesEdit} from './pptx-notes.ts'
 import {inspectLinkCapabilities,prepareLinkEdits,applyLinkEdits,type LinkEdit} from './pptx-links.ts'
+import {setElementLink} from '../packages/pptx-engine/src/hyperlink.ts'
 import {inspectClipboardCapabilities,prepareClipboardPastes,applyClipboardPastes,type ClipboardPaste} from './pptx-clipboard.ts'
 import {inspectBrushSource} from './pptx-brush-source.ts'
 import { inspectGroupCapabilities, validateGroupEdits, applyGroupEdits, type GroupEdit } from './pptx-groups.ts'
@@ -10,15 +17,16 @@ import {inspectClassicComments,validateClassicCommentEdits,applyClassicCommentEd
 import { inspectPictureImages, validatePictureInsertions, validatePictureReplacements, applyPictureReplacements, type PictureInsertion, type PictureReplacement } from './pptx-images.ts'
 import { inspectChartEdit, validateChartEdits, applyChartEdits, type NativeChartEdit } from './pptx-chart-edit.ts'
 import { inspectPictureCrop, validatePictureCrops, applyPictureCrops, type PictureCrop } from './pptx-picture-crop.ts'
-import { inspectBackgroundImage, validateBackgroundImages, applyBackgroundImages, type BackgroundImage } from './pptx-background-image.ts'
-import { inspectBackgroundState, validateBackgroundOps, applyBackgroundOps, type BackgroundGradient, type BackgroundGraphics } from './pptx-background-ops.ts'
+import { inspectBackgroundImage, validateBackgroundImages, applyBackgroundImages, validateBackgroundImageReuses, applyBackgroundImageReuses, type BackgroundImageReuse, type BackgroundImage } from './pptx-background-image.ts'
+import { inspectBackgroundState, validateBackgroundOps, applyBackgroundOps, applyBackgroundColors, type BackgroundGradient, type BackgroundGraphics } from './pptx-background-ops.ts'
 import { inspectPictureOpacity, validatePictureOpacities, applyPictureOpacities, type PictureOpacity } from './pptx-picture-opacity.ts'
 import { findReplaceEditable } from './pptx-find-replace.ts'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts'
 import { readFile, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideBackground, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -44,6 +52,8 @@ type TextBox = {
   italic?: boolean
   outline?: { color: string; widthEmu: number }
   wordArt?: boolean
+  /** 固定源 insertEquation：Unicode 数学文本框，不换行且随文字调整大小。 */
+  equation?: boolean
 }
 /** 固定源 Ribbon MOTION_PATHS（右直线、下直线、对角线、圆形、锯齿），坐标相对幻灯片宽高。 */
 const MOTION_PATH_PRESETS: readonly string[] = [
@@ -57,10 +67,12 @@ type AnimationTiming = { trigger?: SlideAnimation['trigger']; durationMs?: numbe
 type AnimationSequenceItem =
   | ({ source: number; spid: number; effect: SlideAnimation['effect'] } & AnimationTiming)
   | { elementId: string; effect: SlideAnimation['effect']; trigger: SlideAnimation['trigger']; durationMs: number; delayMs: number; direction?: SlideAnimation['direction']; motionPath?: string; paragraph?: number }
-const NEW_ANIMATION_EFFECTS = new Set(['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'motionPath'])
+const NEW_ANIMATION_EFFECTS = new Set(['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'motionPath', 'mediaPlay', 'mediaPause', 'mediaStop'])
 const validTiming = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 120000
 
 type Input = {
+  masterTextEdits?: MasterTextEdit[]
+  masterElementEdits?: MasterElementEdit[]
   action: 'inspect' | 'edit'
   commentEdits?: ClassicCommentEdit[]
   /** 仅由 Python 宿主注入，外部 journal 不接受作者。 */
@@ -105,7 +117,12 @@ type Input = {
     geometry: { x: number; y: number; width: number; height: number }
     descr?: string
   }[]
+  /** Source-bound static slide thumbnail with an internal slide-jump link (GenOffice Zoom). */
+  zoomInsertions?: { slideIdentity: string; targetSlideIdentity: string; bytesBase64: string; geometry: Geometry; mode: 'slide' | 'section' }[]
   nativeImages?: PictureInsertion[]
+  modelInsertions?: ModelInsertion[]
+  modelViews?: ModelViewEdit[]
+  mediaInsertions?: MediaInsertion[]
   pictureReplacements?: PictureReplacement[]
   pictureCrops?: PictureCrop[]
   pictureOpacities?: PictureOpacity[]
@@ -135,6 +152,8 @@ type Input = {
   slideLayouts?: { slideIndex: number; layoutPath: string }[]
   backgrounds?: { slideIndex: number; color: string }[]
   /** 固定源背景面板图片填充：一张图片应用到 slideIndices（来源页序号），拉伸或平铺。 */
+  customShows?: CustomShow[]
+  backgroundImageReuses?: BackgroundImageReuse[]
   backgroundImages?: BackgroundImage[]
   /** 固定源背景面板：渐变（→ ↓ ↘ 径向）、重置为版式/母版背景、隐藏背景图形 */
   backgroundGradients?: BackgroundGradient[]
@@ -325,17 +344,23 @@ function cellShadingState(table: TableElement, slidePath: string) {
   return { tableCellShadingEditable: editable, tableCellShadingReason: editable ? null : '此表格含合并、扩展或无法确认的单元格映射，暂不能修改单格底纹' }
 }
 const withoutCellProperties = (xml: string) => xml.replace(/<a:tcPr[^>]*\/>|<a:tcPr[^>]*>[\s\S]*?<\/a:tcPr>/g,'')
+/** Server-owned source identity; callers never provide slide XML or paths. */
+const slideIdentity = (slide: { path: string; originalXml: string }) =>
+  createHash('sha256').update(slide.path).update('\0').update(slide.originalXml).digest('hex')
 
 if (request.action === 'inspect') {
   const comments=inspectClassicComments(opened)
   const pictureImages=inspectPictureImages(opened)
   process.stdout.write(JSON.stringify({
     size: opened.deck.size,
+    ...inspectCustomShows(opened),
     masterParts: listMasterParts(opened.archive),
+    masterTextParts: inspectMasterTextParts(opened),
     layouts,
     // 现有分节（p14:sectionLst）：节名与所含页（来源页序号）
     sections: getSections(opened).map(section => ({ name: section.name, slideIndices: section.slideIndices })),
     slides: opened.deck.slides.map((slide, slideIndex) => ({
+      slideIdentity: slideIdentity(slide),
       hidden: getSlideHidden(slide),
       headerFooter: readHeaderFooter(slide),
       slideIndex,
@@ -364,6 +389,8 @@ if (request.action === 'inspect') {
       elements: slide.elements.map((element) => ({
         id: element.id,
         type: element.type,
+        ...(element.type==='picture'&&element.model3d?{model3d:readModelSources(opened,slideIndex).find(item=>item.sourceId===element.id)}:{}),
+        ...(element.type === 'picture' && element.media ? { mediaKind: element.media.kind } : {}),
         name: element.name ?? '',
         text: textOf(element),
         ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element), ...cellShadingState(element,slide.path) } : {}),
@@ -435,7 +462,9 @@ if (request.action === 'inspect') {
   if (request.theme && !Object.hasOwn(themes, request.theme)) throw new Error('theme_invalid')
   // 页面引用在重排前固定；背景和新增文本框在主题之后写入，避免显式颜色被主题重映射。
   const originalSlides = [...opened.deck.slides]
+  const sourceIdentities = originalSlides.map(slideIdentity)
   const slideCount = originalSlides.length
+  const customShows=prepareCustomShows(opened,request.customShows)
   const commentSourcePaths=originalSlides.map(slide=>slide.path)
   const notesEdits=prepareNotesEdits(opened,request.notesEdits,{deletedSlides:request.deletedSlides,newSlides:request.newSlides})
   const linkEdits=prepareLinkEdits(opened,request.linkEdits,{deletedSlides:request.deletedSlides,deletions:request.deletions,groupEdits:request.groupEdits,newSlides:request.newSlides})
@@ -560,7 +589,29 @@ if (request.action === 'inspect') {
     hiddenTargets.add(item.slideIndex)
   }
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.pictureReplacements, request.pictureCrops, request.pictureOpacities, request.chartEdits, request.hiddenSlides, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.mediaInsertions, request.modelInsertions, request.modelViews, request.pictureReplacements, request.pictureCrops, request.pictureOpacities, request.chartEdits, request.hiddenSlides, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const zoomInsertions = request.zoomInsertions ?? []
+  if (!Array.isArray(zoomInsertions) || zoomInsertions.length > 50) throw new Error('zoom_insertions_invalid')
+  const identityIndex = new Map<string, number>()
+  const identityPath = new Map<string, string>()
+  for (const [index, slide] of originalSlides.entries()) {
+    const identity = sourceIdentities[index]!
+    if (identityIndex.has(identity)) throw new Error('slide_identity_ambiguous')
+    identityIndex.set(identity, index)
+    identityPath.set(identity, slide.path)
+  }
+  const zoomTargets = new Set<string>()
+  for (const item of zoomInsertions) {
+    if (!item || Object.keys(item).sort().join() !== 'bytesBase64,geometry,mode,slideIdentity,targetSlideIdentity' ||
+      !/^[a-f0-9]{64}$/.test(item.slideIdentity) || !/^[a-f0-9]{64}$/.test(item.targetSlideIdentity) ||
+      !['slide','section'].includes(item.mode) || typeof item.bytesBase64 !== 'string' || item.bytesBase64.length > 8 * 1024 * 1024 ||
+      identityIndex.get(item.slideIdentity) === undefined || identityIndex.get(item.targetSlideIdentity) === undefined ||
+      deletedSlides.includes(identityIndex.get(item.slideIdentity)!) || deletedSlides.includes(identityIndex.get(item.targetSlideIdentity)!) ||
+      !item.geometry || Object.keys(item.geometry).sort().join() !== 'height,width,x,y' ||
+      ![item.geometry.x,item.geometry.y,item.geometry.width,item.geometry.height].every(value=>Number.isFinite(value)&&value>=0&&value<=100000) ||
+      item.geometry.width <= 0 || item.geometry.height <= 0 || zoomTargets.has(item.slideIdentity+':'+item.targetSlideIdentity)) throw new Error('zoom_insertions_invalid')
+    zoomTargets.add(item.slideIdentity+':'+item.targetSlideIdentity)
+  }
   if (slideRecords.some(records => (records ?? []).some(record => removedSlides.has(record.slideIndex))) || (request.newSlides ?? []).some(item => removedSlides.has(newSlideSource(item) as number))) throw new Error('deleted_slide_has_pending_edits')
   const deletions = request.deletions ?? []
   const deleted = new Set<string>()
@@ -577,6 +628,8 @@ if (request.action === 'inspect') {
   const pictureCrops=validatePictureCrops(opened,request.pictureCrops,{deletedSlides,deletions,pictureReplacements})
   const pictureOpacities = validatePictureOpacities(opened, request.pictureOpacities, { deletedSlides, deletions, pictureReplacements })
   validatePictureInsertions(opened,request.nativeImages??[])
+  validateModels(opened,request.modelInsertions??[],request.modelViews??[],[...(request.images??[]),...(request.nativeImages??[]),...(request.pictureReplacements??[]),...(request.backgroundImages??[]),...(request.mediaInsertions??[])].reduce((sum,item)=>sum+Buffer.from(item.bytesBase64,'base64').length+('poster' in item&&item.poster?Buffer.from(item.poster.bytesBase64,'base64').length:0),0))
+  validateMediaInsertions(opened,request.mediaInsertions??[],[...(request.images??[]),...(request.nativeImages??[]),...(request.pictureReplacements??[]),...(request.backgroundImages??[])])
   validatePictureReplacements(opened,pictureReplacements)
   for(const item of [...pictureReplacements,...chartEdits]) if(touchesDeleted(item.slideIndex,item.elementId)) throw new Error('media_edit_target_deleted')
   const pictureKeys=new Set(pictureReplacements.map(item=>`${item.slideIndex}:${item.elementId}`))
@@ -702,7 +755,7 @@ if (request.action === 'inspect') {
         || (item.direction !== undefined && (!['top', 'bottom', 'left', 'right'].includes(item.direction) || !['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(item.effect)))
         || ((item.effect === 'motionPath') !== (item.motionPath !== undefined)) || (item.motionPath !== undefined && !MOTION_PATH_PRESETS.includes(item.motionPath))) throw new Error('animation_sequence_item_invalid')
       const element = slide.elements.find(candidate => candidate.id === item.elementId)
-      if (!element || elementSpid(element) === null || (element.type !== 'text' && element.type !== 'shape') || touchesDeleted(sequence.slideIndex, item.elementId)) throw new Error('animation_target_invalid')
+      if (!element || elementSpid(element) === null || (item.effect.startsWith('media') ? element.type !== 'picture' || !element.media : element.type !== 'text' && element.type !== 'shape') || touchesDeleted(sequence.slideIndex, item.elementId)) throw new Error('animation_target_invalid')
       if (item.paragraph !== undefined && (!Number.isInteger(item.paragraph) || item.paragraph < 0 || item.paragraph >= ((request.edits ?? []).findLast(edit => edit.slideIndex === sequence.slideIndex && edit.elementId === item.elementId && edit.text !== undefined)?.text?.split(/\r?\n/).length ?? (element as { text?: { paragraphs: unknown[] } }).text?.paragraphs.length ?? 0) || item.effect === 'motionPath')) throw new Error('animation_paragraph_invalid')
     }
   }
@@ -712,7 +765,8 @@ if (request.action === 'inspect') {
     throw new Error('delete_target_has_pending_edits')
   }
   const backgroundImages = validateBackgroundImages(opened, request.backgroundImages, { removedSlides, colorSlides: new Set((request.backgrounds ?? []).map(item => item.slideIndex)) })
-  const backgroundOps = validateBackgroundOps(opened, request, { removedSlides, fillSlides: new Set([...(request.backgrounds ?? []).map(item => item.slideIndex), ...backgroundImages.flatMap(item => item.slideIndices)]) })
+  const backgroundReuses = validateBackgroundImageReuses(opened, request.backgroundImageReuses, { removedSlides, fillSlides: new Set([...(request.backgrounds ?? []).map(item => item.slideIndex), ...backgroundImages.flatMap(item => item.slideIndices)]) })
+  const backgroundOps = validateBackgroundOps(opened, request, { removedSlides, fillSlides: new Set([...(request.backgrounds ?? []).map(item => item.slideIndex), ...backgroundImages.flatMap(item => item.slideIndices), ...backgroundReuses.flatMap(item => item.slideIndices)]) })
   for (const background of request.backgrounds ?? []) {
     if (!validSlideIndex(background.slideIndex, slideCount)) throw new Error('background_slide_index_invalid')
     if (typeof background.color !== 'string' || !colorPattern.test(background.color)) throw new Error('background_color_invalid')
@@ -731,7 +785,7 @@ if (request.action === 'inspect') {
     if (box.bold !== undefined && typeof box.bold !== 'boolean') throw new Error('textbox_font_invalid')
     if (box.rotation !== undefined && (!Number.isFinite(box.rotation) || Math.abs(box.rotation) > 360)) throw new Error('textbox_rotation_invalid')
     if (box.field !== undefined && !['slidenum', 'datetime1'].includes(box.field)) throw new Error('textbox_field_invalid')
-    if ((box.italic !== undefined && typeof box.italic !== 'boolean') || (box.wordArt !== undefined && typeof box.wordArt !== 'boolean')
+    if ((box.italic !== undefined && typeof box.italic !== 'boolean') || (box.wordArt !== undefined && typeof box.wordArt !== 'boolean') || (box.equation !== undefined && typeof box.equation !== 'boolean')
       || (box.outline !== undefined && (!box.outline || typeof box.outline !== 'object' || Object.keys(box.outline).sort().join() !== 'color,widthEmu' || typeof box.outline.color !== 'string' || !colorPattern.test(box.outline.color) || !Number.isInteger(box.outline.widthEmu) || box.outline.widthEmu < 1 || box.outline.widthEmu > 254000))) throw new Error('textbox_wordart_invalid')
   }
   applyPictureOpacities(opened, pictureOpacities)
@@ -787,7 +841,7 @@ if (request.action === 'inspect') {
       bytes: new Uint8Array(content),
       ext: image.extension,
       offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
-      name: image.descr === 'AI 生成配图' ? 'AI 生成配图' : '插入的图片',
+      name: pictureInsertionName(image),
       descr: image.descr,
     })
     if (!added) throw new Error('image_format_unsupported')
@@ -818,7 +872,7 @@ if (request.action === 'inspect') {
     const slide = opened.deck.slides[animation.slideIndex]
     const element = slide?.elements.find((candidate) => candidate.id === animation.elementId)
     const spid = element ? elementSpid(element) : null
-    if (!slide || spid === null || (element!.type !== 'text' && element!.type !== 'shape')) {
+    if (!slide || !element || spid === null || (animation.effect.startsWith('media') ? element.type !== 'picture' || !element.media : element.type !== 'text' && element.type !== 'shape')) {
       throw new Error('animation_target_invalid')
     }
     const existing = getSlideAnimations(slide)
@@ -952,10 +1006,9 @@ if (request.action === 'inspect') {
       throw new Error('paragraph_indent_out_of_range')
     }
   }
-  for (const background of request.backgrounds ?? []) {
-    setSlideBackground(opened, originalSlides[background.slideIndex]!, background.color.toUpperCase())
-  }
+  applyBackgroundColors(opened, originalSlides, request.backgrounds ?? [])
   applyBackgroundImages(opened, originalSlides, backgroundImages)
+  applyBackgroundImageReuses(opened, originalSlides, backgroundReuses)
   applyBackgroundOps(opened, originalSlides, backgroundOps)
   for (const shape of request.shapes ?? []) {
     const { x, y, width, height } = shape.geometry
@@ -982,7 +1035,7 @@ if (request.action === 'inspect') {
         color: (box.color ?? '#000000').toUpperCase(),
         ...(box.bold ? { bold: true } : {}),
       }] })),
-      bodyPr: box.wordArt ? { wrap: 'none', autoFit: 'resize' } : { autoFit: 'shrink' },
+      bodyPr: box.wordArt || box.equation ? { wrap: 'none', autoFit: 'resize' } : { autoFit: 'shrink' },
     })
     if (box.rotation) {
       element.transform.rot = Math.round(box.rotation * 60000)
@@ -1046,6 +1099,8 @@ if (request.action === 'inspect') {
     if (!added) throw new Error('smartart_insert_failed')
     originalSlides[item.slideIndex] = added.slide
   }
+  applyMediaInsertions(opened,originalSlides,request.mediaInsertions??[])
+  applyModels(opened,originalSlides,request.modelInsertions??[],request.modelViews??[])
   // 页眉页脚会重建页面：放在全部修改与表格之后，应用到最终全部页面（含新建页）。
   if (request.headerFooter !== undefined) {
     const hf = request.headerFooter
@@ -1065,6 +1120,21 @@ if (request.action === 'inspect') {
   applyGroupEdits(opened,mappedGroupEdits)
   applyClassicCommentEdits(opened,commentEdits,commentSourcePaths,request.commentAuthor)
   applyNotesEdits(opened,notesEdits)
+  await applyMasterTextEdits(opened, validateMasterTextEdits(opened, request.masterTextEdits))
+  await applyMasterElementEdits(opened, validateMasterElementEdits(opened, request.masterElementEdits))
+  await applyCustomShows(opened,customShows)
+  for (const item of zoomInsertions) {
+    const destination = opened.deck.slides.findIndex(slide => slide.path === identityPath.get(item.slideIdentity))
+    const target = opened.deck.slides.findIndex(slide => slide.path === identityPath.get(item.targetSlideIdentity))
+    if (destination < 0 || target < 0) throw new Error('zoom_slide_missing')
+    const bytes = Buffer.from(item.bytesBase64, 'base64')
+    if (!bytes.length || bytes.toString('base64') !== item.bytesBase64 || !bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) throw new Error('zoom_image_invalid')
+    const slide = opened.deck.slides[destination]!
+    const added = addPicture(opened, slide, { bytes: new Uint8Array(bytes), ext:'png', offset:{x:Math.round(item.geometry.x*9525),y:Math.round(item.geometry.y*9525),cx:Math.round(item.geometry.width*9525),cy:Math.round(item.geometry.height*9525)}, name:item.mode==='section'?'Section Zoom':'Slide Zoom' })
+    if (!added) throw new Error('zoom_image_invalid')
+    const linked = setElementLink(opened, destination, added.id, {kind:'slide',slideIndex:target})
+    if (!linked) throw new Error('zoom_link_invalid')
+  }
   const bytes = await savePptx(opened)
   await writeFile(request.output, bytes)
   let issues: { page: number; message: string }[]

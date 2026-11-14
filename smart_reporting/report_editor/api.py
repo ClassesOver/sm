@@ -122,7 +122,7 @@ class EditorEventPayload(BaseModel):
         "ai_edit_adopted",
     ]
     duration_ms: int | None = Field(default=None, alias="durationMs", ge=0, le=3_600_000)
-    format: Literal["pdf", "word"] | None = None
+    format: Literal["pdf", "word", "md", "xlsx", "pptx"] | None = None
     error_code: str | None = Field(default=None, alias="errorCode", max_length=128)
     # Ask AI 使用情况：只接受枚举与固定标识，不接受建议原文或用户输入。
     surface: Literal["chart", "table"] | None = None
@@ -334,6 +334,7 @@ def create_report_editor_router(
                 "markdown": document.markdown,
                 "sha256": document.sha256,
                 "csrfToken": grants.csrf_token(raw_session),
+                "deliveryFormat": getattr(context, "delivery_format", "document"),
                 # 交互图表与 PDF/Word、静态图共用同一份报表视觉主题。
                 "visualTheme": REPORT_VISUAL_THEME,
             }
@@ -353,7 +354,7 @@ def create_report_editor_router(
                         ("docx", "word", native_editor.docx_enabled),
                         ("pdf", "pdf", native_editor.pdf_enabled),
                     )
-                    if enabled and session.capabilities is None and context.delivery_format == "document"
+                    if enabled and session.capabilities is None and context.delivery_format in {"document", format_name}
                     and isinstance(render.get(label), dict)
                     and all(field in render[label] for field in ("path", "size", "sha256"))
                 ]

@@ -15,9 +15,17 @@ it('stages flip and opacity in place and crop with the pinned cropRect footprint
  for(const operation of [staged,existingImageBake(sha,target,{kind:'flip',axis:'v'})])expect(()=>validatePdfExistingImage(pages,[operation],[target])).not.toThrow()
 })
 
+it.each([1,3] as const)('stages quarter-turn %i around the image center and swaps the PDF footprint',turns=>{
+ const operation=existingImageBake(sha,target,{kind:'rotate',quarterTurns:turns})
+ expect(operation).toEqual({...base,rect:[70,80,150,180],bake:{kind:'rotate',quarterTurns:turns}})
+ expect(()=>validatePdfExistingImage(pages,[operation],[target])).not.toThrow()
+ expect(()=>validatePdfExistingImage(pages,[{...operation,rect:target.rect}],[target])).toThrow()
+ expect(()=>existingImageBake(sha,{...target,bakeable:false,bakeReason:'图像身份不能安全读取像素'},{kind:'rotate',quarterTurns:turns})).toThrow('不能安全读取像素')
+})
+
 it('rejects unbakeable targets, invalid bakes, moved rects and bake with replacement',()=>{
  expect(()=>existingImageBake(sha,{...target,bakeable:false,bakeReason:'图像带旋转、镜像或位于模板内'},{kind:'flip',axis:'h'})).toThrow('旋转、镜像')
- for(const bake of [{kind:'flip',axis:'d'},{kind:'opacity',alpha:1},{kind:'opacity',alpha:.333},{kind:'crop',crop:{l:0,t:0,r:1,b:1}},{kind:'crop',crop:{l:.6,t:0,r:.5,b:1}},{kind:'crop',crop:{l:0,t:0,r:1.2,b:1}},{kind:'flip',axis:'h',x:1}])
+ for(const bake of [{kind:'flip',axis:'d'},{kind:'opacity',alpha:1},{kind:'opacity',alpha:.333},{kind:'crop',crop:{l:0,t:0,r:1,b:1}},{kind:'crop',crop:{l:.6,t:0,r:.5,b:1}},{kind:'crop',crop:{l:0,t:0,r:1.2,b:1}},{kind:'flip',axis:'h',x:1},{kind:'rotate',quarterTurns:2},{kind:'rotate',quarterTurns:1,extra:true}])
   expect(()=>existingImageBake(sha,target,bake as never),JSON.stringify(bake)).toThrow()
  const flip=existingImageBake(sha,target,{kind:'flip',axis:'h'})
  expect(()=>validatePdfExistingImage(pages,[{...flip,rect:[70,90,170,170]}],[target])).toThrow('不能同时移动')
@@ -35,4 +43,9 @@ it('stages the pinned cutout bake in place with an integer 0–100 tolerance and
   expect(()=>existingImageBake(sha,target,bake as never),JSON.stringify(bake)).toThrow()
  expect(()=>validatePdfExistingImage(pages,[{...staged,rect:[70,90,170,170]}],[target])).toThrow('不能同时移动')
  expect(()=>validatePdfExistingImage(pages,[{...staged,bake:{kind:'cutout',tolerance:500}}],[target])).toThrow()
+})
+it('rejects non-finite opacity before it can become null in a draft',()=>{
+ expect(()=>existingImageBake(sha,target,{kind:'opacity',alpha:NaN})).toThrow('不透明度')
+ const valid=existingImageBake(sha,target,{kind:'flip',axis:'h'})
+ expect(()=>validatePdfExistingImage(pages,[{...valid,bake:{kind:'opacity',alpha:NaN}}],[target])).toThrow('不透明度')
 })

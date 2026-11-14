@@ -1,0 +1,25 @@
+/* 固定源 outline-pane/item/title/line 与 reading-view/slide/bar 的宿主适配。 */
+.slides-outline-pane { min-height: 0; height: 100%; background: white; overflow-y: auto; padding: 8px; }
+.slides-outline-pane[hidden], .slides-reading-view[hidden] { display: none; }
+.slides-workspace[data-view-mode="outline"] .slides-sidebar > :not(.slides-outline-pane) { display: none; }
+.slides-outline-item { display: flex; gap: 8px; padding: 8px 8px 10px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.slides-outline-item:hover { background: var(--office-hover-bg); }
+.slides-outline-item.active { background: var(--office-accent-soft); border-color: var(--office-accent); }
+.slides-outline-num { font-size: 11px; color: var(--office-muted); min-width: 16px; padding-top: 2px; }
+.slides-outline-body { min-width: 0; }
+.slides-outline-title { font-size: 13px; font-weight: 600; margin-bottom: 2px; word-break: break-word; }
+.slides-outline-line { font-size: 12px; color: var(--office-muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.slides-outline-more { color: var(--office-border-strong); }
+.slides-outline-pane:focus-visible, .slides-reading-view:focus-visible { outline: 2px solid var(--office-accent); outline-offset: -2px; }
+.slides-workspace[data-view-mode="reading"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(240px, 1fr); }
+.slides-workspace[data-view-mode="reading"] > :not(.slides-reading-view) { display: none; }
+.slides-reading-view { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #1f2937; padding: 20px; min-width: 0; overflow: auto; }
+.slides-reading-slide { line-height: 0; box-shadow: 0 6px 24px #0005; cursor: pointer; background: white; padding: 0; border: 0; }
+.slides-reading-bar { display: flex; align-items: center; gap: 12px; }
+.slides-reading-bar button { background: #ffffff1f; color: #f8fafc; border: 1px solid #ffffff40; border-radius: 5px; font-size: 12.5px; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
+.slides-reading-bar button:hover:not(:disabled) { background: #ffffff38; }
+.slides-reading-bar button:disabled { opacity: .4; cursor: default; }
+.slides-reading-page { color: #cbd5e1; font-size: 12.5px; min-width: 56px; text-align: center; }
+.slides-reading-exit { margin-left: 16px; }
+.slides-reading-note { margin: 0; color: #cbd5e1; font-size: 11px; text-align: center; }
+@media (max-width: 600px) { .slides-reading-view { padding: 12px; gap: 12px; } .slides-reading-bar { gap: 6px; flex-wrap: wrap; justify-content: center; } .slides-reading-exit { margin-left: 0; } .slides-reading-bar button { padding: 5px 8px; } }

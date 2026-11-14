@@ -175,6 +175,15 @@ try {
   const select = id => page.locator('#object-select').selectOption(id)
   const home = () => page.locator('[data-ribbon-tab="home"]').click()
   const command = id => page.locator('[data-command="' + id + '"]').click()
+  const canvasKeyboard=process.env.PPTX_CLIPBOARD_KEYBOARD==='1'
+  const canvasFocus=async(image=false)=>{
+    const canvas=page.locator('.slides-canvas canvas').first();await canvas.scrollIntoViewIfNeeded();const box=await canvas.boundingBox()
+    await page.evaluate(()=>document.activeElement instanceof HTMLElement&&document.activeElement.blur())
+    const geometry=sourceImage.geometry
+    await canvas.click({position:{x:box.width*(image?(geometry[0]+geometry[2]/2)/fixture.model.size.cx:.9),y:box.height*(image?(geometry[1]+geometry[3]/2)/fixture.model.size.cy:.9)}})
+    assert.equal(await page.locator('.slides-canvas').evaluate(node=>node===document.activeElement),true)
+    if(image)assert.equal(await page.locator('#object-select').inputValue(),sourceByName.get('Image').id)
+  }
   const history = id => page.locator('[data-source-action="' + id + '"]').click()
   const linkDialog = async id => {
     await select(id)
@@ -184,7 +193,8 @@ try {
   }
   await open()
   stage('Copying image and brushing A onto B through native controls')
-  await select(sourceByName.get('Image').id); await home(); await command('copy')
+  if(canvasKeyboard){await home();await canvasFocus(true);await page.keyboard.press('Control+c')}
+  else {await select(sourceByName.get('Image').id); await home(); await command('copy')}
   assert.deepEqual(await draft(), [], 'copy does not change draft')
   await select(sourceByName.get('A').id); await command('formatBrush')
   assert.equal(await page.locator('[data-command="formatBrush"]').getAttribute('aria-pressed'), 'true')
@@ -199,7 +209,8 @@ try {
   await page.locator('[data-link-confirm]').click()
   await waitDraft(op => op.linkEdits?.some(item => item.target?.url === linkUrl))
   stage('Pasting onto page two, undoing, restoring and refreshing draft')
-  await page.locator('.slide-open[data-slide-index="1"]').click(); await home(); await command('paste')
+  await page.locator('.slide-open[data-slide-index="1"]').click(); await home()
+  if(canvasKeyboard){await canvasFocus();await page.keyboard.press('Control+v')}else await command('paste')
   const pasted = await waitDraft(op => op.clipboardPastes?.length === 1)
   assert.deepEqual(pasted[0].clipboardPastes, [{sourceSlideIndex: 0, elementIds: [sourceByName.get('Image').id], slideIndex: 1, dx: 20, dy: 20}])
   await history('onUndo'); await waitDraft(op => !op.clipboardPastes?.length)
@@ -219,10 +230,12 @@ try {
   assert.equal(copied.model.slides[0].elements.find(item => item.name === 'After').elementLink.url, linkUrl)
   stage('Cutting saved source image and pasting into page two')
   const image = copied.model.slides[0].elements.find(item => item.name === 'Image')
-  await select(image.id); await home(); await command('cut')
+  if(canvasKeyboard){await home();await canvasFocus(true);await page.keyboard.press('Control+x')}
+  else {await select(image.id); await home(); await command('cut')}
   await waitDraft(op => op.deletions?.some(item => item.elementId === image.id))
   assert.equal(await page.locator('#object-select option').evaluateAll((options, id) => options.filter(option => option.value === id).length, image.id), 0, 'cut hides source immediately')
-  await page.locator('.slide-open[data-slide-index="1"]').click(); await command('paste')
+  await page.locator('.slide-open[data-slide-index="1"]').click()
+  if(canvasKeyboard){await canvasFocus();await page.keyboard.press('Control+v')}else await command('paste')
   const cutDraft = await waitDraft(op => op.clipboardPastes?.length === 1 && op.deletions?.length === 1)
   await open(2); assert.deepEqual(await draft(), cutDraft)
   const cut = await saveAndOpen()
@@ -243,7 +256,7 @@ try {
   await Promise.all(identityReads)
   assert.deepEqual(pageErrors, []); assert.deepEqual(consoleErrors, []); assert.deepEqual(routeErrors, []); assert.deepEqual(failedResponses, [])
   assert.equal(sha(await readFile(resolve(staticRoot, '.vite/manifest.json'))), manifestSha256)
-  const evidence = {ok: true, authorization: 'explicit route fixture; production auth is not exercised',
+  const evidence = {ok: true, canvasKeyboard, authorization: 'explicit route fixture; production auth is not exercised',
     pdfPreview: 'valid attachment placeholder; PDF conversion and native PDF plugin are not exercised',
     engine: 'real Python inspect/patch/render and independent python-pptx/ZIP readback',
     manifestSha256, runtimeJavaScript: [...runtimeJavaScript.values()], sourceSha256: sourceSha,

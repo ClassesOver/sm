@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { barValueFraction, barValueScale } from './chart-value-scale'
+import { barValueFraction, barValueScale, scatterAxisScale } from './chart-value-scale'
 
 it.each([
  {values:[300,-500],min:-600,max:400,ticks:[-600,-500,-400,-300,-200,-100,0,100,200,300,400]},
@@ -55,6 +55,11 @@ it('preserves finite ratios across overflowing spans and narrowly separated larg
  expect(barValueFraction([[Number.MAX_VALUE,-Number.MAX_VALUE]])!(0)).toBeCloseTo(0.5)
  const fraction=barValueFraction([[1e16,1e16+2]],{min:1e16,max:1e16+2,reversed:false})!
  expect(fraction(1e16)).toBe(0);expect(fraction(1e16+2)).toBe(1)
+})
+it('scales a large scatter vector without spreading it into function arguments',()=>{
+ const values=Array.from({length:200_000},(_,index)=>index%10_000)
+ const scale=scatterAxisScale(values)
+ expect(scale.min).toBe(0);expect(scale.max).toBe(10_000)
 })
 it.each([{min:5,max:2,reversed:false},{reversed:false,unsupported:'logarithmic' as const}])('declines unsupported scaling %j',scaling=>{
  expect(barValueFraction([[3,6]],scaling)).toBeUndefined()

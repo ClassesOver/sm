@@ -1,18 +1,29 @@
 .office-assistant-window-header{display:flex;align-items:center;gap:8px;flex:none;box-sizing:border-box;min-height:48px;padding:8px 14px;border-bottom:1px solid var(--office-border,#dbe3ef);color:var(--office-ink,#172033)}
-.office-assistant-window-header>strong{flex:1;font-size:13px;font-weight:600;letter-spacing:.2px}
-.office-assistant-window-header button{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:5px;border:0;border-radius:8px;background:transparent;color:var(--office-muted,#64748b);cursor:pointer}
+.office-assistant-window-header>strong{flex:1;min-width:0;font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.office-assistant-window-header button{display:inline-flex;flex:none;align-items:center;justify-content:center;width:30px;height:30px;padding:5px;border:0;border-radius:var(--office-radius);background:transparent;color:var(--office-muted,#64748b);font:inherit;cursor:pointer}
 .office-assistant-window-header button:hover{color:var(--office-accent,#245ecc);background:var(--office-accent-soft,#eaf1ff)}
 .office-assistant-window-header button:focus-visible,.office-assistant-drag-handle:focus-visible{outline:2px solid var(--office-accent,#245ecc);outline-offset:2px}
 .office-assistant-drag-handle{display:none;color:var(--office-muted,#64748b);font-size:20px;line-height:1;cursor:grab}
-:is(.office-task-dock,.pdf-ai-dock).is-office-assistant-floating{position:fixed;right:auto;bottom:auto;z-index:90;width:min(var(--office-task-width,380px),calc(100vw - 16px));max-width:calc(100vw - 16px);height:min(720px,calc(100dvh - 32px));max-height:calc(100dvh - 16px);flex:none;border:1px solid var(--office-border,#dbe3ef);border-radius:16px;box-shadow:0 20px 64px rgb(15 23 42 / 18%),0 4px 16px rgb(15 23 42 / 8%);overflow:hidden}
+:is(.office-task-dock,.pdf-ai-dock).is-office-assistant-floating{position:fixed;right:auto;bottom:auto;z-index:90;width:min(var(--office-task-width,380px),calc(100vw - 16px));max-width:calc(100vw - 16px);height:min(720px,calc(100dvh - 32px));max-height:calc(100dvh - 16px);flex:none;border:1px solid var(--office-border,#dbe3ef);border-radius:var(--office-radius);box-shadow:var(--shadow-popover);overflow:hidden}
 .is-office-assistant-floating>.office-assistant-window-header{cursor:grab;touch-action:none;background:var(--office-chrome,#fff)}
 .is-office-assistant-floating .office-assistant-drag-handle{display:inline-block}
 .is-office-assistant-floating .office-task-divider{display:none}
 @media(prefers-reduced-motion:no-preference){.office-assistant-window-header button{transition:background .15s,color .15s}}
 /* 外壳保留一个窗口标题，内部标题仅标识当前任务。 */
-:is(.office-task-dock,.pdf-ai-dock)>nav{display:flex;gap:3px;margin:10px 12px 4px;padding:4px;border:0;border-radius:10px;background:var(--office-accent-soft,#eef2f8);position:static}
-:is(.office-task-dock,.pdf-ai-dock)>nav button{flex:1;min-height:32px;padding:5px 8px;border:0;border-radius:7px;background:transparent;color:var(--office-muted,#64748b);font-size:12px;font-weight:500;cursor:pointer}
-:is(.office-task-dock,.pdf-ai-dock)>nav button:is([aria-pressed=true],[aria-selected=true]){background:var(--office-chrome,#fff);color:var(--office-accent,#245ecc);box-shadow:0 1px 4px rgb(15 23 42 / 8%)}
+:is(.office-task-dock,.pdf-ai-dock)>nav{display:flex;gap:3px;margin:0;padding:4px 10px;border:0;border-bottom:1px solid var(--office-border-soft);border-radius:0;background:var(--office-chrome);position:static}
+:is(.office-task-dock,.pdf-ai-dock)>nav button{flex:1;min-width:0;min-height:32px;padding:5px 8px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--office-muted,#64748b);font:inherit;font-size:12px;font-weight:500;overflow-wrap:anywhere;cursor:pointer}
+:is(.office-task-dock,.pdf-ai-dock)>nav button:is([aria-pressed=true],[aria-selected=true]){border-bottom-color:var(--office-accent);background:var(--office-pressed-bg);color:var(--office-accent);box-shadow:none}
 :is(.office-task-dock,.pdf-ai-dock) .office-assistant-layout>.office-assistant-header{min-height:38px;padding:0 16px;border-bottom:0;background:transparent}
 :is(.office-task-dock,.pdf-ai-dock) .office-assistant-header h3{font-size:12px;color:var(--office-muted,#64748b);font-weight:500}
 :is(.office-task-dock,.pdf-ai-dock) .office-assistant-header .office-assistant-close{margin-left:auto}
+:is(.office-task-dock,.pdf-ai-dock)>nav button:focus-visible,
+:is(.office-task-dock,.pdf-ai-dock) .office-assistant-layout :is(button,select,textarea,summary,.office-assistant-body):focus-visible{outline:2px solid var(--office-focus-ring);outline-offset:1px}
+/* 窄屏用窗口滚动保留完整工具栏/输入区，结果区仍可独立键盘阅读。 */
+@media(max-width:900px),(max-height:480px){
+ :is(.office-task-dock,.pdf-ai-dock):not([hidden]):has(>.office-assistant-layout:not([hidden])){overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+ :is(.office-task-dock,.pdf-ai-dock):not([hidden])>.native-ai.office-assistant-layout{flex:none;height:auto;overflow:visible}
+ :is(.office-task-dock,.pdf-ai-dock) .office-assistant-layout>.office-assistant-body{flex:none;min-height:64px;max-height:35dvh;overflow:auto}
+}
+@media(max-height:480px){
+ :is(.office-task-dock,.pdf-ai-dock):not(.is-office-assistant-floating):not([hidden]){position:fixed;top:8px;right:8px;bottom:8px;width:min(var(--office-task-width,360px),calc(100vw - 16px));max-width:calc(100vw - 16px);height:auto;z-index:70;border:1px solid var(--office-border);box-shadow:var(--shadow-popover)}
+}

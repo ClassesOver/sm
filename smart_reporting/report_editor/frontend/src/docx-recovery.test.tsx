@@ -32,8 +32,10 @@ vi.mock('./vendor/genoffice-docs/apps/docs/src/renderer/editor/convert', () => (
 vi.mock('./vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions', async () => {
   const { Node, Extension } = await import('@tiptap/core')
   const { UndoRedo } = await import('@tiptap/extensions')
+  const { TrackChangesExtension } = await import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/revisions')
   return { DocNestedTable: Node.create({ name: 'docNestedTable', group: 'block', atom: true, renderHTML: () => ['table'] }), DocTableRow: Node.create({ name: 'docTableRow', content: 'block*', renderHTML: () => ['tr', 0] }), editorExtensions: [
     UndoRedo,
+    TrackChangesExtension,
     Node.create({ name: 'doc', topNode: true, content: 'block+' }),
     Node.create({ name: 'docParagraph', group: 'block', content: 'inline*', addAttributes: () => ({ docxIndex: { default: 0 } }), renderHTML: () => ['p', 0] }),
     Node.create({ name: 'text', group: 'inline' }),

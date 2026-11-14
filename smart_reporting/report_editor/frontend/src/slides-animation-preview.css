@@ -1,0 +1,10 @@
+/* 固定源 anim-preview-overlay 的画布宿主，原播放器/静态节点保持共用。 */
+.slides-animation-preview { position: absolute; inset: 0; z-index: 30; background: var(--office-canvas, #e9eef3); display: grid; grid-template-rows: minmax(0, 1fr) auto; padding: 8px; gap: 8px; min-width: 0; max-height: calc(100dvh - 40px); box-sizing: border-box; scroll-margin-bottom: 32px; }
+.slides-animation-preview:focus-visible { outline: 2px solid var(--office-accent); outline-offset: -2px; }
+.slides-animation-preview-stage { min-width: 0; min-height: 0; display: grid; place-items: center; overflow: hidden; }
+.slides-animation-preview .anim-preview-overlay { cursor: pointer; line-height: 0; background: white; }
+.slides-animation-preview-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--office-muted); font-size: 11px; }
+.slides-animation-preview-controls button { flex-shrink: 0; border: 1px solid var(--office-border); border-radius: 4px; padding: 5px 8px; color: var(--office-text); background: var(--office-paper, white); cursor: pointer; }
+@media (max-height: 480px) {
+  .slides-animation-preview { position: fixed; inset: 8px 8px 40px; z-index: 1000; max-height: none; }
+}

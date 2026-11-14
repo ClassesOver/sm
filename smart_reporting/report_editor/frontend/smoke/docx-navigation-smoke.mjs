@@ -90,6 +90,32 @@ try {
     await page.locator('[data-tab-id=view]').click()
     const toggle = page.locator('[data-action=navigation-toggle]')
     await toggle.click(); await panel.waitFor({ state: 'visible' })
+    if (process.env.DOCX_NAVIGATION_LAYOUT_VIEWPORTS) {
+      for (const viewport of process.env.DOCX_NAVIGATION_LAYOUT_VIEWPORTS.split(',')) {
+        const [width,height] = viewport.split('x').map(Number)
+        await page.setViewportSize({width,height}); await page.evaluate(() => document.fonts.ready)
+        await panel.locator('[data-navigation-query]').fill('第二')
+        const geometry = await panel.evaluate(node => {
+          const rect=node.getBoundingClientRect(), input=node.querySelector('input'), close=node.querySelector('[data-navigation-action=close]'), button=close.getBoundingClientRect()
+          return {x:rect.x,y:rect.y,right:rect.right,bottom:rect.bottom,width:rect.width,inputWidth:input.getBoundingClientRect().width,
+            font:getComputedStyle(node).fontFamily,overflow:node.scrollWidth>node.clientWidth+1,
+            closeAccessible:close.contains(document.elementFromPoint(button.x+button.width/2,button.y+button.height/2))}
+        })
+        assert.ok(geometry.x>=0&&geometry.y>=0&&geometry.right<=width+1&&geometry.bottom<=height+1,JSON.stringify(geometry))
+        assert.ok(geometry.width>=220&&geometry.inputWidth>=120&&!geometry.overflow&&geometry.closeAccessible,JSON.stringify(geometry))
+        assert.ok(geometry.font.includes('Noto Sans'))
+        const last = panel.locator('[data-navigation-search-result]').last(); await last.scrollIntoViewIfNeeded()
+        assert.ok(await last.evaluate(node=>{const rect=node.getBoundingClientRect();return node.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2))}))
+        await page.screenshot({path:resolve(output,`${editingEnabled?'editable':'readonly'}-${viewport}.png`)})
+        await panel.locator('[data-navigation-action=close]').click()
+        assert.ok(await toggle.evaluate(node=>document.activeElement===node))
+        assert.equal(await editor.innerHTML(),before)
+        assert.equal(await page.evaluate(()=>JSON.stringify(localStorage)),storageBefore)
+        actions.push({editingEnabled,width,height,geometry,documentUnchanged:true,storageUnchanged:true})
+        await toggle.click()
+      }
+      await page.close(); continue
+    }
     const headings = panel.locator('[data-navigation-heading]')
     assert.deepEqual(await headings.allTextContents(), ['重复标题', '（空标题）', '继承正文标题', '编号继承标题', '重复标题', '第二子标题'])
     await headings.nth(1).click()

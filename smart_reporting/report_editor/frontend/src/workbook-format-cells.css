@@ -1,0 +1,440 @@
+@import "./vendor/genoffice-sheets-format/color-picker.css";
+/* Adapted from fixed GenOffice f8c17004 Sheets FormatCellsDialog CSS. */
+.workbook-format-cells-overlay .format-cells-dialog {
+  display: grid;
+  gap: 10px;
+  /* The tab row cannot compress below its labels, and the single grid column
+     sizes every row to that width — with a fixed 420px card, locales with
+     long tab labels (fr 490px, pl 528px measured) paint the fields, lists and
+     buttons past the card edge. Size the card to its widest incompressible
+     row instead; 420px stays the floor (en fits at 407px, so en/zh keep
+     today's exact size), the cap keeps small windows usable. The sample
+     <output> keeps overflow: hidden, so a long cell value contributes no
+     min-content and cannot widen the card. */
+  width: min-content;
+  min-width: 420px;
+  max-width: min(92vw, 560px);
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  padding: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
+}
+
+
+.workbook-format-cells-overlay .format-cells-dialog header {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.workbook-format-cells-overlay .dialog-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workbook-format-cells-overlay .dialog-tabs button {
+  border: 0;
+  padding: 5px 12px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.workbook-format-cells-overlay .dialog-tabs button.active {
+  color: var(--accent-dark);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.workbook-format-cells-overlay .dialog-body {
+  min-height: 150px;
+}
+
+.workbook-format-cells-overlay .dialog-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.workbook-format-cells-overlay .dialog-grid label {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.workbook-format-cells-overlay .dialog-grid select,
+.workbook-format-cells-overlay .dialog-grid input:not([type='checkbox']):not([type='radio']) {
+  /* Fill the grid cell; intrinsic input width would otherwise force
+     narrow columns (e.g. the 3-column header/footer dialog) to overflow. */
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.workbook-format-cells-overlay .dialog-grid .dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: end;
+}
+
+
+/* Format Cells → Number tab */
+.workbook-format-cells-overlay .numfmt-tab {
+  display: grid;
+  grid-template-columns: 118px 1fr;
+  gap: 12px;
+}
+
+.workbook-format-cells-overlay .numfmt-cats {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  align-self: start;
+}
+
+.workbook-format-cells-overlay .numfmt-cats button {
+  border: 0;
+  padding: 4px 8px;
+  background: transparent;
+  border-radius: var(--radius-small);
+  font-size: 12px;
+  color: var(--text);
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbook-format-cells-overlay .numfmt-cats button:hover:not(.active) {
+  background: var(--surface-hover);
+}
+
+.workbook-format-cells-overlay .numfmt-cats button.active {
+  background: var(--accent);
+  color: var(--sheets-on-accent);
+}
+
+.workbook-format-cells-overlay .numfmt-body {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+}
+
+.workbook-format-cells-overlay .numfmt-field {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.workbook-format-cells-overlay .numfmt-field select,
+.workbook-format-cells-overlay .numfmt-field input {
+  height: 26px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.workbook-format-cells-overlay .numfmt-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.workbook-format-cells-overlay .numfmt-body .dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.workbook-format-cells-overlay .numfmt-sample output {
+  min-height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbook-format-cells-overlay .numfmt-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 138px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+}
+
+.workbook-format-cells-overlay .numfmt-list button {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 3px 8px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.workbook-format-cells-overlay .numfmt-list button:hover:not(.active) {
+  background: var(--surface-hover);
+}
+
+.workbook-format-cells-overlay .numfmt-list button.red {
+  color: var(--danger);
+}
+
+.workbook-format-cells-overlay .numfmt-list button.active {
+  background: var(--accent);
+  color: var(--sheets-on-accent);
+}
+
+.workbook-format-cells-overlay .numfmt-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.workbook-format-cells-overlay .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+
+.workbook-format-cells-overlay .menu-select {
+  position: relative;
+  display: inline-flex;
+  anchor-name: --menu-select;
+  anchor-scope: --menu-select;
+}
+
+/* Anchor positioning for the shared Word-style color panel (@genoffice/ui
+   .gcp-palette draws the chrome; this only places it under its trigger). */
+.workbook-format-cells-overlay .sheets-color-pop {
+  position: fixed;
+  position-anchor: --menu-select;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks:
+    flip-inline,
+    flip-block,
+    flip-inline flip-block;
+  position-visibility: anchors-visible;
+  z-index: 1000;
+}
+
+/* body-portal variant for transformed/clipping hosts (Univer float DOM);
+   left/top are set inline against the trigger's viewport rect */
+.workbook-format-cells-overlay .sheets-color-pop-portal {
+  position: fixed;
+  z-index: 960;
+}
+
+
+.workbook-format-cells-overlay .color-well {
+  width: 48px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+
+
+.workbook-format-cells-overlay { --surface: var(--surface-default, #fff); --border-strong: #b6bec9; --border: #d5dbe3; --text: #243044; --text-muted: #58677b; --surface-hover: #edf3fa; --accent: #1d6f42; --accent-dark: #185c37; --sheets-on-accent: #fff; --radius-small: 3px; }
+.workbook-format-cells-host.modal-card { padding: 0; width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; border-radius: 7px; }
+.workbook-format-cells-overlay .format-cells-dialog { width: 100%; min-width: 0; max-width: none; border: 0; border-radius: 7px; box-shadow: none; box-sizing: border-box; }
+.workbook-format-cells-overlay .dialog-tabs { flex-wrap: wrap; }
+.workbook-format-cells-overlay .dialog-tabs button { flex: 1; padding: 8px 10px; white-space: nowrap; }
+.workbook-format-cells-overlay .dialog-body { min-width: 0; }
+.workbook-format-cells-overlay .dialog-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.workbook-format-cells-overlay .gs-dd { width: 100%; min-width: 0; }
+.workbook-format-cells-overlay .gs-dd-btn { min-height: 30px; }
+.workbook-format-cells-overlay .gs-dd-pop { max-width: calc(100vw - 24px); z-index: 1600; }
+.workbook-format-cells-overlay .numfmt-field { min-width: 0; }
+.workbook-format-cells-overlay .numfmt-field input { width: 100%; box-sizing: border-box; }
+.workbook-format-cells-overlay .format-cells-error { margin: 0; color: #b42318; font-size: 12px; overflow-wrap: anywhere; }
+.workbook-format-cells-overlay .format-cells-error:empty { display: none; }
+.workbook-format-cells-overlay .dialog-note { grid-column: 1 / -1; margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-muted); }
+.workbook-format-cells-overlay .dialog-actions button { min-height: 32px; padding: 0 14px; border: 1px solid #b6bec9; border-radius: 4px; cursor: pointer; }
+.workbook-format-cells-overlay .dialog-actions .primary-action { color: #fff; background: #1d6f42; border-color: #1d6f42; }
+.workbook-format-cells-overlay button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+@media (max-width: 420px) { .workbook-format-cells-overlay .numfmt-tab { grid-template-columns: 90px minmax(0, 1fr); gap: 8px; } .workbook-format-cells-overlay .dialog-tabs button { flex: 1 0 25%; } }
+
+/* Existing source shared Dropdown, scoped to this host. */
+/* Shared select-replacement dropdown (Dropdown in dropdown.tsx): themed
+ * trigger + anchored popover. Colors are chrome tokens only; apps size the
+ * control via a class on the .gs-dd wrapper. */
+
+.workbook-format-cells-overlay .gs-dd {
+  position: relative;
+  display: inline-flex;
+  anchor-name: --gs-dd;
+  anchor-scope: --gs-dd;
+}
+
+.workbook-format-cells-overlay .gs-dd-btn {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  /* right 5px: caret glyph right edge lands 6px from the outer edge, matching
+   * the format-pane caret alignment line */
+  padding: 0 5px 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workbook-format-cells-overlay .gs-dd-btn:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.workbook-format-cells-overlay .gs-dd-btn:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.workbook-format-cells-overlay .gs-dd-value {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.workbook-format-cells-overlay .gs-dd-caret {
+  flex-shrink: 0;
+  display: flex;
+  color: var(--text-dim);
+}
+
+/* fixed + anchored so scroll-container overflow never clips the popover or
+ * its shadow; flips above the trigger near the viewport bottom */
+.workbook-format-cells-overlay .gs-dd-pop {
+  position: fixed;
+  position-anchor: --gs-dd;
+  top: calc(anchor(bottom) + 2px);
+  left: anchor(left);
+  min-width: anchor-size(width);
+  /* flip-inline: a popover wider than its trigger near the window's right edge would
+   * otherwise run offscreen and clip (fixed positioning clips at the viewport) —
+   * flipping right-aligns it to the trigger so it grows leftwards instead */
+  position-try-fallbacks:
+    flip-block,
+    flip-inline,
+    flip-block flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 80;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  box-shadow: var(--shadow-menu);
+}
+
+/* with a filter box the popover stops scrolling itself: the box stays put
+ * above an inner scroller, so it never rides out of view with the list */
+.workbook-format-cells-overlay .gs-dd-pop.has-search {
+  overflow: hidden;
+}
+
+.workbook-format-cells-overlay .gs-dd-list {
+  display: contents;
+}
+
+.workbook-format-cells-overlay .gs-dd-pop.has-search .gs-dd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.workbook-format-cells-overlay .gs-dd-search {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  margin: 0 0 2px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.workbook-format-cells-overlay .gs-dd-search:focus {
+  border-color: var(--accent);
+}
+
+.workbook-format-cells-overlay .gs-dd-item {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  border-radius: 3px;
+  padding: 5px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workbook-format-cells-overlay .gs-dd-item.active {
+  background: var(--hover);
+}
+
+.workbook-format-cells-overlay .gs-dd-item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.workbook-format-cells-overlay .gs-dd-item.selected {
+  background: var(--accent-soft);
+}
+
+/* Keep the PC dialog title, tabs and actions reachable on short screens. */
+.workbook-format-cells-overlay .format-cells-dialog { max-height: calc(100dvh - 24px); grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
+.workbook-format-cells-overlay .dialog-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }

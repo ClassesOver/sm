@@ -1,0 +1,18 @@
+/* Fixed source PasteSpecialDialog groups, adapted to the existing browser modal. */
+.workbook-paste-special-dialog { width:min(540px,calc(100vw - 32px));max-height:calc(100dvh - 32px);display:flex;flex-direction:column;gap:12px;padding:18px;overflow:hidden;font-size:13px; }
+.workbook-paste-special-dialog h2 { margin:0 28px 0 0;font-size:16px; }
+.workbook-paste-special-body { min-height:0;overflow:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 16px; }
+.workbook-paste-special-body fieldset { min-width:0;display:flex;flex-direction:column;gap:7px;margin:0;padding:8px 12px 12px;border:1px solid var(--border);border-radius:6px; }
+.workbook-paste-special-body fieldset:first-child { grid-row:span 2; }
+.workbook-paste-special-body legend { padding:0 4px;color:var(--text-muted); }
+.workbook-paste-special-body label { display:flex;align-items:flex-start;gap:6px;overflow-wrap:anywhere; }
+.workbook-paste-special-body input { flex:none;accent-color:var(--accent); }
+.workbook-paste-special-body label:has(input:disabled) { color:var(--text-muted); }
+.workbook-paste-special-flags { display:flex;flex-direction:column;gap:7px;padding:0 12px; }
+.workbook-paste-special-note { grid-column:1/-1;margin:0; }
+.workbook-paste-special-actions { flex:none;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap; }
+.workbook-paste-special-actions button { padding:6px 12px; }
+.workbook-paste-special-actions button:first-child { margin-right:auto; }
+.workbook-paste-special-dialog [role=alert]:empty { display:none; }
+.workbook-paste-special-dialog [role=alert] { margin:0;color:var(--danger);overflow-wrap:anywhere; }
+@media(max-width:440px) { .workbook-paste-special-dialog { padding:12px; }.workbook-paste-special-body { gap:8px; }.workbook-paste-special-body fieldset { padding:6px; } }

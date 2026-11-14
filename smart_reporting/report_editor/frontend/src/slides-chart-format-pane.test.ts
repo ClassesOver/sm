@@ -14,6 +14,20 @@ function open(state=initial) {
  return onConfirm
 }
 const well=(point:string)=>pane.element.querySelector<HTMLButtonElement>(`[data-chart-format-well="${point}"]`)!
+it.each(['composition','legacy','handled'])('数据点色板保留受保护打开、导航与Escape：%s',protection=>{
+ const confirm=open(),button=well('0:0');button.focus()
+ const key=(node:HTMLElement,key:string)=>{const event=new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,isComposing:protection==='composition',keyCode:protection==='legacy'?229:0});if(protection==='handled')event.preventDefault();act(()=>node.dispatchEvent(event));return event}
+ key(button,'ArrowDown');expect(document.querySelector('[data-chart-format-palette]')).toBeNull();expect(document.activeElement).toBe(button)
+ act(()=>button.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true})))
+ const popup=document.querySelector<HTMLElement>('[data-chart-format-palette]')!,cell=popup.querySelector<HTMLElement>('[tabindex="0"]')!;cell.focus()
+ for(const name of ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Escape']){
+  const event=key(cell,name);expect(document.querySelector('[data-chart-format-palette]')).toBe(popup);expect(document.activeElement).toBe(cell);expect(event.defaultPrevented).toBe(protection==='handled')
+ }
+ cell.addEventListener('keydown',event=>event.preventDefault(),{capture:true,once:true});act(()=>cell.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true})));expect(document.activeElement).toBe(cell)
+ act(()=>cell.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true})));expect(document.activeElement).not.toBe(cell)
+ act(()=>document.activeElement!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})));expect(document.querySelector('[data-chart-format-palette]')).toBeNull();expect(document.activeElement).toBe(button)
+ act(()=>vi.advanceTimersByTime(250));expect(confirm).not.toHaveBeenCalled()
+})
 function pick(point:string,color:string) {
  if(document.querySelector('[data-chart-format-palette]'))act(()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})))
  act(()=>well(point).click())
@@ -87,4 +101,21 @@ it('同一目标锁定再解锁不会自动重开旧颜色浮层',()=>{
  expect(document.querySelector('[data-chart-format-palette]')).not.toBeNull()
  act(()=>pane.setLocked(true));act(()=>pane.setLocked(false))
  expect(document.querySelector('[data-chart-format-palette]')).toBeNull()
+})
+
+it('键盘选择色块后关闭颜色浮层并返回对应入口',()=>{
+ open();act(()=>well('0:0').click())
+ const cell=document.querySelector<HTMLButtonElement>('[role="gridcell"][data-pos="0-5"]')!
+ act(()=>cell.focus());expect(document.activeElement).toBe(cell)
+ act(()=>cell.click())
+ expect(document.querySelector('[data-chart-format-palette]')).toBeNull()
+ expect(document.activeElement).toBe(well('0:0'))
+})
+
+it('来源系列用原生分组命名，单系列也保留来源系列名称',()=>{
+ open({...initial,series:[{name:'收入系列 / 长系列名称',values:[1,2]},{name:'',values:[3,4]}]})
+ expect([...pane.element.querySelectorAll('fieldset>legend')].map(node=>node.textContent)).toEqual(['收入系列 / 长系列名称','系列 2'])
+ act(()=>pane.update({...initial,series:[{name:'独立系列',values:[1,2]}]}))
+ expect(pane.element.querySelector('fieldset>legend')?.textContent).toBe('独立系列')
+ expect(pane.element.querySelectorAll('fieldset button')).toHaveLength(4)
 })

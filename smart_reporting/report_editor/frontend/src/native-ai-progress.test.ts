@@ -25,6 +25,15 @@ it('reconnects from the last cursor with same-origin GET and stops after a bound
   expect(fetcher).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ method: 'GET', credentials: 'same-origin', signal: expect.any(AbortSignal) }))
   expect(events).toHaveLength(1)
 })
+it('accepts an explicit cursor reset before replay while rejecting ordinary backwards events', async () => {
+  const events: NativeAIProgressEvent[] = []
+  const response = stream([frame(-1, 'reset') + frame(2, 'content', { delta: '旧事件' })
+    + frame(0, 'reset') + frame(1, 'phase') + frame(2, 'terminal', { status: 'completed' })])
+  const result = await consumeNativeAIProgress(response, event => events.push(event), new AbortController().signal, 100)
+  expect(result).toEqual({ after: 2, terminal: true })
+  expect(events.map(event => event.kind)).toEqual(['reset', 'phase', 'terminal'])
+  expect(events[0].sequence).toBe(0)
+})
 it('aborts consumption, releases the reader and ignores buffered events after cancellation', async () => {
   const controller = new AbortController(), cancel = vi.fn(), events: NativeAIProgressEvent[] = []
   const response = new Response(new ReadableStream({ start(source) { source.enqueue(new TextEncoder().encode(frame(1, 'phase') + frame(2, 'content', { delta: '旧内容' }))) }, cancel }), { headers: { 'Content-Type': 'text/event-stream' } })

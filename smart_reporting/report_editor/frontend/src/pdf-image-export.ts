@@ -12,8 +12,11 @@ export function bindPdfImageExportDialog(options:{root:HTMLElement;sourceSha256:
   const apply=owner.createElement('button');apply.type='button';apply.textContent='生成图片 ZIP';apply.dataset.pdfImageExportApply=''
   const close=owner.createElement('button');close.type='button';close.textContent='关闭'
   const status=owner.createElement('p');status.setAttribute('role','status');const delivery=owner.createElement('div')
-  dialog.append(title,hint,pageLabel,formatLabel,dpiLabel,apply,close,status,delivery);options.root.append(dialog)
+  const actions=owner.createElement('div');actions.className='pdf-layout-actions';actions.append(close,apply)
+  delivery.className='pdf-layout-delivery'
+  dialog.append(title,hint,pageLabel,formatLabel,dpiLabel,status,delivery,actions);options.root.append(dialog)
   let busy=false,disposed=false,generation=0,url:string|undefined
+  dialog.addEventListener('keydown',event=>{if(busy&&event.key==='Tab'){event.preventDefault();close.focus()}})
   function release(){if(url){URL.revokeObjectURL(url);url=undefined}delivery.replaceChildren()}
   dialog.addEventListener('close',()=>{generation++;release()});close.addEventListener('click',()=>dialog.close())
   apply.addEventListener('click',()=>{void submit()})

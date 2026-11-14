@@ -14,7 +14,7 @@ import type { WorkbookOperation } from './workbook-draft'
 type Source = NonNullable<WorkbookModel['sheets'][number]['conditionalFormatting']>
 export type NativeRule = { cfId?: string; ranges: IRange[]; stopIfTrue?: boolean; rule: object }
 export interface ConditionalFormattingWorkbook {
-  getSheets(): { getSheetName(): string; getConditionalFormattingRules?(): NativeRule[] }[]
+  getSheets(): { getSheetId?(): string; getSheetName(): string; getConditionalFormattingRules?(): NativeRule[] }[]
 }
 export function conditionalFormattingNativeRule(rule: ConditionalFormattingWireRule, cfId: string): NativeRule {
   return { ranges: rule.ranges.map(area => ({ ...area })), stopIfTrue: rule.stopIfTrue, rule: formulaShape(rule.rule, true) as object, cfId }
@@ -41,6 +41,19 @@ function formulaShape(value: unknown, native: boolean): unknown {
 }
 export function conditionalFormattingWireRule(rule: NativeRule): ConditionalFormattingWireRule {
   return { ranges: rule.ranges.map(({ startRow, endRow, startColumn, endColumn }) => ({ startRow, endRow, startColumn, endColumn })), stopIfTrue: rule.stopIfTrue === true, rule: formulaShape(rule.rule, false) as Record<string, unknown> }
+}
+function preserveImplicitStyleDefaults(rule: ConditionalFormattingWireRule, source?: ConditionalFormattingWireRule): ConditionalFormattingWireRule {
+  if (!source) return rule
+  const sourceStyle = source.rule.style as Record<string, unknown> | undefined
+  const style = rule.rule.style as Record<string, unknown> | undefined
+  if (!style) return rule
+  const nextStyle = { ...style }
+  for (const [key, color] of [['cl', '#2f56ef'], ['bg', '#e8ecfc']] as const) {
+    const current = style[key]
+    if (sourceStyle?.[key] === undefined && current && typeof current === 'object'
+      && Object.keys(current).length === 1 && (current as { rgb?: unknown }).rgb === color) delete nextStyle[key]
+  }
+  return { ...rule, rule: { ...rule.rule, style: nextStyle } }
 }
 function validate(rules: ConditionalFormattingWireRule[], source?: Source): void {
   if (source?.issues.length) throw new Error(`条件格式来源不完整：${source.issues.join('; ')}`)
@@ -82,7 +95,14 @@ export function workbookConditionalFormattingOperations(model: WorkbookModel, wo
     const source = model.sheets.find(item => item.name === sheet.getSheetName())?.conditionalFormatting
     // 未知规则保持原XML；该sheet的CF编辑应由前置guard拒绝。
     if (source?.issues.length || !sheet.getConditionalFormattingRules) continue
-    const rules = sheet.getConditionalFormattingRules().map(conditionalFormattingWireRule)
+    const sourceRules = source?.rules ?? []
+    const prefix = sheet.getSheetId ? `file-cf-${sheet.getSheetId()}-` : ''
+    const rules = sheet.getConditionalFormattingRules().map((native, index) => {
+      const wire = conditionalFormattingWireRule(native)
+      const suffix = prefix && native.cfId?.startsWith(prefix) ? native.cfId.slice(prefix.length) : ''
+      const sourceIndex = /^\d+$/.test(suffix) ? Number(suffix) : index
+      return preserveImplicitStyleDefaults(wire, sourceRules[sourceIndex] && conditionalFormattingWireRule(sourceRules[sourceIndex] as NativeRule))
+    })
     if (identity(rules) === identity((source?.rules ?? []).map(item => conditionalFormattingWireRule(item as NativeRule)))) continue
     validate(rules, source)
     operations.push({ kind: 'replaceSheetConditionalFormats', sheetName: sheet.getSheetName(), rules })

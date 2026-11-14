@@ -47,6 +47,17 @@ describe('lossless default header/footer editing', () => {
 })
 
 describe('header/footer dialog', () => {
+  it('notifies the print preview once after each close path without changing content', async () => {
+    const p = await product(), patches: unknown[] = [], closed: string[] = [], target = { book: {}, sheet: {}, sheetId: 's' }
+    const dialog = p.createHeaderFooterDialog(document.body, (patch: unknown) => patches.push(patch)); disposables.push(dialog)
+    for (const action of ['cancel', 'escape', 'confirm']) {
+      dialog.open(p.headerFooterEditorState(undefined), target, () => closed.push(action))
+      if (action === 'cancel') document.querySelector<HTMLButtonElement>('[data-header-footer-cancel]')!.click()
+      else if (action === 'escape') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+      else document.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    }
+    expect(closed).toEqual(['cancel', 'escape', 'confirm']); expect(patches).toEqual([])
+  })
   it('provides six textareas and applies only the edited half once', async () => {
     const p = await product(), patches: unknown[] = [], target = { book: {}, sheet: {}, sheetId: 's' }
     const dialog = p.createHeaderFooterDialog(document.body, (patch: unknown, captured: unknown) => patches.push({ patch, captured })); disposables.push(dialog)

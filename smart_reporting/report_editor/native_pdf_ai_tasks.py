@@ -52,6 +52,7 @@ class NativePDFReadService:
         self.editor, self.planner, self.enabled = editor, planner, enabled
         self.timeout_seconds = timeout_seconds
         self._jobs: dict[tuple[str, str], _ReadJob] = {}
+        self._closed = False
 
     async def _context(self, session):
         context = await self.editor.context_for_session(session)
@@ -80,6 +81,8 @@ class NativePDFReadService:
                 del self._jobs[key]
 
     def _reserve(self, *, cancelled=False):
+        if self._closed and not cancelled:
+            raise ReportingError("native_ai_closed", "AI 任务服务已关闭。")
         self._prune()
         # 提前取消的回执也保留一小时，避免迟到 start 重新调用模型。
         if len(self._jobs) >= 128 or (
@@ -306,6 +309,7 @@ class NativePDFReadService:
         if job.task and not job.task.done():
             job.task.cancel()
             await asyncio.gather(job.task, return_exceptions=True)
+        await job.event_log.finish(job.status)
         return self._serialize(job)
 
     @staticmethod
@@ -320,12 +324,17 @@ class NativePDFReadService:
         }
 
     async def aclose(self):
+        self._closed = True
+        jobs = list(self._jobs.values())
         tasks = [
-            job.task for job in self._jobs.values() if job.task and not job.task.done()
+            job.task for job in jobs if job.task and not job.task.done()
         ]
-        for job in self._jobs.values():
+        for job in jobs:
             if job.status == "running":
-                job.status = "cancelled"
+                job.status, job.result = "cancelled", None
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        for job in jobs:
+            if job.status == "cancelled":
+                await job.event_log.finish(job.status)

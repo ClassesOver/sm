@@ -1,11 +1,12 @@
 import { IconBringForward, IconBringToFront, IconSendBackward, IconSendToBack } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { ComponentType } from 'react'
 import { BringToFront, SendToBack, ArrowUp, ArrowDown, Group, Ungroup, Search, Blend, Crosshair, Images, LayoutGrid, ListX, PaintBucket, PanelTop, Printer, Rows3, Save, SquareDashed, Table, TableProperties, createElement } from 'lucide'
-import { IconNoneX, IconFind, IconSave, IconPageColor } from './vendor/genoffice-slides/components/icons'
+import { IconNoneX, IconFind, IconSave, IconPageColor, IconCustomShow, IconRemoveBg } from './vendor/genoffice-slides/components/icons'
 import { Icon3d, IconAnimNone, IconAnimStar, IconApplyAll, IconAudio, IconBullets, IconChangeChartType, IconCrop, IconDirLtr, IconDirRtl, IconEditChartData, IconEraser, IconGridlines, IconHideSlide, IconIndentDec, IconIndentInc, IconLink, IconNavPane, IconNewSlide, IconNotes, IconNumbered, IconObjAlignLeft, IconObjAlignCenterH, IconObjAlignRight, IconObjAlignTop, IconObjAlignMiddle, IconObjAlignBottom, IconObjDistributeH, IconObjDistributeV, IconPageSize, IconPathCircle, IconPathDiagonal, IconPathDown, IconPathRight, IconPathZigzag, IconPen, IconPicture, IconPlayCurrent, IconPosition, IconPresenterView, IconRehearse, IconRecord, IconReplacePicture, IconRuler, IconSpellcheck, IconTranslate, IconVideo, IconWatermark } from './vendor/genoffice-slides/components/icons'
 
 /** 命令的语义图标；控件自带的 sourceIcon 优先于此补全表。 */
 export const slidesRibbonSourceIcons: Record<string, ComponentType<{ size?: number }>> = {
+  customShows: IconCustomShow, removeBackground: IconRemoveBg,
   findReplace: IconFind, saveAs: IconSave, bringToFront: IconBringToFront, bringForward: IconBringForward, sendBackward: IconSendBackward, sendToBack: IconSendToBack,
   bulletChar: IconBullets, bulletNumber: IconNumbered, pictureBullet: IconPicture,
   indentDecrease: IconIndentDec, indentIncrease: IconIndentInc, directionLtr: IconDirLtr, directionRtl: IconDirRtl,

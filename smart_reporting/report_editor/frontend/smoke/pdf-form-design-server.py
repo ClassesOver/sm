@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,7 +60,7 @@ class SaveRepository(MemoryRepository):
 async def create_app(directory: Path, port: int):
     directory.mkdir(parents=True, exist_ok=True)
     f = await extract_fixture(directory / "runtime")
-    source = form_pdf()
+    source = Path(os.environ["PDF_FORM_DESIGN_SOURCE"]).read_bytes() if os.environ.get("PDF_FORM_DESIGN_SOURCE") else form_pdf()
     identity = ArtifactFile(path=f.original_identity.path, size=len(source), sha256=hashlib.sha256(source).hexdigest(), mediaType="application/pdf")
     await f.workspace.awrite_bytes(f.thread, identity.path, source, overwrite=True, expected_sha256=f.original_identity.sha256)
     f.parent = f.parent.model_copy(update={"source_file": identity})
@@ -67,6 +68,8 @@ async def create_app(directory: Path, port: int):
     original_row = f.repository.revisions[f.parent.document_id]
     repository.revisions[f.parent.document_id] = original_row.model_copy(update={"context": f.parent, "artifacts": NativeArtifacts(pdf=identity)})
     f.editor.repository = repository
+    if os.environ.get("PDF_FORM_DESIGN_READ_ONLY") == "1":
+        f.editor.pdf_enabled = False
     f.publication.repository = repository
     f.publication.public_base_url = origin = f"http://127.0.0.1:{port}"
     (directory / "source.pdf").write_bytes(source)
@@ -78,9 +81,10 @@ async def create_app(directory: Path, port: int):
         await f.workspace.registry.aclose()
 
     app = FastAPI(lifespan=lifespan)
+    static_root = Path(os.environ.get("PDF_FORM_DESIGN_STATIC_ROOT", Path(__file__).resolve().parents[2] / "static"))
     app.include_router(create_native_editor_router(f.publication.editor_grants, editor=f.editor,
-        download_service=f.downloads, cookie_secure=False, allowed_origin=origin))
-    app.mount("/reports/v1/editor/assets", StaticFiles(directory=Path(__file__).resolve().parents[2] / "static"))
+        download_service=f.downloads, cookie_secure=False, allowed_origin=origin, static_dir=static_root))
+    app.mount("/reports/v1/editor/assets", StaticFiles(directory=static_root))
 
     @app.middleware("http")
     async def record(request: Request, call_next):

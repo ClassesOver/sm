@@ -4,7 +4,7 @@ import { hasWorkbookModal, isWorkbookGridKeyTarget } from './workbook-shortcut-t
 export function installOutlineShortcuts(host: HTMLElement, editable: () => boolean, cellEditing: () => boolean,
   command: (command: 'outline-group:auto' | 'outline-ungroup:auto') => void): { dispose(): void } {
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.isComposing || !event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || !event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey
       || !['ArrowLeft', 'ArrowRight'].includes(event.code) || !editable() || cellEditing()) return
     if (!isWorkbookGridKeyTarget(event.target) || hasWorkbookModal(host.ownerDocument)) return
     event.preventDefault()

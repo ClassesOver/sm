@@ -10,8 +10,11 @@ export function bindPdfConvertOfficeDialog(options:{root:HTMLElement;sourceSha25
  const apply=owner.createElement('button');apply.type='button';apply.textContent='生成 PPTX';apply.dataset.pdfConvertOfficeApply=''
  const close=owner.createElement('button');close.type='button';close.textContent='关闭'
  const status=owner.createElement('p');status.setAttribute('role','status');const links=owner.createElement('div')
- dialog.append(title,hint,apply,close,status,links);options.root.append(dialog)
+ const actions=owner.createElement('div');actions.className='pdf-layout-actions';actions.append(close,apply)
+ links.className='pdf-layout-delivery'
+ dialog.append(title,hint,status,links,actions);options.root.append(dialog)
  let disposed=false,busy=false,generation=0,format:PdfConvertOfficeFormat='pptx'
+ dialog.addEventListener('keydown',event=>{if(busy&&event.key==='Tab'){event.preventDefault();close.focus()}})
  const cached=new Map<PdfConvertOfficeFormat,PdfConvertOfficeResult>()
  function link(href:string|undefined,label:string){
   if(!href)return

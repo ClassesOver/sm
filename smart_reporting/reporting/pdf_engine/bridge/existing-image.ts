@@ -4,9 +4,10 @@ import {PDFDocument} from 'pdf-lib'
 import {z} from 'zod'
 import {inspectTextObjects} from '../src/main/text-edit'
 import {staticTextAvailability} from './static-text'
-import {applyExistingImageReplace,applyExistingImageReplaceBgra,applyExistingImageTransform,decodePngBgra,listExistingEngineImages,renderExistingImageBgra,type ExistingEngineImage} from './existing-image-engine'
+import {applyExistingImageReplace,applyExistingImageReplaceBgra,applyExistingImageTransform,decodePngBgra,listExistingEngineImages,renderExistingImageBgra,renderPageBackgroundBgra,type ExistingEngineImage} from './existing-image-engine'
 import {cropRect,flipPixels,multiplyAlpha} from '../src/renderer/image-bake'
 import {removeBackground} from '../src/renderer/cutout'
+import {encodeRgbaPng} from '../vendor/pdf2docx/src/extract/png'
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex')
 const rectSchema=z.tuple([z.number().finite(),z.number().finite(),z.number().finite(),z.number().finite()])
 const operationSchema=z.object({kind:z.literal('transformExistingImage'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string(),imageId:z.string().regex(/^[a-f0-9]{64}$/),expectedImageSha256:z.string().regex(/^[a-f0-9]{64}$/),rect:rectSchema,image:z.string().min(8).max(6_000_000).optional(),bake:z.discriminatedUnion('kind',[
@@ -15,12 +16,14 @@ const operationSchema=z.object({kind:z.literal('transformExistingImage'),sourceS
  // 固定源 ImageBakeOp cutout：容差 0–100（DEFAULT_CUTOUT_TOLERANCE=30），边缘连通的背景像素 alpha 置 0。
  z.object({kind:z.literal('cutout'),tolerance:z.number().int().min(0).max(100)}).strict(),
  z.object({kind:z.literal('crop'),crop:z.object({l:z.number().min(0).max(1),t:z.number().min(0).max(1),r:z.number().min(0).max(1),b:z.number().min(0).max(1)}).strict().refine(c=>c.r-c.l>=.01&&c.b-c.t>=.01&&(c.r-c.l<1||c.b-c.t<1))}).strict(),
+ z.object({kind:z.literal('rotate'),quarterTurns:z.union([z.literal(1),z.literal(3)])}).strict(),
 ]).optional()}).strict().refine(op=>op.image===undefined||op.bake===undefined)
 /** 固定源 App.tsx BAKE_SCALE：烘焙像素按页面尺寸 3 倍取样，结果保持印刷清晰度。 */
 const BAKE_SCALE=3
 export type ExistingImageOperation=z.infer<typeof operationSchema>
 export interface ExistingImageRef {pageId:string;pageIndex:number;rect:[number,number,number,number];aboveText:boolean;imageId:string;expectedImageSha256:string;editable:boolean;reason?:string;replaceable:boolean;replaceReason?:string;bakeable:boolean;bakeReason?:string}
 const near=(a:readonly number[],b:readonly number[],tol=2)=>a.every((v,i)=>Math.abs(v-b[i])<=tol)
+const rotatedImageRect=(rect:readonly number[])=>{const cx=(rect[0]!+rect[2]!)/2,cy=(rect[1]!+rect[3]!)/2,w=rect[2]!-rect[0]!,h=rect[3]!-rect[1]!;return [cx-h/2,cy-w/2,cx+h/2,cy+w/2].map(value=>Math.round(value*1000)/1000)}
 function references(sourceSha256:string,images:ExistingEngineImage[],allowed:boolean):ExistingImageRef[]{
  return images.map((image,index)=>{
   const ambiguous=images.some((other,otherIndex)=>index!==otherIndex&&image.pageIndex===other.pageIndex&&near(image.rect,other.rect))
@@ -43,6 +46,30 @@ export async function inspectExistingImages(content:Uint8Array){
  const reason=!allowed?availability.insertTextReason?.replace('插入静态文字','编辑已有图像'):!images.length?'来源没有可编辑的已有图像':!editExistingImage?existingImages[0]?.reason:null
  return {existingImages,capabilities:{editExistingImage,editExistingImageReason:reason??null}}
 }
+/** 只读取已核验对象自身像素，不能以页面截图混入邻近正文或其它图像。 */
+export async function readExistingImagePixels(content:Uint8Array,input:unknown){
+ const request=z.object({sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string(),imageId:z.string().regex(/^[a-f0-9]{64}$/),expectedImageSha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict().parse(input)
+ if(hash(content)!==request.sourceSha256)throw Error('PDF 来源摘要不匹配')
+ const model=await inspectExistingImages(content),target=model.existingImages.find(image=>image.pageId===request.pageId&&image.imageId===request.imageId&&image.expectedImageSha256===request.expectedImageSha256)
+ if(!target?.bakeable)throw Error(target?.bakeReason??'PDF 已有图像身份无效或已过期')
+ const pixels=await renderExistingImageBgra(content,target.pageIndex,target.rect,BAKE_SCALE),rgba=new Uint8Array(pixels.bgra)
+ for(let i=0;i<rgba.length;i+=4){const blue=rgba[i]!;rgba[i]=rgba[i+2]!;rgba[i+2]=blue}
+ const png=encodeRgbaPng(rgba,pixels.width,pixels.height),image=Buffer.from(png).toString('base64')
+ if(image.length>6_000_000)throw Error('图像像素超过编辑预览限额')
+ return {...request,image,width:pixels.width,height:pixels.height,sha256:hash(png)}
+}
+/** Render the source page below one identity-checked image for a live thumbnail patch. */
+export async function readExistingImageBackground(content:Uint8Array,input:unknown){
+ const request=z.object({sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string().min(1).max(256),imageId:z.string().regex(/^[a-f0-9]{64}$/),expectedImageSha256:z.string().regex(/^[a-f0-9]{64}$/),clip:z.object({x:z.number().finite(),y:z.number().finite(),width:z.number().finite().positive(),height:z.number().finite().positive()}).strict(),pxWidth:z.number().int().min(1).max(2400)}).strict().parse(input)
+ if(hash(content)!==request.sourceSha256)throw Error('PDF 来源摘要不匹配')
+ const model=await inspectExistingImages(content),matches=model.existingImages.filter(image=>image.pageId===request.pageId&&image.imageId===request.imageId&&image.expectedImageSha256===request.expectedImageSha256)
+ if(matches.length!==1||!matches[0]!.editable)throw Error(matches[0]?.reason??'PDF 已有图像身份无效或已过期')
+ const target=matches[0]!,pixels=await renderPageBackgroundBgra(content,target.pageIndex,target.rect,request.clip,request.pxWidth),rgba=new Uint8Array(pixels.bgra)
+ for(let i=0;i<rgba.length;i+=4){const blue=rgba[i]!;rgba[i]=rgba[i+2]!;rgba[i+2]=blue}
+ const png=encodeRgbaPng(rgba,pixels.width,pixels.height),image=Buffer.from(png).toString('base64')
+ if(image.length>6_000_000)throw Error('页面背景补丁超过预览限额')
+ return {sourceSha256:request.sourceSha256,pageId:request.pageId,imageId:request.imageId,expectedImageSha256:request.expectedImageSha256,clip:request.clip,image,width:pixels.width,height:pixels.height,sha256:hash(png)}
+}
 export async function transformExistingImage(content:Uint8Array,input:unknown,expectedSha256:string){
  const operation=operationSchema.parse(input),sourceSha256=hash(content)
  if(expectedSha256!==sourceSha256||operation.sourceSha256!==sourceSha256)throw Error('PDF 来源摘要不匹配')
@@ -53,7 +80,8 @@ export async function transformExistingImage(content:Uint8Array,input:unknown,ex
  if(operation.image!==undefined&&!target.replaceable)throw Error(target.replaceReason??'此图像暂不支持替换')
  if(operation.bake&&!target.bakeable)throw Error(target.bakeReason??'此图像暂不支持裁剪、翻转与透明度')
  // 烘焙不与移动同批：翻转/透明度保持原范围，裁剪的新范围必须正是固定源 cropRect(原范围, 保留比例)。
- if(operation.bake&&!near(operation.rect,operation.bake.kind==='crop'?cropRect(target.rect,operation.bake.crop):target.rect,.05))throw Error(operation.bake.kind==='crop'?'裁剪后的范围须由保留比例计算，不能同时移动':'翻转、透明度或去除背景不能同时移动或缩放图像')
+ const expectedBakeRect=operation.bake?.kind==='crop'?cropRect(target.rect,operation.bake.crop):operation.bake?.kind==='rotate'?rotatedImageRect(target.rect):target.rect
+ if(operation.bake&&!near(operation.rect,expectedBakeRect,.05))throw Error(operation.bake.kind==='crop'?'裁剪后的范围须由保留比例计算，不能同时移动':'翻转、旋转、透明度或去除背景不能同时移动或缩放图像')
  const document=await PDFDocument.load(content,{updateMetadata:false}),page=document.getPage(target.pageIndex),box=page.getCropBox(),[x1,y1,x2,y2]=operation.rect
  if(x2-x1<3||y2-y1<3||x1<box.x||y1<box.y||x2>box.x+box.width||y2>box.y+box.height)throw Error('图像范围超出来源裁切范围或尺寸过小')
  const skip=(reason:string)=>({operationIndex:0,kind:operation.kind,pageId:operation.pageId,reason})
@@ -70,6 +98,14 @@ export async function transformExistingImage(content:Uint8Array,input:unknown,ex
    else if(bake.kind==='opacity')pixels={width:image.width,height:image.height,bgra:new Uint8Array(multiplyAlpha(image,bake.alpha).buffer)}
    // 固定源 removeBackground：背景采样与距离比较对通道顺序对称，BGRA 像素与 RGBA 结果一致。
    else if(bake.kind==='cutout')pixels={width:image.width,height:image.height,bgra:new Uint8Array(removeBackground(image,bake.tolerance).data.buffer)}
+   else if(bake.kind==='rotate'){
+    const width=image.height,height=image.width,bgra=new Uint8Array(width*height*4)
+    for(let y=0;y<image.height;y++)for(let x=0;x<image.width;x++){
+     const targetX=bake.quarterTurns===1?image.height-1-y:y,targetY=bake.quarterTurns===1?x:image.width-1-x
+     bgra.set(source.bgra.subarray((y*image.width+x)*4,(y*image.width+x+1)*4),(targetY*width+targetX)*4)
+    }
+    pixels={width,height,bgra}
+   }
    else{
     // 与固定源 cropImagePng 相同的取整：sx/sy 四舍五入，宽高至少 1 像素
     const {l,t,r,b}=bake.crop,sx=Math.round(l*image.width),sy=Math.round(t*image.height),sw=Math.max(1,Math.min(image.width-sx,Math.round((r-l)*image.width))),sh=Math.max(1,Math.min(image.height-sy,Math.round((b-t)*image.height)))

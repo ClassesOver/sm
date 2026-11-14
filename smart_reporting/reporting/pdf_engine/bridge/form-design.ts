@@ -1,6 +1,6 @@
 /** Strict source-bound adapter around pinned Form Design widget removal. */
 import { createHash } from 'node:crypto'
-import { PDFArray, PDFCheckBox, PDFDict, PDFDocument, PDFDropdown, PDFName, PDFNumber, PDFRef, PDFTextField, PDFRadioGroup, PDFString, PDFHexString, PDFRawStream, PDFStream, type PDFField } from 'pdf-lib'
+import { PDFArray, PDFCheckBox, PDFDict, PDFDocument, PDFDropdown, PDFName, PDFNumber, PDFRef, PDFTextField, PDFRadioGroup, PDFSignature, PDFString, PDFHexString, PDFRawStream, PDFStream, type PDFField } from 'pdf-lib'
 import { applyFormWidgetEdits } from '../src/main/save-pdf'
 import { replyReferences } from './note-replies'
 import {receipt} from './form-design-create'
@@ -24,6 +24,7 @@ export interface DesignWidgetIdentity {
   dateFormat?: string
   radioOptions?: string[]
   radioValue?: string | null
+  radioChecked?: boolean
   radioRenameEditable?: boolean
   radioRenameReason?: string | null
   radioRemovalEditable?: boolean
@@ -125,6 +126,30 @@ function safeAncestors(document:PDFDocument,ref:PDFRef,dict:PDFDict,references:M
  }return false
 }
 
+// 设计操作会改写这些容器；间接共享时不得通过别名改到无关对象。
+export function formDesignContainersUnique(document:PDFDocument,references:Map<string,number>){
+ const unique=(dict:PDFDict,key:string)=>{const raw=dict.get(PDFName.of(key));return !(raw instanceof PDFRef)||references.get(String(raw))===1}
+ const acro=document.catalog.lookupMaybe(PDFName.of('AcroForm'),PDFDict)
+ return unique(document.catalog,'AcroForm')&&(!acro||unique(acro,'Fields'))&&document.getPages().every(page=>unique(page.node,'Annots'))
+}
+
+// 固定源的空签名占位使用合并的 terminal/widget；不放宽普通字段的 Kids 身份规则。
+function safeEmptySignature(document:PDFDocument,field:PDFField,references:Map<string,number>|null){
+ if(!(field instanceof PDFSignature)||!references||!formDesignContainersUnique(document,references)||field.isReadOnly())return false
+ const dict=field.acroField.dict,widgets=field.acroField.getWidgets(),allowed=['Type','Subtype','FT','T','Ff','F','Rect','P','MK']
+ if(widgets.length!==1||widgets[0].dict!==dict||dict.keys().some(key=>!allowed.includes(key.decodeText()))||String(dict.get(PDFName.of('Type')))!=='/Annot'||String(dict.get(PDFName.of('Subtype')))!=='/Widget'||String(dict.get(PDFName.of('FT')))!=='/Sig'||references.get(String(field.ref))!==2)return false
+ const flags=dict.get(PDFName.of('Ff')),annotFlags=dict.get(PDFName.of('F')),roots=document.getForm().acroForm.dict.lookupMaybe(PDFName.of('Fields'),PDFArray)
+ if(!(flags instanceof PDFNumber)||![0,2].includes(flags.asNumber())||!(annotFlags instanceof PDFNumber)||annotFlags.asNumber()!==4||roots?.asArray().filter(ref=>String(ref)===String(field.ref)).length!==1)return false
+ const owners=document.getPages().filter(page=>page.node.lookupMaybe(PDFName.of('Annots'),PDFArray)?.asArray().filter(ref=>String(ref)===String(field.ref)).length===1)
+ if(owners.length!==1||String(dict.get(PDFName.of('P')))!==String(owners[0].ref))return false
+ const rect=dict.lookupMaybe(PDFName.of('Rect'),PDFArray),box=owners[0].getCropBox()
+ if(!rect||rect.size()!==4||rect.asArray().some(v=>!(v instanceof PDFNumber)||!Number.isFinite(v.asNumber())))return false
+ const [x1,y1,x2,y2]=rect.asArray().map(v=>(v as PDFNumber).asNumber())
+ if(x1<box.x||y1<box.y||x2>box.x+box.width||y2>box.y+box.height||x2-x1<8||y2-y1<8)return false
+ const mk=dict.lookupMaybe(PDFName.of('MK'),PDFDict),bc=mk?.lookupMaybe(PDFName.of('BC'),PDFArray)
+ return !!mk&&mk.keys().length===1&&!!bc&&bc.size()===3&&bc.asArray().every(v=>v instanceof PDFNumber&&v.asNumber()>=0&&v.asNumber()<=1)
+}
+
 function census(document: PDFDocument, sourceSha256: string) {
   // getForm() strips XFA; inspect the immutable source graph before calling it.
   const acroForm = document.catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict)
@@ -147,7 +172,8 @@ function census(document: PDFDocument, sourceSha256: string) {
       const rect = widget.getRectangle()
       const flags = widget.dict.lookup(PDFName.of('F'))
       const supported = field instanceof PDFTextField || field instanceof PDFCheckBox || field instanceof PDFDropdown
-      const safe = references !== null && supported && !field.isReadOnly() && widgets.length === 1
+      const emptySignature=safeEmptySignature(document,field,references)
+      const safe = emptySignature || references !== null && supported && !field.isReadOnly() && widgets.length === 1
         && kids?.size() === 1 && raw instanceof PDFRef && String(ref) !== String(field.ref)
         && references.get(String(ref)) === 2 && references.get(String(field.ref)) === 2
         && occurrences.length === 1 && !fieldName.includes('.')
@@ -159,7 +185,7 @@ function census(document: PDFDocument, sourceSha256: string) {
       const date=inspectDesignDateActions(field.acroField.dict),widgetDate=inspectDesignDateActions(widget.dict)
       const actionsSafe=(!field.acroField.dict.has(PDFName.of('AA'))||!!date)&&(!widget.dict.has(PDFName.of('AA'))||!!widgetDate)&&(!date||!widgetDate||date.format===widgetDate.format)
       const designSupported=supported||field instanceof PDFRadioGroup
-      const designEditable=references!==null&&designSupported&&!field.isReadOnly()&&widgets.length>=1&&widgets.length<=64&&kids?.size()===widgets.length&&raw instanceof PDFRef&&String(ref)!==String(field.ref)&&references.get(String(ref))===2&&occurrences.length===1&&safeAncestors(document,field.ref,field.acroField.dict,references,widgets.length)&&String(widget.dict.get(PDFName.of('Parent')))===String(field.ref)&&String(widget.dict.get(PDFName.of('Subtype')))==='/Widget'&&(flags===undefined||flags instanceof PDFNumber&&Number.isInteger(flags.asNumber())&&flags.asNumber()>=0&&(flags.asNumber()&704)===0)&&actionsSafe&&!['A','StructParent','IRT','Popup','OC'].some(key=>widget.dict.has(PDFName.of(key)))&&!field.acroField.dict.has(PDFName.of('A'))&&(!(field instanceof PDFTextField)||!field.isPassword()&&!field.isRichFormatted())
+      const designEditable=emptySignature||references!==null&&designSupported&&!field.isReadOnly()&&widgets.length>=1&&widgets.length<=64&&kids?.size()===widgets.length&&raw instanceof PDFRef&&String(ref)!==String(field.ref)&&references.get(String(ref))===2&&occurrences.length===1&&safeAncestors(document,field.ref,field.acroField.dict,references,widgets.length)&&String(widget.dict.get(PDFName.of('Parent')))===String(field.ref)&&String(widget.dict.get(PDFName.of('Subtype')))==='/Widget'&&(flags===undefined||flags instanceof PDFNumber&&Number.isInteger(flags.asNumber())&&flags.asNumber()>=0&&(flags.asNumber()&704)===0)&&actionsSafe&&!['A','StructParent','IRT','Popup','OC'].some(key=>widget.dict.has(PDFName.of(key)))&&!field.acroField.dict.has(PDFName.of('A'))&&(!(field instanceof PDFTextField)||!field.isPassword()&&!field.isRichFormatted())
       const radioRemoval=inspectRadioRemoval(document,field,index,references,radioRename)
       const textProperties=inspectDesignTextProperties(field)
       const choiceOptions=inspectDesignChoiceOptions(field),choiceOptionsEditable=designEditable&&choiceOptions.editable
@@ -180,9 +206,9 @@ function census(document: PDFDocument, sourceSha256: string) {
         ...(choiceOptionsEditable?{choiceOptions:choiceOptions.options,choiceValue:choiceOptions.value,choiceDefaultValue:choiceOptions.defaultValue}:{}),
         designEditable,
         designReason:designEditable?null:'控件层级、共享引用、保护或动作未通过安全复核；仅支持未签名 AcroForm 的精确控件设计',
-        fieldKind:field instanceof PDFRadioGroup?'radio':field instanceof PDFDropdown?'choice':field instanceof PDFCheckBox?'checkbox':date?'date':field instanceof PDFTextField?'text':'unsupported',
+        fieldKind:field instanceof PDFSignature?'signature':field instanceof PDFRadioGroup?'radio':field instanceof PDFDropdown?'choice':field instanceof PDFCheckBox?'checkbox':date?'date':field instanceof PDFTextField?'text':'unsupported',
         ...(date?{dateFormat:date.format}:{}),
-        ...(field instanceof PDFRadioGroup?{radioOptions:field.getOptions(),radioValue:field.getSelected()??null,radioRenameEditable:radioRename.editable,radioRenameReason:radioRename.reason,radioRemovalEditable:radioRemoval.editable,radioRemovalReason:radioRemoval.reason,radioRequiredEditable:radioRequired.editable,radioRequiredReason:radioRequired.reason}:{}),
+        ...(field instanceof PDFRadioGroup?{radioOptions:field.getOptions(),radioValue:field.getSelected()??null,radioChecked:!!widget.getOnValue()&&String(widget.dict.get(PDFName.of('AS')))===String(widget.getOnValue()),radioRenameEditable:radioRename.editable,radioRenameReason:radioRename.reason,radioRemovalEditable:radioRemoval.editable,radioRemovalReason:radioRemoval.reason,radioRequiredEditable:radioRequired.editable,radioRequiredReason:radioRequired.reason}:{}),
         removable: safe,
         removalReason: safe ? null : '仅支持未保护、无动作、无共享引用的独立单控件字段删除',
       }
@@ -212,6 +238,10 @@ export async function removeDesignWidgetWithReceipt(content:Uint8Array,sourceSha
   field.acroField.removeWidget(index);field.acroField.removeExportValue(index)
   // PageLeaf.removeAnnot 会 normalize Contents/Resources；这里只改已核验的原生 Annots 数组。
   const annots=document.getPage(match.pageIndex).node.lookup(PDFName.of('Annots'),PDFArray),annotIndex=annots.asArray().findIndex(ref=>String(ref)===String(removedRef));annots.remove(annotIndex);document.context.delete(removedRef)
+ }else if(field instanceof PDFSignature){
+  // pdf-lib removeField 强取 AP；空签名没有外观，复用底层 AcroForm 删除并精确移除已核验 Annots。
+  document.getForm().acroForm.removeField(field.acroField)
+  const annots=document.getPage(match.pageIndex).node.lookup(PDFName.of('Annots'),PDFArray),index=annots.asArray().findIndex(ref=>String(ref)===String(removedRef));annots.remove(index);document.context.delete(removedRef)
  }else{
   applyFormWidgetEdits(document,[{fieldName:match.fieldName,widgetId:match.widgetId,remove:true}])
   // pdf-lib 1.17.1 removeField 使用外观 ref；补移已核验的真正 Widget ref。

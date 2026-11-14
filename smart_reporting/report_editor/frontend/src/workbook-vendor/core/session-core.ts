@@ -172,6 +172,8 @@ export const ruleOpsSchema = z
                     categories: z.array(z.string().max(120)).max(1000).optional(),
                     categoriesRef: z.string().min(1).max(512).optional(),
                     color: z.string().regex(HEX_COLOR).optional(),
+                    plot: z.enum(['barChart', 'lineChart']).optional(),
+                    secondaryAxis: z.boolean().optional(),
                   })
                   .strict(),
               )

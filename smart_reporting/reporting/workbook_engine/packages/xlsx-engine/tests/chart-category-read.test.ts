@@ -30,6 +30,11 @@ it('reads literal numeric categories and their own number format',async()=>{
  expect(chart.series[0]!.categoryNumberFormat).toBe('0.0%')
  expect(chart.series[0]!.categoriesRef).toBeUndefined()
 })
+it('reads leaf categories and outer group spans from multi-level category caches',async()=>{
+ const chart=await fixture('<c:cat><c:multiLvlStrRef><c:f>Sheet1!$A$2:$B$5</c:f><c:multiLvlStrCache><c:ptCount val="4"/><c:lvl><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v></c:v></c:pt><c:pt idx="2"><c:v>Q3</c:v></c:pt><c:pt idx="3"><c:v>Q4</c:v></c:pt></c:lvl><c:lvl><c:pt idx="0"><c:v>H1</c:v></c:pt><c:pt idx="2"><c:v>H2</c:v></c:pt></c:lvl></c:multiLvlStrCache></c:multiLvlStrRef></c:cat>')
+ expect(chart.series[0]!.categories).toEqual(['Q1','','Q3','Q4'])
+ expect(chart.series[0]!.categoryGroups).toEqual([{label:'H1',start:0,end:2},{label:'H2',start:2,end:4}])
+})
 it.each([
  '<c:strLit><c:ptCount val="1000000000"/></c:strLit>',
  '<c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="0"><c:v>B</c:v></c:pt></c:strLit>',

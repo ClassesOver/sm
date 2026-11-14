@@ -19,25 +19,26 @@ export function validChartStyle(value: Record<string, unknown>): boolean {
 type Options = { mode: 'data' | 'type' | 'style' | 'design' | 'points'; initial: NativeChartData & Partial<NativeChartStyle> & ChartDesignPatch & { kind: NativeChartKind; pointColors?: ChartPointColors; seriesColors?: (string | null)[] }; colorSchemes?: ChartColorScheme[] | null; onConfirm: (patch: NativeChartPatch) => void; onClose: () => void }
 
 export function createNativeChartEditDialog(host: HTMLElement, options: Options) {
+  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
   const dialog = document.createElement('dialog')
   dialog.className = 'slides-native-chart-dialog'
+  dialog.dataset.chartMode = options.mode
   dialog.setAttribute('role', 'dialog'); dialog.setAttribute('aria-modal', 'true')
   const title = options.mode === 'data' ? '编辑图表数据' : options.mode === 'style' ? '图表元素' : options.mode === 'design' ? '图表配色与样式' : options.mode === 'points' ? '图表单点配色' : '更改图表类型'
   dialog.setAttribute('aria-label', title)
-  Object.assign(dialog.style, { maxWidth: '90vw', maxHeight: '80vh', overflow: 'auto', padding: '24px', border: '1px solid #cad4df', borderRadius: '12px' })
   let active = true, selected = options.initial.kind
   let categories = [...options.initial.categories]
   let names = options.initial.series.map(series => series.name)
   let values = options.initial.series.map(series => categories.map((_, index) => String(series.values[index] ?? '')))
   const changedPoints: ChartPointColors = {}
   const heading = document.createElement('h2'); heading.textContent = title; dialog.append(heading)
-  const content = document.createElement('div'); dialog.append(content)
+  const content = document.createElement('div'); content.className = 'slides-chart-content'; dialog.append(content)
   const error = document.createElement('p'); error.setAttribute('role', 'alert'); dialog.append(error)
-  const actions = document.createElement('div'); Object.assign(actions.style, { display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '16px' }); dialog.append(actions)
+  const actions = document.createElement('div'); actions.className = 'slides-table-actions'; dialog.append(actions)
   function button(label: string, action: () => void) {
     const control = document.createElement('button'); control.type = 'button'; control.textContent = label; control.addEventListener('click', action); return control
   }
-  const dispose = () => { if (!active) return; active = false; dialog.remove(); options.onClose() }
+  const dispose = () => { if (!active) return; active = false; dialog.remove(); if (previous?.isConnected) previous.focus(); options.onClose() }
   function readGrid() {
     for (const input of content.querySelectorAll<HTMLInputElement>('input')) {
       if (input.dataset.chartCategory !== undefined) categories[Number(input.dataset.chartCategory)] = input.value
@@ -102,24 +103,29 @@ export function createNativeChartEditDialog(host: HTMLElement, options: Options)
     catch (cause) { error.textContent = cause instanceof Error ? cause.message : '图表修改未能应用，请重新选择后重试。'; return }
     dispose()
   }
-  function renderData() {
+  function renderData(focusSelector?: string) {
     content.replaceChildren()
-    const table = document.createElement('table'); table.style.borderSpacing = '6px'; content.append(table)
+    const grid = document.createElement('div'); grid.className = 'slides-chart-data-grid'; content.append(grid)
+    const table = document.createElement('table'); table.style.borderSpacing = '6px'; grid.append(table)
     const head = table.createTHead().insertRow(); head.insertCell()
     names.forEach((name, si) => {
       const cell = head.insertCell(), input = document.createElement('input'); input.value = name; input.dataset.chartSeries = String(si); input.setAttribute('aria-label', `系列 ${si + 1} 名称`); cell.append(input)
-      const remove = button('删除系列', () => { readGrid(); names.splice(si, 1); values.splice(si, 1); renderData() }); remove.disabled = names.length <= 1; cell.append(remove)
+      const remove = button('删除系列', () => { readGrid(); names.splice(si, 1); values.splice(si, 1); renderData(`[data-chart-series="${Math.min(si, names.length - 1)}"]`) }); remove.disabled = names.length <= 1; cell.append(remove)
     })
     const body = table.createTBody()
     categories.forEach((category, ci) => {
       const row = body.insertRow(), cell = row.insertCell(), input = document.createElement('input'); input.value = category; input.dataset.chartCategory = String(ci); input.setAttribute('aria-label', `类别 ${ci + 1}`); cell.append(input)
-      const remove = button('删除类别', () => { readGrid(); categories.splice(ci, 1); values.forEach(series => series.splice(ci, 1)); renderData() }); remove.disabled = categories.length <= 1; cell.append(remove)
+      const remove = button('删除类别', () => { readGrid(); categories.splice(ci, 1); values.forEach(series => series.splice(ci, 1)); renderData(`[data-chart-category="${Math.min(ci, categories.length - 1)}"]`) }); remove.disabled = categories.length <= 1; cell.append(remove)
       names.forEach((_, si) => { const value = document.createElement('input'); value.value = values[si]?.[ci] ?? ''; value.inputMode = 'decimal'; value.dataset.chartValue = `${si}:${ci}`; value.setAttribute('aria-label', `类别 ${ci + 1} 系列 ${si + 1} 数值`); row.insertCell().append(value) })
     })
-    const addCategory = button('添加类别', () => { readGrid(); categories.push(`类别 ${categories.length + 1}`); values.forEach(series => series.push('')); renderData() }); addCategory.dataset.chartAddCategory = ''; addCategory.disabled = categories.length >= 100
-    const addSeries = button('添加系列', () => { readGrid(); names.push(`系列 ${names.length + 1}`); values.push(categories.map(() => '')); renderData() }); addSeries.dataset.chartAddSeries = ''; addSeries.disabled = names.length >= 20
+    const addCategory = button('添加类别', () => { readGrid(); categories.push(`类别 ${categories.length + 1}`); values.forEach(series => series.push('')); renderData(`[data-chart-category="${categories.length - 1}"]`) }); addCategory.dataset.chartAddCategory = ''; addCategory.disabled = categories.length >= 100
+    const addSeries = button('添加系列', () => { readGrid(); names.push(`系列 ${names.length + 1}`); values.push(categories.map(() => '')); renderData(`[data-chart-series="${names.length - 1}"]`) }); addSeries.dataset.chartAddSeries = ''; addSeries.disabled = names.length >= 20
     content.append(addCategory, addSeries)
     const note = document.createElement('p'); note.textContent = '空白或无效数值按 0 保存。'; content.append(note)
+    if (focusSelector) {
+      const input = content.querySelector<HTMLInputElement>(focusSelector)
+      input?.focus(); input?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+    }
   }
   const style: NativeChartStyle = { title: '', catAxisTitle: '', valAxisTitle: '', legendPos: 'none', dataLabels: false, gridlines: false, ...Object.fromEntries(CHART_STYLE_FIELDS.filter(key => options.initial[key] !== undefined).map(key => [key, options.initial[key]])) }
   if (options.mode === 'points') {
@@ -127,7 +133,7 @@ export function createNativeChartEditDialog(host: HTMLElement, options: Options)
     for (const [si, series] of options.initial.series.entries()) {
       const name = document.createElement('h3'); name.textContent = series.name || `系列 ${si + 1}`; content.append(name)
       for (const [pi, category] of categories.entries()) {
-        const row = document.createElement('div'); Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' })
+        const row = document.createElement('div'); row.className = 'slides-chart-point-row'
         const label = document.createElement('label'); label.textContent = category || `#${pi + 1}`
         const input = document.createElement('input'); input.type = 'color'; input.dataset.chartPoint = `${si}:${pi}`; input.setAttribute('aria-label', `系列 ${si + 1} 数据点 ${pi + 1} 颜色`)
         const colors = options.initial.seriesColors
@@ -140,19 +146,19 @@ export function createNativeChartEditDialog(host: HTMLElement, options: Options)
     }
   }
   else if (options.mode === 'design') {
-    Object.assign(content.style, { display: 'grid', gap: '12px', minWidth: '300px' })
     const paletteLabel = document.createElement('label'); paletteLabel.textContent = '配色方案'
     const palette = document.createElement('select'); palette.dataset.chartPalette = ''; palette.setAttribute('aria-label', '配色方案')
     palette.add(new Option('保留当前配色', ''))
     const schemes = options.colorSchemes ?? chartColorSchemes()
     for (const scheme of schemes) palette.add(new Option(scheme.label, scheme.key))
     palette.value = options.initial.colorScheme ?? ''; paletteLabel.append(palette)
-    const swatches = document.createElement('div'); swatches.setAttribute('aria-label', '配色预览')
-    Object.assign(swatches.style, { display: 'flex', gap: '6px', minHeight: '24px' })
+    const swatches = document.createElement('div'); swatches.setAttribute('role', 'group'); swatches.setAttribute('aria-label', '配色预览')
+    Object.assign(swatches.style, { display: 'flex', flexWrap: 'wrap', gap: '6px', minHeight: '24px' })
     const renderSwatches = () => {
       swatches.replaceChildren()
       for (const color of schemes.find(item => item.key === palette.value)?.colors ?? []) {
         const swatch = document.createElement('span'); swatch.dataset.chartSwatch = ''; swatch.title = color
+        swatch.setAttribute('role', 'img'); swatch.setAttribute('aria-label', color)
         Object.assign(swatch.style, { display: 'inline-block', width: '28px', height: '24px', backgroundColor: color, border: '1px solid #cad4df' }); swatches.append(swatch)
       }
     }
@@ -166,7 +172,6 @@ export function createNativeChartEditDialog(host: HTMLElement, options: Options)
     content.append(paletteLabel, swatches, presetLabel, note)
   }
   else if (options.mode === 'style') {
-    Object.assign(content.style, { display: 'grid', gap: '12px', minWidth: '280px' })
     for (const [key, caption] of [['title', '图表标题'], ['catAxisTitle', '分类轴标题'], ['valAxisTitle', '数值轴标题']] as const) {
       const label = document.createElement('label'); label.textContent = caption
       const input = document.createElement('input'); input.value = style[key]; input.dataset.chartStyle = key; input.setAttribute('aria-label', caption)
@@ -185,15 +190,14 @@ export function createNativeChartEditDialog(host: HTMLElement, options: Options)
   }
   else if (options.mode === 'data') renderData()
   else {
-    Object.assign(content.style, { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: '12px' })
     for (const [kind, label] of NATIVE_CHART_TYPES) {
       const pick = button(label, () => { selected = kind; for (const control of content.querySelectorAll<HTMLButtonElement>('[data-chart-kind]')) control.setAttribute('aria-pressed', String(control.dataset.chartKind === kind)) })
       pick.dataset.chartKind = kind; pick.setAttribute('aria-pressed', String(kind === selected)); pick.addEventListener('dblclick', () => { selected = kind; confirm() }); content.append(pick)
     }
   }
-  const cancel = button('取消', dispose), ok = button('确定', confirm); ok.dataset.chartConfirm = ''; actions.append(cancel, ok)
+  const cancel = button('取消', dispose), ok = button('确定', confirm); ok.dataset.chartConfirm = ''; ok.value = 'ok'; actions.append(cancel, ok)
   dialog.addEventListener('cancel', event => { event.preventDefault(); dispose() })
-  dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); dispose() } })
+  dialog.addEventListener('keydown', event => { if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if (event.key === 'Escape') { event.preventDefault(); dispose() } })
   dialog.addEventListener('close', dispose)
   host.append(dialog)
   if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '')

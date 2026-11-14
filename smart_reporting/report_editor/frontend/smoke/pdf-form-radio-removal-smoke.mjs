@@ -1,3 +1,4 @@
+import {fillPdfRadioRows} from './pdf-form-radio-row-input.mjs'
 // Frozen production assets; real grant/cookie/CSRF, packed engine, publication and download.
 import assert from 'node:assert/strict'
 import {spawn,spawnSync} from 'node:child_process'
@@ -79,7 +80,7 @@ try{
  async function createRadio(){
   stage='radio-create';await openDesign('addRadioGroup');await panel.waitFor({state:'visible'})
   await panel.getByRole('textbox',{name:'字段名称',exact:true}).fill('party.answer')
-  await panel.getByRole('textbox',{name:'单选按钮（每行：选项,X,Y,宽度,高度,勾选true或false）',exact:true}).fill('Yes,30,240,20,20,true\nNo,90,240,20,20,false\nMaybe,150,240,20,20,false')
+  await fillPdfRadioRows(panel,'Yes,30,240,20,20,true\nNo,90,240,20,20,false\nMaybe,150,240,20,20,false')
   await panel.getByRole('checkbox',{name:'必填',exact:true}).check();await panel.locator('[data-pdf-form-create-apply]').click();await waitOperations(1)
   const staged=await operations();assert.equal(staged[0].fieldKind,'radio');assert.equal(staged[0].radioWidgets.length,3)
   await panel.getByRole('button',{name:'关闭字段设置',exact:true}).click();await saveActual('radio','createFormField',4)
@@ -93,7 +94,7 @@ try{
  stage='open-real-grant';await page.goto(origin+info.openPath);await ready()
  await createRadio();await createCode()
  stage='remove-input';await openDesign('deleteField');const removal=page.locator('.pdf-form-design-panel');await removal.waitFor({state:'visible'})
- const buttons=removal.locator('li').filter({hasText:'party.answer'}).getByRole('button',{name:'删除单选按钮',exact:true});assert.equal(await buttons.count(),3);assert.equal(await buttons.nth(0).isDisabled(),true);assert.equal(await buttons.nth(1).isDisabled(),false)
+ const buttons=removal.locator('li').filter({hasText:'party.answer'}).locator('[data-pdf-form-widget-remove]');assert.equal(await buttons.count(),3);assert.equal(await buttons.nth(0).isDisabled(),true);assert.equal(await buttons.nth(1).isDisabled(),false)
  await removal.screenshot({path:join(directory,'removal-input.png')});await buttons.nth(1).click();await waitOperations(1)
  const staged=await operations();assert.equal(staged[0].kind,'removeFormWidget');assert.equal(staged[0].fieldName,'party.answer');assert.equal('newFieldName' in staged[0],false)
  await page.locator('[data-pdf-ribbon-tab="home"]').click();await page.locator('[data-source-command-id="genoffice.pdf.home.edit.undo"]').click();assert.deepEqual(await operations(),[]);await page.locator('[data-source-command-id="genoffice.pdf.home.edit.redo"]').click();assert.deepEqual(await operations(),staged)

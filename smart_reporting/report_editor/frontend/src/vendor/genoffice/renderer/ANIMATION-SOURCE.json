@@ -1,0 +1,31 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": [
+    {
+      "source": "apps/slides/src/renderer/animation-play.ts",
+      "sourceSha256": "642d37728a8fcf95586edda7a5d29488984a57f5b8eedb04033ea660cc31f538",
+      "local": "vendor/genoffice/renderer/animation-play.ts",
+      "localSha256": "363e5099c1ce1eef37a5b152a91e3c1174e62fd1544abd81ebb9bb61c66d5707"
+    },
+    {
+      "source": "apps/slides/src/renderer/components/AnimatedSlide.tsx",
+      "sourceSha256": "0122710170bd5157bafca6ef17a21b8d3b31b1034e554fb329583b8460a5fda0",
+      "local": "vendor/genoffice/renderer/AnimatedSlide.tsx",
+      "localSha256": "071eec8cbdeefacc2afd8db6194c206c2b7077a3f02bb4262313a68a249c55ad"
+    },
+    {
+      "source": "apps/slides/tests/animation-play.test.ts",
+      "sourceSha256": "185576f72b65d11e32101b20132dc0a8bddbd2ec85e99c2cef2ddcf9b2d60239",
+      "local": "slides-animation-play-source.test.ts",
+      "localSha256": "c3329090b0a7dd5c13a7b28f137062f87674b3abc147138ef41aa932ea4a324e"
+    }
+  ],
+  "adaptations": [
+    "animation-play.ts: type import path only; all runtime code unchanged",
+    "AnimatedSlide.tsx: type/renderer imports, local Chinese preview hint, optional width prop defaulting to source slide.widthPx",
+    "animation-play.test.ts: import paths only; assertions unchanged",
+    "animation-types.ts: fixed source shared/ipc.ts animation type excerpt; no IPC implementation",
+    "2026-11-13 show visual QA: restore source AnimatedSlideStage background Rect width=slide.widthPx; Layer alone applies host-fit scaling (two failing tests and native background coverage regression)."
+  ],
+  "mediaBoundary": "Pinned Preview computes mediaCmds but does not execute them; this host also lacks audio/video URLs in native render-tree and returns an explicit warning. SlideShow media playback is not ported."
+}

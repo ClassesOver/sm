@@ -2,6 +2,39 @@ import { it, expect, vi } from 'vitest'
 import { bindNativeAI } from './native-ai'
 import { NativeDraft } from './native-draft'
 
+it.each(['cancel', 'selection', 'dispose'])('启动回执未返回时通过请求身份取消：%s', async action => {
+  const draft = new NativeDraft({documentId:'early-cancel-'+action,revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
+  const api = {aiStart:vi.fn((_payload, signal: AbortSignal) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {once:true})
+  })), aiCancel:vi.fn(), aiCancelRequest:vi.fn().mockResolvedValue({})}
+  const root=document.createElement('div'), binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+  binding.setSelection([{blockId:'p1'}]); root.querySelector('textarea')!.value='修改'
+  root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+  await vi.waitFor(() => expect(api.aiStart).toHaveBeenCalledOnce())
+  const payload=api.aiStart.mock.calls[0][0] as {clientRequestId?:string}
+  if(action==='cancel') root.querySelector<HTMLButtonElement>('[data-ai=cancel]')!.click()
+  else if(action==='selection') binding.setSelection([{blockId:'p2'}])
+  else binding.dispose()
+  await vi.waitFor(() => expect(api.aiCancelRequest).toHaveBeenCalledOnce())
+  expect(payload.clientRequestId).toEqual(expect.any(String))
+  expect(api.aiCancelRequest).toHaveBeenCalledWith(payload.clientRequestId)
+  expect(api.aiCancel).not.toHaveBeenCalled()
+  expect(draft.operations).toEqual([])
+  binding.dispose()
+})
+
+it('启动网络失败且没有编辑ID时按请求身份清理服务端任务', async () => {
+  const draft = new NativeDraft({documentId:'start-network-error',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
+  const api = {aiStart:vi.fn().mockRejectedValue(new Error('网络中断')),aiCancel:vi.fn(),aiCancelRequest:vi.fn().mockResolvedValue({})}
+  const root=document.createElement('div'),binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+  binding.setSelection([{blockId:'p'}]);root.querySelector('textarea')!.value='修改'
+  root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+  await vi.waitFor(() => expect(api.aiCancelRequest).toHaveBeenCalledOnce())
+  expect(api.aiCancelRequest).toHaveBeenCalledWith(api.aiStart.mock.calls[0][0].clientRequestId)
+  expect(root.textContent).toContain('网络中断');expect(draft.operations).toEqual([])
+  binding.dispose();expect(api.aiCancelRequest).toHaveBeenCalledOnce()
+})
+
 it('采纳时提交当前完整草稿，冲突保留修改且候选文字不作为HTML执行', async () => {
   const draft = new NativeDraft({ documentId: 'doc', revision: 1, sourceSha256: 'a'.repeat(64), scope: { database:'db', companyId:'c', userId:'u', threadId:'t' } }, localStorage)
   const api = { aiStart: vi.fn().mockResolvedValue({editId:'id',status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'<img src=x>',operations:[]}}), aiAccept:vi.fn().mockRejectedValue(new Error('草稿已变化')), aiCancel:vi.fn().mockResolvedValue({}) }

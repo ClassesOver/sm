@@ -44,7 +44,7 @@ try {
   for(const item of [{action:'ask',tab:'home',id:'home.ai.openAssistant'},{action:'summarize',tab:'home',id:'home.ai.summarize'},{action:'keyPoints',tab:'home',id:'home.ai.keyPoints'},{action:'reviewSummary',tab:'annotate',id:'annotate.aiReview.summary'}]) {
     stage=item.action;await page.locator('[data-pdf-ribbon-tab="'+item.tab+'"]').click()
     const button=page.locator('[data-source-command-id="genoffice.pdf.'+item.id+'"]');assert.equal(await button.isDisabled(),false);assert.equal(await button.locator('svg').count(),1)
-    const headings=await page.locator('[data-pdf-ribbon-panel="'+item.tab+'"] .pdf-ribbon-group h3').allTextContents();assert.equal(headings.some(text=>/AI Review|Draw Tools|Edit|Markup/.test(text)),false,JSON.stringify(headings))
+    const headings=await page.locator('[data-pdf-ribbon-panel="'+item.tab+'"] .pdf-ribbon-group h2').allTextContents();assert.equal(headings.some(text=>/AI Review|Draw Tools|Edit|Markup/.test(text)),false,JSON.stringify(headings))
     await button.click()
     await actualPanel.waitFor({state:'visible'})
     await actualPanel.getByLabel('PDF AI 问题或补充要求').scrollIntoViewIfNeeded();assert.equal(await actualPanel.getByLabel('PDF AI 问题或补充要求').isEditable(),true)

@@ -28,3 +28,29 @@ it('busy blocks duplicate/dismiss, failure stays open and allows retry',async()=
  reject(new Error('筛选失败'));await vi.waitFor(()=>expect(overlay.querySelector('[role="alert"]')!.textContent).toContain('筛选失败'))
  expect(overlay.hidden).toBe(false);form.dispatchEvent(new Event('submit',{cancelable:true}));await vi.waitFor(()=>expect(overlay.hidden).toBe(true));expect(apply).toHaveBeenCalledTimes(2);dialog.dispose()
 })
+it('keeps the heading and actions outside the scrollable fields and names reading regions',async()=>{
+ const {dialog,overlay}=await setup(),card=overlay.querySelector('.modal-card')!
+ expect(card.querySelector(':scope > header h2')?.textContent).toBe('高级筛选')
+ expect(card.querySelector(':scope > form > footer button[type="submit"]')).not.toBeNull()
+ for(const label of ['高级筛选说明','高级筛选范围','高级筛选状态','高级筛选错误']){
+  const region=card.querySelector<HTMLElement>(`[aria-label="${label}"]`)
+  expect(region,`${label}须可单独聚焦阅读`).not.toBeNull();expect(region?.tabIndex).toBe(0)
+ }
+ dialog.dispose()
+})
+it('focuses readable busy status and carries focus to failure while preserving the condition',async()=>{
+ let reject!:(error:Error)=>void
+ const {dialog,overlay,form}=await setup(vi.fn(()=>new Promise((_,fail)=>{reject=fail})))
+ const value=overlay.querySelector<HTMLInputElement>('[aria-label="第一条件值"]')!,status=overlay.querySelector<HTMLElement>('[role="status"]')!,error=overlay.querySelector<HTMLElement>('[role="alert"]')!
+ value.value=' A ';form.dispatchEvent(new Event('submit',{cancelable:true}))
+ expect(status).not.toBeNull();expect(status?.textContent).toContain('正在筛选');expect(document.activeElement).toBe(status)
+ reject(new Error('范围已变化'));await vi.waitFor(()=>expect(error.textContent).toBe('范围已变化'))
+ expect(document.activeElement).toBe(error);expect(status.textContent).toBe('');expect(value.value).toBe(' A ');expect(value.disabled).toBe(false)
+ dialog.dispose()
+})
+it('reveals validation feedback without stealing the input focus',async()=>{
+ const {dialog,overlay,form,apply}=await setup(),value=overlay.querySelector<HTMLInputElement>('[aria-label="第一条件值"]')!,error=overlay.querySelector<HTMLElement>('[role="alert"]')!
+ const reveal=vi.fn();error.scrollIntoView=reveal;value.focus();form.dispatchEvent(new Event('submit',{cancelable:true}))
+ expect(error.textContent).toBe('请填写第一筛选条件');expect(reveal).toHaveBeenCalledWith({block:'nearest'});expect(document.activeElement).toBe(value);expect(apply).not.toHaveBeenCalled()
+ dialog.dispose()
+})

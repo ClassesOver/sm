@@ -4,6 +4,9 @@ import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
 import { NativeDraft } from './native-draft'
 
+// jsdom没有尺寸观察API；让新标尺正常挂载，布局仍由真实浏览器烟测验收。
+beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }))
+
 describe('shared PPTX editor', () => {
   beforeEach(() => {
     document.body.innerHTML = '<main id="app"></main>'
@@ -35,10 +38,20 @@ describe('shared PPTX editor', () => {
     vi.stubGlobal('fetch', fetcher)
     const root = document.querySelector<HTMLElement>('#app')!
     const shell = createEditorShell(root, 'full', 'pptx')
-    createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: !!headerFooter })
+    const view = createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: !!headerFooter })
     await vi.waitFor(() => expect(root.querySelectorAll('.slide-open')).toHaveLength(2))
-    return { root, shell, fetcher }
+    return { root, shell, fetcher, view }
   }
+
+  it('removes reference overlays when the editor is disposed', async () => {
+    const { root, view } = await openEditor({ footer: null, slideNum: false, date: null })
+    root.querySelector<HTMLButtonElement>('[data-command="ruler"]')!.click()
+    root.querySelector<HTMLButtonElement>('[data-command="guides"]')!.click()
+    expect(document.querySelector('.ruler')).not.toBeNull()
+    expect(document.querySelector('.ruler-bubble')).not.toBeNull()
+    view.dispose()
+    expect(document.querySelector('.ruler,.ruler-corner,.guide-line,.ruler-bubble')).toBeNull()
+  })
 
   it('preserves a fixed date when changing the footer', async () => {
     const { root, shell, fetcher } = await openEditor({ footer: 'old', slideNum: false, date: '2026-10-01', dateAuto: false })
@@ -52,6 +65,78 @@ describe('shared PPTX editor', () => {
     await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
     const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
     expect(payload.headerFooter).toMatchObject({ date: '2026-10-01', dateAuto: false, footer: 'new footer' })
+  })
+
+  describe.each([
+    { command: 'insertTable', title: '插入表格', field: 'cols', initial: '5', edited: '7' },
+    { command: 'addSection', title: '新增节', field: 'name', initial: '无标题节', edited: '未提交的节' },
+    { command: 'headerFooter', title: '页眉和页脚', field: 'footer', initial: '', edited: '未提交的页脚' },
+  ])('$title settings dialog', spec => {
+    it.each(['cancel', 'nativeCancel', 'title'])('restores focus and discards local changes on %s', async action => {
+      const { root, shell, fetcher } = await openEditor({ footer: null, slideNum: false, date: null })
+      const opener = root.querySelector<HTMLButtonElement>(`[data-command="${spec.command}"]`)!
+      const status = shell.statusLabel.textContent
+      opener.focus(); opener.click()
+      const dialog = root.querySelector<HTMLDialogElement>(`dialog[aria-label="${spec.title}"]`)!
+      const input = dialog.querySelector<HTMLInputElement>(`[name="${spec.field}"]`)!
+      input.focus(); input.value = spec.edited
+      const requestCount = fetcher.mock.calls.length
+      if (action === 'nativeCancel') dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+      else if (action === 'title') {
+        const close = dialog.querySelector<HTMLButtonElement>(`[aria-label="关闭${spec.title}"]`)
+        expect(close).not.toBeNull(); close!.click()
+      } else dialog.querySelector<HTMLButtonElement>('[value="cancel"]')!.click()
+      expect(dialog.isConnected).toBe(false)
+      expect(document.activeElement).toBe(opener)
+      expect(shell.statusLabel.textContent).toBe(status)
+      expect(fetcher.mock.calls).toHaveLength(requestCount)
+      opener.click()
+      const reopened = root.querySelector<HTMLDialogElement>(`dialog[aria-label="${spec.title}"]`)!
+      expect(reopened.querySelector<HTMLInputElement>(`[name="${spec.field}"]`)!.value).toBe(spec.initial)
+      reopened.querySelector<HTMLButtonElement>('[value="cancel"]')!.click()
+    })
+  })
+
+  it('keeps table dimensions and section names in the native save payload', async () => {
+    const { root, shell, fetcher } = await openEditor({ footer: null, slideNum: false, date: null })
+    root.querySelector<HTMLButtonElement>('[data-command="insertTable"]')!.click()
+    let dialog = root.querySelector<HTMLDialogElement>('dialog[aria-label="插入表格"]')!
+    dialog.querySelector<HTMLInputElement>('[name="cols"]')!.value = '3'
+    dialog.querySelector<HTMLInputElement>('[name="rows"]')!.value = '4'
+    dialog.querySelector<HTMLButtonElement>('[value="ok"]')!.click()
+    root.querySelector<HTMLButtonElement>('[data-command="addSection"]')!.click()
+    dialog = root.querySelector<HTMLDialogElement>('dialog[aria-label="新增节"]')!
+    dialog.querySelector<HTMLInputElement>('[name="name"]')!.value = ' 第二部分 '
+    dialog.querySelector<HTMLButtonElement>('[value="ok"]')!.click()
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, revisionRegistered: true, validation: { issues: [] } })))
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
+    const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
+    expect(payload.tables).toEqual([{ slideIndex: 0, rows: 4, cols: 3 }])
+    expect(payload.sections).toEqual([{ slideIndex: 0, name: '第二部分' }])
+  })
+
+  it.each([
+    { command: 'insertTable', title: '插入表格', field: 'cols', value: '0', message: '行数和列数须为 1–75 的整数' },
+    { command: 'addSection', title: '新增节', field: 'name', value: '', message: '请输入节名称' },
+  ])('keeps invalid $title input and exposes a keyboard-readable error', async spec => {
+    const { root, shell, fetcher } = await openEditor({ footer: null, slideNum: false, date: null })
+    root.querySelector<HTMLButtonElement>(`[data-command="${spec.command}"]`)!.click()
+    const dialog = root.querySelector<HTMLDialogElement>(`dialog[aria-label="${spec.title}"]`)!
+    const input = dialog.querySelector<HTMLInputElement>(`[name="${spec.field}"]`)!
+    input.value = spec.value
+    const status = shell.statusLabel.textContent, requests = fetcher.mock.calls.length
+    dialog.querySelector<HTMLButtonElement>('[value="ok"]')!.click()
+    const error = dialog.querySelector<HTMLElement>('[role="alert"]')!
+    expect(error.textContent).toBe(spec.message)
+    expect(error.getAttribute('aria-label')).toBe(`${spec.title}错误`)
+    expect(error.tabIndex).toBe(0)
+    error.focus()
+    expect(document.activeElement).toBe(error)
+    expect(input.value).toBe(spec.value)
+    expect(dialog.open).toBe(true)
+    expect(shell.statusLabel.textContent).toBe(status)
+    expect(fetcher.mock.calls).toHaveLength(requests)
   })
 
   it('defaults a legacy fixed date to non-automatic mode', async () => {
@@ -89,7 +174,7 @@ describe('shared PPTX editor', () => {
       newSlides: [{ layoutFrom: 0 }, { layoutFrom: 0 }],
       sections: [{ slideIndex: 3, name: 'Retained section' }] }])
     createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx,
-      native: true, draft })
+      native: true, draft, request: async <T>() => deck as T })
     await vi.waitFor(() => expect(root.querySelectorAll('[data-new-slide="true"]')).toHaveLength(2))
     root.querySelector<HTMLElement>('[data-new-slide="true"]')!.querySelector<HTMLButtonElement>('[aria-label="移除新建的幻灯片"]')!.click()
     expect(draft.operations[0]).toMatchObject({ order: [0, 2, 1], newSlides: [{ layoutFrom: 0 }],
@@ -112,7 +197,7 @@ describe('shared PPTX editor', () => {
     y.value = '75'
     y.dispatchEvent(new Event('change'))
     fetcher.mockResolvedValueOnce(new Response(JSON.stringify({
-      revision: 2, validation: { issues: [] }, pptx: { downloadUrl: '/download/r2' },
+      revision: 2, revisionRegistered: true, validation: { issues: [] }, pptx: { downloadUrl: '/download/r2' },
     })))
     shell.save.click()
     await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
@@ -140,7 +225,7 @@ describe('shared PPTX editor', () => {
     background.value = '#123456'; background.dispatchEvent(new Event('change'))
     expect(root.querySelectorAll('.structure-pending li')).toHaveLength(3)
 
-    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] } })))
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, revisionRegistered: true, validation: { issues: [] } })))
     shell.save.click()
     await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
     const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
@@ -169,7 +254,7 @@ describe('shared PPTX editor', () => {
     expect(text.disabled).toBe(false)
     root.querySelector<HTMLSelectElement>('#object-select')!.dispatchEvent(new Event('change'))
     expect(text.value).toBe('保存快照')
-    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] } })))
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, revisionRegistered: true, validation: { issues: [] } })))
     shell.save.click()
     await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
     const payload = JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string)
@@ -192,7 +277,7 @@ describe('shared PPTX editor', () => {
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/save'))).toHaveLength(0)
     resolve(new Response(JSON.stringify({ accepted: true })))
     await vi.waitFor(() => expect(text.value).toBe('AI文字'))
-    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] } })))
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, revisionRegistered: true, validation: { issues: [] } })))
     shell.save.click()
     await vi.waitFor(() => expect(shell.statusLabel.textContent).toBe('已保存'))
     expect(JSON.parse(fetcher.mock.calls.at(-1)![1]!.body as string).edits[0].text).toBe('AI文字')
@@ -263,7 +348,7 @@ it('requires reopening the saved revision before another edit can be saved', asy
   await vi.waitFor(() => expect(root.querySelectorAll('.slide-open')).toHaveLength(1))
   const text = root.querySelector<HTMLTextAreaElement>('#object-text')!
   text.value = '第一轮修改'; text.dispatchEvent(new Event('input'))
-  fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, validation: { issues: [] }, pptx: { downloadUrl: '/download/r2' }, editor: { openUrl: '/reports/v1/slides/open/r2' } })))
+  fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ revision: 2, revisionRegistered: true, validation: { issues: [] }, pptx: { downloadUrl: '/download/r2' }, editor: { openUrl: '/reports/v1/slides/open/r2' } })))
   shell.save.click()
   await vi.waitFor(() => expect(root.querySelector('.revision-link')).not.toBeNull())
   expect(shell.save.disabled).toBe(true)

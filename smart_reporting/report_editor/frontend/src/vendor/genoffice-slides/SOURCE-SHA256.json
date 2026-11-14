@@ -7,12 +7,14 @@
     "apps/slides/src/renderer/color-input.ts": "5c8a5c74472e487203ddcaab9cf58f2e00d7f18a53d0246bfdfd8b7a70b93c86",
     "apps/slides/src/renderer/components/FormatPane.tsx": "7af130c4cd8901b83c96ae7bd0f534c97ed8a083415518ccd624655516a342cd",
     "apps/slides/src/renderer/components/ColorWell.tsx": "5f7d5846a33ca36212f9e7106d6d47de3fc0c781092a1fbbc1471588da9d61c4",
-    "apps/slides/src/renderer/i18n/panes/zh.ts": "071ac21956cd1e4fb5a92c11a79ff95582f991af5a2b132ef82fb58f6f6692d8"
+    "apps/slides/src/renderer/i18n/panes/zh.ts": "071ac21956cd1e4fb5a92c11a79ff95582f991af5a2b132ef82fb58f6f6692d8",
+    "apps/slides/src/shared/slide-selection.ts": "d25f417d8d4a5537268bd7837fa1406718c54719326eecfc58730681f3e514f8"
   },
   "local": {
     "slide-size.ts": "4f428b6e000b405ccaf2034be859b4de1a86a95641da747cd70e1b51467fe27a",
     "ui/color-picker.tsx": "8cb984120287510d9d3d17a0b55aa0c8a14c666f8829dc54f7f6e1bf1eaf70e1",
     "ui/color-picker.css": "54d11716b518384edc6a2d8d352eaf62fe219e05d96ab143743030884d75a88a",
-    "color-input.ts": "5c8a5c74472e487203ddcaab9cf58f2e00d7f18a53d0246bfdfd8b7a70b93c86"
+    "color-input.ts": "5c8a5c74472e487203ddcaab9cf58f2e00d7f18a53d0246bfdfd8b7a70b93c86",
+    "slide-selection.ts": "d25f417d8d4a5537268bd7837fa1406718c54719326eecfc58730681f3e514f8"
   }
 }

@@ -463,13 +463,13 @@ const inCellRange = (row: number, column: number) =>
 
 /** Single-cell patches retain all untouched comment elements and original VML shapes. */
 export async function patchSheetNotes(sourceBytes: Uint8Array, sheetName: string, sourceIdentity: string,
-  changes: readonly NotePatchChange[]): Promise<Uint8Array> {
+  changes: readonly NotePatchChange[], options: { allowPictures?: boolean; allowThreads?: boolean; mirrorAuthors?: ReadonlyMap<string, string> } = {}): Promise<Uint8Array> {
   if (!/^[a-f0-9]{64}$/.test(sourceIdentity) || !Array.isArray(changes) || changes.length > NOTE_LIMIT) throw new NoteEditError('批注请求身份或预算无效')
   const source = await createBufferEntrySource(sourceBytes)
   const element = parseSheetElements(await source.readText('xl/workbook.xml')).find(s => s.name === sheetName)
   if (!element?.relationshipId) throw new NoteEditError('批注来源工作表不存在')
   const path = await resolveWorksheetPath(source, element.relationshipId)
-  const original = await readSheetNotes(source, path)
+  const original = await readSheetNotes(source, path, options)
   if (original.readOnlyReason) throw new NoteEditError(original.readOnlyReason)
   if (original.sourceIdentity !== sourceIdentity) throw new NoteEditError('批注来源身份已变化，请刷新后重试')
   const plainKeys = new Set<string>()
@@ -508,7 +508,7 @@ export async function patchSheetNotes(sourceBytes: Uint8Array, sheetName: string
   for (const { change, moving } of moves) notes.set(noteKey(change.toRow, change.toColumn), { ...moving, row: change.toRow, column: change.toColumn })
   for (const { key, change } of edits) {
     if (change.text === null) continue
-    notes.set(key, { row: change.row, column: change.column, author: notes.get(key)?.author ?? '用户', text: change.text })
+    notes.set(key, { row: change.row, column: change.column, author: options.mirrorAuthors?.get(key) ?? notes.get(key)?.author ?? '用户', text: change.text })
   }
   if (notes.size > NOTE_LIMIT || [...notes.values()].reduce((sum, n) => sum + n.text.length, 0) > 1024 * 1024) throw new NoteEditError('批注集合超出预算')
   if (!changes.length) return sourceBytes
@@ -547,10 +547,13 @@ export async function patchSheetNotes(sourceBytes: Uint8Array, sheetName: string
       }
       const key = noteKey(change.row, change.column)
       if (change.text === null) removals.add(key)
-      else if (original.commentXml.has(key)) {
+      else if (original.commentXml.has(key) && !options.mirrorAuthors?.has(key)) {
         const raw = original.commentXml.get(key)!
         comments = comments.replace(raw, () => raw.replace(/<text>[\s\S]*?<\/text>/, () => `<text><t xml:space="preserve">${escapeXml(change.text).replace(/\r/g, '&#13;')}</t></text>`))
-      } else creations.push({ key, text: change.text, author: '用户' })
+      } else {
+        if (original.commentXml.has(key)) removals.add(key)
+        creations.push({ key, text: change.text, author: options.mirrorAuthors?.get(key) ?? '用户' })
+      }
     }
     for (const key of removals) {
       const raw = original.commentXml.get(key), shape = original.shapeXml.get(key)

@@ -1,11 +1,12 @@
-import {afterEach,expect,it,vi} from 'vitest'
+import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {createEditorShell} from './shell'
 import {createSlidesEditorView} from './slides-main'
 import {NativeDraft} from './native-draft'
 const canvas=vi.hoisted(()=>({state:undefined as any}))
 vi.mock('./slides-canvas',()=>({mountSlidesCanvas:()=>({update(state:any){canvas.state=state},destroy(){}})}))
 const views:ReturnType<typeof createSlidesEditorView>[]=[]
-afterEach(()=>{views.splice(0).forEach(v=>v.dispose());document.body.replaceChildren();canvas.state=undefined})
+beforeEach(()=>vi.stubGlobal('ResizeObserver',class{observe(){}unobserve(){}disconnect(){}}))
+afterEach(()=>{views.splice(0).forEach(v=>v.dispose());document.body.replaceChildren();canvas.state=undefined;vi.unstubAllGlobals()})
 const source={revision:1,sha256:'a'.repeat(64),size:{cx:9144000,cy:5143500},slides:[{slideIndex:0,elements:[{id:'a',name:'甲',type:'text',text:'甲正文',editable:true,deletable:true,clipboardEditable:true,linkEditable:true,elementLink:null,brushSource:{supported:true,text:{bold:true,color:'#123456'},align:'center'},geometry:{x:10,y:10,width:100,height:50}},{id:'b',name:'乙',type:'shape',text:'乙正文',editable:true,deletable:true,clipboardEditable:true,linkEditable:true,elementLink:null,brushSource:{supported:true,text:{bold:false,color:'#654321'},align:'left'},geometry:{x:150,y:10,width:100,height:50}}]},{slideIndex:1,elements:[]}]}
 async function open(operations:any[]=[]){
  const draft=new NativeDraft({documentId:'clipboard-links',revision:1,sourceSha256:source.sha256,scope:{database:'fixture',companyId:'c',userId:'u',threadId:'t'}},{getItem:()=>null,setItem(){},removeItem(){}})
@@ -22,6 +23,39 @@ it('复制不落历史，粘贴来源引用一次提交并可撤销重做',async
  const before=structuredClone(app.draft.operations)
  app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click();expect(app.draft.operations).toEqual([])
  app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click();expect(app.draft.operations).toEqual(before)
+})
+it.each([false,true])('画布选择接管焦点后支持对象复制粘贴，框选=%s',async multiple=>{
+ const app=await open(),host=app.shell.editor.querySelector<HTMLElement>('.slides-canvas')!
+ const input=app.shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!;input.focus()
+ if(multiple)canvas.state.onSelectMany(['a','b']);else canvas.state.onSelect('a')
+ expect(document.activeElement).toBe(host)
+ for(const key of ['c','v'])host.dispatchEvent(new KeyboardEvent('keydown',{key,ctrlKey:true,bubbles:true,cancelable:true}))
+ expect(app.draft.operations[0]?.clipboardPastes).toEqual([{sourceSlideIndex:0,elementIds:multiple?['a','b']:['a'],slideIndex:0,dx:20,dy:20}])
+})
+it.each(['c','x','v'])('目标已消费的%s快捷键不触发对象剪贴板',async key=>{
+ const app=await open(),host=app.shell.editor.querySelector<HTMLElement>('.slides-canvas')!
+ app.command('copy').click();canvas.state.onSelect('a')
+ const status=app.shell.editor.querySelector<HTMLElement>('.status-message')!;status.textContent='目标控件正在处理快捷键'
+ let consumed=false;host.addEventListener('keydown',event=>{consumed=true;event.preventDefault()},{once:true})
+ host.dispatchEvent(new KeyboardEvent('keydown',{key,ctrlKey:true,bubbles:true,cancelable:true}))
+ expect(consumed).toBe(true);expect(app.draft.operations).toEqual([]);expect(status.textContent).toBe('目标控件正在处理快捷键')
+})
+it.each([{isComposing:true},{keyCode:229}])('组合输入标记%s不触发对象剪贴板',async marker=>{
+ const app=await open(),host=app.shell.editor.querySelector<HTMLElement>('.slides-canvas')!
+ app.command('copy').click();canvas.state.onSelect('a')
+ for(const key of ['c','x','v']){
+  const event=new KeyboardEvent('keydown',{key,ctrlKey:true,...marker,bubbles:true,cancelable:true});host.dispatchEvent(event)
+  expect(event.defaultPrevented).toBe(false);expect(app.draft.operations).toEqual([])
+ }
+})
+it('文字输入框Escape保留格式刷，由画布Escape退出',async()=>{
+ const app=await open();app.command('formatBrush').click()
+ const input=app.shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!;input.focus()
+ const event=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true});input.dispatchEvent(event)
+ expect(event.defaultPrevented).toBe(false);expect(app.command('formatBrush').getAttribute('aria-pressed')).toBe('true')
+ canvas.state.onSelect('');const host=app.shell.editor.querySelector<HTMLElement>('.slides-canvas')!
+ host.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+ expect(app.command('formatBrush').getAttribute('aria-pressed')).toBe('false')
 })
 it('剪切用已有删除草稿，粘贴仍引用保存来源并可刷新恢复',async()=>{
  const app=await open();app.command('cut').click();expect(app.draft.operations[0]?.deletions).toEqual([{slideIndex:0,elementId:'a'}]);app.command('paste').click()

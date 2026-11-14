@@ -1,3 +1,4 @@
+import {fillPdfRadioRows} from './pdf-form-radio-row-input.mjs'
 // Frozen production assets; real grant/cookie/CSRF, packed engine, publication and download.
 import assert from 'node:assert/strict'
 import {spawn,spawnSync} from 'node:child_process'
@@ -92,7 +93,7 @@ try{
  await createText('code','party.customer.code','C001',210,5)
  stage='hierarchical-radio-create';await openDesign('addRadioGroup');await panel.waitFor({state:'visible'})
  await panel.getByRole('textbox',{name:'字段名称',exact:true}).fill('party.consent')
- await panel.getByRole('textbox',{name:'单选按钮（每行：选项,X,Y,宽度,高度,勾选true或false）',exact:true}).fill(['Yes,30,170,20,20,false','No,80,170,20,20,true'].join(String.fromCharCode(10)))
+ await fillPdfRadioRows(panel,['Yes,30,170,20,20,false','No,80,170,20,20,true'].join(String.fromCharCode(10)))
  await panel.getByRole('checkbox',{name:'必填',exact:true}).check();await panel.screenshot({path:join(directory,'radio-input.png')})
  await panel.locator('[data-pdf-form-create-apply]').click();await waitOperations(1);assert.equal((await operations())[0].fieldName,'party.consent')
  await panel.getByRole('button',{name:'关闭字段设置',exact:true}).click();await saveActual('radio','createFormField',6)

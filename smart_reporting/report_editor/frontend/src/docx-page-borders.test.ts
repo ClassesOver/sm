@@ -96,9 +96,9 @@ describe('Word page borders (pinned PageBorderDialog + applySectionSettings)', (
     const editor = new Editor({ element: host, extensions: [Doc, P, T], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'x' }] }] } })
     let reason: string | null = null, current: { pageBorder: boolean } = { pageBorder: false }
     const apply = vi.fn((value: { pageBorder: boolean }) => { current = { pageBorder: value.pageBorder } })
-    const args: unknown[] = Array.from({ length: 22 }, () => undefined)
+    const args: unknown[] = Array.from({ length: 25 }, () => undefined)
     args[0] = editor; args[1] = true; args[5] = []; args[12] = []
-    args[21] = { current: () => current, reason: () => reason, sectionLabel: () => '第 1 节', apply }
+    args[24] = { current: () => current, reason: () => reason, sectionLabel: () => '第 1 节', apply }
     const ribbon = (createDocxRibbon as (...rest: unknown[]) => HTMLElement)(...args); document.body.append(ribbon)
     ribbon.querySelector<HTMLButtonElement>('[data-tab-label="设计"]')!.click()
     const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!
@@ -114,4 +114,100 @@ describe('Word page borders (pinned PageBorderDialog + applySectionSettings)', (
     expect(disabled.disabled).toBe(true); expect(disabled.title).toBe(reason)
     editor.destroy()
   })
+})
+
+import { docxDefaultPageBox, docxSectionSettingsWithPatch } from '../../../reporting/doc_engine/bridge/docx-section-settings'
+import type { SectionSettings } from '@genoffice/docx-engine'
+
+const settings: SectionSettings = { orientation: 'portrait', pageWidth: 12240, pageHeight: 15840, marginTop: 1440, marginRight: 1440, marginBottom: 1440, marginLeft: 1440, columns: 1, pageBorder: false }
+const section = { sectionId: 's1', expectedSectionSha256: 'a'.repeat(64), settings }
+const editors: Editor[] = []
+afterEach(() => { for (const editor of editors.splice(0)) editor.destroy(); document.body.replaceChildren() })
+function mount(current = settings, editable = true) {
+  const host = document.createElement('div'); document.body.append(host)
+  const Doc = Node.create({ name: 'doc', topNode: true, content: 'block+' })
+  const P = Node.create({ name: 'docParagraph', group: 'block', content: 'text*', renderHTML: () => ['p', 0] })
+  const T = Node.create({ name: 'text', group: 'inline' })
+  const editor = new Editor({ element: host, editable, extensions: [Doc, P, T], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: '正文' }] }] } }); editors.push(editor)
+  const onChange = vi.fn(), onPageBorderApply = vi.fn(), controller = { settings: current, label: '第 2 节，共 2 节', onChange,
+    pageBorders: () => ({ settings: current, apply: (props: SectionSettings['pageBorderProps'] | null, scope: 'whole' | 'section') => { onPageBorderApply(props, scope, section.sectionId, section.expectedSectionSha256) } }) }
+  const ribbon = createDocxRibbon(editor, editable, undefined, undefined, controller)
+  document.body.append(ribbon); ribbon.querySelector<HTMLButtonElement>('[data-tab-label="设计"]')!.click()
+  return { ribbon, onChange, onPageBorderApply, editor, controller }
+}
+it('exposes the pinned current-section default box/none menu; closing and same-value choices do not edit', () => {
+  const { ribbon, onChange } = mount()
+  const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!
+  expect(trigger?.disabled).toBe(false); expect(trigger.title).toContain('第 2 节')
+  trigger.click(); trigger.click(); expect(onChange).not.toHaveBeenCalled()
+  trigger.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-none"]')!.click(); expect(onChange).not.toHaveBeenCalled()
+  trigger.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-box"]')!.click()
+  expect(onChange).toHaveBeenCalledExactlyOnceWith({ pageBorder: true }); expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  expect(ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-custom"]')!.disabled).toBe(false)
+})
+
+it('opens the border settings dialog and applies per-side properties to the selected section scope', async () => {
+  const { ribbon, onPageBorderApply } = mount()
+  const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!
+  trigger.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-custom"]')!.click()
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="页面边框"]')!
+  expect(dialog).not.toBeNull()
+  dialog.querySelectorAll<HTMLButtonElement>('.pb-setting')[4]!.click()
+  dialog.querySelector<HTMLButtonElement>('.pb-side-top')!.click()
+  dialog.querySelector<HTMLButtonElement>('.pb-style[title="Double"]')!.click()
+  dialog.querySelector<HTMLSelectElement>('.pb-line select')!.value = '2.25'
+  dialog.querySelector<HTMLSelectElement>('.pb-line select')!.dispatchEvent(new Event('change', { bubbles: true }))
+  const color = dialog.querySelector<HTMLInputElement>('input[type="color"]')!
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(color, '#123456')
+  color.dispatchEvent(new Event('input', { bubbles: true }))
+  dialog.querySelector<HTMLSelectElement>('.pb-preview-col select')!.value = 'section:firstPage'
+  dialog.querySelector<HTMLSelectElement>('.pb-preview-col select')!.dispatchEvent(new Event('change', { bubbles: true }))
+  dialog.querySelector<HTMLButtonElement>('.modal-actions button[type="submit"]')!.click()
+  expect(onPageBorderApply).toHaveBeenCalledExactlyOnceWith({
+    offsetFrom: 'page', spacePt: 24, widthPt: 2.25, display: 'firstPage', color: '123456',
+    sides: { top: { val: 'double', widthPt: 2.25, spacePt: 24, color: '123456' } },
+  }, 'section', section.sectionId, section.expectedSectionSha256)
+  await vi.waitFor(() => expect(document.querySelector('[role="dialog"][aria-label="页面边框"]')).toBeNull())
+  expect(document.activeElement).toBe(trigger)
+})
+
+it('cancels border settings without staging a layout change', async () => {
+  const { ribbon, onPageBorderApply, onChange } = mount()
+  const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!
+  trigger.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-custom"]')!.click()
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="页面边框"]')!
+  dialog.querySelector<HTMLButtonElement>('.modal-actions button[type="button"]')!.click()
+  expect(onPageBorderApply).not.toHaveBeenCalled(); expect(onChange).not.toHaveBeenCalled()
+  await vi.waitFor(() => expect(document.activeElement).toBe(trigger))
+})
+it('can replace a custom source box with the default, clear it, and disables choices while readonly', () => {
+  const custom = { ...settings, pageBorder: true, pageBorderProps: { offsetFrom: 'text' as const, spacePt: 8, widthPt: 2, sides: { top: { val: 'double', widthPt: 2, spacePt: 8 } } } }
+  const { ribbon, onChange, editor } = mount(custom)
+  ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-box"]')!.click()
+  expect(onChange).toHaveBeenLastCalledWith({ pageBorder: true })
+  ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-none"]')!.click()
+  expect(onChange).toHaveBeenLastCalledWith({ pageBorder: false })
+  editor.setEditable(false); editor.emit('selectionUpdate', { editor, transaction: editor.state.tr })
+  expect(ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!.disabled).toBe(true)
+  expect(ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-box"]')!.disabled).toBe(true)
+})
+it('restores boolean page-border intent under the same section identity, rejecting richer or malformed input', () => {
+  const op = { kind: 'setSectionLayout', sectionId: section.sectionId, expectedSectionSha256: section.expectedSectionSha256, values: { pageBorder: true } }
+  expect(restoredDocxSectionOperation([op], section)).toEqual(op)
+  for (const values of [{ pageBorder: 'yes' }, { pageBorder: 1 }, { pageBorder: null }, { pageBorder: true, pageBorderProps: {} }]) expect(() => restoredDocxSectionOperation([{ ...op, values }], section)).toThrow()
+  expect(() => restoredDocxSectionOperation([{ ...op, sectionId: 'other' }], section)).toThrow('节身份')
+})
+it('removes custom properties only for the default-box intent while retaining other layout and source values', () => {
+  const custom = { ...settings, pageBorder: true, pageBorderProps: { offsetFrom: 'text' as const, spacePt: 8, widthPt: 2, sides: { top: { val: 'double', widthPt: 2, spacePt: 8 } } } }
+  expect(docxSectionSettingsWithPatch(custom, { marginLeft: 720 }).pageBorderProps).toEqual(custom.pageBorderProps)
+  const changed = docxSectionSettingsWithPatch(custom, { pageBorder: true, marginLeft: 720 })
+  expect(changed.pageBorderProps).toBeUndefined(); expect(changed.marginLeft).toBe(720); expect(custom.pageBorderProps).toBeDefined()
+  expect(docxDefaultPageBox(changed)).toBe(true)
+})
+it('recognises an imported default box and avoids adding same-value history', () => {
+  const standard = { ...settings, pageBorder: true, pageBorderProps: { offsetFrom: 'page' as const, spacePt: 24, widthPt: 0.5, sides: Object.fromEntries(['top', 'left', 'bottom', 'right'].map(name => [name, { val: 'single', widthPt: 0.5, spacePt: 24, color: 'auto' }])) } }
+  expect(docxDefaultPageBox(standard)).toBe(true)
+  const { ribbon, onChange } = mount(standard)
+  ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-box"]')!.click()
+  expect(onChange).not.toHaveBeenCalled()
 })

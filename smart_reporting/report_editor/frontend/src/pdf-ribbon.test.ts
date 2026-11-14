@@ -3,6 +3,20 @@ import { createPdfRibbon } from './pdf-ribbon'
 
 afterEach(() => document.body.replaceChildren())
 
+it('工具栏分组使用文档主标题下的二级标题',()=>{
+ const host=document.body.appendChild(document.createElement('main')),ribbon=createPdfRibbon(host),group=ribbon.group('home','AI')
+ expect(group.querySelector('h2')?.textContent).toBe('AI');expect(group.querySelector('h3')).toBeNull()
+})
+it.each(['composition','legacy','handled'])('工具栏标签保留受保护方向键：%s',protection=>{
+ const host=document.body.appendChild(document.createElement('main'));createPdfRibbon(host)
+ const home=host.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab=home]')!;home.focus()
+ for(const key of ['ArrowRight','ArrowLeft','Home','End']){
+  const event=new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,isComposing:protection==='composition',keyCode:protection==='legacy'?229:0});if(protection==='handled')event.preventDefault();home.dispatchEvent(event)
+  expect(home.getAttribute('aria-selected')).toBe('true');expect(document.activeElement).toBe(home);expect(event.defaultPrevented).toBe(protection==='handled')
+ }
+ home.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true,cancelable:true}));expect(host.querySelector('[data-pdf-ribbon-tab=annotate]')!.getAttribute('aria-selected')).toBe('true')
+})
+
 it('shows field design without exposing form filling on a source without fields',()=>{
  const root=document.createElement('main');document.body.append(root)
  const ribbon=createPdfRibbon(root)
@@ -38,7 +52,7 @@ it('groups commands under the selected GenOffice ribbon tab and disposes cleanly
 
   document.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab=page]')!.click()
   expect(button.closest('[data-pdf-ribbon-panel=page]')?.hasAttribute('hidden')).toBe(false)
-  expect(button.closest('.pdf-ribbon-group')?.querySelector('h3')?.textContent).toBe('Organize')
+  expect(button.closest('.pdf-ribbon-group')?.querySelector('h2')?.textContent).toBe('Organize')
   ribbon.dispose()
   expect(document.querySelector('.pdf-ribbon')).toBeNull()
 })
@@ -72,10 +86,10 @@ it('localizes the source ribbon tabs and group titles from the active document l
   const group = ribbon.group('page', 'Organize')
   ribbon.setLanguage('zh-CN')
   expect(document.querySelector('[data-pdf-ribbon-tab=home]')?.textContent).toBe('开始')
-  expect(group.querySelector('h3')?.textContent).toBe('页面组织')
+  expect(group.querySelector('h2')?.textContent).toBe('页面组织')
   ribbon.setLanguage('en-US')
   expect(document.querySelector('[data-pdf-ribbon-tab=home]')?.textContent).toBe('Home')
-  expect(group.querySelector('h3')?.textContent).toBe('Organize')
+  expect(group.querySelector('h2')?.textContent).toBe('Organize')
 })
 
 it('places AI first and conversion last in Home keyboard order', () => {

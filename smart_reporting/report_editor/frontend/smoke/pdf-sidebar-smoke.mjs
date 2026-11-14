@@ -5,6 +5,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets } from './pdf-object-dialog-checks.mjs'
+import { inspectPdfNavigation } from './pdf-navigation-checks.mjs'
+import { inspectPdfSidebarKeys } from './pdf-gesture-keyboard-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_SIDEBAR_SMOKE_PORT ?? 4211), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -20,6 +23,10 @@ if p['mode']=='create':
  w=PdfWriter(clone_from=PdfReader(BytesIO(size_fixture())))
  for i in range(27):w.add_blank_page(400,500)
  w.add_outline_item('Second page',1)
+ if p.get('navigation'):
+  parent=w.add_outline_item('章节导航 '+ '很长的目录标题'.__mul__(6),0)
+  for i in range(12):parent=w.add_outline_item('子章节 '+str(i+1)+' · '+'完整目录标题'.__mul__(4),i+2,parent=parent)
+  w.add_metadata({'/Title':'桌面属性与导航核验 · '+'长标题'.__mul__(40),'/Author':'导航测试作者','/Subject':'长属性不裁切','/Keywords':'PC,PDF,导航'})
  out=BytesIO();w.write(out);b=out.getvalue();print(json.dumps({'bytes':base64.b64encode(b).decode(),'model':inspect_pdf(b)}))
 elif p['mode']=='inspect':print(json.dumps(inspect_pdf(base64.b64decode(p['bytes']))))
 elif p['mode']=='patch':
@@ -28,13 +35,14 @@ elif p['mode']=='patch':
   if (result.status !== 0) throw Error(result.stderr)
   return JSON.parse(result.stdout)
 }
-const fixture = python({ mode: 'create' }), source = Buffer.from(fixture.bytes, 'base64'), revisions = new Map([[1, source], [2, source]])
+const fixture = python({ mode: 'create', navigation:!!process.env.PDF_NAVIGATION_VIEWPORTS }), source = Buffer.from(fixture.bytes, 'base64'), revisions = new Map([[1, source], [2, source]])
 let browser, readonly = false, savedOperations, previewBytes
-const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+const server = spawn('./node_modules/.bin/vite', ['preview', ...(process.env.PDF_SMOKE_VITE_CONFIG?['--config',process.env.PDF_SMOKE_VITE_CONFIG]:[]), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: '/usr/bin/chromium' })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE?{executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE}:{}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor:2, acceptDownloads: true }), errors = []
+  const builtAssets=await observePdfBuiltAssets(page),navigationLayouts=[]
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   await page.addInitScript(() => {
     const get=Storage.prototype.getItem,set=Storage.prototype.setItem,key='genoffice-pdf-sidebar-width'
@@ -68,7 +76,10 @@ try {
   const waitRaster=w=>page.waitForFunction(w=>{const c=document.querySelector('.pdf-thumbnail canvas');return c&&Math.abs(c.width-w)<2},w)
   const begin=async()=>{const b=await divider.boundingBox();await page.mouse.move(b.x+b.width/2,b.y+80);await page.mouse.down();return {x:b.x+b.width/2,y:b.y+80}}
   const fit=async()=>page.waitForFunction(()=>{const v=document.querySelector('.pdf-document-pages');if(!v)return false;const s=getComputedStyle(v),w=v.clientWidth-parseFloat(s.paddingLeft)-parseFloat(s.paddingRight),rows=[...v.querySelectorAll('.pdf-page-row')];const max=Math.max(...rows.map(r=>r.getBoundingClientRect().width));return max<=w+1&&Math.abs(max-w)<1.5})
-  await open(1);assert.equal(await paneWidth(),150);assert.equal(await divider.getAttribute('aria-valuemin'),'120');assert.equal(await divider.getAttribute('aria-valuemax'),'320')
+  await open(1)
+  const gestureKeyboard=process.env.PDF_GESTURE_KEYBOARD==='1'?await inspectPdfSidebarKeys(page,{operations:ops,directory:process.env.PDF_SIDEBAR_EVIDENCE_DIR}):[]
+  if(process.env.PDF_NAVIGATION_VIEWPORTS){navigationLayouts.push(...await inspectPdfNavigation(page,{operations:ops,directory:process.env.PDF_SIDEBAR_EVIDENCE_DIR,phase:'editable',fileSize:source.length}));await open(1)}
+  assert.equal(await paneWidth(),150);assert.equal(await divider.getAttribute('aria-valuemin'),'120');assert.equal(await divider.getAttribute('aria-valuemax'),'320')
   assert.equal(await thumbs.locator('canvas').last().evaluate(c=>c.width),1)
   const lazyInitial=await thumbs.locator('canvas').evaluateAll(nodes=>({total:nodes.length,rasterized:nodes.filter(n=>n.width>1).length}));assert.ok(lazyInitial.rasterized<15)
   await page.evaluate(()=>{window.__firstSidebarThumb=document.querySelector('.pdf-thumbnail canvas');document.body.style.cursor='crosshair';document.body.style.userSelect='text'})
@@ -103,11 +114,12 @@ try {
   await page.getByRole('button',{name:'返回原稿编辑',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.native-pdf-editor')?.dataset.pdfPreview==='false'&&document.querySelectorAll('.pdf-page').length===29);await page.waitForFunction(()=>document.querySelector('.pdf-thumbnail canvas')?.width>1);assert.deepEqual(await ops(),beforePreview)
   const downloaded=Buffer.from(await page.evaluate(async()=>[...new Uint8Array(await(await fetch('/reports/v1/native/sidebar-fixture/1/api/file')).arrayBuffer())]));assert.deepEqual(downloaded,source)
   readonly=true;await open(2);await waitWidth(250);await divider.focus();await divider.press('ArrowRight');await waitWidth(260)
+  if(process.env.PDF_NAVIGATION_VIEWPORTS){navigationLayouts.push(...await inspectPdfNavigation(page,{operations:ops,directory:process.env.PDF_SIDEBAR_EVIDENCE_DIR,phase:'readonly',fileSize:source.length}));await open(2);await waitWidth(260)}
   await page.evaluate(()=>localStorage.setItem('genoffice-pdf-sidebar-width','not-a-number'));await page.reload();await page.waitForFunction(()=>document.querySelectorAll('.pdf-page').length===30);await waitWidth(150)
   await page.evaluate(()=>sessionStorage.setItem('block-sidebar','yes'));await page.reload();await page.waitForFunction(()=>document.querySelectorAll('.pdf-page').length===30);await waitWidth(150);await divider.focus();await divider.press('ArrowRight');await waitWidth(160);assert.equal(await pref(),'not-a-number')
   assert.ok(await page.evaluate(()=>Object.entries(localStorage).filter(([k])=>k.startsWith('native-editor-draft')).map(([,v])=>JSON.parse(v)).filter(d=>d.identity.revision===2).every(d=>d.operations.length===0)))
   await page.evaluate(()=>{document.body.style.cursor='help';document.body.style.userSelect='text'});const closing=await begin();await page.mouse.move(closing.x+20,closing.y);await frames();await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));await page.mouse.up();await frames();assert.equal(await page.locator('.pdf-page').count(),0);assert.equal(await page.evaluate(()=>document.body.style.cursor),'help');assert.equal(await page.evaluate(()=>document.body.style.userSelect),'text');assert.deepEqual(errors,[])
-  const evidence={ok:true,browserVersion:browser.version(),sourceSha256:sha(source),downloadedSha256:sha(downloaded),previewSha256:sha(previewBytes),initialWidth:150,committedWidth:260,initialRaster,committedRaster,lazyInitial,dragDoesNotReraster:true,cancelPointerEscapeBlurAndSwitch:true,keyboardAndBounds:true,mobileClampDoesNotPersist:true,readonlyCorruptAndDeniedStorage:true,documentCachesIsolated:true,offscreenAndDeletedBitmapsReleased:true,activeDragDisposeRestoresStyles:true,operations:beforePreview[0],provenance:'production static UI; actual PDF.js/packed engine; real mouse/keyboard and pointer cancellation; substituted auth/revision routes; no desktop/production claim'}
+  const evidence={ok:true,gestureKeyboard,browserVersion:browser.version(),sourceSha256:sha(source),downloadedSha256:sha(downloaded),previewSha256:sha(previewBytes),initialWidth:150,committedWidth:260,initialRaster,committedRaster,lazyInitial,dragDoesNotReraster:true,cancelPointerEscapeBlurAndSwitch:true,keyboardAndBounds:true,mobileClampDoesNotPersist:true,readonlyCorruptAndDeniedStorage:true,documentCachesIsolated:true,offscreenAndDeletedBitmapsReleased:true,activeDragDisposeRestoresStyles:true,operations:beforePreview[0],navigationLayouts,...await builtAssets(),provenance:'production static UI; actual PDF.js/packed engine; real mouse/keyboard and pointer cancellation; substituted auth/revision routes; no desktop/production claim'}
   const dir=process.env.PDF_SIDEBAR_EVIDENCE_DIR;if(dir){await mkdir(dir,{recursive:true});await writeFile(`${dir}/source.pdf`,source);await writeFile(`${dir}/preview.pdf`,previewBytes);await writeFile(`${dir}/downloaded.pdf`,downloaded);await writeFile(`${dir}/evidence.json`,JSON.stringify(evidence,null,2))}
   console.log(JSON.stringify(evidence))
 } catch(error){const dir=process.env.PDF_SIDEBAR_EVIDENCE_DIR;if(dir&&browser){await mkdir(dir,{recursive:true});const page=browser.contexts()[0]?.pages()[0];if(page){await writeFile(`${dir}/failure.json`,JSON.stringify({error:String(error),state:await page.evaluate(()=>({text:document.body.innerText,pref:window.__rawSidebar?.(),sidebar:[...document.querySelectorAll('.pdf-layout>nav,.pdf-layout>aside')].map(p=>({hidden:p.hidden,width:p.getBoundingClientRect().width})),storage:{...localStorage}}))},null,2));await page.screenshot({path:`${dir}/failure.png`,fullPage:true})}};throw error

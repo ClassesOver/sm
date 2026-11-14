@@ -22,6 +22,20 @@ function fixture(operations:NativeOperation[]) {
  return {host,svg,controller,commit,error,disable(){enabled=false;controller.sync()},stale(){unchanged=false;controller.sync()}}
 }
 function pointer(target:Element,type:string,x=70,y=380,id=1) {const e=new MouseEvent(type,{bubbles:true,cancelable:true,button:0,clientX:x,clientY:y});Object.defineProperties(e,{pointerId:{value:id},isPrimary:{value:true}});target.dispatchEvent(e)}
+it.each(['composing','legacy229','consumed'] as const)('keeps the active drawing drag after %s Escape and commits once on release',mode=>{
+ const input=[shapes[0]!],original=structuredClone(input),f=fixture(input),target=f.host.querySelector('[data-pdf-shape-hit]')!,control=document.createElement('input');document.body.append(control)
+ if(mode==='consumed')control.addEventListener('keydown',event=>event.preventDefault())
+ pointer(target,'pointerdown');pointer(f.svg,'pointermove',80,390)
+ control.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true,isComposing:mode==='composing',keyCode:mode==='legacy229'?229:27}))
+ pointer(f.svg,'pointerup',80,390)
+ expect(f.commit).toHaveBeenCalledTimes(1);expect(f.commit.mock.calls[0]![0][0].rect).toEqual([70,90,170,170]);expect(input).toEqual(original)
+})
+it('ordinary Escape restores drawing geometry and prevents a release from committing',()=>{
+ const f=fixture([shapes[0]!]),target=f.host.querySelector('[data-pdf-shape-hit]')!
+ pointer(target,'pointerdown');pointer(f.svg,'pointermove',80,390)
+ document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));pointer(f.svg,'pointerup',80,390)
+ expect(f.commit).not.toHaveBeenCalled();expect(f.host.querySelector('[data-pdf-drawing="rect"]')?.getAttribute('x')).toBe('50')
+})
 it.each(shapes.map(shape=>[String(shape.shape),shape] as const))('moves exact %s record once, cancels stale updates and never mutates during live',(_name,shape)=>{
  const input=[shape,shape],original=structuredClone(input),f=fixture(input),g=f.host.querySelector('[data-pdf-shape-index="1"]')!
  pointer(g.querySelector('[data-pdf-shape-hit]')!,'pointerdown');pointer(f.svg,'pointermove',80,390)

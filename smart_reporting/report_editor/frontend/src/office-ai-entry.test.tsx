@@ -30,7 +30,7 @@ it('XLSX 助手位于开始首组，切换标签、无选区和只读刷新后�
   const ribbon = mountWorkbookRibbon(host, vi.fn(), { rotation: () => undefined, editable: () => false, onAssistant: open })
   const check = () => {
     const group = host.querySelector('.workbook-ribbon-body > section')!
-    expect(group.querySelector('h3')?.textContent).toBe('AI 助手')
+    expect(group.querySelector('h2')?.textContent).toBe('AI 助手')
     group.querySelector<HTMLButtonElement>('button')!.click()
   }
   check()
@@ -45,7 +45,7 @@ it('PPTX 助手位于开始首组，编辑锁不阻断阅读入口', () => {
   const host = document.body.appendChild(document.createElement('div')), open = vi.fn()
   const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn(), onAssistant: open })
   const first = host.querySelector('[data-ribbon-panel=home] > section')!
-  expect(first.querySelector('h3')?.textContent).toBe('AI 助手')
+  expect(first.querySelector('h2')?.textContent).toBe('AI 助手')
   ribbon.setLocked(true)
   first.querySelector<HTMLButtonElement>('button')!.click()
   expect(open).toHaveBeenCalledOnce()

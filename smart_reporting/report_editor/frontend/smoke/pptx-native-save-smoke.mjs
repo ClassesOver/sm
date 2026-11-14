@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
 import { verifyBrowserTextInput } from './browser-input-preflight.mjs'
+import { animationLongName, inspectPptxAnimationLayout } from './office-pptx-animation-layout.mjs'
 
 const frontend = process.cwd()
 const repo = new URL('../../../', `file://${frontend}/`).pathname
@@ -38,6 +39,12 @@ if payload['mode'] == 'create':
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     shape = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1))
     shape.text = 'Native browser formatting fixture'
+    if payload.get('animationLongName'): shape.name = payload['animationLongName']
+    if payload.get('simpleShapeStyle'):
+        # 正向轮廓编辑要求来源具有明确的简单实线，继承缺省来源按产品契约保持只读。
+        from pptx.dml.color import RGBColor
+        shape.line.color.rgb = RGBColor(0, 0, 0)
+        shape.line.width = Pt(1)
     if payload.get('spacingSample'):
         p = shape.text_frame.paragraphs[0]; p.line_spacing = 1.0; p.space_before = Pt(0); p.space_after = Pt(6); p.alignment = PP_ALIGN.LEFT
         p._p.get_or_add_pPr().set('rtl', '1')
@@ -110,7 +117,7 @@ elif payload['mode'] == 'patch':
   return result.stdout.trim()
 }
 
-const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists', 'animation-pane'].includes(smokeMode), animatedSample: smokeMode === 'animation-pane', listsSample: smokeMode === 'paragraph-lists', extraSlide: ['new-slide', 'hidden-slides'].includes(smokeMode), hiddenSample: smokeMode === 'hidden-slides' }), 'base64')
+const sourceBytes = Buffer.from(runPython({ mode: 'create', spacingSample: ['paragraph-spacing', 'paragraph-lists', 'animation-pane'].includes(smokeMode), animatedSample: smokeMode === 'animation-pane', animationLongName: process.env.PPTX_ANIMATION_LAYOUT_VIEWPORTS ? animationLongName : undefined, listsSample: smokeMode === 'paragraph-lists', extraSlide: ['new-slide', 'hidden-slides'].includes(smokeMode), simpleShapeStyle: smokeMode === 'new-slide', hiddenSample: smokeMode === 'hidden-slides' }), 'base64')
 const sourceIdentity = createHash('sha256').update(sourceBytes).digest('hex')
 const sourceSha = sourceIdentity
 let activeBytes = sourceBytes
@@ -126,6 +133,10 @@ print(json.dumps(model))
   if (result.status !== 0) throw new Error(result.stderr)
   return JSON.parse(result.stdout)
 })()
+if (smokeMode === 'new-slide') {
+  const styledSource = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
+  assert.deepEqual(styledSource.brushSource.shape.stroke, { color: '#000000', widthPt: 1 }, 'positive outline fixture must expose a proven simple source stroke')
+}
 let savedBytes
 let savePayload
 let saveReceipt
@@ -142,6 +153,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true })
   const pageErrors = []
   const failedResponses = []
+  let animationLayout
   const runtimeJavaScript = new Map(), runtimeIdentityReads = []
   page.on('response', response => {
     const path = new URL(response.url()).pathname
@@ -334,7 +346,7 @@ try {
     await layoutPicker.selectOption(titleLayout.path)
     await page.waitForFunction(() => document.querySelectorAll('.slide-row').length === 4)
     assert.equal(await layoutPicker.inputValue(), '')
-    assert.equal(await page.locator('.slide-row').nth(3).locator('.slide-title').textContent(), '新建幻灯片 · Title Slide（保存后写入）')
+    assert.equal(await page.locator('.slide-row').nth(3).locator('.slide-title').textContent(), '新建幻灯片 · 标题幻灯片（保存后写入）')
     // 重置版式（固定源 onResetLayout）：作用于来源页，进入待保存清单。
     await page.locator('.slide-row').filter({ hasText: 'Native browser' }).first().locator('.slide-open').click()
     await page.locator('[data-command="resetLayout"][data-source-action="onResetLayout"]').click()
@@ -425,6 +437,7 @@ try {
     await page.locator('[data-command="animationDelay"]').fill('300')
     await page.locator('[data-command="addAnimation"][data-source-action="onAddAnimation"]').click()
   } else if (smokeMode === 'animation-pane') {
+    if (process.env.PPTX_ANIMATION_LAYOUT_VIEWPORTS) animationLayout = await inspectPptxAnimationLayout(page, { output: resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR), viewports: process.env.PPTX_ANIMATION_LAYOUT_VIEWPORTS })
     // 固定源动画窗格 / 无 / 按段 / 动作路径：全部写入同一份整页动画序列。
     const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
@@ -548,10 +561,10 @@ try {
     await page.locator('[data-ribbon-tab="design"]').click()
     if (smokeMode === 'slide-size-custom') {
       await page.locator('[data-command="customSlideSize"]').click()
-      await page.getByLabel('Slide Width', { exact: true }).fill('25')
-      await page.getByLabel('Slide Height', { exact: true }).fill('20')
-      assert.equal(await page.getByLabel('Slide Width', { exact: true }).inputValue(), '25')
-      assert.equal(await page.getByLabel('Slide Height', { exact: true }).inputValue(), '20')
+      await page.getByLabel('幻灯片宽度', { exact: true }).fill('25')
+      await page.getByLabel('幻灯片高度', { exact: true }).fill('20')
+      assert.equal(await page.getByLabel('幻灯片宽度', { exact: true }).inputValue(), '25')
+      assert.equal(await page.getByLabel('幻灯片高度', { exact: true }).inputValue(), '20')
       await page.locator('[data-command="applyCustomSlideSize"]').click()
       await page.locator('[data-command="slideOrientation"]').selectOption('portrait')
       await page.locator('[data-command="slideOrientation"]').selectOption('landscape')
@@ -852,7 +865,7 @@ try {
   const receipt = { ok: true, inputBaseline, mode: smokeMode, manifestSha256, runtimeJavaScript: [...runtimeJavaScript.values()].sort((a, b) => a.path.localeCompare(b.path)), ribbonAudit,
     ...(smokeMode === 'native-ai' ? { planner: 'deterministic-route-fixture', engine: 'real-pptx-preview-and-save', aiAccepts, cancelledRequestCount: cancelledRequests.size } : {}), revision: reopened.revision, originalSha256: sourceIdentity,
     downloadedSha256: reopened.sha256, ...(smokeMode === 'hidden-slides' ? { hiddenSlides: operation.hiddenSlides, order: operation.order, pythonPptxHidden: reopened.pythonPptxHidden } : {}), size: reopened.size, transitions: reopened.slides[0].transition,
-    animations: reopened.slides[0].animations, operationKinds: savePayload.operations.map(item => item.kind),
+    animations: reopened.slides[0].animations, operationKinds: savePayload.operations.map(item => item.kind), animationLayout,
     ...(['paragraph-spacing', 'paragraph-lists'].includes(smokeMode) ? { listVariant: smokeMode === 'paragraph-lists' ? listVariant : undefined, paragraphs: reopened.pythonPptxParagraphs.map(shape => shape.paragraphs) } : {}),
   }
   if (process.env.PPTX_SMOKE_EVIDENCE_DIR) {

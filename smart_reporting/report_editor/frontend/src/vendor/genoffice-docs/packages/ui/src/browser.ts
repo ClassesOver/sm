@@ -2,3 +2,4 @@
 export { shapeClipCss } from './shape-gallery'
 export { WORDART_PRESETS, wordArtStrokePx } from './wordart-presets'
 export { BUILTIN_FONT_FAMILIES, fontFamiliesFor, partitionFontFamilies, systemFamiliesBesidesCandidates } from './font-list'
+export { Dropdown, type DropdownOption } from './dropdown'

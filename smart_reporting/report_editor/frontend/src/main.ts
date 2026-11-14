@@ -42,6 +42,7 @@ import {
 } from 'lucide'
 
 import { ReportEditorApiError, ReportEditorClient } from './api'
+import { configureExportButtons, exportLabels, exportOutcome, type ExportFormat } from './delivery-format'
 import { configureSelectionAISuggestions, selectionAIProvider } from './ai'
 import { runInBackground } from './background'
 import {
@@ -273,6 +274,7 @@ let captureEvidenceEditor = () => {}
 let restoreEvidenceEditor = () => shell.editor.focus({ preventScroll: true })
 let focusEvidenceTarget = (_target: HTMLElement) => shell.editor.focus({ preventScroll: true })
 let evidenceLocateIntent = 0
+let saveEvidenceMarkdown: (() => Promise<string>) | null = null
 // 证据浏览器在后台预加载，不阻塞编辑器首屏；加载完成前的调用按顺序排队，
 // isOpen 在加载前恒为 false（浏览器尚未打开）。
 type EvidenceBrowser = ReturnType<typeof import('./evidence-browser').createEvidenceBrowser>
@@ -350,6 +352,10 @@ const evidenceBrowserReady: Promise<EvidenceBrowser> = import('./evidence-browse
     })
   },
   getDraft: () => ({ markdown: getEditorMarkdown(), sha256 }),
+  saveMarkdown: async () => {
+    if (!saveEvidenceMarkdown) throw new Error('编辑器尚未完成载入')
+    return saveEvidenceMarkdown()
+  },
   downloadTraceList: async () => {
     const markdown = getEditorMarkdown()
     const [sources, { buildTraceListCsv, downloadTraceList }] = await Promise.all([loadBodyCatalog(), import('./trace-list')])
@@ -488,6 +494,7 @@ function errorStatusLabel(error: unknown): string {
 
 try {
   const documentState = await client.load()
+  const primaryExportFormat = configureExportButtons(shell.exportPdf, shell.exportWord, documentState.deliveryFormat)
   if (documentState.nativeFormats?.length) {
     const { attachNativeLaunchActions } = await import('./native-launcher')
     const actions = root.querySelector<HTMLElement>('.toolbar-group-output')
@@ -953,6 +960,8 @@ try {
     if (getEditorMarkdown() !== lastSavedMarkdown) return saveNow()
   }
 
+  saveEvidenceMarkdown = async () => { await saveNow(); return sha256 }
+
   const networkLabel = root.querySelector<HTMLElement>('.network-status')
   if (networkLabel) {
     createNetworkStatusController(networkLabel, () => {
@@ -987,8 +996,8 @@ try {
     }
   }
 
-  async function exportFormat(format: 'pdf' | 'word') {
-    const formatLabel = format === 'pdf' ? 'PDF' : 'Word'
+  async function exportFormat(format: ExportFormat) {
+    const formatLabel = exportLabels[format]
     const exportStartedAt = performance.now()
     setActionsDisabled(true)
     status(`准备导出 ${formatLabel}`, 'busy')
@@ -1019,9 +1028,9 @@ try {
         format,
       })
       // 验收失败仍签发下载（AGENTS），但状态必须如实提示，不能显示为完成通过。
-      if (result.validation?.ok === false) status(`${formatLabel} 已生成 · 验收未通过`, 'error')
-      else status(`${formatLabel} 导出完成`)
-      exportPanel.show(result, format)
+      const outcome = exportOutcome(result, documentState.deliveryFormat, format)
+      status(outcome.title, outcome.failed ? 'error' : undefined)
+      exportPanel.show(result, format, documentState.deliveryFormat)
     } catch (error) {
       void telemetry.record({
         event: 'export_failed',
@@ -1037,11 +1046,11 @@ try {
   }
 
   shell.save.addEventListener('click', saveInBackground)
-  shell.exportPdf.addEventListener('click', () => void exportFormat('pdf'))
+  shell.exportPdf.addEventListener('click', () => void exportFormat(primaryExportFormat))
   shell.exportWord.addEventListener('click', () => void exportFormat('word'))
   installEditorShortcuts({
     save: saveInBackground,
-    exportPdf: () => void exportFormat('pdf'),
+    exportPdf: () => void exportFormat(primaryExportFormat),
     // 与按钮禁用状态一致：导出/恢复进行中再按快捷键会并发第二个任务，其失败的 finally
     // 会提前撤掉阻塞遮罩并重新启用按钮。
     isBlocked: () => shell.exportPdf.disabled,

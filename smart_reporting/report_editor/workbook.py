@@ -29,8 +29,9 @@ class ReportWorkbookEditorService:
     def __init__(
         self, *, state_repository: Any, workspace_registry: Any, workspace: Any,
         editor_grants: Any = None, artifact_persistence: Any = None,
-        download_grants: Any = None, public_base_url: str = "",
+        download_grants: Any = None, public_base_url: str = "", report_editor: Any = None,
     ) -> None:
+        self.report_editor = report_editor
         self.state_repository = state_repository
         self.workspace_registry = workspace_registry
         self.workspace = workspace
@@ -41,6 +42,9 @@ class ReportWorkbookEditorService:
 
     async def context_for_session(self, session: ReportEditorSession) -> ReportEditorContext:
         return await self._context_for_capability(session, "xlsx_editor")
+
+    async def refresh_context_for_session(self, session: ReportEditorSession) -> ReportEditorContext:
+        return await self._context_for_capability(session, "xlsx_editor", verify_file=False)
 
     async def download_for_session(self, session: ReportEditorSession) -> tuple[ReportEditorContext, bytes]:
         context = await self._context_for_capability(session, "xlsx_download", verify_file=False)
@@ -159,6 +163,10 @@ class ReportWorkbookEditorService:
             logger.warning("report_workbook_validation_failed error_type={}", type(error).__name__)
             issues.append({"code": "workbook_read_validation_failed", "message": "XLSX 已保存，工作簿可读性验收失败。"})
         job = deepcopy(context.job)
+        from .office_refresh import saved_source_pointer
+        pointer = await saved_source_pointer(self, context, issues)
+        if pointer is not None:
+            job['officeRefreshSource'] = pointer
         sources = deepcopy(job.get("workbookSources", embedded_sources.get("sources", {}) if isinstance(embedded_sources, dict) else []))
         if operations:
             issues.append({"code": "workbook_sources_need_verification", "message": "编辑值与原始证据分开保留，来源关联需重新核验。"})
@@ -200,6 +208,7 @@ class ReportWorkbookEditorService:
             reportId=context.report_id, revision=revision, jobId=context.job_id,
             analysisContextFile=context.analysis_context_file,
             workflowRunId=context.workflow_run_id, markdownPath=context.markdown_path,
+            artifactManifest=context.artifact_manifest,
             job=job, scope=context.scope, source="manual", createdAt=datetime.now(UTC),
             note="工作簿编辑", deliveryFormat="xlsx", xlsxPath=revised_path,
             xlsxSize=len(revised), xlsxSha256=digest,

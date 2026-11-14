@@ -1,3 +1,8 @@
+import type {PdfDigitalSignatureModel} from './pdf-digital-signatures'
+import {validatePdfStaticFill,type PdfStaticFill} from './pdf-static-fill'
+import {validatePdfMetadata} from './pdf-metadata'
+import {validatePdfBates} from './pdf-bates'
+import {validatePdfOutlineOperations,type PdfOutlineModel} from './pdf-outline-edit'
 import {validatePdfFormTextProperties} from './pdf-form-text-properties'
 import {validatePdfRadioExtension} from './pdf-form-radio-extension'
 import {validatePdfStyledReplacement} from './pdf-replace-text-style'
@@ -29,20 +34,24 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
   return result
 }
 export interface PdfBox { x: number; y: number; width: number; height: number }
-export interface PdfPageIdentity { pageId: string; index: number; blank?: boolean; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean; drawings?: SavedPdfDrawing[]; drawingsReadSafe?: boolean }
+export interface PdfPageIdentity { pageId: string; index: number; blank?: boolean; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; userUnit?:number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean; drawings?: SavedPdfDrawing[]; drawingsReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel extends PdfAttachmentModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; formFields?: PdfFormField[]; existingImages?:PdfExistingImage[]; formDesignWidgets?:PdfDesignWidget[]; capabilities?: { editFormTextProperties?:boolean; editFormTextPropertiesReason?:string|null; appendRadioWidget?:boolean; appendRadioWidgetReason?:string|null; createFormField?:boolean; createFormFieldReason?:string|null; editFormFieldRequired?:boolean; editFormWidget?:boolean; editFormWidgetReason?:string|null; arrangeFormWidgets?:boolean; arrangeFormWidgetsReason?:string|null; editExistingImage?:boolean; editExistingImageReason?:string|null; protectPdf?: boolean; insertText?: boolean; insertTextReason?: string | null; removeFormWidget?:boolean; cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; removeDrawing?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel extends PdfAttachmentModel, PdfOutlineModel, PdfDigitalSignatureModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; staticFormFills?:PdfStaticFill[]; formFields?: PdfFormField[]; existingImages?:PdfExistingImage[]; formDesignWidgets?:PdfDesignWidget[]; capabilities?: { staticFill?:boolean;staticFillReason?:string|null;editMetadata?:boolean;editMetadataReason?:string|null;bates?:boolean;batesReason?:string|null;editFormTextProperties?:boolean; editFormTextPropertiesReason?:string|null; appendRadioWidget?:boolean; appendRadioWidgetReason?:string|null; createFormField?:boolean; createFormFieldReason?:string|null; editFormFieldRequired?:boolean; editFormWidget?:boolean; editFormWidgetReason?:string|null; arrangeFormWidgets?:boolean; arrangeFormWidgetsReason?:string|null; editExistingImage?:boolean; editExistingImageReason?:string|null; protectPdf?: boolean; insertText?: boolean; insertTextReason?: string | null; removeFormWidget?:boolean; cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; removeDrawing?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
 /** 所有操作引用不可变来源索引；排序后的页面位置永远不能当作来源身份。 */
 export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperation[]): PdfPageIdentity[] {
+  validatePdfStaticFill(pages,operations)
+  validatePdfMetadata(operations,pages[0]?.pageId.match(/^sha256:([a-f0-9]{64}):page:/)?.[1]??'')
+  validatePdfBates(pages,operations)
+  validatePdfOutlineOperations(pages,operations)
   validatePdfFormCreation(operations)
   validatePdfRadioExtension(operations)
   validatePdfFormTextProperties(operations)
   validatePdfStyledReplacement(pages,operations)
   validatePdfExistingImage(pages,operations)
-  if(operations.some(op=>['createFormField','editFormFieldRequired','editFormWidget','arrangeFormWidgets','appendRadioWidget','editFormTextProperties','transformExistingImage'].includes(op.kind)))return pages.map(page=>({...page}))
+  if(operations.some(op=>['createFormField','editFormFieldRequired','editFormWidget','editFormWidgetRects','arrangeFormWidgets','appendRadioWidget','editFormTextProperties','transformExistingImage'].includes(op.kind)))return pages.map(page=>({...page}))
   validatePdfStaticText(pages, operations)
   if (operations.some(operation => operation.kind === 'insertText')) return pages.map(page => ({ ...page }))
   validatePdfFormWidgetRemoval(operations)
@@ -80,10 +89,11 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       order = operation.pageIds as string[]
       continue
     }
-    if (['setFormValue', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(operation.kind)) continue
+    if (['setMetadata', 'addBates', 'setOutline', 'setFormValue', 'setPageSize', 'addAttachment', 'removeAttachment', 'replyNote', 'replyPendingNote'].includes(operation.kind)) continue
     const page = byId.get(String(operation.pageId))
     if (!page) throw new Error('页面身份已过期，请重新打开文件')
     if (page.blank && operation.kind !== 'rotatePage') throw new Error(PDF_BLANK_PAGE_EDIT_REASON)
+    if(operation.kind==='setStaticFill'||operation.kind==='removeStaticFill'){if(deleted.has(page.pageId))throw Error('静态填写不能引用已删除页面');continue}
     if (operation.kind === 'deletePage') deleted.add(page.pageId)
     else if (operation.kind === 'rotatePage') {
       if (![90, 180, 270].includes(Number(operation.delta))) throw new Error('页面旋转无效')
@@ -368,6 +378,14 @@ export function movePdfPage(pages: PdfPageIdentity[], operations: NativeOperatio
   ;[order[index], order[destination]] = [order[destination], order[index]]
   return validated(pages, withOrder(operations, order))
 }
+export function movePdfPageTo(pages: PdfPageIdentity[], operations: NativeOperation[], pageId: string, targetPageId: string): NativeOperation[] {
+  const order = pdfPageState(pages, operations).map(page => page.pageId)
+  const from = order.indexOf(pageId), target = order.indexOf(targetPageId)
+  if (from < 0 || target < 0 || from === target) return structuredClone(operations)
+  order.splice(from, 1)
+  order.splice(target, 0, pageId)
+  return validated(pages, withOrder(operations, order))
+}
 export function reversePdfPages(pages: PdfPageIdentity[], operations: NativeOperation[]): NativeOperation[] {
   const order = pdfPageState(pages, operations).map(page => page.pageId)
   if (order.length <= 1) return structuredClone(operations)
@@ -385,7 +403,11 @@ export function deletePdfPage(pages: PdfPageIdentity[], operations: NativeOperat
   if (order.length === 1) throw new Error('不能删除全部页面')
   // 删除同时丢弃该页未保存的标注/旋转；撤销会恢复完整前一个操作快照。
   // 未保存的空白页没有来源页：删除即撤回插入本身，不产生 deletePage。
-  const kept = operations.filter(operation => operation.pageId !== pageId)
+  const kept = operations.filter(operation => operation.pageId !== pageId).flatMap(operation=>{
+    if(!isPdfBlankPageId(pageId)||operation.kind!=='addBates')return [operation]
+    const entries=(operation.entries as {pageId:string}[]).filter(entry=>entry.pageId!==pageId)
+    return entries.length?[{...operation,entries}]:[]
+  })
   return validated(pages, withOrder(isPdfBlankPageId(pageId) ? kept : [...kept, { kind: 'deletePage', pageId }], order.filter(id => id !== pageId)))
 }
 
@@ -442,6 +464,24 @@ export function pdfRectFromClient(viewport: PdfViewportInverse, bounds: { left: 
   if (!result.every(Number.isFinite) || result[2] - result[0] < .5 || result[3] - result[1] < .5) throw new Error('请选择页面内的有效范围')
   return result
 }
+/** 固定源 SignDropOverlay：图片点击后按像素/页面比例放置，中心定位并裁在当前页面内。 */
+export function pdfImagePlacementRect(viewport: PdfViewportInverse, crop: PdfBox, image: { width: number; height: number }, scale: number, client: readonly number[], bounds: { left: number; top: number }, placement: 'image' | 'signature' = 'image'): PdfRect {
+  if (![image.width, image.height, scale, ...client, bounds.left, bounds.top].every(Number.isFinite) || image.width < 1 || image.height < 1 || scale <= 0 || client.length !== 2) throw new Error('图像放置尺寸无效')
+  const factor = placement === 'signature'
+    ? Math.min(viewport.width / scale / 3 / image.width, viewport.height / scale / 6 / image.height)
+    : Math.min(viewport.width / scale / 2 / image.width, viewport.height / scale / 2 / image.height, 0.75)
+  const width = image.width * factor * scale, height = image.height * factor * scale
+  const left = Math.min(Math.max(client[0]! - bounds.left - width / 2, 0), Math.max(viewport.width - width, 0))
+  const top = Math.min(Math.max(client[1]! - bounds.top - height / 2, 0), Math.max(viewport.height - height, 0))
+  const corners = [viewport.convertToPdfPoint(left, top), viewport.convertToPdfPoint(left + width, top + height)]
+  const rect: PdfRect = [Math.max(crop.x, Math.min(corners[0]![0]!, corners[1]![0]!)), Math.max(crop.y, Math.min(corners[0]![1]!, corners[1]![1]!)), Math.min(crop.x + crop.width, Math.max(corners[0]![0]!, corners[1]![0]!)), Math.min(crop.y + crop.height, Math.max(corners[0]![1]!, corners[1]![1]!))]
+  if (!rect.every(Number.isFinite) || rect[2] - rect[0] < 1 || rect[3] - rect[1] < 1) throw new Error('图像放置范围太小或超出页面')
+  return rect.map(value => Math.round(value * 100) / 100) as PdfRect
+}
+export function pdfImagePlacementOperation(pageId: string, viewport: PdfViewportInverse, crop: PdfBox, size: { width: number; height: number }, scale: number, client: readonly number[], bounds: { left: number; top: number }, image: string, color: [number, number, number], placement: 'image' | 'signature' = 'image'): NativeOperation {
+  const rect = pdfImagePlacementRect(viewport, crop, size, scale, client, bounds, placement)
+  return pdfDrawingOperation(pageId, 'image', [rect.slice(0, 2), rect.slice(2)], crop, color, { image })
+}
 export function stickyNoteRect(point: readonly number[], crop: PdfBox): PdfRect {
   if (crop.width < 20 || crop.height < 18 || !point.every(Number.isFinite)) throw new Error('该页面无法放置文字批注')
   const x = Math.max(crop.x, Math.min(crop.x + crop.width - 20, point[0]))
@@ -449,7 +489,7 @@ export function stickyNoteRect(point: readonly number[], crop: PdfBox): PdfRect 
   return [x, y - 18, x + 20, y]
 }
 
-export interface PdfTextObject { objectId: string; text: string; rect: PdfRect; expectedTextSha256: string; fontSize: number; fontName: string; fontSha256: string | null }
+export interface PdfTextObject { objectId: string; text: string; rect: PdfRect; expectedTextSha256: string; fontSize: number; fontName: string; fontSha256: string | null; fillColor?: [number,number,number] }
 
 /** Confirmation belongs to one complete operation snapshot and never survives undo via a changed draft. */
 export class PdfPreviewReview {

@@ -1,5 +1,75 @@
 .docx-native { --surface:#fff; --text:#222; --border:#ddd; --text-secondary:#667085; position:relative; color:#222; }
+.docx-native .modal-card :is(button,input,select,textarea):focus-visible,
+:is(.docx-table-property-dialog,.docx-settings-dialog) :is(button,input,select,textarea):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:2px; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) { padding:20px; font-size:var(--office-font-size); line-height:1.6; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) h2 { margin:0 32px 16px 0; font-size:var(--font-size-lg); }
+:is(.docx-table-property-dialog,.docx-settings-dialog) form { display:grid; grid-template-columns:1fr auto auto; gap:12px 8px; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) form > :is(label,p) { grid-column:1 / -1; margin:0; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) label { display:grid; gap:6px; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) label:has(input[type=checkbox]) { display:flex; align-items:center; gap:8px; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) :is(input:not([type=checkbox]),select,textarea) { width:100%; min-width:0; min-height:34px; padding:6px 8px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:var(--office-chrome); color:var(--office-ink); font:inherit; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) form > [data-action=cancel] { grid-column:2; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) form > [type=submit] { grid-column:3; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) form > button { font:inherit; min-height:34px; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) p:empty { display:none; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) [role=alert] { color:var(--color-danger); }
+/* 仅设置界面采用紧凑桌面布局，不影响正文纸面。 */
+:is(.docx-table-property-dialog,.docx-settings-dialog) label { min-width:0; }
+.docx-native :is(.docx-table-property-dialog,.docx-settings-dialog) [hidden] { display:none; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) :is(input,select,textarea) { box-sizing:border-box; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) :is(button,input,select,textarea):disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+:is(.docx-table-property-dialog,.docx-settings-dialog) > button:not(.modal-close) { margin:0 8px 8px 0; min-height:32px; padding:4px 10px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:var(--office-chrome); color:var(--office-ink); font:inherit; }
+.docx-settings-dialog.docx-caption-dialog { display:flex;flex-direction:column;box-sizing:border-box;width:min(640px,calc(100vw - 24px));max-height:calc(100dvh - 24px);padding:0;overflow:hidden;font:inherit;font-size:13px;line-height:1.5; }
+.docx-page-number-dialog { width:min(560px,100%); overflow-wrap:anywhere; }
+.docx-page-number-dialog input[aria-invalid=true] { border-color:var(--color-danger); }
+.docx-caption-dialog > header { flex:none;padding:12px 48px 12px 16px;border-bottom:1px solid var(--office-border-soft); }
+.docx-caption-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.docx-caption-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0; }
+.docx-caption-dialog .docx-caption-body { min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+.docx-settings-dialog.docx-caption-dialog label { display:grid;grid-template-columns:80px minmax(0,1fr);align-items:center;gap:8px;margin:0 0 8px; }
+.docx-settings-dialog.docx-caption-dialog :is(input,select) { height:28px;min-height:28px;padding:3px 6px;font:inherit; }
+.docx-caption-dialog p { margin:0;overflow-wrap:anywhere; }
+.docx-caption-dialog .docx-caption-body > p { max-height:min(80px,18dvh);margin-bottom:12px;padding:4px;overflow:auto;color:var(--office-muted);scrollbar-width:thin; }
+.docx-caption-dialog fieldset { min-width:0;margin:12px 0 0;padding:8px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius); }
+.docx-caption-dialog legend { padding:0 4px;font-weight:600; }
+.docx-caption-dialog [data-caption-preview] { min-height:40px;max-height:min(160px,28dvh);padding:4px;overflow:auto;scrollbar-width:thin; }
+.docx-caption-dialog > footer { flex:none;min-width:0;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
+.docx-caption-dialog [role=status] { max-height:min(72px,20dvh);padding:4px;overflow:auto;color:var(--office-muted);scrollbar-width:thin; }
+.docx-caption-dialog .docx-setting-actions { flex-wrap:wrap;gap:8px;margin-top:4px; }
+.docx-caption-dialog .docx-setting-actions button { min-height:28px;padding:3px 10px;font:inherit;line-height:20px; }
+.docx-caption-dialog :is(button,input,select,[tabindex]) { scroll-margin:6px; }
+.docx-caption-dialog button { border-radius:var(--office-radius); }
+.docx-caption-dialog :is(button,input,select,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+@media(max-width:420px) {
+ .docx-settings-dialog.docx-caption-dialog label { grid-template-columns:56px minmax(0,1fr); }
+ .docx-caption-dialog .docx-caption-body { padding:8px; }
+ .docx-caption-dialog > footer { padding:6px 8px 8px; }
+}
+.docx-setting-actions { display:flex; justify-content:flex-end; gap:8px; }
+.docx-setting-actions button { min-height:32px; font:inherit; }
+.docx-revision-dialog { width:min(760px,100%); padding:20px; font-size:var(--office-font-size); line-height:1.6; overflow-wrap:anywhere; }
+.docx-revision-dialog h2 { margin:0 32px 16px 0; font-size:var(--font-size-lg); }
+.docx-revision-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.docx-revision-dialog button:not(.modal-close) { min-height:32px; padding:4px 10px; font:inherit; }
+.docx-revision-dialog [data-revision-list] { display:grid; gap:12px; margin:16px 0 0; padding-left:24px; }
+.docx-revision-dialog [data-revision-list] li { min-width:0; padding:12px; border:1px solid var(--office-border-soft); border-radius:var(--office-radius); }
+.docx-revision-dialog [data-revision-list] p { margin:0 0 10px; }
+.docx-revision-dialog [data-revision-list] button { margin:0 6px 6px 0; }
+.docx-word-count-dialog { width:min(380px,calc(100vw - 24px)); padding:20px; }
+.docx-word-count-dialog h2 { margin:0 32px 16px 0; font-size:var(--font-size-lg); }
+.docx-word-count-dialog [data-word-count-stats] { display:grid; gap:8px; margin:0; }
+.docx-word-count-dialog [data-word-count-stats] > div { display:flex; justify-content:space-between; gap:16px; }
+.docx-word-count-dialog [data-word-count-stats] dt { color:var(--office-muted); }
+.docx-word-count-dialog [data-word-count-stats] dd { margin:0; font-variant-numeric:tabular-nums; }
+.docx-word-count-dialog [data-action="close"] { min-height:32px; padding:4px 12px; }
+@media(min-width:769px) {
+  :is(.docx-table-property-dialog,.docx-settings-dialog) label:not(:has(input[type=checkbox])), .docx-zoom-form label { display:grid; grid-template-columns:120px minmax(0,1fr); gap:6px 12px; align-items:center; }
+  :is(.docx-table-property-dialog,.docx-settings-dialog) label > small { grid-column:2; color:var(--office-muted); }
+  :is(.docx-table-property-dialog,.docx-settings-dialog) :is(input:not([type=checkbox]),select,textarea), .docx-zoom-form input { min-height:32px; }
+  :is(.docx-table-property-dialog,.docx-settings-dialog) form > button { min-height:32px; padding:4px 12px; }
+}
 .docx-native .docx-tools { min-width:0; padding:0; background:var(--color-surface); border-bottom:1px solid var(--color-border); }
+.docx-native .docx-tools > [data-action="word-count"] { display:block; width:max-content; margin:4px 12px 6px auto; }
 /* Interface tokens stay inside the ribbon; source document styles are untouched. */
 .docx-native .docx-ribbon { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); min-width:0; max-width:100%; overflow:visible; background:var(--color-surface); color:var(--color-ink); font-family:inherit; font-size:var(--font-size-md); line-height:1.4; }
 .docx-native .docx-ribbon .ribbon-tabs { -webkit-app-region:no-drag; display:flex; align-items:stretch; min-width:0; min-height:var(--office-tabbar-height); margin:0; padding:3px 12px 0; overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--office-tabbar); scrollbar-width:thin; }
@@ -41,6 +111,14 @@
 .docx-native .docx-ribbon .rb-color-input { width:var(--office-control-height); height:var(--office-control-height); padding:4px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); cursor:pointer; }
 .docx-native .docx-ribbon .rb-big { display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-height:var(--office-big-control-height); gap:4px; border:1px solid transparent; border-radius:var(--radius-sm); padding:6px 10px; background:transparent; color:var(--color-ink-2); font:inherit; white-space:pre-line; }
 .docx-native .docx-ribbon .docx-ribbon-command { width:auto; min-width:56px; max-width:110px; height:auto; min-height:32px; padding:4px 8px; font-size:var(--font-size-sm); line-height:1.4; white-space:normal; }
+.docx-native .docx-ribbon .ribbon-group-items.docx-review-revisions-items { display:grid; grid-template-columns:repeat(3,max-content); grid-template-rows:repeat(2,auto); gap:4px; align-items:stretch; }
+.docx-native .docx-ribbon .ribbon-group-items.docx-review-display-items { display:grid; grid-template-columns:repeat(3,max-content); grid-template-rows:repeat(3,var(--office-control-height)); gap:4px 8px; align-items:center; }
+.docx-native .docx-ribbon .docx-review-display-items > label:not(.docx-review-authors) { grid-column:1; white-space:nowrap; }
+.docx-native .docx-ribbon .docx-review-display-items > .docx-review-authors { display:flex; flex-direction:column; align-self:stretch; grid-column:2; grid-row:1 / span 3; gap:2px; white-space:nowrap; }
+.docx-native .docx-ribbon .docx-review-authors > select { flex:1; min-height:0; width:144px; }
+.docx-native .docx-ribbon .docx-review-display-items > button { grid-column:3; white-space:nowrap; }
+.docx-native .docx-ribbon .docx-review-display-items > [data-action="revision-balloons-unavailable"] { grid-row:1; }
+.docx-native .docx-ribbon .docx-review-display-items > [data-action="track-changes-options-unavailable"] { grid-row:2; }
 .docx-native .docx-ribbon .layout-num { display:inline-flex; align-items:center; gap:6px; color:var(--color-ink-2); font-size:var(--font-size-sm); }
 .docx-native .docx-ribbon .layout-num input { width:76px; text-align:right; }
 .docx-native .docx-ribbon .layout-unit { color:var(--color-text-muted); font-size:var(--font-size-xs); }
@@ -61,19 +139,27 @@
 .docx-zoom-form [role=alert] { color:var(--color-danger); }
 .docx-zoom-actions { display:flex; justify-content:flex-end; gap:8px; }
 .docx-zoom-dialog :is(button,input):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
-.docx-native .docx-find-replace { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); position:relative; inset:auto; width:auto; max-width:100%; box-sizing:border-box; border-bottom:1px solid var(--color-border); padding:12px 14px; background:var(--color-surface); color:var(--color-ink); font:inherit; }
+/* 查找沿用宿主内的非模态区域，所有内容通过面板滚动访问。 */
+.docx-native .docx-find-replace { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); display:block; position:relative; inset:auto; width:auto; max-width:100%; box-sizing:border-box; border:0; border-top:1px solid var(--color-border); border-radius:0; box-shadow:none; padding:8px 12px; background:var(--color-surface); color:var(--color-ink); font:inherit; font-size:var(--office-font-size); line-height:1.4; scrollbar-width:thin; scroll-padding:4px; }
 .docx-native .docx-find-replace[hidden],
 .docx-native .docx-find-replace [hidden] { display:none; }
-.docx-native .docx-find-replace :is(.find-tabs,.find-row,.find-options) { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-.docx-native .docx-find-replace .find-row { margin-top:8px; }
-.docx-native .docx-find-replace .find-input { flex:1 1 180px; min-width:0; min-height:var(--office-control-height); box-sizing:border-box; padding:5px 8px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
-.docx-native .docx-find-replace :is(button,select) { min-height:32px; border:1px solid var(--color-border); border-radius:var(--radius-sm); padding:4px 10px; background:var(--color-bg-soft); color:var(--color-ink-2); font:inherit; }
+.docx-native .docx-find-replace :is(.find-tabs,.find-row,.find-options,[role=tablist]) { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.docx-native .docx-find-replace .find-tabs { justify-content:space-between; max-width:900px; padding-bottom:6px; border-bottom:1px solid var(--color-border); }
+.docx-native .docx-find-replace .find-row { max-width:900px; margin-top:6px; }
+.docx-native .docx-find-replace .find-row > label { display:flex; flex:1 1 220px; min-width:0; align-items:center; gap:8px; white-space:nowrap; }
+.docx-native .docx-find-replace .find-input { flex:1; width:0; min-width:0; height:28px; min-height:28px; box-sizing:border-box; padding:3px 8px; border:1px solid var(--color-border-strong); border-radius:var(--office-radius); background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.docx-native .docx-find-replace :is(button,select) { height:28px; min-height:28px; box-sizing:border-box; border:1px solid var(--color-border); border-radius:var(--office-radius); padding:3px 8px; background:var(--color-bg-soft); color:var(--color-ink-2); font:inherit; }
+.docx-native .docx-find-replace .find-tab { background:transparent; border-color:transparent; }
+.docx-native .docx-find-replace .find-tab.on { border-bottom:2px solid var(--office-accent); border-radius:0; font-weight:600; }
 .docx-native .docx-find-replace button:is(:hover,.on):not(:disabled) { border-color:var(--color-select-border); background:var(--color-primary-soft); color:var(--color-primary); }
 .docx-native .docx-find-replace :is(button,input,select):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
-.docx-native .docx-find-replace .find-options { margin-top:8px; color:var(--color-text-muted); font-size:var(--font-size-sm); }
-.docx-native .docx-find-replace .find-results { max-height:180px; overflow:auto; }
-.docx-native .docx-find-replace .find-result { display:block; width:100%; margin-top:4px; text-align:left; white-space:normal; }
-.docx-native .docx-find-replace :is([data-find-status],.find-results-note) { margin:8px 0 0; color:var(--color-text-muted); font-size:var(--font-size-sm); line-height:1.5; }
+.docx-native .docx-find-replace :is(button,input,select):disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+.docx-native .docx-find-replace .find-options { margin-top:6px; color:var(--color-text-muted); font-size:var(--office-label-size); }
+.docx-native .docx-find-replace .find-options label { display:flex; align-items:center; gap:4px; white-space:nowrap; }
+.docx-native .docx-find-replace .find-count { min-width:38px; text-align:right; font-variant-numeric:tabular-nums; }
+.docx-native .docx-find-replace .find-results { display:block; width:auto; max-width:900px; max-height:180px; overflow:auto; padding:4px; scrollbar-width:thin; scroll-padding:4px; }
+.docx-native .docx-find-replace .find-result { display:block; width:100%; height:auto; min-height:28px; margin-top:4px; text-align:left; white-space:normal; overflow-wrap:anywhere; }
+.docx-native .docx-find-replace :is([data-find-status],.find-results-note) { margin:6px 0 0; padding:0; color:var(--color-text-muted); font-size:var(--office-label-size); line-height:1.5; }
 .docx-native .docx-notice { margin:0; padding:8px 14px; color:var(--office-muted); background:var(--office-tabbar); font-size:13px; }
 .docx-native .editor-scroll { overflow:auto; min-height:0; max-height:none; background:var(--office-canvas); padding:24px; }
 .docx-native .doc-zoom { width:max-content; min-width:100%; }
@@ -83,7 +169,55 @@
 .docx-native .docx-comment-panel label { display:block; margin-block:8px; }
 .docx-native .docx-comment-panel select, .docx-native .docx-comment-panel textarea { display:block; width:100%; max-width:640px; margin-top:4px; font:inherit; }
 .docx-native .docx-comment-panel button { margin-right:8px; }
+/* 书签与交叉引用保持非模态面板；仅统一这两类设置，不改变其它批注面板或正文。 */
+.docx-settings-dialog.docx-link-dialog { display:flex;flex-direction:column;box-sizing:border-box;width:min(560px,100%);max-height:calc(100dvh - 40px);padding:0;overflow:hidden;color:var(--office-ink);font:inherit;font-size:13px;line-height:1.5; }
+.docx-link-dialog > header { flex:none;padding:10px 44px 10px 16px;border-bottom:1px solid var(--office-border-soft); }
+.docx-link-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.docx-settings-dialog.docx-link-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0;border-radius:var(--office-radius); }
+.docx-link-dialog > form { display:flex;flex:1;flex-direction:column;gap:0;min-height:0; }
+.docx-link-dialog .docx-link-body { display:grid;grid-auto-rows:max-content;gap:10px;min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+.docx-link-dialog .docx-link-body label { display:grid;grid-template-columns:80px minmax(0,1fr);align-items:center;gap:8px;margin:0;font:inherit; }
+.docx-settings-dialog.docx-link-dialog input { box-sizing:border-box;grid-column:2;width:100%;height:28px;min-height:28px;padding:3px 6px;font:inherit; }
+.docx-link-dialog .docx-link-body p { max-height:96px;min-width:0;margin:0;padding:4px;overflow:auto;overflow-wrap:anywhere;scrollbar-width:thin; }
+.docx-link-dialog form > footer { display:flex;flex:none;justify-content:flex-end;gap:8px;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
+.docx-settings-dialog.docx-link-dialog button { box-sizing:border-box;height:28px;min-height:28px;padding:3px 10px;border-radius:var(--office-radius);font:inherit; }
+.docx-link-dialog :is(button,input,[tabindex]) { scroll-margin:6px; }
+.docx-link-dialog :is(button,input,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:1px; }
+@media(max-width:420px) {
+ .docx-link-dialog .docx-link-body { padding:10px 12px; }
+ .docx-link-dialog .docx-link-body label { grid-template-columns:64px minmax(0,1fr); }
+ .docx-link-dialog form > footer { padding:8px 12px 10px; }
+}
+.docx-native :is(.docx-bookmarks,.docx-cross-references) { min-width:0; padding:12px 16px; color:var(--office-ink); font-size:var(--office-font-size); line-height:1.5; overflow-wrap:anywhere; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) h2 { margin:0 0 6px; font-size:var(--font-size-md); }
+.docx-native .docx-reference-fields { min-width:0; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) p { margin:6px 0; color:var(--office-muted); }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) label { display:grid; gap:6px; max-width:620px; min-width:0; }
+.docx-native .docx-bookmarks input { box-sizing:border-box; width:100%; min-width:0; min-height:32px; padding:4px 8px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:var(--office-chrome); color:var(--office-ink); font:inherit; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) button { box-sizing:border-box; max-width:100%; min-width:0; min-height:32px; margin:0 8px 6px 0; padding:4px 10px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:var(--office-chrome); color:var(--office-ink); font:inherit; white-space:normal; overflow-wrap:anywhere; cursor:pointer; }
+.docx-native .docx-bookmarks [data-bookmark-add] { border-color:var(--office-accent); background:var(--office-accent); color:white; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) :is(input,button):disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) button:hover:not(:disabled):not([data-bookmark-add]) { background:var(--office-accent-soft); border-color:var(--office-accent); }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) :is(input,button,ul):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:2px; }
+.docx-native .docx-cross-references [role=status] { padding:4px;max-height:120px;overflow:auto;scroll-margin:6px; }
+.docx-native .docx-cross-references [role=status]:empty { display:none; }
+.docx-native .docx-cross-references [role=status]:focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) ul { box-sizing:border-box; max-width:800px; max-height:220px; margin:8px 0 0; padding:4px; overflow:auto; border:1px solid var(--office-border-soft); border-radius:var(--office-radius); list-style:none; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) ul:empty { display:none; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) li { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:start; gap:6px 8px; min-width:0; padding:8px; border-bottom:1px solid var(--office-border-soft); }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) li:last-child { border-bottom:0; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) li button { margin:0; text-align:left; }
+.docx-native :is(.docx-bookmarks,.docx-cross-references) li span { min-width:0; grid-column:1 / -1; color:var(--office-muted); }
+@media(min-width:769px) {
+  .docx-native :is(.docx-bookmarks,.docx-cross-references):not([hidden]) { display:grid; grid-template-columns:minmax(260px,360px) minmax(0,800px); gap:20px; align-items:start; }
+  .docx-native :is(.docx-bookmarks,.docx-cross-references) ul { margin:0; }
+  .docx-native .docx-bookmarks label { grid-template-columns:84px minmax(0,1fr); align-items:center; gap:6px 12px; }
+  .docx-native .docx-cross-references li { grid-template-columns:minmax(180px,280px) minmax(0,1fr); }
+  .docx-native .docx-cross-references li span { grid-column:auto; }
+}
 .docx-native .doc-comment.native-comment-hidden { background:none; border-bottom:none; cursor:text; }
+.docx-native .rev-display-simple .docx-review-changed-line { position:relative; }
+.docx-native .rev-display-simple .docx-review-changed-line::before { content:'';position:absolute;left:-8px;top:0;bottom:0;width:2px;background:var(--docs-paper-rev-ink);pointer-events:none; }
 .editor-format-docx .editor-surface { padding:0; background:var(--office-canvas); }
 .editor-format-docx #report-editor { max-width:none; padding:0; }
 @media(max-width:768px) {
@@ -108,6 +242,23 @@
   .docx-native .docx-find-replace, .docx-native .docx-comment-panel { flex:none; max-height:30dvh; overflow:auto; }
   .docx-native .editor-scroll { flex:1; }
 }
+/* 短屏让功能区与说明各自滚动，保留正文命中和选区所需的可见空间。 */
+@media screen and (max-height:480px) {
+  .docx-native .docx-tools { max-height:35dvh; overflow:auto; }
+  .docx-native .docx-notice { max-height:2lh; }
+}
+
+/* 交叉引用在短屏保留标题与关闭，设置说明和来源列表独立滚动。 */
+.docx-native .docx-comment-panel.docx-cross-references:not([hidden]) { display:flex;flex-direction:column;max-height:min(360px,50dvh);padding:0;overflow:hidden; }
+.docx-native .docx-cross-references > header { display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:8px 16px;border-bottom:1px solid var(--office-border-soft); }
+.docx-native .docx-cross-references > header h2 { margin:0; }
+.docx-native .docx-cross-references > header button { flex:none;min-height:28px;margin:0;padding:2px 10px; }
+.docx-native .docx-cross-reference-body { min-height:0;overflow:auto;padding:12px 16px;scroll-padding:6px; }
+.docx-native .docx-cross-reference-body [role=status] { max-height:min(96px,max(48px,calc(50dvh - 88px))); }
+.docx-native .docx-cross-reference-body ul { max-height:min(220px,max(64px,calc(50dvh - 64px))); }
+@media(min-width:769px) {
+  .docx-native .docx-cross-reference-body { display:grid;grid-template-columns:minmax(240px,320px) minmax(0,800px);gap:20px;align-items:start; }
+}
 
 /* 设计 ▸ 页面颜色：按钮下方色条显示当前页面颜色；弹层沿用单元格底纹色板样式。 */
 .docx-page-color-trigger { display:inline-flex; flex-direction:column; align-items:center; gap:2px; }
@@ -117,21 +268,28 @@
 .docx-native .docx-ribbon .docx-page-color-palette [aria-pressed="true"] { outline:2px solid var(--office-accent); outline-offset:1px; }
 
 /* 设计 ▸ 水印：菜单沿用 layout-menu；对话框外壳用 --office-* token；纸面预览为文档内容色。 */
-.docx-native .docx-ribbon .docx-watermark-menu { min-width:150px; }
-.docx-watermark-dialog { width:min(420px,calc(100vw - 32px)); box-sizing:border-box; border:1px solid var(--office-border); border-radius:var(--radius-md); padding:20px; box-shadow:var(--shadow-popover); color:var(--office-ink); }
+.docx-native .docx-ribbon .docx-watermark-menu { min-width:150px; max-width:calc(100vw - 16px); max-height:var(--docx-watermark-menu-height,60dvh); overflow:auto; box-sizing:border-box; scroll-padding:4px; }
+.docx-watermark-dialog { width:min(440px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); box-sizing:border-box; border:1px solid var(--office-border); border-radius:var(--radius-md); padding:0; overflow:hidden; box-shadow:var(--shadow-popover); background:var(--office-chrome); color:var(--office-ink); font:inherit; font-size:13px; line-height:1.5; }
+.docx-watermark-dialog[open] { display:flex; flex-direction:column; }
+.docx-watermark-dialog [hidden] { display:none; }
+.docx-watermark-dialog > header { display:flex; flex:none; align-items:center; justify-content:space-between; gap:12px; padding:10px 16px; border-bottom:1px solid var(--office-border-soft); }
+.docx-watermark-dialog > header button { width:28px; height:28px; padding:0; border:0; border-radius:var(--office-radius); background:transparent; color:var(--office-muted); font:inherit; font-size:18px; cursor:pointer; }
+.docx-watermark-dialog > header button:hover { background:var(--office-hover-bg); color:var(--office-ink); }
+.docx-watermark-dialog .docx-watermark-body { min-height:0; padding:12px 16px; overflow:auto; scrollbar-width:thin; scroll-padding:4px; }
+.docx-watermark-dialog > footer { flex:none; padding:10px 16px; border-top:1px solid var(--office-border-soft); }
 .docx-watermark-dialog::backdrop { background:var(--color-scrim); }
-.docx-watermark-dialog h2 { margin:0 0 12px; font-size:var(--font-size-lg); }
-.docx-watermark-dialog fieldset { display:grid; gap:8px; margin:8px 0 0; padding:10px 12px; border:1px solid var(--office-border); border-radius:var(--office-radius); }
+.docx-watermark-dialog h2 { margin:0; font-size:14px; font-weight:600; }
+.docx-watermark-dialog fieldset { display:grid; min-width:0; gap:8px; margin:8px 0 0; padding:10px 12px; border:1px solid var(--office-border); border-radius:var(--office-radius); }
 .docx-watermark-dialog fieldset:disabled { opacity:var(--office-disabled-opacity); }
 .docx-watermark-dialog label { display:flex; align-items:center; gap:6px; color:var(--office-ink-2); font-size:var(--office-font-size); }
-.docx-watermark-dialog :is(input[name=text],select) { flex:1; min-height:var(--office-control-height); padding:0 8px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); font:inherit; }
+.docx-watermark-dialog :is(input[name=text],select) { flex:1; min-width:0; min-height:28px; padding:0 8px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); font:inherit; background:var(--office-chrome); color:var(--office-ink); }
 .docx-watermark-dialog input[name=transparency] { width:64px; min-height:var(--office-control-height); padding:0 6px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); }
 .docx-watermark-dialog .docx-watermark-layout { display:flex; gap:10px; align-items:center; color:var(--office-ink-2); }
-.docx-watermark-dialog [role=alert] { min-height:1em; margin:8px 0 0; color:var(--color-danger); }
-.docx-watermark-dialog .docx-watermark-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+.docx-watermark-dialog [role=alert] { max-height:min(100px,24dvh); margin:8px 0 0; overflow:auto; overflow-wrap:anywhere; color:var(--color-danger); }
+.docx-watermark-dialog .docx-watermark-actions { display:flex; justify-content:flex-end; gap:8px; }
 .docx-watermark-dialog .docx-watermark-actions button { min-height:var(--office-control-height); padding:0 14px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:#fff; color:var(--office-ink); cursor:pointer; }
 .docx-watermark-dialog .docx-watermark-actions button[value=ok] { background:var(--office-accent); border-color:var(--office-accent); color:#fff; }
-.docx-watermark-dialog :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:1px; }
+.docx-watermark-dialog :is(button,input,select,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:-2px; }
 .docx-native .doc-page[data-watermark] { position:relative; isolation:isolate; }
 .docx-native .doc-page[data-watermark]::before { content:attr(data-watermark); position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:-1;
   color:var(--watermark-color); opacity:var(--watermark-opacity); transform:rotate(var(--watermark-rotate)); font-family:var(--watermark-font); font-weight:var(--watermark-weight); font-style:var(--watermark-style); font-size:96px; white-space:nowrap; }
@@ -146,3 +304,138 @@
 .docx-page-border-dialog .modal-actions .btn-primary { background:var(--office-accent); border-color:var(--office-accent); color:#fff; }
 .docx-page-border-dialog .pb-check { display:flex; align-items:center; gap:6px; color:var(--office-ink-2); }
 .docx-page-border-dialog :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:1px; }
+/* 新建批注保留原停靠位置，采用桌面标题、编辑区和草稿分组。 */
+.docx-native .docx-comment-create { display:flex;flex:none;flex-direction:column;min-width:0;max-height:min(460px,52dvh);padding:0;overflow:hidden;color:var(--office-ink);font:inherit;font-size:13px;line-height:1.5; }
+.docx-native .docx-comment-create[hidden], .docx-native .docx-comment-create [hidden] { display:none; }
+.docx-comment-create > header { display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;border-bottom:1px solid var(--office-border-soft); }
+.docx-comment-create > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.docx-comment-create .docx-comment-create-body { display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,.65fr);gap:16px;min-height:0;padding:8px 14px;overflow:auto;scrollbar-width:thin;scroll-padding:6px; }
+.docx-comment-create-body > * { min-width:0; }
+.docx-comment-create-body p { margin:0 0 8px;overflow-wrap:anywhere; }
+.docx-comment-create .docx-comment-composer > p { color:var(--office-muted); }
+.docx-comment-create [data-new-comment-selection] { box-sizing:border-box;max-height:min(72px,14dvh);margin:0 0 8px;padding:6px 8px;overflow:auto;border:1px solid var(--office-border-soft);border-radius:var(--office-radius);background:var(--office-sidebar);white-space:pre-wrap;overflow-wrap:anywhere; }
+.docx-native .docx-comment-create label { display:grid;gap:4px;margin:0 0 8px;font:inherit; }
+.docx-native .docx-comment-create textarea { box-sizing:border-box;width:100%;max-width:none;height:88px;min-height:72px;max-height:160px;margin:0;padding:6px 8px;resize:vertical;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit; }
+.docx-native .docx-comment-create button { box-sizing:border-box;height:28px;min-height:28px;max-width:100%;margin:0;padding:3px 10px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit; }
+.docx-native .docx-comment-create [data-new-comment-close] { flex:none;width:28px;padding:0;font-size:18px;line-height:1; }
+.docx-comment-create .docx-comment-create-actions { display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px; }
+.docx-native .docx-comment-create [data-new-comment-submit]:not(:disabled) { background:var(--office-accent);border-color:var(--office-accent);color:var(--office-chrome); }
+.docx-comment-create button:hover:not(:disabled) { background:var(--office-hover-bg);border-color:var(--office-hover-border); }
+.docx-comment-create [data-new-comment-submit]:hover:not(:disabled) { background:var(--office-accent-hover);border-color:var(--office-accent-hover); }
+.docx-comment-create :is(button,textarea):disabled { opacity:var(--office-disabled-opacity);cursor:not-allowed; }
+.docx-comment-create :is(button,textarea,[tabindex]) { scroll-margin:6px; }
+.docx-comment-create :is(button,textarea,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.docx-comment-create .docx-comment-drafts { padding-left:16px;border-left:1px solid var(--office-border-soft); }
+.docx-comment-create .docx-comment-drafts h3 { margin:0 0 8px;font:inherit;font-weight:600; }
+.docx-comment-create [data-new-comment-empty] { color:var(--office-muted); }
+.docx-comment-create [data-new-comment-list] { box-sizing:border-box;max-height:min(220px,20dvh);margin:0;padding:4px;overflow:auto;list-style:none;scrollbar-width:thin; }
+.docx-comment-create [data-new-comment-list] li { min-width:0;padding:8px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius);overflow-wrap:anywhere; }
+.docx-comment-create [data-new-comment-list] li + li { margin-top:8px; }
+.docx-comment-create [data-new-comment-list] li > div { display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:4px; }
+.docx-comment-create [data-new-comment-list] time { color:var(--office-muted);font-size:12px; }
+.docx-comment-create [data-new-comment-list] li p { margin:0;white-space:pre-wrap; }
+@media(max-width:900px) {
+  .docx-comment-create .docx-comment-create-body { grid-template-columns:minmax(0,1fr);gap:12px; }
+  .docx-comment-create .docx-comment-drafts { padding:12px 0 0;border-left:0;border-top:1px solid var(--office-border-soft); }
+}
+
+/* 已有批注采用同一桌面停靠面板；关闭仍先应用输入。 */
+.docx-native .docx-comment-editor { display:flex;flex:none;flex-direction:column;min-width:0;max-height:min(460px,52dvh);padding:0;overflow:hidden;color:var(--office-ink);font:inherit;font-size:13px;line-height:1.5; }
+.docx-native .docx-comment-editor[hidden], .docx-native .docx-comment-editor [hidden] { display:none; }
+.docx-comment-editor > header { display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;border-bottom:1px solid var(--office-border-soft); }
+.docx-comment-editor > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.docx-comment-editor .docx-comment-editor-body { display:grid;grid-template-columns:minmax(0,1fr) minmax(160px,220px);gap:16px;min-height:0;padding:8px 14px;overflow:auto;scrollbar-width:thin;scroll-padding:6px; }
+.docx-comment-editor-body > * { min-width:0; }
+.docx-comment-editor-body p { margin:0 0 8px;overflow-wrap:anywhere; }
+.docx-comment-editor-help, .docx-comment-editor-meta { color:var(--office-muted); }
+.docx-native .docx-comment-editor label { display:grid;gap:4px;margin:0 0 8px;font:inherit; }
+.docx-native .docx-comment-editor :is(select,textarea) { box-sizing:border-box;width:100%;max-width:none;margin:0;padding:4px 8px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit; }
+.docx-native .docx-comment-editor select { height:28px;min-height:28px; }
+.docx-native .docx-comment-editor textarea { height:88px;min-height:72px;max-height:160px;padding:6px 8px;resize:vertical; }
+.docx-native .docx-comment-editor button { display:inline-flex;box-sizing:border-box;align-items:center;justify-content:center;gap:6px;min-height:28px;max-width:100%;margin:0;padding:3px 10px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit;line-height:20px; }
+.docx-native .docx-comment-editor [data-comment-title-close] { flex:none;width:28px;height:28px;padding:0;font-size:18px;line-height:1; }
+.docx-comment-editor .docx-comment-editor-actions { display:flex;flex-direction:column;align-items:stretch;gap:8px;padding-left:16px;border-left:1px solid var(--office-border-soft); }
+.docx-comment-editor-actions h3 { margin:0;font:inherit;font-weight:600; }
+.docx-comment-editor-actions button { overflow-wrap:anywhere; }
+.docx-comment-editor-actions svg { flex:none; }
+.docx-native .docx-comment-editor [data-comment-apply]:not(:disabled) { background:var(--office-accent);border-color:var(--office-accent);color:var(--office-chrome); }
+.docx-comment-editor button:hover:not(:disabled) { background:var(--office-hover-bg);border-color:var(--office-hover-border); }
+.docx-comment-editor [data-comment-apply]:hover:not(:disabled) { background:var(--office-accent-hover);border-color:var(--office-accent-hover); }
+.docx-comment-editor :is(button,select,textarea):disabled { opacity:var(--office-disabled-opacity);cursor:not-allowed; }
+.docx-comment-editor :is(button,select,textarea) { scroll-margin:6px; }
+.docx-comment-editor :is(button,select,textarea):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+@media(max-width:900px) {
+ .docx-comment-editor .docx-comment-editor-body { grid-template-columns:minmax(0,1fr);gap:12px; }
+ .docx-comment-editor .docx-comment-editor-actions { flex-direction:row;flex-wrap:wrap;padding:12px 0 0;border-left:0;border-top:1px solid var(--office-border-soft); }
+ .docx-comment-editor-actions h3 { flex-basis:100%; }
+}
+
+/* 根批注回复与新建/已有批注保持相同桌面控件密度。 */
+.docx-native .docx-comment-reply { display:flex;flex:none;flex-direction:column;min-width:0;max-height:min(460px,52dvh);padding:0;overflow:hidden;color:var(--office-ink);font:inherit;font-size:13px;line-height:1.5; }
+.docx-native .docx-comment-reply[hidden], .docx-native .docx-comment-reply [hidden] { display:none; }
+.docx-comment-reply > header { display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;border-bottom:1px solid var(--office-border-soft); }
+.docx-comment-reply > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.docx-comment-reply .docx-comment-reply-body { display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,.65fr);gap:16px;min-height:0;padding:8px 14px;overflow:auto;scrollbar-width:thin;scroll-padding:6px; }
+.docx-comment-reply-body > * { min-width:0; }
+.docx-comment-reply-body p { margin:0 0 8px;overflow-wrap:anywhere; }
+.docx-comment-reply-help { color:var(--office-muted); }
+.docx-comment-reply [data-comment-reply-parent] { box-sizing:border-box;max-height:min(72px,14dvh);margin:0 0 8px;padding:6px 8px;overflow:auto;border:1px solid var(--office-border-soft);border-radius:var(--office-radius);background:var(--office-sidebar);white-space:pre-wrap;overflow-wrap:anywhere; }
+.docx-native .docx-comment-reply label { display:grid;gap:4px;margin:0 0 8px;font:inherit; }
+.docx-native .docx-comment-reply textarea { box-sizing:border-box;width:100%;max-width:none;height:88px;min-height:72px;max-height:160px;margin:0;padding:6px 8px;resize:vertical;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit; }
+.docx-native .docx-comment-reply button { box-sizing:border-box;height:28px;min-height:28px;max-width:100%;margin:0;padding:3px 10px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit; }
+.docx-native .docx-comment-reply [data-comment-reply-close] { flex:none;width:28px;padding:0;font-size:18px;line-height:1; }
+.docx-comment-reply .docx-comment-reply-actions { display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px; }
+.docx-native .docx-comment-reply [data-comment-reply-submit]:not(:disabled) { background:var(--office-accent);border-color:var(--office-accent);color:var(--office-chrome); }
+.docx-comment-reply button:hover:not(:disabled) { background:var(--office-hover-bg);border-color:var(--office-hover-border); }
+.docx-comment-reply [data-comment-reply-submit]:hover:not(:disabled) { background:var(--office-accent-hover);border-color:var(--office-accent-hover); }
+.docx-comment-reply :is(button,textarea):disabled { opacity:var(--office-disabled-opacity);cursor:not-allowed; }
+.docx-comment-reply :is(button,textarea,[tabindex]) { scroll-margin:6px; }
+.docx-comment-reply :is(button,textarea,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.docx-comment-reply .docx-comment-reply-drafts { padding-left:16px;border-left:1px solid var(--office-border-soft); }
+.docx-comment-reply-drafts h3 { margin:0 0 8px;font:inherit;font-weight:600; }
+.docx-comment-reply [data-comment-reply-empty] { color:var(--office-muted); }
+.docx-comment-reply [data-comment-reply-list] { box-sizing:border-box;max-height:min(220px,20dvh);margin:0;padding:4px;overflow:auto;list-style:none;scrollbar-width:thin; }
+.docx-comment-reply [data-comment-reply-list] li { min-width:0;padding:8px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius);overflow-wrap:anywhere; }
+.docx-comment-reply [data-comment-reply-list] li + li { margin-top:8px; }
+.docx-comment-reply [data-comment-reply-list] li > div { display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:4px; }
+.docx-comment-reply [data-comment-reply-list] time { color:var(--office-muted);font-size:12px; }
+.docx-comment-reply [data-comment-reply-list] li p { margin:0;white-space:pre-wrap; }
+@media(max-width:900px) {
+ .docx-comment-reply .docx-comment-reply-body { grid-template-columns:minmax(0,1fr);gap:12px; }
+ .docx-comment-reply .docx-comment-reply-drafts { padding:12px 0 0;border-left:0;border-top:1px solid var(--office-border-soft); }
+}
+
+/* 单元格覆盖边距：标题与操作固定，长说明和错误在正文内滚动。 */
+.docx-settings-dialog.docx-cell-margins-dialog { display:flex;flex-direction:column;box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0;overflow:hidden;font-size:13px;line-height:1.5; }
+.docx-cell-margins-dialog > header { flex:none;padding:12px 48px 12px 16px;border-bottom:1px solid var(--office-border-soft); }
+.docx-cell-margins-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.docx-cell-margins-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0; }
+.docx-settings-dialog.docx-cell-margins-dialog form { display:flex;flex-direction:column;min-height:0;gap:0; }
+.docx-cell-margins-body { min-width:0;min-height:0;padding:12px 16px;overflow:auto;scrollbar-width:thin;scroll-padding:6px; }
+.docx-cell-margins-properties { display:flex;flex-wrap:wrap;align-items:center;gap:8px; }
+.docx-cell-margins-properties:empty { display:none; }
+.docx-cell-margins-properties button { border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink); }
+.docx-cell-margins-properties p { flex-basis:100%; }
+.docx-cell-margins-dialog fieldset { min-width:0;margin:8px 0 12px;padding:8px 12px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius); }
+.docx-cell-margins-dialog legend { padding:0 4px;font-weight:600; }
+.docx-settings-dialog.docx-cell-margins-dialog fieldset label { display:grid;grid-template-columns:64px minmax(0,1fr);align-items:center;gap:8px;margin:0 0 8px; }
+.docx-settings-dialog.docx-cell-margins-dialog fieldset label:last-child { margin-bottom:0; }
+.docx-settings-dialog.docx-cell-margins-dialog input { height:32px;min-height:32px;padding:4px 8px; }
+.docx-cell-margins-dialog p { margin:0;overflow-wrap:anywhere; }
+.docx-cell-margins-dialog section p + p { margin-top:8px; }
+.docx-cell-margins-dialog :is([data-source-state],section,[role=alert]) { margin-top:8px;padding:4px; }
+.docx-cell-margins-dialog :is([data-source-state],section) { color:var(--office-muted); }
+.docx-cell-margins-dialog footer { display:flex;flex:none;flex-wrap:wrap;gap:8px;padding:10px 16px;border-top:1px solid var(--office-border-soft); }
+.docx-cell-margins-dialog footer [data-action=inherit] { margin-right:auto; }
+.docx-cell-margins-dialog button:not(.modal-close) { min-height:28px;padding:3px 10px;font:inherit; }
+.docx-cell-margins-dialog :is(button,input,[tabindex]) { scroll-margin:6px; }
+.docx-cell-margins-dialog [tabindex]:focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.docx-cell-margins-dialog [hidden] { display:none; }
+@media(max-width:420px) {
+ .docx-cell-margins-body { padding:8px; }
+ .docx-cell-margins-dialog footer { padding:8px; }
+}
+@media screen {
+  .docx-navigation-layout.show-table-gridlines .doc-table td,
+  .docx-navigation-layout.show-table-gridlines .doc-table th { outline: 1px dashed var(--office-border-strong); outline-offset: -1px; }
+}

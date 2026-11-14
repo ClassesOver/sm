@@ -10,13 +10,6 @@ export interface PdfPageRibbonGroup {
   commands: PdfPageRibbonCommand[]
 }
 
-const unavailable = (id: string, label: string, reason: string): PdfPageRibbonCommand => ({
-  id: `genoffice.pdf.${id}`,
-  label,
-  enabled: false,
-  reason,
-})
-
 export const PDF_PAGE_RIBBON_GROUPS: PdfPageRibbonGroup[] = [
   {
     title: 'Rotation',
@@ -32,7 +25,9 @@ export const PDF_PAGE_RIBBON_GROUPS: PdfPageRibbonGroup[] = [
       { id: 'genoffice.pdf.page.delete', label: '删除页面', enabled: true },
       { id: 'genoffice.pdf.page.extract', label: '提取页面', enabled: true },
       { id:'genoffice.pdf.page.insertPdf',label:'插入 PDF',enabled:true },
+      { id:'genoffice.pdf.page.shrink',label:'压缩 PDF',enabled:true },
       { id: 'genoffice.pdf.page.insertBlank', label: '插入空白页', enabled: true },
+      { id: 'genoffice.pdf.page.bates', label: 'Bates 编号', enabled: true },
       { id:'genoffice.pdf.page.replace',label:'替换页面',enabled:true },
     ],
   },
@@ -47,8 +42,8 @@ export const PDF_PAGE_RIBBON_GROUPS: PdfPageRibbonGroup[] = [
     title: 'Combine & Split',
     commands: [
       { id: 'genoffice.pdf.page.reverse', label: '反转页面', enabled: true },
-      unavailable('page.splitPdf', '拆分 PDF', '拆分输出尚未接入授权下载与新修订登记'),
-      unavailable('page.mergePdf', '合并 PDF', '合并输出尚未接入来源身份验证和新修订登记'),
+      { id: 'genoffice.pdf.page.splitPdf', label: '拆分 PDF', enabled: true },
+      {id:'genoffice.pdf.page.mergePdf',label:'合并 PDF',enabled:true},
       { id: 'genoffice.pdf.page.mergePages', label: '合并页面', enabled: true },
       { id: 'genoffice.pdf.page.splitPages', label: '拆分页面', enabled: true },
     ],

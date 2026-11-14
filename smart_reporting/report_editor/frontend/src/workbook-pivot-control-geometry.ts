@@ -75,7 +75,7 @@ export function installPivotControlGeometry(univer: Pick<Univer, '__getInjector'
         next.preventDefault(); next.stopPropagation()
       }
       const pointerCancel = (next: PointerEvent) => { if (next.pointerId === event.pointerId) cleanup() }
-      const key = (next: KeyboardEvent) => { if (next.key === 'Escape') { cleanup(); next.preventDefault(); next.stopPropagation() } }
+      const key = (next: KeyboardEvent) => { if (next.isComposing || next.keyCode === 229 || next.defaultPrevented) return; if (next.key === 'Escape') { cleanup(); next.preventDefault(); next.stopPropagation() } }
       const cleanup = () => {
         if (stopped) return
         stopped = true; cancel = undefined

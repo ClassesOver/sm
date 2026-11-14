@@ -1,0 +1,201 @@
+/* GenOffice f8c17004 StylesPane / StyleDialog, scoped native adaptation. */
+.docx-styles-pane-host .styles-pane {
+  width: 264px;
+  flex: none;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.docx-styles-pane-host .styles-pane-section {
+  margin: 8px 10px 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.docx-styles-pane-host .styles-pane-current {
+  width: auto;
+  margin: 0 10px;
+  cursor: default;
+}
+
+.docx-styles-pane-host .styles-pane-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 10px 0;
+}
+
+.docx-styles-pane-host .styles-pane-actions .styles-pane-new {
+  flex: 1;
+}
+
+.docx-styles-pane-host .styles-pane-clear .style-card-preview {
+  font-size: 12.5px;
+}
+
+.docx-styles-pane-host .styles-pane-search {
+  margin: 2px 10px 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.docx-styles-pane-host .styles-pane-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.docx-styles-pane-host .styles-pane-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.docx-styles-pane-host .style-pane-card,
+.docx-styles-pane-host .style-pane-row {
+  flex-direction: row;
+  justify-content: space-between;
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  padding: 5px 8px;
+  gap: 8px;
+  text-align: left;
+}
+
+.docx-styles-pane-host .style-pane-card .style-card-preview,
+.docx-styles-pane-host .style-pane-row .style-card-preview {
+  flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.docx-styles-pane-host .style-pane-kind {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.docx-styles-pane-host .styles-pane-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.docx-styles-pane-host .styles-pane-foot label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.docx-styles-pane-host .styles-pane-foot select {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+.docx-styles-pane-host .styles-pane-new {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.docx-styles-pane-host .styles-pane-new:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-styles-pane-host .styles-pane-new:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.docx-styles-pane-host .styles-pane-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+}
+
+.docx-styles-pane-host .modal.style-dialog {
+  width: 560px;
+}
+
+.docx-styles-pane-host .style-dialog .font-dialog-row + .font-dialog-row {
+  margin-top: 10px;
+}
+
+.docx-styles-pane-host .style-dialog-num {
+  flex: 0 0 84px !important;
+}
+
+.docx-styles-pane-host .style-dialog-color {
+  flex: 0 0 72px !important;
+}
+
+.docx-styles-pane-host .style-dialog-error {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.docx-styles-pane-host .style-dialog-preview {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--color-bg-page);
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+
+.docx-styles-pane-host { flex:none;display:flex;min-height:0;--text-dim:#667085;--hover:#f2f4f7;--accent:#185abd;--danger:#b42318;--color-bg-page:#fff; }
+.docx-styles-pane-host[hidden] { display:none; }
+.docx-styles-pane-host .styles-pane { height:100%;max-height:calc(100dvh - 150px);min-height:180px; }
+.docx-styles-pane-host .nav-pane-head { display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--border); }
+.docx-styles-pane-host .nav-pane-title { font-weight:600; }
+.docx-styles-pane-host .nav-pane-close { border:0;background:transparent;padding:5px; }
+.docx-styles-pane-host .style-card { display:flex;box-sizing:border-box;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);cursor:pointer; }
+.docx-styles-pane-host .style-card.active { border-color:var(--accent);background:#edf3fd; }
+.docx-styles-pane-host .style-card-preview { overflow:hidden;white-space:nowrap; }
+.docx-styles-pane-host .style-card:disabled { opacity:.5;cursor:default; }
+.docx-styles-pane-host .modal-backdrop { position:fixed;inset:0;z-index:700;display:flex;align-items:center;justify-content:center;background:rgb(16 24 40 / 35%);padding:12px;box-sizing:border-box; }
+.docx-styles-pane-host .modal.style-dialog { box-sizing:border-box;max-width:100%;max-height:calc(100dvh - 24px);overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:18px;box-shadow:0 12px 36px #0003;font:13px/1.5 system-ui; }
+.docx-styles-pane-host .style-dialog h2 { margin:0 0 12px;font-size:16px; }
+.docx-styles-pane-host .font-dialog-row { display:flex;gap:10px;flex-wrap:wrap;align-items:end; }
+.docx-styles-pane-host .font-dialog-row > label { display:flex;flex:1;min-width:100px;flex-direction:column;gap:3px; }
+.docx-styles-pane-host .font-dialog-row > .font-check { min-width:auto;flex:none;flex-direction:row;align-items:center;padding-bottom:5px; }
+.docx-styles-pane-host .style-dialog :is(select,input:not([type=checkbox])) { min-width:0;box-sizing:border-box;width:100%;height:30px;border:1px solid var(--border);border-radius:4px;background:#fff;padding:3px 6px;font:inherit; }
+.docx-styles-pane-host .style-dialog :is(button,input,select):focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+.docx-styles-pane-host .modal-actions { display:flex;justify-content:flex-end;gap:8px;margin-top:16px; }
+.docx-styles-pane-host .modal-actions button { min-height:32px;min-width:72px;padding:4px 12px;border:1px solid var(--border);border-radius:4px;background:#fff;font:inherit; }
+.docx-styles-pane-host .modal-actions :is(button.primary,.btn-primary) { background:var(--accent);color:white; }
+.docx-styles-pane-host .ctx-menu { position:fixed;max-height:calc(100dvh - 24px);overflow:auto;min-width:220px;padding:5px;background:var(--surface);border:1px solid var(--border);border-radius:5px;box-shadow:0 8px 24px #0003; }
+.docx-styles-pane-host .ctx-item { display:flex;width:100%;padding:7px 10px;background:none;border:0;text-align:left;font:inherit; }
+.docx-styles-pane-host .ctx-item:hover { background:var(--hover); }
+.docx-styles-pane-host .ctx-sep { border-top:1px solid var(--border);margin:4px 0; }
+@media(max-width:700px) { .docx-styles-pane-host { position:absolute;right:0;top:0;bottom:0;z-index:25;box-shadow:-4px 0 16px #0002; } .docx-styles-pane-host .styles-pane { max-height:100%;width:min(264px,85vw); } }

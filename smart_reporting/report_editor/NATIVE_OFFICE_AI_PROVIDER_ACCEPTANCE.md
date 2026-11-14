@@ -2,6 +2,8 @@
 
 日期：2026-11-11。模型使用 AgentSettings.from_environment() 与生产 _report_model → _reporting_phase_model、同 thinking profile/预算及模型参数；未替换 endpoint 或模型。实际模型 ID 为 deepseek-v4.1-flash。全部输入为现场生成的合成文件，不包含用户业务资料；不提交、推送或部署。
 
+2026-11-13 增量：新增 XLSX AI 来源图表与系列换绑真实模型证据，见本文末尾及[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。下述 11 月 11 日时间与范围保持历史语义，不外推为最终生产同链。
+
 ## 当前结果与边界
 
 | 格式 | 当前真实结果 | 证据 |
@@ -27,3 +29,11 @@ Word/PPTX 使用真实签名会话、工作区、NativeEditorService 与结构�
 2026-11-11 探针 /tmp/probe-native-pdf-review-real-provider-20261111.py 通过同一生产 settings/model factory，实际读取完整一页及全部一条批注。完整任务返回 replaceText/replyNote 候选，服务实际预览与显式采纳后独立回读正文700、未选择原文和AI作者；/tmp/native-pdf-review-real-provider-20261111-xww9zoiy/{source.pdf,accepted-preview.pdf} 保留实际字节。root另独立核对source/output SHA及回复 /IRT 精确指向原始根便签。
 
 本次 provider 运行发生于 PDF 引擎“直接字典与字符串转义兼容”构建，后续间接对象身份遍历的最终桥以七项真实引擎回归及最终浏览器另证；不把模型调用时间跨写为后续最终桥重新调用。保留一次 Agno中间 cleaned JSON 解析 warning；最终结构化任务、真实预览与采纳成功，不声称零告警。此探针未执行修订保存/下载，不能替代实际保存链或全部PDF AI工具面验收。
+
+## 2026-11-13 XLSX 来源图表真实模型增量
+
+`/tmp/native-ai-chart-sources-provider-20261113-complete-proposal/summary.json` 为 `ok=true`，模型仍为实际配置 `deepseek-v4.1-flash`：新增任务 8.45 秒、系列换绑任务 8.48 秒，均经 Agno、真实 grant／工作区、原生引擎候选和显式采纳。实际预览字节与 draftSha256 匹配，独立重放逐 part 内容一致；openpyxl／lxml 核对标题、引用、缓存 10/73→73、人工 B3=73、两张原图及来源保全。
+
+该探针为合成输入及内存修订仓储，不含浏览器／保存下载。另一个 final8 ScriptedModel 浏览器已通过两次保存下载和修订4→5→6重开，但不能合并声称生产数据库＋真实 provider＋浏览器同链完成。
+
+三次失败分别保留：源 op 与 kind 包装混用；对两次重放错误比较 ZIP 总 SHA（part 内容相同、仅时间戳不同，已修探针而非生产 ZIP 策略）；换绑首次候选漏标题且后续补交被拒绝。补齐完整调用例子与一次完整候选协议后最终通过，未放宽范围／字段／文件身份校验。单点折线无可见标记与复杂图表视觉仍开放，详细日志、实际文件及构建边界见[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。

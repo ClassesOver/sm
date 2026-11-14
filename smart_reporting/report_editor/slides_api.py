@@ -15,6 +15,13 @@ from ._api_helpers import (
     reporting_http_error,
     require_editor_csrf,
 )
+from .office_refresh import (
+    OfficeRefreshRequest,
+    office_refresh_capability,
+    office_refresh_delivery,
+    office_refresh_status,
+    start_office_refresh,
+)
 from .service import ReportEditorGrantService
 
 SLIDES_SESSION_COOKIE = "report_slides_session"
@@ -34,7 +41,7 @@ def create_report_slides_editor_router(
     router = APIRouter()
     root = Path(static_dir).resolve()
 
-    async def require_context(request: Request, report_id: str, revision: int):
+    async def require_context(request: Request, report_id: str, revision: int, *, verify_file: bool = True):
         try:
             session = await grants.lookup_session(
                 request.cookies.get(SLIDES_SESSION_COOKIE, "")
@@ -43,7 +50,9 @@ def create_report_slides_editor_router(
                 raise ReportingError(
                     "report_slides_scope_mismatch", "幻灯片编辑会话作用域不一致。"
                 )
-            return session, await slides.context_for_session(session)
+            context = (await slides.context_for_session(session) if verify_file else
+                await slides.refresh_context_for_session(session))
+            return session, context
         except ReportingError as error:
             status = 403 if "permission_denied" in error.code else 404
             raise reporting_http_error(error, status_code=status) from None
@@ -143,7 +152,7 @@ def create_report_slides_editor_router(
     async def read_slides_editor_page(
         report_id: str, revision: int, request: Request
     ) -> FileResponse:
-        await require_context(request, report_id, revision)
+        await require_context(request, report_id, revision, verify_file=False)
         index = root / "slides.html"
         if not index.is_file():
             raise HTTPException(status_code=503, detail={"code": "slides_editor_unbuilt"})
@@ -336,5 +345,47 @@ def create_report_slides_editor_router(
             return await service.generate_candidate(session, prompt)
         except ReportingError as error:
             raise reporting_editor_error(error) from None
+
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/context", include_in_schema=False)
+    async def refresh_context(report_id: str, revision: int, request: Request):
+        _session, context = await require_context(request, report_id, revision, verify_file=False)
+        return {"reportId": context.report_id, "revision": context.revision,
+            "contextSha256": context.digest(),
+            "sha256": getattr(context, context.delivery_format + '_sha256'),
+            "dataRefresh": await office_refresh_capability(slides, context)}
+
+    @router.post("/reports/v1/slides/{report_id}/{revision}/api/recalculations", include_in_schema=False)
+    async def submit_refresh(report_id: str, revision: int, request: Request, payload: OfficeRefreshRequest):
+        _session, context = await require_context(request, report_id, revision, verify_file=False)
+        require_csrf(request)
+        try:
+            return await start_office_refresh(slides, context, payload)
+        except ReportingError as error:
+            raise reporting_http_error(error, status_code=503 if error.code == 'report_editor_recalculation_unavailable' else 409) from None
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/recalculations/by-request/{request_id}", include_in_schema=False)
+    async def refresh_request_status(report_id: str, revision: int, request_id: str, request: Request):
+        _session, context = await require_context(request, report_id, revision, verify_file=False)
+        try:
+            return await office_refresh_status(slides, context, request_id=request_id)
+        except ReportingError as error:
+            raise reporting_http_error(error, status_code=409) from None
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/recalculations/{task_id}", include_in_schema=False)
+    async def refresh_task_status(report_id: str, revision: int, task_id: str, request: Request):
+        _session, context = await require_context(request, report_id, revision, verify_file=False)
+        try:
+            return await office_refresh_status(slides, context, task_id=task_id)
+        except ReportingError as error:
+            raise reporting_http_error(error, status_code=409) from None
+
+    @router.get("/reports/v1/slides/{report_id}/{revision}/api/recalculations/{task_id}/delivery", include_in_schema=False)
+    async def refresh_task_delivery(report_id: str, revision: int, task_id: str, request: Request):
+        _session, context = await require_context(request, report_id, revision, verify_file=False)
+        try:
+            return await office_refresh_delivery(slides, context, task_id)
+        except ReportingError as error:
+            raise reporting_http_error(error, status_code=409) from None
 
     return router

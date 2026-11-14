@@ -5,6 +5,7 @@ import type {SlidesAIObject} from './slides-native-ai-context'
 import type { NativeOperation } from './native-draft'
 import { nativeAIProgressListener, type NativeAIProgressListener } from './native-ai-progress'
 import { mountNativeAIProgress } from './native-ai-progress'
+import { slidesAIPreset, type SlidesAIPreset } from './slides-ai-presets'
 
 type Scope = 'object' | 'slide' | 'deck' | 'notes' | 'deckNotes'
 type Selection = { slideIndex: number; elementId?: string }
@@ -146,5 +147,13 @@ export function mountSlidesNativeAI(host: HTMLElement, options: { api: SlidesNat
   instruction.addEventListener('input', invalidate)
   scope.addEventListener('change', invalidate)
   refresh()
-  return { panel, open() { if (disposed) return; panelView.beforeOpen(); panel.hidden = false; refresh(); panel.scrollIntoView?.({block:'nearest'}); instruction.focus({preventScroll:true}) }, close() { if (!disposed) closeButton.click() }, refresh, dispose() { panelView.dispose(); disposed = true; ++generation; progress.stop(); controller.abort(); const id = activeId || pending?.editId; if (activeRequestId) void options.api.cancelRequest?.(activeRequestId).catch(() => {}); if (id) void options.api.cancel(id).catch(() => {}); panel.remove() } }
+  function open() { if (disposed) return; panelView.beforeOpen(); panel.hidden = false; refresh(); panel.scrollIntoView?.({block:'nearest'}); instruction.focus({preventScroll:true}) }
+  return { panel, open, openPreset(preset: SlidesAIPreset) {
+    if (disposed || accepting || options.locked()) return false
+    const next = slidesAIPreset(preset)
+    void discard(); ++generation // 旧取消回执不能覆盖新语言/预设的准备状态。
+    instruction.value = next.instruction; scope.value = next.scope; title.textContent = 'AI 助手 · ' + next.title
+    open(); status.textContent = '请核对授权范围，点击生成候选后才调用 AI；候选仍需明确采纳。'
+    return true
+  }, close() { if (!disposed) closeButton.click() }, refresh, dispose() { panelView.dispose(); disposed = true; ++generation; progress.stop(); controller.abort(); const id = activeId || pending?.editId; if (activeRequestId) void options.api.cancelRequest?.(activeRequestId).catch(() => {}); if (id) void options.api.cancel(id).catch(() => {}); panel.remove() } }
 }

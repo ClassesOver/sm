@@ -16,7 +16,7 @@ function axisUnit(span: number): number {
   }
   return span
 }
-function niceCeiling(value: number): number {
+export function niceCeiling(value: number): number {
   let exponent = Math.floor(Math.log10(value)) - 1
   for (let guard = 0; guard < 8; guard++, exponent++) {
     for (const base of [1, 2, 2.5, 5]) {
@@ -27,6 +27,34 @@ function niceCeiling(value: number): number {
     }
   }
   return value
+}
+
+const MAX_SCATTER_AXIS_TICKS = 10_000
+function scatterUnitTicks(min: number, max: number, unit: number): number[] {
+  if (!Number.isFinite(unit) || !(unit > 0)) return [min, max]
+  const count = Math.min(Math.floor((max - min) / unit + 1e-6) + 1, MAX_SCATTER_AXIS_TICKS)
+  const ticks: number[] = []
+  for (let index = 0; index < count; index++) {
+    const tick = min + index * unit
+    if (tick > max + unit * 1e-6) break
+    ticks.push(Number(tick.toPrecision(12)))
+  }
+  return ticks.length >= 2 ? ticks : [min, max]
+}
+
+export function scatterAxisScale(values: readonly number[], explicit?: { min?: number; max?: number; majorUnit?: number; reversed?: boolean }) {
+  let dataMin = Infinity, dataMax = -Infinity
+  for (const value of values) if (Number.isFinite(value)) {
+    dataMin = Math.min(dataMin, value); dataMax = Math.max(dataMax, value)
+  }
+  if (dataMin === Infinity) { dataMin = 0; dataMax = 1 }
+  const min = explicit?.min ?? (dataMin >= 0 ? 0 : -niceCeiling(-dataMin))
+  let max = explicit?.max ?? (dataMax <= 0 ? 0 : niceCeiling(dataMax))
+  if (!(max > min)) max = min + 1
+  const ticks = explicit?.majorUnit
+    ? scatterUnitTicks(min, max, explicit.majorUnit)
+    : Array.from({ length: 5 }, (_, index) => min + ((max - min) * index) / 4)
+  return { min, max, ticks, reversed: explicit?.reversed === true }
 }
 function axisTicks(min: number, max: number, unit: number): number[] {
   const span = max - min

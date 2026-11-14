@@ -132,3 +132,6 @@ media folder is exposed. HTML is attachment-only. OCR is not enabled, and
 content/layout/font fidelity remains pending manual review.
 
 2026-11-11 标尺：原封迁入固定 f8c17004 的 components/Ruler.tsx、use-measurement.ts、units.ts；宿主 docx-ruler.tsx 仅开放可信单段右缩进及当前节左右边距，tabs/左缩进/首行/悬挂明确只读。导航页面使用既有同源分页快照及本地 continuous PM 呈现适配，不声称直接迁入依赖 live gap 的 NavPageThumbs。
+
+
+2026-11-13 多级列表源增量：原样迁移 `list-presets.ts`、`components/ListDialogs.tsx`、`LengthInput.tsx`、`modal-keys.ts`、`system-fonts.ts` 与共享 `dropdown.tsx/.css`，固定提交不变。仅启用八套九级预设及 DefineMultilevelDialog；普通项目符号/编号库和设置编号值未因此开放。宿主 `docx-list-gallery` 管理来源快照、保存锁与 IME，并为窄屏限定局部滚动布局；原始文件 SHA 与当前本地 SHA 分别登记。详见 `NATIVE_WORD_MULTILEVEL_ACCEPTANCE.md`。

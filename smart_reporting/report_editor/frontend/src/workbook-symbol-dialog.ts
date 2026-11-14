@@ -16,6 +16,7 @@ export const WORKBOOK_SYMBOL_CATEGORIES: readonly { readonly label: string; read
   { label: '几何/其它', symbols: ['★', '☆', '●', '○', '◆', '◇', '■', '□', '▲', '△', '▼', '▽', '✓', '✗', '☑', '☐', '♠', '♣', '♥', '♦', '♪', '♫', '☀', '☁', '☂', '☎'] },
 ]
 const ALL_SYMBOLS = new Set(WORKBOOK_SYMBOL_CATEGORIES.flatMap(category => category.symbols))
+let symbolDialogId = 0
 
 /** 活动单元格的当前内容；公式与富文本单独标出。 */
 export interface SymbolTargetCell { value: string | number | boolean | null | undefined; formula?: string | null; richText?: boolean }
@@ -35,31 +36,70 @@ export function symbolInsertion(cell: SymbolTargetCell, char: string): string {
 
 export function createWorkbookSymbolDialog(root: HTMLElement, insert: (char: string) => string) {
   let disposed = false, categoryIndex = 0
+  const id = `workbook-symbol-${++symbolDialogId}`
   const modal = createModal({ root, label: '插入符号', closeLabel: '关闭插入符号', overlayClass: 'workbook-ribbon-format-overlay',
     cardClass: 'workbook-ribbon-format-dialog workbook-symbol-dialog', content: `
-    <h2>插入符号</h2><nav class="workbook-symbol-tabs" role="tablist" aria-label="符号分类"></nav>
-    <div class="workbook-symbol-grid" role="group" aria-label="符号"></div>
-    <p>点击符号追加到活动单元格，可连续插入，完成后关闭。</p><p class="workbook-ribbon-format-error" role="alert"></p><p data-symbol-status role="status"></p>
-    <div class="workbook-ribbon-format-actions"><button type="button" data-symbol-close>关闭</button></div>` })
+    <header><h2>插入符号</h2></header>
+    <div class="workbook-symbol-body">
+      <nav class="workbook-symbol-tabs" role="tablist" aria-label="符号分类"></nav>
+      <div id="${id}-panel" role="tabpanel"><div class="workbook-symbol-grid" role="group" aria-label="符号"></div></div>
+      <p role="region" aria-label="符号插入说明" tabindex="0">点击符号追加到活动单元格，可连续插入，完成后关闭。方向键选择符号，Enter 或空格插入；Tab 切换区域。</p>
+      <p class="workbook-ribbon-format-error" role="alert" aria-label="符号插入错误" tabindex="0"></p>
+      <p data-symbol-status role="status" aria-label="符号插入结果" tabindex="0"></p>
+    </div>
+    <footer class="workbook-ribbon-format-actions"><button type="button" data-symbol-close>关闭</button></footer>` })
   const tabs = modal.card.querySelector<HTMLElement>('.workbook-symbol-tabs')!, grid = modal.card.querySelector<HTMLElement>('.workbook-symbol-grid')!
+  const panel = modal.card.querySelector<HTMLElement>('[role="tabpanel"]')!
   const error = modal.card.querySelector<HTMLElement>('[role="alert"]')!, status = modal.card.querySelector<HTMLElement>('[data-symbol-status]')!
   const render = () => {
-    tabs.replaceChildren(...WORKBOOK_SYMBOL_CATEGORIES.map((category, index) => {
-      const tab = document.createElement('button'); tab.type = 'button'; tab.textContent = category.label; tab.setAttribute('role', 'tab')
-      tab.setAttribute('aria-selected', String(index === categoryIndex)); tab.dataset.symbolCategory = String(index)
-      tab.addEventListener('click', () => { categoryIndex = index; render() }); return tab
-    }))
-    grid.replaceChildren(...WORKBOOK_SYMBOL_CATEGORIES[categoryIndex]!.symbols.map(symbol => {
+    tabButtons.forEach((tab, index) => {
+      tab.setAttribute('aria-selected', String(index === categoryIndex)); tab.tabIndex = index === categoryIndex ? 0 : -1
+    })
+    panel.setAttribute('aria-labelledby', tabButtons[categoryIndex]!.id)
+    const buttons = WORKBOOK_SYMBOL_CATEGORIES[categoryIndex]!.symbols.map((symbol, index) => {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = symbol; button.title = `插入 ${symbol}`
-      button.setAttribute('aria-label', `插入 ${symbol}`); button.dataset.symbol = symbol
+      button.setAttribute('aria-label', `插入 ${symbol}`); button.dataset.symbol = symbol; button.tabIndex = index === 0 ? 0 : -1
+      button.addEventListener('focus', () => buttons.forEach(item => { item.tabIndex = item === button ? 0 : -1 }))
+      button.addEventListener('keydown', event => {
+        if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+        const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length || 1
+        let next = index
+        if (event.key === 'ArrowLeft') next = Math.max(0, index - 1)
+        else if (event.key === 'ArrowRight') next = Math.min(buttons.length - 1, index + 1)
+        else if (event.key === 'ArrowUp') next = Math.max(0, index - columns)
+        else if (event.key === 'ArrowDown') next = Math.min(buttons.length - 1, index + columns)
+        else if (event.key === 'Home') next = 0
+        else if (event.key === 'End') next = buttons.length - 1
+        else return
+        event.preventDefault(); buttons[next]!.focus()
+      })
       button.addEventListener('click', () => {
         if (disposed) return
         error.textContent = ''
         try { status.textContent = insert(symbol) } catch (cause) { status.textContent = ''; error.textContent = (cause as Error).message }
       })
       return button
-    }))
+    })
+    grid.replaceChildren(...buttons)
   }
+  const tabButtons = WORKBOOK_SYMBOL_CATEGORIES.map((category, index) => {
+    const tab = document.createElement('button'); tab.type = 'button'; tab.textContent = category.label; tab.setAttribute('role', 'tab')
+    tab.id = `${id}-tab-${index}`; tab.setAttribute('aria-controls', panel.id); tab.dataset.symbolCategory = String(index)
+    tab.addEventListener('click', () => { categoryIndex = index; render() })
+    tab.addEventListener('keydown', event => {
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      if (event.key === 'ArrowLeft') categoryIndex = (index + WORKBOOK_SYMBOL_CATEGORIES.length - 1) % WORKBOOK_SYMBOL_CATEGORIES.length
+      else if (event.key === 'ArrowRight') categoryIndex = (index + 1) % WORKBOOK_SYMBOL_CATEGORIES.length
+      else if (event.key === 'Home') categoryIndex = 0
+      else if (event.key === 'End') categoryIndex = WORKBOOK_SYMBOL_CATEGORIES.length - 1
+      else return
+      event.preventDefault(); render(); tabButtons[categoryIndex]!.focus()
+    })
+    return tab
+  })
+  tabs.append(...tabButtons)
   modal.card.querySelector('[data-symbol-close]')!.addEventListener('click', modal.close)
   return {
     open() { if (disposed) return; error.textContent = ''; status.textContent = ''; render(); modal.open(grid.querySelector('button') ?? undefined) },

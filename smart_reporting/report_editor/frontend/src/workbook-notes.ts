@@ -86,7 +86,7 @@ export function noteSource(model: WorkbookModel | undefined, sheetName: string):
   return source
 }
 export function noteStructureReason(model: WorkbookModel | undefined, workbook: NoteWorkbook | null, command: { id: string; params?: unknown }): string | undefined {
-  if (!/^sheet\.(?:command|mutation)\.(?:(?:insert|delete)-range(?:-|$)|move-range$|move-(?:row|rows|col|cols)(?:-|$)|(?:insert|remove)-(?:row|rows|col|cols)(?:-|$)|insert-multi-(?:rows|cols)(?:-|$))/.test(command.id)) return undefined
+  if (!/^sheet\.(?:command|mutation)\.(?:(?:insert|delete)-range(?:-|$)|move-range$|sort-range$|move-(?:row|rows|col|cols)(?:-|$)|(?:insert|remove)-(?:row|rows|col|cols)(?:-|$)|insert-multi-(?:rows|cols)(?:-|$))/.test(command.id)) return undefined
   // Sorts and row/column insert/remove relocate notes in-grid through the
   // official ref-range followers; the save pairs those moves and keeps authors.
   const params = command.params as { sheetId?: string; subUnitId?: string; from?: { subUnitId?: string }; to?: { subUnitId?: string } } | undefined
@@ -94,8 +94,8 @@ export function noteStructureReason(model: WorkbookModel | undefined, workbook: 
   const sheets = ids.length ? [...new Set(ids)].map(id => workbook?.getSheetBySheetId(id)) : [workbook?.getActiveSheet()]
   if (sheets.some(sheet => {
     if (!sheet) return false
-    const source = model?.sheets.find(item => item.name === sheet.getSheetName())?.notes
-    return !!source?.readOnlyReason
+    const modelSheet = model?.sheets.find(item => item.name === sheet.getSheetName())
+    return !!modelSheet?.notes?.readOnlyReason || !!modelSheet?.threads?.threads.length
   })) return '此批注来源尚不支持当前结构修改；请保留批注原位置并使用受支持的行列插删'
 }
 
@@ -103,7 +103,7 @@ export function withWorkbookNotes(data: UniverWorkbookData, model: WorkbookModel
   const resource: Record<string, Record<number, Record<number, GridNote>>> = {}
   for (const sheet of Object.values(data.sheets)) {
     const source = model.sheets.find(s => s.name === sheet.name)?.notes
-    if (!source || source.readOnlyReason) continue
+    if (!source || source.readOnlyReason && !(source as any).pictureProjection) continue
     for (const note of source.notes) {
       const row = ((resource[sheet.id] ??= {})[note.row] ??= {})
       row[note.column] = { id: `legacy-${note.row}-${note.column}`, row: note.row, col: note.column, note: note.text, width: 240, height: 140, show: false }
@@ -120,7 +120,11 @@ export function workbookNoteOperations(model: WorkbookModel, workbook: NoteWorkb
     if (typeof sheet.getNotes !== 'function') continue
     const current = sheet.getNotes(), source = model.sheets.find(s => s.name === sheet.getSheetName())?.notes
     if (!source) { if (current.length) throw new Error('新增工作表请先保存后再编辑批注'); continue }
-    if (source.readOnlyReason) { if (current.length) throw new Error(source.readOnlyReason); continue }
+    if (source.readOnlyReason) {
+      const projected = (source as any).pictureProjection && current.length === source.notes.length && current.every(note => source.notes.some(before => before.row === note.row && before.column === note.col && before.text === note.note))
+      if (current.length && !projected) throw new Error(source.readOnlyReason)
+      continue
+    }
     const original = new Map(source.notes.map(n => [noteKey(n.row, n.column), n]))
     const latest = new Map(current.map(n => [noteKey(n.row, n.col), n]))
     validateNoteCollection(current)
@@ -180,7 +184,7 @@ export function createNoteDialog(root: HTMLElement, apply: (target: NoteTarget, 
   let target: NoteTarget | undefined
   let writable = true
   const modal = createModal({ root, label: '单元格批注', overlayClass: 'workbook-ribbon-note-overlay', cardClass: 'workbook-ribbon-note-dialog', closeLabel: '关闭批注', content: `
-    <h2>单元格批注</h2><form class="workbook-ribbon-note-form">
+    <h2>单元格批注</h2><form class="workbook-ribbon-note-form workbook-ribbon-format-form">
       <p class="workbook-ribbon-note-author"></p>
       <label>批注内容<textarea maxlength="32767" rows="8" aria-describedby="workbook-ribbon-note-error"></textarea></label>
       <p id="workbook-ribbon-note-error" role="alert"></p>

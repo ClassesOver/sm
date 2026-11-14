@@ -7,6 +7,7 @@ import { bindOfficeAssistantPanel } from './office-assistant-panel'
 export function bindNativeAI(container: HTMLElement, options: {
   api: ReturnType<typeof createNativeApi>; draft: NativeDraft; format?: 'docx' | 'pdf'
   view: { refresh(): Promise<void>; flushPendingEdits?(): void }; onDraftChange(): void
+  locked?(): boolean; onStateChange?(): void
 }) {
   const panel = document.createElement('section')
   panel.className = 'native-ai'
@@ -44,16 +45,18 @@ export function bindNativeAI(container: HTMLElement, options: {
   }
   const progress = mountNativeAIProgress(panel)
   let selection: NativeAISelection[] = [], documentSelection: NativeAISelection[] = [], reviewMode=false
-  let job: NativeAIJob | undefined, busy = false, disposed = false, generation = 0
+  let job: NativeAIJob | undefined, busy = false, accepting = false, disposed = false, generation = 0
   let controller: AbortController | undefined
   let noteBeforeText: string | undefined
   let wordTarget: string | undefined
+  let activeRequestId: string | undefined
   const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection})
-  const editable = () => !disposed && !options.draft.closed && !options.draft.saving
+  const editable = () => !disposed && !options.draft.closed && !options.draft.saving && !options.locked?.()
   function update() {
-    start.disabled = !editable() || busy || !selection.length
-    accept.disabled = !editable() || busy || job?.status !== 'succeeded'
+    start.disabled = !editable() || busy || accepting || !selection.length
+    accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded'
     cancel.disabled = disposed || !job && !busy
+    options.onStateChange?.()
   }
   function show(value: NativeAIJob) {
     job = value
@@ -81,19 +84,20 @@ export function bindNativeAI(container: HTMLElement, options: {
     update()
   }
   start.onclick = async () => {
-    if (!editable() || busy || !selection.length || !input.value.trim()) return
+    if (!editable() || busy || accepting || !selection.length || !input.value.trim()) return
     try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
     const turn = ++generation
     const instruction=input.value.trim(), selected=structuredClone(selection)
     if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected})
     const target=wordTarget
+    const requestId = crypto.randomUUID()
+    activeRequestId = requestId
     controller = new AbortController(); busy = true; job = undefined; update()
     details.hidden = true
     status.textContent = '正在生成并核验建议'
     try {
-      let result = await options.api.aiStart({instruction, selection:selected, expectedSha256:options.draft.identity.sourceSha256, operations:options.draft.operations}, controller.signal)
+      let result = await options.api.aiStart({clientRequestId:requestId, instruction, selection:selected, expectedSha256:options.draft.identity.sourceSha256, operations:options.draft.operations}, controller.signal)
       if(disposed || turn!==generation || options.format==='docx' && target!==currentWordTarget()) {
-        // 启动接口没有请求 ID 取消协议；只有拿到迟到回执后才能按编辑 ID 请求取消。
         void options.api.aiCancel(result.editId).catch(()=>{})
         if(!disposed && turn===generation) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update()}
         return
@@ -105,41 +109,59 @@ export function bindNativeAI(container: HTMLElement, options: {
         if (result.status !== 'running') break
         result = await options.api.aiStatus(result.editId, controller.signal)
       }
-    } catch (error) { if (!disposed && turn === generation) status.textContent = error instanceof Error ? error.message : '建议生成失败' }
+    } catch (error) {
+      if (!disposed && turn === generation) {
+        status.textContent = error instanceof Error ? error.message : '建议生成失败'
+        if (!job && activeRequestId === requestId && options.api.aiCancelRequest) {
+          activeRequestId = undefined
+          void options.api.aiCancelRequest(requestId).catch(() => {})
+        }
+      }
+    }
     finally { if (turn === generation) { busy = false; update() } }
   }
   accept.onclick = async () => {
-    if (!editable() || busy || job?.status !== 'succeeded') return
+    if (!editable() || busy || accepting || job?.status !== 'succeeded') return
     if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
     const turn = generation
     const target=wordTarget
-    busy = true; update()
+    accepting = true; busy = true; update()
     try {
       const operations = options.draft.operations
       const result = await options.api.aiAccept(job.editId, {expectedSha256:options.draft.identity.sourceSha256, operations, snapshotSha256:job.snapshotSha256})
-      // 网络等待期间可能发生保存；草稿本身也强制检查修订锁。
+      // 网络等待期间可能发生保存或刷新；写稿前再次核验会话锁。
       if (turn !== generation || disposed) return
       if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
-      if (!editable()) throw new Error('当前修订正在保存或已关闭，请重新生成建议')
+      if (!editable()) throw new Error('当前修订正在保存、刷新或已关闭，请重新生成建议')
       if (JSON.stringify(operations) !== JSON.stringify(options.draft.operations)) throw new Error('草稿已变化，请重新生成建议')
       options.draft.setOperations(result.operations)
       options.onDraftChange()
       await options.view.refresh()
-      job = undefined; status.textContent = options.format === 'pdf' ? '建议已进入草稿。保存前请核对实际 PDF 预览并确认。' : '建议已进入草稿，内容待重新核验；保存后生成新修订'
+      job = undefined; activeRequestId = undefined
+      status.textContent = options.format === 'pdf' ? '建议已进入草稿。保存前请核对实际 PDF 预览并确认。' : '建议已进入草稿，内容待重新核验；保存后生成新修订'
       details.hidden = true
     } catch (error) { if (turn === generation && !disposed) status.textContent = error instanceof Error ? error.message : '采纳失败' }
-    finally { if (turn === generation) { busy = false; update() } }
+    finally {
+      // 取消或换选区只能丢弃回包，不能提前释放仍在途的采纳请求。
+      accepting = false
+      if (turn === generation) busy = false
+      update()
+    }
   }
   cancel.onclick = async () => {
     ++generation; progress.stop(); controller?.abort(); busy = false
-    const id = job?.editId; job = undefined; status.textContent = '建议已取消'; update()
+    const id = job?.editId, requestId = activeRequestId; activeRequestId = undefined
+    job = undefined; status.textContent = '建议已取消'; update()
     details.hidden = true
     if (id) try { await options.api.aiCancel(id) } catch (error) { if (!disposed) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
+    else if (requestId && options.api.aiCancelRequest) try { await options.api.aiCancelRequest(requestId) } catch (error) { if (!disposed) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
   }
   function clearCandidate() {
-    const id=job?.editId
+    const id=job?.editId, requestId=activeRequestId
+    activeRequestId=undefined
     ++generation;controller?.abort();progress.reset();busy=false;job=undefined;wordTarget=undefined;details.hidden=true
     if(id)void options.api.aiCancel(id).catch(()=>{})
+    else if(requestId && options.api.aiCancelRequest)void options.api.aiCancelRequest(requestId).catch(()=>{})
   }
   function close() {
     if (disposed) return
@@ -149,6 +171,8 @@ export function bindNativeAI(container: HTMLElement, options: {
   if(options.format==='docx')input.oninput=()=>{if(job || busy){clearCandidate();status.textContent='修改要求已变化，请重新生成建议。';update()}}
   update()
   return {
+    update,
+    get accepting() { return accepting },
     open() { if(disposed)return;panelView?.beforeOpen();panel.hidden=false;panel.scrollIntoView?.({block:'nearest'}); input.focus({preventScroll:true}) },
     close,
     openNotes(value: NativeAINoteSelection, instruction='', beforeText?:string) {
@@ -168,11 +192,8 @@ export function bindNativeAI(container: HTMLElement, options: {
       if(reviewMode)return
       if(options.format==='docx' && JSON.stringify(selection)!==JSON.stringify(value) && (job || busy)) {clearCandidate();status.textContent='Word 选区已变化，请重新生成建议。'}
       if (options.format === 'pdf' && JSON.stringify(selection) !== JSON.stringify(value) && (job || busy)) {
-        const id = job?.editId
-        ++generation; controller?.abort(); busy = false; job = undefined
-        details.hidden = true
+        clearCandidate()
         status.textContent = 'PDF 文字选区已变化，请重新生成建议。'
-        if (id) void options.api.aiCancel(id).catch(() => {})
       }
       selection = structuredClone(value); update()
     },

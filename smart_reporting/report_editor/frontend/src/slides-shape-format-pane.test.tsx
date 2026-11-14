@@ -80,3 +80,49 @@ it('功能区任意来源线宽回填，锁定解锁后仍保留来源能力限�
  delete (context.element.brushSource.shape as any).stroke;act(()=>pane!.update())
  width.disabled=false;act(()=>pane!.setLocked(false));expect(width.disabled).toBe(true)
 })
+
+it('填充和轮廓使用原生可辨识分组',()=>{
+ setup()
+ expect([...pane!.element.querySelectorAll('fieldset > legend')].map(node=>node.textContent)).toEqual(['填充','轮廓'])
+})
+it('非法粗细暴露字段错误状态',()=>{
+ const {type,width}=setup();type('0');expect(width().getAttribute('aria-invalid')).toBe('true')
+})
+it.each(['legacy','handled'])('粗细Enter与Escape尊重受保护按键：%s',protection=>{
+ const {type,width,confirm}=setup();vi.useFakeTimers()
+ for(const key of ['Enter','Escape']){
+  type(key==='Enter'?'4':'0');width().focus()
+  const event=new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,keyCode:protection==='legacy'?229:0});if(protection==='handled')event.preventDefault()
+  act(()=>width().dispatchEvent(event));expect(confirm).not.toHaveBeenCalled();expect(width().value).toBe(key==='Enter'?'4':'0');expect(document.activeElement).toBe(width())
+ }
+ act(()=>width().dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})));expect(width().value).toBe('2.25')
+ act(()=>vi.advanceTimersByTime(250));expect(confirm).not.toHaveBeenCalled()
+})
+it('粗细错误关联唯一且可聚焦的状态说明，多实例不重用身份',()=>{
+ const {type,width}=setup();type('0')
+ const status=pane!.element.querySelector<HTMLElement>('[role=status]')!
+ expect(status.id).toBeTruthy();expect(width().getAttribute('aria-describedby')).toBe(status.id);expect(status.getAttribute('aria-label')).toBe('形状格式状态');expect(status.tabIndex).toBe(0)
+ expect(status.classList.contains('shape-format-error')).toBe(true);status.focus();expect(document.activeElement).toBe(status)
+ const other=createSlidesShapeFormatPane(()=>structuredClone(base),vi.fn());document.body.append(other.element)
+ try{act(()=>other.update());expect(other.element.querySelector('[role=status]')!.id).not.toBe(status.id)}finally{act(()=>other.dispose())}
+})
+it.each(['Enter','Escape'])('组合输入期间的 %s 不提交或撤回粗细',key=>{
+ const {type,width,confirm}=setup();vi.useFakeTimers()
+ type(key==='Enter'?'4':'0');width().focus()
+ act(()=>width().dispatchEvent(new KeyboardEvent('keydown',{key,isComposing:true,bubbles:true,cancelable:true})))
+ expect(confirm).not.toHaveBeenCalled();expect(width().value).toBe(key==='Enter'?'4':'0');expect(document.activeElement).toBe(width())
+})
+it('Escape 撤回尚未提交的粗细且保留同批填充，定时器不会随后提交旧粗细',()=>{
+ const {type,width,pick,confirm,context}=setup();vi.useFakeTimers()
+ pick('shape-fill','#abcdef');act(()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})))
+ width().focus();type('4')
+ act(()=>width().dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})))
+ expect(width().value).toBe('2.25');expect(document.activeElement).toBe(width())
+ act(()=>vi.advanceTimersByTime(250))
+ expect(confirm).toHaveBeenCalledOnce();expect(context().changes.shapeStyles).toEqual([{slideIndex:0,elementId:'shape',fill:'#ABCDEF'}])
+})
+it('Escape 撤回单独的粗细输入，不留下空历史',()=>{
+ const {type,width,confirm}=setup();vi.useFakeTimers();type('4')
+ act(()=>width().dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})))
+ expect(width().value).toBe('2.25');act(()=>vi.advanceTimersByTime(250));expect(confirm).not.toHaveBeenCalled()
+})

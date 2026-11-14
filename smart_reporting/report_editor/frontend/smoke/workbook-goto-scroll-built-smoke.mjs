@@ -116,7 +116,8 @@ try {
   assert.equal(beforeHash, sha(bytes)); assert.equal(await downloadHash('before'), beforeHash); console.log(JSON.stringify({ phase: 'baseline', baseline }))
   const check = async (name, reference, markers, reverse = false) => {
     stage = name; await toggle(false); await goto(reference)
-    await page.getByText(`已定位到 ${reference}，目标已显示。`, { exact: true }).waitFor()
+    // 原生 Office 外壳隐藏旧 AI 状态区；等待导航结果，随后用实际画布验证高亮与滚动。
+    await page.waitForFunction(reference => document.querySelector('.workbook-feedback')?.textContent === `已定位到 ${reference}，目标已显示。`, reference)
     if (reverse) {
       await page.keyboard.press('Shift+ArrowLeft'); await page.keyboard.press('Shift+ArrowUp')
       const sentinel = `cross-selection-${Date.now()}`

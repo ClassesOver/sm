@@ -2276,7 +2276,8 @@ export function generateParagraphXml(block: GeneratedBlock, ctx: GenerateContext
     crossStarts +
     generateRunsXml(block.runs, ctx) +
     crossEnds
-  if (block.rawPPr !== undefined) return `<w:p>${block.rawPPr}${content}</w:p>`
+  const paragraphOpen = `<w:p${block.rawPAttrs ?? ''}>`
+  if (block.rawPPr !== undefined) return `${paragraphOpen}${block.rawPPr}${content}</w:p>`
 
   const children: PPrChild[] = []
   let styleId: string | undefined
@@ -2315,7 +2316,7 @@ export function generateParagraphXml(block: GeneratedBlock, ctx: GenerateContext
   }
   children.sort((a, b) => PPR_CHILD_ORDER.indexOf(a.name) - PPR_CHILD_ORDER.indexOf(b.name))
   const pPr = children.length > 0 ? `<w:pPr>${children.map((c) => c.xml).join('')}</w:pPr>` : ''
-  return `<w:p>${pPr}${content}</w:p>`
+  return `${paragraphOpen}${pPr}${content}</w:p>`
 }
 
 /**

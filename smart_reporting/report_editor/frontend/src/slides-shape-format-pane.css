@@ -1,12 +1,20 @@
-.slides-shape-format-pane { grid-column:1 / -1; min-width:0; padding:10px 14px; margin-top:12px; border-top:1px solid var(--office-border); color:var(--office-ink); font-size:12px; --surface:var(--office-chrome); --border-strong:var(--office-border-strong); --text-dim:var(--office-muted); --slides-swatch-ring:var(--office-border-strong); }
+/* 仅设置窗格采用桌面 Office 分组和紧凑控件，来源形状样式不变。 */
+.slides-shape-format-pane { grid-column:1 / -1; min-width:0; padding:10px 14px; margin-top:12px; border-top:1px solid var(--office-border); color:var(--office-ink); font:inherit; font-size:var(--office-font-size); --surface:var(--office-chrome); --border-strong:var(--office-border-strong); --text-dim:var(--office-muted); --slides-swatch-ring:var(--office-border-strong); }
 .slides-shape-format-pane[hidden] { display:none; }
-.slides-shape-format-pane h3 { font-size:14px; margin:0 0 12px; }
-.slides-shape-format-pane h4 { font-size:12px; margin:14px 0 8px; padding-bottom:4px; border-bottom:1px solid var(--office-border); }
-.slides-shape-format-pane .shape-radio { display:flex; align-items:center; gap:6px; margin:8px 0; }
-.slides-shape-format-pane .shape-color-row { display:flex; align-items:center; gap:8px; margin:10px 0; }
-.slides-shape-format-pane button { border:1px solid var(--office-border-strong); border-radius:3px; background:var(--office-chrome); color:inherit; font-size:12px; }
-.slides-shape-format-pane button:disabled { opacity:.45; }
-.slides-shape-format-pane .shape-width { display:flex; align-items:center; gap:8px; }
-.slides-shape-format-pane .shape-width input { min-width:0; width:90px; height:26px; border:1px solid var(--office-border-strong); border-radius:3px; padding:0 5px; color:inherit; }
-.slides-shape-format-pane p { color:var(--office-muted); font-size:12px; }
+.slides-shape-format-pane h3 { font-size:14px; margin:0 0 8px; }
+.slides-shape-format-pane fieldset { min-width:0; margin:10px 0 0; padding:6px 0 0; border:0; border-top:1px solid var(--office-border); }
+.slides-shape-format-pane legend { padding:0 6px 0 0; font-weight:600; }
+.slides-shape-format-pane .shape-radio { display:flex; align-items:center; gap:6px; margin:6px 0; }
+.slides-shape-format-pane input[type=radio] { width:14px; height:14px; margin:0; accent-color:var(--office-accent); }
+.slides-shape-format-pane .shape-color-row { display:grid; grid-template-columns:36px 74px minmax(0,1fr); align-items:center; gap:6px; margin:8px 0; }
+.slides-shape-format-pane button { min-width:0; min-height:28px; height:28px; padding:2px 6px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:var(--office-chrome); color:inherit; font:inherit; white-space:nowrap; }
+.slides-shape-format-pane button:hover:not(:disabled) { border-color:var(--office-hover-border); background:var(--office-hover-bg); }
+.slides-shape-format-pane :is(button,input):disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+.slides-shape-format-pane :is(button,input):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:1px; }
+.slides-shape-format-pane .shape-width { display:grid; grid-template-columns:36px minmax(64px,1fr) auto; align-items:center; gap:6px; }
+.slides-shape-format-pane .shape-width input { box-sizing:border-box; min-width:0; width:100%; height:28px; padding:2px 6px; border:1px solid var(--office-border-strong); border-radius:var(--office-radius); background:var(--office-chrome); color:inherit; font:inherit; text-align:right; font-variant-numeric:tabular-nums; }
+.slides-shape-format-pane .shape-width input[aria-invalid=true] { border-color:var(--color-danger); }
+.slides-shape-format-pane p { margin:6px 0; color:var(--office-muted); font-size:var(--office-label-size); line-height:1.5; overflow-wrap:anywhere; }
 .slides-shape-format-pane p:empty { display:none; }
+.slides-shape-format-pane .shape-format-error { color:var(--color-danger); }
+.slides-shape-format-pane [role=status]:focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:1px; }

@@ -1,3 +1,9 @@
+import {showDocxPasteDialog} from './docx-paste-ui'
+import type { createDocxPictureControls } from './docx-picture-controls'
+import { openDocxPageBorderDialog as openDocxPageBorderSourceDialog } from './docx-page-border-dialog-source'
+import { openDocxFontDialog, docxFontDialogUnavailable } from './docx-font-dialog'
+import { docxDefaultPageBox } from '../../../reporting/doc_engine/bridge/docx-section-settings'
+import { openDocxParagraphDialog, docxParagraphDialogUnavailable } from './docx-paragraph-dialog'
 import { fillDocxCommandIcons } from './docx-command-icons'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { createDocxCellBorderUiState, createDocxCellBordersControls } from './docx-cell-borders-controls'
@@ -12,28 +18,41 @@ import { applyParagraphHighlight, highlightTarget, selectedHighlight, textFormat
 import { applyParagraphShading, paragraphShading, paragraphShadingTarget, DOCX_SHADING_COLORS } from './docx-shading'
 import { applyDocxCellShading, docxCellShadingUnavailable } from './docx-cell-shading'
 import { createParagraphStyleControl } from './docx-styles'
+import { createDocxListGallery } from './docx-list-gallery'
+import { applyDocxHomeList, applyDocxCustomList, changeDocxCustomListLevel, clearDocxCustomList, docxCustomListReason } from './docx-custom-list'
+import { createDocxNumberingValueControl } from './docx-numbering-value-host'
+import { customLevelFromNumberingLevel, type StyleInfo } from '@genoffice/docx-engine'
 import type { DocxViewCommands } from './docx-view'
 import { selectedVerticalAlign, toggleParagraphVerticalAlign, verticalAlignTarget } from './docx-vertical'
-import { TABLE_ACTIONS, type DocxTableCommands } from './docx-tables'
+import { TABLE_ACTIONS, TABLE_SELECTION_ACTIONS, type DocxTableCommands } from './docx-tables'
 import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
-import { IconComments, IconComment, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconComments, IconComment, IconTrash, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
 import { DocxHomeSource } from './docx-home-source'
+import type {DocxReviewViewState} from './docx-review-view'
+import type {RevisionFilter} from './vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-filters'
+
+interface DocxReviewViewCommands {
+ state:()=>DocxReviewViewState
+ authors:()=>string[]
+ setMode:(mode:DocxReviewViewState['mode'])=>void
+ setFilter:(filter:RevisionFilter)=>void
+}
 import { createDocxPainter, docxClipboardCopy, docxClipboardCut, docxClipboardPaste, type DocxPasteMode } from './docx-clipboard'
 import { docxLineSpacingUnavailable, openDocxLineSpacingDialog } from './docx-line-spacing'
 import { docxSpecialIndentUnavailable, openDocxSpecialIndentDialog } from './docx-special-indent'
-import type { DocxAnchor, SectionValues } from './docx-operations'
+import type { DocxAnchor, SectionChangeResult, SectionValues } from './docx-operations'
 import { DocxInsertSource } from './docx-insert-source'
 import { DocxLayoutSource } from './docx-layout-source'
 import { DocxHeaderFooterSource, type DocxHeaderFooterController } from './docx-hf-source'
 import type { SectionSettings } from '@genoffice/docx-engine'
 import { effectiveBidi, setSelectionAlign } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/direction'
-import { DOCX_WATERMARK_PRESETS, type DocxWatermarkModel, type DocxWatermarkSpec } from './docx-watermark'
-import { openDocxWatermarkDialog } from './docx-watermark-dialog'
+import { DOCX_WATERMARK_PRESETS, type DocxWatermarkModel, type DocxWatermarkValue } from './docx-watermark'
+import { openDocxWatermarkSourceDialog } from './docx-watermark-dialog-source'
 import { openDocxPageBorderDialog } from './docx-page-border-dialog'
 import type { DocxPageBorderValue, PageBorderScope } from './docx-page-borders'
 
@@ -54,7 +73,7 @@ const pendingGroups: Record<string, [string, string[]][]> = {
   layout: [['页面设置', ['页边距', '纸张方向', '纸张大小', '分栏', '分节符']], ['段落(选中段落)', ['左缩进', '右缩进', '段前', '段后']], ['排列', ['位置', '环绕文字']]],
   references: [['Zotero', ['Zotero']], ['目录', ['目录', '更新目录']], ['脚注', ['插入脚注', '插入尾注']], ['书签', ['书签', '交叉引用']], ['引文与索引', ['插入引文', '书目', '题注', '索引']]],
   mailings: [['创建', ['信封', '标签']], ['开始邮件合并', ['开始邮件合并', '选择收件人', '编辑收件人列表']], ['编写和插入域', ['突出显示合并域', '地址块', '问候语', '插入合并域']], ['预览结果', ['预览结果', '查找收件人', '检查错误']], ['完成', ['完成并合并']]],
-  review: [['校对', ['编辑器', '拼写检查']], ['语言', ['翻译']], ['批注', ['新建批注', '显示批注']], ['修订', ['修订', '显示标记', '接受', '拒绝', '上一条', '下一条']], ['保护', ['比较', '保护文档']]],
+  review: [['校对', ['编辑器', '拼写检查']], ['语言', ['翻译']], ['批注', ['新建批注', '删除当前批注', '删除已解决批注', '删除全部批注', '上一条批注', '下一条批注', '显示批注']], ['修订', ['修订', '显示标记', '接受', '拒绝', '上一条', '下一条']], ['保护', ['比较', '保护文档']]],
   view: [['视图', ['页面视图', 'Web 版式', '大纲', '阅读视图', '分页预览']], ['缩放', ['缩放', '缩小', '放大', '100%', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
   tableDesign: [['表格样式', ['无样式', '表格样式']], ['底纹', ['单元格底纹']], ['边框', ['所有框线', '外侧框线', '内侧框线', '边框颜色', '边框粗细']]],
   tableLayout: [['删除', ['删除表格']], ['行和列', ['上方插入', '下方插入', '左侧插入', '右侧插入']], ['合并', ['合并单元格', '拆分单元格']], ['行列操作', ['删除行', '删除列']], ['对齐方式', ['顶端对齐', '垂直居中', '底端对齐']], ['单元格大小', ['行高', '列宽']], ['表格数据', ['表格属性']]],
@@ -133,12 +152,13 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
 export interface DocxPageBorderControls { current(): Pick<SectionSettings, 'pageBorder' | 'pageBorderProps'>; reason(scope: PageBorderScope): string | null; sectionLabel?(): string | undefined; apply(value: DocxPageBorderValue, scope: PageBorderScope): void }
 /** 固定源 Design ▸ Page Color：当前值、不可用原因与选色回调（草稿写入由宿主负责）。 */
 export interface DocxPageColorControls { current(): string | null; reason(): string | null; apply(color: string | null): void }
+export interface DocxTableGridlinesControls { readonly visible: boolean; reason(): string | null; toggle(): void }
 /** 固定源 Design ▸ Watermark：当前生效水印、来源模型、不可用原因与应用回调（草稿写入由宿主负责）。 */
-export interface DocxWatermarkControls { current(): DocxWatermarkSpec | null; source: DocxWatermarkModel; reason(): string | null; apply(spec: DocxWatermarkSpec | null): void }
+export interface DocxWatermarkControls { current(): DocxWatermarkValue | null; source: DocxWatermarkModel; reason(): string | null; apply(spec: DocxWatermarkValue | null): void; snapshot?(): unknown; pageBox?(): import("./docx-watermark-dialog-source").WatermarkPageBox }
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => void; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void }, commentCommands?: { open: () => void; openNew?: () => void }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void, pageColor?: DocxPageColorControls, watermark?: DocxWatermarkControls, pageBorders?: DocxPageBorderControls): HTMLElement {
+  section?: { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => SectionChangeResult; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; pageBorders?: () => { settings: SectionSettings; apply: (props: SectionSettings['pageBorderProps'] | null, scope: 'whole' | 'section') => SectionChangeResult }; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void; applyAll: (action: 'accept' | 'reject') => void; batchReason: () => string | null; navigateRevision?: (direction: 1 | -1) => boolean; navigationReason?: () => string | null; trackingEnabled?:()=>boolean;trackingReason?:()=>string|null;toggleTracking?:()=>void; spellcheck?: {element:HTMLButtonElement;refresh:()=>void}; view?: DocxReviewViewCommands }, commentCommands?: { open: (event?: {currentTarget:EventTarget|null}) => void; toggle?: (event?: {currentTarget:EventTarget|null}) => void; openNew?: () => void; navigate?: (direction: 1 | -1, event?: {currentTarget:EventTarget|null}) => boolean; navigationReason?: () => string | null; deleteCurrent?: () => boolean; deleteReason?: () => string | null; deleteAll?: (resolvedOnly:boolean) => boolean; deleteAllReason?: (resolvedOnly:boolean) => string|null }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void, pageColor?: DocxPageColorControls, watermark?: DocxWatermarkControls, pictures?: ReturnType<typeof createDocxPictureControls>, tableGridlines?: DocxTableGridlinesControls, formattingMarks?: { readonly visible: boolean; toggle(): void }, pageBorders?: DocxPageBorderControls): HTMLElement {
   const formattingAnchors = noteAnchors.length ? noteAnchors : anchors
   const withNotes = noteAnchors.length > 0
   const ribbon = document.createElement('div')
@@ -152,6 +172,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let cellBorderControls: ReturnType<typeof createDocxCellBordersControls> | undefined
   let active = 'home'
   let closeLineSpacing: (() => void) | undefined
+  let closeFontDialog: (() => void) | undefined
+  let closeParagraphDialog: (() => void) | undefined
+  let closePageBorderDialog: (() => void) | undefined
+  let closeWatermarkDialog: (() => void) | undefined
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
@@ -172,6 +196,69 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       button.disabled = reason !== null
       button.title = reason ?? '在 Word 中打开后更新域以计算页码'
       button.setAttribute('aria-description', button.title)
+    }
+  }
+  const refreshReviewCommands = () => {
+    if (!reviewCommands) return
+    reviewCommands.spellcheck?.refresh()
+    if(reviewCommands.view){
+      const authors=reviewCommands.view.authors(),select=body.querySelector<HTMLSelectElement>('[data-action="revision-filter-authors"]')
+      if(select&&JSON.stringify(Array.from(select.options,option=>option.value))!==JSON.stringify(authors)){
+        const hidden=new Set(reviewCommands.view.state().hiddenAuthors)
+        select.replaceChildren(...authors.map(author=>{const option=document.createElement('option');option.value=author;option.textContent=author||'未知作者';option.selected=hidden.has(author);return option}))
+        select.size=Math.min(3,Math.max(1,authors.length));select.disabled=authors.length===0
+      }
+    }
+    const reason = reviewCommands.batchReason()
+    for (const button of body.querySelectorAll<HTMLButtonElement>('[data-review-revision-action]')) {
+      button.disabled = reason !== null
+      button.title = reason ?? button.dataset.reviewLabel ?? ''
+      if (reason) button.setAttribute('aria-description', reason)
+      else button.removeAttribute('aria-description')
+    }
+    const navigationReason = reviewCommands.navigationReason ? reviewCommands.navigationReason() : '没有可导航的受支持正文修订'
+    for (const button of body.querySelectorAll<HTMLButtonElement>('[data-review-revision-navigation]')) {
+      button.disabled = navigationReason !== null
+      button.title = navigationReason ?? button.dataset.reviewLabel ?? ''
+      if (navigationReason) button.setAttribute('aria-description', navigationReason)
+      else button.removeAttribute('aria-description')
+    }
+    const trackingReason=reviewCommands.trackingReason?.()??null
+    for(const button of body.querySelectorAll<HTMLButtonElement>('[data-review-track-changes]')){
+      const enabled=reviewCommands.trackingEnabled?.()??false
+      button.disabled=trackingReason!==null
+      button.setAttribute('aria-pressed',String(enabled))
+      button.textContent=enabled?'停止跟踪':'跟踪修订'
+      button.setAttribute('aria-label',button.textContent)
+      button.title=trackingReason??button.textContent
+      if(trackingReason)button.setAttribute('aria-description',trackingReason)
+      else button.removeAttribute('aria-description')
+    }
+  }
+  const refreshCommentNavigation = () => {
+    if (!commentCommands) return
+    if (commentCommands.navigationReason) {
+      const reason = commentCommands.navigationReason()
+      for (const button of body.querySelectorAll<HTMLButtonElement>('[data-comment-navigation]')) {
+        button.disabled = reason !== null
+        button.title = reason ?? button.textContent ?? ''
+        if (reason) button.setAttribute('aria-description', reason)
+        else button.removeAttribute('aria-description')
+      }
+    }
+    if (commentCommands.deleteReason) {
+      const reason = commentCommands.deleteReason()
+      for (const button of body.querySelectorAll<HTMLButtonElement>('[data-comment-delete-current]')) {
+        button.disabled = reason !== null
+        button.title = reason ?? '删除当前批注'
+        if (reason) button.setAttribute('aria-description', reason)
+        else button.removeAttribute('aria-description')
+      }
+    }
+    if (commentCommands.deleteAllReason) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-comment-delete-batch]')) {
+      const resolvedOnly = button.dataset.commentDeleteBatch === 'resolved', reason = commentCommands.deleteAllReason(resolvedOnly)
+      button.disabled = reason !== null; button.title = reason ?? button.getAttribute('aria-label') ?? ''
+      if (reason) button.setAttribute('aria-description', reason); else button.removeAttribute('aria-description')
     }
   }
   const notesPanel = document.createElement('div')
@@ -200,8 +287,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     return Array.from({ length: 9 }, (_, target) => {
       const level = definition?.levels?.[target]
       if (!level) return false
-      const bullet = level.numFmt === 'bullet' || level.picBulletId != null
-      return bullet === (node.attrs.kind === 'bullet')
+      return true
     })
   }
   const hasListLevel = (node: any, delta: -1 | 1) => {
@@ -211,7 +297,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const setListLevel = (ilvl: number) => {
     const selected = selectedParagraph()
     if (!selected || selected.node.type.name !== 'docListItem' || !availableListLevels(selected.node)[ilvl]) return
-    editor.view.dispatch(editor.state.tr.setNodeMarkup(selected.pos, undefined, { ...selected.node.attrs, ilvl }))
+    if (selected.node.attrs.nativeListDefinition) { changeDocxCustomListLevel(editor, ilvl); return }
+    const level = editor.storage.listNumbering.defs.get(String(selected.node.attrs.numId))!.levels[ilvl]!
+    editor.view.dispatch(editor.state.tr.setNodeMarkup(selected.pos, undefined, { ...selected.node.attrs, ilvl, kind: level.numFmt === 'bullet' || level.picBulletId != null ? 'bullet' : 'ordered' }))
   }
   const rightIndentField = () => {
     const selected = selectedParagraph()
@@ -359,6 +447,17 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       items.className = 'ribbon-group-items'
       for (const item of commands) {
         const { id: actionId, label } = item
+        if (id === 'tableLayout' && actionId === 'table-view-gridlines' && tableGridlines) {
+          const gridButton = document.createElement('button')
+          gridButton.type = 'button'; gridButton.className = 'rb-icon docx-ribbon-command'; gridButton.textContent = label
+          gridButton.dataset.action = actionId; gridButton.dataset.sourceAction = 'onToggleTableGridlines'; gridButton.setAttribute('aria-label', label)
+          gridButton.setAttribute('aria-pressed', String(tableGridlines.visible))
+          const reason = tableGridlines.reason()
+          gridButton.disabled = reason !== null; gridButton.title = reason ?? label
+          gridButton.addEventListener('mousedown', event => event.preventDefault())
+          gridButton.addEventListener('click', () => { tableGridlines.toggle(); gridButton.setAttribute('aria-pressed', String(tableGridlines.visible)) })
+          items.append(gridButton); continue
+        }
         if (id === 'layout' && label === '右缩进') { items.append(rightIndentField()); continue }
         if (id === 'layout' && label === '段前') { items.append(spacingField('space-before-value', label)); continue }
         if (id === 'layout' && label === '段后') { items.append(spacingField('space-after-value', label)); continue }
@@ -387,10 +486,44 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           const sep = document.createElement('div'); sep.className = 'rb-menu-sep'; menu.append(sep)
           item('页面边框…', 'page-borders-dialog', () => {
             closeMenu()
-            openDocxPageBorderDialog(ribbon, pageBorders.current(), (props, scope) => apply(props ? { pageBorder: true, pageBorderProps: props } : { pageBorder: false }, scope), pageBorders.sectionLabel?.())
+            closePageBorderDialog?.()
+            const openedDoc = editor.state.doc, openedSection = pageBorders.sectionLabel?.()
+            const dialog = openDocxPageBorderDialog(ribbon, pageBorders.current(), (props, scope) => {
+              if (editor.state.doc !== openedDoc || pageBorders.sectionLabel?.() !== openedSection) { reportError?.(new Error('文档或活动节已变化，请重新打开页面边框')); return }
+              apply(props ? { pageBorder: true, pageBorderProps: props } : { pageBorder: false }, scope)
+            }, openedSection)
+            closePageBorderDialog = () => { dialog.close(); dialog.remove() }
           })
           wrap.append(trigger, menu); items.append(wrap)
           continue
+        }
+        if (id === 'design' && label === '页面边框' && section) {
+          const wrap = document.createElement('div'), trigger = document.createElement('button'), menu = document.createElement('div')
+          wrap.className = 'rb-split-wrap'
+          trigger.type = 'button'; trigger.className = 'rb-icon docx-ribbon-command'; trigger.dataset.action = 'page-borders'; trigger.textContent = label
+          trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-haspopup', 'true')
+          menu.className = 'layout-menu'; menu.hidden = true; menu.dataset.rbPanel = ''; menu.setAttribute('role', 'group'); menu.setAttribute('aria-label', '当前节页面边框')
+          wrap.addEventListener('mousedown', event => event.preventDefault())
+          trigger.addEventListener('click', () => { menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden)) })
+          for (const [key, text, value] of [['box', '方框', true], ['none', '无', false]] as const) {
+            const button = document.createElement('button'); button.type = 'button'; button.textContent = text; button.dataset.action = `page-borders-${key}`
+            button.addEventListener('click', () => {
+              try {
+                if (editable && editor.isEditable && (value ? !docxDefaultPageBox(section.settings) : section.settings.pageBorder)) section.onChange({ pageBorder: value })
+              } catch (error) { reportError?.(error) }
+              menu.hidden = true; trigger.setAttribute('aria-expanded', 'false'); syncPageBorders()
+            }); menu.append(button)
+          }
+          const custom = document.createElement('button'); custom.type = 'button'; custom.textContent = '边框和底纹…'; custom.dataset.action = 'page-borders-custom'; custom.disabled = !section.pageBorders
+          custom.title = '页面边框：设置、样式、艺术型、预览及适用范围'
+          custom.addEventListener('click', () => {
+            if (!editable || !editor.isEditable || !section.pageBorders) return
+            menu.hidden = true; trigger.setAttribute('aria-expanded', 'false')
+            closePageBorderDialog?.()
+            const binding = section.pageBorders()
+            closePageBorderDialog = openDocxPageBorderSourceDialog(binding.settings, (props, scope) => binding.apply(props, scope), trigger)
+          })
+          menu.append(custom); wrap.append(trigger, menu); items.append(wrap); continue
         }
         if (id === 'design' && label === '水印' && watermark) {
           // 固定源水印菜单：预设文字、“自定义水印…”、“删除水印”。
@@ -400,15 +533,28 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-haspopup', 'true')
           menu.className = 'layout-menu docx-watermark-menu'; menu.hidden = true; menu.dataset.rbPanel = ''; menu.setAttribute('role', 'group'); menu.setAttribute('aria-label', '水印')
           const close = () => { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false') }
-          const apply = (spec: DocxWatermarkSpec | null) => { try { watermark.apply(spec) } catch (error) { reportError?.(error) } close(); syncWatermark() }
+          const apply = (spec: DocxWatermarkValue | null) => { try { watermark.apply(spec) } catch (error) { reportError?.(error) } close(); syncWatermark() }
           wrap.addEventListener('mousedown', event => { if (!(event.target instanceof HTMLInputElement)) event.preventDefault() })
-          trigger.addEventListener('click', () => { menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden)) })
+          trigger.addEventListener('click', () => {
+            menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden))
+            if (!menu.hidden) menu.style.setProperty('--docx-watermark-menu-height', `${Math.max(48, innerHeight - trigger.getBoundingClientRect().bottom - 12)}px`)
+          })
           for (const text of DOCX_WATERMARK_PRESETS) {
             const item = document.createElement('button'); item.type = 'button'; item.textContent = text; item.dataset.action = `watermark-preset-${text}`
             item.addEventListener('click', () => apply({ text })); menu.append(item)
           }
           const custom = document.createElement('button'); custom.type = 'button'; custom.textContent = '自定义水印…'; custom.dataset.action = 'watermark-custom'
-          custom.addEventListener('click', () => { close(); openDocxWatermarkDialog(ribbon, watermark.current(), spec => apply(spec)) })
+          custom.addEventListener('click', () => {
+            close(); const value = watermark.current(), snapshot = watermark.snapshot?.()
+            const current = value && 'image' in value ? { text: null, style: null, picture: value } : { text: value?.text ?? null, style: value ? (({ text: _text, ...style }) => style)(value) : null, picture: null }
+            closeWatermarkDialog?.()
+            closeWatermarkDialog = openDocxWatermarkSourceDialog(current, watermark.pageBox?.() ?? { pageWidthPt: 612, pageHeightPt: 792, marginWidthPt: 468, marginHeightPt: 648 }, spec => {
+              const blocked = watermark.reason(); if (blocked) throw new Error(blocked)
+              if (watermark.snapshot && watermark.snapshot() !== snapshot) throw new Error('水印对话框打开后文档或草稿已改变，请重新打开')
+              if (typeof spec === 'string') throw new Error('水印值无效')
+              watermark.apply(spec); syncWatermark()
+            }, trigger)
+          })
           const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '删除水印'; remove.dataset.action = 'watermark-remove'
           remove.addEventListener('click', () => apply(null))
           menu.append(custom, remove); wrap.append(trigger, menu); items.append(wrap)
@@ -466,8 +612,12 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         const command = document.createElement('button')
         command.type = 'button'
         command.className = 'rb-icon docx-ribbon-command'
-        const structure = !!TABLE_ACTIONS[actionId] || ['table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(actionId)
+        const tableSelection = !!TABLE_SELECTION_ACTIONS[actionId]
+        const structure = tableSelection || !!TABLE_ACTIONS[actionId] || ['table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(actionId)
         const view = id === 'view' ? viewCommands : undefined
+        if(id==='mailings'&&['开始邮件合并','选择收件人','插入合并域','预览结果','完成并合并'].includes(label)){
+          command.textContent=label;command.dataset.action='mail-merge';command.setAttribute('aria-label',label);command.disabled=!editable;command.addEventListener('mousedown',event=>event.preventDefault());command.addEventListener('click',()=>ribbon.dispatchEvent(new CustomEvent('native-mail-merge-open',{bubbles:true})));items.append(command);continue
+        }
         if(id==='references'&&references&&(label==='题注'||label==='交叉引用')) {
           command.textContent=label;command.setAttribute('aria-label',label);command.dataset.action=label==='题注'?'caption-insert':'cross-reference';command.dataset.editableAction='true';command.disabled=!editable||!editor.isEditable
           command.addEventListener('mousedown',event=>event.preventDefault());command.addEventListener('click',label==='题注'?references.caption.open:references.crossReferences.open);items.append(command);continue
@@ -497,15 +647,55 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           command.addEventListener('mousedown',event=>event.preventDefault())
           command.addEventListener('click',commentCommands.openNew);items.append(command);continue
         }
+        if (id === 'review' && label === '删除当前批注' && commentCommands?.deleteCurrent) {
+          const visibleLabel = '删除批注'
+          const icon = document.createElement('span'), iconRoot = createRoot(icon)
+          flushSync(() => iconRoot.render(createElement(IconTrash, {size:20})))
+          command.append(icon.firstElementChild!.cloneNode(true)); iconRoot.unmount()
+          command.append(document.createTextNode(visibleLabel)); command.dataset.action = 'comment-delete-current'; command.dataset.commentDeleteCurrent = ''
+          command.setAttribute('aria-label', label)
+          command.addEventListener('mousedown', event => event.preventDefault())
+          command.addEventListener('click', () => { commentCommands.deleteCurrent?.(); refreshCommentNavigation() })
+          items.append(command); refreshCommentNavigation(); continue
+        }
+        if (id === 'review' && (label === '删除已解决批注' || label === '删除全部批注') && commentCommands?.deleteAll) {
+          const resolvedOnly = label === '删除已解决批注'
+          command.textContent = label; command.dataset.action = resolvedOnly ? 'comment-delete-resolved' : 'comment-delete-all'
+          command.dataset.commentDeleteBatch = resolvedOnly ? 'resolved' : 'all'
+          command.setAttribute('aria-label', resolvedOnly ? '删除所有已解决的批注' : '删除文档中的所有批注')
+          command.addEventListener('mousedown', event => event.preventDefault())
+          command.addEventListener('click', () => { commentCommands.deleteAll?.(resolvedOnly); refreshCommentNavigation() })
+          items.append(command); refreshCommentNavigation(); continue
+        }
         if (id === 'review' && label === '显示批注' && commentCommands) {
           const icon = document.createElement('span'), iconRoot = createRoot(icon)
           flushSync(() => iconRoot.render(createElement(IconComments, { size: 20 })))
           command.append(icon.firstElementChild!.cloneNode(true)); iconRoot.unmount()
           command.append(document.createTextNode(label)); command.dataset.action = 'comment-text-list'; command.setAttribute('aria-label', label)
           command.title = label
-          command.addEventListener('click', commentCommands.open); items.append(command); continue
+          command.addEventListener('click', event => (commentCommands.toggle ?? commentCommands.open)(event)); items.append(command); continue
         }
-        const reason = view ? view.reason(label) : structure && tableCommands ? (!editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(actionId)) : actionId ? tableUnavailable : migrating
+        if (id === 'review' && (label === '上一条批注' || label === '下一条批注') && commentCommands?.navigate) {
+          const direction = label === '上一条批注' ? -1 : 1
+          command.textContent = label; command.dataset.action = direction < 0 ? 'comment-previous' : 'comment-next'
+          command.dataset.commentNavigation = String(direction)
+          command.setAttribute('aria-label', label)
+          const reason = commentCommands.navigationReason?.() ?? null
+          command.disabled = reason !== null; command.title = reason ?? label
+          if (reason) command.setAttribute('aria-description', reason)
+          command.addEventListener('mousedown', event => event.preventDefault())
+          command.addEventListener('click', event => commentCommands.navigate?.(direction, event))
+          items.append(command); continue
+        }
+        if (id === 'pictureFormat' && pictures && ['替换图片', '删除背景', '裁剪'].includes(label)) {
+          const action = label === '替换图片' ? 'replace' : label === '裁剪' ? 'crop' : 'cutout'
+          const unavailable = pictures.reason()
+          command.textContent = label; command.dataset.action = 'picture-' + action; command.dataset.pictureAction = action
+          command.disabled = !!unavailable; command.title = unavailable ?? label; command.setAttribute('aria-label', label)
+          command.addEventListener('mousedown', event => event.preventDefault())
+          command.addEventListener('click', () => pictures.open(action)); items.append(command); continue
+        }
+        const reason = view ? view.reason(label) : structure && tableCommands ? (tableSelection ? tableCommands.reason(actionId) : !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(actionId)) : actionId ? tableUnavailable : migrating
         const available = view ? reason === null : structure && tableCommands ? reason === null : !actionId && id === 'view' && label === '分页预览' && !!onPaginationPreview
         if(actionId==='table-repeat-header-rows'||actionId?.startsWith('table-autofit-')||actionId?.startsWith('table-text-direction-')||actionId?.startsWith('table-align-'))command.setAttribute('aria-pressed',String(tableCommands?.active?.(actionId)??false))
         command.disabled = !available
@@ -527,7 +717,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         } else if (view && available) {
           command.dataset.sourceAction = label === '标尺' ? 'onShowRuler' : label === '网格线' ? 'onShowGrid' : label === '导航窗格' ? 'onShowNav' : label === '大纲' || label === '页面视图' ? 'onViewMode' : label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
           command.addEventListener('mousedown', event => event.preventDefault())
-          command.addEventListener('click', () => { view.run(label); refreshView() })
+          command.addEventListener('click', () => { if (label === '导航窗格') command.focus({ preventScroll: true }); view.run(label); refreshView() })
         } else if (available) command.addEventListener('click', onPaginationPreview!)
         items.append(command)
       }
@@ -539,16 +729,77 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       content.append(group)
     }
     if (id === 'review' && reviewCommands) {
+      if (reviewCommands.spellcheck) {
+        const proofing = document.createElement('section')
+        proofing.className = 'ribbon-group docx-ribbon-group';proofing.setAttribute('aria-label', '校对')
+        const spellcheck = reviewCommands.spellcheck.element
+        spellcheck.className = 'rb-icon docx-ribbon-command';spellcheck.setAttribute('aria-label', '拼写检查');spellcheck.title = '键入时使用浏览器拼写检查'
+        proofing.append(spellcheck)
+        const caption = document.createElement('div');caption.className = 'ribbon-group-label';caption.textContent = '校对';proofing.append(caption)
+        content.append(proofing)
+      }
       const group = document.createElement('section'), button = document.createElement('button')
       group.className = 'ribbon-group docx-ribbon-group'
-      group.setAttribute('aria-label', '正文修订')
+      group.setAttribute('aria-label', '受支持正文修订')
+      const revisionItems=document.createElement('div')
+      revisionItems.className='ribbon-group-items docx-review-revisions-items'
+      group.append(revisionItems)
+      if(reviewCommands.toggleTracking){
+        const tracking=document.createElement('button')
+        tracking.type='button';tracking.className='rb-icon docx-ribbon-command';tracking.dataset.action='track-changes-toggle';tracking.dataset.reviewTrackChanges=''
+        tracking.setAttribute('aria-pressed',String(reviewCommands.trackingEnabled?.()??false))
+        tracking.addEventListener('click',()=>{reviewCommands.toggleTracking?.();refreshReviewCommands()})
+        revisionItems.append(tracking)
+      }
+      for (const [direction, label] of [[-1, '上一条受支持正文修订'], [1, '下一条受支持正文修订']] as const) {
+        const command = document.createElement('button')
+        command.type = 'button'; command.className = 'rb-icon docx-ribbon-command'
+        command.textContent = label; command.dataset.action = direction === -1 ? 'text-revision-previous' : 'text-revision-next'
+        command.dataset.reviewRevisionNavigation = ''; command.dataset.reviewLabel = label
+        command.setAttribute('aria-label', label)
+        command.addEventListener('click', () => reviewCommands.navigateRevision?.(direction))
+        revisionItems.append(command)
+      }
       button.type = 'button'; button.className = 'rb-icon docx-ribbon-command'
       button.textContent = '修订列表'; button.dataset.action = 'text-revision-list'
       button.addEventListener('click', reviewCommands.open)
-      group.append(button); content.append(group)
+      revisionItems.append(button)
+      for (const [action, label, operation] of [
+        ['accept', '接受支持的正文修订', 'accept'], ['reject', '拒绝支持的正文修订', 'reject'],
+      ] as const) {
+        const command = document.createElement('button')
+        command.type = 'button'; command.className = 'rb-icon docx-ribbon-command'
+        command.textContent = label; command.dataset.action = `text-revision-${action}-supported`
+        command.dataset.reviewRevisionAction = action; command.dataset.reviewLabel = label
+        command.setAttribute('aria-label', label)
+        command.addEventListener('click', () => reviewCommands.applyAll(operation))
+        revisionItems.append(command)
+      }
+      content.append(group)
+      if(reviewCommands.view){
+        const controller=reviewCommands.view,viewGroup=document.createElement('section'),mode=document.createElement('select'),insDel=document.createElement('input'),format=document.createElement('input'),authors=document.createElement('select')
+        viewGroup.className='ribbon-group docx-ribbon-group';viewGroup.setAttribute('aria-label','修订显示')
+        const displayItems=document.createElement('div');displayItems.className='ribbon-group-items docx-review-display-items';viewGroup.append(displayItems)
+        mode.dataset.action='revision-display';mode.setAttribute('aria-label','标记显示')
+        for(const [value,label] of [['all','所有标记'],['simple','简单标记'],['none','无标记'],['original','原始状态']] as const){const option=document.createElement('option');option.value=value;option.textContent=label;mode.append(option)}
+        mode.value=controller.state().mode;mode.addEventListener('change',()=>controller.setMode(mode.value as DocxReviewViewState['mode']))
+        const modeLabel=document.createElement('label');modeLabel.append(document.createTextNode('标记显示 '),mode);displayItems.append(modeLabel)
+        const filter=(input:HTMLInputElement,label:string,action:string,key:'insDel'|'format')=>{
+          const wrapper=document.createElement('label');input.type='checkbox';input.dataset.action=action;input.checked=controller.state()[key];wrapper.append(input,document.createTextNode(label));input.addEventListener('change',()=>{const current=controller.state();controller.setFilter({...current,[key]:input.checked})});displayItems.append(wrapper)
+        }
+        filter(insDel,'插入和删除','revision-filter-insdel','insDel');filter(format,'格式','revision-filter-format','format')
+        authors.multiple=true;authors.size=Math.min(3,Math.max(1,controller.authors().length));authors.dataset.action='revision-filter-authors';authors.setAttribute('aria-label','特定人员（选中以隐藏）')
+        for(const author of controller.authors()){const option=document.createElement('option');option.value=author;option.textContent=author||'未知作者';option.selected=controller.state().hiddenAuthors.includes(author);authors.append(option)}
+        authors.disabled=authors.options.length===0
+        authors.addEventListener('change',()=>{const current=controller.state();controller.setFilter({...current,hiddenAuthors:Array.from(authors.selectedOptions,option=>option.value)})})
+        const peopleLabel=document.createElement('label');peopleLabel.className='docx-review-authors';peopleLabel.append(document.createTextNode('特定人员 '),authors);displayItems.append(peopleLabel)
+        for(const [action,label,description] of [['revision-balloons-unavailable','气泡','标记气泡显示尚未在本地编辑器接通'],['track-changes-options-unavailable','修订选项','高级修订选项尚未在本地编辑器接通']] as const){const unavailable=document.createElement('button');unavailable.type='button';unavailable.textContent=label;unavailable.dataset.action=action;unavailable.disabled=true;unavailable.title=description;unavailable.setAttribute('aria-label',`${label}，${description}`);displayItems.append(unavailable)}
+        const caption=document.createElement('div');caption.className='ribbon-group-label';caption.textContent='显示标记';viewGroup.append(caption);content.append(viewGroup)
+      }
     }
     fillDocxCommandIcons(content)
     body.append(content)
+    if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
     if (active === 'headerFooter' && id !== active) {
@@ -597,6 +848,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     else { body.replaceChildren(home); body.setAttribute('aria-label', '开始') }
   }
   const refreshContextTabs = () => {
+    const focusedContextTab = [...contextTabs.values()].find(button => button === document.activeElement)
     const selection = editor.state.selection
     const selectedNode = selection instanceof NodeSelection ? selection.node : undefined
     const names: string[] = []
@@ -609,6 +861,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     const states: Record<string, boolean> = { tableDesign: inTable, tableLayout: inTable, pictureFormat: picture, shapeFormat: shape, headerFooter: !!headerFooter }
     for (const [id, button] of contextTabs) button.hidden = states[id] !== true
     if (contextTabs.get(active)?.hidden) setActive('home')
+    if (focusedContextTab?.hidden) tablist.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.focus()
   }
   for (const { id, label, contextual } of tabs) {
     const tab = document.createElement('button')
@@ -623,9 +876,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (contextual) { tab.hidden = true; contextTabs.set(id, tab) }
     tab.addEventListener('click', () => setActive(id))
     tab.addEventListener('keydown', event => {
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented || tab.hidden || tab.disabled) return
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
       event.preventDefault()
-      const visible = [...tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]')].filter(item => !item.hidden)
+      const visible = [...tablist.querySelectorAll<HTMLButtonElement>('[role="tab"]')].filter(item => !item.hidden && !item.disabled)
       const index = visible.indexOf(tab)
       const next = event.key === 'Home' ? visible[0] : event.key === 'End' ? visible.at(-1)! : visible[(index + (event.key === 'ArrowRight' ? 1 : -1) + visible.length) % visible.length]
       setActive(next.dataset.tabId!); next.focus()
@@ -641,7 +895,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const renderInsert = () => {
     const numberTarget = section ? { format: section.pageNumberFmt, start: section.pageNumberStart, reason: section.pageNumberReason, label: section.label, commit: ((label, settings) => (values: SectionValues) => {
       if (section.label !== label || section.settings !== settings) throw new Error('当前节发生变化，请重新打开页码格式')
-      section.onChange(values)
+      return section.onChange(values)
     })(section.label, section.settings) } : undefined
     flushSync(() => insertRoot.render(createElement(DocxInsertSource, { editor, editable, anchors, onNewComment:commentCommands?.openNew, onBookmarks:bookmarks?.open,onCrossReference:references?.crossReferences.open,
     headerFooter: headerFooter?.prepareEdges ? { prepare: () => headerFooter.prepareEdges!(), edit: target => {
@@ -700,7 +954,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       if (node.type.name === 'docListItem') {
         const next = Number(node.attrs.ilvl) + delta
         if (!hasListLevel(node, delta)) throw new Error(delta > 0 ? '编号定义中没有兼容的下一级' : '编号定义中没有兼容的上一级')
-        editor.view.dispatch(editor.state.tr.setNodeMarkup($pos.before(depth), undefined, { ...node.attrs, ilvl: next }))
+        setListLevel(next)
         return
       }
       if (!['docParagraph', 'docHeading'].includes(node.type.name)) continue
@@ -717,18 +971,51 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   body.append(home)
   const homeRoot = createRoot(home)
   // 上游 Home toggleList 的正文分支：同类列表再点还原普通段落。
-  // numId 只作浏览器草稿标识；真实编号身份由服务端从来源文档分配。
+  // 浏览器绑定原始定义或源默认定义；持久化numId仍由服务端从来源文档分配。
   const toggleList = (kind: 'bullet' | 'ordered') => {
-    if (editor.isActive('docListItem', { kind })) editor.chain().focus().setNode('docParagraph').run()
-    else editor.chain().focus().setNode('docListItem', { kind, numId: `native-${kind}`, ilvl: 0 }).run()
+    if (!editable || !editor.isEditable) return
+    if (editor.isActive('docListItem', { kind })) {
+      if (editor.getAttributes('docListItem').nativeListDefinition || editor.getAttributes('docListItem').nativeNumberingBinding) clearDocxCustomList(editor, anchors)
+      else editor.chain().focus().setNode('docParagraph', { nativeListDefinition: null, nativeNumberingBinding: null }).run()
+    }
+    else { try { applyDocxHomeList(editor, anchors, kind) } catch (error) { if (reportError) reportError(error) } }
   }
   const paragraphStyleControl = createParagraphStyleControl(editor, editable, anchors)
   // 剪贴板组：格式刷控制器 + 粘贴/剪切/复制回调（docx-clipboard.ts，协议内收敛）。
   // 剪贴板/刷子的失败原因经 reportError 写回文档状态栏，按钮保持可用可重试。
   const reportClipboardError = (error: unknown) => { if (reportError) reportError(error); else console.warn(error instanceof Error ? error.message : String(error)) }
+  const numberingValueControl = createDocxNumberingValueControl(editor, editable, anchors, reportClipboardError)
+  let disposed = false
+  let listSnapshot: { doc: typeof editor.state.doc; selection: typeof editor.state.selection } | undefined
+  const assertListSnapshot = () => {
+    if (!listSnapshot || editor.state.doc !== listSnapshot.doc || !editor.state.selection.eq(listSnapshot.selection)) throw new Error('多级列表选区或来源已变化，请重新打开')
+    const reason = !editable ? '当前文档不可编辑' : docxCustomListReason(editor, anchors)
+    if (reason) throw new Error(reason)
+  }
+  const listOptions: Parameters<typeof createDocxListGallery>[0] = {
+    reason: () => !editable ? '当前文档不可编辑' : docxCustomListReason(editor, anchors),
+    styles: () => [...((editor.storage.listNumbering.styles as Map<string, StyleInfo> | undefined)?.values() ?? [])],
+    definitions: () => editor.storage.listNumbering?.defs?.values() ?? [],
+    level: () => { const node = selectedParagraph()?.node; return { current: Number(node?.attrs.ilvl) || 0, available: availableListLevels(node) } },
+    changeLevel: ilvl => { assertListSnapshot(); setListLevel(ilvl) },
+    current: () => {
+      listSnapshot = { doc: editor.state.doc, selection: editor.state.selection }
+      const node = selectedParagraph()?.node
+      if (node?.attrs.nativeListDefinition) return structuredClone(node.attrs.nativeListDefinition.levels)
+      const definition = node?.type.name === 'docListItem' ? editor.storage.listNumbering.defs.get(String(node.attrs.numId)) : undefined
+      return definition ? Object.values(definition.levels).map(customLevelFromNumberingLevel) : undefined
+    },
+    apply: levels => { assertListSnapshot(); applyDocxCustomList(editor, anchors, levels) },
+    clear: () => { assertListSnapshot(); clearDocxCustomList(editor, anchors) },
+    report: reportClipboardError,
+  }
+  const multilevelListControl = createDocxListGallery(listOptions)
+  const bulletListControl = createDocxListGallery({ ...listOptions, kind: 'bullets' })
+  const numberListControl = createDocxListGallery({ ...listOptions, kind: 'numbers' })
   let refreshHome: () => void = () => {}
   const painter = createDocxPainter(editor, { report: reportClipboardError, onChange: () => refreshHome() })
   const renderHome = () => {
+    multilevelListControl.refresh(); bulletListControl.refresh(); numberListControl.refresh()
     let alignment: string | undefined
     let listKind: string | undefined
     let indentLeft: number | null = null
@@ -750,6 +1037,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       editable: editable && editor.isEditable,
       onAssistant,
       paragraphStyleControl,
+      multilevelListControl: multilevelListControl.element,
+      onSetNumberingValue: () => { void numberingValueControl.open() }, numberingValueUnavailable: numberingValueControl.reason(),
+      bulletListControl: bulletListControl.element, numberListControl: numberListControl.element,
       clearFormattingUnavailable: docxClearFormattingUnavailable(editor, editable, anchors),
       onClearFormatting: () => { try { applyDocxClearFormatting(editor, editable, anchors) } catch (error) { reportClipboardError(error) } },
       caseUnavailable: docxCaseUnavailable(editor, editable, anchors),
@@ -759,6 +1049,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       spaceBefore: selected?.attrs.spaceBefore == null ? null : Number(selected.attrs.spaceBefore),
       spaceAfter: selected?.attrs.spaceAfter == null ? null : Number(selected.attrs.spaceAfter),
       lineSpacing: selected?.attrs.lineSpacing == null ? null : Number(selected.attrs.lineSpacing),
+      fontOptionsUnavailable: docxFontDialogUnavailable(editor, anchors),
+      onFontOptions: () => {
+        try { closeLineSpacing?.(); closeSpecialIndent?.(); closeParagraphDialog?.(); closeFontDialog?.(); closeFontDialog = openDocxFontDialog(ribbon, editor, anchors) }
+        catch (error) { reportClipboardError(error) }
+      },
+      paragraphOptionsUnavailable: docxParagraphDialogUnavailable(editor, anchors),
+      onParagraphOptions: () => {
+        try { closeLineSpacing?.(); closeSpecialIndent?.(); closeParagraphDialog?.(); closeParagraphDialog = openDocxParagraphDialog(ribbon, editor, anchors) }
+        catch (error) { reportClipboardError(error) }
+      },
       lineSpacingUnavailable: docxLineSpacingUnavailable(editor, anchors),
       specialIndentUnavailable: docxSpecialIndentUnavailable(editor, anchors),
       onSpecialIndentOptions: () => {
@@ -803,6 +1103,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       onParagraph: onParagraphCommand ? (command: 'add' | 'delete') => onParagraphCommand(command) : undefined,
       onFindReplace,
       onSelectAll: !editor.isDestroyed ? () => { editor.chain().focus().selectAll().run() } : undefined,
+      formattingMarksVisible: formattingMarks?.visible ?? false,
+      onToggleFormattingMarks: formattingMarks && !editor.isDestroyed ? () => formattingMarks.toggle() : undefined,
+      onPasteSpecial: (defaults?:boolean)=>showDocxPasteDialog(editor,defaults),
       onPaste: (mode?: DocxPasteMode) => { void docxClipboardPaste(editor, mode).catch(reportClipboardError) },
       onCut: () => { try { docxClipboardCut(editor) } catch (error) { reportClipboardError(error) } },
       onCopy: () => { try { docxClipboardCopy(editor) } catch (error) { reportClipboardError(error) } },
@@ -828,7 +1131,20 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   /** 水印按钮：可用性、提示与菜单选中项随编辑状态和草稿刷新。 */
   function syncPageBorders() {
     const trigger = body.querySelector<HTMLButtonElement>('[data-action="page-borders"]')
-    if (!trigger || !pageBorders) return
+    if (!trigger) return
+    if (!pageBorders) {
+      if (!section) return
+      const disabled = !editable || !editor.isEditable
+      trigger.disabled = disabled; trigger.title = disabled ? '当前文档不可编辑或正在保存' : `页面边框：${section.label ?? '当前节'}；分页预览显示各节实际边框`
+      trigger.classList.toggle('active', section.settings.pageBorder)
+      const custom = body.querySelector<HTMLButtonElement>('[data-action="page-borders-custom"]')
+      if (custom) custom.disabled = disabled || !section.pageBorders
+      for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action="page-borders-box"],[data-action="page-borders-none"]')) {
+        button.disabled = disabled
+        button.setAttribute('aria-pressed', String(button.dataset.action === 'page-borders-box' ? docxDefaultPageBox(section.settings) : !section.settings.pageBorder))
+      }
+      return
+    }
     const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : pageBorders.reason('section')
     const current = pageBorders.current()
     trigger.disabled = reason !== null
@@ -843,14 +1159,19 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : watermark.reason()
     const current = watermark.current()
     trigger.disabled = reason !== null
-    trigger.title = reason ?? (current ? `水印：${current.text}` : watermark.source.picture ? '水印：图片水印（可替换为文字水印或删除）' : '水印：无')
+    trigger.title = reason ?? (current ? ('image' in current ? '水印：图片水印' : `水印：${current.text}`) : watermark.source.picture ? '水印：图片水印（可替换为文字水印或删除）' : '水印：无')
     trigger.classList.toggle('active', !!current || (watermark.source.picture && !trigger.title.includes('无')))
-    for (const item of body.querySelectorAll<HTMLButtonElement>('[data-action^="watermark-preset-"]')) item.classList.toggle('active', current?.text === item.textContent && Object.keys(current).length === 1)
+    for (const item of body.querySelectorAll<HTMLButtonElement>('[data-action^="watermark-preset-"]')) item.classList.toggle('active', !!current && !('image' in current) && current.text === item.textContent && Object.keys(current).length === 1)
   }
   const refreshSelection = () => {
     refreshView()
+    if (active === 'review') refreshReviewCommands()
+    if (active === 'review') refreshCommentNavigation()
     if (active === 'design') { syncPageColor(); syncWatermark(); syncPageBorders() }
     refreshContextTabs()
+    for (const button of body.querySelectorAll<HTMLButtonElement>('[data-picture-action]')) {
+      const unavailable = pictures?.reason(); button.disabled = !!unavailable; button.title = unavailable ?? button.textContent ?? ''
+    }
     renderInsert()
     if (active === 'references') { renderNotes(); refreshToc(body) }
     if (active === 'tableDesign') {
@@ -864,8 +1185,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     }
     if (active === 'tableLayout' && tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action]')) {
       const action = button.dataset.action!
-      if (!TABLE_ACTIONS[action] && !['table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(action)) continue
-      const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(action)
+      if (!TABLE_SELECTION_ACTIONS[action] && !TABLE_ACTIONS[action] && !['table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(action)) continue
+      const selectionOnly = !!TABLE_SELECTION_ACTIONS[action]
+      const reason = selectionOnly ? tableCommands.reason(action) : !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(action)
       button.disabled = reason !== null
       if(action==='table-repeat-header-rows'||action.startsWith('table-autofit-')||action.startsWith('table-text-direction-')||action.startsWith('table-align-'))button.setAttribute('aria-pressed',String(tableCommands.active?.(action)??false))
       const label = button.textContent ?? action
@@ -887,7 +1209,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', refreshTocAfterDraft)
   editor.on('transaction', renderHome)
   editor.on('update', renderHome)
-  editor.on('destroy', () => {
+  const dispose = () => {
+    if (disposed) return
+    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)
@@ -896,10 +1220,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     editor.off('update', renderHome)
     notesRoot?.unmount()
     painter.dispose()
+    multilevelListControl.destroy(); bulletListControl.destroy(); numberListControl.destroy()
     closeLineSpacing?.()
     closeSpecialIndent?.()
+    closeFontDialog?.()
+    closeParagraphDialog?.()
     homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount()
-  })
+    editor.off('destroy', dispose)
+  }
+  editor.on('destroy', dispose)
+  Object.assign(ribbon, { dispose })
   refreshContextTabs()
   return ribbon
 }

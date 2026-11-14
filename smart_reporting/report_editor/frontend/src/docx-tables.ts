@@ -1,3 +1,5 @@
+import { projectDocxTableProperties, tablePropertiesPatchOf } from './docx-table-properties'
+import { openDocxTablePropertiesSourceDialog } from './docx-table-properties-source'
 import {projectDocxTableAltText,type DocxTableAltTextAnchor} from './docx-table-alt-text'
 import {normalizeTableAltText} from './docx-table-alt-text-core'
 import {openDocxTableAltTextDialog,attachDocxTableAltTextNavigation} from './docx-table-alt-text-controls'
@@ -45,11 +47,14 @@ export const TABLE_ACTIONS: Record<string, { kind: TableKind; after?: boolean }>
   'table-insert-column-before': { kind: 'insertTableColumn' }, 'table-insert-column-after': { kind: 'insertTableColumn', after: true },
   'table-delete-row': { kind: 'deleteTableRow' }, 'table-delete-column': { kind: 'deleteTableColumn' },
 }
+export const TABLE_SELECTION_ACTIONS: Record<string, 'cell' | 'row' | 'column' | 'table'> = {
+  'table-select-cell': 'cell', 'table-select-row': 'row', 'table-select-column': 'column', 'table-select-all': 'table',
+}
 // nativeTableInsert 标记新增表格的行列意图（docx-new-table.ts），与结构意图同样不渲染、不入文件。
 // nativeCoverPage 标记新增封面首段的预设段落规格（docx-cover-page.ts），同样不渲染、不入文件。
 export const NativeTableStructure = Extension.create({ name: 'nativeTableStructure', addGlobalAttributes: () => [
   { types: ['docParagraph', 'docHeading', 'docListItem'], attributes: { nativeClearFormatting: { default: null, rendered: false, keepOnSplit: false } } },
-  { types: ['docTable'], attributes: { nativeTableStructure: { default: null, rendered: false }, nativeTableCellShape: { default: null, rendered: false }, nativeTableColumnWidths: { default: null, rendered: false }, nativeTableRowHeights: { default: null, rendered: false }, nativeTableAutoFit: { default: null, rendered: false }, nativeTableCellTextDirection: { default: null, rendered: false }, nativeTableCellAlignment: { default: null, rendered: false }, nativeTableCellMargins: { default: null, rendered: false }, nativeTableCellWrap: { default: null, rendered: false }, nativeTableAltText: { default: null, rendered: false }, nativeTableCellMarginOverrides: { default: null, rendered: false }, nativeTableRowBreaks: { default: null, rendered: false }, nativeTableAlignment: { default: null, rendered: false }, nativeTableInsert: { default: null, rendered: false, keepOnSplit: false } } },
+  { types: ['docTable'], attributes: { nativeTableProperties: { default: null, rendered: false }, nativeTableStructure: { default: null, rendered: false }, nativeTableCellShape: { default: null, rendered: false }, nativeTableColumnWidths: { default: null, rendered: false }, nativeTableRowHeights: { default: null, rendered: false }, nativeTableAutoFit: { default: null, rendered: false }, nativeTableCellTextDirection: { default: null, rendered: false }, nativeTableCellAlignment: { default: null, rendered: false }, nativeTableCellParagraphProperties: { default: null, rendered: false }, nativeTableCellMargins: { default: null, rendered: false }, nativeTableCellWrap: { default: null, rendered: false }, nativeTableAltText: { default: null, rendered: false }, nativeTableCellMarginOverrides: { default: null, rendered: false }, nativeTableRowBreaks: { default: null, rendered: false }, nativeTableAlignment: { default: null, rendered: false }, nativeTableInsert: { default: null, rendered: false, keepOnSplit: false } } },
   { types: ['docParagraph'], attributes: { nativeCoverPage: { default: null, rendered: false, keepOnSplit: false } } },
   // nativeSectionBreak 标记新增分节符的起始方式（docx-operations.ts sectionBreakNode），同样不渲染、不入文件。
   { types: ['docProtected'], attributes: { nativeSectionBreak: { default: null, rendered: false, keepOnSplit: false } } },
@@ -156,6 +161,28 @@ export function projectDocxTable(source: DocxPmNode, anchor: DocxAnchor, value: 
 }
 export interface DocxTableCommands { active?: (action: string) => boolean; reason: (action: string) => string | null; run: (action: string) => void }
 export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, anchors: DocxAnchor[], reportError: (error: unknown) => void, nestedInputActive: () => boolean = () => false): DocxTableCommands {
+  const selectionTarget = () => {
+    if (nestedInputActive()) throw new Error('嵌套表格输入中，请先在外层表格内定位')
+    const selection = editor.state.selection
+    if (selection instanceof NodeSelection && selection.node.type.name === 'docTable') {
+      return { table: selection.node, tablePos: selection.from, map: TableMap.get(selection.node), top: 0, left: 0 }
+    }
+    const rect = selectedRect(editor.state)
+    return { table: rect.table, tablePos: rect.tableStart - 1, map: rect.map, top: rect.top, left: rect.left }
+  }
+  const selectTablePart = (action: string) => {
+    const target = selectionTarget(), kind = TABLE_SELECTION_ACTIONS[action]
+    if (!kind) throw new Error('此表格选择命令尚未接入')
+    if (kind === 'table') {
+      editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, target.tablePos)))
+      return
+    }
+    const cellPos = target.tablePos + 1 + target.map.map[target.top * target.map.width + target.left]!
+    const $cell = editor.state.doc.resolve(cellPos)
+    const selection = kind === 'row' ? CellSelection.rowSelection($cell)
+      : kind === 'column' ? CellSelection.colSelection($cell) : new CellSelection($cell)
+    editor.view.dispatch(editor.state.tr.setSelection(selection))
+  }
   const target = (action: string) => {
     if (!editor.isEditable) throw new Error('当前文档不可编辑或正在保存')
     if (nestedInputActive()) throw new Error('嵌套表格当前支持文字编辑，请先在外层表格内定位后操作结构或标题行')
@@ -679,12 +706,37 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
       editor.view.dispatch(tr); editor.view.dispatch(closeHistory(editor.state.tr)); editor.commands.focus()
     }, { reason: rowBreakReason(), open: rowBreakDialog }, { reason: tableAlignmentReason(), open: tableAlignmentDialog })
   }
-  const propertiesReason = () => {
-    try { marginOverridesTarget(); return null } catch (error) { return rowBreakReason() === null || tableAlignmentReason() === null || wrapReason() === null || altTextReason() === null ? null : error instanceof Error ? error.message : '当前表格属性不可编辑' }
+  const propertiesTarget = () => {
+    if (!editor.isEditable) throw new Error('当前文档不可编辑或正在保存')
+    if (nestedInputActive()) throw new Error('请先在外层表格内定位')
+    const selection=editor.state.selection
+    const table=selection instanceof NodeSelection&&selection.node.type.name==='docTable'?selection.node:selectedRect(editor.state).table
+    const tableStart=selection instanceof NodeSelection?selection.from+1:selectedRect(editor.state).tableStart
+    const index=table.attrs.docxIndex,anchor=anchors.find(a=>a.docxIndex===index)
+    const source=baseline.content?.find(n=>n.type==='docTable'&&n.attrs?.docxIndex===index)
+    if(!anchor?.tablePropertiesEditable||!source)throw new Error(anchor?.tablePropertiesReadOnlyReason??'当前来源不支持完整表格属性')
+    const expected=table.attrs.nativeTableProperties?projectDocxTableProperties(source,anchor,table.attrs.nativeTableProperties,editor.schema):source
+    if(!equal(expected,table.toJSON()))throw new Error('完整表格属性不能与同表文字、格式或其他修改混用，请先保存')
+    return{table,tableStart,anchor,source}
   }
+  const propertiesReason = () => {try{propertiesTarget();return null}catch(error){return error instanceof Error?error.message:'当前表格属性不可编辑'}}
   const propertiesDialog = () => {
-    try { marginOverridesTarget() } catch (error) { openDocxRowPropertiesMenu(editor.view.dom.ownerDocument.body, error instanceof Error ? error.message : '当前来源不支持单元格边距', rowBreakReason(), rowBreakDialog, { reason: tableAlignmentReason(), open: tableAlignmentDialog }); wrapNavigation(); altTextNavigation(); return }
-    marginOverridesDialog(); wrapNavigation(); altTextNavigation()
+    let target=propertiesTarget()
+    if(editor.state.selection instanceof NodeSelection){const map=TableMap.get(target.table);editor.view.dispatch(editor.state.tr.setSelection(CellSelection.create(editor.state.doc,target.tableStart+map.map[0],target.tableStart+map.map[map.map.length-1])))}
+    let frozen=JSON.stringify(editor.getJSON()),capturedAnchor=JSON.stringify(target.anchor),selection=JSON.stringify(editor.state.selection.toJSON())
+    openDocxTablePropertiesSourceDialog(editor,(target.anchor.columnWidthMaxTwips??9360)/15,command=>{
+      target=propertiesTarget()
+      if(frozen!==JSON.stringify(editor.getJSON())||capturedAnchor!==JSON.stringify(target.anchor)||selection!==JSON.stringify(editor.state.selection.toJSON()))throw new Error('对话框打开后文档、选区或来源已改变，请重新选择')
+      command(editor.state,tr=>{
+        const next=tr.doc.nodeAt(target.tableStart-1)
+        if(!next||next.type.name!=='docTable')throw new Error('表格来源已改变')
+        const patch=tablePropertiesPatchOf(target.source,next.toJSON(),editor.schema)
+        const projected=patch?editor.schema.nodeFromJSON(projectDocxTableProperties(target.source,target.anchor,patch,editor.schema)):editor.schema.nodeFromJSON(target.source)
+        if(!equal(next.toJSON(),target.table.toJSON()))tr.replaceWith(target.tableStart-1,target.tableStart-1+next.nodeSize,projected)
+        editor.view.dispatch(tr)
+        frozen=JSON.stringify(editor.getJSON());selection=JSON.stringify(editor.state.selection.toJSON())
+      })
+    })
   }
   const marginsTarget = () => {
     if (!editor.isEditable) throw new Error('当前文档不可编辑或正在保存')
@@ -728,9 +780,11 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
   const isShape = (action: string) => action === 'table-merge-cells' || action === 'table-split-cells'
   return {
     active(action) { try { if (alignmentActions[action]) return alignmentActive(alignmentActions[action]); if (directionActions[action]) return directionActive(directionActions[action]); if (autoFitModes[action]) return autoFitTarget().table.attrs.tblAutoFit === autoFitModes[action]; return action==='table-repeat-header-rows' && headerTarget().active } catch { return false } },
-    reason(action) { try { if(action==='table-properties'){const reason=propertiesReason();if(reason)throw new Error(reason)}else if(action==='table-alt-text')altTextTarget();else if(action==='table-cell-wrap')wrapTarget();else if(action==='table-row-breaks')rowBreakTarget();else if(action==='table-alignment')tableAlignmentTarget();else if(action==='table-cell-margins')marginsTarget();else if(alignmentActions[action])alignmentTarget();else if(directionActions[action])directionTarget();else if(autoFitModes[action])autoFitTarget();else if(action==='table-row-height'||action==='table-distribute-rows')heightTarget();else if(isWidth(action))widthTarget();else if(isShape(action))shapeTarget(action);else if(action==='table-repeat-header-rows')headerTarget();else target(action); return null } catch (error) { return error instanceof Error && !/No cell|Not in a table/.test(error.message) ? error.message : '请先在可编辑表格的单个单元格内定位' } },
+    reason(action) { try { if(TABLE_SELECTION_ACTIONS[action])selectionTarget();else if(action==='table-properties'){const reason=propertiesReason();if(reason)throw new Error(reason)}else if(action==='table-alt-text')altTextTarget();else if(action==='table-cell-wrap')wrapTarget();else if(action==='table-row-breaks')rowBreakTarget();else if(action==='table-alignment')tableAlignmentTarget();else if(action==='table-cell-margins')marginsTarget();else if(alignmentActions[action])alignmentTarget();else if(directionActions[action])directionTarget();else if(autoFitModes[action])autoFitTarget();else if(action==='table-row-height'||action==='table-distribute-rows')heightTarget();else if(isWidth(action))widthTarget();else if(isShape(action))shapeTarget(action);else if(action==='table-repeat-header-rows')headerTarget();else target(action); return null } catch (error) { return error instanceof Error && !/No cell|Not in a table/.test(error.message) ? error.message : '请先在表格单元格内定位' } },
     run(action) {
       try {
+        if(action!=='table-properties'&&!TABLE_SELECTION_ACTIONS[action]) { try { const rect=selectedRect(editor.state);if(rect.table.attrs.nativeTableProperties)throw new Error('完整表格属性修改后请先保存') } catch(error) { if(error instanceof Error&&error.message.includes('完整表格属性'))throw error } }
+        if (TABLE_SELECTION_ACTIONS[action]) { selectTablePart(action); return }
         if (action === 'table-cell-wrap') { wrapDialog(); return }
         if (action === 'table-properties') { propertiesDialog(); return }
         if (action === 'table-alt-text') { altTextDialog(); return }

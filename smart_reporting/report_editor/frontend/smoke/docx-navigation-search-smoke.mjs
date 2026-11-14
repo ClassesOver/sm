@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process'
 import { dirname, resolve, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { inspectDocxNavigation } from './office-cross-format-navigation.mjs'
 
 const fixtureRoot = dirname(fileURLToPath(import.meta.url)), repo = resolve(fixtureRoot, '../../../..')
 const output = resolve(process.env.DOCX_TEST_OUTPUT ?? '/tmp/docx-navigation-search-smoke')
@@ -27,6 +28,7 @@ const python = [
   'from smart_reporting.reporting.delivery.docx_native import inspect_docx',
   'doc=Document()',
   'doc.add_heading("导航搜索专项",1)',
+  'doc.add_heading("目录章一",1);doc.add_heading("目录子节",2);doc.add_heading("目录章二",1)',
   'p=doc.add_paragraph();p.add_run("前😀ca").bold=True;p.add_run("t尾 cat ＣＡＴ ^p ^ .* <img src=x onerror=alert(1)>")',
   'table=doc.add_table(rows=1,cols=1);table.cell(0,0).text="表格 cat"',
   'doc.add_paragraph("动态 cat")',
@@ -54,12 +56,13 @@ let browser, page
 try {
   browser = await chromium.launch({ headless: true })
   for (const editingEnabled of [true, false]) {
-    page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+    const browserContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+    page = await browserContext.newPage()
     page.on('pageerror', error => errors.push(error.message))
     page.on('response', response => {
       const path = new URL(response.url()).pathname
       if (response.status() >= 400) errors.push(response.status() + ' ' + path)
-      if (response.ok() && path.startsWith(prefix) && path.endsWith('.js')) identities.push(response.body().then(async body => { assert.equal(sha(body), sha(await readFile(resolve(staticRoot, path.slice(prefix.length))))); chunks.set(path, sha(body)) }))
+      if (response.ok() && path.startsWith(prefix) && /\.(js|css)$/.test(path)) identities.push(response.body().then(async body => { assert.equal(sha(body), sha(await readFile(resolve(staticRoot, path.slice(prefix.length))))); chunks.set(path, sha(body)) }))
     })
     const docId = 'fixture-navigation-search-' + editingEnabled, pathBase = '/reports/v1/native/' + docId + '/1'
     await page.route(base + pathBase, async route => route.fulfill({ body: await readFile(resolve(staticRoot, 'native.html')), contentType: 'text/html' }))
@@ -85,6 +88,7 @@ try {
     const action = name => panel.locator('[data-navigation-search-action="' + name + '"]')
     const count = () => panel.locator('[data-navigation-search-count]').textContent()
     await query.fill('cat'); assert.equal(await results.count(), 5); assert.equal(await count(), '0/5')
+    const keyboardLayout = await inspectDocxNavigation(page, { output, phase: editingEnabled ? 'editable' : 'readonly' })
     await action('next').click(); assert.equal((await selected()).text, 'cat'); assert.equal(await count(), '1/5')
     await action('previous').click(); assert.equal(await count(), '5/5'); assert.equal((await selected()).text, 'cat')
     await results.nth(2).click(); assert.equal((await selected()).text, 'ＣＡＴ')
@@ -110,7 +114,7 @@ try {
     await query.fill('cat'); await panel.locator('[data-navigation-action=close]').click(); await page.locator('[data-action=navigation-toggle]').click(); assert.equal(await results.count(), 5)
     const geometry = await page.locator('.docx-navigation-layout').evaluate(node => { const p = node.querySelector('[data-docx-navigation]').getBoundingClientRect(), e = node.querySelector('.editor-scroll').getBoundingClientRect(); return { panelRight: p.right, editorLeft: e.left, right: e.right, width: innerWidth } })
     assert.ok(geometry.panelRight <= geometry.editorLeft + 1); assert.ok(geometry.right <= geometry.width + 1)
-    actions.push({ editingEnabled, literalResults: 5, exactNonBmpSpan: emoji.to - emoji.from, cappedResults: 500, navigableMatches: 503, findHighlightsPreserved: true, outlineResultReturnsToPage: true, documentStorageUndoUnchanged: true, geometry })
+    actions.push({ editingEnabled, keyboardLayout, literalResults: 5, exactNonBmpSpan: emoji.to - emoji.from, cappedResults: 500, navigableMatches: 503, findHighlightsPreserved: true, outlineResultReturnsToPage: true, documentStorageUndoUnchanged: true, geometry })
     if (editingEnabled) {
       await results.last().click(); await editor.evaluate(node => node.editor.view.focus()); await page.keyboard.type('dog')
       await page.waitForFunction(() => document.querySelector('[data-navigation-search-count]')?.textContent.endsWith('/4'))
@@ -118,7 +122,7 @@ try {
       await action('previous').click(); assert.deepEqual(await snapshot(), changed); assert.equal(await page.evaluate(() => JSON.stringify(localStorage)), changedStorage)
       actions.push({ realtimeSearchUpdate: true, existingDraftUndoPreserved: true })
     }
-    await page.close()
+    await browserContext.close()
   }
   await Promise.all(identities); assert.deepEqual(errors, []); assert.equal(requests.filter(request => request.path.endsWith('/save') || request.path.endsWith('/export')).length, 0)
   assert.equal(sha(await readFile(manifestPath)), manifestSha256); assert.equal(sha(await readFile(bridgePath)), bridgeSha256)

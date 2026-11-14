@@ -1,0 +1,26 @@
+.pdf-stamp-source-dialog{--surface:#fff;--accent:#2563eb;--text-dim:#64748b;--text:#172033;--border-strong:#cbd5e1;--hover:#eff6ff;--shadow-modal-strong:0 8px 24px #0f172a30;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);padding:0;border:1px solid #cbd5e1;border-radius:10px;color:#172033;background:#fff;box-shadow:0 18px 60px #0f172a40}
+.pdf-stamp-source-dialog::backdrop{background:#0f172a66}
+.pdf-stamp-source-dialog .pdf-modal{width:600px;max-width:calc(100vw - 28px);max-height:calc(100dvh - 28px);padding:20px;overflow:auto;box-sizing:border-box}
+.pdf-stamp-source-dialog .pdf-modal-title{font-size:17px;font-weight:650;margin-bottom:14px}
+.pdf-stamp-source-dialog .pdf-sign-tabs{display:flex;gap:4px;border-bottom:1px solid #cbd5e1;margin-bottom:16px}
+.pdf-stamp-source-dialog .pdf-sign-tab{border:0;background:transparent;padding:10px 16px;color:#475569;cursor:pointer}
+.pdf-stamp-source-dialog .pdf-sign-tab.active{color:#2563eb;border-bottom:2px solid #2563eb}
+.pdf-stamp-source-dialog .pdf-field{display:flex;align-items:center;gap:12px;margin:12px 0;min-width:0}
+.pdf-stamp-source-dialog .pdf-field>span:first-child{min-width:76px}
+.pdf-stamp-source-dialog .pdf-modal-input{min-width:0;flex:1;min-height:34px;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:4px;padding:6px 8px;font:inherit}
+.pdf-stamp-source-dialog input[type=range]{flex:1;min-width:80px;accent-color:#2563eb}
+.pdf-stamp-source-dialog .pdf-field em{min-width:42px;font-size:12px;color:#64748b;font-style:normal}
+.pdf-stamp-source-dialog .pdf-field-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+.pdf-stamp-source-dialog .pdf-wm-preview{height:180px;display:grid;place-items:center;border:1px solid #cbd5e1;border-radius:5px;background:repeating-linear-gradient(#f8fafc 0 23px,#e2e8f0 23px 24px);overflow:hidden;margin-top:16px}
+.pdf-stamp-source-dialog .pdf-wm-preview span{max-width:95%;overflow-wrap:anywhere}
+.pdf-stamp-source-dialog .pdf-modal-actions{position:sticky;bottom:-20px;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px;margin-top:18px;padding:12px 0;background:#fff}
+.pdf-stamp-source-dialog .pdf-modal-btn{border:1px solid #cbd5e1;border-radius:5px;min-height:34px;padding:6px 16px;background:#fff;color:#172033;cursor:pointer}
+.pdf-stamp-source-dialog .pdf-modal-btn.primary{background:#2563eb;border-color:#2563eb;color:#fff}.pdf-stamp-source-dialog button:disabled{opacity:.5;cursor:default}
+.pdf-stamp-source-dialog :focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.pdf-stamp-source-dialog .pdf-color-well-wrap{position:relative}.pdf-stamp-source-dialog .pdf-color-well{width:48px;height:32px;border:1px solid #94a3b8;border-radius:4px;cursor:pointer}.pdf-stamp-source-dialog .pdf-color-popover{position:absolute;z-index:2;top:36px;left:0;padding:8px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;box-shadow:0 6px 22px #0f172a30}
+.pdf-stamp-source-dialog .pdf-sign-hint{font-size:12px;color:#64748b}.pdf-stamp-source-dialog .pdf-cert-error{color:#b91c1c}
+@media(max-width:600px){.pdf-stamp-source-dialog .pdf-modal{padding:12px}.pdf-stamp-source-dialog .pdf-field-grid{grid-template-columns:1fr}.pdf-stamp-source-dialog .pdf-modal-actions{bottom:-12px}.pdf-stamp-source-dialog .pdf-field>span:first-child{min-width:66px}.pdf-stamp-source-dialog .pdf-color-popover{left:-70px}}
+/* 低高度时为固定动作区预留滚动可视范围，避免聚焦字段被按钮遮盖。 */
+.pdf-stamp-source-dialog .pdf-modal{scroll-padding-block:12px 90px}
+.pdf-stamp-source-dialog :is(input,button){scroll-margin-block:12px 80px}
+.pdf-stamp-source-dialog .pdf-modal-actions button{scroll-margin-block:8px}

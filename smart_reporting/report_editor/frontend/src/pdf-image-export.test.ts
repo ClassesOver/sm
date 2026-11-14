@@ -31,3 +31,12 @@ it.each(['sha','size','source','signature'])('refuses ZIP identity mismatch: %s'
 })
 it('rejects invalid selections and changed editability before export',async()=>{const f=fixture();f.view.open();f.root.querySelector<HTMLInputElement>('[aria-label="导出图片页码"]')!.value='5';f.apply.click();expect(f.exportImages).not.toHaveBeenCalled();f.block();f.apply.dispatchEvent(new MouseEvent('click'));expect(f.exportImages).not.toHaveBeenCalled()})
 it('ignores a completed export after closing the dialog',async()=>{const f=fixture();let done!:(value:PdfImageExportResult)=>void;f.exportImages.mockImplementation(()=>new Promise(resolve=>{done=resolve}));f.view.open();f.apply.click();await vi.waitFor(()=>expect(f.exportImages).toHaveBeenCalledTimes(1));f.dialog.close();const before=f.root.innerHTML;done(result());await new Promise(resolve=>setTimeout(resolve,0));expect(f.root.innerHTML).toBe(before);expect(URL.createObjectURL).not.toHaveBeenCalled()})
+it('keeps both Tab directions on the available close action during export',()=>{
+  const f=fixture();f.exportImages.mockImplementation(()=>new Promise(()=>{}));f.view.open();f.apply.click()
+  const close=[...f.root.querySelectorAll('button')].find(button=>button.textContent==='关闭')!;close.focus()
+  for(const shiftKey of [false,true]){
+    const tab=new KeyboardEvent('keydown',{key:'Tab',shiftKey,bubbles:true,cancelable:true});close.dispatchEvent(tab)
+    expect(tab.defaultPrevented).toBe(true);expect(document.activeElement).toBe(close)
+  }
+  close.click();expect(f.dialog.open).toBe(false);f.view.dispose()
+})

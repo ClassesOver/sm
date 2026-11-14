@@ -1,5 +1,13 @@
 # GenOffice Slides Ribbon Sources
 
+2026-11-12 键盘与拖动后续：`slides-chart-format-pane.tsx` 在宿主浮层创建时、
+React Portal 委托注册前安装冒泡守卫，保护组合输入、旧式229及目标控件已消费的
+方向键；开关和 Escape 同样尊重这些状态。`ui/color-picker.tsx`、CSS 与
+`color-input.ts` 继续保持下文登记的原始字节，没有派生另一套颜色图库。
+参考线和标尺的宿主适配也保护上述 Escape，并保留普通取消、松开提交及
+本机视图状态存储；不把参考线写进幻灯片草稿。验证范围及实机限制见
+`report_editor/NATIVE_OFFICE_UI_AUDIT_20261112.md` 的后续批次记录。
+
 2026-11-11 相对图片原始尺寸：`slides-geometry-pane.ts` 适配固定源
 `FormatPane.tsx` 的 `naturalSize`、`relOriginal` 与 `scaleBasis`，复用当前渲染树
 图片 dataUrl 的浏览器解码；以 naturalWidth/naturalHeight 为96dpi像素基准，
@@ -210,4 +218,8 @@ consoleErrors、failedResponses 均为空。Chromium 140.0.7339.16，端口 4307
 2026-11-12: `ruler-ticks.ts` is a byte-identical copy of the pinned `apps/slides/src/renderer/ruler-ticks.ts`
 (SHA-256 `3c784278b8d8f9755b45e357c22db10ed04b8a66135ff7917b816e58de57c42a`). `src/slides-ruler.ts` ports
 `components/StageRuler.tsx` to plain DOM (ticks from `computeRulerTicks`, 0 at the slide centre, the
-press-drag pointer hairline); pulling guides off the ruler is not ported yet.
+press-drag pointer hairline). Pulling guides off the ruler is now implemented by the host adapters
+`src/slides-ruler.ts` and `src/slides-guides.ts`; the pinned tick source remains unchanged.
+
+
+2026-11-13 Normal/Slide Sorter: slide-selection.ts is a byte-identical copy of apps/slides/src/shared/slide-selection.ts at the pinned commit, newly recorded in SOURCE-SHA256.json. Native view adapters reuse this click/range/reorder math and existing draft history; source full HTTP and final lazy-thumbnail read-only evidence remain separate.

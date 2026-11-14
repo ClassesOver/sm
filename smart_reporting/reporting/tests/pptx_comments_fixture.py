@@ -30,7 +30,7 @@ def rewrite(data, changes):
 
 def encoded(root): return E.tostring(root, xml_declaration=True, encoding='UTF-8', standalone=True)
 
-def create(variant='classic'):
+def create(variant='classic', long_text=None, long_author=None):
     deck = Presentation()
     for text in TEXTS:
         slide = deck.slides.add_slide(deck.slide_layouts[6])
@@ -40,6 +40,7 @@ def create(variant='classic'):
         changes = {}
         authors = E.Element('{'+P+'}cmAuthorLst', nsmap={'p': P})
         for author_id, name, initials, last in [(0, 'Alice 爱丽丝', 'AL', '2'), (1, 'Bob 鲍勃', 'BB', '1')]:
+            if author_id == 1 and long_author: name = long_author
             E.SubElement(authors, '{'+P+'}cmAuthor', id=str(author_id), name=name, initials=initials, lastIdx=last, clrIdx=str(author_id))
         changes['ppt/commentAuthors.xml'] = encoded(authors)
         pres_rels = E.fromstring(z.read('ppt/_rels/presentation.xml.rels'))
@@ -52,6 +53,7 @@ def create(variant='classic'):
         for index, records in enumerate(COMMENTS, 1):
             comments = E.Element('{'+P+'}cmLst', nsmap={'p': P})
             for author_id, idx, text in records:
+                if index == 1 and author_id == 1 and long_text: text = long_text
                 item = E.SubElement(comments, '{'+P+'}cm', authorId=str(author_id), idx=str(idx), dt='2026-11-11T01:02:03Z')
                 E.SubElement(item, '{'+P+'}pos', x='10', y='10')
                 E.SubElement(item, '{'+P+'}text').text = text
@@ -101,7 +103,9 @@ def verify(source, output, expected):
     assert b['slides'][1]['comments']==[] and b['slides'][1]['part'] is None
     assert 'ppt/comments/comment2.xml' not in b['parts']
     records=b['slides'][0]['comments'];assert not any(c['authorId']==0 and c['idx']==1 for c in records)
-    kept=[c for c in records if c['authorId']==1 and c['idx']==1];assert len(kept)==1 and kept[0]['text']==COMMENTS[0][1][2]
+    kept=[c for c in records if c['authorId']==1 and c['idx']==1]
+    source_kept=[c for c in a['slides'][0]['comments'] if c['authorId']==1 and c['idx']==1]
+    assert len(kept)==len(source_kept)==1 and kept[0]==source_kept[0]
     added=[c for c in records if c['author']=='用户'];assert [c['text'] for c in added]==expected
     assert len(records)==1+len(expected)
     with ZipFile(BytesIO(source)) as before, ZipFile(BytesIO(output)) as after:
@@ -118,7 +122,7 @@ def verify(source, output, expected):
 if __name__=='__main__':
     p=json.load(sys.stdin);mode=p['mode']
     if mode=='create':
-        data=create(p.get('variant','classic'));Path(p['path']).write_bytes(data)
+        data=create(p.get('variant','classic'),p.get('longText'),p.get('longAuthor'));Path(p['path']).write_bytes(data)
         print(json.dumps({'bytes':base64.b64encode(data).decode(),'readback':readback(data)},ensure_ascii=False))
     elif mode=='readback':print(json.dumps(readback(Path(p['path']).read_bytes()),ensure_ascii=False))
     elif mode=='verify':print(json.dumps(verify(Path(p['source']).read_bytes(),Path(p['output']).read_bytes(),p['expected']),ensure_ascii=False))

@@ -393,23 +393,35 @@ export function InsertFunctionDialog({
         <div className="fn-filter-row">
           <input
             autoFocus
+            aria-label={t('dlgFnSearchLabel')}
             placeholder={t('dlgFnSearchPlaceholder')}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => { setQuery(event.target.value); setPicked(null) }}
           />
           <Dropdown
             value={category}
             options={categories.map((name) => ({ value: name, label: t(CATEGORY_LABELS[name]) }))}
-            onPick={setCategory}
+            onPick={(value) => { setCategory(value); setPicked(null) }}
           />
         </div>
-        <div className="fn-list" role="listbox">
-          {matches.map((spec) => (
+        <div className="fn-list" role={matches.length ? 'listbox' : 'region'} aria-label={t('dlgFnResults')}>
+          {matches.map((spec, index) => (
             <button
               key={spec.name}
               className={`fn-row${picked?.name === spec.name ? ' active' : ''}`}
               role="option"
               aria-selected={picked?.name === spec.name}
+              tabIndex={picked?.name === spec.name || (!picked && index === 0) ? 0 : -1}
+              onFocus={() => setPicked(spec)}
+              onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing || event.keyCode === 229 || event.defaultPrevented) return
+                const next = event.key === 'ArrowDown' ? Math.min(matches.length - 1, index + 1)
+                  : event.key === 'ArrowUp' ? Math.max(0, index - 1)
+                  : event.key === 'Home' ? 0 : event.key === 'End' ? matches.length - 1 : null
+                if (next === null) return
+                event.preventDefault()
+                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="option"]')[next]?.focus()
+              }}
               onClick={() => setPicked(spec)}
               onDoubleClick={() => onPick(spec)}
             >
@@ -417,10 +429,10 @@ export function InsertFunctionDialog({
               <span>{spec.abstract}</span>
             </button>
           ))}
-          {matches.length === 0 && <p className="dialog-note">{t('dlgFnNoMatch')}</p>}
+          {matches.length === 0 && <p className="dialog-note" role="status">{t('dlgFnNoMatch')}</p>}
         </div>
         {picked && (
-          <p className="dialog-note fn-syntax">
+          <p className="dialog-note fn-syntax" role="region" aria-label={t('dlgFnDescription')} tabIndex={0}>
             <code>{picked.syntax}</code>
             {picked.description !== picked.abstract && <span>{picked.description}</span>}
           </p>

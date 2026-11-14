@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
+import { inspectWatermarkDialog } from './office-docx-watermark-layout.mjs'
 
 // 设计 ▸ 水印：真实 Python/Node DOCX 引擎检查、保存与独立 ZIP/XML 回读；授权与修订路由为显式 fixture。
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.DOCX_WATERMARK_SMOKE_PORT ?? 4233), base = `http://127.0.0.1:${port}`
 const output = process.env.DOCX_WATERMARK_SMOKE_OUTPUT ?? '/tmp/docx-watermark'
+mkdirSync(dirname(output), { recursive: true })
+const staticRoot = process.env.DOCX_WATERMARK_STATIC_ROOT
 const mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const python = (input, venv = process.env.DOCX_SMOKE_PYTHON ?? `${repo}/.venv/bin/python`) => {
   const result = spawnSync(venv, ['-c', `
@@ -49,14 +53,27 @@ else:
 }
 const source = Buffer.from(python({ mode: 'create' }), 'base64'), sourceModel = JSON.parse(python({ mode: 'inspect', bytes: source.toString('base64') }))
 assert.deepEqual({ text: sourceModel.watermark.text, editable: sourceModel.watermark.editable }, { text: null, editable: true })
-let saved, savedModel, payload, browser, page
+let saved, savedModel, payload, browser, page, layouts = []
 const errors = []
-const server = spawn(process.execPath, ['--input-type=module', '-e', `import { createServer } from 'vite'; const server = await createServer({ server: { host: '127.0.0.1', port: ${port}, strictPort: true, hmr: false } }); await server.listen()`], { cwd: frontend, stdio: 'ignore' })
+const assets = new Map(), assetChecks = []
+const manifestSha256 = staticRoot ? sha(readFileSync(join(staticRoot, '.vite/manifest.json'))) : null
+if (process.env.DOCX_WATERMARK_EXPECTED_MANIFEST_SHA256) assert.equal(manifestSha256, process.env.DOCX_WATERMARK_EXPECTED_MANIFEST_SHA256)
+const server = spawn('./node_modules/.bin/vite', [...(staticRoot ? ['preview', '--outDir', staticRoot] : []), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let i = 0; i < 160; i++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
   browser = await chromium.launch({ headless: true, args: ['--disable-features=LocalNetworkAccessChecks'], ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? { executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE } : {}) })
-  page = await browser.newPage({ viewport: { width: 1600, height: 1100 } })
+  const context = await browser.newContext({ viewport: { width: 1600, height: 1100 } })
+  page = await context.newPage()
   page.on('pageerror', error => errors.push(error.message))
+  page.on('response', response => {
+    const path = new URL(response.url()).pathname, prefix = '/reports/v1/editor/assets/'
+    if (!staticRoot || !path.startsWith(prefix) || !path.endsWith('.js')) return
+    assetChecks.push((async () => {
+      const bytes = await response.body(), relative = path.slice(prefix.length)
+      assert.equal(sha(bytes), sha(readFileSync(join(staticRoot, relative))), relative)
+      assets.set(path, { path, sha256: sha(bytes), size: bytes.length })
+    })())
+  })
   const revision = route => Number(route.request().url().match(/watermark\/(\d+)\/api/)[1]), active = route => revision(route) === 1 ? source : saved
   await page.route('**/reports/v1/native/watermark/*/api/context', route => route.fulfill({ json: { context: { documentId: 'watermark', format: 'docx', revision: revision(route), parentRevision: revision(route) === 1 ? null : 1,
     scope: { database: 'fixture', companyId: 'fixture', userId: 'fixture', threadId: 'fixture' }, sourceFile: { path: 'source.docx', size: active(route).length, sha256: sha(active(route)), mediaType: mime }, origin: 'upload' },
@@ -96,6 +113,8 @@ try {
   await page.keyboard.press('Control+Shift+z'); await waitMark('机密')
   // 删除水印 = 与来源（无水印）相同，撤回修改
   await menu(); await page.locator('[data-action="watermark-remove"]').click(); await waitMark(null); assert.deepEqual(await draft(), [])
+  if (process.env.DOCX_WATERMARK_LAYOUT === '1') layouts = await inspectWatermarkDialog(page, { output, draft, trigger,
+    open: async () => { await menu(); await page.locator('[data-action="watermark-custom"]').click() } })
   // 自定义水印…：文字、字体、字号 72、粗体、透明度 60%、颜色、水平
   await menu(); await page.locator('[data-action="watermark-custom"]').click()
   const dialog = page.locator('.docx-watermark-dialog'); await dialog.waitFor({ state: 'visible' })
@@ -144,5 +163,10 @@ try {
   await dialog.locator('button[value=cancel]').click(); assert.deepEqual(await draft(), [])
   await page.screenshot({ path: `${output}-reopened.png` })
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ ok: true, browser: browser.version(), sourceSha256: sha(source), savedSha256: sha(saved), operations: payload.operations, readback, undoRedo: true, withdrawToSource: true, draftRestored: true, revision2Reopened: true, pageErrors: errors }))
+  await Promise.all(assetChecks)
+  if (staticRoot) assert.equal(sha(readFileSync(join(staticRoot, '.vite/manifest.json'))), manifestSha256)
+  writeFileSync(`${output}-source.docx`, source)
+  const evidence = { ok: true, browser: browser.version(), sourceSha256: sha(source), savedSha256: sha(saved), operations: payload.operations, readback, undoRedo: true, withdrawToSource: true, draftRestored: true, revision2Reopened: true, pageErrors: errors, manifestSha256, runtimeJavaScript: [...assets.values()], layouts }
+  writeFileSync(`${output}-evidence.json`, JSON.stringify(evidence, null, 2))
+  console.log(JSON.stringify(evidence))
 } catch (error) { await page?.screenshot({ path: `${output}-failed.png` }).catch(() => {}); console.error(JSON.stringify({ failed: true, message: String(error), pageErrors: errors })); throw error } finally { await browser?.close(); server.kill() }

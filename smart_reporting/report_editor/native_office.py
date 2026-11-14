@@ -23,12 +23,23 @@ from .slides import (
     _validate_structure_edits,
 )
 from .slides_render import validate_slide_edits
+from .pptx_master_elements import native_master_element_edits
+from .pptx_media import native_media_insertions
+from .pptx_model3d import native_model_edits
 
-_ALLOWED_KEYS = {'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'customShows', 'backgroundImageReuses', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'zoomInsertions', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
+    'insertPicture': {'sheetName', 'sourceIdentity', 'imageId', 'row', 'column', 'widthPx', 'heightPx', 'picture'},
+    'editPicture': {'sheetName', 'sourceIdentity', 'drawingPart', 'pictureId', 'mediaSha256', 'before', 'geometry'},
+    'retargetExternalLink': {'index', 'expectedTarget', 'target'},
+    'patchThreadedComments': {'sheetName', 'sourceIdentity', 'changes'},
+    'setNotePicture': {'sheetName', 'row', 'column', 'sourceIdentity', 'picture'},
+    'breakExternalLink': {'index', 'expectedTarget'},
+    'updateExternalLinkCaches': {'updates'},
+    'bindExternalLinkSource': {'index', 'expectedTarget', 'name', 'mediaType', 'size', 'sha256', 'bytesBase64'},
     'applyCellEdits': {'edits'}, 'applySheetMerges': {'sheetName', 'ranges'},
-    'applyChartAdditions': {'additions'}, 'applyChartDeletions': {'deletions'}, 'applyChartEdits': {'edits'},
+    'applyChartAdditions': {'additions'}, 'applyChartDeletions': {'deletions'}, 'applyChartEdits': {'edits'}, 'applyChartAnchors': {'edits'}, 'applyChartSource': {'operation'},
     'applySheetEdits': {'plan'}, 'applyRowColumnOps': {'sheetName', 'ops'},
     'applyCellShift': {'sheetName', 'range', 'shift'},
     'applyDvRules': {'rules'}, 'applyCfRules': {'rules'}, 'applySheetNotes': {'sheetName', 'notes'}, 'applySheetHyperlinks': {'sheetName', 'edits'},
@@ -128,6 +139,37 @@ def _native_background_images(operation: dict[str, Any]) -> list[dict[str, Any]]
     return items
 
 
+def _native_custom_shows(operation: dict[str, Any]) -> list[dict[str, Any]] | None:
+    items = operation.get('customShows')
+    if items is None:
+        return None
+    if (not isinstance(items, list) or len(items) > 100
+        or any(not isinstance(item, dict) or set(item) != {'id', 'name', 'slideIndices'}
+               or not isinstance(item['id'], str) or not re.fullmatch(r'(?:0|[1-9]\d*|cs-[a-z0-9-]{1,80})', item['id'])
+               or not isinstance(item['name'], str) or not item['name'].strip() or len(item['name']) > 255
+               or re.search(r'[\x00-\x1f\x7f-\x9f\ud800-\udfff\ufffe\uffff]', item['name'])
+               or not isinstance(item['slideIndices'], list) or len(item['slideIndices']) > 500
+               or any(not _slide_index(index) for index in item['slideIndices']) for item in items)
+        or len({item['id'] for item in items}) != len(items)
+        or sum(len(item['slideIndices']) for item in items) > 5000):
+        raise ValueError('native_office_operations_invalid')
+    return items
+
+
+def _native_background_reuses(operation: dict[str, Any]) -> list[dict[str, Any]]:
+    items = operation.get('backgroundImageReuses', [])
+    if (not isinstance(items, list) or len(items) > 50
+        or any(not isinstance(item, dict) or set(item) != {'sourceSlideIndex', 'expectedSha256', 'expectedSize', 'slideIndices', 'tile'}
+               or not _slide_index(item['sourceSlideIndex'])
+               or not isinstance(item['expectedSha256'], str) or not re.fullmatch(r'[a-f0-9]{64}', item['expectedSha256'])
+               or type(item['expectedSize']) is not int or item['expectedSize'] < 1
+               or type(item['tile']) is not bool or not isinstance(item['slideIndices'], list) or not item['slideIndices']
+               or len(item['slideIndices']) > 500 or any(not _slide_index(index) for index in item['slideIndices'])
+               or len(set(item['slideIndices'])) != len(item['slideIndices']) for item in items)):
+        raise ValueError('native_office_operations_invalid')
+    return items
+
+
 def _native_background_ops(operation: dict[str, Any]) -> dict[str, list[Any]]:
     """固定源背景面板：渐变（0/45/90° 或径向）、重置背景、隐藏背景图形；页面冲突与自有背景由桥接按真实文件复核。"""
     gradients = operation.get('backgroundGradients', [])
@@ -152,11 +194,30 @@ def _native_background_ops(operation: dict[str, Any]) -> dict[str, list[Any]]:
     return {'background_gradients': gradients, 'background_resets': resets, 'background_graphics': graphics}
 
 
+def _valid_ink_image(item: dict[str, Any]) -> bool:
+    """原生墨迹仍是 PNG 图片；name 与固定源 vector descr 必须同时可读。"""
+    if (not isinstance(item.get('name'), str) or not re.fullmatch(r'aislides-ink [a-z0-9-]{1,64}', item['name'])
+        or item.get('extension') != 'png' or not isinstance(item.get('descr'), str) or len(item['descr']) > 10000):
+        return False
+    try:
+        value = json.loads(item['descr'])
+        return (isinstance(value, dict) and set(value) == {'v', 'tool', 'color', 'width', 'points'}
+            and type(value['v']) is int and value['v'] == 1 and value['tool'] in {'pen', 'pencil', 'highlighter'}
+            and isinstance(value['color'], str) and re.fullmatch(r'[0-9a-fA-F]{6}', value['color']) is not None
+            and _number(value['width'], 0, 200) and value['width'] > 0
+            and isinstance(value['points'], list) and 0 < len(value['points']) <= 20000
+            and all(isinstance(pair, list) and len(pair) == 2 and all(_number(n, -100000, 100000) for n in pair) for pair in value['points']))
+    except (ValueError, TypeError):
+        return False
+
+
 def _native_media_edits(operation: dict[str, Any]) -> tuple[list, list, list]:
     """上传图片与原生图表沿用同一修订，不接收本机文件路径或 AI 候选身份。"""
-    images = _records(operation, 'images', {'slideIndex', 'bytesBase64', 'extension', 'geometry'}, {'descr'})
+    images = _records(operation, 'images', {'slideIndex', 'bytesBase64', 'extension', 'geometry'}, {'descr', 'name'})
     replacements = _records(operation, 'pictureReplacements',
-        {'slideIndex', 'elementId', 'expectedSha256', 'expectedSize', 'bytesBase64', 'extension'})
+        {'slideIndex', 'elementId', 'expectedSha256', 'expectedSize', 'bytesBase64', 'extension'}, {'keepSrcRect'})
+    if any('keepSrcRect' in item and item['keepSrcRect'] is not True for item in replacements):
+        raise ValueError('native_office_operations_invalid')
     total = 0
     for records in (images, replacements):
         if len(records) > 50:
@@ -180,9 +241,12 @@ def _native_media_edits(operation: dict[str, Any]) -> tuple[list, list, list]:
             if total > 8 * 1024 * 1024:
                 raise ValueError('native_office_operations_invalid')
     for item in images:
+        ink = 'name' in item and _valid_ink_image(item)
+        if 'name' in item and not ink:
+            raise ValueError('native_office_operations_invalid')
         geometry = item['geometry']
         if (not isinstance(geometry, dict) or set(geometry) != {'x', 'y', 'width', 'height'}
-            or any(not _number(geometry[key], 0, 100_000) for key in ('x', 'y'))
+            or any(not _number(geometry[key], -100_000 if ink else 0, 100_000) for key in ('x', 'y'))
             or any(not _number(geometry[key], 0, 100_000) or geometry[key] <= 0 for key in ('width', 'height'))
             or ('descr' in item and (not isinstance(item['descr'], str) or len(item['descr']) > 10000))):
             raise ValueError('native_office_operations_invalid')
@@ -237,6 +301,44 @@ def _native_media_edits(operation: dict[str, Any]) -> tuple[list, list, list]:
         if len(set(keys)) != len(keys):
             raise ValueError('native_office_operations_invalid')
     return images, replacements, charts
+
+
+def _native_zoom_insertions(operation: dict[str, Any]) -> list[dict[str, Any]]:
+    """GenOffice Zoom 静态缩略图；桥接层按 slideIdentity 重新绑定真实页面。"""
+    items = operation.get('zoomInsertions', [])
+    if not isinstance(items, list) or len(items) > 50:
+        raise ValueError('native_office_operations_invalid')
+    seen = set()
+    total = 0
+    for item in items:
+        if (not isinstance(item, dict)
+            or set(item) != {'slideIdentity', 'targetSlideIdentity', 'bytesBase64', 'geometry', 'mode'}
+            or not isinstance(item['slideIdentity'], str) or not re.fullmatch(r'[a-f0-9]{64}', item['slideIdentity'])
+            or not isinstance(item['targetSlideIdentity'], str) or not re.fullmatch(r'[a-f0-9]{64}', item['targetSlideIdentity'])
+            or item['mode'] not in {'slide', 'section'}
+            or (item['slideIdentity'], item['targetSlideIdentity']) in seen
+            or not isinstance(item['bytesBase64'], str) or len(item['bytesBase64']) > 8 * 1024 * 1024):
+            raise ValueError('native_office_operations_invalid')
+        geometry = item['geometry']
+        if (not isinstance(geometry, dict) or set(geometry) != {'x', 'y', 'width', 'height'}
+            or any(not _number(geometry[key], 0, 100_000) for key in ('x', 'y'))
+            or any(not _number(geometry[key], 1, 100_000) for key in ('width', 'height'))):
+            raise ValueError('native_office_operations_invalid')
+        try:
+            data = base64.b64decode(item['bytesBase64'], validate=True)
+            if base64.b64encode(data).decode() != item['bytesBase64'] or not data or len(data) > 6 * 1024 * 1024:
+                raise ValueError('native_office_operations_invalid')
+            with Image.open(BytesIO(data)) as image:
+                if image.format != 'PNG' or image.width * image.height > 100_000_000:
+                    raise ValueError('native_office_operations_invalid')
+                image.verify()
+        except (ValueError, binascii.Error, OSError, Image.DecompressionBombError) as exc:
+            raise ValueError('native_office_operations_invalid') from exc
+        seen.add((item['slideIdentity'], item['targetSlideIdentity']))
+        total += len(data)
+        if total > 8 * 1024 * 1024:
+            raise ValueError('native_office_operations_invalid')
+    return items
 
 
 def _native_picture_opacities(operation: dict[str, Any]) -> list[dict[str, Any]]:
@@ -387,6 +489,28 @@ def _native_clipboard_pastes(operation: dict[str, Any]) -> list[dict[str, Any]]:
     return records
 
 
+def _native_master_text_edits(operation: dict[str, Any]) -> list[dict[str, Any]]:
+    records = operation.get('masterTextEdits', [])
+    if not isinstance(records, list) or len(records) > 200:
+        raise ValueError('native_office_operations_invalid')
+    seen, total, result = set(), 0, []
+    for item in records:
+        if (not isinstance(item, dict) or set(item) != {'partPath', 'spid', 'text'}
+            or not isinstance(item['partPath'], str) or not re.fullmatch(r'ppt/(?:slideMasters/slideMaster|slideLayouts/slideLayout)[1-9]\d*\.xml', item['partPath'])
+            or isinstance(item['spid'], bool) or not isinstance(item['spid'], int) or not 0 < item['spid'] <= 4294967295
+            or not isinstance(item['text'], str)):
+            raise ValueError('native_office_operations_invalid')
+        key, value = (item['partPath'], item['spid']), item['text']
+        size = sum(2 if ord(char) > 0xffff else 1 for char in value)
+        total += size
+        if (key in seen or size > 20000 or total > 200000
+            or any(not (ord(char) in {9, 10, 13} or 0x20 <= ord(char) <= 0xd7ff or 0xe000 <= ord(char) <= 0xfffd or 0x10000 <= ord(char) <= 0x10ffff) for char in value)):
+            raise ValueError('native_office_operations_invalid')
+        seen.add(key)
+        result.append({**item, 'text': value.replace('\r\n', '\n').replace('\r', '\n')})
+    return result
+
+
 def _native_notes_edits(operation: dict[str, Any]) -> list[dict[str, Any]]:
     records = _records(operation, 'notesEdits', {'slideIndex', 'text'})
     if len(records) > 200:
@@ -410,7 +534,7 @@ def _native_notes_edits(operation: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
-    if operation.get('kind') != 'editSlides' or not set(operation).issubset(_ALLOWED_KEYS):
+    if operation.get('kind') != 'editSlides' or not set(operation).issubset(_ALLOWED_KEYS | {'mediaInsertions', 'modelInsertions', 'modelViews'}):
         raise ValueError('native_office_operations_invalid')
     native_images, picture_replacements, chart_edits = _native_media_edits(operation)
     picture_crops = _native_picture_crops(operation)
@@ -641,14 +765,14 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'hidden_slides': hidden_slides, 'comment_edits': comment_edits, 'transitions': transitions, 'animations': animations,
-        'slide_layouts': layouts, 'backgrounds': backgrounds, 'background_images': _native_background_images(operation), **_native_background_ops(operation), 'text_boxes': text_boxes, 'deletions': deletions,
-        'paragraph_formatting': paragraph_formatting, 'native_images': native_images,
+    return {'master_element_edits': native_master_element_edits(operation.get('masterElementEdits', [])), 'master_text_edits': _native_master_text_edits(operation), 'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'hidden_slides': hidden_slides, 'comment_edits': comment_edits, 'transitions': transitions, 'animations': animations,
+        'custom_shows': _native_custom_shows(operation), 'slide_layouts': layouts, 'backgrounds': backgrounds, 'background_images': _native_background_images(operation), 'background_image_reuses': _native_background_reuses(operation), **_native_background_ops(operation), 'text_boxes': text_boxes, 'deletions': deletions,
+        'paragraph_formatting': paragraph_formatting, 'native_images': native_images, 'media_insertions': native_media_insertions(operation), **native_model_edits(operation),
         'picture_replacements': picture_replacements, 'picture_crops': picture_crops, 'picture_opacities': picture_opacities, 'chart_edits': chart_edits,
-        'element_orders': _native_element_orders(operation), 'group_edits': _native_group_edits(operation), 'notes_edits': _native_notes_edits(operation), 'link_edits': _native_link_edits(operation), 'clipboard_pastes': _native_clipboard_pastes(operation)}
+        'element_orders': _native_element_orders(operation), 'group_edits': _native_group_edits(operation), 'notes_edits': _native_notes_edits(operation), 'link_edits': _native_link_edits(operation), 'clipboard_pastes': _native_clipboard_pastes(operation), 'zoom_insertions': _native_zoom_insertions(operation)}
 
 
-def patch_office(format: str, content: bytes, operations: list[dict[str, Any]]) -> bytes:
+def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], *, thread_actor: dict[str, str] | None = None) -> bytes:
     _content(format, content)
     try:
         if (not isinstance(operations, list) or len(operations) > 500
@@ -674,6 +798,10 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]]) 
                         raise ValueError('native_office_operations_invalid')
                 elif set(operation) != allowed:
                     raise ValueError('native_office_operations_invalid')
+            from .native_xlsx_pictures import validate_xlsx_pictures
+            validate_xlsx_pictures(operations)
+            from .native_xlsx_threads import validate_xlsx_thread_actors
+            validate_xlsx_thread_actors(content, operations, thread_actor)
             result = patch_workbook(content, operations)
         else:
             if len(operations) != 1:

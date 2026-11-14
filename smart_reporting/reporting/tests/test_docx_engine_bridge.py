@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 from io import BytesIO
 from zipfile import ZipFile
 
@@ -10,6 +11,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.shared import Inches, Pt, RGBColor
 from PIL import Image
+from smart_reporting.reporting.delivery.docx_native import _validate_paste_images
 
 
 @pytest.fixture
@@ -97,6 +99,52 @@ def test_docx_changes_text_and_cell_without_damaging_other_parts(content):
     assert doc.tables[1]._tbl.xml == original.tables[1]._tbl.xml
     assert any(b.get('text') == '新正文：收入125万元' for b in inspect(edited)['blocks'])
     assert patch(edited, []) == edited
+
+
+def test_docx_table_cell_paragraph_properties_patch_only_the_bound_paragraph(content):
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+    inspect, patch = api()
+    source = inspect(content)
+    table = next(block for block in source['blocks'] if block['type'] == 'table')
+    cell = table['cells'][1][1]
+    paragraph = cell['paragraphs'][0]
+    operation_value = operation(
+        table,
+        'setTableCellParagraphProperties',
+        cellId=cell['cellId'],
+        expectedCellSha256=cell['expectedObjectSha256'],
+        paragraphIndex=paragraph['index'],
+        expectedParagraphSha256=paragraph['expectedObjectSha256'],
+        values={'align': 'center', 'spaceAfter': 180},
+    )
+    edited = patch(content, [operation_value])
+    doc = Document(BytesIO(edited))
+    target = doc.tables[0].cell(1, 1).paragraphs[0]
+    assert target.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert target.paragraph_format.space_after == Pt(9)
+    assert target.runs[0].bold is True
+    assert doc.tables[0].cell(1, 0)._tc.xml == Document(BytesIO(content)).tables[0].cell(1, 0)._tc.xml
+    assert doc.paragraphs[1]._p.xml == Document(BytesIO(content)).paragraphs[1]._p.xml
+    from docx.oxml.ns import qn
+    assert target._p.pPr.jc.get(qn('w:val')) == 'center'
+
+
+def test_docx_table_cell_paragraph_properties_reject_stale_paragraph_identity(content):
+    inspect, patch = api()
+    table = next(block for block in inspect(content)['blocks'] if block['type'] == 'table')
+    cell = table['cells'][1][1]
+    paragraph = cell['paragraphs'][0]
+    with pytest.raises(ValueError, match='anchor_invalid'):
+        patch(content, [operation(
+            table,
+            'setTableCellParagraphProperties',
+            cellId=cell['cellId'],
+            expectedCellSha256=cell['expectedObjectSha256'],
+            paragraphIndex=paragraph['index'],
+            expectedParagraphSha256='0' * 64,
+            values={'align': 'center'},
+        )])
 
 
 def test_docx_paragraph_style_insert_delete_and_reopen(content):
@@ -714,6 +762,20 @@ def test_docx_rejects_complex_cell_and_unauthorized_picture(content):
     image = next(b for b in model['blocks'] if b['type'] == 'image')
     with pytest.raises(ValueError, match='docx_.*unsupported'):
         patch(content, [operation(image, 'replaceImage', path='/tmp/foreign.png')])
+
+
+def test_docx_rich_paste_rejects_truncated_image_with_readable_header():
+    image = BytesIO()
+    Image.new('RGB', (16, 12), 'red').save(image, format='PNG')
+    content = image.getvalue()
+    truncated = content[:-20]
+    with Image.open(BytesIO(truncated)) as readable:
+        assert readable.size == (16, 12)
+    op = {'kind': 'pasteRichContent', 'blocks': [{'type': 'docParagraph', 'content': [
+        {'type': 'docInlineImage', 'attrs': {'dataUrl': 'data:image/png;base64,' + base64.b64encode(truncated).decode()}}
+    ]}]}
+    with pytest.raises(ValueError, match='docx_image_invalid'):
+        _validate_paste_images([op])
 
 
 @pytest.mark.parametrize('source', [b'', b'not a docx', b'PK\x03\x04broken'])

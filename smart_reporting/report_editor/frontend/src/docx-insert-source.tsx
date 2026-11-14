@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react'
+import {EquationGallery,EquationModal,type MathEditTarget} from './docx-equation-source'
+import { useEffect, useRef, useState } from 'react'
 import type { DocxPreparedHfEdges } from './docx-hf-source'
-import type { SectionValues } from './docx-operations'
+import type { SectionChangeResult, SectionValues } from './docx-operations'
 import { DocxPageNumberDialog } from './docx-page-number-dialog'
 import { hfPageNumberOnly, hfHasPageField, hfWithoutPageMarks } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/hf-dom'
 import type { Editor } from '@tiptap/core'
@@ -10,6 +11,8 @@ import { docxPictureUnavailable, insertDocxImageFile } from './docx-clipboard'
 import { COVER_PRESETS, docxCoverUnavailable, docxHasCoverPage, insertDocxCoverPage, removeDocxCoverPage } from './docx-cover-page'
 import { NEW_TABLE_LIMITS, docxTableInsertUnavailable, insertDocxTable, newTableSize } from './docx-new-table'
 import { applyDocxLink, docxLinkSelection, linkSelectionUnavailable, type DocxLinkSelection } from './docx-links'
+import { openDocxLinkDialog } from './docx-link-dialog'
+import { applyDocxDropCap, docxDropCapUnavailable } from './docx-drop-cap'
 import { IconDoc, IconCaret, IconPageBreak, IconTable, IconPicture, IconChart, IconShapes, IconTextBox, IconWordArt, IconLink, IconBook, IconRefresh, IconComment, IconHeader, IconFooter, IconPageNumber, IconSymbol, IconEquation } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { insertRibbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/insert-zh'
 const BIG = 28
@@ -152,9 +155,11 @@ export function insertDocxBlankPage(editor: Editor): boolean {
 export function DocxInsertSource({ editor, editable, anchors = [], headerFooter, pageNumber, onNewComment, onBookmarks, onCrossReference }: {
   editor: Editor; editable: boolean; anchors?: DocxAnchor[]; onNewComment?: () => void; onBookmarks?: () => void; onCrossReference?: () => void
   headerFooter?: { prepare(): Promise<DocxPreparedHfEdges>; edit(target: DocxPreparedHfEdges['header'] | DocxPreparedHfEdges['footer']): void }
-  pageNumber?: { format?: string | null; start?: number | null; reason?: string; label?: string; commit(values: SectionValues): void }
+  pageNumber?: { format?: string | null; start?: number | null; reason?: string; label?: string; commit(values: SectionValues): SectionChangeResult }
 }) {
   const t = (key: keyof typeof insertRibbonZh) => insertRibbonZh[key]
+  const [equationDialog,setEquationDialog]=useState<MathEditTarget|null|undefined>(undefined)
+
   const [dropdown, setDropdown] = useState<string | null>(null)
   const [hfEdges, setHfEdges] = useState<DocxPreparedHfEdges | null>(null)
   const [hfError, setHfError] = useState('')
@@ -195,8 +200,22 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
   const [pictureLoading, setPictureLoading] = useState(false)
   const pictureReason = pictureLoading ? '正在读取图片' : docxPictureUnavailable(editor, editable)
   const [linkDialog, setLinkDialog] = useState<DocxLinkSelection | null>(null)
-  const [href, setHref] = useState('')
   const [linkError, setLinkError] = useState('')
+  const linkRoot = useRef<HTMLDivElement>(null)
+  const linkModal = useRef<ReturnType<typeof openDocxLinkDialog> | null>(null)
+  const linkEditable = useRef(editable)
+  linkEditable.current = editable
+  useEffect(() => {
+    if (!linkDialog) return
+    const dialog = openDocxLinkDialog(linkRoot.current!.closest<HTMLElement>('.docx-native') ?? document.body, linkDialog.href ?? '', {
+      unavailable: () => !linkEditable.current || !editor.isEditable,
+      apply: value => { if (!applyDocxLink(editor, linkDialog, value)) throw new Error('链接修改未被接受，请检查段落的保存限制') },
+      onClose: () => { setLinkDialog(null); setLinkError(''); if (!editor.isDestroyed) editor.view.focus() },
+    })
+    linkModal.current = dialog
+    return () => { dialog.dispose(); linkModal.current = null }
+  }, [linkDialog, editor])
+  useEffect(() => { linkModal.current?.refresh() }, [editable, editor.isEditable])
   const link = editable ? docxLinkSelection(editor, anchors) : undefined
   const pageBreakReason = docxPageBreakUnavailable(editor, editable)
   const tableReason = docxTableInsertUnavailable(editor, editable)
@@ -217,14 +236,14 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
   }
   const blankPageReason = docxBlankPageUnavailable(editor, editable)
   const linkUnavailable = linkSelectionUnavailable
-  const openLink = () => { if (link) { setLinkDialog(link); setHref(link.href ?? ''); setLinkError('') } }
+  const openLink = () => { if (link) { setLinkDialog(link); setLinkError('') } }
   const applyLink = (selection: DocxLinkSelection, value: string | null) => {
     try {
       if (!applyDocxLink(editor, selection, value)) throw new Error('链接修改未被接受，请检查段落的保存限制')
       setLinkDialog(null); setLinkError('')
     } catch (error) { setLinkError(error instanceof Error ? error.message : String(error)) }
   }
-  return <div className="ribbon-content docx-source-insert"><>
+  return <div ref={linkRoot} className="ribbon-content docx-source-insert"><>
       {/* Word: Pages (cover page / blank page / page break) sits leftmost */}
       <div className="ribbon-group">
         <div className="ribbon-group-items">
@@ -355,13 +374,16 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
             </button>
           </div>
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-drop-cap" aria-label={t("ribbonDropCap")}>
+            <button className="rb-big" disabled={!editable || !!docxDropCapUnavailable(editor, anchors)} title={docxDropCapUnavailable(editor, anchors) ?? t('ribbonDropCap')} aria-haspopup="menu" aria-expanded={dropdown === 'dropCap'} onMouseDown={event => event.preventDefault()} onClick={() => setDropdown(current => current === 'dropCap' ? null : 'dropCap')} data-action="insert-drop-cap" aria-label={t("ribbonDropCap")}>
               <span className="rb-big-icon" style={{ fontSize: 20, lineHeight: 1, fontWeight: 'bold' }}>
                 A̲
                 <IconCaret />
               </span>
               <span>{t('ribbonDropCap')}</span>
             </button>
+            {dropdown === 'dropCap' ? <div data-rb-panel="" className="dropcap-menu" role="menu" aria-label="首字下沉方式">
+              {([{ value: null, label: '无', desc: '取消首字下沉' }, { value: 'drop', label: '下沉', desc: '首字下沉（嵌入文字）' }, { value: 'margin', label: '悬挂', desc: '首字悬挂（在页边距处）' }] as const).map(option => <button type="button" role="menuitem" key={option.label} className="dropcap-option" data-drop-cap-option={option.value ?? 'none'} title={option.desc} onMouseDown={event => event.preventDefault()} onClick={() => { if (!editable || docxDropCapUnavailable(editor, anchors)) return; applyDocxDropCap(editor, anchors, option.value); setDropdown(null) }}><span className="dropcap-preview">{option.value ? 'A' : '—'}</span><span>{option.label}</span></button>)}
+            </div> : null}
           </div>
           <div className="rb-split-wrap">
             <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-field" aria-label={t("ribbonFieldTip")}>
@@ -472,26 +494,20 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
               </div>)}
           </div>
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-equation" aria-label={t("ribbonEquationTip")}>
+            <button className="rb-big" disabled={!editable} data-editable-action="true" onClick={()=>setDropdown(current=>current==='equation'?null:'equation')} data-action="insert-equation" aria-label={t("ribbonEquationTip")}>
               <span className="rb-big-icon">
                 <IconEquation size={BIG}/>
                 <IconCaret />
               </span>
               <span>{t('ribbonEquation')}</span>
             </button>
+            {dropdown==='equation'?<EquationGallery editor={editor} onPick={()=>setDropdown(null)} onCustom={()=>{setDropdown(null);setEquationDialog(null)}}/>:null}
           </div>
         </div>
         <div className="ribbon-group-label">{t('ribbonGroupSymbols')}</div>
       </div>
-      {linkDialog && <div role="dialog" aria-modal="true" aria-label="Link" className="docx-link-dialog" style={{ position: 'fixed', left: '50%', top: '25%', transform: 'translateX(-50%)', zIndex: 1000, background: 'white', padding: 20, border: '1px solid #aaa', boxShadow: '0 4px 24px #0003' }}>
-        <form onSubmit={event => { event.preventDefault(); applyLink(linkDialog, href) }}>
-          <label>链接地址 <input autoFocus aria-label="Link URL" value={href} onChange={event => setHref(event.target.value)} /></label>
-          <button type="submit" data-command="applyLink" disabled={!editable || !editor.isEditable}>应用</button>
-          <button type="button" data-command="cancelLink" onClick={() => { setLinkDialog(null); setLinkError(''); editor.view.focus() }}>取消</button>
-          {linkError && <p role="alert">{linkError}</p>}
-        </form>
-      </div>}
-      {numberDialog ? <DocxPageNumberDialog format={numberDialog.format} start={numberDialog.start} label={numberDialog.label} onChange={values => { try { numberDialog.commit(values) } catch (error) { setHfError((error as Error).message) } }} onClose={() => setNumberDialog(undefined)} /> : null}
+      {equationDialog!==undefined?<EquationModal editor={editor} editTarget={equationDialog??undefined} onClose={()=>setEquationDialog(undefined)}/>:null}
+      {numberDialog ? <DocxPageNumberDialog format={numberDialog.format} start={numberDialog.start} label={numberDialog.label} disabledReason={!editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : !pageNumber ? '当前节页码设置不可用' : pageNumber.reason} onChange={values => numberDialog.commit(values)} onClose={() => setNumberDialog(undefined)} /> : null}
       {!dropdown && hfError ? <p role="alert">{hfError}</p> : null}
       {!linkDialog && linkError && <p role="alert">{linkError}</p>}
     </></div>

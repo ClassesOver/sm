@@ -7,7 +7,7 @@ import {mountNativeAIProgress} from './native-ai-progress'
 
 export function bindNativePDFReview(root: HTMLElement, options: {
   api: ReturnType<typeof createNativeApi>; draft: NativeDraft
-  view: {refresh(): Promise<void>}; onDraftChange(): void; canEdit?: () => boolean
+  view: {refresh(): Promise<void>}; onDraftChange(): void; canEdit?: () => boolean; beginMutation?(): () => void
 }) {
   const panel=document.createElement('section');panel.className='native-ai native-ai-panel native-pdf-review';panel.hidden=true
   panel.setAttribute('aria-label','AI 处理 PDF 批注')
@@ -23,10 +23,10 @@ export function bindNativePDFReview(root: HTMLElement, options: {
   const progress=mountNativeAIProgress(panel)
   panel.append(title,help,input,start,accept,cancel,close,status,output,details);root.append(panel)
   const panelView=bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,onClose:()=>stop()})
-  let generation=0,disposed=false,busy=false,job: NativePDFReviewJob | undefined,activeRequest: string | undefined
+  let generation=0,disposed=false,busy=false,accepting=false,job: NativePDFReviewJob | undefined,activeRequest: string | undefined
   let controller: AbortController | undefined
   const editable=()=>!disposed && !options.draft.closed && !options.draft.saving && (options.canEdit?.() ?? true)
-  function update() {start.disabled=busy || !editable();accept.disabled=busy || !editable() || job?.status!=='succeeded' || !job.proposal;cancel.disabled=!activeRequest}
+  function update() {start.disabled=busy || accepting || !editable();accept.disabled=busy || accepting || !editable() || job?.status!=='succeeded' || !job.proposal;cancel.disabled=!activeRequest}
   function stop(message='建议已取消') {
     const turn=++generation,request=activeRequest
     controller?.abort();activeRequest=undefined;busy=false;job=undefined;status.textContent=message;output.textContent='';details.replaceChildren();update()
@@ -51,7 +51,7 @@ export function bindNativePDFReview(root: HTMLElement, options: {
     status.textContent=value.error?.message ?? ({running:'正在读取批注、生成建议并核验实际 PDF',succeeded:'处理建议已核验，请逐条核对后采纳',failed:'批注处理失败',cancelled:'建议已取消'}[value.status]);update()
   }
   async function run() {
-    if(busy || !editable()) return
+    if(busy || accepting || !editable()) return
     if(activeRequest) stop('开始新的处理建议')
     const turn=++generation,operations=structuredClone(options.draft.operations),snapshot=JSON.stringify(operations)
     const request=crypto.randomUUID();activeRequest=request;controller=new AbortController();const signal=controller.signal
@@ -67,10 +67,11 @@ export function bindNativePDFReview(root: HTMLElement, options: {
     finally {if(turn===generation && !disposed) {busy=false;update()}}
   }
   async function apply() {
-    if(busy || !editable() || job?.status!=='succeeded' || !job.proposal) return
+    if(busy || accepting || !editable() || job?.status!=='succeeded' || !job.proposal) return
     const turn=generation,operations=structuredClone(options.draft.operations),snapshot=JSON.stringify(operations),candidate=job
     let staged=false
-    busy=true;controller=new AbortController();update()
+    const finishMutation=options.beginMutation?.()
+    accepting=true;busy=true;controller=new AbortController();update()
     try {
       const result=await options.api.pdfReviewAccept(candidate.editId,{expectedSha256:options.draft.identity.sourceSha256,operations,snapshotSha256:candidate.snapshotSha256},controller.signal)
       if(turn!==generation || disposed) return
@@ -80,7 +81,7 @@ export function bindNativePDFReview(root: HTMLElement, options: {
       if(turn!==generation || disposed) return
       status.textContent='建议已进入草稿。请核对实际 PDF 预览并确认，保存后生成新修订。'
     } catch(error) {if(turn===generation && !disposed) status.textContent=(staged ? '建议已进入草稿，但预览刷新失败：' : '')+(error instanceof Error ? error.message : '采纳失败')}
-    finally {if(turn===generation && !disposed) {busy=false;update()}}
+    finally {accepting=false;if(turn===generation && !disposed) busy=false;update();finishMutation?.()}
   }
   start.onclick=()=>{void run()};accept.onclick=()=>{void apply()};cancel.onclick=()=>stop();close.onclick=()=>{stop();panel.hidden=true}
   update()

@@ -1,9 +1,9 @@
 {
-  "core/session-core.ts": "a1e1a687983e9264f1aff50e60be9a5c84f459464e59c519ee66df9bb4f75314",
+  "core/session-core.ts": "5289f05281902c3f4f5b5afb90b1cd4e5ee7e0f3aab6691087828dabad2e3003",
   "grid/decimal-step.ts": "f97c59a2aa70900c99dc9f8f350a214430878c7f2e0868e8a98fe042c5712a60",
   "core/style-map.ts": "d63983128da55a67d3703eafe7029a93fe58ca62a9c3dc6f26aa61a1e40699cb",
   "grid/sync.ts": "05f50199a2a63767f55271d1e5ced3bd2385949b526b4db8d521c0d8121b0f9d",
-  "core/univer-data.ts": "27a2ce42e6bdb47fc1005a23a8c2d1a1c6b0f79f120034fc142d60ba558ee3c8",
+  "core/univer-data.ts": "a15e814bda289d14fa68c5f50ec204c5d554266d566ffc75fe186a276f93b4ce",
   "core/data-tools.ts": "b61dbf4364419a187e603d1b7c5e3e412a310681d691c6520852834cddb93014",
   "grid/csv-import.ts": "7e6a2a2d39386648e963c07ef2321870dc6b27901d4729c7ac564f1fec935548",
   "grid/workbook-queries.ts": "a792fc4e4badc405401a97f1abbceea86e2f40f06c668211548f96b93c643a13",
@@ -14,5 +14,7 @@
   "grid/chart-value-axis.ts": "a2836b9faf6bd8538b552161929f24815fb2985ce0da621980ed1859da503196",
   "grid/chart-category-axis.ts": "67f9261cc58b3388b2eb906244157136b09dd41ae1983387414b862867a03514",
   "grid/chart-data-labels.ts": "d390677e37672e9c868a71f9902ea7e946d9f614bd713c87cc8f29ae4e787e68",
-  "grid/chart-legend.ts": "437f49ccf11620c87cbba8369caae84f0c15beca9b35d9e2bfac06e7793d7e47"
+  "grid/chart-legend.ts": "7cc375e8607db933c755548b95292b5c37bc750a94acc6c7d555c1f50b0162f4",
+  "grid/chart-render.ts": "6c692457a683de4177458226d42b391c57f293be1b07dab7b6ef54686b45b45a",
+  "grid/chart-pie-data-labels.ts": "6fe523b66724edde579490b2fec6c6d5f8d8a963f601a701d14ba8fe81771d18"
 }

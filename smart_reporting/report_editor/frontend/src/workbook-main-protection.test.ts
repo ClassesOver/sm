@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { applyCellEdits, applyTableAdditions, createBufferEntrySource, assemblePackage, applySheetEdits, createBlankWorkbook, protectSheet, readWorkbook } from '@sheets-web/xlsx-engine'
+import { applyCellEdits, applyTableAdditions, applyPageSetups, createBufferEntrySource, assemblePackage, applySheetEdits, createBlankWorkbook, protectSheet, readWorkbook } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { createWorkbookEditorView } from './workbook-main'
 import { createNativeOfficeTransport } from './native-office-view'
@@ -89,6 +89,34 @@ const write = (row: number, column: number, value: string) => grid.api.executeCo
 afterEach(() => {
   for (const instance of grid.instances.splice(0)) instance.dispose()
   document.body.replaceChildren()
+})
+
+it.each(['sheet-protect', 'workbook-protect'] as const)('undoes %s in native history without undoing source frozen panes', async command => {
+  const source = await applyPageSetups(await protectSheet(await fixture(), 'Sheet1', false), [{ sheetName:'Sheet1', frozenRows:1, frozenColumns:1 }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, vi.fn())
+  try {
+  expect(sheet().getFreeze()).toMatchObject({xSplit:1,ySplit:1})
+  grid.ribbon(command)
+  await vi.waitFor(() => expect(kinds(draft)).toContain(command === 'sheet-protect' ? 'protectSheet' : 'protectWorkbookStructure'))
+  const applied = draft.operations
+  grid.ribbon('undo')
+  await vi.waitFor(() => expect(draft.operations).toEqual([]))
+  expect(sheet().getFreeze()).toMatchObject({xSplit:1,ySplit:1})
+  grid.ribbon('redo')
+  await vi.waitFor(() => expect(draft.operations).toEqual(applied))
+  expect(sheet().getFreeze()).toMatchObject({xSplit:1,ySplit:1})
+  } finally { current.view?.dispose() }
+})
+
+it('waits for pending protection capture when Undo is requested immediately', async () => {
+  const source = await protectSheet(await fixture(), 'Sheet1', false)
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, vi.fn())
+  try {
+    grid.ribbon('sheet-protect');grid.ribbon('undo')
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toBe('已保存'))
+    expect(draft.operations).toEqual([])
+    expect(grid.view.protection().sheet.protected).toBe(false)
+  } finally { current.view?.dispose() }
 })
 
 
@@ -348,4 +376,22 @@ it('saves table filter buttons through main, undo and recovered drafts without e
   expect(saved.sheets[0]!.tables![0]).toMatchObject({ filterButton: false, headerRowCount: 1, range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 } })
   expect(saved.sheets[0]!.cells).toEqual((await readWorkbook(source)).sheets[0]!.cells)
   reopened.view?.dispose()
+})
+
+it('shows failed validation reasons and retains the download and reopen links after a native save', async () => {
+  const current = await open(await fixture(), new NativeDraft(identity, store()), async () => ({
+    revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/saved.xlsx' } },
+    editor: { openUrl: '/revision/2' }, validation: { ok: false, issues: [{ message: '透视筛选版式验收待复核' }] },
+  }))
+  grid.ribbon('sheet-protect')
+  await write(0, 0, '待保存')
+  current.shell.save.click()
+  await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+  const feedback = current.shell.editor.querySelector<HTMLElement>('.workbook-feedback')!
+  expect(feedback.hidden).toBe(false)
+  expect(feedback.textContent).toContain('透视筛选版式验收待复核')
+  expect(feedback.querySelector('a')?.getAttribute('href')).toBe('/revision/2')
+  expect(current.shell.exportXlsx.hidden).toBe(false)
+  expect(current.shell.exportXlsx.getAttribute('href')).toBe('/saved.xlsx')
+  current.view?.dispose()
 })

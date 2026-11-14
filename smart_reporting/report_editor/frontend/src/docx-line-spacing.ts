@@ -23,7 +23,7 @@ export function openDocxLineSpacingDialog(root: HTMLElement, editor: Editor, anc
   const target = spacingTarget(editor, anchors)
   if (!target || !editor.isEditable) throw new Error(docxLineSpacingUnavailable(editor, anchors)!)
   const doc = editor.state.doc, selection = editor.state.selection
-  const modal = createModal({ root, label: '段落行距', closeLabel: '关闭段落行距', onRequestClose: () => modal.remove(), content: `
+  const modal = createModal({ root, label: '段落行距', cardClass: 'docx-settings-dialog', closeLabel: '关闭段落行距', onRequestClose: () => modal.remove(), content: `
     <h2>段落行距</h2><form novalidate>
       <label>行距类型<select aria-label="行距类型"><option value="multiple">倍数</option><option value="atLeast">最小值</option><option value="exact">固定值</option></select></label>
       <label data-spacing-multiple>倍数<input aria-label="行距倍数" type="number" min="0.06" max="132" step="0.01"></label>
@@ -38,6 +38,8 @@ export function openDocxLineSpacingDialog(root: HTMLElement, editor: Editor, anc
   const currentMultiple = Number(target.node.attrs.lineSpacing) || 1
   multiple.value = String(currentMultiple)
   points.value = String(target.node.attrs.lineRawTwips == null ? 12 : Number(target.node.attrs.lineRawTwips) / 20)
+  const initialRule = rule.value
+  const initialValue = initialRule === 'multiple' ? multiple.value : points.value
   const sync = () => {
     modal.card.querySelector<HTMLElement>('[data-spacing-multiple]')!.hidden = rule.value !== 'multiple'
     modal.card.querySelector<HTMLElement>('[data-spacing-points]')!.hidden = rule.value === 'multiple'
@@ -48,6 +50,7 @@ export function openDocxLineSpacingDialog(root: HTMLElement, editor: Editor, anc
     event.preventDefault()
     try {
       if (editor.isDestroyed || !editor.isEditable || editor.state.doc !== doc || !editor.state.selection.eq(selection)) throw new Error('文档或选区已变化，请重新打开行距选项')
+      if (rule.value === initialRule && (rule.value === 'multiple' ? multiple.value : points.value) === initialValue) { modal.remove(); return }
       const pt = Number(points.value), twips = Math.round(pt * 20)
       if (rule.value !== 'multiple' && (!points.value.trim() || !Number.isFinite(pt) || pt < 1 || pt > 1584 || Math.abs(pt * 20 - twips) > 1e-7)) throw new Error('行距须为 1–1584 pt，最小单位为 0.05 pt')
       const values = rule.value === 'multiple' ? { lineSpacing: Number(multiple.value) } : { lineRule: rule.value, lineRawTwips: twips }

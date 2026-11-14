@@ -20,6 +20,7 @@ export type SlidesCanvasState = {
   editableIds: Set<string>
   selectableIds?: Set<string>
   edits: CanvasEdit[]
+  onMediaPlayback?: (id:string) => void
   onSelect: (id: string, additive?: boolean) => void
   onSelectMany?: (ids: string[], additive?: boolean) => void
   onGeometry: (id: string, geometry: CanvasGeometry) => void
@@ -117,7 +118,9 @@ function SlideCanvas({ state, width }: { state: SlidesCanvasState; width: number
           if (value && editable && !node.background) nodes.current.set(node.sourceId, value); else nodes.current.delete(node.sourceId)
           if (value && selectable) selectableNodes.current.set(node.sourceId, value); else selectableNodes.current.delete(node.sourceId)
         }}
-          name={editable ? 'editable-slide-object' : 'readonly-slide-object'} draggable={editable && !node.background && !multiple} listening={selectable}
+          name={editable ? 'editable-slide-object' : 'readonly-slide-object'} draggable={editable && !node.background && !multiple} listening={selectable || (node.type==='picture' && !!node.media && !!state.onMediaPlayback)}
+          onDblClick={() => {if(node.type==='picture'&&node.media)state.onMediaPlayback?.(node.sourceId)}}
+          onDblTap={() => {if(node.type==='picture'&&node.media)state.onMediaPlayback?.(node.sourceId)}}
           onClick={event => { if (!suppressClick.current && event.evt.button === 0) state.onSelect(node.sourceId, !!(event.evt.ctrlKey || event.evt.metaKey || event.evt.shiftKey)) }} onTap={() => state.onSelect(node.sourceId)}
           onDragStart={() => state.onSelect(node.sourceId)} onDragEnd={event => commit(node, event.target as Konva.Group)}
           onTransformEnd={event => commit(node, event.target as Konva.Group)}>

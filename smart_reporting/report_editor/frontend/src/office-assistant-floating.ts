@@ -1,4 +1,5 @@
 import {createElement,PanelsTopLeft,PanelRight} from 'lucide'
+import './office-theme.css'
 import './office-assistant-floating.css'
 
 /** 浮动只改变位置，不搬动面板或重建任务控制器。 */

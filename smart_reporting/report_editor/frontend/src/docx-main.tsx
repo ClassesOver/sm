@@ -1,5 +1,17 @@
+import {mountDocxPasteUi} from './docx-paste-ui'
+import {NativeDocxRichPaste,createDocxRichPaste} from './docx-rich-paste'
+import {EquationEditListener} from './docx-equation-source'
+import {NativeDocxEquations,createDocxEquations} from './docx-equations'
+import type {DocxEquationsModel} from '../../../reporting/doc_engine/bridge/docx-equations-core'
+import { createDocxPictureControls } from './docx-picture-controls'
+import { normalizeDocxPictures } from './docx-pictures'
+import { createDocxStylesPane } from './docx-styles-pane'
+import { NativeStylesPane, normalizeStylesPane, stylesPaneOperations, stylesPaneStyles, type StylesPaneModel } from './docx-styles-pane-operations'
+import { NativeDocxFontDialog } from './docx-font-properties'
+import { NativeDocxParagraphProperties } from './docx-paragraph-properties'
+import { normalizeDocxDropCaps } from './docx-drop-cap'
 import {createDocxRuler} from './docx-ruler'
-import {createDocxGridlines} from './docx-gridlines'
+import {createDocxGridlines, createDocxTableGridlines} from './docx-gridlines'
 import {createDocxNavigation} from './docx-navigation'
 import {createDocxOutlineView} from './docx-outline-view'
 import {resetDocxHistory} from './docx-refresh-history'
@@ -13,6 +25,13 @@ import {assertDocxCommentCreationBatch,createDocxCommentCreationControls,normali
 import { normalizeDocxTextRevisions } from './docx-text-revisions'
 import { assertDocxTextRevisionBatch } from './docx-text-revisions-core'
 import { createDocxTextRevisionControls } from './docx-text-revision-controls'
+import { createDocxWordCountControl } from './docx-word-count'
+import { createDocxSpellcheckControl } from './docx-spellcheck'
+import { assertDocxTrackedChangesBatch, normalizeDocxTrackedChanges, replayDocxTrackedChanges } from './docx-tracked-changes'
+import {docxTrackedInputProjection} from './docx-tracked-input-guard'
+import { docxTrackRevisionsEnabled, withDocxTrackRevisions } from './docx-track-revisions'
+import {createDocxReviewView,NativeDocxReviewChangedLines,revisionAuthorsOf,reviewRunsInView} from './docx-review-view'
+import {collectHfRevisions,collectNoteRevisions,collectTextboxRevisions} from './vendor/genoffice-docs/apps/docs/src/renderer/editor/story-revisions'
 import { assertDocxCommentTextBatch, commentTextOperationsOf, normalizeDocxCommentText, projectedDocxCommentTexts, replayDocxCommentText, verifiedDocxCommentTextModel, type DocxCommentTextModel } from './docx-comment-text'
 import { createDocxCommentControls } from './docx-comment-controls'
 import { assertDocxCommentThreadBatch, hiddenDocxCommentIds, isDocxCommentThreadOperation, normalizeDocxCommentThreads, projectedDocxCommentThreads, replayDocxCommentThreads, verifiedDocxCommentThreadModel, type DocxCommentThreadModel } from './docx-comment-thread'
@@ -27,9 +46,10 @@ import { newWidthPassState, resetWidthPassHistory } from './vendor/genoffice-doc
 import { docxColumnFacts, applyDocxCanvasColumns, applyDocxCanvasHf } from './docx-columns'
 import { sectionHfHeights } from './vendor/genoffice-docs/apps/docs/src/renderer/hf-heights'
 import { createDocxHfProbeScope } from './docx-hf-probe-scope'
-import { NativeDocxHistory, commitDocxNativeOperations, docxNativeOperationsOf, seedDocxNativeOperations } from './docx-native-history'
+import { NativeDocxHistory, commitDocxNativeOperations, docxNativeOperations, docxNativeOperationsOf, seedDocxNativeOperations } from './docx-native-history'
 import { hfVariantsFromParsed } from './vendor/genoffice-docs/apps/docs/src/renderer/doc-state'
-import { layoutMixedDocxColumns } from './docx-mixed-columns'
+import { layoutMixedDocxColumns, renderDocxCanvasPageBorders } from './docx-mixed-columns'
+import { docxSectionSettingsWithPatch } from '../../../reporting/doc_engine/bridge/docx-section-settings'
 import { setColumnLayout } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/column-layout'
 import { setPageGaps } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/pagination-gaps'
 import { NativeRibbonStyle } from './docx-style-majority'
@@ -40,6 +60,7 @@ import { NativeCellBorders } from './docx-cell-borders'
 import { normalizePlainDocxRuns, replayPlainDocxRuns } from './docx-plain-paragraph-runs'
 import { closeHistory } from '@tiptap/pm/history'
 import { NativeDocxRulerIndent, applyDocxRulerIndent, docxRulerParagraphReason } from './docx-ruler-indent'
+import { NativeDocxCustomList } from './docx-custom-list'
 import { NativeDocxTabStops, applyDocxTabStops } from './docx-tab-stops'
 import { TextSelection } from '@tiptap/pm/state'
 import { applyDocxNotesIntent, notesOperationsOf, projectedDocxNotes, replayDocxNotes, normalizeDocxNotes, editDocxNoteOperations, type DocxNotesModel, type DocxNoteOperation } from './docx-notes'
@@ -49,12 +70,12 @@ import { bytesSha256 } from './source-validation'
 import { Editor, Extension, type JSONContent } from '@tiptap/core'
 import { Plugin } from '@tiptap/pm/state'
 import { createRoot } from 'react-dom/client'
-import { readSections, readSectionSettings, type HfPartInfo, type HeaderFooter } from '@genoffice/docx-engine'
+import { readSections, readSectionSettings, type HfPartInfo, type HeaderFooter, type SectionSettings } from '@genoffice/docx-engine'
 import type { EditorShell } from './shell'
 import type { createNativeApi, NativeContextResponse } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { createDocxFindReplace } from './docx-find-replace'
-import { docxOperations, replayDocxOperations, restoredDocxSectionOperation, restoredDocxSectionOperations, sectionBreakNode, type DocxAnchor, type DocxPmNode, type DocxSectionAnchor, type SectionBreakType, type SectionValues } from './docx-operations'
+import { docxOperations, replayDocxOperations, restoredDocxSectionOperation, restoredDocxSectionOperations, docxPageBorderSectionOperations, sectionBreakNode, type DocxAnchor, type DocxPmNode, type DocxSectionAnchor, type SectionBreakType, type SectionChangeResult, type SectionValues } from './docx-operations'
 import { docxHeaderFooterOperation, mergeDocxHeaderFooterOperation, restoredDocxHeaderFooterOperations, type DocxHeadersFootersModel, type DocxHfFlags, type DocxHfPart, type DocxHfVariant } from './docx-hf'
 import type { DocxHeaderFooterController, DocxHfPendingEditor } from './docx-hf-source'
 import { NativeTableStructure, createDocxTableCommands } from './docx-tables'
@@ -62,10 +83,14 @@ import { normalizeDocxAutoFitSources } from './docx-table-autofit'
 import { normalizeDocxColumnWidthSources } from './docx-table-column-width'
 import { withDocxTableAlignmentDisplayIndents } from './docx-table-alignment-baseline'
 import { createDocxRibbon } from './docx-ribbon'
+import {createDocxMailMergeControls} from './docx-mail-merge-controls'
 import { docxPageColorModel, docxPageColorOperations, effectiveDocxPageColor, withDocxPageColor } from './docx-page-color'
 import { effectiveDocxPageBorder, withDocxPageBorder } from './docx-page-borders'
+import { pictureWatermarkPreviewImage, textWatermarkPreviewImage } from '@genoffice/docx-engine'
+import { hfWashoutFilter } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/hf-dom'
 import { docxWatermarkModel, docxWatermarkOperations, effectiveDocxWatermark, withDocxWatermark } from './docx-watermark'
 import { createDocxViewCommands } from './docx-view'
+import { createDocxFormattingMarks } from './docx-formatting-marks'
 import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/renderer/parse-off-thread'
 import { blocksToPmDoc, pmDocOptions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/convert'
 import { sourceEmptyDocxParagraphs } from './docx-empty-paragraph'
@@ -80,7 +105,7 @@ import './docx.css'
 import './docx-outline-view.css'
 import './office-theme.css'
 
-interface WordModel { sourceSha256: string; blocks: (Omit<DocxAnchor, 'docxIndex'> & { type: string })[]; sections: DocxSectionAnchor[]; headersFooters?: DocxHeadersFootersModel; notes?: DocxNotesModel; comments?: DocxCommentTextModel; commentCreation?: DocxCommentCreationModel; commentReplies?: DocxCommentReplyModel; commentThreads?: DocxCommentThreadModel; bookmarks?: DocxBookmarksModel; crossReferences?:DocxCrossReferencesModel }
+interface WordModel { sourceSha256: string; trackRevisions?: boolean; trackRevisionsReadOnlyReason?: string | null; blocks: (Omit<DocxAnchor, 'docxIndex'> & { type: string })[]; sections: DocxSectionAnchor[]; headersFooters?: DocxHeadersFootersModel; notes?: DocxNotesModel; comments?: DocxCommentTextModel; commentCreation?: DocxCommentCreationModel; commentReplies?: DocxCommentReplyModel; commentThreads?: DocxCommentThreadModel; bookmarks?: DocxBookmarksModel; crossReferences?:DocxCrossReferencesModel }
 const sha256 = (bytes: ArrayBuffer | Uint8Array<ArrayBuffer>) => bytesSha256(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
 
 const part = (value: HfPartInfo | null | undefined): HeaderFooter | null => value ? { text: value.text, paras: value.paras, pageNumber: value.hasPageNumber } : null
@@ -94,6 +119,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const [buffer, inspected] = await Promise.all([api.file(), !context.editingEnabled && context.wordReadAIEnabled
     ? api.readModel<WordModel>() : api.preview<WordModel>({ expectedSha256, operations: [] })])
   if (await sha256(buffer) !== expectedSha256 || inspected.model.sourceSha256 !== expectedSha256) throw new Error('Word 来源文件身份发生变化，请重新打开')
+  const trackRevisionsModel = { sourceSha256: expectedSha256, enabled: inspected.model.trackRevisions === true, readOnlyReason: inspected.model.trackRevisionsReadOnlyReason ?? null }
   const parsed = await parseDocxOffThread(new Uint8Array(buffer))
   const commentsModel = inspected.model.comments ? verifiedDocxCommentTextModel(inspected.model.comments, expectedSha256, parsed.comments ?? []) : undefined
   const commentCreationModel = inspected.model.commentCreation ? verifiedDocxCommentCreationModel(inspected.model.commentCreation, expectedSha256) : undefined
@@ -117,6 +143,8 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   anchors = withDocxTableAlignmentDisplayIndents(anchors, parsed.blocks, sections, pmDocOptions(parsed))
   const tocSource = createDocxToc(parsed, anchors)
   const captionSource = createDocxCaption(parsed, anchors)
+  const richPasteSource=createDocxRichPaste(expectedSha256,parsed.blocks)
+  const equationSource=createDocxEquations((inspected.model as {equations?:DocxEquationsModel}).equations)
   // 全部节逐一核验身份（文档顺序，尾节在最后）；页面设置作用于光标所在节。
   if (!sections.length || inspected.model.sections.length !== sections.length) throw new Error('Word 页面设置的节身份校验失败')
   const sectionAnchors: DocxSectionAnchor[] = []
@@ -189,6 +217,8 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   let commentCreationControls: ReturnType<typeof createDocxCommentCreationControls> | undefined
   let commentReplyControls: ReturnType<typeof createDocxCommentReplyControls> | undefined
   const reportError = (error: unknown) => { notice.textContent = error instanceof Error ? error.message : String(error) }
+  const equationError=(event:Event)=>reportError((event as CustomEvent).detail)
+  host.addEventListener('native-equation-error',equationError)
   const notesModel = inspected.model.notes
   // 固定源 Design ▸ Page Color：文档级非正文意图，随原生事务历史撤销/重做，按来源背景摘要绑定。
   const pageColorModel = docxPageColorModel((inspected.model as { pageColor?: unknown }).pageColor)
@@ -196,27 +226,42 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   // 固定源 Design ▸ Watermark：文档级非正文意图，按全部页眉部件摘要绑定来源。
   const watermarkModel = docxWatermarkModel((inspected.model as { watermark?: unknown }).watermark)
   docxWatermarkOperations(draft.operations, watermarkModel)
+  const stylesPaneModel = (inspected.model as { stylesPane?: StylesPaneModel }).stylesPane
+  stylesPaneOperations(draft.operations, parsed.styles, stylesPaneModel)
+  const currentStyles = (current: DocxPmNode) => stylesPaneStyles(parsed.styles, docxNativeOperationsOf(current))
   const isNote = (op: { kind?: unknown }) => ['insertNote', 'updateNote', 'deleteNote'].includes(String(op.kind))
   const collectOperationsUnchecked = (current: DocxPmNode, sectionOps = sectionOperation(docxNativeOperationsOf(current)), hfOps = headerFooterOperations(docxNativeOperationsOf(current)), operationBaseline = baseline) => {
     if (!notesModel) {
       if (notesOperationsOf(current).length) throw new Error('当前来源未提供脚注尾注编辑能力')
-      try { return docxOperations(operationBaseline, current, anchors, sectionOps, editor.schema, parsed.styles, hfOps) }
+      try { return docxOperations(operationBaseline, current, anchors, sectionOps, editor.schema, currentStyles(current), hfOps) }
       catch (originalError) {
         try {
           const normalized = normalizePlainDocxRuns(operationBaseline, current, anchors)
-          return [...docxOperations(normalized.baseline, normalized.current, anchors, sectionOps, editor.schema, parsed.styles, hfOps), ...normalized.operations]
+          return [...docxOperations(normalized.baseline, normalized.current, anchors, sectionOps, editor.schema, currentStyles(current), hfOps), ...normalized.operations]
         } catch { throw originalError }
       }
     }
     let normalized = normalizeDocxNotes(operationBaseline, current, anchors, notesModel)
-    try { return [...docxOperations(normalized.baseline, normalized.current, anchors, sectionOps, editor.schema, parsed.styles, hfOps), ...normalized.operations] }
+    try { return [...docxOperations(normalized.baseline, normalized.current, anchors, sectionOps, editor.schema, currentStyles(current), hfOps), ...normalized.operations] }
     catch {
       normalized = normalizeDocxNotes(operationBaseline, current, anchors, notesModel, true)
-      return [...docxOperations(normalized.baseline, normalized.current, anchors, sectionOps, editor.schema, parsed.styles, hfOps), ...normalized.operations]
+      return [...docxOperations(normalized.baseline, normalized.current, anchors, sectionOps, editor.schema, currentStyles(current), hfOps), ...normalized.operations]
     }
   }
   const collectOperations = (current: DocxPmNode, sectionOps = sectionOperation(docxNativeOperationsOf(current)), hfOps = headerFooterOperations(docxNativeOperationsOf(current))) => {
-    const crossReferences = normalizeDocxCrossReferences(baseline,current,crossReferencesModel)
+    const mergeOperations=docxNativeOperationsOf(current).filter(op=>['insertMailMergeField','mailMergeSingle'].includes(op.kind))
+    if(mergeOperations.length){
+      const clean=(node:DocxPmNode)=>({...node,attrs:{...node.attrs,nativeDocxOperations:null}})
+      if(mergeOperations.length!==1||docxNativeOperationsOf(current).length!==1||JSON.stringify(clean(current))!==JSON.stringify(clean(baseline)))throw new Error('邮件合并需独立保存，请先保存或撤销其他修改')
+      return mergeOperations
+    }
+    const pasted=richPasteSource.normalize(baseline,current,editor.schema)
+    current=pasted.current
+    const equations=equationSource.normalize(baseline,current,editor.schema)
+    current=equations.current
+    const styleDefinitions = stylesPaneOperations(docxNativeOperationsOf(current), parsed.styles, stylesPaneModel)
+    const pane = normalizeStylesPane(baseline, current, anchors, currentStyles(current), editor.schema)
+    const crossReferences = normalizeDocxCrossReferences(baseline,pane.current,crossReferencesModel)
     const captions = normalizeDocxCaption(baseline,crossReferences.current,captionSource,editor.schema)
     const bookmarks = normalizeDocxBookmarks(baseline, captions.current, bookmarksModel)
     const toc = normalizeDocxToc(baseline, bookmarks.current, tocSource, editor.schema)
@@ -225,8 +270,14 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     const creations = normalizeDocxCommentCreation(baseline, replies.current, commentCreationModel)
     const comments = commentsModel ? normalizeDocxCommentText(baseline, creations.current, commentsModel) : { current: creations.current, operations: [] }
     if (!commentsModel && commentTextOperationsOf(current).length) throw new Error('当前来源未提供批注文字编辑能力')
-    const revisions = normalizeDocxTextRevisions(baseline, comments.current, anchors, editor.schema)
-    const operations = [...crossReferences.operations, ...captions.operations, ...bookmarks.operations, ...toc.operations, ...threads.operations, ...replies.operations, ...creations.operations, ...comments.operations, ...revisions.operations, ...collectOperationsUnchecked(revisions.current, sectionOps, hfOps, revisions.baseline), ...docxPageColorOperations(docxNativeOperationsOf(current), pageColorModel), ...docxWatermarkOperations(docxNativeOperationsOf(current), watermarkModel)]
+    const tracked = normalizeDocxTrackedChanges(baseline, comments.current, anchors)
+    const revisions = normalizeDocxTextRevisions(baseline, tracked.current, anchors, editor.schema)
+    const pictures = normalizeDocxPictures(revisions.baseline, revisions.current, anchors)
+    const dropCaps = normalizeDocxDropCaps(revisions.baseline, pictures.current, anchors)
+    const nativeOperations=docxNativeOperationsOf(current)
+    const operations = [...pasted.operations, ...equations.operations, ...styleDefinitions, ...pane.operations, ...crossReferences.operations, ...captions.operations, ...bookmarks.operations, ...toc.operations, ...threads.operations, ...replies.operations, ...creations.operations, ...comments.operations, ...tracked.operations, ...revisions.operations, ...pictures.operations, ...dropCaps.operations, ...collectOperationsUnchecked(dropCaps.current, sectionOps, hfOps, revisions.baseline), ...docxPageColorOperations(nativeOperations, pageColorModel), ...docxWatermarkOperations(nativeOperations, watermarkModel), ...nativeOperations.filter(operation=>operation.kind==='setTrackRevisions')]
+    if(pasted.operations.length&&operations.length!==1)throw new Error('富文本粘贴请单独保存')
+    if(operations.some(op=>op.kind==='editEquations')&&operations.length!==1)throw new Error('公式修改请单独保存')
     assertDocxBookmarksBatch(operations)
     assertDocxTocBatch(operations)
     assertDocxCrossReferencesBatch(operations)
@@ -236,6 +287,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     assertDocxCommentCreationBatch(operations)
     assertDocxCommentTextBatch(operations)
     assertDocxTextRevisionBatch(operations)
+    assertDocxTrackedChangesBatch(operations)
     if (operations.length > 500) throw new Error('操作超过 500 条，请分批保存')
     return operations
   }
@@ -264,7 +316,18 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       if (!ready || refreshing || !transaction.docChanged) return true
       if (saving || draft.saving || draft.closed || !context.editingEnabled) return false
       try { collectOperations(transaction.doc.toJSON()); return true }
-      catch (error) { reportError(error); return false }
+      catch (error) {
+        // 原生 recorder 在 appendTransaction 才补 ins/del；仅验证其前置纯文本过渡，不将临时 diff 写入草稿。
+        if(editor.storage.trackChanges.enabled&&!editor.view.composing&&!transaction.getMeta('composition')&&!transaction.getMeta('trackIgnore')&&!transaction.getMeta('history$'))try{
+          const input=docxTrackedInputProjection(transaction,anchors)
+          if(input){
+            collectOperations(transaction.before.toJSON())
+            collectOperationsUnchecked(input.current,sectionOperation(docxNativeOperationsOf(input.current)),headerFooterOperations(docxNativeOperationsOf(input.current)),input.baseline)
+            return true
+          }
+        }catch{ /* 保留原严格校验错误；不放行不满足来源权限的事务。 */ }
+        reportError(error);return false
+      }
     },
   })] })
   let nestedInputActive = false, nestedInputError: string | null = null
@@ -276,7 +339,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     for (let depth = resolved.depth; depth > 1; depth--) {
       if (!['docTableCell', 'docTableHeader'].includes(resolved.node(depth).type.name)) continue
       const root = resolved.node(depth - 2), anchor = anchors.find(item => item.docxIndex === root.attrs.docxIndex)
-      if (root.type.name !== 'docTable' || (root.attrs.nativeTableStructure || root.attrs.nativeTableCellShape || root.attrs.nativeTableColumnWidths || root.attrs.nativeTableRowHeights || root.attrs.nativeTableAutoFit || root.attrs.nativeTableCellTextDirection || root.attrs.nativeTableCellAlignment || root.attrs.nativeTableCellMargins || root.attrs.nativeTableCellMarginOverrides || root.attrs.nativeTableRowBreaks || root.attrs.nativeTableAlignment || root.attrs.nativeTableCellWrap || root.attrs.nativeTableAltText)) return false
+      if (root.type.name !== 'docTable' || (root.attrs.nativeTableProperties || root.attrs.nativeTableStructure || root.attrs.nativeTableCellShape || root.attrs.nativeTableColumnWidths || root.attrs.nativeTableRowHeights || root.attrs.nativeTableAutoFit || root.attrs.nativeTableCellTextDirection || root.attrs.nativeTableCellAlignment || root.attrs.nativeTableCellMargins || root.attrs.nativeTableCellMarginOverrides || root.attrs.nativeTableRowBreaks || root.attrs.nativeTableAlignment || root.attrs.nativeTableCellWrap || root.attrs.nativeTableAltText)) return false
       let ordinal = 0
       for (let index = 0; index < resolved.index(depth); index++) if (resolved.node(depth).child(index).type.name === 'docNestedTable') ordinal++
       return anchor?.nestedTables?.find(item => item.row === resolved.index(depth - 2) && item.column === resolved.index(depth - 1) && item.nestedOrdinal === ordinal)?.cells[row]?.[column]?.editable === true
@@ -284,10 +347,11 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     return false
   } })
   const flushPendingEdits = () => { nestedInputError = null; window.dispatchEvent(new Event('ai-docs-commit-tables')); if (nestedInputError) throw new Error(nestedInputError); pendingHfEditor?.flush(); commentControls?.flush(); commentCreationControls?.flush(); commentReplyControls?.flush() }
-  const editor = new Editor({ element: host.querySelector<HTMLElement>('.docx-canvas')!, extensions: [...editorExtensions.map(extension => extension.name === 'docNestedTable' ? nativeNestedTable : extension.name === 'docTableRow' ? DocTableRow.extend({ content: '(docTableCell | docTableHeader)*' }) : extension), NativeTableStructure, NativeCellBorders, NativeBookmarkIntent, NativeNotesIntent, NativeCommentTextIntent, NativeCommentCreationIntent, NativeCommentReplyIntent, NativeCommentThreadIntent, NativeTextRevisionIntent, NativeRibbonStyle, NativeDocxRulerIndent, NativeDocxTabStops, NativeDocxToc, NativeDocxCrossReference, NativeDocxCaption, NativeDocxHistory, Guard],
+  let richPasteController:ReturnType<typeof richPasteSource.controls>|undefined
+  const editor = new Editor({ element: host.querySelector<HTMLElement>('.docx-canvas')!, extensions: [...editorExtensions.map(extension => extension.name === 'docNestedTable' ? nativeNestedTable : extension.name === 'docTableRow' ? DocTableRow.extend({ content: '(docTableCell | docTableHeader)*' }) : extension), NativeTableStructure, NativeCellBorders, NativeBookmarkIntent, NativeNotesIntent, NativeCommentTextIntent, NativeCommentCreationIntent, NativeCommentReplyIntent, NativeCommentThreadIntent, NativeTextRevisionIntent, NativeDocxReviewChangedLines, NativeRibbonStyle, NativeDocxCustomList, NativeDocxRulerIndent, NativeDocxTabStops, NativeDocxParagraphProperties, NativeDocxFontDialog, NativeStylesPane, NativeDocxToc, NativeDocxCrossReference, NativeDocxCaption, NativeDocxEquations, NativeDocxRichPaste, NativeDocxHistory, Guard],
     content: sourceEmptyDocxParagraphs(blocksToPmDoc(parsed.blocks, sections, pmDocOptions(parsed)) as DocxPmNode, parsed.blocks) as JSONContent,
     editable: context.editingEnabled,
-    editorProps: { attributes: { class: 'doc-page', 'aria-label': 'Word 文档编辑区', role: 'textbox', 'aria-multiline': 'true' } },
+    editorProps: { handleDOMEvents:{paste:(_view,event)=>{if(event.target instanceof HTMLElement&&event.target.closest('.doc-nested-table'))return false;const data=(event as ClipboardEvent).clipboardData;if(!data?.getData('text/html'))return false;event.preventDefault();try{richPasteController?.paste({html:data.getData('text/html'),text:data.getData('text/plain')})}catch(error){reportError(error)}return true}}, attributes: { class: 'doc-page', 'aria-label': 'Word 文档编辑区', role: 'textbox', 'aria-multiline': 'true' } },
     onSelectionUpdate: ({ editor }) => {
       if (!(document.activeElement instanceof HTMLElement) || !document.activeElement.closest('.doc-nested-table')) nestedInputActive = false
       const { $from } = editor.state.selection
@@ -317,10 +381,16 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     },
     onUpdate: () => {
       if (!ready || refreshing) return
-      try { draft.setOperations(collectOperations(editor.getJSON())); syncSection(); editor.commands.setMeta('native-section-layout', true); bookmarkControls?.refresh(); commentControls?.refresh(); commentCreationControls?.refresh(); commentReplyControls?.refresh(); options.onDraftChange?.() }
+      try { draft.setOperations(collectOperations(editor.getJSON())); syncSection(); editor.commands.setMeta('native-section-layout', true); reviewView.setAuthors(reviewAuthors()); bookmarkControls?.refresh(); commentControls?.refresh(); commentCreationControls?.refresh(); commentReplyControls?.refresh(); options.onDraftChange?.() }
       catch (error) { reportError(error) }
     },
   })
+  let refreshOpenPaginationPreview:(()=>void)|null=null
+  let invalidateReviewLayout:(()=>void)|null=null
+  let paginationPreviewOpen=false
+  const reviewView = createDocxReviewView({host,editor,previewRoot:host.querySelector<HTMLElement>('.docx-preview-root'),initial:{mode:'all',insDel:true,format:true,hiddenAuthors:[]},onChange:()=>{invalidateReviewLayout?.();refreshOpenPaginationPreview?.()}})
+  editor.storage.trackChanges.enabled = docxTrackRevisionsEnabled(trackRevisionsModel, draft.operations)
+  const formattingMarks = createDocxFormattingMarks({ editor, root: host, sections })
   const nestedFocus = (event: FocusEvent) => {
     const target = event.target as HTMLElement | null
     if (!target || !editor.view.dom.contains(target)) return
@@ -331,6 +401,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   }
   host.addEventListener('focusin', nestedFocus)
   editor.storage.listNumbering.styles = parsed.styles
+  editor.storage.trackChanges.author = context.context.scope.userId
   editor.storage.listNumbering.docDefaults = parsed.docDefaults
   editor.storage.listNumbering.defs = parsed.numbering
   editor.storage.listNumbering.defaultTabTwips = parsed.defaultTabStopTwips ?? 720
@@ -343,11 +414,18 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     if (color) host.style.setProperty('--page-bg', `#${color}`); else host.style.removeProperty('--page-bg')
     syncWatermark()
   }
-  /** 画布纸面按生效文字水印预览（居中、半透明，斜式时旋转 −45°；来源为图片水印时不绘制预览）。 */
+  /** 画布纸面按生效的文字或图片水印预览。 */
   const syncWatermark = () => {
     const spec = effectiveDocxWatermark(nativeOperations(), watermarkModel)
     for (const page of host.querySelectorAll<HTMLElement>('.doc-page')) {
+      page.querySelector('.docx-picture-watermark-preview')?.remove()
       if (!spec) { delete page.dataset.watermark; continue }
+      if ('image' in spec) {
+        delete page.dataset.watermark
+        const mark = pictureWatermarkPreviewImage(spec, { widthPt: (section.pageWidth - section.marginLeft - section.marginRight) / 20, heightPt: (section.pageHeight - section.marginTop - section.marginBottom) / 20 })
+        const image = document.createElement('img'); image.className = 'docx-picture-watermark-preview'; image.src = mark.dataUrl; image.alt = ''; image.setAttribute('aria-hidden', 'true')
+        Object.assign(image.style, { position: 'absolute', pointerEvents: 'none', width: `${mark.widthPx}px`, height: `${mark.heightPx}px`, left: '50%', top: '50%', transform: 'translate(-50%,-50%)', opacity: '1', zIndex: '0', ...(mark.washout ? { filter: hfWashoutFilter(mark.washout) } : {}) }); page.prepend(image); continue
+      }
       page.dataset.watermark = spec.text
       page.style.setProperty('--watermark-color', `#${spec.colorHex ?? 'C0C0C0'}`)
       page.style.setProperty('--watermark-opacity', String(spec.opacity ?? 0.5))
@@ -359,19 +437,25 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   }
   const syncSection = () => {
     syncPageColor()
-    const settings = { ...sectionAnchors[activeSection]!.settings, ...sectionValues(activeSection) }
+    const settings = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection))
     sectionRibbon.settings = settings
     Object.assign(sectionRibbon, pageNumberOf(activeSection), { pageNumberReason: sectionAnchors[activeSection]!.pageNumberReadOnlyReason })
     sectionRibbon.titlePg = titlePageOf(activeSection)
     sectionRibbon.titlePgReason = sectionAnchors[activeSection]!.titlePgReadOnlyReason
     sectionRibbon.evenAndOddHeaders = evenOddOf()
     sectionRibbon.label = sections.length > 1 ? `第 ${activeSection + 1} 节，共 ${sections.length} 节` : undefined
-    const canvasSections = sections.map((item, index) => ({ ...item, settings: { ...sectionAnchors[index]!.settings, ...sectionValues(index) } }))
+    const canvasSections = sections.map((item, index) => ({ ...item, settings: docxSectionSettingsWithPatch(sectionAnchors[index]!.settings, sectionValues(index)) }))
     applyDocxCanvasColumns(editor.view.dom, docxColumnFacts(canvasSections, section))
   }
-  editor.chain().setMeta('addToHistory', false).setContent(normalizeDocxAutoFitSources(normalizeDocxColumnWidthSources(editor.getJSON(), anchors, editor.schema), anchors, editor.schema) as JSONContent, { emitUpdate: false }).run()
+  editor.chain().setMeta('addToHistory', false).setMeta('trackIgnore',true).setContent(normalizeDocxAutoFitSources(normalizeDocxColumnWidthSources(editor.getJSON(), anchors, editor.schema), anchors, editor.schema) as JSONContent, { emitUpdate: false }).run()
+  editor.chain().setMeta('addToHistory',false).setMeta('trackIgnore',true).setContent(equationSource.annotate(editor.getJSON()),{emitUpdate:false}).run()
   const readSourceDoc = editor.state.doc
   baseline = editor.getJSON()
+  richPasteController=richPasteSource.controls(editor,()=>draft.operations,()=>nestedInputActive?'请退出嵌套表格编辑后再粘贴正文':pendingHfEditor?'请退出页眉页脚编辑后再粘贴正文':null)
+  mountDocxPasteUi(editor,host,reportError)
+  equationSource.controls(editor,()=>draft.operations,()=>nestedInputActive?'嵌套表格当前只支持文字编辑，不能将公式插入正文':pendingHfEditor?'请退出页眉页脚编辑后，在支持公式的正文或普通表格中选择位置':null)
+  const equationHost=document.createElement('div');host.append(equationHost);const equationRoot=createRoot(equationHost);equationRoot.render(<EquationEditListener editor={editor}/>)
+  editor.storage.nativeDocxCustomList.sourceDoc = editor.state.doc
   nativeOperations = () => docxNativeOperationsOf(editor.getJSON())
   for (const anchor of anchors) if (anchor.nestedTables?.length) {
     const root = baseline.content?.find(node => node.attrs?.docxIndex === anchor.docxIndex)
@@ -391,6 +475,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     assertDocxCommentCreationBatch(draft.operations)
     assertDocxCommentTextBatch(draft.operations)
     assertDocxTextRevisionBatch(draft.operations)
+    assertDocxTrackedChangesBatch(draft.operations)
     sectionOperation(draft.operations)
     headerFooterOperations(draft.operations)
     const bookmarkOperations = draft.operations.filter(op => ['createBookmark', 'deleteBookmark'].includes(op.kind))
@@ -405,9 +490,11 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     if (commentOperations.length && !commentsModel) throw new Error('当前来源未提供批注文字编辑能力')
     const threadOperations = draft.operations.filter(isDocxCommentThreadOperation)
     if (threadOperations.length && !commentThreadsModel) throw new Error('当前来源未提供批注线程编辑能力')
-    const ordinary = replayDocxOperations(baseline, draft.operations.filter(op => !isNote(op) && !isDocxCommentThreadOperation(op) && !isDocxTocOperation(op) && !isDocxCaptionOperation(op) && op.kind !== 'insertCrossReference' && op.kind !== 'patchParagraphRuns' && op.kind !== 'editCommentText' && op.kind !== 'createComment' && op.kind !== 'replyComment' && op.kind !== 'createBookmark' && op.kind !== 'deleteBookmark'), anchors, sectionAnchors, editor.schema, parsed.styles, multiHf ? undefined : { anchor: hfAnchor, model: hfModel })
+    const ordinary = replayDocxOperations(baseline, draft.operations.filter(op => !['insertMailMergeField','mailMergeSingle'].includes(op.kind) && !isNote(op) && !isDocxCommentThreadOperation(op) && !isDocxTocOperation(op) && !isDocxCaptionOperation(op) && op.kind !== 'pasteRichContent' && op.kind !== 'editEquations' && op.kind !== 'insertCrossReference' && op.kind !== 'patchParagraphRuns' && op.kind !== 'recordTextRevision' && op.kind !== 'editCommentText' && op.kind !== 'createComment' && op.kind !== 'replyComment' && op.kind !== 'createBookmark' && op.kind !== 'deleteBookmark'), anchors, sectionAnchors, editor.schema, stylesPaneStyles(parsed.styles, draft.operations), multiHf ? undefined : { anchor: hfAnchor, model: hfModel })
+    const trackedOperations = draft.operations.filter(op => op.kind === 'recordTextRevision')
+    const tracked = replayDocxTrackedChanges(ordinary, trackedOperations, anchors, editor.schema, context.context.scope.userId, null)
     const plans = draft.operations.filter(op => op.kind === 'patchParagraphRuns')
-    const noted = notesModel ? replayDocxNotes(ordinary, noteOperations, anchors, notesModel, plans) : replayPlainDocxRuns(ordinary, plans, anchors)
+    const noted = notesModel ? replayDocxNotes(tracked, noteOperations, anchors, notesModel, plans) : replayPlainDocxRuns(tracked, plans, anchors)
     const commented = commentsModel ? replayDocxCommentText(noted, commentOperations, commentsModel) : noted
     const created = commentCreationModel ? replayDocxCommentCreation(commented, creationOperations, commentCreationModel) : commented
     const replied = commentRepliesModel ? replayDocxCommentReplies(created, replyOperations, commentRepliesModel) : created
@@ -416,7 +503,8 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     const tocContent = replayDocxToc(bookmarked, draft.operations, tocSource, editor.schema)
     if(draft.operations.some(op=>op.kind==='insertCrossReference')&&!crossReferencesModel) throw new Error('当前来源未提供交叉引用能力')
     const referenced = crossReferencesModel ? replayDocxCrossReferences(tocContent,draft.operations,crossReferencesModel) : tocContent
-    const content = replayDocxCaption(referenced,draft.operations,captionSource,editor.schema)
+    const captioned = replayDocxCaption(referenced,draft.operations,captionSource,editor.schema)
+    const content = richPasteSource.replay(equationSource.replay(captioned,draft.operations,editor.schema),draft.operations,editor.schema)
     const operations = docxNativeOperationsOf({type:'doc',attrs:{nativeDocxOperations:draft.operations}})
     const expected = editor.schema.nodeFromJSON({...content,attrs:{...content.attrs,
       nativeBookmarkOperations:bookmarkOperations.length?bookmarkOperations:null,
@@ -430,11 +518,12 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     const previousState = editor.state, previousSection = activeSection, previousEditable = editor.isEditable
     refreshing = true
     try {
-      editor.chain().setMeta('addToHistory',false).setContent(expected.toJSON(),{emitUpdate:false}).run()
+      editor.chain().setMeta('addToHistory',false).setMeta('trackIgnore',true).setContent(expected.toJSON(),{emitUpdate:false}).run()
       const transaction = editor.state.tr.setMeta('addToHistory',false)
       for (const [key,value] of Object.entries(expected.attrs)) transaction.setDocAttribute(key,value)
       editor.view.dispatch(transaction)
       seedDocxNativeOperations(editor,draft.operations)
+      editor.storage.trackChanges.enabled = docxTrackRevisionsEnabled(trackRevisionsModel, draft.operations)
       if (!editor.state.doc.eq(expected)) throw new Error('草稿刷新未能完整安装，已保留原编辑状态')
       syncSection(); editor.commands.setMeta('native-section-layout',true)
       editor.setEditable(context.editingEnabled&&!saving&&!draft.saving&&!draft.closed,false)
@@ -480,14 +569,19 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       titlePg: sectionAnchors.some((_, index) => titlePageOf(index) === true), evenOddHf: evenOddOf() ?? false, legacyBands: (parsed.compatibilityMode ?? 0) < 15,
     })
     currentCanvasTop = applyDocxCanvasHf(editor.view.dom, currentSections, currentSection, hfHeights[0]!, evenOddOf() ?? false)
-    const geometry = JSON.stringify([currentSections, draft.operations, hfHeights, currentCanvasTop, [...editor.view.dom.querySelectorAll('img')].map(image => [image.currentSrc, image.complete, image.naturalWidth, image.naturalHeight])])
+    const geometry = JSON.stringify([currentSections, draft.operations, reviewView.state, hfHeights, currentCanvasTop, [...editor.view.dom.querySelectorAll('img')].map(image => [image.currentSrc, image.complete, image.naturalWidth, image.naturalHeight])])
     if (columnHistoryDoc !== editor.state.doc || columnHistoryGeometry !== geometry) {
       resetWidthPassHistory(columnWidthHistory); columnHistoryDoc = editor.state.doc; columnHistoryGeometry = geometry; columnLayoutReady = false; currentColumnLayout = null
     }
     // 源App仅在正文/布局输入变化时重排；Preview及prepareEdges复用同一已提交布局。
     if (columnLayoutReady) return
     const facts = docxColumnFacts(currentSections, section)
-    if (facts.colMode !== 'mixed' && !facts.sectionWidths && !parsed.mirrorMargins) { setColumnLayout(editor.view, []); setPageGaps(editor.view, []); editor.view.dom.style.removeProperty('height'); return }
+    if (facts.colMode !== 'mixed' && !facts.sectionWidths && !parsed.mirrorMargins && !currentSections.some(item => item.settings.pageBorder)) {
+      setColumnLayout(editor.view, []); setPageGaps(editor.view, []); editor.view.dom.style.removeProperty('height')
+      const wrap = (editor.view.dom.closest('.page-wrap') as HTMLElement) ?? editor.view.dom
+      renderDocxCanvasPageBorders(wrap, currentSection, 1)
+      return
+    }
     const result = layoutMixedDocxColumns(editor.view, { pm: editor.view.dom, sections: currentSections, section: currentSection,
       mirrorMargins: parsed.mirrorMargins, canvasTop: currentCanvasTop, colMode: facts.colMode, colFlow: facts.colFlow, ...noteFacts,
       hfParts: parsed.hfParts ?? {}, legacyBands: (parsed.compatibilityMode ?? 0) < 15,
@@ -503,25 +597,41 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   let previewRequest = 0
   const showPaginationPreview = async () => {
     flushPendingEdits()
-    const request = ++previewRequest, doc = editor.state.doc, operations = JSON.stringify(draft.operations), geometrySection = activeSection
+    paginationPreviewOpen=true
+    const request = ++previewRequest, doc = editor.state.doc, operations = JSON.stringify(draft.operations), geometrySection = activeSection, reviewState=JSON.stringify(reviewView.state)
     const stillCurrent = () => request === previewRequest && ready && !editor.isDestroyed && !draft.closed
-      && editor.state.doc === doc && JSON.stringify(draft.operations) === operations && activeSection === geometrySection
+      && editor.state.doc === doc && JSON.stringify(draft.operations) === operations && activeSection === geometrySection && JSON.stringify(reviewView.state)===reviewState && paginationPreviewOpen
     try {
     const currentSections = sections.map((item, index) => ({ ...item, titlePg: titlePageOf(index) ?? item.titlePg,
       pageNumberFmt: pageNumberOf(index).pageNumberFmt ?? undefined, pageNumberStart: pageNumberOf(index).pageNumberStart ?? undefined,
-      settings: { ...sectionAnchors[index]!.settings, ...sectionValues(index) } }))
+      settings: docxSectionSettingsWithPatch(sectionAnchors[index]!.settings, sectionValues(index)) }))
     const columnFacts = docxColumnFacts(currentSections, section)
     const currentSection = columnFacts.section
     const footnotes = await prepareNotePagination(currentSections, currentSection, stillCurrent)
+    if (!stillCurrent()) return
     layoutColumns(currentSections, currentSection, footnotes)
     // 在React effect之前清旧gap，避免Tiptap节点视图在effect内flushSync。
     setPageGaps(editor.view, [])
     const commentTexts = commentsModel ? new Map(projectedDocxCommentTexts(commentsModel, commentTextOperationsOf(editor.getJSON(), commentsModel))
       .filter(target => target.editableText).map(target => [target.originalCommentId, target.text])) : undefined
     const previewComments = projectedDocxCommentThreads((parsed.comments ?? []).map(comment => ({ ...comment, text: commentTexts?.get(comment.id) ?? comment.text })), editor.getJSON(), commentThreadsModel)
+    const watermarkDirty = nativeOperations().some(operation => operation.kind === 'setWatermark')
+    const watermark = effectiveDocxWatermark(nativeOperations(), watermarkModel)
+    const pendingWatermark = !watermark ? null : 'image' in watermark
+      ? pictureWatermarkPreviewImage(watermark, { widthPt: (currentSection.pageWidth - currentSection.marginLeft - currentSection.marginRight) / 20, heightPt: (currentSection.pageHeight - currentSection.marginTop - currentSection.marginBottom) / 20 })
+      : textWatermarkPreviewImage(watermark)
+    if (!stillCurrent()) return
+    const review=reviewView.state
+    const previewResolveHf:typeof resolvePaginationHf=(...args)=>{
+      const result=resolvePaginationHf(...args), value=result.value
+      if(!value?.paras)return result
+      const filter=(runs:NonNullable<HeaderFooter['paras']>[number]['runs'])=>reviewRunsInView(runs,review)
+      return {...result,value:{...value,paras:value.paras.map(para=>({...para,runs:filter(para.runs),...(para.cells?{cells:para.cells.map(cell=>({...cell,paras:cell.paras.map(filter)}))}:{})}))}}
+    }
     previewRoot.render(<PaginationPreview section={currentSection} sections={currentSections} canvasTop={currentCanvasTop} hfParts={parsed.hfParts ?? {}}
+    watermarkDirty={watermarkDirty} pendingWatermark={pendingWatermark}
     {...footnotes}
-    resolveHf={resolvePaginationHf}
+    resolveHf={previewResolveHf}
     layout={() => currentColumnLayout}
     colFlow={columnFacts.colFlow} colMode={columnFacts.colMode} mirrorMargins={parsed.mirrorMargins} comments={previewComments} anchorBlocks={parsed.blocks}
     hf={{ header: { text: parsed.headerText ?? '', paras: parsed.headerParas ?? undefined, pageNumber: parsed.headerHasPageNumber },
@@ -530,9 +640,10 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       titlePg: sectionAnchors.some((_, index) => titlePageOf(index) === true), evenOddHf: evenOddOf() ?? parsed.evenAndOddHeaders ?? false,
       images: { header: parsed.headerImages ?? undefined, footer: parsed.footerImages ?? undefined,
         headerFirst: parsed.headerFirst?.images, footerFirst: parsed.footerFirst?.images, headerEven: parsed.headerEven?.images, footerEven: parsed.footerEven?.images } }}
-    onExportPdf={() => shell.exportPdf.click()} onClose={() => { previewRequest++; previewRoot.render(null); columnLayoutReady = false; scheduleColumns() }} />)
-    } catch (error) { if (ready && !editor.isDestroyed) reportError(error) }
+    onExportPdf={() => shell.exportPdf.click()} onClose={() => { paginationPreviewOpen=false; previewRequest++; previewRoot.render(null); columnLayoutReady = false; scheduleColumns() }} />)
+  } catch (error) { if (stillCurrent() && ready && !editor.isDestroyed) reportError(error) }
   }
+  refreshOpenPaginationPreview=()=>{if(paginationPreviewOpen)void showPaginationPreview()}
   const selectParagraph = () => {
     const { $from } = editor.state.selection
     for (let depth = $from.depth; depth > 0; depth--) if (['docParagraph', 'docHeading', 'docListItem'].includes($from.node(depth).type.name)) {
@@ -573,15 +684,44 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     evenAndOddHeadersReason: sectionAnchor.evenAndOddHeadersReadOnlyReason,
     label: sections.length > 1 ? `第 1 节，共 ${sections.length} 节` : undefined as string | undefined,
     onSectionBreak: insertSectionBreak,
-    onChange: (values: SectionValues) => {
-      if (saving || draft.saving || draft.closed || !context.editingEnabled) return
+    pageBorders: () => {
+      const openedDoc = editor.state.doc, openedSection = activeSection
+      return {
+        settings: docxSectionSettingsWithPatch(sectionAnchors[openedSection]!.settings, sectionValues(openedSection)),
+        apply: (props: SectionSettings['pageBorderProps'] | null, scope: 'whole' | 'section'): SectionChangeResult => {
+          try {
+            if (saving || draft.saving || draft.closed || !context.editingEnabled || !editor.isEditable) throw new Error('当前文档不可编辑或正在保存')
+            if (editor.state.doc !== openedDoc || activeSection !== openedSection) throw new Error('文档或活动节已变化，请重新打开页面边框')
+            const indices = scope === 'whole' ? sectionAnchors.map((_, index) => index) : [openedSection]
+            if (indices.some(index => pendingBreakIn(index))) throw new Error('目标节已插入分节符，请先保存，再调整页面边框')
+            const before = indices.map(index => docxSectionSettingsWithPatch(sectionAnchors[index]!.settings, sectionValues(index)))
+            const operations = docxPageBorderSectionOperations(sectionOperation(), sectionAnchors, indices, props)
+            const changed = indices.some((index, slot) => {
+              const values = operations.find(item => item.kind === 'setSectionLayout' && item.sectionId === sectionAnchors[index]!.sectionId)?.values
+              const after = docxSectionSettingsWithPatch(sectionAnchors[index]!.settings, values as SectionValues | undefined)
+              return before[slot]!.pageBorder !== after.pageBorder || JSON.stringify(before[slot]!.pageBorderProps) !== JSON.stringify(after.pageBorderProps)
+            })
+            if (!changed) return
+            const next = collectOperations(editor.getJSON(), operations, headerFooterOperations())
+            if (!commitDocxNativeOperations(editor, next)) throw new Error('页面边框未能写入文档，请重试')
+            syncSection()
+            editor.commands.setMeta('native-section-layout', true)
+          } catch (error) { reportError(error); return { error: error instanceof Error ? error.message : String(error) } }
+        },
+      }
+    },
+    onChange: (values: SectionValues): SectionChangeResult => {
+      if (saving || draft.saving || draft.closed || !context.editingEnabled) return { error: '当前文档不可编辑或正在保存' }
+      let result: SectionChangeResult = undefined
       try {
         // 文档级奇偶页设置使用尾节身份作为保存锚，无论光标在哪一节。
         const targetIndex = values.evenAndOddHeaders !== undefined ? sectionAnchors.length - 1 : activeSection
         const target = sectionAnchors[targetIndex]!
         if (pendingBreakIn(targetIndex)) throw new Error('此节已插入分节符，请先保存，再调整页面设置')
+        const merged = { ...sectionValues(targetIndex), ...values }
+        if (values.pageBorder !== undefined && !Object.hasOwn(values, 'pageBorderProps')) delete merged.pageBorderProps
         const operation = restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId: target.sectionId,
-          expectedSectionSha256: target.expectedSectionSha256, values: { ...sectionValues(targetIndex), ...values } }], target)
+          expectedSectionSha256: target.expectedSectionSha256, values: merged }], target)
         const others = sectionOperation().filter(item => item.sectionId !== target.sectionId)
         const hfOperations = headerFooterOperations().map(item => {
           const rest = { ...item }
@@ -590,10 +730,12 @@ export async function createDocxEditorView(shell: EditorShell, options: {
           if (targetIndex === sectionAnchors.length - 1) for (const key of ['pageNumberFmt', 'pageNumberStart'] as const) if (values[key] !== undefined) delete rest[key]
           return rest
         })
-        commitDocxNativeOperations(editor, collectOperations(editor.getJSON(), [...others, ...(operation ? [operation] : [])], hfOperations))
-      } catch (error) { reportError(error) }
+        const operations = collectOperations(editor.getJSON(), [...others, ...(operation ? [operation] : [])], hfOperations)
+        if (!commitDocxNativeOperations(editor, operations) && JSON.stringify(docxNativeOperationsOf(editor.getJSON())) !== JSON.stringify(docxNativeOperations(operations))) throw new Error('页面设置未能写入文档，请重试')
+      } catch (error) { reportError(error); result = { error: error instanceof Error ? error.message : String(error) } }
       syncSection()
       editor.commands.setMeta('native-section-layout', true)
+      return result
     },
   }
   // 导航和首末页入口复用同一真实测量；异步等待后同时复核文档、草稿与活动节。
@@ -605,7 +747,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     assertCurrent()
     const currentSections = sections.map((item, index) => ({ ...item, titlePg: titlePageOf(index) ?? item.titlePg,
       pageNumberFmt: pageNumberOf(index).pageNumberFmt ?? undefined, pageNumberStart: pageNumberOf(index).pageNumberStart ?? undefined,
-      settings: { ...sectionAnchors[index]!.settings, ...sectionValues(index) } }))
+      settings: docxSectionSettingsWithPatch(sectionAnchors[index]!.settings, sectionValues(index)) }))
     const columnFacts = docxColumnFacts(currentSections, section)
     const currentSection = columnFacts.section
     // 固定源App边缘条使用document全局titlePg（parse对整个XML判定）；面板仍保留按节能力。
@@ -637,7 +779,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   }
   const ruler = createDocxRuler({ editor, container: host.querySelector<HTMLElement>('.doc-zoom')!, extendedIndents: true, editableTabs: true,
     onTabStopsChange: stops => applyDocxTabStops(editor, anchors, stops ?? []),
-    getSection: () => ({ ...sectionAnchors[activeSection]!.settings, ...sectionValues(activeSection) }),
+    getSection: () => (docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection))),
     getZoom: () => Number(host.dataset.docxZoom ?? 100) / 100,
     readOnlyReason: kind => {
       const locked = rulerReadOnlyReason()
@@ -658,6 +800,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     onError: reportError,
   })
   const gridlines = createDocxGridlines({editor,root:host.querySelector<HTMLElement>('.docx-navigation-layout')!})
+  const tableGridlines = createDocxTableGridlines({editor,root:host.querySelector<HTMLElement>('.docx-navigation-layout')!})
   const navigation = createDocxNavigation({editor,container:host.querySelector<HTMLElement>('.docx-navigation-host')!,styles:new Map(parsed.styles),onError:reportError,onSearchNavigate:()=>outline.run('页面视图'),
     pages: { prepare: () => outline.run('页面视图'), getZoom: () => Number(host.dataset.docxZoom ?? 100) / 100,
       getPagination: async stillCurrent => {
@@ -668,7 +811,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     onVisibilityChange:()=>{editor.commands.setMeta('native-view-state',true)}})
   const outline = createDocxOutlineView({editor,root:host.querySelector<HTMLElement>('.docx-navigation-layout')!,onError:reportError})
   const view = createDocxViewCommands({ root: host, scroller: host.querySelector<HTMLElement>('.editor-scroll')!, page: editor.view.dom,
-    pageSize: () => { const current = { ...sectionAnchors[activeSection]!.settings, ...sectionValues(activeSection) }; return { width: px(current.pageWidth), height: px(current.pageHeight) } },
+    pageSize: () => { const current = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection)); return { width: px(current.pageWidth), height: px(current.pageHeight) } },
     onPaginationPreview: showPaginationPreview, onZoomChange: () => { ruler.refresh(); navigation.refresh() }, navigation, outline, gridlines, ruler })
   const legacyHeaderFooter: DocxHeaderFooterController | undefined = hfModel ? {
     get editable() { return context.editingEnabled && !saving && !draft.saving && !draft.closed },
@@ -727,7 +870,8 @@ export async function createDocxEditorView(shell: EditorShell, options: {
         }
         assertDocxCommentReplyBatch(operations)
         assertDocxCommentThreadBatch(operations)
-        assertDocxBookmarksBatch(operations)
+        if(operations.some(op=>op.kind==='editEquations')&&operations.length!==1)throw new Error('公式修改请单独保存')
+    assertDocxBookmarksBatch(operations)
         assertDocxTocBatch(operations)
         assertDocxCrossReferencesBatch(operations)
         assertDocxCaptionBatch(operations)
@@ -740,6 +884,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const publishHf = (operations: typeof draft.operations) => {
     assertDocxCommentReplyBatch(operations)
     assertDocxCommentThreadBatch(operations)
+    if(operations.some(op=>op.kind==='editEquations')&&operations.length!==1)throw new Error('公式修改请单独保存')
     assertDocxBookmarksBatch(operations)
     assertDocxTocBatch(operations)
     assertDocxCrossReferencesBatch(operations)
@@ -936,6 +1081,35 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     readOnlyReason: () => !context.editingEnabled || saving || draft.saving || draft.closed || nestedInputActive ? '当前文档不可编辑、正在保存或有未完成的表格输入' : null,
     onError: reportError,
   })
+  const spellcheckControl = createDocxSpellcheckControl(editor)
+  const reviewAuthors = () => {
+    const doc = editor.state.doc, operations = notesOperationsOf(editor.getJSON())
+    const stories = [...collectHfRevisions(hfState()), ...collectTextboxRevisions(doc)]
+    for (const kind of ['footnote', 'endnote'] as const) {
+      const list = kind === 'footnote' ? parsed.footnotes ?? [] : parsed.endnotes ?? []
+      let notes = list
+      if (notesModel) {
+        const projected = projectedDocxNotes(notesModel, operations).filter(note => note.kind === kind)
+        const updated = new Set(operations.filter(operation => operation.kind === 'updateNote' && operation.noteKind === kind).map(operation => operation.noteId))
+        notes = projected.flatMap(note => {
+          const source = list.find(item => item.id === note.id)
+          return source && !updated.has(note.id) ? [source] : []
+        })
+      }
+      stories.push(...collectNoteRevisions(doc, kind, notes))
+    }
+    return revisionAuthorsOf(doc, stories)
+  }
+  reviewView.setAuthors(reviewAuthors())
+  const reviewCommands = { ...textRevisions, spellcheck: spellcheckControl, view:{state:()=>reviewView.state,authors:reviewAuthors,setMode:reviewView.setMode,setFilter:reviewView.setFilter},
+    trackingEnabled: () => docxTrackRevisionsEnabled(trackRevisionsModel, nativeOperations()),
+    trackingReason: () => !context.editingEnabled || saving || draft.saving || draft.closed ? '当前文档不可编辑或正在保存' : trackRevisionsModel.readOnlyReason,
+    toggleTracking: () => {
+      if (!context.editingEnabled || saving || draft.saving || draft.closed || trackRevisionsModel.readOnlyReason) return
+      const enabled = !docxTrackRevisionsEnabled(trackRevisionsModel, nativeOperations())
+      if (commitDocxNativeOperations(editor, withDocxTrackRevisions(nativeOperations(), trackRevisionsModel, enabled))) editor.storage.trackChanges.enabled = enabled
+    },
+  }
   const replyLock = () => saving || draft.saving || draft.closed || !context.editingEnabled || refreshing ? '当前文档不可编辑或正在保存' : draft.operations.some(op => op.kind !== 'replyComment') ? '批注回复需独立保存，请先保存或撤销正文及其他修改' : null
   commentControls = createDocxCommentControls({ editor, container: host, model: commentsModel, collectOperations,
     onReviewAI: context.aiEnabled ? options.onReviewAI : undefined,
@@ -955,7 +1129,11 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const referenceLock=()=>saving||draft.saving||draft.closed||!context.editingEnabled||refreshing||nestedInputActive?'当前文档不可编辑、正在保存或有未完成的表格输入':null
   crossReferenceControls=createDocxCrossReferenceControls({editor,container:host,model:crossReferencesModel,collectOperations,readOnlyReason:referenceLock,onError:reportError})
   captionDialog=createDocxCaptionDialog({editor,container:host,controls:captionSource.controls(editor,()=>draft.operations,reportError),readOnlyReason:referenceLock,onError:reportError})
-  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError, () => nestedInputActive), view, findReplace.open, reportError, headerFooter, notes, noteFormattingAnchors, textRevisions, {open:commentControls.open,openNew:commentCreationControls.openNew}, tocSource.controls(editor, () => draft.operations, reportError), bookmarkControls, {crossReferences:crossReferenceControls,caption:captionDialog}, options.onAssistant, pageColorModel ? {
+  const pictureControls = createDocxPictureControls(editor, anchors, host, () => saving || draft.saving || draft.closed || !context.editingEnabled ? '当前文档不可编辑或正在保存' : null, reportError)
+  const wordCountControl = createDocxWordCountControl({editor,container:host})
+  const mailMergeControls=createDocxMailMergeControls({editor,host,api,draft,anchors,reason:()=>saving||draft.saving||draft.closed||!context.editingEnabled||refreshing?'当前文档不可编辑或正在保存':null,onSave:()=>shell.save.click(),onError:reportError})
+  host.addEventListener('native-mail-merge-open',mailMergeControls.open)
+  toolbar.append(createDocxRibbon(editor, context.editingEnabled, showPaginationPreview, paragraphCommand, sectionRibbon, anchors, createDocxTableCommands(editor, baseline, anchors, reportError, () => nestedInputActive), view, findReplace.open, reportError, headerFooter, notes, noteFormattingAnchors, reviewCommands, {open:commentControls.open,toggle:event=>{const closing=commentControls.visible;if(closing)commentCreationControls.cancelPending();commentControls.toggle(event)},openNew:commentCreationControls.openNew,navigate:commentControls.navigate,navigationReason:commentControls.navigationReason,deleteCurrent:commentControls.deleteAtCaret,deleteReason:commentControls.deleteAtCaretReason,deleteAll:commentControls.deleteAll,deleteAllReason:commentControls.deleteAllReason}, tocSource.controls(editor, () => draft.operations, reportError), bookmarkControls, {crossReferences:crossReferenceControls,caption:captionDialog}, options.onAssistant, pageColorModel ? {
     current: () => effectiveDocxPageColor(nativeOperations(), pageColorModel),
     reason: () => saving || draft.saving || draft.closed || !context.editingEnabled ? '当前文档不可编辑或正在保存' : pageColorModel.editable ? null : pageColorModel.readOnlyReason ?? '此文档的页面颜色不能修改',
     apply: (color: string | null) => {
@@ -967,12 +1145,17 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     current: () => effectiveDocxWatermark(nativeOperations(), watermarkModel),
     source: watermarkModel,
     reason: () => saving || draft.saving || draft.closed || !context.editingEnabled ? '当前文档不可编辑或正在保存' : watermarkModel.editable ? null : watermarkModel.readOnlyReason ?? '此文档的水印不能修改',
-    apply: (spec: import('./docx-watermark').DocxWatermarkSpec | null) => {
+    snapshot: () => JSON.stringify([editor.getJSON(), nativeOperations(), activeSection]),
+    pageBox: () => {
+      const current = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection))
+      return { pageWidthPt: current.pageWidth / 20, pageHeightPt: current.pageHeight / 20, marginWidthPt: (current.pageWidth - current.marginLeft - current.marginRight) / 20, marginHeightPt: (current.pageHeight - current.marginTop - current.marginBottom) / 20 }
+    },
+    apply: (spec: import('./docx-watermark').DocxWatermarkValue | null) => {
       if (saving || draft.saving || draft.closed || !context.editingEnabled) return
       commitDocxNativeOperations(editor, withDocxWatermark(nativeOperations(), watermarkModel, spec))
       syncWatermark()
     },
-  } : undefined, {
+  } : undefined, pictureControls, tableGridlines, formattingMarks, {
     // 固定源 Design ▸ Page Borders：整篇文档 = 每节一条 setSectionLayout（onPageBorderAll），本节 = 当前节。
     current: () => effectiveDocxPageBorder(sectionAnchors[activeSection]!.settings, sectionValues(activeSection) as Record<string, unknown> | undefined),
     sectionLabel: () => sectionAnchors.length > 1 ? `第 ${activeSection + 1} 节` : undefined,
@@ -987,11 +1170,13 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       const indices = scope === 'whole' ? sectionAnchors.map((_, index) => index) : [activeSection]
       const layout = withDocxPageBorder(sectionOperation(), indices.map(index => ({ sectionId: sectionAnchors[index]!.sectionId, settings: sectionAnchors[index]!.settings })), value,
         (sectionId, values) => { const anchor = sectionAnchors.find(item => item.sectionId === sectionId)!; return restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId, expectedSectionSha256: anchor.expectedSectionSha256, values }], anchor) })
-      commitDocxNativeOperations(editor, collectOperations(editor.getJSON(), layout, headerFooterOperations()))
+      if (JSON.stringify(layout) === JSON.stringify(sectionOperation())) return
+      if (!commitDocxNativeOperations(editor, collectOperations(editor.getJSON(), layout, headerFooterOperations()))) throw new Error('页面边框未能写入文档，请重试')
       syncSection()
       editor.commands.setMeta('native-section-layout', true)
     },
-  }))
+  })); toolbar.append(wordCountControl.element)
+  const stylesPane = createDocxStylesPane({ editor, host, toolbar, parsed, anchors, model: stylesPaneModel, canEdit: () => ready && !saving && !draft.saving && !draft.closed && context.editingEnabled, onError: reportError, onCss: css => { style.textContent = css; if (style.sheet) scopeDocxStyleRules(style.sheet) } })
   editor.on('transaction', view.refresh)
   let columnFrame = 0, columnRequest = 0
   const scheduleColumns = () => {
@@ -1002,11 +1187,12 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       const stillCurrent = () => ready && !editor.isDestroyed && !draft.closed && request === columnRequest && editor.state.doc === doc && JSON.stringify(draft.operations) === operations
       const currentSections = sections.map((item, index) => ({ ...item, titlePg: titlePageOf(index) ?? item.titlePg,
         pageNumberFmt: pageNumberOf(index).pageNumberFmt ?? undefined, pageNumberStart: pageNumberOf(index).pageNumberStart ?? undefined,
-        settings: { ...sectionAnchors[index]!.settings, ...sectionValues(index) } }))
+        settings: docxSectionSettingsWithPatch(sectionAnchors[index]!.settings, sectionValues(index)) }))
       const currentSection = docxColumnFacts(currentSections, section).section
       void prepareNotePagination(currentSections, currentSection, stillCurrent).then(notes => { if (stillCurrent()) layoutColumns(currentSections, currentSection, notes) }).catch(error => { if (stillCurrent()) reportError(error) })
     })
   }
+  invalidateReviewLayout=()=>{columnLayoutReady=false;currentColumnLayout=null;resetWidthPassHistory(columnWidthHistory);scheduleColumns()}
   const columnTransaction = ({ transaction }: { transaction: import('@tiptap/pm/state').Transaction }) => {
     if (transaction.docChanged || transaction.getMeta('native-section-layout')) scheduleColumns()
   }
@@ -1015,5 +1201,5 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const releaseHfProbeScope = createDocxHfProbeScope(host)
   scheduleColumns()
   return { refresh, flushPendingEdits, getReadSelection: () => docxAIReadSelection(editor.state.doc, editor.state.selection, readSourceDoc, anchors, nestedInputActive), setSaving(value: boolean) { saving = value; pendingHfEditor?.setEditable(!value && context.editingEnabled && !draft.closed); editor.setEditable(context.editingEnabled && !saving && !draft.closed, false); editor.commands.setMeta('native-section-layout', true); findReplace.refreshLock(); textRevisions.refresh(); bookmarkControls?.refresh(); crossReferenceControls?.refresh(); captionDialog?.refresh(); commentControls?.refresh(); commentCreationControls?.refresh(); commentReplyControls?.refresh(); toolbar.querySelectorAll<HTMLButtonElement>('[data-mutates=true], [data-editable-action=true]').forEach(control => { control.disabled = !context.editingEnabled || saving || draft.closed }) },
-    dispose() { host.removeEventListener('focusin', nestedFocus); ready = false; columnRequest++; cancelAnimationFrame(columnFrame); editor.off('transaction', columnTransaction); editor.off('transaction', view.refresh); findReplace.dispose(); textRevisions.dispose(); bookmarkControls?.dispose(); crossReferenceControls?.dispose(); captionDialog?.dispose(); commentControls?.dispose(); commentCreationControls?.dispose(); commentReplyControls?.dispose(); noteDialog.dispose(); ruler.dispose(); navigation.dispose(); gridlines.dispose(); outline.dispose(); view.dispose(); previewRoot.unmount(); editor.destroy(); void adoptEmbeddedFonts([]); releaseHfProbeScope(); host.remove() } }
+    dispose() { mailMergeControls.dispose(); host.removeEventListener('native-mail-merge-open',mailMergeControls.open); wordCountControl.dispose(); spellcheckControl.dispose(); formattingMarks.dispose(); pictureControls.dispose(); stylesPane.dispose(); reviewView.dispose(); host.removeEventListener('focusin', nestedFocus); ready = false; columnRequest++; cancelAnimationFrame(columnFrame); editor.off('transaction', columnTransaction); editor.off('transaction', view.refresh); findReplace.dispose(); textRevisions.dispose(); bookmarkControls?.dispose(); crossReferenceControls?.dispose(); captionDialog?.dispose(); commentControls?.dispose(); commentCreationControls?.dispose(); commentReplyControls?.dispose(); noteDialog.dispose(); ruler.dispose(); navigation.dispose(); gridlines.dispose(); tableGridlines.dispose(); outline.dispose(); view.dispose(); equationRoot.unmount();equationHost.remove();host.removeEventListener('native-equation-error',equationError);previewRoot.unmount(); editor.destroy(); void adoptEmbeddedFonts([]); releaseHfProbeScope(); host.remove() } }
 }

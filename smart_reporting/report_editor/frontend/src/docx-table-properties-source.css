@@ -1,0 +1,27 @@
+/* 固定源五页表格属性的局部 Office 主题适配，不影响其他弹窗。 */
+.docx-table-properties-source-host .modal-backdrop { position:fixed;inset:0;z-index:1100;display:flex;align-items:center;justify-content:center;padding:12px;background:#12223466; }
+.docx-table-properties-source-host .table-properties-dialog { box-sizing:border-box;width:min(620px,100%);max-height:calc(100dvh - 24px);min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:18px;border:1px solid var(--office-border);border-radius:12px;background:var(--office-chrome,#fff);box-shadow:0 16px 48px #12223433;font:13px var(--office-font,"Noto Sans CJK SC",sans-serif);color:var(--office-text,#222); }
+.docx-table-properties-source-host .table-properties-header { display:flex;align-items:center;gap:10px;flex:none; }
+.docx-table-properties-source-host .table-properties-header h2 { margin:0;font-size:17px; }
+.docx-table-properties-source-host .table-properties-header-icon { display:flex;padding:8px;background:var(--office-accent-soft);color:var(--office-accent);border-radius:8px; }
+.docx-table-properties-source-host .dlg-tabs { display:flex;flex:none;gap:4px;padding:10px 0;border-bottom:1px solid var(--office-border); }
+.docx-table-properties-source-host button { min-height:32px;border:1px solid var(--office-border);border-radius:6px;padding:5px 12px;font:inherit;background:var(--office-chrome,#fff);color:inherit;cursor:pointer; }
+.docx-table-properties-source-host .dlg-tabs button { flex:1;min-width:0;padding:5px; }
+.docx-table-properties-source-host .dlg-tabs .active { background:var(--office-accent-soft);border-color:var(--office-accent);color:var(--office-accent); }
+.docx-table-properties-source-host .table-properties-body { min-height:0;overflow:auto;overscroll-behavior:contain;padding:2px 3px; }
+.docx-table-properties-source-host .table-properties-card { margin:10px 0;padding:12px;border:1px solid var(--office-border);border-radius:8px; }
+.docx-table-properties-source-host h3 { font-size:13px;margin:0 0 10px; }
+.docx-table-properties-source-host .table-properties-segments { display:flex;flex-wrap:wrap;gap:10px; }
+.docx-table-properties-source-host label { display:flex;align-items:center;gap:8px;margin:8px 0;min-width:0; }
+.docx-table-properties-source-host input:not([type=checkbox]):not([type=radio]),.docx-table-properties-source-host select,.docx-table-properties-source-host textarea { box-sizing:border-box;min-height:32px;min-width:0;width:120px;border:1px solid var(--office-border);border-radius:5px;padding:5px 8px;font:inherit;background:var(--office-chrome,#fff);color:inherit; }
+.docx-table-properties-source-host input:is([type=checkbox],[type=radio]) { width:16px;height:16px;accent-color:var(--office-accent); }
+.docx-table-properties-source-host .table-properties-grid { display:grid;grid-template-columns:1fr;gap:0 16px; }
+.docx-table-properties-source-host .table-properties-grid>label { justify-content:space-between; }
+.docx-table-properties-source-host .table-properties-inline,.docx-table-properties-source-host .table-properties-nav { display:flex;align-items:center;gap:10px;flex-wrap:wrap; }
+.docx-table-properties-source-host .table-alt-text label { display:grid;grid-template-columns:90px 1fr;align-items:start; }
+.docx-table-properties-source-host .table-alt-text :is(input,textarea) { width:100%; }
+.docx-table-properties-source-host .modal-actions { display:flex;flex:none;justify-content:flex-end;gap:8px;padding-top:12px;border-top:1px solid var(--office-border); }
+.docx-table-properties-source-host .modal-actions .primary { color:#fff;background:var(--office-accent);border-color:var(--office-accent); }
+.docx-table-properties-source-host :is(button,input,select,textarea):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.docx-table-properties-source-host [role=alert]:empty { display:none; }
+@media(max-width:640px) { .docx-table-properties-source-host .table-properties-dialog { padding:12px; }.docx-table-properties-source-host .table-properties-grid { grid-template-columns:1fr; }.docx-table-properties-source-host .table-properties-header-icon { display:none; } }

@@ -70,3 +70,35 @@ export function paintBarDataLabels(ctx:UniverRenderingContext,spec:ChartReadSpec
   }
   ctx.restore()
 }
+
+export function paintLineDataLabels(ctx:UniverRenderingContext,spec:ChartReadSpec,points:ReadonlyArray<{value:number;index:number;seriesIndex:number;x:number;y:number}>,plot:Plot):void {
+  if(points.length>500)return
+  const painted:Plot[]=[]
+  ctx.save();ctx.textBaseline='middle'
+  for(const point of points){
+    const series=spec.series[point.seriesIndex]!
+    const layers=[spec.dataLabels,series.dataLabels,spec.dataLabels?.points?.[point.index],series.dataLabels?.points?.[point.index]]
+    if(layers.some(layer=>layer?.unsupported))continue
+    const setting=Object.assign({},...layers)
+    if(!setting.showValue||setting.deleted)continue
+    const style=Object.assign({},...layers.map(layer=>layer?.style))
+    const fontSize=style.sizePt===undefined?11:style.sizePt*4/3
+    if(!(fontSize>0)||!Number.isFinite(fontSize))continue
+    ctx.font=`${style.bold?'bold ':''}${fontSize}px system-ui`
+    const text=labelText(point.value,setting.numberFormat,series.numberFormat)
+    if(!text)continue
+    const metrics=ctx.measureText(text),width=metrics.width
+    const ascent=Number.isFinite(metrics.actualBoundingBoxAscent)?metrics.actualBoundingBoxAscent:fontSize*6/11
+    const descent=Number.isFinite(metrics.actualBoundingBoxDescent)?metrics.actualBoundingBoxDescent:fontSize*6/11
+    const height=ascent+descent
+    if(!(width>0&&height>0)||![width,height].every(Number.isFinite))continue
+    const position=setting.position??'center'
+    const x=Math.max(plot.left+width/2,Math.min(plot.right-width/2,point.x))
+    const top=position==='center'?point.y-height/2:position==='inside-end'?point.y-height-2:point.y-height-4
+    const box={left:x-width/2,right:x+width/2,top,bottom:top+height}
+    if(!contains(plot,box)||painted.some(other=>overlaps(box,other)))continue
+    if(points.some(other=>other!==point&&Math.abs(other.x-point.x)<1&&Math.abs(other.y-point.y)<1&&overlaps(box,{left:other.x-2,right:other.x+2,top:other.y-2,bottom:other.y+2})))continue
+    ctx.fillStyle=style.color??'#1f2328';ctx.textAlign='center';ctx.fillText(text,x,top+ascent);painted.push(box)
+  }
+  ctx.restore()
+}

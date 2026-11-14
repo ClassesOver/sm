@@ -7,6 +7,8 @@
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { createBufferEntrySource, assemblePackage, type EntrySource, type MutationPlan } from './zip'
 import { ensureRelationshipNamespace, escapeXmlAttribute, escapeXmlText, readXmlAttribute } from './xml'
+import { relationships } from './sheet-removal-parts'
+import { resolveTablePartPath } from './table-read'
 
 export class ChartAddError extends Error {}
 
@@ -242,9 +244,10 @@ async function ensureSheetDrawing(
   const sheetRelsPath = relsPathFor(worksheetPath)
   if (await hasPart(source, overlay, sheetRelsPath)) {
     const rels = await readPart(source, overlay, sheetRelsPath)
-    const existing = matchRelationship(rels, DRAWING_REL_TYPE)
+    const existing = relationships(rels, sheetRelsPath).find(link => link.type === DRAWING_REL_TYPE)
     if (existing) {
-      return { path: resolveRelTarget(worksheetPath, existing.target) }
+      if (existing.external) throw new ChartAddError('图表绘图关系不能引用外部目标。')
+      return { path: resolveTablePartPath(worksheetPath, existing.target) }
     }
   }
   const drawingPath = await allocatePartPath(source, overlay, 'xl/drawings/drawing', '.xml')
@@ -780,17 +783,6 @@ function relativeTarget(fromPart: string, toPart: string): string {
   }
   const ups = fromDir.length - common
   return `${'../'.repeat(ups)}${toSegments.slice(common).join('/')}`
-}
-
-function matchRelationship(relsXml: string, type: string): { id: string; target: string } | null {
-  for (const match of relsXml.matchAll(/<Relationship\b[^>]*\/?>(?:<\/Relationship>)?/g)) {
-    const tag = match[0]
-    if (!tag.includes(`Type="${type}"`)) continue
-    const id = tag.match(/\bId="([^"]+)"/)?.[1]
-    const target = tag.match(/\bTarget="([^"]+)"/)?.[1]
-    if (id && target) return { id, target }
-  }
-  return null
 }
 
 function resolveRelTarget(fromPart: string, target: string): string {

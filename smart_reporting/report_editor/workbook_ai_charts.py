@@ -1,13 +1,10 @@
-"""Bind existing-chart candidates to unique identities in the frozen draft.
-
-This deliberately authorizes formatting/deletion only. Chart data replacement
-and creation need a separate source-data contract, not arbitrary cache literals.
-"""
+"""Bind chart candidates to frozen targets and worksheet source ranges."""
 from __future__ import annotations
 
 import re
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Required
 
+from openpyxl.utils.cell import range_boundaries
 from pydantic import ConfigDict, Field, TypeAdapter, ValidationError, with_config
 from typing_extensions import TypedDict
 
@@ -53,6 +50,91 @@ class _ChartFormat(TypedDict, total=False):
 _FORMAT_ADAPTER = TypeAdapter(_ChartFormat)
 _FORMAT_FIELDS = frozenset(_ChartFormat.__annotations__)
 
+_Range = Annotated[str, Field(pattern=r'^[A-Z]{1,3}[1-9][0-9]{0,6}(?::[A-Z]{1,3}[1-9][0-9]{0,6})?$')]
+
+
+@with_config(ConfigDict(extra='forbid'))
+class _ChartSourceAdd(TypedDict, total=False):
+    op: Required[Literal['add_chart']]
+    sheetId: Required[str]
+    chartType: Required[Literal['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'radar', 'combo']]
+    dataRange: Required[_Range]
+    title: _Text
+    anchorCell: _Range
+
+
+@with_config(ConfigDict(extra='forbid'))
+class _SeriesSource(TypedDict, total=False):
+    index: Required[Annotated[int, Field(ge=0, le=9999)]]
+    name: _Text
+    valuesRange: _Range
+    categoriesRange: _Range
+    sheetId: str
+
+
+@with_config(ConfigDict(extra='forbid'))
+class _ChartSourceEdit(_ChartFormat, total=False):
+    op: Required[Literal['edit_chart']]
+    chartPath: Required[str]
+    seriesData: Annotated[list[_SeriesSource], Field(min_length=1, max_length=32)]
+
+
+_SOURCE_ADAPTER = TypeAdapter(_ChartSourceAdd | _ChartSourceEdit)
+
+
+def _source_bounds(address: str, *, vector: bool = False) -> tuple[int, int, int, int]:
+    c0, r0, c1, r1 = range_boundaries(address)
+    if (not 1 <= c0 <= c1 <= 16384 or not 1 <= r0 <= r1 <= 1048576
+            or (c1-c0+1)*(r1-r0+1) > 2000 or vector and c0 != c1 and r0 != r1):
+        raise ValueError('workbook_ai_chart_source_invalid')
+    return c0, r0, c1, r1
+
+
+def _validate_source(model: dict[str, Any], operation: dict[str, Any], owners: dict[str, list[str]], deleted: set[str]) -> None:
+    if set(operation) != {'kind', 'operation'}:
+        raise ValueError('workbook_ai_chart_source_invalid')
+    try:
+        source = _SOURCE_ADAPTER.validate_python(operation.get('operation'), strict=True)
+    except ValidationError as error:
+        raise ValueError('workbook_ai_chart_source_invalid') from error
+    sheets = {sheet['name'] for sheet in model.get('sheets', [])}
+    if source['op'] == 'add_chart':
+        if source['sheetId'] not in sheets:
+            raise ValueError('workbook_ai_chart_source_invalid')
+        c0, r0, c1, _ = _source_bounds(source['dataRange'])
+        anchor = source.get('anchorCell')
+        if anchor:
+            c0, r0, ac1, ar1 = _source_bounds(anchor)
+            if c0 != ac1 or r0 != ar1:
+                raise ValueError('workbook_ai_chart_source_invalid')
+        else:
+            c0 = c1 + 2
+        if c0 + 7 > 16384 or r0 + 15 > 1048576:
+            raise ValueError('workbook_ai_chart_source_invalid')
+        return
+    path = source['chartPath']
+    if len(owners.get(path, [])) != 1 or path in deleted:
+        raise ValueError('workbook_ai_chart_target_invalid')
+    formatted = {key: value for key, value in source.items() if key in _FORMAT_FIELDS}
+    if formatted:
+        _validate_format(formatted)
+    if not formatted and not source.get('seriesData'):
+        raise ValueError('workbook_ai_chart_source_invalid')
+    indices = set()
+    for series in source.get('seriesData', []):
+        if series['index'] in indices or not set(series) & {'name', 'valuesRange', 'categoriesRange'}:
+            raise ValueError('workbook_ai_chart_source_invalid')
+        indices.add(series['index'])
+        if series.get('sheetId', owners[path][0]) not in sheets:
+            raise ValueError('workbook_ai_chart_source_invalid')
+        lengths = []
+        for key in ('valuesRange', 'categoriesRange'):
+            if key in series:
+                c0, r0, c1, r1 = _source_bounds(series[key], vector=True)
+                lengths.append((r1-r0+1)*(c1-c0+1))
+        if len(set(lengths)) > 1:
+            raise ValueError('workbook_ai_chart_source_invalid')
+
 
 def _validate_format(record: dict[str, Any]) -> None:
     fields = {key: value for key, value in record.items() if key != 'chartPath'}
@@ -74,6 +156,9 @@ def validate_chart_candidates(model: dict[str, Any], operations: list[dict[str, 
     and chart-specific support. A
     chartPath supplied by the model alone is never sufficient authorization.
     """
+    if (any(operation['kind'] == 'applyChartSource' for operation in operations)
+            and any(operation['kind'] in {'applySheetEdits', 'applyRowColumnOps', 'applyCellShift'} for operation in operations)):
+        raise ValueError('workbook_ai_chart_structure_batch_invalid')
     owners: dict[str, list[str]] = {}
     for sheet in model.get('sheets', []):
         for chart in sheet.get('charts', []):
@@ -83,6 +168,9 @@ def validate_chart_candidates(model: dict[str, Any], operations: list[dict[str, 
     deleted: set[str] = set()
     for operation in operations:
         kind = operation['kind']
+        if kind == 'applyChartSource':
+            _validate_source(model, operation, owners, deleted)
+            continue
         if kind not in {'applyChartEdits', 'applyChartDeletions'}:
             continue
         key = 'edits' if kind == 'applyChartEdits' else 'deletions'

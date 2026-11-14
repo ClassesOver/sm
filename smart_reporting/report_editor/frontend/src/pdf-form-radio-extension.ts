@@ -1,3 +1,4 @@
+import {createPdfFormSettingsPanel} from './pdf-form-settings-panel'
 import type {NativeDraft,NativeOperation} from './native-draft'
 import type {PdfDesignWidget} from './pdf-form-design'
 import type {PdfFormWidgetTarget} from './pdf-form-create'
@@ -35,15 +36,13 @@ export function validateRestoredPdfRadioExtension(model:PdfRadioExtensionModel,o
  stagePdfRadioExtension(model,[],target,{pageId:op.pageId as string,rect:op.rect as [number,number,number,number],exportValue:op.exportValue as string})
 }
 export function bindPdfRadioExtensionPanel(options:{root:HTMLElement;draft:NativeDraft;model:()=>PdfRadioExtensionModel;activePageId:()=>string;unavailable:()=>string|null;refresh:()=>Promise<void>}){
- const doc=options.root.ownerDocument,panel=doc.createElement('section');panel.className='pdf-form-radio-extension-panel';panel.hidden=true;panel.setAttribute('aria-label','追加单选选项')
- const heading=doc.createElement('h3');heading.textContent='追加单选选项';const help=doc.createElement('p');help.textContent='向当前已保存的单选组追加一个真实控件；保留已有选项、选择、必填属性和外观。新控件初始不选中，选项限可打印 ASCII。坐标为 PDF 左下角原点。'
- const close=doc.createElement('button');close.type='button';close.textContent='关闭追加单选选项';close.onclick=()=>{panel.hidden=true}
- const body=doc.createElement('div'),status=doc.createElement('p');status.setAttribute('role','status');panel.append(heading,help,close,status,body);options.root.append(panel)
+ const ui=createPdfFormSettingsPanel(options.root,'pdf-form-radio-extension-panel','追加单选选项','向当前已保存的单选组追加一个真实控件；保留已有选项、选择、必填属性和外观。新控件初始不选中，选项限可打印 ASCII。坐标为 PDF 左下角原点。','关闭追加单选选项'),{panel,body,status}=ui,doc=options.root.ownerDocument
  let disposed=false,renderedKey=''
  const key=()=>JSON.stringify([options.draft.operations,options.draft.closed,options.draft.saving,options.unavailable(),options.model()])
  function field(label:string,type='text'){const wrapper=doc.createElement('label'),input=doc.createElement('input');wrapper.textContent=label;input.type=type;input.setAttribute('aria-label',label);wrapper.append(input);body.append(wrapper);return input}
  function select(label:string){const wrapper=doc.createElement('label'),input=doc.createElement('select');wrapper.textContent=label;input.setAttribute('aria-label',label);wrapper.append(input);body.append(wrapper);return input}
- function render(){if(disposed)return;renderedKey=key();body.replaceChildren();const model=options.model(),seen=new Set<string>(),groups=(model.formDesignWidgets??[]).filter(w=>{if(!eligible(model,w)||seen.has(w.fieldName))return false;seen.add(w.fieldName);return true}),group=select('单选组'),page=select('目标页面')
+ function render(){if(disposed)return;ui.render(()=>{renderBody();body.disabled=!!options.unavailable()||options.draft.closed||options.draft.saving||options.draft.dirty||options.model().capabilities?.appendRadioWidget!==true||!body.querySelector<HTMLSelectElement>('select')?.options.length})}
+ function renderBody(){if(disposed)return;renderedKey=key();body.replaceChildren();const model=options.model(),seen=new Set<string>(),groups=(model.formDesignWidgets??[]).filter(w=>{if(!eligible(model,w)||seen.has(w.fieldName))return false;seen.add(w.fieldName);return true}),group=select('单选组'),page=select('目标页面')
   for(const w of groups){const item=doc.createElement('option');item.value=w.widgetIdentity;item.textContent=w.fieldName+'（已有：'+w.radioOptions!.join(', ')+'；当前：'+(w.radioValue??'未选择')+'）';group.append(item)}
   for(const[pIndex,p]of model.pages.entries()){const item=doc.createElement('option');item.value=p.pageId;item.textContent='第'+((p.index??pIndex)+1)+'页';page.append(item)}page.value=options.activePageId()
   const value=field('新增选项值'),controls=['左下角 X','左下角 Y','宽度','高度'].map(label=>field(label,'number'))
@@ -57,7 +56,7 @@ export function bindPdfRadioExtensionPanel(options:{root:HTMLElement;draft:Nativ
   const model=options.model();if(model.sourceSha256!==options.draft.identity.sourceSha256)throw Error('PDF 来源已变化，请重新打开修订')
   const w=model.formDesignWidgets?.find(w=>w.widgetIdentity===identity);if(!w)throw Error('单选组身份已变化')
   const target=Object.fromEntries(identityKeys.map(k=>[k,w[k]])) as unknown as PdfFormWidgetTarget,[x,y,width,height]=numbers
-  options.draft.setOperations(stagePdfRadioExtension(model,options.draft.operations,target,{pageId,rect:[x,y,x+width,y+height],exportValue}));staged=true;await options.refresh();if(!disposed){render();status.textContent='单选控件已加入草稿，请核对实际 PDF 预览后保存'}
- }catch(error){if(!disposed){render();status.textContent=(staged?'单选控件已加入草稿，草稿已保留；':'')+(error instanceof Error?error.message:String(error))}}}
- return {element:panel,open(){if(!disposed){panel.hidden=false;render()}},refresh(){if(!panel.hidden&&renderedKey!==key())render()},dispose(){disposed=true;panel.remove()}}
+  options.draft.setOperations(stagePdfRadioExtension(model,options.draft.operations,target,{pageId,rect:[x,y,x+width,y+height],exportValue}));staged=true;render();await options.refresh();if(!disposed){render();status.textContent='单选控件已加入草稿，请核对实际 PDF 预览后保存'}
+ }catch(error){if(!disposed){if(staged||renderedKey!==key())render();status.textContent=(staged?'单选控件已加入草稿，草稿已保留；':'')+(error instanceof Error?error.message:String(error))}}}
+ return {element:panel,open(){if(!disposed){ui.open();render()}},refresh(){if(!panel.hidden&&renderedKey!==key())render()},dispose(){disposed=true;ui.dispose()}}
 }

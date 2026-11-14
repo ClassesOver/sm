@@ -6,6 +6,7 @@ import {
   IconGrowFont, IconHighlight, IconIndentDec, IconIndentInc, IconLineSpacing,
   IconNumbered, IconPaste, IconPasteMerge, IconPasteSource, IconPasteText, IconPicture, IconShading,
   IconShrinkFont, IconSubscript, IconSuperscript, IconCaret, IconSelectAll, IconSearch, IconReplace, IconConvert,
+  IconPilcrow,
 } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { DocxPasteMode } from './docx-clipboard'
 import type { CaseMode } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/case-transform'
@@ -27,6 +28,11 @@ type Props = {
   onChangeCase?: (mode: CaseMode) => void
   caseUnavailable?: string | null
   paragraphStyleControl?: HTMLElement
+  bulletListControl?: HTMLElement
+  numberListControl?: HTMLElement
+  multilevelListControl?: HTMLElement
+  onSetNumberingValue?: () => void
+  numberingValueUnavailable?: string | null
   onVerticalAlign?: (kind: 'superscript' | 'subscript') => void
   verticalAlign?: string
   verticalAlignAvailable?: boolean
@@ -53,6 +59,10 @@ type Props = {
   spaceAfter?: number | null
   lineSpacing?: number | null
   onSpacing?: (values: Record<string, unknown>) => void
+  onFontOptions?: () => void
+  fontOptionsUnavailable?: string | null
+  onParagraphOptions?: () => void
+  paragraphOptionsUnavailable?: string | null
   onLineSpacingOptions?: () => void
   lineSpacingUnavailable?: string | null
   onSpecialIndentOptions?: () => void
@@ -66,7 +76,10 @@ type Props = {
   onParagraph?: (command: 'add' | 'delete') => void
   onFindReplace?: (mode: 'find' | 'replace') => void
   onSelectAll?: () => void
+  onToggleFormattingMarks?: () => void
+  formattingMarksVisible?: boolean
   onPaste?: (mode?: DocxPasteMode) => void
+  onPasteSpecial?: (defaults?:boolean) => void
   onCut?: () => void
   onCopy?: () => void
   onPainterClick?: () => void
@@ -82,7 +95,7 @@ const unavailable = '原版控件保留；当前 DOCX 原生操作协议未支�
  * recorded in SOURCE-SHA256.json). Its App callbacks are replaced by Native
  * Tiptap/DOCX operations; unsupported commands remain visible and disabled.
  */
-export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, onFindReplace, onSelectAll, onPaste, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
+export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
   const fontListId = useId()
   const [caseOpen, setCaseOpen] = useState(false)
   const caseWrap = useRef<HTMLDivElement>(null)
@@ -121,8 +134,6 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
   const pasteWrap = useRef<HTMLDivElement>(null)
   useDismissablePopover(pasteOpen, () => setPasteOpen(false), { inside: () => [pasteWrap.current], escape: true })
   const canPaste = editable && !!onPaste
-  const richPasteReason = '富文本粘贴无法精确映射到 DOCX 保存协议（仅支持整段统一格式），请使用"仅保留文本"'
-  const pasteUnavailable = (id: string, action: string, label: string, reason: string, glyph?: ReactNode) => <button type="button" role="menuitem" data-action={action} data-source-action={id} disabled title={`${label}：${reason}`} aria-label={`${label}，${reason}`}>{glyph}{label}</button>
   const BORDER_MODE_SIDES = { bottom: 'b', top: 't', left: 'l', right: 'r', tblr: 'tblr' } as const
   const borderPenSpec = (mode: keyof typeof BORDER_MODE_SIDES) => safeDocxBorders({ sides: BORDER_MODE_SIDES[mode], color: penBorderColor, szPt: penBorderWidth })
   const bordersActive = !!borders?.length
@@ -160,16 +171,16 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
           <span className="rb-caret-inline"><IconCaret /></span>
         </button>
         {pasteOpen && <div data-rb-panel="" className="spacing-menu paste-menu" role="menu">
-          {pasteUnavailable('paste-source', 'paste-source', appZh.appPasteKeepSource, richPasteReason, <IconPasteSource size={16} />)}
-          {pasteUnavailable('paste-merge', 'paste-merge', appZh.appPasteMergeFormat, richPasteReason, <IconPasteMerge size={16} />)}
+          <button type="button" role="menuitem" data-action="paste-source" disabled={!canPaste} onClick={()=>{setPasteOpen(false);onPaste?.('source')}}><IconPasteSource size={16}/>{appZh.appPasteKeepSource}</button>
+          <button type="button" role="menuitem" data-action="paste-merge" disabled={!canPaste} onClick={()=>{setPasteOpen(false);onPaste?.('merge')}}><IconPasteMerge size={16}/>{appZh.appPasteMergeFormat}</button>
           <button type="button" role="menuitem" data-action="paste-text" data-source-action="paste-text" disabled={!canPaste} title={zh.ribbonPaste} aria-label={appZh.appPasteTextOnly} onClick={() => { setPasteOpen(false); onPaste?.('text') }}>
             <IconPasteText size={16} />{appZh.appPasteTextOnly}
           </button>
           <button type="button" role="menuitem" data-action="paste-picture" data-source-action="paste-picture" disabled={!canPaste} title="粘贴剪贴板中的图片" aria-label="粘贴图片（PNG/JPEG）" onClick={() => { setPasteOpen(false); onPaste?.('picture') }}>
             <IconPicture size={16} />图片
           </button>
-          {pasteUnavailable('paste-special', 'paste-special', ribbonZh.ribbonPasteSpecial, '选择性粘贴对话框尚未接入')}
-          {pasteUnavailable('paste-defaults', 'paste-defaults', ribbonZh.ribbonSetDefaultPaste, '默认粘贴模式设置尚未接入')}
+          <button type="button" role="menuitem" data-action="paste-special" disabled={!canPaste||!onPasteSpecial} onClick={()=>{setPasteOpen(false);onPasteSpecial?.()}}>{ribbonZh.ribbonPasteSpecial}</button>
+          <button type="button" role="menuitem" data-action="paste-defaults" disabled={!canPaste||!onPasteSpecial} onClick={()=>{setPasteOpen(false);onPasteSpecial?.(true)}}>{ribbonZh.ribbonSetDefaultPaste}</button>
         </div>}
       </div>
       <div className="rb-col">
@@ -180,6 +191,7 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
     </>)}
     <div className="ribbon-sep" />
     {group('字体', <>
+      <button type="button" data-action="font-options" disabled={!editable || !onFontOptions || !!fontOptionsUnavailable} title={fontOptionsUnavailable ?? '字体设置'} onMouseDown={event => event.preventDefault()} onClick={() => onFontOptions?.()}>字体…</button>
       <div className="rb-row">
         <input className="rb-select rb-font-family" data-action="font-family" data-editable-action="true" aria-label={zh.ribbonFontFamilyTip} placeholder={zh.ribbonFontFamilyTip} disabled={!editable} list={fontListId} title="选择或输入字体，按 Enter 应用；系统字体需本机安装"
           onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); onFontFamily(event.currentTarget.value.trim()) } }} />
@@ -227,19 +239,20 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
     {group(zh.ribbonGroupParagraph, <>
       <div className="rb-row">
         <button type="button" className={`rb-icon${listKind === 'bullet' ? ' active' : ''}`} data-action="bullets" data-source-action="list-bullets-toggle" data-editable-action="true" disabled={!editable} title={zh.ribbonBullets} aria-label={zh.ribbonBullets} aria-pressed={listKind === 'bullet'} onClick={() => onList('bullet')}><IconBullets size={16} /></button>
-        {unavailableSourceAction('list-bullets-gallery', 'list-bullets-gallery', '项目符号库', '项目符号库预设、清除列表和自定义项目符号写回尚未接入')}
+        {bulletListControl ? <span ref={element => { if (element && bulletListControl.parentElement !== element) element.append(bulletListControl) }} /> : unavailableSourceAction('list-bullets-gallery', 'list-bullets-gallery', '项目符号库', '项目符号库预设、清除列表和自定义项目符号写回尚未接入')}
         <button type="button" className={`rb-icon${listKind === 'ordered' ? ' active' : ''}`} data-action="numbering" data-source-action="list-numbering-toggle" data-editable-action="true" disabled={!editable} title={zh.ribbonNumbering} aria-label={zh.ribbonNumbering} aria-pressed={listKind === 'ordered'} onClick={() => onList('ordered')}><IconNumbered size={16} /></button>
-        {unavailableSourceAction('list-numbering-gallery', 'list-numbering-gallery', '编号库', '编号样式库、自定义编号及其重新开始配置写回尚未接入')}
-        {unavailableSourceAction('list-multilevel-gallery', 'list-multilevel-gallery', '多级列表库', '多级样式库、自定义层级及级间重新开始规则写回尚未接入')}
+        {numberListControl ? <span ref={element => { if (element && numberListControl.parentElement !== element) element.append(numberListControl) }} /> : unavailableSourceAction('list-numbering-gallery', 'list-numbering-gallery', '编号库', '编号样式库、自定义编号及其重新开始配置写回尚未接入')}
+        {multilevelListControl ? <span ref={element => { if (element && multilevelListControl.parentElement !== element) element.append(multilevelListControl) }} /> : unavailableSourceAction('list-multilevel-gallery', 'list-multilevel-gallery', '多级列表库', '多级样式库、自定义层级及级间重新开始规则写回尚未接入')}
         <select className="rb-select" data-action="list-level-picker" data-source-action="list-change-level" aria-label="列表级别" title="选择当前编号定义中可用的列表级别" disabled={!editable || !['bullet', 'ordered'].includes(String(listKind)) || !listLevelOptions?.some(Boolean)} value={String(listLevel ?? 0)} onChange={event => onListLevel?.(Number(event.currentTarget.value))}>
           {Array.from({ length: 9 }, (_, level) => <option key={level} value={level} disabled={!listLevelOptions?.[level]}>{level + 1}</option>)}
         </select>
-        <button type="button" className="rb-icon docx-source-command" data-action="list-numbering-set-value" data-source-action="list-numbering-set-value" disabled title="设置编号值：起始编号、重新开始和继续列表写回尚未接入" aria-label="设置编号值，起始编号、重新开始和继续列表写回尚未接入"><span>1</span></button>
+        <button type="button" className="rb-icon docx-source-command" data-action="list-numbering-set-value" data-source-action="list-numbering-set-value" disabled={!editable || !onSetNumberingValue || !!numberingValueUnavailable} title={numberingValueUnavailable ? `设置编号值：${numberingValueUnavailable}` : '设置编号值'} aria-label={numberingValueUnavailable ? `设置编号值，${numberingValueUnavailable}` : '设置编号值'} onMouseDown={event => event.preventDefault()} onClick={onSetNumberingValue}><span>1</span></button>
         {action('indent-decrease', zh.ribbonDecreaseIndent, <IconIndentDec size={16} />, () => onIndent(-1), false, listKind === 'bullet' || listKind === 'ordered' ? listLevelDecreaseAvailable === true : Number(indentLeft) > 0, listKind === 'bullet' || listKind === 'ordered' ? '编号定义中没有兼容的上一级' : '段落已无可减少的缩进')}
         {action('indent-increase', zh.ribbonIncreaseIndent, <IconIndentInc size={16} />, () => onIndent(1), false, listKind === 'bullet' || listKind === 'ordered' ? listLevelIncreaseAvailable === true : Number(indentLeft) < 14400, listKind === 'bullet' || listKind === 'ordered' ? '编号定义中没有兼容的下一级' : '段落缩进已达到支持范围上限')}
       </div>
       <div className="rb-row">{action('align-left', zh.ribbonAlignLeftTip, <IconAlignLeft size={16} />, () => onAlignment('left'), alignment === 'left')}{action('align-center', zh.ribbonAlignCenterTip, <IconAlignCenter size={16} />, () => onAlignment('center'), alignment === 'center')}{action('align-right', zh.ribbonAlignRightTip, <IconAlignRight size={16} />, () => onAlignment('right'), alignment === 'right')}{action('align-justify', zh.ribbonJustifyTip, <IconAlignJustify size={16} />, () => onAlignment('justify'), alignment === 'justify')
         }{action('add-paragraph', '新增段落', <span>+</span>, () => onParagraph?.('add'), false, !!onParagraph)}{action('delete-paragraph', '删除段落', <span>−</span>, () => onParagraph?.('delete'), false, !!onParagraph)}</div>
+      <button type="button" data-action="paragraph-options" disabled={!editable || !onParagraphOptions || !!paragraphOptionsUnavailable} title={paragraphOptionsUnavailable ?? '段落设置'} onMouseDown={event => event.preventDefault()} onClick={() => onParagraphOptions?.()}>段落…</button>
       <div className="rb-split-wrap" ref={spacingWrap}>
         <button type="button" className={`rb-icon${lineSpacing != null ? ' active' : ''}`} data-action="line-spacing" data-source-action="line-spacing-menu" data-editable-action="true" disabled={!editable} title={zh.ribbonLineSpacing} aria-label={zh.ribbonLineSpacing} aria-expanded={spacingOpen} onClick={() => setSpacingOpen(open => !open)}><IconLineSpacing size={16} /><IconCaret size={10} /></button>
         <div className="spacing-menu" data-rb-panel="" data-source-action="line-spacing-options-menu" hidden={!spacingOpen}>
@@ -286,7 +299,7 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
     <div className="ribbon-sep" />
     {group(zh.ribbonGroupStyles, paragraphStyleControl ? <div ref={element => { if (element && paragraphStyleControl.parentElement !== element) element.append(paragraphStyleControl) }} /> : <button type="button" className="rb-big" disabled title={unavailable}>{zh.ribbonStyleNormal}</button>)}
     <div className="ribbon-sep" />
-    {group(zh.ribbonGroupEditing, <>{(['find', 'replace'] as const).map(mode => <button key={mode} type="button" className="rb-icon docx-source-command" data-action={mode} data-source-action={mode} disabled={!onFindReplace} onClick={() => onFindReplace?.(mode)}>{mode === 'find' ? <IconSearch /> : <IconReplace />}{mode === 'find' ? '查找' : '替换'}</button>)}<button type="button" className="rb-small" data-action="select" data-source-action="select" title={ribbonZh.ribbonSelectAllTip} disabled={!onSelectAll} onClick={() => onSelectAll?.()}><IconSelectAll />{ribbonZh.ribbonSelectAll}</button></>)}
+    {group(zh.ribbonGroupEditing, <>{(['find', 'replace'] as const).map(mode => <button key={mode} type="button" className="rb-icon docx-source-command" data-action={mode} data-source-action={mode} disabled={!onFindReplace} onClick={() => onFindReplace?.(mode)}>{mode === 'find' ? <IconSearch /> : <IconReplace />}{mode === 'find' ? '查找' : '替换'}</button>)}<button type="button" className="rb-small" data-action="select" data-source-action="select" title={ribbonZh.ribbonSelectAllTip} disabled={!onSelectAll} onClick={() => onSelectAll?.()}><IconSelectAll />{ribbonZh.ribbonSelectAll}</button><button type="button" className={`rb-icon${formattingMarksVisible ? ' active' : ''}`} data-action="formatting-marks" aria-label="显示/隐藏编辑标记" title="显示/隐藏编辑标记" aria-pressed={!!formattingMarksVisible} disabled={!onToggleFormattingMarks} onClick={() => onToggleFormattingMarks?.()}><IconPilcrow /></button></>)}
     {group('转换', <>{disabled('convert-pdf', '转换为 PDF', <><IconConvert /><span>PDF</span></>)}{disabled('convert-html', '转换为 HTML', <><IconConvert /><span>HTML</span></>)}{disabled('convert-markdown', '转换为 Markdown', <><IconConvert /><span>MD</span></>)}{disabled('export-images', '导出图像', <><IconPicture /><span>IMG</span></>)}</>)}
     <div className="ribbon-sep" />
   </div>

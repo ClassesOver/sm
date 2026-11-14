@@ -186,6 +186,38 @@ async def test_native_save_failure_keeps_actual_word_download(publication, monke
 
 
 @pytest.mark.anyio
+async def test_native_recorded_revision_uses_authorized_user_and_keeps_download(publication):
+    from lxml import etree
+    from zipfile import ZipFile
+
+    namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+    from smart_reporting.report_editor.native import bind_native_workspace
+    from smart_reporting.reporting.delivery.docx_native import inspect_docx
+
+    service, context, downloads = publication
+    source, _ = await service.workspace.afile_bytes(
+        bind_native_workspace(service.workspace, context.scope), context.source_file.path
+    )
+    block = inspect_docx(source)['blocks'][0]
+    result = await service.save_revision(
+        context,
+        operations=[{'kind': 'recordTextRevision', 'blockId': block['blockId'],
+            'expectedObjectSha256': block['expectedObjectSha256'], 'from': 1, 'to': 2, 'text': '新'}],
+        request_id='tracked-revision',
+        expected_sha256=context.source_file.sha256,
+    )
+    assert result['validation']['ok'] is False
+    assert result['artifacts']['word']['downloadUrl']
+    raw = result['artifacts']['word']['downloadUrl'].split('/')[-2]
+    _, chunks = await downloads.stream(raw, artifact='word')
+    output = b''.join([chunk async for chunk in chunks])
+    with ZipFile(BytesIO(output)) as archive:
+        document = etree.fromstring(archive.read('word/document.xml'))
+        authors = document.xpath('.//w:ins/@w:author | .//w:del/@w:author', namespaces=namespaces)
+    assert authors and set(authors) == {context.scope.user_id}
+
+
+@pytest.mark.anyio
 async def test_saved_retry_reuses_revision_and_actual_bytes(publication):
     service, context, downloads = publication
     first = await service.save_revision(

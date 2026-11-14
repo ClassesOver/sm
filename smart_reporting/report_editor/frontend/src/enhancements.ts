@@ -1,3 +1,6 @@
+import { renderEditorLayoutProvenance } from './editor-layout-provenance'
+import type { DeliveryFormat, ExportArtifact, ExportResult } from './api'
+import { exportFormats, exportLabels, exportOutcome, type ExportFormat } from './delivery-format'
 import { copyText } from './clipboard'
 import { createModal } from './modal'
 import { formatRevisionLabel } from './localization'
@@ -217,21 +220,11 @@ export function createImagePreview(editor: HTMLElement, options: ImagePreviewOpt
   return { dialog, close }
 }
 
-interface ExportPanelResult {
-  revision: number
-  requestId?: string
-  pdf?: { downloadUrl: string; path?: string; size?: number }
-  word?: { downloadUrl: string; path?: string; size?: number }
-  editor?: { openUrl: string }
-  /** 验收失败时文件仍签发下载；必须明确显示失败原因，不得显示为通过。 */
-  validation?: { ok: boolean; issues: { code?: string; message?: string }[] }
-}
-
 function exportArtifactLabel(
-  format: 'pdf' | 'word',
-  artifact: { downloadUrl: string; path?: string; size?: number },
+  format: ExportFormat,
+  artifact: ExportArtifact,
 ): string {
-  const fallback = format === 'pdf' ? 'report.pdf' : 'report.docx'
+  const fallback = `report.${format === 'word' ? 'docx' : format}`
   const filename = artifact.path?.split('/').at(-1) || fallback
   if (!artifact.size) return filename
   const size = artifact.size < 1024
@@ -257,10 +250,10 @@ export function createExportPanel() {
       <div class="export-validation-warning" role="alert" hidden></div>
       <div class="panel-body">
         <div class="export-links">
-          <div class="export-format-row"><a data-format="pdf" target="_blank" rel="noreferrer">下载 PDF</a><span data-artifact-meta="pdf"></span><button type="button" data-copy="pdf">复制链接</button></div>
-          <div class="export-format-row"><a data-format="word" target="_blank" rel="noreferrer">下载 Word</a><span data-artifact-meta="word"></span><button type="button" data-copy="word">复制链接</button></div>
+          ${exportFormats.map(format => `<div class="export-format-row"><a data-format="${format}" target="_blank" rel="noreferrer">下载 ${exportLabels[format]}</a><span data-artifact-meta="${format}"></span><button type="button" data-copy="${format}">复制链接</button></div>`).join('')}
           <a data-format="editor">继续编辑新版本</a>
         </div>
+        <div data-export-provenance></div>
         <p class="export-request-id"></p>
         <p class="export-copy-status" aria-live="polite"></p>
       </div>
@@ -269,14 +262,14 @@ export function createExportPanel() {
   const close = modal.closeButton!
   dialog.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const format = button.dataset.copy as 'pdf' | 'word'
+      const format = button.dataset.copy as ExportFormat
       const link = dialog.querySelector<HTMLAnchorElement>(`[data-format="${format}"]`)
       const status = dialog.querySelector<HTMLElement>('.export-copy-status')!
       const href = link?.getAttribute('href')
       if (!href) { status.textContent = '该格式未生成，暂无下载链接'; return }
       try {
         await copyText(href)
-        status.textContent = `${format === 'pdf' ? 'PDF' : 'Word'} 链接已复制`
+        status.textContent = `${exportLabels[format]} 链接已复制`
       } catch {
         status.textContent = '复制失败，请直接打开下载链接'
       }
@@ -285,13 +278,11 @@ export function createExportPanel() {
   return {
     dialog,
     close,
-    show(result: ExportPanelResult, preferredFormat: 'pdf' | 'word' = 'pdf') {
-      const partial = !result.pdf?.downloadUrl || !result.word?.downloadUrl
-      const available = Boolean(result.pdf?.downloadUrl || result.word?.downloadUrl)
-      const failed = result.validation?.ok === false || partial
-      dialog.querySelector<HTMLElement>('#export-title')!.textContent =
-        !available ? '未生成可下载文件' : partial ? '部分格式已生成 · 验收未通过'
-        : `${preferredFormat === 'pdf' ? 'PDF' : 'Word'} ${failed ? '已生成 · 验收未通过' : '导出完成'}`
+    show(result: ExportResult, preferredFormat: ExportFormat = 'pdf', targetFormat?: DeliveryFormat) {
+      renderEditorLayoutProvenance(dialog.querySelector<HTMLElement>('[data-export-provenance]')!, result.validation?.layoutProvenance)
+      const { available, failed, format: primaryFormat, title } = exportOutcome(result, targetFormat, preferredFormat)
+      dialog.querySelector<HTMLElement>('#export-title')!.textContent = title
+      dialog.querySelector<HTMLElement>('.export-note')!.hidden = !available
       const warning = dialog.querySelector<HTMLElement>('.export-validation-warning')!
       warning.hidden = !failed
       warning.replaceChildren()
@@ -307,28 +298,29 @@ export function createExportPanel() {
         warning.append(lead, list)
       }
       dialog.querySelector<HTMLElement>('.export-revision')!.textContent =
-        `${formatRevisionLabel(result.revision)} 已生成`
-      const pdf = dialog.querySelector<HTMLAnchorElement>('[data-format="pdf"]')!
-      const word = dialog.querySelector<HTMLAnchorElement>('[data-format="word"]')!
-      for (const format of ['pdf', 'word'] as const) {
+        available ? `${formatRevisionLabel(result.revision)} 已生成` : formatRevisionLabel(result.revision)
+      for (const format of exportFormats) {
         const artifact = result[format]
-        const link = format === 'pdf' ? pdf : word
+        const link = dialog.querySelector<HTMLAnchorElement>(`[data-format="${format}"]`)!
         const ready = Boolean(artifact?.downloadUrl)
         link.hidden = !ready
+        const row = link.closest<HTMLElement>('.export-format-row')!
+        row.hidden = !ready
+        row.style.display = ready ? '' : 'none'
         if (ready) link.href = artifact!.downloadUrl
         else link.removeAttribute('href')
+        link.classList.toggle('is-primary', ready && format === primaryFormat)
         dialog.querySelector<HTMLButtonElement>(`[data-copy="${format}"]`)!.disabled = !ready
         dialog.querySelector<HTMLElement>(`[data-artifact-meta="${format}"]`)!.textContent =
-          ready ? exportArtifactLabel(format, artifact!) : `${format === 'pdf' ? 'PDF' : 'Word'} 未生成`
+          ready ? exportArtifactLabel(format, artifact!) : `${exportLabels[format]} 未生成`
       }
       const requestId = dialog.querySelector<HTMLElement>('.export-request-id')!
       requestId.textContent = result.requestId ? `请求编号：${result.requestId}` : ''
       requestId.hidden = !result.requestId
       dialog.querySelector<HTMLElement>('.export-copy-status')!.textContent = ''
-      pdf.classList.toggle('is-primary', Boolean(result.pdf?.downloadUrl) && (preferredFormat === 'pdf' || !result.word?.downloadUrl))
-      word.classList.toggle('is-primary', Boolean(result.word?.downloadUrl) && (preferredFormat === 'word' || !result.pdf?.downloadUrl))
       const editor = dialog.querySelector<HTMLAnchorElement>('[data-format="editor"]')!
       editor.hidden = !result.editor?.openUrl
+      editor.style.display = result.editor?.openUrl ? '' : 'none'
       if (result.editor?.openUrl) editor.href = result.editor.openUrl
       else editor.removeAttribute('href')
       modal.open(close)

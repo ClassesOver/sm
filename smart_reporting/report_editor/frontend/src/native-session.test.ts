@@ -21,6 +21,29 @@ function fixture() {
 }
 
 describe('native save session', () => {
+  it('文件操作复用现有flush与预览确认，只在登记成功后返回保存回执', async () => {
+    const f = fixture(); f.controller.dispose()
+    const view = { ...f.view, flushPendingEdits: vi.fn(), prepareSave: vi.fn(async () => ({ confirmedPreviewDigest: 'b'.repeat(64) })) }
+    const controller = bindNativeSession(f.shell, { draft: f.draft, api: f.api, format: 'pdf', view })
+    const saved = await controller.flushForFileOperation()
+    expect(saved).toEqual(f.result)
+    expect(view.prepareSave).toHaveBeenCalledOnce()
+    expect(f.api.save.mock.calls[0][0].confirmedPreviewDigest).toBe('b'.repeat(64))
+    expect(f.draft.closed).toBe(true)
+    expect(await controller.flushForFileOperation()).toEqual(f.result)
+    expect(f.api.save).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('文件操作保存未登记时保留草稿和下载并拒绝继续派生', async () => {
+    const f = fixture()
+    f.api.save.mockResolvedValue({ ...f.result, revisionRegistered: false })
+    await expect(f.controller.flushForFileOperation()).rejects.toThrow('修订尚未登记')
+    expect(f.draft.closed).toBe(false)
+    expect(document.querySelector<HTMLAnchorElement>('.native-delivery a')?.href).toBe('http://localhost/download')
+    f.controller.dispose()
+  })
+
   it('keeps failed saves and retries the same request identity', async () => {
     const f = fixture()
     f.api.save.mockRejectedValueOnce(new Error('网络不可用'))

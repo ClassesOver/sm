@@ -18,7 +18,7 @@ export async function normalizeAddedNoteDates(baseBytes: Uint8Array, outputBytes
   // Also inspect untouched survivors: a shared indirect Annots array must not
   // append a new note to an unrelated page as a collateral side effect.
   for (const [outputIndex, sourceIndex] of outputOrder.entries()) {
-    const original = base.getPage(sourceIndex).node.lookupMaybe(PDFName.of('Annots'), PDFArray)
+    const original = sourceIndex < base.getPageCount() ? base.getPage(sourceIndex).node.lookupMaybe(PDFName.of('Annots'), PDFArray) : undefined
     const prefix = (original?.size() ?? 0) + markupPages.filter(index => index === sourceIndex).length
     const appended = drawings?.filter(item => item.pageIndex === sourceIndex) ?? (byPage.get(sourceIndex) ?? []).map(() => ({ kind: 'note' }))
     const indices = appended.flatMap((item, index) => item.kind === 'note' ? [prefix + index] : [])

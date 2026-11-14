@@ -1,3 +1,15 @@
+import {captureWorkbookPictureEdits, WORKBOOK_PICTURE_EDIT_COMMANDS, WORKBOOK_PICTURE_EDIT_WRAPPERS, type WorkbookPictureBinding} from './workbook-picture-edits'
+import {createWorkbookPictureSelectionController} from './workbook-picture-selection'
+import {SheetSkeletonService} from '@univerjs/sheets'
+import {drawingPositionToTransform} from '@univerjs/sheets-drawing'
+import {IDrawingManagerService,getDrawingShapeKeyByDrawingSearch} from '@univerjs/drawing'
+import {createWorkbookPictures,controlledWorkbookPicture,installWorkbookPictures} from './workbook-pictures'
+import {readWorkbookPictures,pictureSourceIdentity} from '@sheets-web/xlsx-engine/pictures'
+import {mountWorkbookThreads} from './workbook-threaded-comments-host'
+import type {ThreadActor} from './workbook-threaded-comments'
+import { createWorkbookExternalLinks, type ExternalLinksSnapshot } from './workbook-external-links'
+import { externalLinksContext, calculateExternalUpdates, evaluateExternalFormula, withExternalFormulaCaches, installExternalFormulaCaches, type ExternalLinksContext } from './workbook-external-links-host'
+import { createWorkbookPasteSpecial } from './workbook-paste-special'
 import { subtotalPreflightOperations } from './workbook-subtotal-preflight'
 import { openWorkbookCsvImport } from './workbook-import-csv'
 import { createWorkbookQueriesDialog } from './workbook-queries'
@@ -69,13 +81,23 @@ import CoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
 import FindReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
 import SortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 import '@univerjs/preset-sheets-core/lib/index.css'
-import { formatAddress, parseRange, matchMarginPreset, readWorkbook, readPackageSheetHyperlinks, cellHyperlinkState, type WorkbookModel } from '@sheets-web/xlsx-engine'
+import { formatAddress, parseRange, matchMarginPreset, readWorkbook, recommendCharts, readXmlAttribute, readPackageSheetHyperlinks, cellHyperlinkState, type WorkbookModel, type ChartGridValue } from '@sheets-web/xlsx-engine'
 import { createWorkbookLinkDialog, LINK_TEXT } from './workbook-link-dialog'
 import { createSparklineDialog } from './workbook-sparkline-dialog'
 import { createChartDesignDialog } from './workbook-chart-design-dialog'
+import { createWorkbookChartFormatPane } from './workbook-chart-format-pane'
+import { createWorkbookChartDescriptions } from './workbook-chart-descriptions'
+import { installWorkbookChartSelection } from './workbook-chart-selection'
+import { installWorkbookChartObjectInteraction } from './workbook-chart-object-interaction'
+import { chartPresetEdit, type ChartPresetSource } from './workbook-chart-presets'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
+import { readNotePictures, noteImageInfo } from '@sheets-web/xlsx-engine/note-pictures'
+import { createNotePictures } from './workbook-note-pictures'
+import { installNotePictureHover, projectPictureNotes } from './workbook-note-pictures-host'
+import { assertNotePictureTransaction, createNotePictureFilePicker } from './workbook-note-picture-transaction'
 import { chartAdditionFromGrid } from './workbook-chart-add'
-import { switchChartSeries } from './workbook-chart-switch'
+import { createWorkbookRecommendedChartsDialog } from './workbook-recommended-charts-dialog'
+import { chartSwitchReference, switchChartSeries } from './workbook-chart-switch'
 import { createUniver } from './workbook-vendor/grid/create-univer'
 import { loadWorkbookData, readBack, openFindReplace } from './workbook-vendor/grid/sync'
 import { validateWorkbookReplacement, workbookReplacementCommand } from './workbook-find-replace'
@@ -115,12 +137,14 @@ import { applyWorkbookCellStyle } from './workbook-cell-style-presets'
 import { toggleWorkbookHeadings } from './workbook-headings'
 import { installWorkbookRtl } from './workbook-rtl'
 import { installFunctionShortcuts } from './workbook-function-shortcuts'
+import { insertNowCellEdit, installInsertNowShortcuts } from './workbook-insert-now'
 import { installOutlineShortcuts } from './workbook-outline-shortcuts'
 import { installOutlineGutter, type OutlineGutterHandle } from './workbook-outline-gutter'
 import { applyConsolidate } from './workbook-consolidate'
 import { createConsolidateDialog } from './workbook-consolidate-dialog'
 import { createSortDialog, type SortRange } from './workbook-sort-dialog'
-import { createFormatCellsDialog } from './workbook-numfmt-dialog'
+import { createFormatCellsDialog } from './workbook-format-cells-host'
+import { selectedFormatCellsDraft, validateFormatCellsTarget, formatCellsOperation, validateFormatCellsBudget } from './workbook-format-cells'
 import { applyFillSeries, createFillSeriesDialog, fillSeriesDefaultType, fillSeriesDirection } from './workbook-fill-series'
 import { createGoToDialog, focusWorkbookGrid, resolveGoToRef } from './workbook-goto'
 import { createWorkbookReveal } from './workbook-goto-reveal'
@@ -152,12 +176,14 @@ import { installPageBreakOverlay, planPageBreakPreview } from './workbook-page-b
 import { planFormulaTrace, installFormulaTraceOverlay } from './workbook-formula-trace'
 import { createFormulaTraceController } from './workbook-formula-trace-controller'
 import { installCrossHighlight, loadCrossHighlightPreference, storeCrossHighlightPreference } from './workbook-cross-highlight'
+import { binaryRefreshLock, mountOfficeReportRefresh } from './binary-refresh'
 import './workbook.css'
 import './office-theme.css'
 
 type AIStatus = { editId: string; status: string; snapshotSha256: string; proposal?: WorkbookProposal; error?: { message: string } }
 
 export interface WorkbookEditorOptions {
+  threadActor?: ThreadActor
   request?: <T>(path: string, payload?: unknown) => Promise<T>
   file?: () => Promise<{ bytes: ArrayBuffer; sha256: string; path?: string }>
   native?: boolean
@@ -178,7 +204,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   shell.editor.innerHTML = `
     <section class="workbook-ai" aria-label="工作簿 AI 编辑"><form><label for="workbook-instruction">Ask AI</label><textarea id="workbook-instruction" maxlength="2000" rows="2" placeholder="描述要调整的单元格、公式或样式"></textarea><button type="submit">生成候选</button><button type="button" class="workbook-undo" disabled>撤销 AI 采纳</button></form><div class="workbook-feedback" role="status" aria-live="polite"></div><div class="workbook-candidate" hidden><strong></strong><pre></pre><button type="button" class="workbook-accept">采纳到草稿</button><button type="button" class="workbook-reject">拒绝</button></div></section>
     <div class="workbook-ribbon-host"></div>
-    <div class="workbook-grid-frame"><div id="workbook-grid" class="workbook-grid" aria-label="报告工作簿"></div></div>`
+    <div class="workbook-grid-frame"><div id="workbook-grid" class="workbook-grid" aria-label="报告工作簿"></div><div class="workbook-note-pictures-host"></div></div>`
   const feedback = shell.editor.querySelector<HTMLElement>('.workbook-feedback')!
   const form = shell.editor.querySelector<HTMLFormElement>('form')!
   const instruction = shell.editor.querySelector<HTMLTextAreaElement>('textarea')!
@@ -205,11 +231,26 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   // 新修订已登记后不再从当前底稿保存，避免重复生成修订。
   let saved = false
   let loading = true
+  let reloadUnavailable = false
   let saving = false
+  let refresh: Awaited<ReturnType<typeof mountOfficeReportRefresh>>
+  let refreshFlush: (() => Promise<void>) | undefined
+  let refreshSave: (() => Promise<void>) | undefined
   let nativeAI: ReturnType<typeof mountWorkbookNativeAI> | undefined
+  let threadsView: ReturnType<typeof mountWorkbookThreads> | undefined
+  let notePictures: ReturnType<typeof createNotePictures> | undefined
+  let notePictureHover: { dispose(): void } | undefined
   let nativeAIAccepting = false
   let disposed = false
   let gridChanged = false
+  if (!options.native) refresh = await mountOfficeReportRefresh(shell.editor.closest<HTMLElement>('.report-app') ?? shell.editor.parentElement!, 'xlsx',
+    (path, init) => requestJson(`${base}/api/${path}`, init, 'report_workbook_csrf'), {
+      saving: () => saving,
+      blocked: () => loading || saving || saved || disposed || shell.save.disabled || !refreshFlush || nativeAIAccepting || calculationBusy || subtotal?.isRunning() === true || advancedFilter?.isRunning() === true,
+      flush: async () => { await refreshFlush?.() }, dirty: () => dirty || gridChanged,
+      save: async () => { await refreshSave?.() },
+      setRefreshing: binaryRefreshLock(shell.editor, shell.save, () => saving || saved || disposed),
+    })
   let captureGeneration = 0
   let mergeGeneration = 0
   let persistence = Promise.resolve()
@@ -303,8 +344,13 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let subtotalMutating = false
   let advancedFilter: ReturnType<typeof installAdvancedFilter> | undefined
   let advancedFilterMutating = false
+  let pictureBindings = new Map<string, WorkbookPictureBinding>()
+  let pictureEditBusy = false
   let calculationBusy = false
   let acceptedSnapshot = ''
+  let noteEpoch = 0
+  let notePickerCancel: (() => void) | undefined
+  let refreshNotePictures: (() => Promise<unknown>) | undefined
   // Canvas 首次测量前加载内置中文字体，避免缓存系统替代字体的字宽。
   if (document.fonts) await Promise.allSettled([
     document.fonts.load('12px "Noto Sans CJK SC"', '中文'),
@@ -327,7 +373,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       UniverSheetsConditionalFormattingPreset(),
     ],
   })
-  const loadingLock = installWorkbookLoadingLock(shell.editor.querySelector<HTMLElement>('.workbook-grid')!, () => loading)
+  const externalFormulaCaches = installExternalFormulaCaches(runtime)
+  const loadingLock = installWorkbookLoadingLock(shell.editor.querySelector<HTMLElement>('.workbook-grid')!, () => loading || reloadUnavailable || pictureEditBusy)
   const rtl = installWorkbookRtl(runtime)
   let rtlBusy = false
   const formulaBar = createFormulaBarView(shell.editor.querySelector<HTMLElement>('.workbook-grid')!)
@@ -340,8 +387,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let functionOverrides: { dispose(): void } | undefined
   let headingsBusy = false
   const markDirty = () => {
-    if (loading || saving || saved || disposed || calculationBusy || subtotalMutating || advancedFilterMutating) return
+    if (loading || reloadUnavailable || saving || saved || disposed || calculationBusy || subtotalMutating || advancedFilterMutating) return
     mergeGeneration++
+    noteEpoch++
     dirty = true
     gridChanged = true
     shell.statusLabel.textContent = '有未保存修改'
@@ -370,7 +418,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     const name = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
     return currentModel?.sheets.find(sheet => sheet.name === name)?.rotationReadOnlyReason ? '此工作表包含尚不能完整回读的继承格式，暂不支持旋转编辑' : undefined
   }
-  const editable = () => !loading && !saving && !saved && !disposed && !calculationBusy && !shell.editor.inert && !shell.editor.closest('[inert]')
+  const workbookAvailable = () => !loading && !reloadUnavailable && !saving && !saved && !disposed && !calculationBusy && !shell.editor.inert && !shell.editor.closest('[inert]')
+  const editable = () => !pictureEditBusy && workbookAvailable()
   let disposeCsvImport: (() => void) | undefined
   let printPreviewDialog: { open(options: { hasSelection: boolean; sheetCount: number }): void; dispose(): void } | undefined
   const formulaBarAvailable = () => !loading && !saving && !disposed && !calculationBusy
@@ -456,6 +505,165 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let sparklines: ReturnType<typeof installWorkbookSparklines> | undefined
   let sparklineDialog: ReturnType<typeof createSparklineDialog> | undefined
   let chartDesignDialog: ReturnType<typeof createChartDesignDialog> | undefined
+  let chartFormatPane: ReturnType<typeof createWorkbookChartFormatPane> | undefined
+  let chartFormatTarget: ReturnType<typeof chartTarget> | undefined
+  let chartDataDialog: ReturnType<typeof import('./workbook-chart-data-dialog').createChartDataDialog> | undefined
+  let chartDataTarget: ReturnType<typeof chartTarget> | undefined
+  const chartDescriptions = createWorkbookChartDescriptions(shell.editor)
+  let chartSelection: ReturnType<typeof installWorkbookChartSelection> | undefined
+  let chartObjectInteraction: ReturnType<typeof installWorkbookChartObjectInteraction> | undefined
+  let chartSelectionSource: Uint8Array | undefined
+  const chartsForSheet = (name: string) => {
+    const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheets().find(sheet => sheet.getSheetName() === name)
+    return (sheet ? originalSheet(sheet.getSheetId()) : currentModel?.sheets.find(sheet => sheet.name === name))?.charts ?? []
+  }
+  const chartTarget = () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+    if (!workbook || !sheet) throw new Error('请先打开包含图表的工作表')
+    const charts = chartsForSheet(sheet.getSheetName()), selected = chartSelection?.current()
+    const chart = selected ? charts.find(chart => chart.chartPath === selected.chartPath) : charts.length === 1 ? charts[0] : undefined
+    if (!chart) throw new Error(charts.length ? '当前工作表含多个图表，请先选择要操作的图表' : '请先打开包含图表的工作表')
+    return { chart, sheet, sheetId: sheet.getSheetId(), sheetName: sheet.getSheetName(),
+      workbookCore: workbook.getWorkbook(), sheetCore: sheet.getSheet(), source: original }
+  }
+  const chartPresetSource = (target: ReturnType<typeof chartTarget>): ChartPresetSource => {
+    const first = target.chart.series[0]
+    let categoryCount = first?.categories?.length ?? 0
+    if (first) {
+      try {
+        const range = parseRange(first.valuesRef.slice(first.valuesRef.lastIndexOf('!') + 1))
+        categoryCount = Math.max(categoryCount, (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1))
+      } catch { /* 无法解析的来源仍可使用真实缓存的点数。 */ }
+    }
+    return {
+      isPie: target.chart.kind === 'pie' || target.chart.kind === 'doughnut',
+      // 组合图的首个 bar/line plot 可写标签；scatter/radar 没有可标注 plot。
+      canLabel: !['scatter', 'radar'].includes(target.chart.kind),
+      seriesCount: target.chart.series.length, categoryCount,
+    }
+  }
+  const validateChartTarget = (target: ReturnType<typeof chartTarget>) => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    if (sheetProtected(target.sheetId)) throw new Error('工作表受保护，请先撤销保护')
+    const active = runtime.univerAPI.getActiveWorkbook(), sheet = active?.getActiveSheet()
+    if (active?.getWorkbook() !== target.workbookCore || sheet?.getSheet() !== target.sheetCore || original !== target.source ||
+      chartTarget().chart !== target.chart) throw new Error('图表目标已变化，请重新选择后操作')
+  }
+  const applyWorkbookDraftOperation = async (validate: () => void, operation: WorkbookOperation | ((bytes: Uint8Array) => Promise<WorkbookOperation[]>), message: string) => {
+    validate()
+    await persistence
+    validate()
+    const generation = mergeGeneration, operations = await currentOperations()
+    validate()
+    if (generation !== mergeGeneration) throw new Error('工作簿内容已变化，请重新打开设置')
+    const additions = typeof operation === 'function'
+      ? await operation(operations.length ? await applyWorkbookOperations(original, operations) : original) : [operation]
+    validate()
+    if (generation !== mergeGeneration) throw new Error('工作簿内容已变化，请重新打开设置')
+    const next = [...operations, ...additions]
+    validateFormatCellsBudget(next)
+    // 文件身份/旧锚点校验在改变 loading 和网格前完成；失败不能锁住现有人工草稿。
+    const replayedBytes = await applyWorkbookOperations(original, next)
+    validate()
+    if (generation !== mergeGeneration) throw new Error('工作簿内容已变化，请重新打开设置')
+    // 当前草稿与目标核对完毕才锁定重建；锁内不调用会受自身 inert 影响的 editable。
+    await withWorkbookLocked(shell.editor, async () => {
+      captureGeneration++
+      const previousModel = currentModel, previousSource = original, previousBook = runtime.univerAPI.getActiveWorkbook()
+      const previousCore = previousBook?.getWorkbook(), previousSheet = previousBook?.getActiveSheet()
+      const previousSelection = previousSheet?.getSelection()?.getActiveRange()?.getRange()
+      const previousTarget = chartDialogTarget, previousChart = chartSelection?.current()
+      const previousStatus = shell.statusLabel.textContent, previousDirty = dirty
+      try { await loadOperations(next, undefined, replayedBytes) }
+      catch (error) {
+        if (!disposed && original === previousSource) {
+          if (currentModel !== previousModel || runtime.univerAPI.getActiveWorkbook()?.getWorkbook() !== previousCore) {
+            try { await loadOperations(operations) }
+            catch (rollbackError) {
+              reloadUnavailable = true; shell.save.disabled = true
+              throw new Error(`${(error as Error).message}；恢复工作簿失败：${(rollbackError as Error).message}。本地草稿已保留，请重新打开文档。`)
+            }
+            const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === previousSheet?.getSheetName())
+            if (sheet) {
+              workbook!.setActiveSheet(sheet)
+              if (previousSelection) sheet.getRange(previousSelection.startRow, previousSelection.startColumn,
+                previousSelection.endRow - previousSelection.startRow + 1, previousSelection.endColumn - previousSelection.startColumn + 1).activate()
+              if (previousChart) chartSelection?.reset(previousChart)
+              if (previousTarget && chartDialogTarget === previousTarget) chartDialogTarget = chartTarget()
+            }
+            // 重建后的撤销/恢复沿用已有原生草稿历史，不使用已销毁网格的命令栈。
+            gridChanged = false; dirty = previousDirty; shell.statusLabel.textContent = previousStatus
+          }
+        }
+        throw error
+      }
+      if (nativeDraft) {
+        nativeDraft.setOperations(operations as NativeOperation[])
+        nativeDraft.setOperations(next as NativeOperation[])
+      } else draft.setOperations(next)
+      // 完整重放已重建网格；包级修改进入草稿历史，而非已清空的 Univer 历史。
+      gridChanged = false; dirty = true
+      shell.statusLabel.textContent = '有未保存修改'
+    })
+    ribbon.refreshState?.(); feedback.textContent = message
+  }
+  const applyChartOperation = (target: ReturnType<typeof chartTarget>, operation: WorkbookOperation, message: string) =>
+    applyWorkbookDraftOperation(() => validateChartTarget(target), operation, message)
+  const runInsertNow = (kind: 'date' | 'time') => {
+    if (!editable()) return
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+    if (!workbook || !sheet) throw new Error('工作簿尚未就绪')
+    if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+    const range = sheet.getSelection()?.getActiveRange()
+    if (!range) throw new Error('请先选择活动单元格')
+    const active = sheet.getSelection()?.getCurrentCell() as { actualRow?: number; actualColumn?: number } | undefined
+    const row = active?.actualRow ?? range.getRow(), column = active?.actualColumn ?? range.getColumn()
+    const xml = workbookSourceXml.get(currentModel)
+    if (!xml) throw new Error('工作簿日期系统尚未读取，请重新打开文件')
+    const properties = xml.match(/<(?:\w+:)?workbookPr\b[^>]*>/)?.[0] ?? ''
+    const date1904 = ['1', 'true'].includes(readXmlAttribute(properties, 'date1904') ?? '')
+    const operation = insertNowCellEdit(sheet.getSheetName(), row, column, kind, new Date(), date1904)
+    const source = original, workbookCore = workbook.getWorkbook(), sheetCore = sheet.getSheet()
+    const selected = JSON.stringify({ row, column })
+    const validate = () => {
+      const current = runtime.univerAPI.getActiveWorkbook(), activeSheet = current?.getActiveSheet()
+      const cell = activeSheet?.getSelection()?.getCurrentCell() as { actualRow?: number; actualColumn?: number } | undefined
+      const currentRange = activeSheet?.getSelection()?.getActiveRange()
+      if (!editable() || original !== source || current?.getWorkbook() !== workbookCore || activeSheet?.getSheet() !== sheetCore || sheetProtected(sheet.getSheetId()))
+        throw new Error('工作簿、工作表或保护状态已变化，请重新操作')
+      const currentRow = cell?.actualRow ?? currentRange?.getRow(), currentColumn = cell?.actualColumn ?? currentRange?.getColumn()
+      if (JSON.stringify({ row: currentRow, column: currentColumn }) !== selected) throw new Error('活动单元格已变化，请重新操作')
+    }
+    void applyWorkbookDraftOperation(validate, operation, kind === 'date' ? '静态日期已写入活动单元格，修改尚未保存。' : '静态时间已写入活动单元格，修改尚未保存。')
+      .catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
+  }
+  const chartAdditionTarget = () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet(), selection = sheet?.getSelection()?.getActiveRange()
+    if (!workbook || !sheet || !selection) throw new Error('请先选择图表数据区域')
+    if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+    const values = selection.getValues() as ChartGridValue[][]
+    return { sheet, sheetName: sheet.getSheetName(), sheetId: sheet.getSheetId(), workbookCore: workbook.getWorkbook(), sheetCore: sheet.getSheet(), source: original,
+      range: { startRow: selection.getRow(), endRow: selection.getRow() + selection.getHeight() - 1,
+        startColumn: selection.getColumn(), endColumn: selection.getColumn() + selection.getWidth() - 1 }, values: structuredClone(values) }
+  }
+  const validateChartAdditionTarget = (target: ReturnType<typeof chartAdditionTarget>) => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+    if (workbook?.getWorkbook() !== target.workbookCore || sheet?.getSheet() !== target.sheetCore || original !== target.source || sheet?.getSheetName() !== target.sheetName)
+      throw new Error('图表数据工作表已变化，请重新选择数据并插入图表')
+    if (sheetProtected(target.sheetId)) throw new Error('工作表受保护，请先撤销保护')
+    const range = target.range, values = sheet.getRange(range.startRow, range.startColumn, range.endRow - range.startRow + 1, range.endColumn - range.startColumn + 1).getValues()
+    if (JSON.stringify(values) !== JSON.stringify(target.values)) throw new Error('图表数据已变化，请重新选择数据并插入图表')
+  }
+  let recommendedChartsDialog: ReturnType<typeof createWorkbookRecommendedChartsDialog<ReturnType<typeof chartAdditionTarget>>> | undefined
+  const deleteChart = () => {
+    try {
+      const target = chartTarget()
+      void applyChartOperation(target, { kind: 'applyChartDeletions', deletions: [{ sheetName: target.sheetName, chartPath: target.chart.chartPath }] }, '图表已删除，修改尚未保存。')
+        .catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
+    } catch (error) { if (!disposed) feedback.textContent = (error as Error).message }
+  }
+  let chartDialogTarget: ReturnType<typeof chartTarget> | undefined
   const insertFunction = createWorkbookInsertFunction(shell.editor, {
     runtime, editable, protectedSheet: sheetProtected,
     file: options.file,
@@ -599,6 +807,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     feedback.textContent = `已合并 ${result.sources} 个来源，生成 ${result.rows} 行 ${result.columns} 列公式，修改尚未保存。`
   })
   // 开始▸编辑▸填充▸序列（固定源 fill-series-apply.ts）：写入为普通 set-values，可撤销、走保存差分。
+  const pasteSpecialDialog = createWorkbookPasteSpecial(shell.editor,{runtime,editable,onMessage:text=>{feedback.textContent=text},onChange:()=>{markDirty();ribbon.refreshState?.()}})
   const fillSeriesDialog = createFillSeriesDialog(shell.editor, options => {
     if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
     const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet(), active = workbook?.getActiveRange()
@@ -663,6 +872,50 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       return navigateReference(`'${live.getSheetName().replaceAll("'", "''")}'!${match[2]}`)
     },
   })
+  let externalContext: ExternalLinksContext | undefined
+  const externalCurrent = (key: string) => !disposed && editable() && externalContext?.key === key
+    && JSON.stringify(nativeDraft?.operations ?? draft.operations) === JSON.stringify(externalContext.operations)
+    && !gridChanged
+  const captureExternal = async () => {
+    await persistence
+    const operations = await currentOperations()
+    const bytes = operations.length ? await applyWorkbookOperations(original, operations) : original
+    if (nativeDraft) nativeDraft.setOperations(operations as NativeOperation[]); else draft.setOperations(operations)
+    gridChanged = false
+    const key = JSON.stringify(operations)
+    externalContext = await externalLinksContext(bytes, operations, key)
+    return externalContext
+  }
+  const applyExternal = async (snapshot: ExternalLinksSnapshot, additions: Record<string, unknown>[]) => {
+    if (!externalCurrent(snapshot.key) || !externalContext) throw new Error('工作簿或草稿已变化，请重新打开外部链接')
+    const before = externalContext.operations
+    await withWorkbookLocked(shell.editor, async () => {
+      const operations = [...before, ...additions]
+      captureGeneration++
+      try { await loadOperations(operations) } catch (error) { await loadOperations(before); throw error }
+      if (nativeDraft) { nativeDraft.setOperations(before as NativeOperation[]); nativeDraft.setOperations(operations as NativeOperation[]) }
+      else draft.setOperations(operations)
+      gridChanged = false; dirty = true
+      shell.statusLabel.textContent = '有未保存修改'
+    })
+    ribbon.refreshState?.(); nativeAI?.refresh()
+  }
+  const externalLinks = createWorkbookExternalLinks(shell.editor, {
+    capture: captureExternal, current: externalCurrent, editable,
+    apply: applyExternal,
+    locate: async (index, snapshot) => {
+      if (!externalCurrent(snapshot.key)) throw new Error('工作簿或草稿已变化')
+      const file = snapshot.bindings.find(item => item.index === index)
+      return file ? '已定位当前修订授权文件：' + file.name + '；SHA-256 ' + file.sha256 + '；' + file.size + ' 字节。浏览器不探测原 OS 路径。'
+        : '此来源尚未授权。请通过更改来源选择本地 XLSX；浏览器不探测原 OS 路径或 URL。'
+    },
+    update: async snapshot => {
+      if (!externalCurrent(snapshot.key) || !externalContext) throw new Error('工作簿或草稿已变化')
+      const report = await calculateExternalUpdates(externalContext, candidate => evaluateExternalFormula(runtime, candidate), () => externalCurrent(snapshot.key))
+      if (report.operation) await applyExternal(snapshot, [report.operation])
+      return { message: report.message }
+    },
+  })
   const numberFormatDialog = createNumberFormatDialog(shell.editor, {
     initial: () => formatState().numberFormat,
     apply: (target, pattern) => {
@@ -675,23 +928,34 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       feedback.textContent = '数字格式已更新，值和公式保持不变；修改尚未保存。'
     },
   })
-  // 开始▸单元格▸格式▸设置单元格格式（数字页）：分类+选项生成格式代码，经同一校验与预算写入。
+  // 固定源六页签：整批预校验后经现有文件重放与草稿历史保存。
   let formatCellsTarget: ReturnType<typeof captureNumberFormatTarget>
+  let formatCellsSource: Uint8Array | undefined
   const formatCellsDialog = createFormatCellsDialog(shell.editor, {
     current: () => {
-      const state = formatState().numberFormat
-      const range = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSelection()?.getActiveRange()
-      const value = range?.getValue?.()
-      return { pattern: state.kind === 'value' ? String(state.value) : undefined, anchor: typeof value === 'number' || typeof value === 'string' ? value : null }
+      validateFormatCellsTarget(formatCellsTarget, formatWorkbook(), editable())
+      formatCellsSource = original
+      const range = formatCellsTarget.range as typeof formatCellsTarget.range & { getValue?(): unknown }
+      const value = range.getValue?.()
+      return { draft: selectedFormatCellsDraft(formatCellsTarget, currentModel), anchor: typeof value === 'number' || typeof value === 'string' ? value : null }
     },
-    apply: pattern => {
-      if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
-      if (!formatCellsTarget) throw new Error('请先选择单元格或区域')
-      if (formatState().numberFormat.kind === 'unavailable') throw new Error('来源格式未完整投影，暂不能安全编辑数字格式')
-      validateNumberFormatBudget(runtime.univerAPI.getActiveWorkbook()!.getSnapshot(), currentModel, staged, structural.length, formatCellsTarget, pattern)
-      applyCapturedNumberFormat(formatCellsTarget, formatWorkbook(), pattern, editable())
-      markDirty(); ribbon.refreshState?.()
-      feedback.textContent = `数字格式已设为 ${pattern}，值和公式保持不变；修改尚未保存。`
+    apply: async commands => {
+      const target = formatCellsTarget
+      const validate = () => {
+        validateFormatCellsTarget(target, formatWorkbook(), editable())
+        if (original !== formatCellsSource) throw new Error('来源文件已变化，请重新打开单元格格式')
+        if (sheetProtected(target.sheetId)) throw new Error('工作表受保护，请先撤销保护')
+      }
+      validate()
+      const sheetName = target!.sheet.getSheetName?.()
+      const operation = formatCellsOperation(target!, commands)
+      if (!operation.edits.length) return
+      await applyWorkbookDraftOperation(validate, operation, '单元格格式已更新，值和公式保持不变；修改尚未保存。')
+      const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === sheetName)
+      if (sheet) {
+        workbook!.setActiveSheet(sheet)
+        sheet.getRange(target!.row, target!.column, target!.height, target!.width).activate()
+      }
     },
   })
   const noteWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as NoteWorkbook | null
@@ -750,26 +1014,70 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (!file || !snapshot.sheets[sheetId]) throw new Error('无法读取当前工作表的打印设置或网格快照，请重新加载。')
     return { source: printSourceFromSnapshotSheet(snapshot.sheets[sheetId], snapshot.styles as Record<string, import('./workbook-vendor/core/style-map').UniverStyleData>), setup: pageBreakPreviewSetup(file, {}) }
   }
+  let printPreviewTarget: { book: object; sheet: object; sheetId: string; name: string; source: Uint8Array; path: string | undefined } | undefined
+  const validatePrintPreviewTarget = () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet(), target = printPreviewTarget
+    if (disposed || loading || !workbook || !sheet || !target || workbook.getWorkbook() !== target.book || sheet.getSheet() !== target.sheet || sheet.getSheetId() !== target.sheetId || sheet.getSheetName() !== target.name || original !== target.source || sourcePath !== target.path)
+      throw new Error('原工作簿或工作表已变化，请重新打开打印预览。')
+    return { workbook, sheet }
+  }
   const openPrintPreview = async () => {
     const module = await import('./workbook-print-preview')
     const printModule = await import('./workbook-print')
     if (disposed) return
     if (!printPreviewDialog) printPreviewDialog = module.createWorkbookPrintPreviewDialog(shell.editor, {
       capture: async () => {
-        const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
-        if (!workbook || !sheet) throw new Error('工作簿尚未就绪')
+        const { workbook, sheet } = validatePrintPreviewTarget()
+        // 固定源 openPrintPreviewHost 先 settleFormulas。复用当前 Univer 的
+        // 原生结果应用等待，避免人工输入后的异步公式回写使快照立即过期。
+        const formula = typeof runtime.univerAPI.getFormula === 'function' ? runtime.univerAPI.getFormula() : undefined
+        if (formula) await formula.onCalculationResultApplied(30_000)
+        validatePrintPreviewTarget()
         const epoch = printCaptureEpoch, version = mergeGeneration, core = sheet.getSheet(), snapshot = structuredClone(workbook.getSnapshot()) as unknown as { sheetOrder: readonly string[]; sheets: Readonly<Record<string, { name?: string; hidden?: number }>>; styles?: Readonly<Record<string, import('./workbook-vendor/core/style-map').UniverStyleData>> }
         const selection = sheet.getSelection()?.getActiveRange()
         const area = selection ? { startRow: selection.getRow(), endRow: selection.getRow() + selection.getHeight() - 1, startColumn: selection.getColumn(), endColumn: selection.getColumn() + selection.getWidth() - 1 } : null
         const operations = await currentOperations()
-        const model = await readModelWithStructureSource(await applyWorkbookOperations(original, operations))
-        return { snapshot, model, activeSheetId: sheet.getSheetId(), selection: area, fileName: sourcePath?.split(/[\\/]/).pop() ?? '', current: () => !disposed && !loading && epoch === printCaptureEpoch && version === mergeGeneration && runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet() === core }
+        const printBytes = await applyWorkbookOperations(original, operations)
+        const model = await readModelWithStructureSource(printBytes)
+        const { readWorkbookHeaderFooterPictures } = await import('@sheets-web/xlsx-engine')
+        const headerFooterPictures = await readWorkbookHeaderFooterPictures(printBytes)
+        const selectionCurrent = () => {
+          const current = sheet.getSelection()?.getActiveRange()
+          return area ? Boolean(current && current.getRow() === area.startRow && current.getColumn() === area.startColumn && current.getHeight() === area.endRow - area.startRow + 1 && current.getWidth() === area.endColumn - area.startColumn + 1) : !current
+        }
+        return { snapshot, model, activeSheetId: sheet.getSheetId(), selection: area, fileName: sourcePath?.split(/[\\/]/).pop() ?? '', headerFooterPictures,
+          marginsPreset: (pageSetupJournal.get(sheet.getSheetId())?.margins as import('./workbook-print').PrintMarginPreset | undefined) ?? matchMarginPreset(originalSheet(sheet.getSheetId())?.margins),
+          canEdit: editable() && !sheetProtected(sheet.getSheetId()), current: () => {
+            try { validatePrintPreviewTarget() } catch { return false }
+            return epoch === printCaptureEpoch && version === mergeGeneration && runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet() === core && selectionCurrent()
+          } }
+      },
+      applySetup: (captured, changes) => {
+        if (!captured.current()) throw new Error('工作簿或选区已变化，请重新打开打印预览。')
+        if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+        const { sheet } = validatePrintPreviewTarget()
+        if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+        const file = captured.model.sheets.find(item => item.name === sheet.getSheetName()), state = pageBreakPreviewSetup(file, {})
+        const changed = Object.entries(changes).some(([key, value]) => value !== (key === 'margins' ? captured.marginsPreset : state[key as keyof typeof state]))
+        if (!changed) return
+        pageSetupJournal.set(sheet.getSheetId(), { ...pageSetupJournal.get(sheet.getSheetId()), ...changes })
+        refreshPageBreakPreview(); markDirty(); ribbon.refreshState?.()
+        feedback.textContent = '打印页面设置已更新，修改尚未保存。'
+      },
+      pageSetup: async captured => {
+        if (!captured.current()) throw new Error('工作簿或选区已变化，请重新打开打印预览。')
+        if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+        const { workbook, sheet } = validatePrintPreviewTarget()
+        if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+        await new Promise<void>(resolve => headerFooterDialog.open(headerFooterEditorState(originalSheet(sheet.getSheetId())?.headerFooter, pageSetupJournal.get(sheet.getSheetId())), { book: workbook.getWorkbook(), sheet: sheet.getSheet(), sheetId: sheet.getSheetId() }, resolve))
       },
       print: html => printModule.printDocument(html),
     })
     const workbook = runtime.univerAPI.getActiveWorkbook(), active = workbook?.getActiveSheet(), selection = active?.getSelection()?.getActiveRange()
+    if (!workbook || !active) throw new Error('工作簿尚未就绪')
+    printPreviewTarget = { book: workbook.getWorkbook(), sheet: active.getSheet(), sheetId: active.getSheetId(), name: active.getSheetName(), source: original, path: sourcePath }
     const visibleCount = workbook?.getSheets().filter(item => item.getSheet().getConfig().hidden !== 1).length ?? 0
-    printPreviewDialog.open({ hasSelection: Boolean(selection), sheetCount: visibleCount })
+    printPreviewDialog.open({ hasSelection: Boolean(selection && (selection.getWidth() > 1 || selection.getHeight() > 1)), sheetCount: visibleCount })
   }
   const pageBreakPreview = createPageBreakPreviewController({
     target: () => loading || disposed ? null : runtime.univerAPI.getActiveWorkbook()?.getActiveSheet() ?? null,
@@ -926,6 +1234,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const applyTheme = async (kind: ThemeCommandKind, id: string) => {
     if (!editable() || !themeSource) throw new Error('当前工作簿不可编辑或尚未就绪')
     const { operation, name } = themeOperation(kind, id, themeSource)
+    const owner = shell.editor.ownerDocument
+    const focusedMenu = owner.activeElement instanceof HTMLSelectElement && owner.activeElement.dataset.ribbonMenu === kind ? owner.activeElement : null
     await withWorkbookLocked(shell.editor, async () => {
       await persistence
       const before = await currentOperations()
@@ -940,7 +1250,11 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       gridChanged = false; dirty = true
       shell.statusLabel.textContent = '有未保存修改'
       feedback.textContent = `${kind === 'theme' ? '主题' : kind === 'theme-colors' ? '主题颜色' : '主题字体'}已设为「${name}」，修改尚未保存；引用主题色或主题字体的单元格已随之更新。`
-    }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
+    }).finally(() => {
+      ribbon.refreshState?.(); nativeAI?.refresh()
+      // 重放期间inert使原下拉失焦；只恢复该入口，用户已移到其他控件时不抢焦点。
+      if (focusedMenu?.isConnected && !focusedMenu.disabled && owner.activeElement === owner.body) focusedMenu.focus({ preventScroll: true })
+    })
   }
   const applyEditableRanges = async (sheetName: string, ranges: { name: string; sqref: string }[]) => {
     if (!editable() || !editableRangesContext) throw new Error('工作簿不可编辑，请重新打开允许编辑区域')
@@ -995,7 +1309,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       const pivotOperations = control ? plan.operations.map(operation => operation.kind === 'applyPivotLayoutExpansions' ? { ...operation, controlRequest: control } : operation) : plan.operations
       const operations = [...context.operations, ...pivotOperations, ...(control ? [{ kind: 'upsertPivotControl', request: control }] : [])]
       captureGeneration++
-      try { await loadOperations(operations) }
+      const committedBytes = await applyWorkbookOperations(original, operations)
+      try { await loadOperations(operations, undefined, committedBytes) }
       catch (error) { await loadOperations(context.operations); throw error }
       if (nativeDraft) {
         nativeDraft.setOperations(context.operations as NativeOperation[])
@@ -1003,6 +1318,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       } else draft.setOperations(operations)
       gridChanged = false; dirty = true
       shell.statusLabel.textContent = '有未保存修改'
+      pivotContext = { bytes: committedBytes, operations }
       feedback.textContent = tablePath ? '透视表字段与缓存已更新，修改尚未保存。' : '数据透视表已创建，修改尚未保存。'
     }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
   }
@@ -1098,20 +1414,29 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   }
   const nativeHistory = async (direction:'undo'|'redo') => {
     if (!nativeDraft) return
+    const sheetName = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
     await withWorkbookLocked(shell.editor,async()=>{
       await persistence
       nativeDraft.setOperations(await currentOperations() as NativeOperation[])
       if(direction==='undo')nativeDraft.undo();else nativeDraft.redo()
       captureGeneration++;await loadOperations(nativeDraft.operations as WorkbookOperation[])
+      const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(item => item.getSheetName() === sheetName)
+      if (sheet) workbook!.setActiveSheet(sheet)
       gridChanged=false;dirty=nativeDraft.dirty
       shell.statusLabel.textContent=dirty?'有未保存修改':'已保存'
-    }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
+    }).finally(() => {
+      if (!disposed && document.activeElement === document.body) focusWorkbookGrid(runtime)
+      ribbon.refreshState?.(); nativeAI?.refresh()
+    })
   }
   const pivotHistoryShortcut = (event:KeyboardEvent) => {
     if (!nativeDraft || gridChanged || !editable() || runtime.univerAPI.getActiveWorkbook()?.isCellEditing?.() || !event.ctrlKey && !event.metaKey) return
     const direction = event.key.toLowerCase()==='y' || event.key.toLowerCase()==='z' && event.shiftKey ? 'redo' : event.key.toLowerCase()==='z' ? 'undo' : undefined
-    if (!direction || !(direction==='undo'?nativeDraft.canUndo:nativeDraft.canRedo)) return
-    if ((event.target as HTMLElement)?.closest('input,textarea,select,[contenteditable="true"]')) return
+    if (!direction || !(direction==='undo'?nativeDraft.canUndo || dirty:nativeDraft.canRedo)) return
+    const target = event.target as HTMLElement | null
+    // 未进入单元格编辑时，官方隐藏文档编辑器仍承接网格快捷键。
+    const gridEditor = target?.closest('#workbook-grid') && target.closest('[data-u-comp="editor"]')
+    if (!gridEditor && target?.closest('input,textarea,select,[contenteditable="true"]')) return
     event.preventDefault();event.stopImmediatePropagation()
     void nativeHistory(direction).catch(error=>{feedback.textContent=(error as Error).message})
   }
@@ -1119,7 +1444,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const ribbon = mountWorkbookRibbon(
     shell.editor.querySelector<HTMLElement>('.workbook-ribbon-host')!,
     (command, capturedTarget) => {
-      if (calculationBusy) return
+      if (pictureEditBusy || calculationBusy) return
       if (command === 'allow-edit-ranges-open') {
         void openEditableRanges().catch(error => { feedback.textContent = (error as Error).message }); return
       }
@@ -1179,6 +1504,18 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         feedback.textContent = statistics?.message ?? '工作簿尚未就绪'
         return
       }
+      if (command === 'chart-descriptions') {
+        if (loading || disposed) return
+        const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+        if (sheet) chartDescriptions.open(sheet.getSheetName(), chartsForSheet(sheet.getSheetName()), {
+          getName: () => sheet.getSheetName(), getCell: (row, column) => sheet.getSheet().getCell(row, column) ?? undefined,
+        }, chartPath => {
+          if (runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet() !== sheet.getSheet()) return
+          if (chartSelection?.select({ sheetName: sheet.getSheetName(), chartPath }))
+            queueMicrotask(() => { if (!disposed) shell.editor.querySelector<HTMLElement>('.workbook-grid')?.focus({ preventScroll: true }) })
+        })
+        return
+      }
       if (command === 'error-checking') {
         if (!formulaBarAvailable()) return
         const check = errorChecking.check()
@@ -1187,6 +1524,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         return
       }
       if (command === 'watch-window') { if (!loading && !disposed) watchWindow.toggle(); return }
+      if (command === 'external-links-panel') { void externalLinks.open().catch(error => { feedback.textContent = (error as Error).message }); return }
       if (command === 'queries-open') { void queriesDialog.open(); return }
       if (command === 'trace-precedents' || command === 'trace-dependents' || command === 'remove-arrows') {
         if (loading || saving || disposed) return
@@ -1206,13 +1544,13 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       if (command === 'print' || command === 'undo' || command === 'redo') {
         // 固定源 File/Edit 菜单语义：打印为只读操作（与查找一致，保存后仍可
         // 用）；撤销/恢复重放 Univer 历史（与网格快捷键同一命令栈），需可编辑态。
-        const blocked = loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')
+        const blocked = loading || reloadUnavailable || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')
         if (command === 'print' ? loading || disposed : blocked) return
         try {
           const workbook = runtime.univerAPI.getActiveWorkbook()
           const sheet = workbook?.getActiveSheet()
           if (!workbook || !sheet) throw new Error('工作簿尚未就绪')
-          if ((command === 'undo' || command === 'redo') && nativeDraft && !gridChanged && (command === 'undo' ? nativeDraft.canUndo : nativeDraft.canRedo)) {
+          if ((command === 'undo' || command === 'redo') && nativeDraft && !gridChanged && (command === 'undo' ? nativeDraft.canUndo || dirty : nativeDraft.canRedo)) {
             void nativeHistory(command).catch(error => { feedback.textContent = (error as Error).message }); return
           }
           if (command === 'undo' || command === 'redo') {
@@ -1229,16 +1567,33 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       }
       if (command === 'merge-workbooks') {
         if (!editable() || structureLocked()) return
+        let ownsMergeLock = false
+        let mergeBefore: WorkbookOperation[] = []
         void import('./workbook-merge').then(({ openWorkbookMergeAction }) => openWorkbookMergeAction({
-          capture: () => ({ workbook: runtime.univerAPI.getActiveWorkbook(), draft: `${mergeGeneration}:${JSON.stringify(staged)}${JSON.stringify(structural)}` }),
-          isBlocked: () => !editable() || structureLocked(),
+          capture: () => ({ workbook: runtime.univerAPI.getActiveWorkbook()?.getWorkbook() ?? null, draft: `${mergeGeneration}:${JSON.stringify(staged)}${JSON.stringify(structural)}` }),
+          // 本次提交持有的 inert 锁不应否定自己；其它状态与祖先锁仍须复核。
+          isBlocked: () => structureLocked() || (ownsMergeLock
+            ? loading || reloadUnavailable || saving || saved || disposed || calculationBusy || !!shell.editor.parentElement?.closest('[inert]')
+            : !editable()),
           setMessage: message => { if (!disposed) feedback.textContent = message },
           wait: () => persistence,
           original: () => original,
-          currentOperations,
+          currentOperations: async () => { mergeBefore = await currentOperations(); return mergeBefore },
           loadOperations,
-          locked: operation => withWorkbookLocked(shell.editor, operation),
-          onApplied: (files, sheets) => { markDirty(); feedback.textContent = `已合并 ${files} 个工作簿、${sheets} 个工作表，修改尚未保存。`; ribbon.refreshState?.() },
+          locked: operation => withWorkbookLocked(shell.editor, async () => {
+            ownsMergeLock = true
+            try { return await operation() } finally { ownsMergeLock = false }
+          }),
+          onApplied: (files, sheets) => {
+            captureGeneration++; mergeGeneration++
+            if (nativeDraft) {
+              nativeDraft.setOperations(mergeBefore as NativeOperation[])
+              nativeDraft.setOperations(staged as NativeOperation[])
+            } else draft.setOperations(staged)
+            // 合并已完整重建网格，撤销应重放原生草稿，而非空的 Univer 历史。
+            gridChanged = false; dirty = true; shell.statusLabel.textContent = '有未保存修改'
+            feedback.textContent = `已合并 ${files} 个工作簿、${sheets} 个工作表，修改尚未保存。`; ribbon.refreshState?.()
+          },
         })).catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
         return
       }
@@ -1374,6 +1729,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       }
       if (command === 'link-open') {
         void openLinkDialog().catch(error => { feedback.textContent = (error as Error).message })
+      } else if (command === 'insert-picture' || command === 'insert-equation' || command === 'insert-icons') {
+        openOrdinaryPicture(command)
         return
       }
       if (command === 'insert-symbol') {
@@ -1638,6 +1995,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         ribbon.refreshState?.()
         return
       }
+      if (command === 'paste-special-open') { if (editable()) void pasteSpecialDialog.open(); return }
       if (CLIPBOARD_COMMANDS[command]) {
         // 固定源 ribbon-actions：复制为只读安全命令；剪切/粘贴/选择性粘贴需可编辑态。
         // 粘贴经 Univer sheet 剪贴板（Clipboard API 不可用时回退内部复制缓存），写入走
@@ -1663,97 +2021,153 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       if (!workbook) return
       try {
         if (command === 'chart-delete') {
-          const sheetName = workbook.getActiveSheet()?.getSheetName()
-          const charts = currentModel.sheets.find(sheet => sheet.name === sheetName)?.charts ?? []
-          if (charts.length !== 1) throw new Error(charts.length ? '当前工作表含多个图表，暂不支持选择要删除的图表' : '请先打开包含图表的工作表')
-          const chart = charts[0]!
-          void loadOperations([...staged, { kind: 'applyChartDeletions', deletions: [{ sheetName: sheetName!, chartPath: chart.chartPath }] }]).then(() => {
-            markDirty(); ribbon.refreshState?.(); feedback.textContent = '图表已删除，修改尚未保存。'
-          }).catch(error => { feedback.textContent = (error as Error).message })
+          deleteChart()
           return
         }
         if (command === 'chart-switch-row-col') {
-          const sheet = workbook.getActiveSheet(), sheetName = sheet?.getSheetName()
-          const charts = currentModel.sheets.find(item => item.name === sheetName)?.charts ?? []
-          if (!sheet || charts.length !== 1) throw new Error('请打开仅包含一个图表的工作表后切换行列')
-          if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
-          const chart = charts[0]!
-          const seriesSet = switchChartSeries(chart, sheet.getSheetName(), (row, column) => sheet.getRange(row, column).getValue())
-          void currentOperations().then(operations => {
-            if (!editable() || workbook.getActiveSheet()?.getSheet() !== sheet.getSheet()) throw new Error('图表来源已变化，请重新操作')
-            return loadOperations([...operations, { kind: 'applyChartEdits', edits: [{ chartPath: chart.chartPath, seriesSet }] }])
-          }).then(() => {
-            markDirty(); ribbon.refreshState?.(); feedback.textContent = '图表行列已切换，修改尚未保存。'
-          }).catch(error => { feedback.textContent = (error as Error).message })
+          const target = chartTarget(), { sheet, chart } = target
+          validateChartTarget(target)
+          const readChartVector = (reference: string): unknown[] => {
+            const { sheetName, range } = chartSwitchReference(reference, sheet.getSheetName())
+            const dataSheet = workbook.getSheets().find(candidate => candidate.getSheetName().toLowerCase() === sheetName.toLowerCase())
+            if (!dataSheet) throw new Error('图表数据缓存引用的工作表不存在')
+            return dataSheet.getRange(range).getRawValues().flat()
+          }
+          const seriesSet = switchChartSeries(chart, readChartVector)
+          void applyChartOperation(target, { kind: 'applyChartEdits', edits: [{ chartPath: chart.chartPath, seriesSet }] }, '图表行列已切换，修改尚未保存。')
+            .catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
           return
         }
         if (command === 'chart-select-data') {
-          const sheet = workbook.getActiveSheet(), range = sheet?.getSelection()?.getActiveRange()
-          const sheetName = sheet?.getSheetName()
-          const charts = currentModel.sheets.find(item => item.name === sheetName)?.charts ?? []
-          if (!sheet || !range || !sheetName) throw new Error('请先选择新的图表数据区域')
-          if (charts.length !== 1) throw new Error(charts.length ? '当前工作表含多个图表，暂不支持选择要编辑的图表' : '请先打开包含图表的工作表')
-          const chart = charts[0]!
-          if (chart.kind === 'combo') throw new Error('组合图暂不支持整体替换数据系列')
-          const values = typeof range.getValues === 'function' ? range.getValues() as unknown as (readonly (string | number | boolean | null | undefined)[][]) : undefined
-          if (!Array.isArray(values)) throw new Error('当前工作簿无法读取图表数据区域')
-          const selection = range.getRange()
-          const type = chart.kind === 'scatter' ? 'scatter' : chart.kind === 'radar' ? 'radar' : chart.kind
-          const replacement = chartAdditionFromGrid({ sheetName, chartType: type as 'column' | 'bar' | 'line' | 'area' | 'pie' | 'scatter' | 'radar' | 'doughnut', range: { startRow: selection.startRow, endRow: selection.endRow, startColumn: selection.startColumn, endColumn: selection.endColumn }, values })
-          void loadOperations([...staged, { kind: 'applyChartEdits', edits: [{ chartPath: chart.chartPath, seriesSet: replacement.chart.series }] }]).then(() => {
-            markDirty(); ribbon.refreshState?.(); feedback.textContent = '图表数据已更新，修改尚未保存。'
-          }).catch(error => { feedback.textContent = (error as Error).message })
+          if (chartDataDialog?.isBusy()) return
+          const target = chartTarget(), { chart } = target
+          validateChartTarget(target)
+          void (async () => {
+            const module = await import('./workbook-chart-data-dialog')
+            await runtime.univerAPI.getFormula().onCalculationResultApplied(30_000)
+            validateChartTarget(target)
+            if (chartDataDialog?.isBusy()) return
+            if (!chartDataDialog) chartDataDialog = module.createChartDataDialog(shell.editor, {
+              readVector: async range => {
+                const captured = chartDataTarget
+                if (!captured) throw new Error('请重新选择图表')
+                validateChartTarget(captured)
+                await runtime.univerAPI.getFormula().onCalculationResultApplied(30_000)
+                validateChartTarget(captured)
+                return module.readChartDataVector(runtime.univerAPI.getActiveWorkbook()!, captured.sheetName, range)
+              },
+              apply: async seriesSet => {
+                const captured = chartDataTarget
+                if (!captured) throw new Error('请重新选择图表')
+                await applyChartOperation(captured, { kind: 'applyChartEdits', edits: [{ chartPath: captured.chart.chartPath, seriesSet }] }, '图表数据已更新，修改尚未保存。')
+              },
+            })
+            chartDataTarget = target
+            chartDataDialog.open(module.hydrateChartDataSeries(chart, range => module.readChartDataVector(runtime.univerAPI.getActiveWorkbook()!, target.sheetName, range)), chart.kind === 'combo')
+          })().catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
           return
         }
-        if (command === 'chart-title' || command === 'chart-legend' || command === 'chart-axis-cat' || command === 'chart-axis-val' || command === 'chart-labels' || command === 'chart-format-pane' || command.startsWith('chart-type-')) {
-          const sheetName = workbook.getActiveSheet()?.getSheetName()
-          const charts = currentModel.sheets.find(sheet => sheet.name === sheetName)?.charts ?? []
-          if (charts.length !== 1) throw new Error(charts.length ? '当前工作表含多个图表，暂不支持选择要编辑的图表' : '请先打开包含图表的工作表')
-          const chart = charts[0]!
-          if (command === 'chart-format-pane' && !['column', 'bar', 'line', 'area'].includes(chart.kind))
-            throw new Error('当前图表类型暂不支持分组和主网格线格式')
-          if ((command === 'chart-axis-cat' || command === 'chart-axis-val') && !['column', 'bar', 'line', 'area'].includes(chart.kind))
+        if (command.startsWith('chart-layout:') || command.startsWith('chart-colors:')) {
+          const target = chartTarget(), patch = chartPresetEdit(command, chartPresetSource(target))
+          if (!patch) throw new Error('当前图表无法应用此预设')
+          void applyChartOperation(target, { kind: 'applyChartEdits', edits: [{ chartPath: target.chart.chartPath, ...patch }] }, '图表预设已应用，修改尚未保存。')
+            .catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'chart-format-pane') {
+          const captured = chartTarget()
+          validateChartTarget(captured)
+          if (chartFormatPane?.isBusy()) return
+          chartFormatTarget = captured
+          chartFormatPane ??= createWorkbookChartFormatPane(shell.editor.querySelector<HTMLElement>('.workbook-grid-frame')!, {
+            editable: () => editable() && !!chartFormatTarget && !sheetProtected(chartFormatTarget.sheetId),
+            onClose: () => { chartFormatTarget = undefined },
+            hydrate: source => {
+              const target = chartFormatTarget
+              if (!target) throw new Error('请重新选择图表')
+              validateChartTarget(target)
+              const activeWorkbook = runtime.univerAPI.getActiveWorkbook()
+              if (activeWorkbook?.getWorkbook() !== target.workbookCore) throw new Error('工作簿目标已变化，请重新选择图表')
+              const readPrefix = (reference: string, limit: number) => {
+                const { sheetName, range } = chartSwitchReference(reference, target.sheetName, limit)
+                const dataSheet = activeWorkbook.getSheets().find(candidate => candidate.getSheetName().toLowerCase() === sheetName.toLowerCase())
+                if (!dataSheet) throw new Error('图表数据引用的工作表不存在')
+                return dataSheet.getRange(range).getRawValues().flat()
+              }
+              return { ...source, series: source.series.map((series, index) => {
+                const referencedName = series.nameRef ? readPrefix(series.nameRef, 1)[0] : undefined
+                const resolvedName = referencedName === undefined || referencedName === null ? '' : String(referencedName)
+                const name = resolvedName || series.nameCache || (series.nameRef ? '' : series.name) || `系列 ${index + 1}`
+                let categories = series.categories
+                if (!categories?.length && series.categoriesRef) categories = readPrefix(series.categoriesRef, 1_000).map(value => String(value ?? '').slice(0, 255))
+                if (!categories?.length && series.xValues?.length) categories = series.xValues.map(String)
+                if (!categories?.length && series.xValuesRef) categories = readPrefix(series.xValuesRef, 1_000).map(value => String(value ?? '').slice(0, 255))
+                return { ...series, nameCache: String(name).slice(0, 255), ...(categories?.length ? { categories } : {}) }
+              }) }
+            },
+            apply: async edit => {
+              const target = chartFormatTarget
+              if (!target) throw new Error('图表目标已变化，请重新选择后操作')
+              await applyChartOperation(target, { kind: 'applyChartEdits', edits: [{ chartPath: target.chart.chartPath, ...edit }] }, '图表格式已更新，修改尚未保存。')
+              // 写回会重建网格，只在同一来源、工作表和图表上重新取得授权对象。
+              if (disposed || original !== target.source || chartFormatTarget !== target) throw new Error('图表目标已变化，请重新选择后操作')
+              const next = chartTarget()
+              if (next.sheetName !== target.sheetName || next.chart.chartPath !== target.chart.chartPath) throw new Error('图表目标已变化，请重新选择后操作')
+              chartFormatTarget = next
+              return next.chart
+            },
+          })
+          chartFormatPane.open(captured.chart,chartSelection?.element())
+          return
+        }
+        if (command === 'chart-title' || command === 'chart-legend' || command === 'chart-axis-cat' || command === 'chart-axis-val' || command === 'chart-labels' || command.startsWith('chart-type-')) {
+          const captured = chartTarget(), { chart } = captured
+          validateChartTarget(captured)
+          if ((command === 'chart-axis-cat' || command === 'chart-axis-val') && !['column', 'bar', 'line', 'area', 'scatter'].includes(chart.kind))
             throw new Error('当前图表类型暂不支持坐标轴标题')
+          if (command === 'chart-labels' && !chartPresetSource(captured).canLabel)
+            throw new Error('当前图表类型暂不支持数据标签')
           if (!command.startsWith('chart-type-')) {
-            const sheet = workbook.getActiveSheet()!
-            if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+            chartDialogTarget = captured
             chartDesignDialog ??= createChartDesignDialog(shell.editor, (edit, target) => {
-              if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
-              if (sheetProtected(target.sheetId)) throw new Error('工作表受保护，请先撤销保护')
-              if (runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId() !== target.sheetId ||
-                !currentModel.sheets.find(item => item.name === target.sheetName)?.charts?.some(item => item.chartPath === target.chartPath))
+              const captured = chartDialogTarget
+              if (!captured || captured.sheetId !== target.sheetId || captured.chart.chartPath !== target.chartPath)
                 throw new Error('图表目标已变化，请重新选择后操作')
-              void currentOperations().then(operations => {
-                if (!editable() || runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId() !== target.sheetId)
-                  throw new Error('图表目标已变化，请重新选择后操作')
-                return loadOperations([...operations, { kind: 'applyChartEdits', edits: [edit] }])
-              }).then(() => {
-                markDirty(); ribbon.refreshState?.(); feedback.textContent = '图表已更新，修改尚未保存。'
-              }).catch(error => { feedback.textContent = (error as Error).message })
+              validateChartTarget(captured)
+              return applyChartOperation(captured, { kind: 'applyChartEdits', edits: [edit] }, '图表已更新，修改尚未保存。')
+                .catch(error => { if (!disposed) feedback.textContent = (error as Error).message; throw error })
             })
             const property = command === 'chart-title' ? 'title' : command === 'chart-legend' ? 'legend' : command === 'chart-axis-cat' ? 'categoryTitle' : command === 'chart-axis-val' ? 'valueTitle' : command === 'chart-labels' ? 'labels' : 'format'
-            const target = { chartPath: chart.chartPath, sheetId: sheet.getSheetId(), sheetName: sheet.getSheetName() }
+            const target = { chartPath: chart.chartPath, sheetId: captured.sheetId, sheetName: captured.sheetName, initial: chart.design ?? {} }
             chartDesignDialog.open(property === 'title' ? { ...target, property, initialTitle: chart.title ?? '' } : { ...target, property })
             return
           }
           const edit = { chartPath: chart.chartPath, chartType: command.slice('chart-type-'.length) as 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' }
-          void loadOperations([...staged, { kind: 'applyChartEdits', edits: [edit] }]).then(() => {
-            markDirty(); ribbon.refreshState?.(); feedback.textContent = '图表已更新，修改尚未保存。'
-          }).catch(error => { feedback.textContent = (error as Error).message })
+          void applyChartOperation(captured, { kind: 'applyChartEdits', edits: [edit] }, '图表已更新，修改尚未保存。')
+            .catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'recommended-charts-open') {
+          const target = chartAdditionTarget(), recommendations = recommendCharts(target.values)
+          if (!recommendations) throw new Error('图表需要至少一列数值数据')
+          recommendedChartsDialog ??= createWorkbookRecommendedChartsDialog(shell.editor, (chartType, captured) => {
+            const parsed = recommendCharts(captured.values)!.parsed
+            const addition = chartAdditionFromGrid({ sheetName: captured.sheetName, range: captured.range, values: captured.values, chartType,
+              title: parsed.series.length === 1 ? parsed.series[0]!.name : 'Chart Title' })
+            void applyWorkbookDraftOperation(() => validateChartAdditionTarget(captured), { kind: 'applyChartAdditions', additions: [addition] }, '推荐图表已插入，修改尚未保存。')
+              .catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
+          })
+          recommendedChartsDialog.open(recommendations, target)
           return
         }
         if (command.startsWith('insert-chart:')) {
-          const sheet = workbook.getActiveSheet(), range = sheet?.getSelection()?.getActiveRange()
-          if (!sheet || !range) throw new Error('请先选择图表数据区域')
-          const values = typeof range.getValues === 'function' ? range.getValues() as unknown as (readonly (string | number | boolean | null | undefined)[][]) : undefined
-          if (!Array.isArray(values)) throw new Error('当前工作簿无法读取图表数据区域')
+          feedback.hidden = false
+          feedback.textContent = '正在插入图表…'
+          const captured = chartAdditionTarget()
           const chartType = command.slice('insert-chart:'.length) as 'column' | 'bar' | 'line' | 'area' | 'pie' | 'scatter' | 'radar' | 'doughnut' | 'combo'
-          const addition = chartAdditionFromGrid({ sheetName: sheet.getSheetName(), chartType, title: '',
-            range: { startRow: range.getRow(), endRow: range.getRow() + range.getHeight() - 1,
-              startColumn: range.getColumn(), endColumn: range.getColumn() + range.getWidth() - 1 }, values })
-          void loadOperations([...staged, { kind: 'applyChartAdditions', additions: [addition] }]).then(() => {
-            markDirty(); ribbon.refreshState?.(); feedback.textContent = '图表已插入，修改尚未保存。'
-          }).catch(error => { feedback.textContent = (error as Error).message })
+          const addition = chartAdditionFromGrid({ sheetName: captured.sheetName, chartType, title: '', range: captured.range, values: captured.values })
+          void applyWorkbookDraftOperation(() => validateChartAdditionTarget(captured), { kind: 'applyChartAdditions', additions: [addition] }, '图表已插入，修改尚未保存。')
+            .catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
           return
         }
         if (command === 'cf-open') {
@@ -1823,7 +2237,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           const next = !view.sheet.protected
           if (next === (originalSheet(sheetId)?.protection?.protected ?? false)) sheetProtection.delete(sheetId)
           else sheetProtection.set(sheetId, next)
-          markDirty(); ribbon.refreshState?.()
+          markDirty()
+          // 保护是宿主元数据；撤销必须重放原生草稿，不能撤销加载时的网格冻结命令。
+          if (nativeDraft) gridChanged = false
+          ribbon.refreshState?.()
           pivotControlOverlay?.refreshState()
           feedback.textContent = next ? '工作表已设为受保护（无密码，Excel 默认权限），保存后写入文件；仅允许编辑区域内可输入值和公式。' : '工作表保护将在保存后移除。'
           return
@@ -1833,7 +2250,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           if (view.workbook.reason) throw new Error(view.workbook.reason)
           const next = !view.workbook.locked
           structureLock = next === (currentModel.workbookProtection?.lockStructure ?? false) ? undefined : next
-          markDirty(); ribbon.refreshState?.()
+          markDirty()
+          if (nativeDraft) gridChanged = false
+          ribbon.refreshState?.()
           feedback.textContent = next ? '工作簿结构已设为受保护（无密码），保存后写入文件；期间不能增删、重命名、移动或隐藏工作表。' : '工作簿结构保护将在保存后移除。'
           return
         }
@@ -2027,6 +2446,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       onAssistant: options.onAssistant ?? (options.nativeAI ? () => nativeAI?.open() : !options.native ? () => { shell.editor.querySelector<HTMLTextAreaElement>('.workbook-ai textarea')?.focus() } : undefined),
       rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null),
       editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
+      chart: () => {
+        if (loading || disposed) return null
+        try { return chartPresetSource(chartTarget()) } catch { return null }
+      },
       crossHighlight: () => ({ active: crossHighlightVisible, available: formulaBarAvailable() }),
       formulaBar: () => ({ visible: formulaBar.visible(), available: formulaBarAvailable() }),
       headings: () => ({ visible: runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet().getConfig().rowHeader.hidden !== 1, available: formulaBarAvailable() && !headingsBusy }),
@@ -2169,7 +2592,38 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       },
     },
   )
+  chartSelection = installWorkbookChartSelection(shell.editor.querySelector<HTMLElement>('.workbook-grid')!, runtime, {
+    charts: chartsForSheet, available: formulaBarAvailable,
+    changed: () => { ribbon.refreshState?.() }, remove: deleteChart,
+    elementChanged: (element,target) => {
+      if(chartFormatPane?.isOpen()&&!chartFormatPane.isBusy()&&chartFormatTarget?.chart.chartPath===target.chartPath&&chartFormatTarget.sheetName===target.sheetName)chartFormatPane.selectElement(element)
+    },
+  })
+  chartObjectInteraction = installWorkbookChartObjectInteraction(shell.editor.querySelector<HTMLElement>('.workbook-grid')!, runtime, {
+    charts: chartsForSheet, current: () => chartSelection?.current(), select: target => chartSelection?.select(target) ?? false,
+    selectElementAt: (target,x,y) => chartSelection?.selectElementAt(target,x,y),
+    available: editable,
+    capture: (chart, sheetName) => {
+      const target = chartTarget()
+      validateChartTarget(target)
+      if (target.chart !== chart || target.sheetName !== sheetName) throw new Error('图表目标已变化，请重新选择后操作')
+      return target
+    },
+    validate: validateChartTarget,
+    commit: async (target, mode, anchor) => {
+      validateChartTarget(target)
+      if (target.chart.anchorKind === 'absoluteAnchor') throw new Error('源 writer 不支持绝对锚点图表移动或缩放')
+      if (target.chart.anchorKind === 'oneCellAnchor' && mode === 'resize') throw new Error('源 writer 仅支持单单元格锚点图表移动，不支持缩放')
+      const before = { fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0, ...target.chart.anchor }
+      await applyChartOperation(target, { kind: 'applyChartAnchors', edits: [{ sheetName: target.sheetName, chartPath: target.chart.chartPath, before, anchor, mode }] }, '图表位置或尺寸已更新，修改尚未保存。')
+    },
+    error: message => { if (!disposed) feedback.textContent = message },
+  })
   let selectionListener: { dispose(): void } | undefined
+  let pictureSelection: ReturnType<typeof createWorkbookPictureSelectionController> | undefined
+  const cancelPictureSelection = () => pictureSelection?.cancel()
+  shell.editor.addEventListener('pointerdown', cancelPictureSelection, true)
+  shell.editor.addEventListener('keydown', cancelPictureSelection, true)
   let validationNames: ReturnType<typeof installDataValidationNames> | undefined
   let definedNameScopes: ReturnType<typeof installDefinedNameScopes> | undefined
   let validationStructure: ReturnType<typeof installDataValidationStructure> | undefined
@@ -2188,6 +2642,102 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let replacing = false
   let pendingShiftUndo: { id: string; element: unknown } | undefined
   runtime.univerAPI.addEvent(runtime.univerAPI.Event.BeforeCommandExecute, command => {
+    if (!loading && WORKBOOK_PICTURE_EDIT_COMMANDS.some(id => id === command.id)) {
+      command.cancel = true
+      feedback.hidden = false
+      // 锁定 SDK 的取消分支不清理命令栈；仅移除此核心调用，保留外层 wrapper。
+      const service = runtime.univer.__getInjector().get<ICommandService>(ICommandService)
+      const stack = (service as unknown as { _commandExecutionStack?: { id: string; params?: unknown }[] })._commandExecutionStack
+      const index = stack?.findLastIndex(item => item.id === command.id && item.params === command.params) ?? -1
+      if (index >= 0) stack?.splice(index, 1)
+      try {
+        // 同原生 BeforeOverGridImageChange 取消语义，从未变的模型还原拖动预览。
+        runtime.univer.__getInjector().get<IDrawingManagerService>(IDrawingManagerService).updateNotification(
+          [...pictureBindings.values()].map(({drawing}) => ({ unitId: drawing.unitId as string,
+            subUnitId: drawing.subUnitId as string, drawingId: drawing.drawingId as string })))
+        if (!editable()) throw new Error('当前工作簿不可编辑或图片正在更新')
+        const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+        if (!workbook || !sheet) throw new Error('工作簿尚未就绪')
+        const edits = captureWorkbookPictureEdits(command, workbook.getId(), pictureBindings, (subUnitId, position) => {
+          const skeleton = runtime.univer.__getInjector().get<SheetSkeletonService>(SheetSkeletonService).getSkeletonParam(workbook.getId(), subUnitId)
+          if (!skeleton) return undefined
+          const transform = drawingPositionToTransform(position, skeleton)
+          if (!transform) return undefined
+          return { left: transform.left ?? NaN, top: transform.top ?? NaN, width: transform.width ?? NaN, height: transform.height ?? NaN }
+        })!
+        const source = original, core = workbook.getWorkbook(), sheetCore = sheet.getSheet(), sheetName = sheet.getSheetName(), bindings = pictureBindings
+        const validate = () => {
+          const active = runtime.univerAPI.getActiveWorkbook()
+          if (!workbookAvailable() || original !== source || active?.getWorkbook() !== core ||
+              active?.getActiveSheet()?.getSheet() !== sheetCore || pictureBindings !== bindings)
+            throw new Error('图片目标已变化，请重新选择后操作')
+          for (const edit of edits) {
+            const target = active.getSheets().find(item => item.getSheetName() === edit.sheetName)
+            if (!target || sheetProtected(target.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+          }
+        }
+        validate()
+        pictureEditBusy = true
+        const saveDisabled = shell.save.disabled
+        shell.save.disabled = true
+        void applyWorkbookDraftOperation(validate, async bytes => {
+          const operations: WorkbookOperation[] = []
+          for (const edit of edits) {
+            const operation = { ...edit, sourceIdentity: await pictureSourceIdentity(bytes) }
+            bytes = await applyWorkbookOperations(bytes, [operation])
+            operations.push(operation)
+          }
+          return operations
+        }, edits.every(edit => edit.geometry === null) ? '图片已删除，修改尚未保存。' : '图片位置或尺寸已更新，修改尚未保存。').then(() => {
+          if (disposed) return
+          const selected = [...pictureBindings.values()].filter(({picture}) => edits.some(edit => edit.geometry !== null &&
+            edit.sheetName === picture.sheetName && edit.drawingPart === picture.drawingPart && edit.pictureId === picture.pictureId))
+          const active = runtime.univerAPI.getActiveWorkbook(), targetSheet = active?.getSheets().find(item => item.getSheetName() === sheetName)
+          if (!active || !targetSheet) return
+          const injector = runtime.univer.__getInjector(), scene = active && injector.get<IRenderManagerService>(IRenderManagerService).getRenderById(active.getId())?.scene
+          const transformer = scene?.getTransformerByCreate()
+          const identities = selected.map(({drawing}) => ({ unitId: drawing.unitId as string,
+            subUnitId: drawing.subUnitId as string, drawingId: drawing.drawingId as string }))
+          const manager = injector.get<IDrawingManagerService>(IDrawingManagerService)
+          const nextCore = active.getWorkbook(), nextSheet = targetSheet.getSheet()
+          let activated = false
+          pictureSelection?.dispose()
+          pictureSelection = createWorkbookPictureSelectionController({
+            refreshTransform$: manager.refreshTransform$,
+            getShape: identity => activated ? scene?.getObject(getDrawingShapeKeyByDrawingSearch(identity)) || undefined : undefined,
+            restore: (shapes, targets) => {
+              transformer?.clearSelectedObjects()
+              for (const shape of shapes) transformer?.setSelectedControl(shape)
+              manager.focusDrawing([...targets])
+            },
+          })
+          pictureSelection.start(identities, () => {
+            const current = runtime.univerAPI.getActiveWorkbook()
+            return !disposed && !loading && !saving && !saved && current?.getWorkbook() === nextCore &&
+              (!activated || current.getActiveSheet()?.getSheet() === nextSheet)
+          })
+          active!.setActiveSheet(targetSheet)
+          activated = true
+          manager.focusDrawing(identities)
+          pictureSelection.check()
+        }).catch(async error => {
+          // 取消时 renderer 可能已有拖动预览，从当前草稿恢复显示。
+          if (!disposed && original === source && !reloadUnavailable) {
+            try { await withWorkbookLocked(shell.editor, async () => loadOperations(await currentOperations())) }
+            catch (restoreError) { reloadUnavailable = true; feedback.textContent = `图片编辑失败，恢复显示失败：${(restoreError as Error).message}。草稿已保留，请重新打开。`; return }
+          }
+          if (!disposed) feedback.textContent = (error as Error).message
+        }).finally(() => {
+          pictureEditBusy = false
+          if (!disposed) {
+            shell.save.disabled = saveDisabled || saved || saving || reloadUnavailable
+            if (document.activeElement === document.body) focusWorkbookGrid(runtime)
+            ribbon.refreshState?.()
+          }
+        })
+      } catch (error) { feedback.textContent = (error as Error).message }
+      return
+    }
     if (!loading && (CF_EDIT_COMMAND_IDS.has(command.id) || CF_MUTATION_IDS.has(command.id))) {
       const workbook = runtime.univerAPI.getActiveWorkbook()
       const targetId = (command.params as { subUnitId?: string } | undefined)?.subUnitId
@@ -2334,14 +2884,16 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   })
   // Facade 的 BeforeCommandExecute 不派发 undo/redo；直接挂命令服务，在栈顶元素出栈前认领单元格移位。
   const historyListener = typeof runtime.univer.__getInjector !== 'function' ? undefined : runtime.univer.__getInjector().get<ICommandService>(ICommandService).beforeCommandExecuted(command => {
+    if (!loading && /^(?:sheet|drawing)\.(?:command|mutation)\..*drawing/.test(command.id) &&
+        !WORKBOOK_PICTURE_EDIT_WRAPPERS.some(id => id === command.id)) throw new CustomCommandExecutionError('此图片操作尚未接入文件回写，请使用图片移动、缩放或删除')
     if (loading || (command.id !== 'univer.command.undo' && command.id !== 'univer.command.redo')) return
-    if (calculationBusy || subtotalMutating || advancedFilterMutating) {
+    if (pictureEditBusy || calculationBusy || subtotalMutating || advancedFilterMutating) {
       // 快捷键直接走命令服务，不能仅靠Ribbon/网格inert阻止破坏运行中的历史批次。
       const service = runtime.univer.__getInjector().get<ICommandService>(ICommandService)
       const stack = (service as unknown as { _commandExecutionStack?: unknown[] })._commandExecutionStack
       const index = stack?.indexOf(command) ?? -1
       if (index >= 0) stack?.splice(index, 1)
-      throw new CustomCommandExecutionError('模拟分析正在计算，请稍候再撤销或恢复')
+      throw new CustomCommandExecutionError('工作簿操作正在处理，请稍候再撤销或恢复')
     }
     const top = command.id === 'univer.command.undo' ? undoStack()?.pitchTopUndoElement() : undoStack()?.pitchTopRedoElement()
     const owned = command.id === 'univer.command.undo'
@@ -2352,6 +2904,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     }
   })
   runtime.univerAPI.onCommandExecuted((command, options) => {
+    if (command.id.includes('worksheet-activ')) pictureSelection?.check()
     formulaTrace.syncTarget()
     if (command.id.startsWith('sheet.mutation.') || command.id === 'univer.command.undo' || command.id === 'univer.command.redo') {
       if (formulaTrace.invalidate() && !loading) feedback.textContent = '工作表内容或显示已变化，追踪箭头已清除，请重新追踪。'
@@ -2436,6 +2989,13 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   const functionShortcuts = installFunctionShortcuts(shell.editor, editable, () => {
     void insertFunction.open().catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
   })
+  const insertNowShortcuts = installInsertNowShortcuts(shell.editor, editable,
+    () => runtime.univerAPI.getActiveWorkbook()?.isCellEditing?.() === true,
+    kind => {
+      if (disposed) return
+      try { runInsertNow(kind) } catch (error) { feedback.textContent = (error as Error).message }
+    }
+  )
   let painterListener: { dispose(): void } | undefined
   try { painterListener = installFormatPainter(runtime, () => ribbon.refreshState?.()) } catch { painterListener = undefined }
   const currentOperations = async (): Promise<WorkbookOperation[]> => {
@@ -2593,277 +3153,323 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     ops.push(...protection.trailing)
     return ops
   }
-  const loadOperations = async (ops: WorkbookOperation[], controlDrafts?: import('./workbook-pivot-controls').PivotControlDrafts) => {
-    const controlGeneration = ++pivotControlGeneration
-    pivotControlOverlay?.dispose(); pivotControlOverlay = undefined
-    goToReveal.cancel()
-    formulaTrace.clear()
-    watchWindow.reset()
-    errorChecking.reset()
+  const loadOperations = async (ops: WorkbookOperation[], controlDrafts?: import('./workbook-pivot-controls').PivotControlDrafts, replayedBytes?: Uint8Array) => {
+    pictureSelection?.dispose(); pictureSelection = undefined
     loading = true
-    refreshPageBreakPreview()
-    pageSetupJournal.clear()
-    const bytes = ops.length ? await applyWorkbookOperations(original, ops) : original
-    currentModel = await readModelWithStructureSource(bytes)
-    themeSource = await readWorkbookThemeSource(bytes)
-    editableRanges = await readWorkbookEditableRanges(bytes)
-    // 批注、筛选、视图状态随快照资源/工作表配置一并灌入，保存差分才有真实基线。
-    const data = withWorkbookConditionalFormatting(withWorkbookDataValidations(withWorkbookTables(withWorkbookView(withWorkbookFilters(withWorkbookNotes(buildWorkbookData(currentModel, 'report-workbook', '报告工作簿'), currentModel), currentModel), currentModel), currentModel), currentModel), currentModel)
-    // 完整官方resource负责CF导入；停用旧窄投影，避免重复规则和无关cell mutation。
-    for (const sheet of Object.values(data.sheets)) delete sheet.cfRules
-    setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? '', undefined)
-    // 官方选区订阅读取当前工作簿；先解绑，避免旧实例销毁时收到空工作簿通知。
-    selectionListener?.dispose()
-    selectionListener = undefined
-    loadWorkbookData(runtime, data)
-    const sparklineBook = runtime.univerAPI.getActiveWorkbook()
-    if (sparklineBook) setSparklineWorkbookResolver(sparklineBook.getId(), name => {
-      const live = runtime.univerAPI.getActiveWorkbook()
-      if (live?.getId() !== sparklineBook.getId()) return undefined
-      const index = currentModel.sheets.findIndex(sheet => sheet.name.toLowerCase() === name.toLowerCase())
-      const source = (index >= 0 ? live.getSheetBySheetId(`sheet-${index}`) : live.getSheets().find(sheet => sheet.getSheetName().toLowerCase() === name.toLowerCase()))?.getSheet()
-      return source ? { getCell: (row, column) => source.getCell(row, column) ?? undefined } : undefined
-    })
-    if (!sparklines && typeof runtime.univer.__getInjector === 'function') sparklines = installWorkbookSparklines(runtime, {
-      readonly: () => !editable(), protectedSheet: sheetProtected,
-      existing: id => originalSheet(id)?.sparklines ?? [], changed: markDirty,
-      sourceSheetId: name => {
-        const index = currentModel.sheets.findIndex(sheet => sheet.name.toLowerCase() === name.toLowerCase())
-        return index >= 0 ? `sheet-${index}` : runtime.univerAPI.getActiveWorkbook()?.getSheets().find(sheet => sheet.getSheetName().toLowerCase() === name.toLowerCase())?.getSheetId()
-      },
-      refresh: (id, specs) => {
-        const book = runtime.univerAPI.getActiveWorkbook()
-        if (!book) return
-        setSparklines(book.getId(), id, specs)
-        const injector = runtime.univer.__getInjector()
-        if (injector.has(IRenderManagerService)) injector.get(IRenderManagerService).getRenderById(book.getId())?.scene.makeDirty(true)
-      },
-    })
-    sparklines?.reset()
-    const loadedNames = liveDefinedNames(definedNameWorkbook())
-    unprojectedNames = (data.definedNames ?? []).filter(expected => !loadedNames?.some(actual =>
-      actual.name.toLowerCase() === expected.name.toLowerCase() && actual.scopeSheetId === expected.scopeSheetId
-      && actual.refersTo === expected.refersTo.replace(/^=/, '').trim()))
-      .map(({ name, scopeSheetId }) => ({ name, ...(scopeSheetId ? { scopeSheetId } : {}) }))
-    if (!functionOverrides) {
-      functionOverrides = installWorkbookFunctionOverrides(runtime, () => sourcePath)
-    }
-    if (!validationStructure && typeof runtime.univer.__getInjector === 'function') validationStructure = installDataValidationStructure(runtime, mutation => {
-      const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheetBySheetId(mutation.params.subUnitId)
-      try {
-        validateDataValidationEdit(mutation.id, mutation.params, sheet?.getDataValidations?.().map(item => item.rule) ?? [], staged, structural.length + 1)
-      } catch (error) { feedback.textContent = (error as Error).message; throw error }
-    }, (command, workbook) => {
-      try {
-        const snapshot = workbook.getSnapshot() as GridSnapshot
-        const plan = planGridSheets(currentModel.sheets.map(sheet => sheet.name), snapshot)
-        const changed = structural.length || plan.renames.length || plan.additions.length || plan.removals.length
-          || plan.order.some((name, index) => name !== currentModel.sheets[index]?.name)
-        let sourceModel = currentModel
-        if (changed) {
-          if (cfBaseline?.source !== currentModel || cfBaseline.signature !== cfStructureSignature(snapshot))
-            throw new Error('结构修改正在同步，请稍后重试删除')
-          sourceModel = cfBaseline.model
-        }
-        assertConditionalFormattingSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
-          const name = snapshot.sheets[sheetId]?.name
-          const source = sourceModel.sheets.find(sheet => sheet.name === name)?.conditionalFormatting
-          const sourceXml = structureSourceXml.get(sourceModel)?.get(name!)
-          if (source?.issues.length && sourceXml === undefined) throw new Error('条件格式来源正在同步，请稍后重试删除')
-          return source && { issues: source.issues, sourceXml: sourceXml ?? '' }
-        })
-        assertDataValidationSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
-          const name = snapshot.sheets[sheetId]?.name
-          const source = sourceModel.sheets.find(sheet => sheet.name === name)?.dataValidations
-          const sourceXml = structureSourceXml.get(sourceModel)?.get(name!)
-          if (source?.readOnlyReason && sourceXml === undefined) throw new Error('数据验证来源正在同步，请稍后重试删除')
-          return source && { readOnlyReason: source.readOnlyReason, sourceXml: sourceXml ?? '' }
-        })
-        assertCellFormulaSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
-          const name = snapshot.sheets[sheetId]?.name
-          const sourceXml = structureSourceXml.get(sourceModel)?.get(name!)
-          return sourceXml === undefined ? undefined : { sourceXml, unprojected: true }
-        })
-        const workbookXml = workbookSourceXml.get(sourceModel)
-        if (workbookXml === undefined) throw new Error('定义名称来源正在同步，请稍后重试删除')
-        assertDefinedNameSheetRemoval(workbook, command.params?.subUnitId, { workbookXml, unprojectedNames })
-        const targetSheet = command.params?.subUnitId ? workbook.getSheetBySheetId(command.params.subUnitId) : workbook.getActiveSheet()
-        const caches = pivotCacheSources.get(sourceModel)
-        if (!caches) throw new Error('透视表来源正在同步，请稍后重试删除')
-        if (caches instanceof Error) throw caches
-        for (const xml of caches) if (pivotCacheReadsFromSheet(xml, targetSheet?.getSheetName() ?? ''))
-          throw new Error(`仍有透视表读取工作表 "${targetSheet?.getSheetName()}" 的来源数据，已拒绝删除。`)
-        const tableSource = sourceModel.sheets.find(sheet => sheet.name === targetSheet?.getSheetName())
-        if (!tableSource) throw new Error('表格来源正在同步，请稍后重试删除')
-        if (!tableSource.tableSources) throw new Error(`表格来源无法完整核对：${tableSource.tableSourcesReadOnlyReason ?? '来源身份缺失'}`)
-        const removedTableParts = tableRemovalParts.get(sourceModel)?.get(tableSource.name)
-        if (removedTableParts instanceof Error) throw removedTableParts
-        if (tableSource.tableSources.length && !removedTableParts) throw new Error('表格删除来源正在同步，请稍后重试删除')
-        assertTableSheetRemoval(workbook, command.params?.subUnitId, {
-          tables: tableSource.tableSources, readOnlyReason: tableSource.tableSourcesReadOnlyReason, workbookXml, unprojectedNames,
-          retainedNames: tableSource.tableSources.filter(table => !removedTableParts?.has(table.path)).flatMap(table => [table.name, table.displayName]),
-          worksheet: sheetId => {
-            const name = snapshot.sheets[sheetId]?.name, xml = structureSourceXml.get(sourceModel)?.get(name!)
-            const sheet = sourceModel.sheets.find(sheet => sheet.name === name)
-            return xml === undefined ? undefined : { xml, conditionalFormattingIncomplete: !!sheet?.conditionalFormatting?.issues.length, dataValidationIncomplete: !!sheet?.dataValidations?.readOnlyReason }
-          },
-        })
-        assertChartSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
-          const charts = chartSources.get(sourceModel)
-          if (!charts) throw new Error('图表来源正在同步，请稍后重试删除')
-          if (charts instanceof Error) throw charts
-          const owned = charts.sheets.get(snapshot.sheets[sheetId]?.name ?? '')
-          if (!owned) throw new Error('图表所属工作表正在同步，请稍后重试删除')
-          return [...owned, ...charts.unowned]
-        })
-      } catch (error) { feedback.textContent = (error as Error).message; throw error }
-    }, (command, workbook) => {
-      if (!loading) {
-        try { sparklines?.assertStructure(command, workbook) }
-        catch (error) { feedback.textContent = (error as Error).message; throw error }
-      }
-      preflightPivotRowColumns(command, workbook)
-    })
-    if (!definedNameScopes && typeof runtime.univer.__getInjector === 'function') definedNameScopes = installDefinedNameScopes(runtime)
-    if (!validationNames && typeof runtime.univer.__getInjector === 'function') validationNames = installDataValidationNames(runtime)
-    if (!outline && typeof runtime.univer.__getInjector === 'function') outline = installWorkbookOutline(runtime)
-    if (!outlineGutter && typeof runtime.univer.__getInjector === 'function') outlineGutter = installOutlineGutter({ runtime, host: shell.editor.querySelector<HTMLElement>('.workbook-grid-frame')!,
-      onToggleGroup: (axis, group, collapsed) => { if (!editable()) return; try { applyOutlineResult(toggleWorkbookOutlineGroup(runtime, axis, group, collapsed, id => sheetProtected(id))) } catch (error) { feedback.textContent = (error as Error).message } },
-      onLevel: (axis, level) => { if (!editable()) return; try { applyOutlineResult(showWorkbookOutlineLevel(runtime, axis, level, id => sheetProtected(id))) } catch (error) { feedback.textContent = (error as Error).message } },
-    })
-    outlineGutter?.refresh()
-    if (!tableHeaders && typeof runtime.univer.__getInjector === 'function') tableHeaders = installTableHeaders(runtime, id => sheetProtected(id), pivotTableColumnReason, message => { feedback.textContent = message })
-    if (!tableDesign && typeof runtime.univer.__getInjector === 'function') tableDesign = installTableDesign(runtime, id => sheetProtected(id))
-    if (!tableStyleRendering && typeof runtime.univer.__getInjector === 'function') tableStyleRendering = installNativeTableStyleRendering(runtime.univer.__getInjector())
-    if (!tableResize && typeof runtime.univer.__getInjector === 'function') tableResize = installTableResize(runtime, id => sheetProtected(id), pivotTableColumnReason)
-    if (!tableCreate && typeof runtime.univer.__getInjector === 'function') tableCreate = installTableCreate({ ...runtime, themePalette: currentModel.themePalette }, id => sheetProtected(id))
-    if (!tableConvert && typeof runtime.univer.__getInjector === 'function') tableConvert = installTableConvert(runtime, id => sheetProtected(id))
-    if (!tableTotals && typeof runtime.univer.__getInjector === 'function') tableTotals = installTableTotals(runtime, id => sheetProtected(id))
-    if (!tableFilterButton && typeof runtime.univer.__getInjector === 'function') tableFilterButton = installTableFilterButton(runtime, id => sheetProtected(id))
-    if (!tableHeaderRow && typeof runtime.univer.__getInjector === 'function') tableHeaderRow = installTableHeaderRow(runtime, id => sheetProtected(id))
-    if (!tableStyleEdit && typeof runtime.univer.__getInjector === 'function') tableStyleEdit = installTableStyleEdit(runtime, id => sheetProtected(id))
-    if (!tableFormulaReferences && typeof runtime.univer.__getInjector === 'function') tableFormulaReferences = installTableFormulaReferences(runtime)
-    formulaSheets.clear()
-    currentModel.sheets.forEach((sheet, index) => { if (sheet.showFormulas) formulaSheets.add(`sheet-${index}`) })
-    // 无注入器的测试替身不提供拦截器服务：公式视图与计算选项不可用。
-    if (!calculation && typeof runtime.univer.__getInjector === 'function') {
-      try { calculation = installCalculation(runtime as never, sheetId => formulaSheets.has(sheetId)) } catch { calculation = undefined }
-    }
-    calculation?.calculateNow()
-    calculation?.syncFormulaView(formulaSheets.has(activeSheetId() ?? ''))
-    if (!dataTable && calculation) dataTable = installDataTable(runtime, calculation, id => sheetProtected(id))
-    if (!goalSeek && calculation) goalSeek = installGoalSeek(runtime, calculation, id => sheetProtected(id))
-    if (!subtotal && typeof runtime.univer.__getInjector === 'function') subtotal = installSubtotal(runtime, {
-      readonly: () => !editable(), protectedSheet: sheetProtected,
-      transaction: active => { subtotalMutating = active },
-      captureMetadata: () => ({ structural: structural.slice(), undone: undone.slice(), dirty, gridChanged, status: shell.statusLabel.textContent }),
-      restoreMetadata: (value, phase) => {
-        const state = value as { structural: typeof structural; undone: CellShiftEntry[]; dirty: boolean; gridChanged: boolean; status: string | null }
-        structural = state.structural.slice(); undone.splice(0, undone.length, ...state.undone); cfBaseline = undefined
-        if (phase === 'rollback') {
-          captureGeneration++; dirty = state.dirty; gridChanged = state.gridChanged; shell.statusLabel.textContent = state.status
-        } else { markDirty(); ribbon.refreshState?.(); outlineGutter?.refresh() }
-      },
-      preflight: async (target: SubtotalTarget, plan) => {
-        if (!editable() || structureLocked()) throw new Error('当前工作簿不可编辑或结构受保护')
-        const workbook = runtime.univerAPI.getActiveWorkbook()!, sheet = workbook.getSheetBySheetId(target.sheetId)
-        if (!sheet) throw new Error('分类汇总来源工作表已变化')
-        for (const row of plan.inserts) {
-          const command = { id: 'sheet.command.insert-row', params: { unitId: target.unitId, subUnitId: target.sheetId,
-            range: { startRow: row, endRow: row, startColumn: 0, endColumn: sheet.getMaxColumns() - 1 } } }
-          sparklines?.assertStructure(command, workbook)
-          preflightPivotRowColumns(command, workbook)
-        }
-        // 在首次原生修改前按真实完整文件预演全部插行、公式与大纲，复用现有依赖和预算校验。
-        const operations = await currentOperations(), name = sheet.getSheetName()
-        await applyWorkbookOperations(original, subtotalPreflightOperations(operations, name, plan))
-      },
-    })
-    if (!advancedFilter && typeof runtime.univer.__getInjector === 'function') advancedFilter = installAdvancedFilter(runtime, {
-      readonly: () => !editable(), protectedSheet: sheetProtected,
-      transaction: active => { advancedFilterMutating = active },
-      captureMetadata: () => ({ dirty, gridChanged, status: shell.statusLabel.textContent }),
-      restoreMetadata: (value, phase) => {
-        const state = value as { dirty: boolean; gridChanged: boolean; status: string | null }
-        if (phase === 'rollback') {
-          captureGeneration++; dirty = state.dirty; gridChanged = state.gridChanged; shell.statusLabel.textContent = state.status
-        } else { markDirty(); ribbon.refreshState?.() }
-      },
-      preflight: async (target, plan) => {
-        if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
-        const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheetBySheetId(target.sheetId)
-        if (!sheet) throw new Error('高级筛选来源工作表已变化')
-        const operations = await currentOperations()
-        await applyWorkbookOperations(original, advancedFilterPreflightOperations(operations, staged.length, sheet.getSheetName(), plan.filter))
-      },
-    })
-    selectionListener = runtime.univerAPI.getActiveWorkbook()?.onSelectionChange?.(() => { ribbon.refreshState?.(); void nativeAI?.refresh() })
-    staged = structuredClone(ops)
-    structural = []
-    undone.length = 0
-    sheetProtection.clear(); structureLock = undefined
-    await waitForWorkbookRendered(runtime, () => disposed)
-    loading = false
     try {
-      const { readPivotControlViews, installPivotControlOverlay, pivotControlGeometryOperation } = await import('./workbook-pivot-controls')
-      const views = await readPivotControlViews(bytes)
-      if (!disposed && controlGeneration === pivotControlGeneration && views.length) {
-        const controlOperations = JSON.stringify(ops)
-        pivotControlOverlay = installPivotControlOverlay(runtime, views, {
-          stateHost: shell.editor,
-          canEdit: view => {
-            const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheets().find(sheet => sheet.getSheetName() === view.pivot.targetSheetName)
-            return editable() && !!sheet && !sheetProtected(sheet.getSheetId())
-          },
-          apply: async (config, control) => {
-            if (disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件已变化，请重新打开工作表')
-            await persistence
-            const operations = await currentOperations(), same = JSON.stringify(operations) === controlOperations
-            const currentBytes = same ? bytes : await applyWorkbookOperations(original, operations)
-            if (!same) {
-              const before = views.find(view => view.control.name === control.name && view.control.tablePath === control.tablePath)
-              const current = (await readPivotControlViews(currentBytes)).find(view => view.control.name === control.name && view.control.tablePath === control.tablePath)
-              if (JSON.stringify(before) !== JSON.stringify(current)) throw new Error('透视表来源或控件已变化，请先刷新透视表')
-            }
-            if (disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件已变化，请重新打开工作表')
-            pivotContext = { bytes: currentBytes, operations }
-            await applyPivot(config, control.tablePath, control)
-            const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === config.targetSheetName)
-            if (sheet && !disposed) workbook!.setActiveSheet(sheet)
-          },
-          changeAnchor: async (view, anchor) => {
-            if (!editable() || disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件不可编辑或已变化，请重新打开工作表')
-            await withWorkbookLocked(shell.editor, async () => {
-              await persistence
-              const target = runtime.univerAPI.getActiveWorkbook()?.getSheets().find(sheet => sheet.getSheetName() === view.pivot.targetSheetName)
-              if (!target || sheetProtected(target.getSheetId())) throw new Error('目标工作表不存在或受保护')
-              const before = await currentOperations(), currentBytes = await applyWorkbookOperations(original, before)
-              const operation = await pivotControlGeometryOperation(currentBytes, view, anchor)
-              if (disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件已变化，请重新打开工作表')
-              const drafts = pivotControlOverlay?.snapshotDrafts(), operations = [...before, operation]
-              captureGeneration++
-              try { await loadOperations(operations, drafts) }
-              catch (error) { await loadOperations(before, drafts); throw error }
-              if (nativeDraft) {
-                nativeDraft.setOperations(before as NativeOperation[])
-                nativeDraft.setOperations(operations as NativeOperation[])
-              } else draft.setOperations(operations)
-              const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === view.pivot.targetSheetName)
-              if (sheet && !disposed) workbook!.setActiveSheet(sheet)
-              gridChanged = false; dirty = true
-              shell.statusLabel.textContent = '有未保存修改'
-              feedback.textContent = '原生控件位置与尺寸已更新，修改尚未保存。'
-            }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
-          },
-          error: message => { feedback.textContent = message },
-        }, `pivot-controls-${controlGeneration}`, controlDrafts)
+      // 来源读取全部成功后才改变现有模型、选中对象与网格；读取期间仍拦截网格输入。
+      const bytes = replayedBytes ?? (ops.length ? await applyWorkbookOperations(original, ops) : original)
+      const nextModel = await readModelWithStructureSource(bytes)
+      const nextNotePictures = await readNotePictures(bytes)
+      const nextPictures = await readWorkbookPictures(bytes)
+      if (nextPictures.issues.length) {
+        const details = [...new Set(nextPictures.issues)].slice(0, 4).join('；')
+        feedback.textContent = `有 ${nextPictures.issues.length} 项来源图片无法显示或编辑，原文件内容仍会保留：${details}`
       }
-    } catch (error) { feedback.textContent = '原生控件未显示：' + (error as Error).message }
-    crossHighlight.setVisible(crossHighlightVisible)
-    insertFunction.refresh()
-    zoomLauncher.refresh()
-    void pageBreakPreview.refresh()
-    ribbon.refreshState?.()
+      const restrictedPictures = nextPictures.pictures.filter(picture => picture.geometryReadOnlyReason)
+      if (!nextPictures.issues.length && restrictedPictures.length) {
+        feedback.hidden = false
+        feedback.textContent = `有 ${restrictedPictures.length} 张图片暂不能移动或缩放，仍可删除且原文件内容保留：${[...new Set(restrictedPictures.map(picture => picture.geometryReadOnlyReason))].join('；')}`
+      }
+      projectPictureNotes(nextModel, { ...nextNotePictures, key: '' })
+      const nextTheme = await readWorkbookThemeSource(bytes)
+      const nextRanges = await readWorkbookEditableRanges(bytes)
+      const data = withWorkbookConditionalFormatting(withWorkbookDataValidations(withWorkbookTables(withWorkbookView(withWorkbookFilters(withWorkbookNotes(buildWorkbookData(nextModel, 'report-workbook', '报告工作簿'), nextModel), nextModel), nextModel), nextModel), nextModel), nextModel)
+      await withExternalFormulaCaches(bytes, data)
+      if (disposed) throw new Error('工作簿已关闭')
+      chartObjectInteraction?.cancel()
+      chartDescriptions.close()
+      if (!chartFormatPane?.isBusy()) { chartFormatPane?.close(); chartFormatTarget = undefined }
+      if (!chartDesignDialog?.isApplying()) { chartDesignDialog?.close(); chartDialogTarget = undefined }
+      const selected = chartSelectionSource === original ? chartSelection?.current() : undefined
+      const selectedSheetName = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+      chartSelection?.reset()
+      const controlGeneration = ++pivotControlGeneration
+      pivotControlOverlay?.dispose(); pivotControlOverlay = undefined
+      goToReveal.cancel()
+      formulaTrace.clear()
+      watchWindow.reset()
+      errorChecking.reset()
+      refreshPageBreakPreview()
+      pageSetupJournal.clear()
+      currentModel = nextModel
+      threadsView?.load(nextModel)
+      themeSource = nextTheme
+      editableRanges = nextRanges
+      // 批注、筛选、视图状态随快照资源/工作表配置一并灌入，保存差分才有真实基线。
+      // 完整官方resource负责CF导入；停用旧窄投影，避免重复规则和无关cell mutation。
+      for (const sheet of Object.values(data.sheets)) {
+        delete sheet.cfRules
+        // 和固定源 installWorkbookVisuals 一致，拖出数据区的图表仍须有真实可绘制锚点。
+        for (const chart of sheet.charts ?? []) {
+          sheet.rowCount = Math.max(sheet.rowCount, Math.min(1048576, Math.max(chart.anchor.fromRow, chart.anchor.toRow) + 1))
+          sheet.columnCount = Math.max(sheet.columnCount, Math.min(16384, Math.max(chart.anchor.fromColumn, chart.anchor.toColumn) + 1))
+        }
+      }
+      setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? '', undefined)
+      // 官方选区订阅读取当前工作簿；先解绑，避免旧实例销毁时收到空工作簿通知。
+      selectionListener?.dispose()
+      selectionListener = undefined
+      loadWorkbookData(runtime, data)
+      pictureBindings = await installWorkbookPictures(runtime.univerAPI,nextPictures.pictures)
+      const sparklineBook = runtime.univerAPI.getActiveWorkbook()
+      if (sparklineBook) setSparklineWorkbookResolver(sparklineBook.getId(), name => {
+        const live = runtime.univerAPI.getActiveWorkbook()
+        if (live?.getId() !== sparklineBook.getId()) return undefined
+        const index = currentModel.sheets.findIndex(sheet => sheet.name.toLowerCase() === name.toLowerCase())
+        const source = (index >= 0 ? live.getSheetBySheetId(`sheet-${index}`) : live.getSheets().find(sheet => sheet.getSheetName().toLowerCase() === name.toLowerCase()))?.getSheet()
+        return source ? { getCell: (row, column) => source.getCell(row, column) ?? undefined } : undefined
+      })
+      if (!sparklines && typeof runtime.univer.__getInjector === 'function') sparklines = installWorkbookSparklines(runtime, {
+        readonly: () => !editable(), protectedSheet: sheetProtected,
+        existing: id => originalSheet(id)?.sparklines ?? [], changed: markDirty,
+        sourceSheetId: name => {
+          const index = currentModel.sheets.findIndex(sheet => sheet.name.toLowerCase() === name.toLowerCase())
+          return index >= 0 ? `sheet-${index}` : runtime.univerAPI.getActiveWorkbook()?.getSheets().find(sheet => sheet.getSheetName().toLowerCase() === name.toLowerCase())?.getSheetId()
+        },
+        refresh: (id, specs) => {
+          const book = runtime.univerAPI.getActiveWorkbook()
+          if (!book) return
+          setSparklines(book.getId(), id, specs)
+          const injector = runtime.univer.__getInjector()
+          if (injector.has(IRenderManagerService)) injector.get(IRenderManagerService).getRenderById(book.getId())?.scene.makeDirty(true)
+        },
+      })
+      sparklines?.reset()
+      const loadedNames = liveDefinedNames(definedNameWorkbook())
+      unprojectedNames = (data.definedNames ?? []).filter(expected => !loadedNames?.some(actual =>
+        actual.name.toLowerCase() === expected.name.toLowerCase() && actual.scopeSheetId === expected.scopeSheetId
+        && actual.refersTo === expected.refersTo.replace(/^=/, '').trim()))
+        .map(({ name, scopeSheetId }) => ({ name, ...(scopeSheetId ? { scopeSheetId } : {}) }))
+      if (!functionOverrides) {
+        functionOverrides = installWorkbookFunctionOverrides(runtime, () => sourcePath)
+      }
+      if (!validationStructure && typeof runtime.univer.__getInjector === 'function') validationStructure = installDataValidationStructure(runtime, mutation => {
+        const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheetBySheetId(mutation.params.subUnitId)
+        try {
+          validateDataValidationEdit(mutation.id, mutation.params, sheet?.getDataValidations?.().map(item => item.rule) ?? [], staged, structural.length + 1)
+        } catch (error) { feedback.textContent = (error as Error).message; throw error }
+      }, (command, workbook) => {
+        try {
+          const snapshot = workbook.getSnapshot() as GridSnapshot
+          const plan = planGridSheets(currentModel.sheets.map(sheet => sheet.name), snapshot)
+          const changed = structural.length || plan.renames.length || plan.additions.length || plan.removals.length
+            || plan.order.some((name, index) => name !== currentModel.sheets[index]?.name)
+          let sourceModel = currentModel
+          if (changed) {
+            if (cfBaseline?.source !== currentModel || cfBaseline.signature !== cfStructureSignature(snapshot))
+              throw new Error('结构修改正在同步，请稍后重试删除')
+            sourceModel = cfBaseline.model
+          }
+          assertConditionalFormattingSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
+            const name = snapshot.sheets[sheetId]?.name
+            const source = sourceModel.sheets.find(sheet => sheet.name === name)?.conditionalFormatting
+            const sourceXml = structureSourceXml.get(sourceModel)?.get(name!)
+            if (source?.issues.length && sourceXml === undefined) throw new Error('条件格式来源正在同步，请稍后重试删除')
+            return source && { issues: source.issues, sourceXml: sourceXml ?? '' }
+          })
+          assertDataValidationSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
+            const name = snapshot.sheets[sheetId]?.name
+            const source = sourceModel.sheets.find(sheet => sheet.name === name)?.dataValidations
+            const sourceXml = structureSourceXml.get(sourceModel)?.get(name!)
+            if (source?.readOnlyReason && sourceXml === undefined) throw new Error('数据验证来源正在同步，请稍后重试删除')
+            return source && { readOnlyReason: source.readOnlyReason, sourceXml: sourceXml ?? '' }
+          })
+          assertCellFormulaSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
+            const name = snapshot.sheets[sheetId]?.name
+            const sourceXml = structureSourceXml.get(sourceModel)?.get(name!)
+            return sourceXml === undefined ? undefined : { sourceXml, unprojected: true }
+          })
+          const workbookXml = workbookSourceXml.get(sourceModel)
+          if (workbookXml === undefined) throw new Error('定义名称来源正在同步，请稍后重试删除')
+          assertDefinedNameSheetRemoval(workbook, command.params?.subUnitId, { workbookXml, unprojectedNames })
+          const targetSheet = command.params?.subUnitId ? workbook.getSheetBySheetId(command.params.subUnitId) : workbook.getActiveSheet()
+          const caches = pivotCacheSources.get(sourceModel)
+          if (!caches) throw new Error('透视表来源正在同步，请稍后重试删除')
+          if (caches instanceof Error) throw caches
+          for (const xml of caches) if (pivotCacheReadsFromSheet(xml, targetSheet?.getSheetName() ?? ''))
+            throw new Error(`仍有透视表读取工作表 "${targetSheet?.getSheetName()}" 的来源数据，已拒绝删除。`)
+          const tableSource = sourceModel.sheets.find(sheet => sheet.name === targetSheet?.getSheetName())
+          if (!tableSource) throw new Error('表格来源正在同步，请稍后重试删除')
+          if (!tableSource.tableSources) throw new Error(`表格来源无法完整核对：${tableSource.tableSourcesReadOnlyReason ?? '来源身份缺失'}`)
+          const removedTableParts = tableRemovalParts.get(sourceModel)?.get(tableSource.name)
+          if (removedTableParts instanceof Error) throw removedTableParts
+          if (tableSource.tableSources.length && !removedTableParts) throw new Error('表格删除来源正在同步，请稍后重试删除')
+          assertTableSheetRemoval(workbook, command.params?.subUnitId, {
+            tables: tableSource.tableSources, readOnlyReason: tableSource.tableSourcesReadOnlyReason, workbookXml, unprojectedNames,
+            retainedNames: tableSource.tableSources.filter(table => !removedTableParts?.has(table.path)).flatMap(table => [table.name, table.displayName]),
+            worksheet: sheetId => {
+              const name = snapshot.sheets[sheetId]?.name, xml = structureSourceXml.get(sourceModel)?.get(name!)
+              const sheet = sourceModel.sheets.find(sheet => sheet.name === name)
+              return xml === undefined ? undefined : { xml, conditionalFormattingIncomplete: !!sheet?.conditionalFormatting?.issues.length, dataValidationIncomplete: !!sheet?.dataValidations?.readOnlyReason }
+            },
+          })
+          assertChartSheetRemoval(workbook, command.params?.subUnitId, sheetId => {
+            const charts = chartSources.get(sourceModel)
+            if (!charts) throw new Error('图表来源正在同步，请稍后重试删除')
+            if (charts instanceof Error) throw charts
+            const owned = charts.sheets.get(snapshot.sheets[sheetId]?.name ?? '')
+            if (!owned) throw new Error('图表所属工作表正在同步，请稍后重试删除')
+            return [...owned, ...charts.unowned]
+          })
+        } catch (error) { feedback.textContent = (error as Error).message; throw error }
+      }, (command, workbook) => {
+        if (!loading) {
+          try { sparklines?.assertStructure(command, workbook) }
+          catch (error) { feedback.textContent = (error as Error).message; throw error }
+        }
+        preflightPivotRowColumns(command, workbook)
+      })
+      if (!definedNameScopes && typeof runtime.univer.__getInjector === 'function') definedNameScopes = installDefinedNameScopes(runtime)
+      if (!validationNames && typeof runtime.univer.__getInjector === 'function') validationNames = installDataValidationNames(runtime)
+      if (!outline && typeof runtime.univer.__getInjector === 'function') outline = installWorkbookOutline(runtime)
+      if (!outlineGutter && typeof runtime.univer.__getInjector === 'function') outlineGutter = installOutlineGutter({ runtime, host: shell.editor.querySelector<HTMLElement>('.workbook-grid-frame')!,
+        onToggleGroup: (axis, group, collapsed) => { if (!editable()) return; try { applyOutlineResult(toggleWorkbookOutlineGroup(runtime, axis, group, collapsed, id => sheetProtected(id))) } catch (error) { feedback.textContent = (error as Error).message } },
+        onLevel: (axis, level) => { if (!editable()) return; try { applyOutlineResult(showWorkbookOutlineLevel(runtime, axis, level, id => sheetProtected(id))) } catch (error) { feedback.textContent = (error as Error).message } },
+      })
+      outlineGutter?.refresh()
+      if (!tableHeaders && typeof runtime.univer.__getInjector === 'function') tableHeaders = installTableHeaders(runtime, id => sheetProtected(id), pivotTableColumnReason, message => { feedback.textContent = message })
+      if (!tableDesign && typeof runtime.univer.__getInjector === 'function') tableDesign = installTableDesign(runtime, id => sheetProtected(id))
+      if (!tableStyleRendering && typeof runtime.univer.__getInjector === 'function') tableStyleRendering = installNativeTableStyleRendering(runtime.univer.__getInjector())
+      if (!tableResize && typeof runtime.univer.__getInjector === 'function') tableResize = installTableResize(runtime, id => sheetProtected(id), pivotTableColumnReason)
+      if (!tableCreate && typeof runtime.univer.__getInjector === 'function') tableCreate = installTableCreate({ ...runtime, themePalette: currentModel.themePalette }, id => sheetProtected(id))
+      if (!tableConvert && typeof runtime.univer.__getInjector === 'function') tableConvert = installTableConvert(runtime, id => sheetProtected(id))
+      if (!tableTotals && typeof runtime.univer.__getInjector === 'function') tableTotals = installTableTotals(runtime, id => sheetProtected(id))
+      if (!tableFilterButton && typeof runtime.univer.__getInjector === 'function') tableFilterButton = installTableFilterButton(runtime, id => sheetProtected(id))
+      if (!tableHeaderRow && typeof runtime.univer.__getInjector === 'function') tableHeaderRow = installTableHeaderRow(runtime, id => sheetProtected(id))
+      if (!tableStyleEdit && typeof runtime.univer.__getInjector === 'function') tableStyleEdit = installTableStyleEdit(runtime, id => sheetProtected(id))
+      if (!tableFormulaReferences && typeof runtime.univer.__getInjector === 'function') tableFormulaReferences = installTableFormulaReferences(runtime)
+      formulaSheets.clear()
+      currentModel.sheets.forEach((sheet, index) => { if (sheet.showFormulas) formulaSheets.add(`sheet-${index}`) })
+      // 无注入器的测试替身不提供拦截器服务：公式视图与计算选项不可用。
+      if (!calculation && typeof runtime.univer.__getInjector === 'function') {
+        try { calculation = installCalculation(runtime as never, sheetId => formulaSheets.has(sheetId)) } catch { calculation = undefined }
+      }
+      calculation?.calculateNow()
+      calculation?.syncFormulaView(formulaSheets.has(activeSheetId() ?? ''))
+      if (!dataTable && calculation) dataTable = installDataTable(runtime, calculation, id => sheetProtected(id))
+      if (!goalSeek && calculation) goalSeek = installGoalSeek(runtime, calculation, id => sheetProtected(id))
+      if (!subtotal && typeof runtime.univer.__getInjector === 'function') subtotal = installSubtotal(runtime, {
+        readonly: () => !editable(), protectedSheet: sheetProtected,
+        transaction: active => { subtotalMutating = active },
+        captureMetadata: () => ({ structural: structural.slice(), undone: undone.slice(), dirty, gridChanged, status: shell.statusLabel.textContent }),
+        restoreMetadata: (value, phase) => {
+          const state = value as { structural: typeof structural; undone: CellShiftEntry[]; dirty: boolean; gridChanged: boolean; status: string | null }
+          structural = state.structural.slice(); undone.splice(0, undone.length, ...state.undone); cfBaseline = undefined
+          if (phase === 'rollback') {
+            captureGeneration++; dirty = state.dirty; gridChanged = state.gridChanged; shell.statusLabel.textContent = state.status
+          } else { markDirty(); ribbon.refreshState?.(); outlineGutter?.refresh() }
+        },
+        preflight: async (target: SubtotalTarget, plan) => {
+          if (!editable() || structureLocked()) throw new Error('当前工作簿不可编辑或结构受保护')
+          const workbook = runtime.univerAPI.getActiveWorkbook()!, sheet = workbook.getSheetBySheetId(target.sheetId)
+          if (!sheet) throw new Error('分类汇总来源工作表已变化')
+          for (const row of plan.inserts) {
+            const command = { id: 'sheet.command.insert-row', params: { unitId: target.unitId, subUnitId: target.sheetId,
+              range: { startRow: row, endRow: row, startColumn: 0, endColumn: sheet.getMaxColumns() - 1 } } }
+            sparklines?.assertStructure(command, workbook)
+            preflightPivotRowColumns(command, workbook)
+          }
+          // 在首次原生修改前按真实完整文件预演全部插行、公式与大纲，复用现有依赖和预算校验。
+          const operations = await currentOperations(), name = sheet.getSheetName()
+          await applyWorkbookOperations(original, subtotalPreflightOperations(operations, name, plan))
+        },
+      })
+      if (!advancedFilter && typeof runtime.univer.__getInjector === 'function') advancedFilter = installAdvancedFilter(runtime, {
+        readonly: () => !editable(), protectedSheet: sheetProtected,
+        transaction: active => { advancedFilterMutating = active },
+        captureMetadata: () => ({ dirty, gridChanged, status: shell.statusLabel.textContent }),
+        restoreMetadata: (value, phase) => {
+          const state = value as { dirty: boolean; gridChanged: boolean; status: string | null }
+          if (phase === 'rollback') {
+            captureGeneration++; dirty = state.dirty; gridChanged = state.gridChanged; shell.statusLabel.textContent = state.status
+          } else { markDirty(); ribbon.refreshState?.() }
+        },
+        preflight: async (target, plan) => {
+          if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+          const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheetBySheetId(target.sheetId)
+          if (!sheet) throw new Error('高级筛选来源工作表已变化')
+          const operations = await currentOperations()
+          await applyWorkbookOperations(original, advancedFilterPreflightOperations(operations, staged.length, sheet.getSheetName(), plan.filter))
+        },
+      })
+      selectionListener = runtime.univerAPI.getActiveWorkbook()?.onSelectionChange?.(() => { ribbon.refreshState?.(); void nativeAI?.refresh() })
+      staged = structuredClone(ops)
+      structural = []
+      undone.length = 0
+      sheetProtection.clear(); structureLock = undefined
+      await waitForWorkbookRendered(runtime, () => disposed)
+      loading = false
+      if (refreshNotePictures) queueMicrotask(() => { void refreshNotePictures?.().catch(() => {}) })
+      chartSelectionSource = original
+      if (selected && selectedSheetName && !disposed) {
+        const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === selectedSheetName)
+        if (sheet && chartsForSheet(selectedSheetName).some(chart => chart.chartPath === selected.chartPath)) {
+          workbook!.setActiveSheet(sheet)
+          chartSelection?.reset({ sheetName: selectedSheetName, chartPath: selected.chartPath })
+        }
+      }
+      try {
+        const { readPivotControlViews, installPivotControlOverlay, pivotControlGeometryOperation } = await import('./workbook-pivot-controls')
+        const views = await readPivotControlViews(bytes)
+        if (!disposed && controlGeneration === pivotControlGeneration && views.length) {
+          const controlOperations = JSON.stringify(ops)
+          pivotControlOverlay = installPivotControlOverlay(runtime, views, {
+            stateHost: shell.editor,
+            canEdit: view => {
+              const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheets().find(sheet => sheet.getSheetName() === view.pivot.targetSheetName)
+              return editable() && !!sheet && !sheetProtected(sheet.getSheetId())
+            },
+            apply: async (config, control) => {
+              if (disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件已变化，请重新打开工作表')
+              await persistence
+              const operations = await currentOperations(), same = JSON.stringify(operations) === controlOperations
+              const currentBytes = same ? bytes : await applyWorkbookOperations(original, operations)
+              if (!same) {
+                const before = views.find(view => view.control.name === control.name && view.control.tablePath === control.tablePath)
+                const current = (await readPivotControlViews(currentBytes)).find(view => view.control.name === control.name && view.control.tablePath === control.tablePath)
+                if (JSON.stringify(before) !== JSON.stringify(current)) throw new Error('透视表来源或控件已变化，请先刷新透视表')
+              }
+              if (disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件已变化，请重新打开工作表')
+              pivotContext = { bytes: currentBytes, operations }
+              await applyPivot(config, control.tablePath, control)
+              const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === config.targetSheetName)
+              if (sheet && !disposed) workbook!.setActiveSheet(sheet)
+            },
+            changeAnchor: async (view, anchor) => {
+              if (!editable() || disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件不可编辑或已变化，请重新打开工作表')
+              await withWorkbookLocked(shell.editor, async () => {
+                await persistence
+                const target = runtime.univerAPI.getActiveWorkbook()?.getSheets().find(sheet => sheet.getSheetName() === view.pivot.targetSheetName)
+                if (!target || sheetProtected(target.getSheetId())) throw new Error('目标工作表不存在或受保护')
+                const before = await currentOperations(), currentBytes = await applyWorkbookOperations(original, before)
+                const operation = await pivotControlGeometryOperation(currentBytes, view, anchor)
+                if (disposed || controlGeneration !== pivotControlGeneration) throw new Error('控件已变化，请重新打开工作表')
+                const drafts = pivotControlOverlay?.snapshotDrafts(), operations = [...before, operation]
+                captureGeneration++
+                try { await loadOperations(operations, drafts) }
+                catch (error) { await loadOperations(before, drafts); throw error }
+                if (nativeDraft) {
+                  nativeDraft.setOperations(before as NativeOperation[])
+                  nativeDraft.setOperations(operations as NativeOperation[])
+                } else draft.setOperations(operations)
+                const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === view.pivot.targetSheetName)
+                if (sheet && !disposed) workbook!.setActiveSheet(sheet)
+                gridChanged = false; dirty = true
+                shell.statusLabel.textContent = '有未保存修改'
+                feedback.textContent = '原生控件位置与尺寸已更新，修改尚未保存。'
+              }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
+            },
+            error: message => { feedback.textContent = message },
+          }, `pivot-controls-${controlGeneration}`, controlDrafts)
+        }
+      } catch (error) { feedback.textContent = '原生控件未显示：' + (error as Error).message }
+      crossHighlight.setVisible(crossHighlightVisible)
+      insertFunction.refresh()
+      zoomLauncher.refresh()
+      void pageBreakPreview.refresh()
+      ribbon.refreshState?.()
+    } finally { loading = false }
   }
   const hideCandidate = () => { candidate.hidden = true; draft.reject(); aiId = '' }
   try {
@@ -2895,11 +3501,151 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   } catch (error) {
     feedback.textContent = (error as Error).message
     shell.statusLabel.textContent = '载入失败'
+    pictureSelection?.dispose()
+    shell.editor.removeEventListener('pointerdown', cancelPictureSelection, true)
+    shell.editor.removeEventListener('keydown', cancelPictureSelection, true)
+    chartDescriptions.dispose()
+    chartSelection?.dispose()
+    insertNowShortcuts.dispose()
+    chartObjectInteraction?.dispose()
+    recommendedChartsDialog?.dispose()
     shell.save.disabled = true
     submit.disabled = true
     if (options.native) { pivotControlOverlay?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); runtime.univer.dispose(); throw error }
     return
   }
+  const threadsHost = document.createElement('div')
+  shell.editor.querySelector('.workbook-grid-frame')!.append(threadsHost)
+  const noteHost = shell.editor.querySelector<HTMLElement>('.workbook-note-pictures-host')!
+  const noteToggle = document.createElement('button')
+  noteToggle.type = 'button'; noteToggle.textContent = '图片批注'; noteToggle.className = 'workbook-note-pictures-toggle'
+  noteToggle.addEventListener('click', () => void notePictures?.toggle())
+  noteHost.append(noteToggle)
+  const picturesView = createWorkbookPictures()
+  const openOrdinaryPicture = (mode: 'insert-picture'|'insert-equation'|'insert-icons') => {
+    if (!editable() || loading || saving || saved || disposed) return
+    const book=runtime.univerAPI.getActiveWorkbook(),sheet=book?.getActiveSheet(),range=sheet?.getSelection()?.getActiveRange()
+    if(!book||!sheet||!range){feedback.textContent='请先选中图片插入位置';return}
+    const identity={book:book.getWorkbook(),source:original,epoch:noteEpoch,sheetId:sheet.getSheetId(),sheetName:sheet.getSheetName(),row:range.getRow(),column:range.getColumn()}
+    const guard=()=>{const current=runtime.univerAPI.getActiveWorkbook(),active=current?.getActiveSheet(),selected=active?.getSelection()?.getActiveRange();assertNotePictureTransaction(identity,{book:current?.getWorkbook(),source:original,epoch:noteEpoch,sheetId:active?.getSheetId()??'',sheetName:active?.getSheetName()??'',row:selected?.getRow()??-1,column:selected?.getColumn()??-1},editable()&&!loading&&!saving&&!saved&&!sheetProtected(identity.sheetId),disposed)}
+    try{guard()}catch(error){feedback.textContent=(error as Error).message;return}
+    picturesView.open(mode,async picture=>{
+      guard()
+      const before=await currentOperations();guard()
+      const bytes=before.length?await applyWorkbookOperations(original,before):original;guard()
+      const sourceIdentity=await pictureSourceIdentity(bytes);guard()
+      const image=controlledWorkbookPicture(picture)
+      const operation={kind:'insertPicture',sheetName:identity.sheetName,row:identity.row,column:identity.column,imageId:`picture-${crypto.randomUUID()}`,sourceIdentity,picture:image,widthPx:picture.width,heightPx:picture.height}
+      await commitNotePicture(before,[...before,operation])
+      feedback.textContent='图片已插入，修改尚未保存。公式和图标保存为PNG图片，可选择图片移动、缩放或删除。'
+    },error=>{feedback.textContent=(error as Error).message})
+  }
+  let noteCaptureKey = ''
+  let noteSnapshot: Awaited<ReturnType<typeof readNotePictures>> | undefined
+  let noteCaptureGeneration = 0
+  const noteBytes = async () => { const operations = await currentOperations(); return operations.length ? applyWorkbookOperations(original, operations) : original }
+  const captureNotes = async () => {
+    const generation = ++noteCaptureGeneration
+    const snapshot = await readNotePictures(await noteBytes())
+    if (generation !== noteCaptureGeneration || disposed) return { ...snapshot, key: noteCaptureKey }
+    noteSnapshot = snapshot
+    noteCaptureKey = `${noteEpoch}|${snapshot.sheets.map(sheet => `${sheet.sheetName}:${sheet.sourceIdentity}`).join('|')}`
+    return { ...snapshot, key: noteCaptureKey }
+  }
+  refreshNotePictures = captureNotes
+  const commitNotePicture = async (before: WorkbookOperation[], operations: WorkbookOperation[]) => {
+    await withWorkbookLocked(shell.editor, async () => {
+      captureGeneration++
+      try { await loadOperations(operations) } catch (error) { await loadOperations(before); throw error }
+      if (nativeDraft) { nativeDraft.setOperations(before as NativeOperation[]); nativeDraft.setOperations(operations as NativeOperation[]) }
+      else draft.setOperations(operations)
+      noteEpoch++; gridChanged = false; dirty = true
+      shell.statusLabel.textContent = '有未保存修改'
+    })
+    await captureNotes()
+    ribbon.refreshState?.(); nativeAI?.refresh()
+  }
+  threadsView = mountWorkbookThreads(threadsHost, {
+    runtime, actor: options.threadActor, model: currentModel,
+    jump: (sheetId,row,column) => {
+      const book=runtime.univerAPI.getActiveWorkbook(),sheet=book?.getSheetBySheetId(sheetId)
+      if(!book||!sheet)return
+      book.setActiveSheet(sheet);book.setActiveRange(sheet.getRange(row,column))
+      void goToReveal.reveal(sheet,row,column,()=>!disposed&&runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet()===sheet.getSheet())
+    },
+    editable: () => !disposed && editable() && !saving && !saved && !sheetProtected(activeSheetId()),
+    error: error => { feedback.hidden = false; feedback.textContent = `线程批注未应用：${(error as Error).message}` },
+    commit: async (sheetId, row, column, thread) => {
+      const book = runtime.univerAPI.getActiveWorkbook(), selected = book?.getActiveSheet(), range = selected?.getSelection()?.getActiveRange()
+      const identity = {book:book?.getWorkbook(),source:original,epoch:noteEpoch,sheetId:selected?.getSheetId() ?? '',sheetName:selected?.getSheetName() ?? '',row:range?.getRow() ?? -1,column:range?.getColumn() ?? -1}
+      const guard = () => {
+        const current = runtime.univerAPI.getActiveWorkbook(), sheet = current?.getActiveSheet(), selection = sheet?.getSelection()?.getActiveRange()
+        assertNotePictureTransaction(identity,{book:current?.getWorkbook(),source:original,epoch:noteEpoch,sheetId:sheet?.getSheetId() ?? '',sheetName:sheet?.getSheetName() ?? '',row:selection?.getRow() ?? -1,column:selection?.getColumn() ?? -1},editable() && !saving && !saved && !sheetProtected(sheetId),disposed)
+      }
+      guard()
+      const target = book?.getSheetBySheetId(sheetId)
+      if (!target || selected?.getSheetId() !== sheetId) throw new Error('批注工作表已变化，请重新打开批注')
+      const before = await currentOperations(); guard()
+      const bytes = before.length ? await applyWorkbookOperations(original,before) : original
+      const model = await readWorkbook(bytes); guard()
+      const state = model.sheets.find(sheet => sheet.name === target.getSheetName())?.threads
+      if (!state || state.readOnlyReason) throw new Error(state?.readOnlyReason ?? '线程批注来源不可用')
+      const existing = state.threads.find(item => item.row === row && item.column === column)
+      const operation = {kind:'patchThreadedComments',sheetName:target.getSheetName(),sourceIdentity:state.sourceIdentity,changes:[{row,column,expectedThreadId:existing?.id ?? null,thread}]}
+      guard()
+      await commitNotePicture(before,[...before,operation])
+    },
+  })
+  notePictures = createNotePictures(noteHost, {
+    capture: captureNotes,
+    current: key => !disposed && editable() && key === noteCaptureKey && key.startsWith(`${noteEpoch}|`),
+    editable: () => editable() && !saving && !saved,
+    jump: picture => { const sheet = runtime.univerAPI.getActiveWorkbook()?.getSheets().find(item => item.getSheetName() === picture.sheetName); if (sheet) { runtime.univerAPI.getActiveWorkbook()?.setActiveSheet(sheet); runtime.univerAPI.getActiveWorkbook()?.setActiveRange(sheet.getRange(picture.row, picture.column)) } },
+    remove: async picture => {
+      const snapshot = await readNotePictures(await noteBytes()), sheet = snapshot.sheets.find(item => item.sheetName === picture.sheetName)
+      if (!sheet || sheet.sourceIdentity !== picture.sourceIdentity) throw new Error('图片批注来源工作表已变化，请重新打开')
+      const before = await currentOperations(), next = [...before, { kind: 'setNotePicture', sheetName: picture.sheetName, row: picture.row, column: picture.column, sourceIdentity: sheet.sourceIdentity, picture: null }] as WorkbookOperation[]
+      await commitNotePicture(before, next)
+    },
+    insert: async () => {
+      if (!editable()) throw new Error('当前工作簿不可编辑')
+      const book = runtime.univerAPI.getActiveWorkbook(), sheet = book?.getActiveSheet(), range = sheet?.getSelection()?.getActiveRange()
+      if (!sheet || !range) throw new Error('请选择要插入图片的单元格')
+      const selectionSheetName = sheet.getSheetName(), selectionRow = range.getRow(), selectionColumn = range.getColumn(), source = (noteSnapshot ?? await readNotePictures(await noteBytes())).sheets.find(item => item.sheetName === selectionSheetName)
+      if (!source) throw new Error('图片批注来源身份不可用，请重新打开')
+      const picker = createNotePictureFilePicker()
+      notePickerCancel = picker.cancel
+      const operationEpoch = noteEpoch, originalBook = book
+      const transactionIdentity = { book: originalBook?.getWorkbook(), source: original, epoch: operationEpoch, sheetId: sheet.getSheetId(), sheetName: selectionSheetName, row: selectionRow, column: selectionColumn }
+      const beforeCommit = () => {
+        const currentBook = runtime.univerAPI.getActiveWorkbook(), currentSheet = currentBook?.getActiveSheet(), currentRange = currentSheet?.getSelection()?.getActiveRange()
+        assertNotePictureTransaction(transactionIdentity, { book: currentBook?.getWorkbook(), source: original, epoch: noteEpoch, sheetId: currentSheet?.getSheetId() ?? '', sheetName: currentSheet?.getSheetName() ?? '', row: currentRange?.getRow() ?? -1, column: currentRange?.getColumn() ?? -1 }, editable() && !!currentSheet && !sheetProtected(currentSheet.getSheetId()), disposed)
+      }
+      try {
+        picker.open()
+        const file = await picker.result
+        if (!file) return
+        const pickerSheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet(), pickerRange = pickerSheet?.getSelection()?.getActiveRange()
+        if (!pickerSheet || pickerSheet.getSheetName() !== selectionSheetName || !pickerRange || pickerRange.getRow() !== selectionRow || pickerRange.getColumn() !== selectionColumn) throw new Error('工作表或单元格已变化，请重新选择后插入')
+        const bytes = new Uint8Array(await file.arrayBuffer()), info = noteImageInfo(bytes)
+        let widthPx = info.width, heightPx = info.height
+        if (typeof createImageBitmap === 'function') { const bitmap = await createImageBitmap(file); widthPx = bitmap.width; heightPx = bitmap.height; bitmap.close() }
+        let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte)
+        const base64 = btoa(binary), digest = await crypto.subtle.digest('SHA-256', bytes), hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+        beforeCommit()
+        const before = await currentOperations(), next = [...before, { kind: 'setNotePicture', sheetName: selectionSheetName, row: selectionRow, column: selectionColumn, sourceIdentity: source.sourceIdentity, picture: { mediaType: info.mediaType, bytesBase64: base64, size: bytes.length, sha256: hash, widthPx, heightPx, name: file.name.slice(0, 255) } }] as WorkbookOperation[]
+        beforeCommit()
+        await commitNotePicture(before, next); notePictures?.close(); await notePictures?.open()
+      } finally { notePickerCancel = undefined; picker.cancel() }
+    },
+  })
+  const noteHover = installNotePictureHover(runtime, (sheetId, row, column) => {
+    const snapshot = noteSnapshot
+    const sheetName = runtime.univerAPI.getActiveWorkbook()?.getSheetBySheetId(sheetId)?.getSheetName()
+    const picture = snapshot?.pictures.find(item => item.sheetName === sheetName && item.row === row && item.column === column)
+    return picture ? { key: noteCaptureKey, picture } : undefined
+  }, (picture, key) => notePictures?.hover(picture, key))
+  void captureNotes().catch(error => { feedback.textContent = `图片批注读取失败：${(error as Error).message}` })
   if (options.nativeAI && nativeDraft) {
     const syncNativeStatus = () => {
       gridChanged = false; dirty = nativeDraft.dirty
@@ -3003,8 +3749,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     feedback.textContent = '已撤销 AI 采纳，恢复采纳前草稿。'
   })
   const save = async () => {
-    if (saved || saving || nativeAIAccepting || calculationBusy || subtotal?.isRunning() || advancedFilter?.isRunning()) return
+    if (refresh?.busy || pictureEditBusy || saved || saving || nativeAIAccepting || calculationBusy || subtotal?.isRunning() || advancedFilter?.isRunning()) return
     saving = true
+    refresh?.update()
     zoomLauncher.refresh()
     // 保存期间网格不可编辑：解除单次/锁定格式刷，避免保存中或保存后继续刷写。
     turnOffFormatPainter(runtime)
@@ -3034,7 +3781,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     } catch (error) { shell.statusLabel.textContent = '保存失败，草稿已保留'; feedback.textContent = (error as Error).message }
     finally {
       saving = false
+      feedback.hidden = false
       shell.save.disabled = saved
+      refresh?.update()
       shell.editor.inert = false
       form.inert = Boolean(options.native || saved)
       zoomLauncher.refresh()
@@ -3042,6 +3791,19 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       if (saved) shell.editor.querySelector<HTMLElement>('.workbook-grid')!.inert = true
     }
   }
+  refreshSave = save
+  refreshFlush = async () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook()
+    if (workbook?.isCellEditing?.()) {
+      const accepted = await workbook.endEditingAsync(true)
+      if (accepted === false) throw new Error('当前单元格输入未提交，请先完成输入')
+    }
+    if (document.activeElement instanceof HTMLElement && shell.editor.contains(document.activeElement)) document.activeElement.blur()
+    await persistence
+    const operations = await currentOperations()
+    dirty = dirty || gridChanged || operations.length > 0
+  }
+  refresh?.update()
   shell.save.addEventListener('click', save)
   const beforeLeave = (event: BeforeUnloadEvent) => {
     if (dirty) { event.preventDefault(); event.returnValue = '' }
@@ -3053,6 +3815,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       epoch: () => mergeGeneration, persisted: () => persistence, operations: async () => await currentOperations() as NativeOperation[],
       setOperations: operations => nativeDraft?.setOperations(operations) })
   }, dispose() {
-    disposed = true; pivotControlOverlay?.dispose(); queriesDialog.dispose(); symbolDialog.dispose(); linkDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
+    pictureSelection?.dispose()
+    shell.editor.removeEventListener('pointerdown', cancelPictureSelection, true)
+    shell.editor.removeEventListener('keydown', cancelPictureSelection, true)
+    chartDescriptions.dispose()
+    chartSelection?.dispose()
+    chartObjectInteraction?.dispose()
+    disposed = true; picturesView.dispose(); threadsView?.dispose(); notePickerCancel?.(); notePickerCancel = undefined; notePictures?.dispose(); noteHover.dispose(); externalFormulaCaches.dispose(); externalLinks.dispose(); pasteSpecialDialog.dispose(); refresh?.dispose(); pivotControlOverlay?.dispose(); queriesDialog.dispose(); symbolDialog.dispose(); linkDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); chartFormatPane?.dispose(); chartDataDialog?.dispose(); recommendedChartsDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
   } }
 }

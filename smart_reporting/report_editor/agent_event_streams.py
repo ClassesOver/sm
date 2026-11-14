@@ -19,18 +19,24 @@ class AgentEventLog:
     sequence: int = 0
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
     pending: set[asyncio.Task] = field(default_factory=set)
+    terminal: bool = False
 
     async def emit(self, kind: str, **data: Any) -> None:
         if kind not in {'phase', 'content', 'toolStarted', 'toolCompleted', 'terminal'}:
             return
-        self.sequence += 1
-        event = {'sequence': self.sequence, 'kind': kind, **data}
         async with self.condition:
+            if self.terminal:
+                return
+            self.sequence += 1
+            event = {'sequence': self.sequence, 'kind': kind, **data}
+            self.terminal = kind == 'terminal'
             self.history.append(event)
             del self.history[:-self.capacity]
             self.condition.notify_all()
 
     def schedule(self, event: Any) -> None:
+        if self.terminal:
+            return
         task = asyncio.get_running_loop().create_task(emit_agno_event(event))
         self.pending.add(task)
         task.add_done_callback(self.pending.discard)
@@ -43,14 +49,14 @@ class AgentEventLog:
     async def after(self, cursor: int, timeout: float = 15) -> tuple[list[dict[str, Any]], int, bool]:
         async with self.condition:
             oldest = self.history[0]['sequence'] if self.history else self.sequence + 1
-            reset = cursor < oldest - 1
-            if not reset and cursor >= self.sequence:
+            reset = cursor < oldest - 1 or cursor > self.sequence
+            if not reset and cursor >= self.sequence and not self.terminal:
                 try:
                     await asyncio.wait_for(self.condition.wait_for(lambda: self.sequence > cursor), timeout=timeout)
                 except TimeoutError:
                     pass
                 oldest = self.history[0]['sequence'] if self.history else self.sequence + 1
-                reset = cursor < oldest - 1
+                reset = cursor < oldest - 1 or cursor > self.sequence
             return [event for event in self.history if event['sequence'] > cursor], self.sequence, reset
 
 
@@ -123,7 +129,7 @@ async def stream_agent_events(log: AgentEventLog, after: int = 0):
             cursor = event['sequence']
             import json
             yield f'id: {cursor}\nevent: progress\ndata: {json.dumps(event, ensure_ascii=False, separators=(",", ":"))}\n\n'
-        if any(event['kind'] == 'terminal' for event in events):
+        if log.terminal and cursor >= log.sequence:
             return
         if not events:
             yield ': heartbeat\n\n'

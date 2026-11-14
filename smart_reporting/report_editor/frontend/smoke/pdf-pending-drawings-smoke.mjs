@@ -5,6 +5,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets, inspectPdfObjectDialog } from './pdf-object-dialog-checks.mjs'
+import { inspectPdfObjectPanel } from './pdf-object-panel-checks.mjs'
+import { inspectPdfDrawingKeys } from './pdf-gesture-keyboard-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_PENDING_DRAWINGS_SMOKE_PORT ?? 4213), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -45,11 +48,12 @@ elif p['mode']=='patch':
 }
 const fixture = python({ mode: 'create' }), source = Buffer.from(fixture.bytes, 'base64'), revisions = new Map([[1, source]]), payloads = []
 let browser, readonly = false
-const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+const server = spawn('./node_modules/.bin/vite', ['preview', ...(process.env.PDF_SMOKE_VITE_CONFIG?['--config',process.env.PDF_SMOKE_VITE_CONFIG]:[]), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ?? '/usr/bin/chromium' })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? {executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE} : {}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = []
+  const verifyAssets=await observePdfBuiltAssets(page)
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   const revision = route => Number(route.request().url().match(/pending-drawings-fixture\/(\d+)\/api/)[1]), active = route => revisions.get(revision(route))
   const inspect = bytes => python({ mode: 'inspect', bytes: bytes.toString('base64') }), patch = (bytes, operations) => python({ mode: 'patch', bytes: bytes.toString('base64'), operations })
@@ -77,7 +81,12 @@ try {
   const show = async () => { await page.locator('[data-pdf-ribbon-tab="annotate"]').click(); await page.getByRole('button', { name: '待保存绘图', exact: true }).click() }
   const loaded = () => page.waitForFunction(() => document.querySelectorAll('.pdf-page').length === 3 && document.querySelector('.pdf-page canvas'), null, { timeout: 60000 })
   const preview = async () => { await page.locator('[data-pdf-ribbon-tab="edit"]').click(); await page.getByRole('button', { name: '校验当前修改', exact: true }).click(); await page.waitForFunction(() => document.querySelector('.native-pdf-editor')?.dataset.pdfPreview === 'true', null, { timeout: 30000 }); await loaded() }
-  const save = async n => { await page.locator('[data-action="save"]').click(); await page.waitForFunction(n => document.querySelector('.save-state-label')?.textContent === `已保存修订 ${n}`, n, { timeout: 30000 }); const link = await page.locator('.native-delivery a').filter({ hasText: '下载 PDF' }).getAttribute('href'); const bytes = Buffer.from(await page.evaluate(async url => [...new Uint8Array(await (await fetch(url)).arrayBuffer())], link)); assert.deepEqual(bytes, revisions.get(n)) }
+  const save = async n => {
+    const confirmation=page.locator('.pdf-preview-review input[type=checkbox]');if(await confirmation.isVisible())await confirmation.check()
+    await page.locator('[data-action="save"]').click(); await page.waitForFunction(n => document.querySelector('.save-state-label')?.textContent === `已保存修订 ${n}`, n, { timeout: 30000 })
+    const link=page.locator('.native-delivery a').filter({hasText:'下载 PDF'}),downloading=page.waitForEvent('download');await link.click();const download=await downloading;assert.equal(await download.failure(),null)
+    const {readFile}=await import('node:fs/promises'),bytes=await readFile(await download.path());assert.deepEqual(bytes,revisions.get(n));assert.equal(await page.locator('.native-delivery').getByText('请核验内容；下载仍可用',{exact:true}).count(),1)
+  }
   await open(1)
   await page.locator('[data-pdf-ribbon-tab="annotate"]').click()
   await page.locator('[data-pdf-draw-shape="rect"]').click()
@@ -90,6 +99,7 @@ try {
   await drag(); await page.waitForFunction(() => document.querySelectorAll('[data-pdf-drawing="rect"]').length === 1)
   await drag(); await page.waitForFunction(() => document.querySelectorAll('[data-pdf-drawing="rect"]').length === 2)
   const twins = await ops(); assert.equal(twins.length, 2); assert.deepEqual(twins[0], twins[1])
+  const gestureKeyboard=process.env.PDF_GESTURE_KEYBOARD==='1'?await inspectPdfDrawingKeys(page,{operations:ops,loaded,directory:process.env.PDF_PENDING_DRAWINGS_EVIDENCE_DIR}):[]
   await page.locator('[data-pdf-ribbon-tab="page"]').click()
   await page.locator('[data-source-command-id="genoffice.pdf.page.rotateRight"]').click(); await loaded()
   await page.locator('[data-source-command-id="genoffice.pdf.page.reverse"]').click(); await loaded()
@@ -101,6 +111,8 @@ try {
   await page.evaluate(() => window.__oldPendingSelect.click())
   assert.match(await panel.innerText(), /已选择草稿操作 #2/)
   const dialog = page.getByRole('dialog', { name: '移动待保存绘图', exact: true })
+  const objectPanels=await inspectPdfObjectPanel(page,{panel,kind:'drawings',operations:ops,directory:process.env.PDF_PENDING_DRAWINGS_EVIDENCE_DIR})
+  const objectLayouts=await inspectPdfObjectDialog(page,{opener:panel.getByRole('button',{name:'移动所选绘图',exact:true}),title:'移动待保存绘图',operations:ops,directory:process.env.PDF_PENDING_DRAWINGS_EVIDENCE_DIR})
   await panel.getByRole('button', { name: '移动所选绘图', exact: true }).click()
   await dialog.locator('form').evaluate(node => { window.__cancelledPendingMove = node })
   await dialog.getByRole('button', { name: '取消', exact: true }).click()
@@ -150,7 +162,9 @@ try {
   await page.locator('[data-pdf-draw-shape="rect"]').evaluate(node => node.click())
   await drag(); assert.deepEqual(await ops(), [])
   assert.deepEqual(errors, [])
-  const evidence = { ok: true, independent, browserVersion: browser.version(), revisions: [...revisions].map(([revision, bytes]) => ({ revision, sha256: sha(bytes), size: bytes.length })), operations: payloads.map(input => input.operations), exactTwinSelectionMoveDelete: true, stalePaneAndCancelledReplacedStaleModalRefused: true, undoRedoReload: true, rotatedAndReorderedSource: true, previewActualDownloadReopen: true, readonlyIsolation: true, provenance: 'production static Web list/modal adaptation; substituted authorization/revision routes; actual packed engine, PDF.js and downloads; no desktop drag/full-image/production acceptance' }
+  const evidence = { ok: true, ...await verifyAssets(), objectLayouts, independent, browserVersion: browser.version(), revisions: [...revisions].map(([revision, bytes]) => ({ revision, sha256: sha(bytes), size: bytes.length })), operations: payloads.map(input => input.operations), exactTwinSelectionMoveDelete: true, stalePaneAndCancelledReplacedStaleModalRefused: true, undoRedoReload: true, rotatedAndReorderedSource: true, previewActualDownloadReopen: true, readonlyIsolation: true, provenance: 'production static Web list/modal adaptation; substituted authorization/revision routes; actual packed engine, PDF.js and downloads; no desktop drag/full-image/production acceptance' }
+  evidence.objectPanels=objectPanels;evidence.gestureKeyboard=gestureKeyboard
   if (process.env.PDF_PENDING_DRAWINGS_EVIDENCE_DIR) { const dir = process.env.PDF_PENDING_DRAWINGS_EVIDENCE_DIR; await mkdir(dir, { recursive: true }); for (const [n, bytes] of revisions) await writeFile(`${dir}/revision-${n}.pdf`, bytes); await writeFile(`${dir}/evidence.json`, JSON.stringify(evidence, null, 2)); await page.screenshot({ path: `${dir}/readonly-reopen.png`, fullPage: true }) }
   console.log(JSON.stringify(evidence))
+} catch(error){const dir=process.env.PDF_PENDING_DRAWINGS_EVIDENCE_DIR;if(dir&&browser){await mkdir(dir,{recursive:true});const page=browser.contexts()[0]?.pages()[0];if(page){await page.screenshot({path:`${dir}/failure.png`,fullPage:true});await writeFile(`${dir}/failure.json`,JSON.stringify({error:String(error),payloads,state:await page.evaluate(()=>({text:document.body.innerText,operations:Object.entries(localStorage).filter(([key])=>key.includes('pending-drawings-fixture'))}))},null,2))}}throw error
 } finally { await browser?.close(); server.kill('SIGTERM') }

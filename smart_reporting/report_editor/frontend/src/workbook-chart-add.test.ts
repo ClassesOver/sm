@@ -4,6 +4,14 @@ import { applyWorkbookOperations } from '../../../reporting/workbook_engine/brid
 import { chartAdditionFromGrid } from './workbook-chart-add'
 
 describe('workbook chart insertion', () => {
+  it('keeps numeric years as categories exactly like the recommendation preview', () => {
+    const addition = chartAdditionFromGrid({ sheetName: 'Sheet1', chartType: 'line',
+      range: { startRow: 0, endRow: 3, startColumn: 0, endColumn: 1 },
+      values: [['Year', 'Sales'], [2023, 10], [2024, 20], [2025, 30]] })
+    expect(addition.chart.series).toHaveLength(1)
+    expect(addition.chart.series[0]).toMatchObject({ name: 'Sales', categories: ['2023', '2024', '2025'], values: [10, 20, 30],
+      categoriesRef: "'Sheet1'!$A$2:$A$4", valuesRef: "'Sheet1'!$B$2:$B$4" })
+  })
   it('maps selected tabular data to a chart addition and saves/reopens it', async () => {
     const addition = chartAdditionFromGrid({
       sheetName: 'Sales Data',

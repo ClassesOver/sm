@@ -19,7 +19,7 @@ vi.mock('./workbook-ribbon', () => ({
 }))
 vi.mock('./workbook-print', async original => {
   const actual = await original<typeof import('./workbook-print')>()
-  return { ...actual, buildSheetPrintHtml: (source: any, setup: any) => { grid.printed.push({ source, setup }); return '<html></html>' }, printDocument: () => true }
+  return { ...actual, buildSheetPrintHtml: (source: any, setup: any, context: any) => { grid.printed.push({ source, setup }); return actual.buildSheetPrintHtml(source, setup, context) }, printDocument: () => true }
 })
 vi.mock('./workbook-page-break-preview', async original => {
   const actual = await original<typeof import('./workbook-page-break-preview')>()
@@ -126,3 +126,55 @@ it('retains original print baseline by stable sheet identity after rename and sa
 })
 
 it('blocks protected sheets before opening print scale without writes',async()=>{const source=await protectSheet(await fixture(),'Sheet1',true),draft=new NativeDraft(identity,store()),current=await open(source,draft,async()=>{throw Error('no save')});try{grid.ribbon('print-scale-open');expect(document.querySelector<HTMLElement>('.workbook-print-scale-overlay')!.hidden).toBe(true);expect(current.shell.editor.querySelector('.workbook-feedback')!.textContent).toMatch(/保护/);expect(draft.operations).toEqual([])}finally{current.view?.dispose()}})
+
+const printField = <T extends HTMLElement>(field: string) => document.querySelector<T>(`[data-print-${field}]`)!
+const openPrint = async () => { grid.ribbon('print'); await vi.waitFor(() => {
+  const submit = printField<HTMLButtonElement>('submit')
+  if (!submit || submit.disabled) throw new Error(`打印未就绪: ${printField('error')?.textContent ?? ''}; ${printField('page')?.textContent ?? ''}; ${document.querySelector('.workbook-feedback')?.textContent ?? ''}`)
+}, { timeout: 10000 }) }
+it('full print dialog recognizes saved and restored draft margin presets', async () => {
+  const source = await fixture()
+  for (const restored of [false, true]) {
+    const storage = store(), draft = new NativeDraft(identity, storage)
+    if (restored) draft.setOperations([{ kind: 'applyPageSetups', setups: [{ sheetName: 'Sheet1', margins: 'narrow' }] }])
+    const current = await open(restored ? source : await applyPageSetups(source, [{ sheetName: 'Sheet1', margins: 'narrow' }]), restored ? new NativeDraft(identity, storage) : draft, async () => { throw Error('no save') })
+    try { await openPrint(); expect(printField<HTMLSelectElement>('margins').value).toBe('narrow') }
+    finally { current.view?.dispose() }
+  }
+}, 20000)
+it('full print dialog saves settings through the original page setup protocol and refreshes after header/footer', async () => {
+  const source = await applyPageSetups(await fixture(), [{ sheetName: 'Sheet1', scale: 85, fitToPage: true, fitToWidth: 2, fitToHeight: 3, orientation: 'landscape' }]), draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('no save') })
+  try {
+    await openPrint(); expect(printField<HTMLSelectElement>('orientation').value).toBe('landscape')
+    expect(printField<HTMLSelectElement>('scaling').value).toBe('fit-file')
+    printField<HTMLSelectElement>('orientation').value = 'portrait'; printField('orientation').dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(draft.operations).toEqual([{ kind: 'applyPageSetups', setups: [{ sheetName: 'Sheet1', orientation: 'portrait' }] }]))
+    await vi.waitFor(() => expect(printField<HTMLButtonElement>('page-setup').disabled).toBe(false))
+    printField<HTMLButtonElement>('page-setup').click()
+    await vi.waitFor(() => expect(document.querySelector<HTMLElement>('.workbook-header-footer-overlay')!.hidden).toBe(false))
+    const header = document.querySelector<HTMLTextAreaElement>('[data-header-footer-field=header-center]')!; header.value = 'Preview &P/&N'
+    document.querySelector<HTMLFormElement>('.workbook-header-footer-dialog form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await vi.waitFor(() => expect(printField<HTMLIFrameElement>('preview').srcdoc).toContain('Preview 1/'))
+    const replayed = await readWorkbook(await applyWorkbookOperations(source, draft.operations))
+    expect(replayed.sheets[0]!.pageSetup).toMatchObject({ orientation: 'portrait', fitToWidth: 2, fitToHeight: 3, scale: 85 })
+    expect(replayed.sheets[0]!.headerFooter?.oddHeader).toContain('Preview &P/&N')
+  } finally { current.view?.dispose() }
+}, 15000)
+
+it('full print dialog rejects replaced workbook before settings mutation and preserves manual draft', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('no save') })
+  try {
+    sheet().getRange(3, 3).setValue('Keep manual'); await vi.waitFor(() => expect(draft.operations.length).toBeGreaterThan(0))
+    await openPrint(); const before = structuredClone(draft.operations), original = grid.api.getActiveWorkbook.bind(grid.api), actual = original()
+    grid.api.getActiveWorkbook = () => new Proxy(actual, { get: (target, key) => key === 'getWorkbook' ? () => ({}) : Reflect.get(target, key, target) })
+    printField<HTMLSelectElement>('orientation').value = 'landscape'; printField('orientation').dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(printField('error').textContent).toMatch(/变化|重新/)); expect(draft.operations).toEqual(before)
+    grid.api.getActiveWorkbook = original
+  } finally { current.view?.dispose() }
+}, 15000)
+
+it('full print dialog keeps protected worksheets printable while disabling page setup mutations', async () => {
+  const source = await protectSheet(await fixture(), 'Sheet1', true), draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('no save') })
+  try { await openPrint(); expect(printField<HTMLFieldSetElement>('settings').disabled).toBe(true); expect(printField<HTMLButtonElement>('page-setup').disabled).toBe(true); expect(draft.operations).toEqual([]) }
+  finally { current.view?.dispose() }
+}, 15000)

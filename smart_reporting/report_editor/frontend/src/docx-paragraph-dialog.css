@@ -1,0 +1,7 @@
+.docx-settings-dialog.docx-paragraph-dialog { box-sizing:border-box;width:min(680px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto; }
+.docx-paragraph-dialog [role=tablist] { display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--office-border-strong); }
+.docx-paragraph-dialog [role=tab] { padding:6px 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--office-ink);font:inherit; }
+.docx-paragraph-dialog [role=tab][aria-selected=true] { border-bottom-color:var(--office-focus-ring); }
+.docx-paragraph-dialog form > [role=tabpanel] { grid-column:1 / -1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px; }
+.docx-paragraph-dialog form > [data-paragraph-cancel] { grid-column:2; }
+@media(max-width:600px) { .docx-paragraph-dialog form > [role=tabpanel] { grid-template-columns:1fr; } }

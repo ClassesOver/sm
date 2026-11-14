@@ -1,0 +1,21 @@
+.docx-page-border-host {
+  position: relative;
+  z-index: 10020;
+}
+
+.docx-page-border-host .modal-backdrop {
+  z-index: 10020;
+}
+
+.docx-native.docx-page-border-host .pb-dialog {
+  box-sizing: border-box;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+}
+
+@media (max-width: 680px) {
+  .docx-native.docx-page-border-host .pb-dialog { padding: 18px; }
+  .docx-native.docx-page-border-host .pb-columns { grid-template-columns: 100px minmax(0, 1fr); }
+  .docx-native.docx-page-border-host .pb-preview-col { grid-column: 1 / -1; }
+  .docx-native.docx-page-border-host .pb-setting { padding-inline: 3px; gap: 4px; }
+}

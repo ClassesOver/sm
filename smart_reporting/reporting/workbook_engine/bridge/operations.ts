@@ -1,3 +1,6 @@
+import {editWorkbookPicture,insertWorkbookPicture} from '../packages/xlsx-engine/src/pictures'
+import {assertSheetThreadsStationary} from '../packages/xlsx-engine/src/thread-read'
+import {patchThreadedComments} from '../packages/xlsx-engine/src/threads'
 /** Server and browser share the migrated engine's operation protocol. */
 import {
   applyCellEdits, applySheetEdits, applyRowColumnOps, applyCellShift, applyDvRules, applyCfRules,
@@ -10,6 +13,11 @@ import {
 import { applyChartAdditions } from '../packages/xlsx-engine/src/chart-add'
 import { applyChartDeletions } from '../packages/xlsx-engine/src/chart-delete'
 import { applyChartEdits } from '@sheets-web/xlsx-engine'
+import { applyChartAnchors } from '../packages/xlsx-engine/src/chart-anchor'
+import { applyChartSource } from './chart-sources'
+import { validateExternalSourceBinding } from '../packages/xlsx-engine/src/external-links-source'
+import { applyExternalLinkCaches } from '../packages/xlsx-engine/src/external-links-update'
+import { applyExternalLinkOperation } from '../packages/xlsx-engine/src/external-links'
 import { z } from 'zod'
 import { upsertPivotControl, upsertPivotControlRequestSchema, syncOwnedPivotControls, removePivotControl, removePivotControlRequestSchema } from '../packages/xlsx-engine/src/pivot-controls'
 import { appendSheetSparklines, appendSheetSparklinesOperationSchema, assertSheetSparklinesShiftable, renameSparklineSheetReferences, removeSheetSparklines, removeSheetSparklinesOperationSchema, editSheetSparklineGroup, editSheetSparklineGroupOperationSchema } from '../packages/xlsx-engine/src/sparkline-additions'
@@ -17,6 +25,7 @@ import { applySheetMerges } from './merges'
 import { replaceSheetDataValidations } from '../packages/xlsx-engine/src/data-validation-write'
 import { replaceConditionalFormattingSnapshots } from '../packages/xlsx-engine/src/conditional-formatting-snapshot'
 import { replaceSheetConditionalFormatsOperationSchema } from '../packages/xlsx-engine/src/conditional-formatting-schema'
+import { applyNotePictureOperation, notePictureOperationSchema } from '../packages/xlsx-engine/src/note-pictures'
 
 const cell = z.object({
   value: z.union([z.string(), z.number().finite(), z.boolean(), z.null()]),
@@ -74,15 +83,33 @@ const setThemePartSchema = z.object({
 export async function applyWorkbookOperations(bytes: Uint8Array, operations: readonly Record<string, any>[]): Promise<Uint8Array> {
   for (const op of operations) {
     switch (op.kind) {
+      case 'editPicture': bytes=await editWorkbookPicture(bytes,op);break
+      case 'insertPicture': bytes = await insertWorkbookPicture(bytes,op); break
+      case 'patchThreadedComments': bytes = await patchThreadedComments(bytes,op); break
+      case 'bindExternalLinkSource': bytes = await validateExternalSourceBinding(bytes, op); break
+      case 'updateExternalLinkCaches': bytes = await applyExternalLinkCaches(bytes, op); break
+      case 'retargetExternalLink':
+      case 'breakExternalLink': bytes = await applyExternalLinkOperation(bytes, op); break
+      case 'setNotePicture': {
+        const parsed = notePictureOperationSchema.parse(op)
+        bytes = await applyNotePictureOperation(bytes, parsed)
+        break
+      }
+      case 'applyChartSource': {
+        const parsed = z.object({ kind: z.literal('applyChartSource'), operation: z.unknown() }).strict().parse(op)
+        bytes = await applyChartSource(bytes, parsed.operation); break
+      }
       case 'applyChartAdditions': bytes = await applyChartAdditions(bytes, op.additions); break
       case 'applyChartDeletions': bytes = await applyChartDeletions(bytes, op.deletions); break
       case 'applyChartEdits': bytes = await applyChartEdits(bytes, op.edits); break
+      case 'applyChartAnchors': bytes = await applyChartAnchors(bytes, op.edits); break
       case 'applyCellEdits': bytes = await applyCellEdits(bytes, z.array(edit).max(1000000).parse(op.edits)); break
       case 'applySheetMerges': bytes = await applySheetMerges(bytes, op.sheetName, op.ranges); break
       case 'applySheetEdits':
         bytes = await renameSparklineSheetReferences(bytes, op.plan.renames)
         bytes = await applySheetEdits(bytes, op.plan); break
       case 'applyRowColumnOps':
+        await assertSheetThreadsStationary(bytes, op.sheetName)
         await assertSheetSparklinesShiftable(bytes, op.sheetName)
         bytes = await applyRowColumnOps(bytes, op.sheetName, op.ops); break
       case 'appendSheetSparklines': {
@@ -102,6 +129,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         const parsed = z.object({ kind: z.literal('applyCellShift'), sheetName: z.string().min(1).max(31),
           range: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}(?::[A-Z]{1,3}[1-9][0-9]{0,6})?$/),
           shift: z.enum(['right', 'down', 'left', 'up']) }).strict().parse(op)
+        await assertSheetThreadsStationary(bytes, parsed.sheetName)
         await assertSheetSparklinesShiftable(bytes, parsed.sheetName, 'cells')
         bytes = await applyCellShift(bytes, parsed.sheetName, { range: parsed.range, shift: parsed.shift }); break
       }
@@ -210,6 +238,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       }
       case 'setThemePart': { const valid = setThemePartSchema.parse(op); bytes = await setThemePart(bytes, valid.themePath, valid.state); break }
       case 'sortRange': {
+        await assertSheetThreadsStationary(bytes, op.sheetName)
         bytes = await sortRangeRows(bytes, op.sheetName, op.spec)
         break
       }

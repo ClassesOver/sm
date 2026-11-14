@@ -1,0 +1,60 @@
+{
+  "commit": "f8c17004",
+  "files": {
+    "FormatCellsDialog.tsx": {
+      "source": "apps/sheets/src/renderer/FormatCellsDialog.tsx",
+      "sourceSha256": "b230b62eaaeaeaa481097e791136f39142310405a2731dc9217fac657224bbc0",
+      "adaptedSha256": "082c05431bd27a1718b238c71a34685cab0020ab4d3f54f40bb7165999003ef9"
+    },
+    "ColorDropdown.tsx": {
+      "source": "apps/sheets/src/renderer/ColorDropdown.tsx",
+      "sourceSha256": "0b13d76ca13ef0d67014320c69708d2eacba80d83e8d8ed10642a79611704802",
+      "adaptedSha256": "1841d3c28443dd6fdb2bad92a22e150cf777993107e5b93d2bcf8adfa099b7d4"
+    },
+    "format-cells.ts": {
+      "source": "apps/sheets/src/renderer/format-cells.ts",
+      "sourceSha256": "e500a0cb593cea13d4e809ac603f02bc71fcfe634b658933a5010d0899e1820e",
+      "adaptedSha256": "ecdef76472023884506a930c0a77b4d9394434f9be0b518319a59612e0c78171"
+    },
+    "selection-format.ts": {
+      "source": "apps/sheets/src/renderer/selection-format.ts",
+      "sourceSha256": "d1d3c6bfc79c425b2bb1d8a4b838005f2d5cbb8670cd95ba45034edf87bf0a92",
+      "adaptedSha256": "67c0305926f796641c3e32f250a312acdb398a6ef7cada67ade2ca880b459996"
+    },
+    "system-fonts.ts": {
+      "source": "apps/sheets/src/renderer/system-fonts.ts",
+      "sourceSha256": "95dd76678cdaa8aadcecf108010cbec11b92e00097994cd1ce6794c021a43fa2",
+      "adaptedSha256": "95dd76678cdaa8aadcecf108010cbec11b92e00097994cd1ce6794c021a43fa2"
+    },
+    "color-picker.tsx": {
+      "source": "packages/ui/src/color-picker.tsx",
+      "sourceSha256": "8cb984120287510d9d3d17a0b55aa0c8a14c666f8829dc54f7f6e1bf1eaf70e1",
+      "adaptedSha256": "8cb984120287510d9d3d17a0b55aa0c8a14c666f8829dc54f7f6e1bf1eaf70e1"
+    },
+    "color-picker.css": {
+      "source": "packages/ui/src/color-picker.css",
+      "sourceSha256": "54d11716b518384edc6a2d8d352eaf62fe219e05d96ab143743030884d75a88a",
+      "adaptedSha256": "54d11716b518384edc6a2d8d352eaf62fe219e05d96ab143743030884d75a88a"
+    },
+    "LICENSE": {
+      "source": "LICENSE",
+      "sourceSha256": "68e32334df324ef4fc79fad3a26487e5abac36055a484bb6c8d7ecf9d8350885",
+      "adaptedSha256": "68e32334df324ef4fc79fad3a26487e5abac36055a484bb6c8d7ecf9d8350885"
+    },
+    "NOTICE": {
+      "source": "NOTICE",
+      "sourceSha256": "26fa7a458f2463af07f96af3d4b26b3cc3b4de688340838e3c9b3b958d390882",
+      "adaptedSha256": "26fa7a458f2463af07f96af3d4b26b3cc3b4de688340838e3c9b3b958d390882"
+    }
+  },
+  "adaptations": [
+    "Browser modal host replaces desktop modal/chrome hooks",
+    "One validated asynchronous batch replaces sequential command callbacks",
+    "Optional mixed-selection initial draft; explicit no-fill applies to mixed fills",
+    "ARIA tab keyboard navigation and busy/error state",
+    "Chinese-only labels; shared number-format model reused",
+    "Nested color palette consumes Escape before shared modal closes",
+    "Cancel label default activation for picked dropdown/palette options so Chromium does not reopen their triggers",
+    "Thick outline preset selects medium line in the visible line-style control; later explicit line selection still wins"
+  ]
+}

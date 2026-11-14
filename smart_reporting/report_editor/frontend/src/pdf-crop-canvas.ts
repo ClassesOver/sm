@@ -13,11 +13,12 @@ export function mountPdfCropCanvas(options: {
   const document = host.ownerDocument, window = document.defaultView!
   const stage = document.createElement('div')
   stage.dataset.pdfCropCanvas = ''
+  stage.setAttribute('role', 'img')
   Object.assign(stage.style, { position: 'relative', width: `${Math.min(520, canvas.width)}px`, maxWidth: '100%', overflow: 'hidden', touchAction: 'none' })
   Object.assign(canvas.style, { width: '100%', height: 'auto', display: 'block' })
   const region = document.createElement('div')
   region.dataset.pdfCropRegion = ''
-  region.setAttribute('aria-label', '拖动裁切保留范围')
+  region.setAttribute('aria-hidden', 'true')
   Object.assign(region.style, { position: 'absolute', border: '2px solid #2563eb', boxSizing: 'border-box', cursor: 'move', boxShadow: '0 0 0 1000px #0007', touchAction: 'none' })
   stage.append(canvas, region); host.append(stage)
   let values: Margins = [0, 0, 0, 0], disposed = false
@@ -31,6 +32,7 @@ export function mountPdfCropCanvas(options: {
   const margins = (): Margins => [...values]
   const render = () => {
     const [left, top, right, bottom] = values
+    stage.setAttribute('aria-label', `裁切预览：左侧裁去 ${left}%，顶部裁去 ${top}%，右侧裁去 ${right}%，底部裁去 ${bottom}%`)
     Object.assign(region.style, { left: `${left}%`, top: `${top}%`, width: `${100 - left - right}%`, height: `${100 - top - bottom}%` })
   }
   function begin(event: PointerEvent, handle: CropHandle) {
@@ -44,7 +46,6 @@ export function mountPdfCropCanvas(options: {
   for (const handle of handles) {
     const element = document.createElement('span')
     element.dataset.pdfCropHandle = handle
-    element.setAttribute('aria-label', `裁切控制柄 ${handle}`)
     const horizontal = handle.includes('w') ? '0%' : handle.includes('e') ? '100%' : '50%'
     const vertical = handle.includes('n') ? '0%' : handle.includes('s') ? '100%' : '50%'
     const cursor = ['nw', 'se'].includes(handle) ? 'nwse-resize' : ['ne', 'sw'].includes(handle) ? 'nesw-resize' : ['n', 's'].includes(handle) ? 'ns-resize' : 'ew-resize'
@@ -76,7 +77,10 @@ export function mountPdfCropCanvas(options: {
     render(); options.change(margins())
   }
   function end(event: PointerEvent) { if (event.pointerId === drag?.id) cancel() }
-  function key(event: KeyboardEvent) { if (event.key === 'Escape') cancel() }
+  function key(event: KeyboardEvent) {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+    if (event.key === 'Escape') cancel()
+  }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', end)
   window.addEventListener('pointercancel', end)

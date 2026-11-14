@@ -2,6 +2,7 @@
 // 保存通过真实Python薄桥和当前生产（DOCX_COMMENT_ENGINE_DIR）或隔离打包Node bridge，下载以独立ZIP/lxml核对。
 // 该证据不冒充真实FastAPI鉴权/HTTP发布链验收。失败后用打印的目录恢复，避免重复成功保存。
 import assert from 'node:assert/strict'
+import {inspectCommentEditor} from './office-docx-comment-editor-layout.mjs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
@@ -18,6 +19,8 @@ const checkpoint = join(temporary, 'checkpoint.json'), runtime = process.env.DOC
 const mediaType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const buildManifestSha256 = sha256(await readFile(join(frontend, '../static/.vite/manifest.json')))
+if(process.env.DOCX_EXPECTED_MANIFEST_SHA256)assert.equal(buildManifestSha256,process.env.DOCX_EXPECTED_MANIFEST_SHA256,'wrong production build')
+const layout={cases:[],failures:[]}
 const changedText = '已核实的中文批注 😀', pendingText = '保存前未失焦的批注 😀'
 console.log(JSON.stringify({ checkpointDirectory: temporary }))
 await mkdir(temporary, { recursive: true })
@@ -91,7 +94,7 @@ try {
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
   page.on('response', response => {
     const path = new URL(response.url()).pathname
-    if (!path.startsWith('/reports/v1/editor/assets/assets/') || !path.endsWith('.js')) return
+    if (!path.startsWith('/reports/v1/editor/assets/assets/') || !(/\.(js|css)$/.test(path))) return
     chunkChecks.push((async () => {
       assert.equal(response.status(), 200)
       const file = path.split('/').at(-1), actual = await response.body(), expected = await readFile(join(frontend, '../static/assets', file))
@@ -154,9 +157,17 @@ try {
     await open(1)
     const input = await panel()
     assert.equal(await input.isDisabled(), false); assert.equal(await input.inputValue(), 'Original note')
+    if(process.env.DOCX_COMMENT_EDITOR_LAYOUT){
+      await inspectCommentEditor(page,{output:temporary,phase:'original',evidence:layout})
+      if(process.env.DOCX_COMMENT_EDITOR_BASELINE)throw new Error('baseline layout defects: '+layout.failures.join('; '))
+      await page.locator('[data-comment-title-close]').click()
+      assert.equal(await page.locator('[data-action="comment-text-list"]').evaluate(node=>document.activeElement===node),true)
+      await panel()
+    }
     await input.fill('明确放弃的输入'); await page.locator('[data-comment-reload]').click()
     assert.equal(await input.inputValue(), 'Original note')
     await input.fill(changedText); await page.locator('[data-comment-apply]').click()
+    if(process.env.DOCX_COMMENT_EDITOR_LAYOUT)await inspectCommentEditor(page,{output:temporary,phase:'applied',evidence:layout})
     const editor = page.getByRole('textbox', { name: 'Word 文档编辑区' })
     await editor.click(); await page.keyboard.press('Control+z'); await page.waitForFunction(() => document.querySelector('[data-comment-text]')?.value === 'Original note')
     await page.keyboard.press('Control+Shift+z'); await page.waitForFunction(expected => document.querySelector('[data-comment-text]')?.value === expected, changedText)
@@ -168,10 +179,19 @@ try {
     await page.locator('[data-action="save"]').dispatchEvent('click')
     await page.waitForFunction(() => document.querySelector('.save-state-label')?.textContent.includes('已保存修订 2'), null, { timeout: 60000 })
     assert.equal(await restored.isDisabled(), true)
+    if(process.env.DOCX_COMMENT_EDITOR_LAYOUT)await inspectCommentEditor(page,{output:temporary,phase:'saved',evidence:layout})
     assert.equal(await page.getByText('批注版式验收待复核', { exact: true }).count(), 1)
     assert.equal(await page.getByRole('link', { name: '下载 Word', exact: true }).count(), 1)
   } else { await open(2) }
-  const downloaded = await page.evaluate(async url => { const response = await fetch(url); if (!response.ok) throw new Error('download failed'); return Array.from(new Uint8Array(await response.arrayBuffer())) }, baseUrl + '/comment-download.docx')
+  let downloaded
+  if(!resumedSuccessfulSave){
+    const actualDownload=await Promise.all([page.waitForEvent('download'),page.getByRole('link',{name:'下载 Word',exact:true}).click()])
+    const downloadPath=join(temporary,'downloaded.docx');await actualDownload[0].saveAs(downloadPath)
+    downloaded=await readFile(downloadPath)
+  }else{
+    // 重开已成功的checkpoint不再保存，也不伪称重开页面有发布应答的下载入口。
+    downloaded=Buffer.from(await page.evaluate(async url=>{const response=await fetch(url);if(!response.ok)throw new Error('download failed');return Array.from(new Uint8Array(await response.arrayBuffer()))},baseUrl+'/comment-download.docx'))
+  }
   const verified = python({ mode: 'verify', source: join(temporary, 'revision-1.docx'), bytes: Buffer.from(downloaded).toString('base64'), expected: pendingText })
   assert.equal(sha256(Buffer.from(downloaded)), sha256(Buffer.from(state.revisions[2].bytes, 'base64')))
   await open(2); assert.equal(await (await panel()).inputValue(), pendingText)
@@ -181,8 +201,10 @@ try {
   await Promise.all(chunkChecks)
   assert.ok([...chunks.keys()].some(file => /^lazy-docx-main-.*\.js$/.test(file)))
   assert.deepEqual(errors, [])
+  assert.equal(sha256(await readFile(join(frontend,'../static/.vite/manifest.json'))),buildManifestSha256,'build changed during smoke')
+  assert.deepEqual(layout.failures,[])
   await page.screenshot({ path: join(temporary, 'comments-revision-2.png'), fullPage: true })
-  const result = { ok: true, builtPreview: true, apiRoutesAreTestDoubles: true, realPythonNodeBridge: true, checkpointDirectory: temporary, engineRuntime: runtime, buildManifestSha256, nodeBridgeSha256: sha256(await readFile(join(runtime, 'dist/edit-docx.mjs'))), sourceSha256: state.revisions[1].model.sourceSha256, outputSha256: state.revisions[2].model.sourceSha256, resumedSuccessfulSave, viewportChecks, changedParts: verified.changed, savedText: verified.text, staleSourceRejected: true, loadedChunks: Object.fromEntries(chunks), errors }
+  const result = { ok: true, builtPreview: true, apiRoutesAreTestDoubles: true, realPythonNodeBridge: true, checkpointDirectory: temporary, engineRuntime: runtime, buildManifestSha256, nodeBridgeSha256: sha256(await readFile(join(runtime, 'dist/edit-docx.mjs'))), sourceSha256: state.revisions[1].model.sourceSha256, outputSha256: state.revisions[2].model.sourceSha256, resumedSuccessfulSave, viewportChecks, changedParts: verified.changed, savedText: verified.text, layout, actualBrowserDownload:!resumedSuccessfulSave, staleSourceRejected: true, loadedChunks: Object.fromEntries(chunks), errors }
   await writeFile(join(temporary, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result))
 } catch (error) {
   await debugPage?.screenshot({ path: join(temporary, 'failure.png'), fullPage: true }).catch(() => {})

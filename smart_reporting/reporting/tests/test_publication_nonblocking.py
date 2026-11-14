@@ -195,13 +195,15 @@ def test_agents_nonblocking_contract_registry_points_at_existing_tests():
 # 这类 raise 必须位于 try 体内且有 except Exception（或裸 except）兜底，把原因转为
 # validation.issues / publicationGate.issues 后继续。新增此类 raise 未兜底即失败。
 _SIGNING_CHAIN = {
+    "smart_reporting/report_editor/office_refresh.py": ("office_refresh_delivery", "selected_office_task", "require_office_reference", "restore_office_source", "registered_office_source"),
+    "smart_reporting/report_editor/native_refresh.py": ("native_refresh_delivery", "selected_task", "require_native_reference", "restore_report_source"),
     "smart_reporting/reporting/trace/reader_formulas.py": ("reader_formula", "_formal_metric_formula"),
     "smart_reporting/reporting/workflow/claim_presentation.py": ("_registered_claim_support", "registered_claim_support_projection", "registered_native_claim_presentations", "registered_document_presentations"),
     "smart_reporting/reporting/trace/native_claims.py": ("native_claim_presentations", "present_native_summary"),
     "smart_reporting/reporting/trace/claim_presentation.py": ("claim_support_projection",),
     "smart_reporting/reporting/delivery/report_runtime/claim_support.py": ("insert_claim_support",),
-    "smart_reporting/report_editor/recalculation.py": ('run_refresh_request', 'read_refresh_delivery', 'run_policy_adoption_request', 'read_policy_adoption_delivery', 'read_registered_recalculation_execution'),
-    "smart_reporting/reporting/workflow/revision_execution.py": ('continue_revision_delivery', 'require_revision_execution', 'revision_delivery_paths'),
+    "smart_reporting/report_editor/recalculation.py": ("run_refresh_request", "read_refresh_delivery", "_restore_refresh_delivery", "run_policy_adoption_request", "read_policy_adoption_delivery", "read_registered_recalculation_execution"),
+    "smart_reporting/reporting/workflow/revision_execution.py": ("continue_revision_delivery", "require_revision_execution", "revision_delivery_paths"),
     "smart_reporting/reporting/workflow/policy_adoption_analysis.py": ("continue_policy_adoption_delivery",),
     "smart_reporting/reporting/trace/revision_impact.py": ("assess_revision_impact",),
     "smart_reporting/reporting/trace/narrative_claims.py": ("narrative_paragraphs",),
@@ -212,6 +214,14 @@ _SIGNING_CHAIN = {
     "smart_reporting/report_editor/data_revisions.py": ("export",),
     "smart_reporting/report_editor/data_revision_exports.py": ("render_data_revision_formats",),
     "smart_reporting/report_editor/render_preparation.py": ("prepare_editor_render",),
+    "smart_reporting/report_editor/template_render.py": ("render_editor_document", "render_editor_template"),
+    "smart_reporting/report_editor/template_provenance.py": ("public_validation", "build_template_provenance", "_project"),
+    "smart_reporting/reporting/workflow/runtime/template_semantics.py": (
+        "freeze_template_review", "_freeze_template_review", "load_frozen_template_review",
+        "prepare_semantic_template", "prepare_runtime_signature"),
+    "smart_reporting/reporting/template_semantic_review.py": ("validate_frozen_review", "review"),
+    "smart_reporting/reporting/delivery/template_signature_semantics.py": ("inspect_signature_candidates", "bind_semantic_signature_slot"),
+    "smart_reporting/reporting/delivery/template_signature_readback.py": ("read_semantic_preparation",),
     "smart_reporting/reporting/workflow/runtime/publication.py": ("_native_claim_presentations", "_verify_claim_fact_bindings", "_render_and_validate", "_render_revision_document", "_render_pptx", "_render_xlsx", "publish_report", "_publish_revision_report", "_write_trace_index"),
     "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication", "_issue_http_pptx_publication", "_issue_http_xlsx_publication", "_issue_http_office_publication"),
     "smart_reporting/reporting/workspace.py": ("_render_report_pair",),
@@ -229,7 +239,8 @@ _SIGNING_CHAIN = {
     "smart_reporting/report_editor/native_publication.py": (
         "save_revision", "_save_reserved", "_publish_artifacts", "_issue_links",
     ),
-    "smart_reporting/report_editor/native_pdf_extract.py": ("extract_pages",),
+    "smart_reporting/report_editor/native_pdf_extract.py": ("extract_pages", "split_pdf", "_publish_derived_pdf"),
+    "smart_reporting/report_editor/native_pdf_merge.py": ("merge_pdf",),
     "smart_reporting/report_editor/native_pdf_protection.py": ("protect_pdf",),
     "smart_reporting/report_editor/native_pdf_convert.py": ("convert_office",),
     "smart_reporting/report_editor/native_pdf_contract.py": ("pdf_review_issues",),
@@ -248,6 +259,15 @@ _SIGNING_CHAIN = {
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。
 _CALLER_GUARDED = {
+    "smart_reporting/reporting/workflow/runtime/template_semantics.py": (
+        ("_freeze_template_review", "validate_frozen_review"),
+        ("_freeze_template_review", "apath_exists"),
+        ("freeze_template_review", "_freeze_template_review"),
+        ("prepare_semantic_template", "validate_frozen_review"),
+        ("prepare_semantic_template", "bind_semantic_signature_slot"),
+        ("prepare_runtime_signature", "run_office_engine")),
+    "smart_reporting/report_editor/template_provenance.py": (("public_validation", "_project"),),
+    "smart_reporting/report_editor/template_render.py": (("render_editor_template", "build_template_provenance"),),
     "smart_reporting/reporting/workflow/runtime/publication.py": (
         ("publish_report", "_dataset_publication_gate"),
         ("_render_and_validate", "registered_document_presentations"),

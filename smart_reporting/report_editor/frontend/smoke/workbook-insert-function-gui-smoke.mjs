@@ -68,7 +68,8 @@ try{
   // 真实pointer range pick更换当前选区；写回仍须落在捕获的C3。
   const point=await page.evaluate(()=>{const rect=window.__fnRuntime.univerAPI.getActiveWorkbook().getActiveSheet().getRange('A1').getCellRect(),canvas=[...document.querySelectorAll('#workbook-grid canvas')].map(node=>node.getBoundingClientRect()).find(rect=>rect.x>=0&&rect.y>=0&&rect.width>500&&rect.height>100);return{x:canvas.x+rect.x+rect.width/2,y:canvas.y+rect.y+rect.height/2}})
   console.log(JSON.stringify({phase:'range-point',point}))
-  await page.locator('.fn-args-pick').first().click();await page.mouse.click(point.x,point.y);await page.waitForFunction(()=>document.querySelector('.fn-args-row input')?.value==='A1');await page.locator('.fn-args-pick').click();await page.locator('.fn-args-row input').first().fill('A1:A2')
+  const rangeToggle=page.locator('.fn-args-pick').first();assert.equal(await rangeToggle.getAttribute('aria-expanded'),'true');assert.equal(await page.locator(`#${await rangeToggle.getAttribute('aria-controls')}`).count(),1)
+  await rangeToggle.click();assert.equal(await rangeToggle.getAttribute('aria-expanded'),'false');await page.mouse.click(point.x,point.y);await page.waitForFunction(()=>document.querySelector('.fn-args-row input')?.value==='A1');await rangeToggle.click();assert.equal(await rangeToggle.getAttribute('aria-expanded'),'true');await page.locator('.fn-args-row input').first().fill('A1:A2')
  }
  await page.locator('.function-args-dialog .primary-action').click();await page.waitForFunction(()=>!document.querySelector('.function-args-dialog'))
  await page.reload();await page.waitForFunction(()=>document.querySelector('#report-editor')?.getAttribute('aria-busy')==='false')

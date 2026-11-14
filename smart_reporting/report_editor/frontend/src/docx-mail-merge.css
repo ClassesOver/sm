@@ -1,0 +1,4 @@
+/* Keep the source panel's compact radio rows inside the host modal rules. */
+.docx-native .modal-mailmerge .mailmerge-radio { display:inline-flex; flex-direction:row; align-items:center; gap:6px; }
+.docx-native .modal-mailmerge .mailmerge-radio input[type=radio] { width:14px; height:14px; min-height:0; margin:0; padding:0; flex:none; }
+.docx-native .modal-mailmerge { max-height:calc(100dvh - 32px); overflow:auto; }

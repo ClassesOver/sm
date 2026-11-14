@@ -1,11 +1,13 @@
 /**
- * 固定源 Design ▸ Watermark（ribbon-design-tab.tsx 预设菜单 + WatermarkDialog 文字页 + “删除水印”）：
+ * 固定源 Design ▸ Watermark（预设菜单 + 完整 WatermarkDialog + “删除水印”）：
  * 原生草稿为一条文档级 setWatermark，按全部页眉部件摘要绑定来源；与来源相同即撤回该修改。
- * 图片水印本轮不接入（对话框只提供“无水印 / 文字”）。
+ * 图片复用原生 PictureWatermarkSpec，保留自动/指定缩放与冲蚀设置。
  */
+import type { PictureWatermarkSpec } from '@genoffice/docx-engine'
 import type { NativeOperation } from './native-draft'
 
-export interface DocxWatermarkModel { text: string | null; style: Omit<DocxWatermarkSpec, 'text' | 'sizePt' | 'boxPt'> | null; picture: boolean; mixed: boolean; editable: boolean; readOnlyReason: string | null; expectedHeadersSha256: string }
+export type DocxWatermarkValue = DocxWatermarkSpec | PictureWatermarkSpec
+export interface DocxWatermarkModel { pictureSpec?: PictureWatermarkSpec | null; text: string | null; style: Omit<DocxWatermarkSpec, 'text' | 'sizePt' | 'boxPt'> | null; picture: boolean; mixed: boolean; editable: boolean; readOnlyReason: string | null; expectedHeadersSha256: string }
 export interface DocxWatermarkSpec { text: string; fontFamily?: string; colorHex?: string; opacity?: number; diagonal?: boolean; bold?: boolean; italic?: boolean; sizePt?: number; boxPt?: { widthPt: number; heightPt: number } }
 
 /** 固定源 WATERMARK_KEYS（中文：机密/严禁复制/草稿/样本）+ 非英文界面追加的 CONFIDENTIAL / DRAFT。 */
@@ -27,7 +29,7 @@ export function docxWatermarkModel(value: unknown): DocxWatermarkModel | null {
   if (typeof model.editable !== 'boolean' || typeof model.picture !== 'boolean' || typeof model.mixed !== 'boolean' || typeof model.expectedHeadersSha256 !== 'string' || !SHA.test(model.expectedHeadersSha256)
     || (model.text !== null && typeof model.text !== 'string')) return null
   const style = model.style && typeof model.style === 'object' && model.text && validDocxWatermarkSpec({ ...model.style, text: model.text }) && !('sizePt' in model.style) ? model.style as DocxWatermarkModel['style'] : null
-  return { text: model.text as string | null, style, picture: model.picture, mixed: model.mixed, editable: model.editable, readOnlyReason: typeof model.readOnlyReason === 'string' ? model.readOnlyReason : null, expectedHeadersSha256: model.expectedHeadersSha256 }
+  return { ...(validDocxPictureWatermark(model.pictureSpec) ? { pictureSpec: model.pictureSpec } : {}), text: model.text as string | null, style, picture: model.picture, mixed: model.mixed, editable: model.editable, readOnlyReason: typeof model.readOnlyReason === 'string' ? model.readOnlyReason : null, expectedHeadersSha256: model.expectedHeadersSha256 }
 }
 
 /** 与桥接一致的文字水印取值范围（固定源对话框可产生的值）。 */
@@ -54,31 +56,32 @@ export function docxWatermarkOperations(operations: NativeOperation[], model: Do
   if (found.length > 1 || !model) throw new Error('水印草稿无效或来源未提供水印能力；原草稿已保留')
   const operation = found[0]!
   if (Object.keys(operation).sort().join() !== 'expectedHeadersSha256,kind,watermark' || operation.expectedHeadersSha256 !== model.expectedHeadersSha256
-    || (operation.watermark !== null && !validDocxWatermarkSpec(operation.watermark)) || (operation.watermark === null && model.text === null && !model.picture)) throw new Error('水印草稿与当前来源不一致；原草稿已保留')
+    || (operation.watermark !== null && !validDocxWatermarkValue(operation.watermark)) || (operation.watermark === null && model.text === null && !model.picture)) throw new Error('水印草稿与当前来源不一致；原草稿已保留')
   if (!model.editable) throw new Error(model.readOnlyReason ?? '此文档的水印不能修改')
   return [JSON.parse(JSON.stringify(operation))]
 }
 
 /** 生效中的水印：草稿优先（null = 草稿删除），否则来源文字水印；undefined 表示来源为图片水印。 */
-export function effectiveDocxWatermark(operations: NativeOperation[], model: DocxWatermarkModel | null): DocxWatermarkSpec | null {
+export function effectiveDocxWatermark(operations: NativeOperation[], model: DocxWatermarkModel | null): DocxWatermarkValue | null {
   const pending = operations.find(operation => operation.kind === 'setWatermark')
-  if (pending) return pending.watermark as DocxWatermarkSpec | null
+  if (pending) return pending.watermark as DocxWatermarkValue | null
   return sourceDocxWatermark(model)
 }
 
-/** 来源文字水印（文字 + 回读样式，固定源 textFromDocImage）。 */
-export function sourceDocxWatermark(model: DocxWatermarkModel | null): DocxWatermarkSpec | null {
+/** 来源图片或文字水印及其独立回读样式。 */
+export function sourceDocxWatermark(model: DocxWatermarkModel | null): DocxWatermarkValue | null {
+  if (model?.pictureSpec) return model.pictureSpec
   return model?.text ? { text: model.text, ...(model.style ?? {}) } : null
 }
-const canonical = (spec: DocxWatermarkSpec | null) => spec === null ? null : JSON.stringify(Object.fromEntries(Object.entries({ diagonal: true, opacity: 0.5, ...spec }).sort(([a], [b]) => a.localeCompare(b))))
+const canonical = (spec: DocxWatermarkValue | null) => spec === null ? null : 'image' in spec ? JSON.stringify({ image: spec.image, scale: spec.scale, washout: spec.washout !== false }) : JSON.stringify(Object.fromEntries(Object.entries({ diagonal: true, opacity: 0.5, ...spec }).sort(([a], [b]) => a.localeCompare(b))))
 
 /** 新水印后的完整非正文草稿：替换已有的 setWatermark；删除且来源本无水印、或预设与来源相同则只撤回。 */
-export function withDocxWatermark(operations: NativeOperation[], model: DocxWatermarkModel | null, spec: DocxWatermarkSpec | null): NativeOperation[] {
+export function withDocxWatermark(operations: NativeOperation[], model: DocxWatermarkModel | null, spec: DocxWatermarkValue | null): NativeOperation[] {
   if (!model) throw new Error('当前来源未提供水印能力')
   if (!model.editable) throw new Error(model.readOnlyReason ?? '此文档的水印不能修改')
-  if (spec !== null && !validDocxWatermarkSpec(spec)) throw new Error('水印文字须为 1–255 个字符，且字号、颜色、透明度在对话框范围内')
+  if (spec !== null && !validDocxWatermarkValue(spec)) throw new Error('水印文字须为 1–255 个字符，且字号、颜色、透明度在对话框范围内')
   const others = operations.filter(operation => operation.kind !== 'setWatermark')
-  const sameAsSource = spec === null ? model.text === null && !model.picture : !model.mixed && !model.picture && canonical(spec) === canonical(sourceDocxWatermark(model))
+  const sameAsSource = spec === null ? model.text === null && !model.picture : !model.mixed && canonical(spec) === canonical(sourceDocxWatermark(model))
   return sameAsSource ? others : [...others, { kind: 'setWatermark', expectedHeadersSha256: model.expectedHeadersSha256, watermark: spec === null ? null : JSON.parse(JSON.stringify(spec)) }]
 }
 
@@ -96,3 +99,16 @@ export function docxWatermarkInkBoxPt(spec: DocxWatermarkSpec, sizePt: number): 
   const round = (value: number) => Math.min(2000, Math.round(value * 100) / 100)
   return { widthPt: round(width), heightPt: round(height) }
 }
+
+export function validDocxPictureWatermark(value: unknown): value is PictureWatermarkSpec {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const spec = value as Record<string, unknown>, image = spec.image as Record<string, unknown> | undefined
+  return !Object.keys(spec).some(key => !['image', 'scale', 'washout'].includes(key)) && !!image && typeof image === 'object'
+    && Object.keys(image).sort().join() === 'base64,heightPx,mime,widthPx'
+    && typeof image.base64 === 'string' && image.base64.length > 0 && image.base64.length <= 11 * 1024 * 1024 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(image.base64)
+    && ['image/png', 'image/jpeg', 'image/gif'].includes(String(image.mime))
+    && [image.widthPx, image.heightPx].every(n => typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 10000)
+    && (spec.scale === undefined || typeof spec.scale === 'number' && Number.isInteger(spec.scale) && spec.scale >= 1 && spec.scale <= 10000)
+    && (spec.washout === undefined || typeof spec.washout === 'boolean')
+}
+export const validDocxWatermarkValue = (value: unknown): value is DocxWatermarkValue => validDocxWatermarkSpec(value) || validDocxPictureWatermark(value)

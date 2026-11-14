@@ -21,6 +21,7 @@ class _DraftPayload(BaseModel):
 
 
 class NativeAIStartPayload(_DraftPayload):
+    client_request_id: str | None = Field(default=None, alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     instruction: str = Field(min_length=1, max_length=2000)
     selection: list[dict[str, str]] = Field(min_length=1, max_length=100)
 
@@ -81,7 +82,7 @@ def _ai_error(error: ReportingError) -> HTTPException:
         status = 409
     elif error.code in ("native_ai_job_missing",):
         status = 404
-    elif error.code in ("native_ai_disabled", "native_ai_pdf_text_disabled", "native_ai_busy"):
+    elif error.code in ("native_ai_disabled", "native_ai_pdf_text_disabled", "native_ai_busy", "native_ai_closed"):
         status = 503
     elif error.code.startswith("native_ai_"):
         status = 422
@@ -249,7 +250,17 @@ def create_native_ai_router(
                 expected_sha256=payload.expected_sha256,
                 operations=payload.operations,
                 selection=payload.selection,
+                **({"client_request_id": payload.client_request_id} if payload.client_request_id is not None else {}),
             )
+        except ReportingError as error:
+            raise _ai_error(error) from None
+
+    @router.post(base + "/cancel-request")
+    async def cancel_request(document_id: str, revision: int, request: Request,
+                             payload: NativePDFReadCancelPayload):
+        try:
+            session = await session_for(request, document_id, revision, write=True)
+            return await ai.cancel_request(session, payload.client_request_id)
         except ReportingError as error:
             raise _ai_error(error) from None
 

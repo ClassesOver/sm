@@ -1,11 +1,12 @@
-import {afterEach,expect,it,vi} from 'vitest'
+import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {createEditorShell} from './shell'
 import {createSlidesEditorView} from './slides-main'
 import {NativeDraft} from './native-draft'
 const canvas=vi.hoisted(()=>({state:undefined as any,updates:0}))
 vi.mock('./slides-canvas',()=>({mountSlidesCanvas:()=>({update(state:any){canvas.state=state;canvas.updates++},destroy(){}})}))
 const views:ReturnType<typeof createSlidesEditorView>[]=[]
-afterEach(()=>{views.splice(0).forEach(v=>v.dispose());document.body.replaceChildren();canvas.state=undefined;canvas.updates=0})
+beforeEach(()=>vi.stubGlobal('ResizeObserver',class{observe(){}unobserve(){}disconnect(){}}))
+afterEach(()=>{views.splice(0).forEach(v=>v.dispose());document.body.replaceChildren();canvas.state=undefined;canvas.updates=0;vi.unstubAllGlobals()})
 const source={revision:1,sha256:'b'.repeat(64),size:{cx:9144000,cy:5143500},slides:[{slideIndex:0,notesText:'原备注',notesEditable:true,notesReason:null,elements:[{id:'a',type:'text',name:'甲',text:'正文甲',editable:true,geometry:{x:10,y:10,width:100,height:50}}]},{slideIndex:1,notesText:'',notesEditable:true,notesReason:null,elements:[]}]}
 async function open(operations:any[]=[]){
  const draft=new NativeDraft({documentId:'notes',revision:1,sourceSha256:source.sha256,scope:{database:'fixture',companyId:'c',userId:'u',threadId:'t'}},{getItem:()=>null,setItem(){},removeItem(){}})

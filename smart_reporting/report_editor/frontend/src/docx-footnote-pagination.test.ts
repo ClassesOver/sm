@@ -1,10 +1,12 @@
-import { beforeAll, expect, it } from 'vitest'
+import { afterEach, beforeAll, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { Schema } from '@tiptap/pm/model'
 import { currentFootnotes, currentDocxNotes, footnotePagination, endnotePagination } from './docx-footnote-pagination'
 import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/renderer/parse-off-thread'
 import { readSections, readSectionSettings } from '@genoffice/docx-engine'
 import type { DocxNotesModel } from './docx-notes'
+import { revisionDisplayState } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/marks'
+afterEach(() => { document.body.querySelectorAll('[data-native-docx-review-state]').forEach(marker => marker.remove()); revisionDisplayState.mode='all' })
 const schema = new Schema({ nodes: { doc: {content:'block+',attrs:{nativeNotesOperations:{default:null}}}, paragraph:{group:'block',content:'inline*',attrs:{docxIndex:{default:0}}}, table:{group:'block',content:'paragraph+',attrs:{docxIndex:{default:0}}}, text:{group:'inline'}, docNoteRef:{inline:true,group:'inline',atom:true,attrs:{id:{default:'1'},kind:{default:'footnote'},num:{default:1}}} } })
 let bytes: Uint8Array, parsed: Awaited<ReturnType<typeof parseDocxOffThread>>, model: DocxNotesModel
 beforeAll(async () => {
@@ -37,6 +39,23 @@ const doc = (operations: unknown[] = [], table=false) => schema.nodeFromJSON({ty
 it('uses original rich NoteInfo without loading source bytes when no note changes',async()=>{
  const notes=await currentFootnotes({bytes:new Uint8Array(),parsed,doc:doc(),model},()=>true)
  expect(notes).toBe(parsed.footnotes); expect(notes[0].richParas?.flat().some(r=>r.bold)).toBe(true)
+})
+it('filters note runs for Original and Show Markup author and insertion/deletion controls',async()=>{
+ const marker=document.createElement('div'); marker.className='app'; marker.dataset.nativeDocxReviewState=''; document.body.append(marker)
+ const note={...parsed.footnotes[0]!,richParas:[[
+  {text:'inserted',ins:{author:'Alice'}},{text:'deleted',del:{author:'Bob'}},{text:'plain'},
+ ]]}
+ const filtered={...parsed,footnotes:[note]}
+ revisionDisplayState.mode='original'; marker.classList.add('rev-display-original')
+ const original=await currentFootnotes({bytes:new Uint8Array(),parsed:filtered,doc:doc(),model},()=>true)
+ expect(original[0]!.richParas?.flat().map(run=>run.text)).toEqual(['deleted','plain'])
+ revisionDisplayState.mode='all'; marker.classList.remove('rev-display-original'); marker.dataset.revHiddenAuthors=JSON.stringify(['Bob'])
+ const people=await currentFootnotes({bytes:new Uint8Array(),parsed:filtered,doc:doc(),model},()=>true)
+ expect(people[0]!.richParas?.flat().map(run=>run.text)).toEqual(['inserted','plain'])
+ marker.dataset.revHiddenAuthors='[]'; marker.dataset.revInsDel='false'
+ const kinds=await currentFootnotes({bytes:new Uint8Array(),parsed:filtered,doc:doc(),model},()=>true)
+ expect(kinds[0]!.richParas?.flat().map(run=>run.text)).toEqual(['inserted','plain'])
+ marker.remove(); revisionDisplayState.mode='all'
 })
 it('projects actual same-paragraph save XML retaining rich runs, and deletion removes entry',async()=>{
  const update={kind:'updateNote',noteKind:'footnote',noteId:'1',expectedNoteSha256:'sha',text:'Bold changed note'}

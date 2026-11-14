@@ -7,7 +7,7 @@ const sides = ['top', 'right', 'bottom', 'left'] as const
 /** pt初值可精确表达整数twip；未改字段直接保留capture值，避免单位往返量化。 */
 export function openDocxCellMarginsDialog(root: HTMLElement, initial: DocxTableMargins, inherited: readonly string[], apply: (margins: DocxTableMargins) => void) {
   const labels = { top: '上', right: '右', bottom: '下', left: '左' }
-  const modal = createModal({ root, label: '默认单元格边距', closeLabel: '关闭默认单元格边距', onRequestClose: () => modal.remove(), content: `
+  const modal = createModal({ root, label: '默认单元格边距', cardClass: 'docx-settings-dialog', closeLabel: '关闭默认单元格边距', onRequestClose: () => modal.remove(), content: `
     <h2>默认单元格边距</h2><form novalidate>
       ${sides.map(side => `<label>${labels[side]}（pt）<input data-margin="${side}" aria-label="${labels[side]}边距（pt）" type="text">${inherited.includes(side) ? '<small>使用来源默认值</small>' : ''}</label>`).join('')}
       <p>调整整表默认值，保留单元格已有自定义边距。可输入 cm、mm、in、pt 等单位；未写单位按 pt。</p>

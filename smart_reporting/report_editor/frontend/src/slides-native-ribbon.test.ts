@@ -3,6 +3,35 @@ import { createSlidesNativeRibbon, stepNativeFontSize } from './slides-native-ri
 
 afterEach(() => document.body.replaceChildren())
 
+it('大纲和阅读视图接入源onViewMode并保持四个入口互斥', () => {
+  const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  for (const command of ['outlineView', 'readingView']) {
+    const button = host.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)
+    expect(button).not.toBeNull()
+    expect(button!.disabled).toBe(false)
+    expect(button!.dataset.sourceAction).toBe('onViewMode')
+    button!.click(); expect(onAction).toHaveBeenLastCalledWith(command, true)
+  }
+  for (const command of ['normalView', 'outlineView', 'slideSorter', 'readingView']) ribbon.setValue(command, String(command === 'outlineView'))
+  expect([...host.querySelectorAll('[data-source-action="onViewMode"][aria-pressed="true"]')].map(el => el.getAttribute('data-command'))).toEqual(['outlineView'])
+  ribbon.dispose()
+})
+
+it('普通和排序视图是可执行的互斥视图入口，状态不要求写回文件', () => {
+  const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  for (const command of ['normalView', 'slideSorter']) {
+    const button = host.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!
+    expect(button.disabled).toBe(false)
+    button.click(); expect(onAction).toHaveBeenLastCalledWith(command, true)
+  }
+  ribbon.setValue('normalView', 'false'); ribbon.setValue('slideSorter', 'true')
+  expect(host.querySelector('[data-command="slideSorter"]')!.getAttribute('aria-pressed')).toBe('true')
+  expect(host.querySelector('[data-command="normalView"]')!.getAttribute('aria-pressed')).toBe('false')
+  ribbon.dispose()
+})
+
 const chartGalleryState = { target: 'rev1:0:chart', kind: 'bar' as const,
   style: { legendPos: 'b' as const, dataLabels: false, gridlines: true, gapWidthPct: 150 },
   colorSchemes: [{key:'default' as const,label:'主题默认',colors:[]},{key:'warm' as const,label:'暖色',colors:['#ED7D31','#FFC000','#FF0000','#C55A11','#833C00']}] }
@@ -183,7 +212,7 @@ it('gives every command button a semantic decorative SVG without changing its ac
     expect(accessibleLabel.startsWith(visibleLabel), button.dataset.command).toBe(true)
     if (button.dataset.unavailable !== 'true') expect(accessibleLabel).toBe(visibleLabel)
   }
-  expect(host.querySelector<HTMLButtonElement>('[data-command="print"]')!.disabled).toBe(true)
+  expect(host.querySelector<HTMLButtonElement>('[data-command="print"]')!.disabled).toBe(false)
   ribbon.dispose()
 })
 
@@ -454,7 +483,7 @@ it('preserves Insert table, image, shape and chart source actions while disablin
   ribbon.dispose()
 })
 
-it('connects the source text-box action and disables unsupported Insert Text and Equation actions', () => {
+it('connects the source text-box and Unicode equation actions while retaining unsupported Insert Text actions', () => {
   const host = document.createElement('div')
   document.body.append(host)
   const onAction = vi.fn()
@@ -481,8 +510,8 @@ it('connects the source text-box action and disables unsupported Insert Text and
     expect(control.title).toMatch(/尚无受支持的 editSlides 写回操作/)
   }
   const equation = host.querySelector<HTMLButtonElement>('[data-source-action="onOpenEquation"]')!
-  expect(equation.disabled).toBe(true)
-  expect(equation.dataset.unavailable).toBe('true')
+  expect(equation.disabled).toBe(false)
+  expect(equation.dataset.unavailable).toBeUndefined()
   ribbon.dispose()
 })
 
@@ -531,11 +560,11 @@ it('explains why unavailable upstream commands cannot run and prevents dispatch'
   document.body.append(host)
   const onAction = vi.fn()
   const ribbon = createSlidesNativeRibbon(host, { onAction })
-  const print = host.querySelector<HTMLButtonElement>('[data-command="print"]')!
+  const unavailable = host.querySelector<HTMLButtonElement>('[data-command="exportImages"]')!
 
-  expect(print.disabled).toBe(true)
-  expect(print.title).toMatch(/桌面 IPC/)
-  print.click()
+  expect(unavailable.disabled).toBe(true)
+  expect(unavailable.title).toMatch(/写回操作/)
+  unavailable.click()
   expect(onAction).not.toHaveBeenCalled()
   ribbon.dispose()
 })
@@ -599,7 +628,7 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(animationGroup.querySelector('[data-source-action="onApplyAnimation"]')).not.toBeNull()
   expect(animationGroup.querySelector<HTMLElement>('[data-source-action="onAddAnimation"]')?.dataset.command).toBe('addAnimation')
   expect(animationPanel.querySelector<HTMLElement>('[data-source-action="onAnimTiming"]')?.dataset.command).toBe('animationTrigger')
-  expect(animationPanel.querySelector('[data-command="animationPreview"]')?.getAttribute('data-unavailable')).toBe('true')
+  expect(animationPanel.querySelector('[data-command="animationPreview"]')?.getAttribute('data-unavailable')).toBeNull()
   // 整页动画序列接通后：无、动画窗格、按段与五条动作路径均可用，并派发各自命令
   for (const command of ['animationNone', 'toggleAnimationPane', 'animationByParagraph', 'motionPathRight', 'motionPathDown', 'motionPathDiagonal', 'motionPathCircle', 'motionPathZigzag']) {
     const control = animationPanel.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!
@@ -794,4 +823,21 @@ it('段落区先呈现列表与对齐，参数输入对齐且保留完整提示'
     expect(control.title).toContain(control.getAttribute('aria-label'))
   }
   ribbon.dispose()
+})
+
+it('uses second-level headings for ribbon groups under the document title', () => {
+ const host=document.body.appendChild(document.createElement('main'))
+ const title=host.appendChild(document.createElement('h1'));title.textContent='智能报告'
+ const ribbon=createSlidesNativeRibbon(host,{onAction:()=>{}})
+ const groups=host.querySelectorAll('.slides-native-ribbon-group')
+ expect(groups.length).toBeGreaterThan(0)
+ for(const group of groups)expect(group.querySelector('h2')).not.toBeNull()
+ expect(host.querySelector('.slides-native-ribbon-group h3')).toBeNull()
+ ribbon.dispose()
+})
+
+it('dispatches browser printing and prevents it while the host is locked',()=>{
+ const host=document.createElement('div'),onAction=vi.fn(),ribbon=createSlidesNativeRibbon(host,{onAction});document.body.append(host)
+ const print=host.querySelector<HTMLButtonElement>('[data-command="print"]')!;expect(print.disabled).toBe(false);print.click();expect(onAction).toHaveBeenCalledWith('print')
+ ribbon.setLocked(true);print.click();expect(onAction).toHaveBeenCalledTimes(1);ribbon.dispose()
 })

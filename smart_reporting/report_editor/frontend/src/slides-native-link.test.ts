@@ -3,6 +3,23 @@ import {openSlidesLink,validateSlidesLinkDraft} from './slides-native-link'
 const slides=[{elements:[{id:'a',type:'text',linkEditable:true},{id:'r',type:'group',linkEditable:false}]},{elements:[{id:'b',type:'picture',linkEditable:true}]}]
 const edit={slideIndex:0,elementId:'a',target:{kind:'url' as const,url:' https://example.com/a?x=1&y=2 '}}
 afterEach(()=>document.body.replaceChildren())
+it.each(['Escape','Enter'])('输入法或已消费按键不取消或提交超链接：%s',key=>{
+ for(const protection of ['composition','legacy','handled']){
+  const apply=vi.fn(),cancel=vi.fn(),editor=openSlidesLink(document.body,{elementLink:null,slides,onApply:apply,onCancel:cancel})
+  const dialog=document.querySelector('dialog')!,url=dialog.querySelector<HTMLInputElement>('[data-link-url]')!
+  url.value='https://example.com/中文草稿';url.focus()
+  const event=new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,isComposing:protection==='composition',keyCode:protection==='legacy'?229:0})
+  if(protection==='handled')event.preventDefault()
+  url.dispatchEvent(event)
+  expect(dialog.isConnected).toBe(true);expect(url.value).toBe('https://example.com/中文草稿');expect(document.activeElement).toBe(url)
+  expect(apply).not.toHaveBeenCalled();expect(cancel).not.toHaveBeenCalled()
+  url.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}))
+  expect(dialog.isConnected).toBe(false)
+  if(key==='Enter')expect(apply).toHaveBeenCalledWith({kind:'url',url:'https://example.com/中文草稿'})
+  else expect(cancel).toHaveBeenCalledOnce()
+  editor.dispose()
+ }
+})
 it('恢复前严格验证链接并返回独立canonical结果，允许URL/来源页/清除',()=>{
  expect(validateSlidesLinkDraft({linkEdits:[edit]},slides)).toEqual([{...edit,target:{kind:'url',url:edit.target.url.trim()}}])
  expect(edit.target.url.startsWith(' ')).toBe(true)

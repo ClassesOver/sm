@@ -126,6 +126,15 @@ export function applyTint(hex: string, tint: number): string {
   return hlsToRgb(h, Math.min(1, Math.max(0, lum)), s)
 }
 
+/** DrawingML亮度操作按来源顺序逐步限幅；复用HLS转换，输出取整不改变单元格tint截断规则。 */
+export function applyDrawingLuminance(hex: string, operations: readonly { kind: 'lumMod' | 'lumOff'; value: number }[]): string {
+  const [h, lightness, s] = rgbToHls(hex)
+  let l = lightness
+  for (const operation of operations) l = Math.min(1, Math.max(0,
+    operation.kind === 'lumMod' ? l * operation.value : l + operation.value))
+  return hlsToRgb(h, l, s, true)
+}
+
 function isValidHexColor(hex: string): boolean {
   return /^#[0-9A-Fa-f]{6}$/.test(hex)
 }

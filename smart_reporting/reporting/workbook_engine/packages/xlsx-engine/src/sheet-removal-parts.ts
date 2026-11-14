@@ -30,7 +30,7 @@ export function relationships(xml: string, path: string): Relationship[] {
   return result
 }
 
-function resolveTarget(owner: string, target: string): string {
+export function resolveTarget(owner: string, target: string): string {
   let decoded: string
   try { decoded = decodeURIComponent(target.split('#', 1)[0]!.trim()) } catch { throw new Error('级联删除关系Target编码无效') }
   if (!decoded || /[\x00-\x1f\\?#]/.test(decoded) || decoded.startsWith('//') || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(decoded)) throw new Error('级联删除关系Target路径不安全')

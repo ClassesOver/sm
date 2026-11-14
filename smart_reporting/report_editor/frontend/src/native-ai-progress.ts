@@ -65,7 +65,8 @@ export async function consumeNativeAIProgress(response: Response, onEvent: (even
         try { raw = JSON.parse(data) } catch { continue }
         if (!raw || typeof raw !== 'object') continue
         const item = raw as Record<string, unknown>
-        if (!Number.isSafeInteger(item.sequence) || Number(item.sequence) <= after || String(item.sequence) !== id
+        if (!Number.isSafeInteger(item.sequence) || Number(item.sequence) < 0
+          || (item.kind !== 'reset' && Number(item.sequence) <= after) || String(item.sequence) !== id
           || !['phase', 'content', 'toolStarted', 'toolCompleted', 'terminal', 'reset'].includes(String(item.kind))) continue
         const event: NativeAIProgressEvent = { sequence: Number(item.sequence), kind: item.kind as NativeAIProgressEvent['kind'] }
         for (const field of ['label', 'toolName', 'toolCallId', 'status', 'delta'] as const) if (typeof item[field] === 'string') event[field] = item[field].slice(0, field === 'delta' ? 16384 : 256)

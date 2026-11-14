@@ -1,3 +1,4 @@
+import { DOCX_FONT_PROPERTIES, DOCX_FONT_DISPLAY } from '../../../reporting/doc_engine/bridge/docx-font-properties'
 import { diffArrays } from 'diff'
 import { replayDocxOperations, formatRangeChanges, type DocxPmNode } from './docx-operations'
 import type { DocxNoteOperation, DocxNotesModel } from './docx-notes'
@@ -8,7 +9,7 @@ export type NoteRunPiece = { sourceFrom: number; sourceTo: number; style?: Recor
   | { noteKind: 'footnote' | 'endnote'; noteId: string; referenceIndex: number }
   | { noteOperationIndex: number }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
-const supported = new Set(['highlight', 'vertAlign', 'color', 'font', 'fontFamily', 'sizeHalfPoints', 'fontSize'])
+const supported = new Set<string>([...DOCX_FONT_PROPERTIES, ...DOCX_FONT_DISPLAY, 'highlight', 'vertAlign', 'color', 'font', 'fontFamily', 'sizeHalfPoints', 'fontSize', 'styleId'])
 function opaque(node: DocxPmNode) {
   return (node.marks ?? []).flatMap(mark => {
     if (['bold', 'italic', 'underline', 'strike'].includes(mark.type)) return []

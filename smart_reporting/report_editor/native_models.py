@@ -50,6 +50,7 @@ class NativeSource(NativeModel):
     report_id: str | None = Field(default=None, alias="reportId", min_length=1)
     workflow_run_id: str | None = Field(default=None, alias="workflowRunId", min_length=1)
     revision: int | None = Field(default=None, ge=1)
+    report_context_sha256: str | None = Field(default=None, alias='reportContextSha256', pattern=SHA256_PATTERN)
     parent_document_id: str | None = Field(default=None, alias="parentDocumentId", min_length=1, max_length=256)
     parent_revision: int | None = Field(default=None, alias="parentRevision", ge=1)
     parent_sha256: str | None = Field(default=None, alias="parentSha256", pattern=SHA256_PATTERN)
@@ -57,6 +58,9 @@ class NativeSource(NativeModel):
     @model_serializer(mode="wrap")
     def serialize_source(self, handler):
         result = handler(self)
+        if self.report_context_sha256 is None:
+            result.pop('reportContextSha256', None)
+            result.pop('report_context_sha256', None)
         # 旧来源的创建幂等键依赖完整序列化；新增追溯字段不能改变旧请求摘要。
         if self.origin != "derived":
             for key in ("parent_document_id", "parent_revision", "parent_sha256", "parentDocumentId", "parentRevision", "parentSha256"):

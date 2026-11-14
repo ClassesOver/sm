@@ -1,0 +1,129 @@
+.workbook-picture-dialog { position:fixed; inset:0; z-index:10050; display:flex; align-items:center; justify-content:center; background:#0005; --border:#ddd; --surface:#fff; --surface-hover:#f1f5f9; --border-strong:#94a3b8; --accent:#4472c4; --danger:#b91c1c; --radius-small:4px; }
+.workbook-picture-dialog .format-cells-dialog { background:white; color:#222; max-width:calc(100vw - 24px); max-height:calc(100vh - 24px); overflow:auto; border-radius:8px; box-shadow:0 12px 40px #0004; }
+.workbook-picture-dialog header { padding:14px; font-weight:600; border-bottom:1px solid #ddd; }
+.workbook-picture-dialog .dialog-body { padding:14px; }
+.workbook-picture-dialog .dialog-actions { padding:10px 14px; display:flex; justify-content:flex-end; gap:8px; border-top:1px solid #ddd; }
+.workbook-picture-dialog .dialog-actions button { border:1px solid #cbd5e1; border-radius:4px; padding:6px 14px; }
+.workbook-picture-dialog .primary { background:#4472c4; color:white; }
+.workbook-picture-dialog .dialog-tabs { display:flex; flex-wrap:wrap; gap:4px; padding:10px 14px 0; }
+.workbook-picture-dialog .dialog-tabs button { padding:4px 7px; border:0; background:#f1f5f9; border-radius:4px; }
+.workbook-picture-dialog .dialog-tabs .active { background:#4472c4; color:white; }
+.workbook-picture-dialog button:disabled { opacity:.55; }
+.workbook-picture-dialog .dialog-note { color:#64748b; font-size:12px; }
+/* Insert Icons dialog */
+.workbook-picture-dialog .icons-dialog {
+  width: 560px;
+}
+
+.workbook-picture-dialog .icons-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 14px 0;
+}
+
+.workbook-picture-dialog .icons-toolbar input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.workbook-picture-dialog .icons-colors {
+  display: flex;
+  gap: 4px;
+}
+
+.workbook-picture-dialog .icons-colors button {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+}
+
+.workbook-picture-dialog .icons-colors button.active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.workbook-picture-dialog .icons-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.workbook-picture-dialog .icons-grid button {
+  display: grid;
+  place-items: center;
+  height: 40px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-small);
+  background: none;
+  font-size: 24px;
+}
+
+.workbook-picture-dialog .icons-grid button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+/* Equation dialog */
+.workbook-picture-dialog .equation-dialog {
+  width: 560px;
+}
+
+.workbook-picture-dialog .equation-presets {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.workbook-picture-dialog .equation-presets button {
+  display: grid;
+  place-items: center;
+  min-height: 52px;
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: none;
+  font-family: 'STIX Two Math', 'Cambria Math', 'Latin Modern Math', serif;
+  font-size: 13px;
+}
+
+.workbook-picture-dialog .equation-presets button:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.workbook-picture-dialog .equation-latex {
+  width: 100%;
+  margin-top: 10px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.workbook-picture-dialog .equation-preview {
+  display: grid;
+  place-items: center;
+  min-height: 90px;
+  margin-top: 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.workbook-picture-dialog .equation-error {
+  padding: 0 12px;
+  color: var(--danger);
+  font-size: 12px;
+}
+

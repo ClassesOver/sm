@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -98,6 +99,8 @@ class _NativeAIJob:
     error: dict[str, str] | None = None
     accepted: bool = False
     event_log: AgentEventLog = field(default_factory=AgentEventLog)
+    client_request_id: str = ""
+    request_sha256: str | None = None
 
 
 def _invalid(code: str, message: str) -> ReportingError:
@@ -133,6 +136,47 @@ class NativeAIService:
         self.editor, self.planner, self.enabled = editor, planner, enabled
         self.timeout_seconds = timeout_seconds
         self._jobs: dict[str, _NativeAIJob] = {}
+        self._requests: dict[tuple[str, str], str] = {}
+        self._closed = False
+
+    @staticmethod
+    def _request_id(value: str) -> str:
+        if not isinstance(value, str) or re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", value) is None:
+            raise _invalid("native_ai_request_invalid", "AI 请求身份无效。")
+        return value
+
+    def _prune(self) -> None:
+        cutoff = datetime.now(UTC) - timedelta(hours=1)
+        for key, job in tuple(self._jobs.items()):
+            if job.created_at < cutoff and (job.task is None or job.task.done()):
+                self._jobs.pop(key, None)
+        self._requests = {key: value for key, value in self._requests.items() if value in self._jobs}
+
+    def _request_job(self, context, request_id, fingerprint):
+        self._prune()
+        edit_id = self._requests.get((context.digest(), request_id))
+        if edit_id is None:
+            return None
+        job = self._jobs[edit_id]
+        if job.request_sha256 is not None and job.request_sha256 != fingerprint:
+            raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。")
+        return job
+
+    async def cancel_request(self, session, client_request_id):
+        context = await self._context(session)
+        request_id = self._request_id(client_request_id)
+        self._prune()
+        key = (context.digest(), request_id)
+        if key in self._requests:
+            return await self.cancel_edit(session, self._requests[key])
+        if len(self._jobs) >= 128:
+            raise _invalid("native_ai_busy", "AI 候选任务繁忙，请稍后重试。")
+        job = _NativeAIJob(uuid4().hex, context.digest(), "", context.scope.user_id,
+                           datetime.now(UTC), status="cancelled", client_request_id=request_id)
+        self._jobs[job.edit_id] = job
+        self._requests[key] = job.edit_id
+        await job.event_log.finish(job.status)
+        return self._serialize(job)
 
     async def _context(self, session: ReportEditorSession) -> NativeEditorContext:
         context = await self.editor.context_for_session(session)
@@ -163,13 +207,23 @@ class NativeAIService:
         expected_sha256: str,
         operations: list[dict[str, Any]],
         selection: list[dict[str, str]],
+        client_request_id: str | None = None,
     ) -> dict[str, Any]:
+        if self._closed:
+            raise _invalid("native_ai_closed", "AI 候选服务已关闭。")
         context = await self._context(session)
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 2000:
             raise _invalid("native_ai_instruction_invalid", "请输入不超过 2000 字的修改要求。")
         if expected_sha256 != context.source_file.sha256:
             raise _invalid("native_ai_snapshot_changed", "原生草稿来源已变化。")
         base = _copy_operations(operations)
+        request_id = self._request_id(client_request_id) if client_request_id is not None else None
+        fingerprint = native_digest({"context": context.digest(), "instruction": instruction,
+            "operations": base, "selection": selection}) if request_id else None
+        if request_id:
+            previous = self._request_job(context, request_id, fingerprint)
+            if previous:
+                return self._serialize(previous)
         # 原来源模型提供唯一允许的锚点；预览改后文件的 SHA 与 ID 不用于保存操作。
         original = await self.editor.preview(
             context, expected_sha256=expected_sha256, operations=[]
@@ -205,30 +259,41 @@ class NativeAIService:
         )
         if len(material) > 48000:
             raise _invalid("native_ai_selection_too_large", "选区内容过多，请缩小选区。")
-        cutoff = datetime.now(UTC) - timedelta(hours=1)
-        for key, previous in tuple(self._jobs.items()):
-            if previous.created_at < cutoff and (previous.task is None or previous.task.done()):
-                self._jobs.pop(key, None)
+        if self._closed:
+            raise _invalid("native_ai_closed", "AI 候选服务已关闭。")
+        # 预览期间取消或重复启动可能已登记相同请求，必须在创建任务前再次核对。
+        self._prune()
+        if request_id:
+            previous = self._request_job(context, request_id, fingerprint)
+            if previous:
+                return self._serialize(previous)
         if sum(job.status == "running" for job in self._jobs.values()) >= 32:
             raise _invalid("native_ai_busy", "AI 候选任务繁忙，请稍后重试。")
         completed = sorted(
             (
                 previous
                 for previous in self._jobs.values()
-                if previous.status != "running" and (previous.task is None or previous.task.done())
+                if not previous.client_request_id and previous.status != "running"
+                and (previous.task is None or previous.task.done())
             ),
             key=lambda previous: previous.created_at,
         )
         for previous in completed[: max(0, len(self._jobs) - 127)]:
             self._jobs.pop(previous.edit_id, None)
+        if len(self._jobs) >= 128:
+            raise _invalid("native_ai_busy", "AI 候选任务繁忙，请稍后重试。")
         job = _NativeAIJob(
             uuid4().hex,
             context.digest(),
             self._snapshot(context, base),
             context.scope.user_id,
             datetime.now(UTC),
+            client_request_id=request_id or "",
+            request_sha256=fingerprint,
         )
         self._jobs[job.edit_id] = job
+        if request_id:
+            self._requests[(context.digest(), request_id)] = job.edit_id
         prompt = (
             "忠实编辑给定 Word 授权选区，只输出 summary 和 operations。每项为 kind 与 arguments，"
             "arguments 使用所给原文件 blockId/cellId/expectedObjectSha256；不要使用改后文件身份。"
@@ -612,13 +677,13 @@ class NativeAIService:
             or self._snapshot(context, base) != job.snapshot_sha256
         ):
             raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
-        if job.status != "succeeded" or job.proposal is None:
+        if job.status != "succeeded" or job.proposal is None or self._closed:
             raise _invalid("native_ai_not_ready", "AI 候选尚不可采纳。")
         combined = self._combined_operations(context, base, job.proposal["operations"])
         preview = await self.editor.preview(
             context, expected_sha256=expected_sha256, operations=combined
         )
-        if job.status != "succeeded" or job.proposal is None:
+        if job.status != "succeeded" or job.proposal is None or self._closed:
             raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
         if context.format == "pdf" and preview.get("previewDigest") != job.proposal.get(
             "previewDigest"
@@ -648,6 +713,7 @@ class NativeAIService:
         if job.task and not job.task.done():
             job.task.cancel()
             await asyncio.gather(job.task, return_exceptions=True)
+        await job.event_log.finish(job.status)
         return self._serialize(job)
 
     @staticmethod
@@ -657,18 +723,24 @@ class NativeAIService:
             "status": job.status,
             "snapshotSha256": job.snapshot_sha256,
             "accepted": job.accepted,
+            **({"clientRequestId": job.client_request_id} if job.client_request_id else {}),
             **({"proposal": job.proposal} if job.proposal is not None else {}),
             **({"error": job.error} if job.error else {}),
         }
 
     async def aclose(self) -> None:
-        jobs = [job for job in self._jobs.values() if job.task and not job.task.done()]
+        self._closed = True
+        jobs = [job for job in self._jobs.values()
+                if job.status == "running" or job.task and not job.task.done()]
         for job in jobs:
             job.status = "cancelled"
             job.proposal = None
-            job.task.cancel()
-        tasks = [job.task for job in jobs]
+            if job.task:
+                job.task.cancel()
+        tasks = [job.task for job in jobs if job.task]
         await asyncio.gather(*tasks, return_exceptions=True)
+        for job in jobs:
+            await job.event_log.finish(job.status)
 
 
 def create_native_ai_service(model: Any, editor: Any, *, enabled: bool = False) -> NativeAIService:

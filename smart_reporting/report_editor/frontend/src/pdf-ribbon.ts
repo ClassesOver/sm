@@ -13,7 +13,7 @@ const TABS = [
 
 export interface PdfRibbon {
   group(tab: string, label: string): HTMLElement
-  setHasForms(hasForms: boolean,canDesign?:boolean): void
+  setHasForms(hasForms: boolean,canDesign?:boolean,canFillStatic?:boolean): void
   setLanguage(language: string): void
   dispose(): void
 }
@@ -59,6 +59,7 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
     }
     button.addEventListener('click', () => select(tab.id))
     button.addEventListener('keydown', event => {
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
       const visibleTabs = [...buttons].filter(([,button]) => !button.hidden).map(([id]) => id)
       const index = visibleTabs.indexOf(tab.id)
       const next = event.key === 'ArrowRight' ? visibleTabs[(index + 1) % visibleTabs.length]
@@ -95,7 +96,7 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
       group.className = 'pdf-ribbon-group'
       group.dataset.ribbonGroup = label
       group.setAttribute('aria-label', label)
-      const title = document.createElement('h3')
+      const title = document.createElement('h2')
       title.textContent = pdfRibbonLabel(label, language)
       group.append(title)
       const trailing = tab !== 'home' || label === 'Convert & Export' ? null
@@ -106,10 +107,10 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
       groups.push({ element: group, name: label, title })
       return group
     },
-    setHasForms(value,canDesign=false) {
+    setHasForms(value,canDesign=false,canFillStatic=false) {
       hasForms = value
       for (const id of contextual) {
-        const shown=value||(id==='formDesign'&&canDesign)
+        const shown=value||(id==='formDesign'&&canDesign)||(id==='fillForm'&&canFillStatic)
         buttons.get(id)!.hidden = !shown
         if (!shown && active === id) select('home')
       }

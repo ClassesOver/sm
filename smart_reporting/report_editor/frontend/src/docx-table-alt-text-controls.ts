@@ -2,7 +2,7 @@ import {createModal} from './modal'
 import {buttonClasses} from './button'
 import {normalizeTableAltText,type TableAltText} from './docx-table-alt-text-core'
 export function openDocxTableAltTextDialog(root:HTMLElement,initial:TableAltText,apply:(value:TableAltText)=>void){
- const modal=createModal({root,label:'标题/说明',closeLabel:'关闭标题/说明',onRequestClose:()=>modal.remove(),content:`<h2>标题/说明</h2><form><label>标题<input type="text" aria-label="标题"></label><label>说明<textarea aria-label="说明" rows="5"></textarea></label><p>为无法看到表格的读者描述表格内容。此处保存表格的替代文字。</p><p role="alert"></p><button type="button" data-action="cancel" class="${buttonClasses('secondary')}">取消</button><button type="submit" class="${buttonClasses('primary')}">确定</button></form>`})
+ const modal=createModal({root,label:'标题/说明',cardClass:'docx-table-property-dialog',closeLabel:'关闭标题/说明',onRequestClose:()=>modal.remove(),content:`<h2>标题/说明</h2><form><label>标题<input type="text" aria-label="标题"></label><label>说明<textarea aria-label="说明" rows="5"></textarea></label><p>为无法看到表格的读者描述表格内容。此处保存表格的替代文字。</p><p role="alert"></p><button type="button" data-action="cancel" class="${buttonClasses('secondary')}">取消</button><button type="submit" class="${buttonClasses('primary')}">确定</button></form>`})
  const title=modal.card.querySelector<HTMLInputElement>('input')!,description=modal.card.querySelector<HTMLTextAreaElement>('textarea')!;title.value=initial.title;description.value=initial.description
  // textarea按HTML规则将原始CR/CRLF规范为LF；未改值时保留原始来源。
  const initialTitle=title.value,initialDescription=description.value

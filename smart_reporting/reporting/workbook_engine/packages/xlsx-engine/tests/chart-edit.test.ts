@@ -52,6 +52,36 @@ async function buildChartWorkbook(): Promise<Uint8Array> {
   return mutation.buffer
 }
 
+async function buildComboChartWorkbook(secondPlot = 'lineChart'): Promise<Uint8Array> {
+  const comboPlot =
+    `<c:${secondPlot}><c:grouping val="standard"/><c:varyColors val="0"/>` +
+    '<c:ser><c:idx val="1"/><c:order val="1"/><c:tx><c:v>Costs</c:v></c:tx>' +
+    '<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$3</c:f><c:strCache><c:ptCount val="2"/></c:strCache></c:strRef></c:cat>' +
+    '<c:val><c:numRef><c:f>Sheet1!$C$2:$C$3</c:f><c:numCache><c:ptCount val="2"/></c:numCache></c:numRef></c:val>' +
+    '</c:ser><c:axId val="333"/><c:axId val="444"/></c:' + secondPlot + '>'
+  const comboXml = CHART_XML.replace('</c:barChart>', `</c:barChart>${comboPlot}`)
+    .replace(
+      '</c:plotArea>',
+      '<c:catAx><c:axId val="333"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="1"/><c:axPos val="b"/><c:crossAx val="444"/></c:catAx>' +
+        '<c:valAx><c:axId val="444"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="r"/><c:crossAx val="333"/><c:crosses val="max"/></c:valAx></c:plotArea>',
+    )
+  const blank = await createBlankWorkbook()
+  const seeded = await applyCellEdits(blank, [])
+  const contentTypes = (await partOf(seeded, '[Content_Types].xml')).replace(
+    '</Types>',
+    '<Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/></Types>',
+  )
+  const mutation = await assemblePackage(seeded, {
+    replaced: new Map<string, string>([['[Content_Types].xml', contentTypes]]),
+    added: new Map([['xl/charts/chart1.xml', comboXml]]),
+    addedBinary: new Map(),
+    removedEntries: [],
+    addedEntries: ['xl/charts/chart1.xml'],
+    touchedEntries: ['[Content_Types].xml', 'xl/charts/chart1.xml'],
+  })
+  return mutation.buffer
+}
+
 describe('chart edits', () => {
   it('lists chart parts and rewrites the title', async () => {
     const bytes = await buildChartWorkbook()
@@ -79,6 +109,31 @@ describe('chart edits', () => {
       { chartPath: 'xl/charts/chart1.xml', chartType: 'bar' },
     ])
     expect(await partOf(flipped, 'xl/charts/chart1.xml')).toContain('<c:barDir val="bar"/>')
+  })
+
+  it('collapses supported combos to one plot, preserving all series and primary axes', async () => {
+    const bytes = await buildComboChartWorkbook()
+    const edited = await applyChartEdits(bytes, [
+      { chartPath: 'xl/charts/chart1.xml', chartType: 'line' },
+    ])
+    const xml = await partOf(edited, 'xl/charts/chart1.xml')
+    expect(xml.match(/<c:lineChart>/g)).toHaveLength(1)
+    expect(xml.match(/<c:ser>/g)).toHaveLength(2)
+    expect(xml).toContain('<c:v>Sales</c:v>')
+    expect(xml).toContain('<c:v>Costs</c:v>')
+    expect(xml).toContain('<c:f>Sheet1!$C$2:$C$3</c:f>')
+    expect(xml).toContain('<c:axId val="111"/>')
+    expect(xml).toContain('<c:axId val="222"/>')
+    expect(xml).not.toContain('<c:axId val="444"/>')
+    expect(xml).not.toContain('<c:valAx><c:axId val="444"/>')
+    expect(xml).toContain('<a:t>Old</a:t>')
+  })
+
+  it('rejects combos containing a plot family outside bar, line, or area', async () => {
+    const bytes = await buildComboChartWorkbook('scatterChart')
+    await expect(
+      applyChartEdits(bytes, [{ chartPath: 'xl/charts/chart1.xml', chartType: 'line' }]),
+    ).rejects.toThrow(/Only bar, line, and area combos/)
   })
 
   it('converting to pie drops the axes; back to column synthesizes them', async () => {
