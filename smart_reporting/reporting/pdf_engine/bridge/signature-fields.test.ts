@@ -71,3 +71,53 @@ test('越界、错页、已签、过期身份、重复绑定与非签名形状�
   await assert.rejects(patchPdfWithReceipt(bytes, [ink([[60, 80, 120, 110]]), ink([[70, 80, 130, 110]])], model.sourceSha256), /identity_invalid_or_readonly/)
   await assert.rejects(patchPdfWithReceipt(bytes, [{ kind: 'addDrawing', pageId, shape: 'rect', rect: [50, 70, 100, 100], color: [0, 0, 0], width: 1, signatureField: { fieldId: open!.fieldId, expectedFieldSha256: open!.expectedFieldSha256 } }], model.sourceSha256))
 })
+
+async function readonlySource(flags: 'direct' | 'inherited' | 'writable') {
+  const document = await PDFDocument.create()
+  const page = document.addPage([400, 500])
+  const field = document.context.obj({ FT: 'Sig', T: PDFString.of('Signature'), Type: 'Annot', Subtype: 'Widget', Rect: [40, 60, 240, 120], F: 4, P: page.ref })
+  const ref = document.context.register(field)
+  let root = ref
+  if (flags === 'direct') field.set(PDFName.of('Ff'), document.context.obj(1))
+  if (flags === 'inherited') {
+    const parent = document.context.obj({ T: PDFString.of('Group'), Ff: 1, Kids: [ref] })
+    root = document.context.register(parent)
+    field.set(PDFName.of('Parent'), root)
+    assert.equal(field.has(PDFName.of('Ff')), false)
+  }
+  page.node.set(PDFName.of('Annots'), document.context.obj([ref]))
+  document.catalog.set(PDFName.of('AcroForm'), document.context.obj({ Fields: [root] }))
+  assert.equal(document.getForm().getFields()[0]!.isReadOnly(), flags !== 'writable')
+  return document.save()
+}
+
+const operation = (model: Awaited<ReturnType<typeof inspectPdf>>, shape: 'ink' | 'image') => ({
+  kind: 'addDrawing', pageId: model.pages[0]!.pageId, shape,
+  ...(shape === 'ink' ? { paths: [[60, 80, 120, 110, 200, 70]] } : { image: png, rect: [50, 70, 230, 110] }),
+  color: [0.15, 0.15, 0.15], width: 1.6,
+  signatureField: { fieldId: model.signatureFields[0]!.fieldId, expectedFieldSha256: model.signatureFields[0]!.expectedFieldSha256 },
+})
+
+for (const flags of ['direct', 'inherited'] as const) {
+  test(`${flags} ReadOnly signature field is advertised as unbindable`, async () => {
+    const model = await inspectPdf(await readonlySource(flags))
+    assert.equal(model.signatureFields[0]!.signed, false)
+    assert.equal(model.signatureFields[0]!.bindable, false)
+    assert.ok(model.signatureFields[0]!.reason)
+  })
+  for (const shape of ['ink', 'image'] as const) test(`server refuses ${shape} binding to ${flags} ReadOnly signature field`, async () => {
+    const bytes = await readonlySource(flags), model = await inspectPdf(bytes)
+    await assert.rejects(patchPdfWithReceipt(bytes, [operation(model, shape)], model.sourceSha256), /pdf_signature_field_identity_invalid_or_readonly/)
+  })
+}
+
+for (const shape of ['ink', 'image'] as const) test(`server still binds ${shape} to an unsigned writable signature field without setting V`, async () => {
+  const bytes = await readonlySource('writable'), model = await inspectPdf(bytes)
+  assert.equal(model.signatureFields[0]!.bindable, true)
+  const result = await patchPdfWithReceipt(bytes, [operation(model, shape)], model.sourceSha256)
+  const saved = await PDFDocument.load(result.bytes)
+  assert.equal(saved.getForm().getFields()[0]!.acroField.dict.has(PDFName.of('V')), false)
+  const annotations = saved.getPage(0).node.lookup(PDFName.of('Annots'), PDFArray)
+  assert.equal(annotations.size(), 2)
+  assert.equal(annotations.lookup(1, PDFDict).has(PDFName.of('GenOfficeFormField')), true)
+})

@@ -27,7 +27,8 @@ def _source(state: str = 'split') -> bytes:
         sheet.freeze_panes = 'B3'
     other = workbook.create_sheet('其他')
     other['A1'] = '保持不变'
-    stream = BytesIO(); workbook.save(stream)
+    stream = BytesIO()
+    workbook.save(stream)
     return stream.getvalue()
 
 

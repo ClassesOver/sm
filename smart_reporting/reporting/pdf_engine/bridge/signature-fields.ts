@@ -58,6 +58,7 @@ export function inspectSignatureFields(document: PDFDocument, formFields: { name
       if (pageIndex === undefined || !rect.every(Number.isFinite) || box.width < 4 || box.height < 4) { reason ??= '签名字段控件的页面或位置无法确认'; continue }
       widgets.push({ pageIndex, rect: rect.map(value => Math.round(value * 100) / 100) as SignatureFieldWidget['rect'] })
     }
+    if (source?.isReadOnly()) reason ??= '签名字段为只读，不能放入可视签名'
     if (signed) reason ??= '此签名字段已有证书签名，写入任何内容都会使其失效'
     if (visual.has(field.name)) reason ??= '此签名字段已有可视签名'
     if (widgets.length !== 1) reason ??= '仅支持只有一个控件的签名字段'

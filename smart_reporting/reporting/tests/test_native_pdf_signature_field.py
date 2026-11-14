@@ -3,7 +3,14 @@ from io import BytesIO
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, DictionaryObject, FloatObject, NameObject, NumberObject, TextStringObject
+from pypdf.generic import (
+    ArrayObject,
+    DictionaryObject,
+    FloatObject,
+    NameObject,
+    NumberObject,
+    TextStringObject,
+)
 
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_pdf_existing_image_replace import _fixture
@@ -28,7 +35,8 @@ def _source(signed=False):
     ref = writer._add_object(field)
     page[NameObject('/Annots')] = ArrayObject([ref])
     writer._root_object[NameObject('/AcroForm')] = writer._add_object(DictionaryObject({NameObject('/Fields'): ArrayObject([ref]), NameObject('/SigFlags'): NumberObject(1)}))
-    stream = BytesIO(); writer.write(stream)
+    stream = BytesIO()
+    writer.write(stream)
     return stream.getvalue()
 
 
