@@ -1,6 +1,8 @@
 # Word binding persistence: verification ledger
 
-Status: **targeted private-persistence/CAS stage validated for Draft PR review**.
+Status: **Draft review reopened for lifecycle/heartbeat expiry fix; new PG GREEN pending**.
+The 78-case result below is historical evidence for 44181e6, not proof of the new
+follow-up implementation. See follow-up I1 at the end of this ledger.
 Independent disposable PG18 validation of exact commit 44181e6 reports 78 passed,
 0 failed, 0 skipped, exit 0, with one third-party deprecation warning. The original
 real PG RED regression is GREEN with the same test file. This is not a full-suite,
@@ -184,3 +186,96 @@ recovery may not execute a provider at all. The gate is the versioned candidate/
 finish reference plus the persisted CLOSED/FINISH_ACCEPTED current run. A future
 coordinator must distinguish provider success from receipt-only recovery and must
 never relabel provider ERROR/unknown status as a successful provider run.
+
+## Follow-up review I1: lifecycle/heartbeat lock-wait expiry
+
+The independent PR review reopened a blocking lease-time issue after the initial
+78-case result. That earlier result is valid for its exact tree, but did not cover
+pure task-row locking across lease expiry. Draft status remains; no merge/deployment
+is authorized. Current fix candidate requires a new targeted PG validation.
+
+### Actual RED and clock-only control, before the fix
+
+The new immutable test file `test_lifecycle_expiry_postgres.py` has SHA256
+`78b00c7e1eb65c47f1b07c689758485c69776bc0c80bdd0b0aef3ebd4044fc04`.
+Two independent disposable PG18 experiments ran exactly the same selected seven cases:
+
+- Original implementation: commit `8cf6b4bddcb9dec51e27c6e14b554f7fb6d871b5`, tree
+  `0554e32b5d9ca8965b63c868d361cd5e5ea96bd9`.
+- Experiment-only clock predicate control: commit
+  `88cd90bd89ce5e3f22c365cd7ccb62200111826c`, tree
+  `a888d0f8d9ff98bfb689d08190d295c2e8c8ca56`. Only the five lifecycle final expiry
+  predicates and heartbeat's expiry predicate changed to clock_timestamp(); no task
+  lock or post-lock validation was added. This control is not a fix/publication branch.
+
+Both runs returned **6 failed, 1 passed, 9 deselected, exit 1, 0 errors, 0 skipped**.
+The failures were actual assertion failures, not import, fixture, readiness or timeout
+failures. Open/resume/request_finish/finalize_finish returned success after expiry;
+heartbeat renewed an expired same-epoch lease; short-wait renewal lost TTL by starting
+it before the wait. The close case PASSED in both experiments, including its actual
+blocking observation, expiry/error check and full-row rollback assertions; it is not
+misreported as RED or removed. Its successful-case blocked SQL was not printed, and
+no extra run was made solely to obtain that diagnostic.
+
+The external blocker only SELECT FOR UPDATE-locked the task row and did not alter its
+tuple. pg_blocking_pids and independent database-time polling proved real waiting and
+expiry. Control failure SQL explicitly contained lease_expires_at > clock_timestamp().
+This demonstrates that replacing a predicate's Python timestamp with a volatile DB
+function alone is insufficient when qualification occurs before a pure row-lock wait.
+Both experiment containers/anonymous volumes were cleaned. An initial original-run
+container had a readiness race before pytest started and was cleaned; each actual
+pytest experiment then ran once on a new container. No failed setup counted as RED.
+
+### Minimal implementation and lock order
+
+Only after those real RED results, all five lifecycle transitions acquire the task
+row via shared _locked_task before child writes, then separately SELECT fresh database
+clock_timestamp() after the lock returns and recheck version/owner/epoch/actual expiry.
+Their final task UPDATEs retain a fresh DB-time predicate because later child-row waits
+can also span expiry. Existing task→run/instruction/execution mutation order is kept;
+no universal absence-of-deadlocks claim is made for every repository/maintenance path.
+
+Heartbeat uses that same real task lock and post-lock authority check, with an explicit
+None version only for heartbeat so normal task progress does not invalidate a live
+lease. Its original four runnable states, owner and epoch guards remain. Renewal starts
+from database clock_timestamp() at the guarded write, RETURNING the actual expires_at;
+neither epoch nor state_version advances. It cannot revive a lease whose authority
+expired while waiting. Production remains PG-only; SQLite tests register a SQL-evaluated
+clock_timestamp UDF, not a production Python-time fallback.
+
+Claim/release semantics are not changed. Generic repository deadline semantics are
+also not expanded: execution budget checks exist in the coordinator, and existing
+FINISHING bookkeeping can complete under a live lease after that budget. The new
+characterization test makes this explicit. Word private commit/read/recovery retains
+its own hard deadline and has a separate real row-wait deadline test. This patch does
+NOT establish a global hard deadline for all generic task APIs.
+
+### Tests and evidence added, not substituted for RED
+
+The original seven-case RED selection stays byte-for-byte unchanged for GREEN.
+The same file also contains run-row wait expiry/rollback checks, heartbeat stale
+owner/epoch/terminal rejection, and the explicit existing generic deadline contract.
+
+The prior `test_old_resume_rolls_back_after_concurrent_postgres_epoch_takeover` is
+replaced by `test_old_resume_rolls_back_before_queued_postgres_epoch_takeover`.
+The old test paused while waiting for another transaction to change an unlocked
+snapshot; with a true task row lock this would create an artificial test deadlock.
+The replacement instead holds a real run row, lets the old resume own task then wait
+on run, observes expiry and a new claim queuing behind task, and proves old rollback
+before the new claim commits. Run resume_count/epoch and task version/new-owner
+assertions are retained, not skipped or weakened.
+
+Separate new PG tests cover bounded request_finish/cancel contention in both orders,
+pending-instruction/new-attempt rollback after run-row waits, independently created
+DB instances contending on actual PostgreSQL advisory locks, each private-column
+CHECK in isolation, actual get_task/get_task_snapshot dataclass/repr projections,
+terminal-row retention deletion, and Word's unchanged hard deadline. These extra tests
+are pending execution and are not presented as substitutes for the original RED cases.
+Projection tests do not claim production log/export redaction or cleanup scheduling.
+
+Local focused contracts+SQLite remain **44 passed** after the new helper and test UDF.
+Ruff, compileall and diff checks are run on the candidate; real PG GREEN is still
+pending. The earlier default full-suite attempt remains the historical **780 collection
+errors** report above; it was not repeated or relabeled as a current full-suite pass.
+Real-scale migration lock budgets, old-worker draining, backups/restore, full application
+validation and production enablement remain outside this limited Draft candidate.

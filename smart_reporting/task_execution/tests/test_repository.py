@@ -212,46 +212,51 @@ async def test_finish_is_two_phase_and_instruction_requires_successor(repository
 
 
 @pytest.mark.anyio
-async def test_old_resume_rolls_back_after_concurrent_postgres_epoch_takeover(repository, monkeypatch):
-    """Two real PG transactions: takeover after snapshot, before old attempt write."""
+async def test_old_resume_rolls_back_before_queued_postgres_epoch_takeover(repository):
+    """A real task lock serializes takeover; expired old run writes still roll back."""
     import asyncio
-    from datetime import timedelta
+    from types import SimpleNamespace
 
-    from sqlalchemy import update
+    from sqlalchemy import select, text
 
-    from smart_reporting.task_execution.models import utcnow
+    from smart_reporting.task_execution.tests.test_lifecycle_expiry_postgres import (
+        blocked_statement,
+        database_lease_expired,
+    )
 
     task = await repository.create_task_with_initial_attempt(scope("late-resume"), "目标")
     old_lease = await repository.claim_lease(task.scope.external_run_id, "old-worker")
     task, initial_attempt = await repository.open_initial(
         task.scope.external_run_id, old_lease, task.state_version,
     )
-    snapshot_read = asyncio.Event()
-    takeover_done = asyncio.Event()
-    original = repository._locked_task
-
-    async def pause_after_snapshot(*args, **kwargs):
-        row = await original(*args, **kwargs)
-        snapshot_read.set()
-        await asyncio.wait_for(takeover_done.wait(), timeout=5)
-        return row
-
-    monkeypatch.setattr(repository, "_locked_task", pause_after_snapshot)
-    old_resume = asyncio.create_task(repository.resume_current(
-        task.scope.external_run_id, old_lease, task.state_version,
-    ))
+    database = SimpleNamespace(async_engine=repository.db.db_engine)
+    async with repository.db.db_engine.begin() as connection:
+        expiry = (await connection.execute(text('UPDATE agentos_coding.agentos_coding_tasks '
+            "SET lease_expires_at=clock_timestamp()+interval '1 second' "
+            'WHERE external_run_id=:run RETURNING lease_expires_at'),
+            {'run': task.scope.external_run_id})).scalar_one()
+    old_lease = Lease(old_lease.owner, old_lease.epoch, expiry)
+    actors = []
     try:
-        await asyncio.wait_for(snapshot_read.wait(), timeout=5)
-        async with repository.db.db_engine.begin() as connection:
-            await connection.execute(update(repository.tasks).where(
-                repository.tasks.c.external_run_id == task.scope.external_run_id,
-            ).values(lease_expires_at=utcnow() - timedelta(seconds=1)))
-        new_lease = await repository.claim_lease(task.scope.external_run_id, "new-worker")
-        assert new_lease.epoch == old_lease.epoch + 1
-        takeover_done.set()
-        with pytest.raises(TaskExecutionRepositoryError) as captured:
-            await old_resume
-        assert captured.value.code == "task_cas_conflict"
+        async with repository.db.db_engine.begin() as blocker:
+            await blocker.execute(select(repository.runs.c.internal_run_id).where(
+                repository.runs.c.internal_run_id == initial_attempt.internal_run_id).with_for_update())
+            holder = (await blocker.execute(text('SELECT pg_backend_pid()'))).scalar_one()
+            actors.append(asyncio.create_task(repository.resume_current(
+                task.scope.external_run_id, old_lease, task.state_version)))
+            await blocked_statement(database, holder)
+            async with repository.db.db_engine.connect() as observer:
+                old_pid = (await observer.execute(text('SELECT pid FROM pg_stat_activity '
+                    "WHERE datname=current_database() AND wait_event_type='Lock' "
+                    'AND :holder = ANY(pg_blocking_pids(pid))'), {'holder': holder})).scalar_one()
+            await database_lease_expired(repository, database, task.scope.external_run_id)
+            actors.append(asyncio.create_task(repository.claim_lease(task.scope.external_run_id, "new-worker")))
+            await blocked_statement(database, old_pid)
+        results = await asyncio.wait_for(asyncio.gather(*actors, return_exceptions=True), 5)
+        assert isinstance(results[0], TaskExecutionRepositoryError)
+        assert results[0].code == "task_cas_conflict"
+        new_lease = results[1]
+        assert isinstance(new_lease, Lease) and new_lease.epoch == old_lease.epoch + 1
         after = await repository.get_attempt(initial_attempt.internal_run_id)
         assert after.resume_count == initial_attempt.resume_count
         assert after.lease_epoch == old_lease.epoch
@@ -259,6 +264,6 @@ async def test_old_resume_rolls_back_after_concurrent_postgres_epoch_takeover(re
         assert current.state_version == task.state_version
         assert current.lease_owner == "new-worker"
     finally:
-        takeover_done.set()
-        old_resume.cancel()
-        await asyncio.gather(old_resume, return_exceptions=True)
+        for actor in actors:
+            actor.cancel()
+        await asyncio.gather(*actors, return_exceptions=True)

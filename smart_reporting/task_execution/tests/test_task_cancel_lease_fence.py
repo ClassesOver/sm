@@ -3,7 +3,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, insert, select, update
+from sqlalchemy import create_engine, event, insert, select, update
 
 from smart_reporting.task_execution import (
     Lease,
@@ -49,6 +49,12 @@ def repository(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'lease-fence.sqlite'}").execution_options(
         schema_translate_map={repository.metadata.schema: None}
     )
+    # Production is PG-only. Test SQLite evaluates a real SQL UDF; never make
+    # production authorization fall back to a Python time captured before waiting.
+    @event.listens_for(engine, "connect")
+    def register_clock(dbapi_connection, _record):
+        dbapi_connection.create_function("clock_timestamp", 0, lambda: utcnow().isoformat(sep=" "))
+
     repository.metadata.create_all(engine)
     adapter = _SqliteAsyncAdapter(engine)
     repository.db = SimpleNamespace(db_engine=adapter)

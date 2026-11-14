@@ -1608,7 +1608,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     self.tasks.c.state_version == expected_state_version,
                     self.tasks.c.lease_owner == lease.owner,
                     self.tasks.c.lease_epoch == lease.epoch,
-                    self.tasks.c.lease_expires_at > utcnow(),
+                    self.tasks.c.lease_expires_at > func.clock_timestamp(),
                 )
                 .values(
                     status=TaskState.ACTIVE,
@@ -1628,25 +1628,35 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         ttl: timedelta = timedelta(seconds=45),
     ) -> Lease:
         await self.initialize()
-        now = utcnow()
-        expires_at = now + ttl
         async with self.db.db_engine.begin() as connection:  # type: ignore[attr-defined]
-            result = await connection.execute(
-                update(self.tasks)
-                .where(
-                    self.tasks.c.external_run_id == external_run_id,
-                    self.tasks.c.lease_owner == lease.owner,
-                    self.tasks.c.lease_epoch == lease.epoch,
-                    self.tasks.c.lease_expires_at > now,
-                    self.tasks.c.status.in_(
-                        [TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED, TaskState.FINISHING]
-                    ),
+            try:
+                # Heartbeat must not fence on task progress/state_version. It only
+                # renews the current live owner/epoch in the original runnable states.
+                await self._locked_task(connection, external_run_id, lease, None)
+            except TaskExecutionRepositoryError as error:
+                raise TaskExecutionRepositoryError("task_lease_lost", "执行任务租约已失效。") from error
+            expires_at = (
+                await connection.execute(
+                    update(self.tasks)
+                    .where(
+                        self.tasks.c.external_run_id == external_run_id,
+                        self.tasks.c.lease_owner == lease.owner,
+                        self.tasks.c.lease_epoch == lease.epoch,
+                        self.tasks.c.lease_expires_at > func.clock_timestamp(),
+                        self.tasks.c.status.in_(
+                            [TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED, TaskState.FINISHING]
+                        ),
+                    )
+                    .values(
+                        lease_expires_at=func.clock_timestamp(type_=DateTime(timezone=True)) + ttl,
+                        updated_at=func.clock_timestamp(),
+                    )
+                    .returning(self.tasks.c.lease_expires_at)
                 )
-                .values(lease_expires_at=expires_at, updated_at=now)
-            )
-        if result.rowcount != 1:
-            raise TaskExecutionRepositoryError("task_lease_lost", "执行任务租约已失效。")
-        return Lease(lease.owner, lease.epoch, expires_at)
+            ).scalar_one_or_none()
+            if expires_at is None:
+                raise TaskExecutionRepositoryError("task_lease_lost", "执行任务租约已失效。")
+        return Lease(lease.owner, lease.epoch, _as_utc(expires_at))
 
     async def resume_current(
         self,
@@ -1698,7 +1708,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     self.tasks.c.state_version == expected_state_version,
                     self.tasks.c.lease_owner == lease.owner,
                     self.tasks.c.lease_epoch == lease.epoch,
-                    self.tasks.c.lease_expires_at > utcnow(),
+                    self.tasks.c.lease_expires_at > func.clock_timestamp(),
                 )
                 .values(
                     status=TaskState.ACTIVE,
@@ -1817,7 +1827,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     self.tasks.c.state_version == expected_state_version,
                     self.tasks.c.lease_owner == lease.owner,
                     self.tasks.c.lease_epoch == lease.epoch,
-                    self.tasks.c.lease_expires_at > utcnow(),
+                    self.tasks.c.lease_expires_at > func.clock_timestamp(),
                 )
                 .values(
                     **task_values,
@@ -1910,7 +1920,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     self.tasks.c.state_version == expected_state_version,
                     self.tasks.c.lease_owner == lease.owner,
                     self.tasks.c.lease_epoch == lease.epoch,
-                    self.tasks.c.lease_expires_at > utcnow(),
+                    self.tasks.c.lease_expires_at > func.clock_timestamp(),
                     self.tasks.c.status.in_([TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]),
                 )
                 .values(
@@ -1962,7 +1972,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     self.tasks.c.state_version == expected_state_version,
                     self.tasks.c.lease_owner == lease.owner,
                     self.tasks.c.lease_epoch == lease.epoch,
-                    self.tasks.c.lease_expires_at > utcnow(),
+                    self.tasks.c.lease_expires_at > func.clock_timestamp(),
                 )
                 .values(
                     status=TaskState.COMPLETED,
@@ -2136,21 +2146,35 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         connection: Any,
         external_run_id: str,
         lease: Lease,
-        expected_state_version: int,
+        expected_state_version: int | None,
     ) -> Any:
+        # Acquire task before touching run/instruction/execution rows. A WHERE
+        # timestamp can be evaluated before a pure row-lock wait and is not proof
+        # of authority after that wait, even when it calls clock_timestamp().
         task = (
             await connection.execute(
-                select(self.tasks).where(
-                    self.tasks.c.external_run_id == external_run_id,
-                    self.tasks.c.state_version == expected_state_version,
-                    self.tasks.c.lease_owner == lease.owner,
-                    self.tasks.c.lease_epoch == lease.epoch,
-                    self.tasks.c.lease_expires_at > utcnow(),
-                )
+                select(self.tasks)
+                .where(self.tasks.c.external_run_id == external_run_id)
+                .with_for_update()
             )
         ).first()
         if task is None:
             raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态或租约已发生变化。")
+        current = (
+            await connection.execute(select(func.clock_timestamp(type_=DateTime(timezone=True))))
+        ).scalar_one()
+        value = task._mapping
+        if (
+            (expected_state_version is not None and value["state_version"] != expected_state_version)
+            or value["lease_owner"] != lease.owner
+            or value["lease_epoch"] != lease.epoch
+            or value["lease_expires_at"] is None
+            or _as_utc(value["lease_expires_at"]) <= _as_utc(current)
+        ):
+            raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态或租约已发生变化。")
+        # No new generic deadline rule: existing FINISHING bookkeeping may complete
+        # under a live lease after its execution budget. Word's hard deadline is
+        # separately enforced by the private Word repository and is unchanged.
         return task
 
     async def _required_current(self, external_run_id: str) -> tuple[TaskSnapshot, AttemptSnapshot]:
