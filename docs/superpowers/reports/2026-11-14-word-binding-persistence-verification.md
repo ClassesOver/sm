@@ -1,8 +1,8 @@
 # Word binding persistence: verification ledger
 
-Status: **Draft review reopened for lifecycle/heartbeat expiry fix; new PG GREEN pending**.
+Status: **Draft candidate; lifecycle/heartbeat fix and latest-code combination independently GREEN**.
 The 78-case result below is historical evidence for 44181e6, not proof of the new
-follow-up implementation. See follow-up I1 at the end of this ledger.
+follow-up implementation. Exact follow-up and combination evidence is recorded at the end.
 Independent disposable PG18 validation of exact commit 44181e6 reports 78 passed,
 0 failed, 0 skipped, exit 0, with one third-party deprecation warning. The original
 real PG RED regression is GREEN with the same test file. This is not a full-suite,
@@ -270,12 +270,57 @@ pending-instruction/new-attempt rollback after run-row waits, independently crea
 DB instances contending on actual PostgreSQL advisory locks, each private-column
 CHECK in isolation, actual get_task/get_task_snapshot dataclass/repr projections,
 terminal-row retention deletion, and Word's unchanged hard deadline. These extra tests
-are pending execution and are not presented as substitutes for the original RED cases.
+passed in the independent PG validation below and are not substitutes for the original RED cases.
 Projection tests do not claim production log/export redaction or cleanup scheduling.
 
 Local focused contracts+SQLite remain **44 passed** after the new helper and test UDF.
-Ruff, compileall and diff checks are run on the candidate; real PG GREEN is still
-pending. The earlier default full-suite attempt remains the historical **780 collection
+Ruff, compileall and diff checks passed locally; independent PG GREEN is recorded below. The earlier default full-suite attempt remains the historical **780 collection
 errors** report above; it was not repeated or relabeled as a current full-suite pass.
 Real-scale migration lock budgets, old-worker draining, backups/restore, full application
 validation and production enablement remain outside this limited Draft candidate.
+
+
+### Independent fix and latest-code combination GREEN
+
+Independent disposable PostgreSQL 18 validation of exact fix commit
+`605ee12aaffcc7fcf0e765e73a7d2600c1f5d219`, tree
+`8e3963b749842ff31e3603be868e4c45a831d830`, completed with **105 passed**,
+0 failed, 0 skipped, exit 0: PG 61, SQLite fixtures 22, contracts 22.
+
+Latest `code` (`b65c5e8ce3fe8f0c625de36a410f57018c7e27bb`, PR #237) was then
+merged without conflicts in an isolated worktree. Exact combination commit
+`a93cbb7b834ba8d3fa6488b11cf6f275b38b2fa7`, tree
+`49d0beca9d9aa49179b1774a096ebb5324308114`, has parents 605ee12 then b65c5e8.
+Its task_execution directory is identical to 605ee12, but that equivalence was not
+used instead of testing: a fresh independent disposable PG18 run on this exact
+combination again reported **105 passed**, 0 failed, 0 skipped, exit 0.
+An independent workbook cross-test run reported **13 passed**, 0 failed, 0 skipped,
+exit 0; these are separate from 105, not a rerun or claim about all of PR #237.
+
+| Original seven nodes | Original | Clock-only | Fix | Combination |
+| --- | --- | --- | --- | --- |
+| open, resume, request_finish, finalize_finish | FAIL | FAIL | PASS | PASS |
+| close | PASS | PASS | PASS | PASS |
+| expired heartbeat, short-wait TTL | FAIL | FAIL | PASS | PASS |
+
+The original RED file SHA256 remains
+`78b00c7e1eb65c47f1b07c689758485c69776bc0c80bdd0b0aef3ebd4044fc04`.
+Both combined runs emitted the same single third-party DeprecationWarning from
+`visions/utils/monkeypatches/imghdr_patch.py:2`: imghdr is deprecated for removal
+in Python 3.13. Workbook negative cases also emitted expected
+`workbook_ai_preview_invalid` WARNING/ERROR logs; their assertions passed.
+All ten phase Python files passed Ruff, and incremental diff-check passed.
+The isolated containers and anonymous volumes were removed and verified absent.
+No cloud code/test changes, push, merge or deployment occurred during verification.
+
+Evidence was independently read from completed cloud runs, not inferred from a
+local bootstrap: fix run `01a1d8cb-2847-716d-b703-211c8d134e1e`; combination run
+`01a1d8d3-75f8-7292-8270-9e99d7536868`. Each retained commands, full pytest output,
+JUnit, source/tree/SHA evidence and cleanup proof. The combination also retained
+separate workbook output/JUnit. This ledger update changes documentation only;
+non-documentation files remain byte-identical to the tested combination.
+
+The historical full-suite **780 collection errors** remain unresolved; 105+13 is
+not a full-suite pass. Global deadline, claim/release, real Codex/provider execution,
+production authentication, rollout safety and editor acceptance integration remain
+outside this validation. Draft review is not authorization to merge or deploy.
