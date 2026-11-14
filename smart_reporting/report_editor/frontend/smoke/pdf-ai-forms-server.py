@@ -24,7 +24,7 @@ from smart_reporting.report_editor.native_models import NativeEditorContext, Nat
 from smart_reporting.report_editor.native_pdf_form_ai import AgnoNativePDFFormPlanner
 from smart_reporting.report_editor.native_pdf_form_ai_api import create_native_pdf_form_ai_router
 from smart_reporting.report_editor.native_pdf_form_ai_tasks import NativePDFFormService
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )

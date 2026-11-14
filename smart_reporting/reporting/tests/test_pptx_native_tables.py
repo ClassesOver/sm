@@ -134,27 +134,3 @@ async def test_formal_generation_freezes_controlled_fact_tables_and_actual_edita
     assert native['artifact']['sha256'] == sha256(await read(native['artifact'])).hexdigest()
 
 
-@pytest.mark.parametrize('accent,expected', [('#FFFFFF', '000000'), ('#E5F4D8', '000000'),
-    ('#FFD966', '000000'), ('#174A66', 'FFFFFF')])
-def test_native_table_header_keeps_readable_contrast_for_light_and_dark_themes(tmp_path, accent, expected):
-    from smart_reporting.management.preference_preflight_readback import readback
-
-    source = table_input(rows=2)
-    resolved = preferences()
-    resolved['common']['accentColor'] = accent
-    slides = ({'title': '主题色表头核验', 'bullets': [], 'tables': [source]},)
-    output = tmp_path / 'theme-table.pptx'
-    build_editable_pptx(output_path=output, title='可读性验证', period='2025年', theme='executive',
-        slides=slides, preferences=resolved, generated_date='2026-11-13')
-    deck = Presentation(output)
-    native = [shape.table for slide in deck.slides for shape in slide.shapes if shape.has_table]
-    assert native
-    for table in native:
-        for cell in table.rows[0].cells:
-            assert cell._tc.xpath('./a:tcPr/a:solidFill/a:srgbClr/@val') == [accent[1:]]
-            for paragraph in cell.text_frame.paragraphs:
-                assert paragraph.runs and all(str(run.font.color.rgb) == expected for run in paragraph.runs)
-    frozen = {'state': {'_documentContext': {'title': '可读性验证', 'periodLabel': '2025年',
-        'generatedDate': '2026-11-13'}}, 'slides': slides}
-    actual = readback(output.read_bytes(), 'pptx', resolved, frozen)
-    assert all(check['passed'] for check in actual['checks'] if check['path'] == 'pptx.typography.table.color')

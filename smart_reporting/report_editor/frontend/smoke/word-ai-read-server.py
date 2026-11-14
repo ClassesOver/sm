@@ -22,7 +22,7 @@ from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
 from smart_reporting.report_editor.native_word_read_ai import AgnoNativeWordReadPlanner
 from smart_reporting.report_editor.native_word_read_tasks import NativeWordReadService
-from smart_reporting.report_editor.service import InMemoryReportEditorRepository, ReportEditorGrantService
+from smart_reporting.office.editor_grants import InMemoryReportEditorRepository, ReportEditorGrantService
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.delivery.docx_native import inspect_docx
 from smart_reporting.reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter

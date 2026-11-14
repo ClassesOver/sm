@@ -17,7 +17,7 @@ from openpyxl import load_workbook
 from smart_reporting.report_editor.native_models import NativeArtifacts
 from smart_reporting.report_editor.native_office import patch_office
 from smart_reporting.report_editor.workbook_native_ai import create_native_workbook_ai_service
-from smart_reporting.reporting.agent import _report_model, _reporting_phase_model
+from smart_reporting.office.model import create_office_model
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
@@ -53,7 +53,7 @@ async def probe(directory: Path):
         token, _ = await fixture.editor.grants.issue(context, capabilities=fixture.editor.capabilities(context))
         _, session = await fixture.editor.grants.exchange(token)
         settings = AgentSettings.from_environment()
-        model = _reporting_phase_model(_report_model(settings, enable_thinking=settings.report_phase_enable_thinking))
+        model = create_office_model(settings)
         profile = (ReportingThinkingProfile.on(reasoning_effort=settings.report_phase_reasoning_effort,
             thinking_budget=settings.report_phase_thinking_budget, temperature=settings.report_phase_temperature)
             if settings.report_phase_enable_thinking else ReportingThinkingProfile.off(temperature=settings.report_phase_temperature))

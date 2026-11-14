@@ -20,7 +20,7 @@ from pptx.util import Inches
 from fastapi.responses import JSONResponse
 from smart_reporting.http.identity import requires_workspace_capability, verified_report_request
 from smart_reporting.http.security import CapabilityError, verify_capability
-from smart_reporting.report_editor import slides, slides_render
+from smart_reporting.report_editor import pptx_engine as slides, slides_render
 from smart_reporting.report_editor.native import NativeEditorService
 from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_import import NativeImportService

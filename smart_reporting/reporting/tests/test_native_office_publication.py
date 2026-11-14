@@ -26,7 +26,7 @@ async def test_office_native_save_keeps_download_when_validation_fails(tmp_path,
         operations=[{'kind':'applyCellEdits','edits':[{'sheetName':'Sheet','row':0,'column':0,'writeValue':True,'cell':{'value':'修改后'}}]}]
     else:
         deck=Presentation();slide=deck.slides.add_slide(deck.slide_layouts[6]);box=slide.shapes.add_textbox(Inches(1),Inches(1),Inches(3),Inches(1));box.text='原文';deck.save(stream)
-        from smart_reporting.report_editor.slides import ReportSlidesEditorService
+        from smart_reporting.report_editor.pptx_engine import PptxEngine as ReportSlidesEditorService
         info=ReportSlidesEditorService._run_engine(stream.getvalue(),'inspect')
         element=info['slides'][0]['elements'][0]
         operations=[{'kind':'editSlides','edits':[{'slideIndex':0,'elementId':element['id'],'text':'修改后'}]}]

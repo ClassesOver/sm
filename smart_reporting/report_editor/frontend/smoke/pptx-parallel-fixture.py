@@ -100,8 +100,8 @@ else:
             # The public adapter deliberately hides engine details; this fixture prints the underlying
             # immutable-input replay failure for diagnosis without changing application behavior.
             from smart_reporting.report_editor.native_office import _pptx_arguments
-            from smart_reporting.report_editor.slides import ReportSlidesEditorService
-            ReportSlidesEditorService._run_engine(content, "edit", **_pptx_arguments(payload["operations"][0]))
+            from smart_reporting.report_editor.pptx_engine import PptxEngine
+            PptxEngine._run_engine(content, "edit", **_pptx_arguments(payload["operations"][0]))
             raise
     if mode == "render":
         from smart_reporting.report_editor.slides_render import render_pptx_tree

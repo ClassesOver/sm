@@ -42,7 +42,7 @@ def test_render_service_reuses_verified_bytes(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_render_preview_edits_use_original_engine_without_persisting(monkeypatch):
-    from smart_reporting.report_editor.slides import ReportSlidesEditorService
+    from smart_reporting.report_editor.pptx_engine import PptxEngine as ReportSlidesEditorService
 
     service = ReportSlidesEditorService(state_repository=None, workspace_registry=None, workspace=None)
     content = FIXTURE.read_bytes()

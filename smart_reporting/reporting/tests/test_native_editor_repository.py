@@ -307,36 +307,6 @@ async def test_saved_revision_is_immutable_and_failed_retry_recovers_same_reserv
     assert (await repo.get_revision(doc.document_id, 2, scope=scope)) == saved
 
 
-def test_legacy_context_digest_remains_unchanged():
-    import hashlib
-    import json
-
-    from smart_reporting.report_editor.service import ReportEditorContext
-
-    context = ReportEditorContext(
-        reportId="r",
-        revision=1,
-        jobId="j",
-        job={"jobId": "j"},
-        workflowRunId="w",
-        markdownPath="r/report.md",
-        scope={"database": "db"},
-    )
-    payload = {
-        "reportId": "r",
-        "revision": 1,
-        "jobId": "j",
-        "job": {"jobId": "j"},
-        "workflowRunId": "w",
-        "markdownPath": "r/report.md",
-        "scope": {"database": "db"},
-    }
-    expected = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    assert context.digest() == expected
-
-
 @pytest.mark.anyio
 async def test_source_identity_scopes_open_retries_and_upload_starts_pending(repositories):
     from smart_reporting.report_editor.native_models import NativeSource

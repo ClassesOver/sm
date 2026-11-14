@@ -26,7 +26,7 @@ from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
 from smart_reporting.report_editor.native_pdf_ai import create_native_pdf_read_planner
 from smart_reporting.report_editor.native_pdf_ai_tasks import NativePDFReadService
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )

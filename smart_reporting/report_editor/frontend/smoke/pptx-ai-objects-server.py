@@ -29,7 +29,7 @@ from smart_reporting.report_editor.native_models import (
     NativeScope,
 )
 from smart_reporting.report_editor.native_office import inspect_office, patch_office
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )
@@ -37,7 +37,7 @@ from smart_reporting.report_editor.slides_ai import AgnoSlidesProposalPlanner
 from smart_reporting.report_editor.slides_ai_native_operations import NativeSlidesAIProposal
 from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
 from smart_reporting.report_editor.slides_native_ai_api import create_native_slides_ai_router
-from smart_reporting.reporting.agent import create_reporting_generator_agent
+from smart_reporting.office.structured_agents import create_structured_candidate_agent
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
@@ -132,7 +132,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
                 call('objects-propose', 'propose_operations', {'proposal': proposal}),
                 ModelResponse(content='候选已预览，等待用户采纳。'),
             ])
-            agent = create_reporting_generator_agent(model=model, name='pptx-ai-objects-browser',
+            agent = create_structured_candidate_agent(model=model, name='pptx-ai-objects-browser',
                 output_schema=NativeSlidesAIProposal,
                 role='仅编辑授权对象，先读取并提交候选。')
             return await AgnoSlidesProposalPlanner(agent).plan_slides(prompt, deck=deck, scope=scope,
