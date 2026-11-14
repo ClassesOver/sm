@@ -121,6 +121,7 @@ export class NativeDraft {
   }
   private persist() {
     try {
+      if(this.current.some(operation=>operation.kind==='setDocumentProtection')){this.storage.removeItem(nativeDraftKey(this.identity));this.persistenceError=null;return}
       this.storage.setItem(nativeDraftKey(this.identity), JSON.stringify({ version: 1, identity: this.identity, operations: this.current, pending: this.pending }))
       this.persistenceError = null
     } catch { this.persistenceError = '无法保存本地草稿；当前修改仍保留在页面中' }
@@ -131,7 +132,9 @@ export class NativeDraft {
       if (!raw) return
       const value = JSON.parse(raw)
       if (value.version !== 1 || JSON.stringify(identityValue(value.identity)) !== JSON.stringify(identityValue(this.identity))) return
-      this.current = copyOperations(value.operations)
+      const restored=copyOperations(value.operations)
+      if(restored.some(operation=>operation.kind==='setDocumentProtection')){this.storage.removeItem(nativeDraftKey(this.identity));return}
+      this.current = restored
       const pending = value.pending as PendingSave | undefined
       if (pending && ['save', 'export'].includes(pending.action) && typeof pending.request.requestId === 'string'
         && pending.request.requestId && pending.request.expectedSha256 === this.identity.sourceSha256

@@ -17,7 +17,7 @@ export function createDocxPictureControls(editor: Editor, anchors: DocxAnchor[],
     const anchor = anchors.find(item => item.docxIndex === selection.node.attrs.docxIndex)
     return anchor || selection.node.attrs.docxIndex == null && selection.node.attrs.genImage ? { node: selection.node, pos: selection.from, anchor } : null
   }
-  const reason = () => locked() ?? (!editor.isEditable ? '当前文档不可编辑' : null) ?? (selected()?.anchor?.imageEditable || selected()?.node.attrs.genImage && selected()?.node.attrs.docxIndex == null ? null : selected()?.anchor?.imageReadOnlyReason ?? '请选择可编辑的整块图片；内联图片与组合对象保持只读')
+  const reason = () => (selected()?.node.attrs.imageFormat?'图片格式与图片替换需分别保存':null) ?? locked() ?? (!editor.isEditable ? '当前文档不可编辑' : null) ?? (selected()?.anchor?.imageEditable || selected()?.node.attrs.genImage && selected()?.node.attrs.docxIndex == null ? null : selected()?.anchor?.imageReadOnlyReason ?? '请选择可编辑的整块图片；内联图片与组合对象保持只读')
   const close = () => { generation++; root?.unmount(); root = undefined; modal?.remove(); modal = undefined }
   const open = (action: DocxPictureAction) => {
     try {

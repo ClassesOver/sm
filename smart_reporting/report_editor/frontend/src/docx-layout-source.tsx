@@ -1,12 +1,15 @@
 import { useLayoutEffect, useState } from 'react'
 import type { SectionSettings } from '@genoffice/docx-engine'
 import { type SectionChangeResult, type SectionValues } from './docx-operations'
+import { MarginDialog } from './docx-margin-dialog'
+import { PaperSizeDialog } from './docx-paper-size-dialog'
+import { MARGIN_PRESETS, marginsFitPage, paperSizeInRange, readLastCustomMargins, rememberCustomMargins, type PageMargins } from './docx-page-setup'
 import { DocxPageNumberDialog } from './docx-page-number-dialog'
 import { IconCaret, IconColumns, IconMargins, IconOrientation, IconPageSize, IconPageBreak, IconHeader, IconPageNumber } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 
 type Values = SectionValues
 type BreakType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage'
-type Props = { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; editable: boolean; settings: SectionSettings | null; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; onChange: (values: Values) => SectionChangeResult; onEditHeaderFooter?: () => void; sectionLabel?: string; onSectionBreak?: (type: BreakType) => void }
+type Props = { mirrorMargins?: boolean; mirrorMarginsReason?: string; onMirrorMargins?: (on: boolean, values?: Values) => SectionChangeResult; onPaperSizeAll?: (width: number, height: number, orientation: 'portrait' | 'landscape') => SectionChangeResult; pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; editable: boolean; settings: SectionSettings | null; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; onChange: (values: Values) => SectionChangeResult; onEditHeaderFooter?: () => void; sectionLabel?: string; onSectionBreak?: (type: BreakType) => void }
 
 // 固定源 ribbon-layout-tab.tsx PAPER_SIZES：纵向 twip，保留 Word 画廊顺序。
 const paperSizes = [
@@ -26,22 +29,48 @@ const paperSizes = [
 ] as const
 const unavailable = 'DOCX 原生 section 操作未覆盖此源命令'
 
-export function DocxLayoutSource({ pageNumberFmt, pageNumberStart, pageNumberReason, editable, settings: initialSettings, titlePg, titlePgReason, evenAndOddHeaders, evenAndOddHeadersReason, onChange, onEditHeaderFooter, sectionLabel, onSectionBreak }: Props) {
+export function DocxLayoutSource({ mirrorMargins, mirrorMarginsReason, onMirrorMargins, onPaperSizeAll, pageNumberFmt, pageNumberStart, pageNumberReason, editable, settings: initialSettings, titlePg, titlePgReason, evenAndOddHeaders, evenAndOddHeadersReason, onChange, onEditHeaderFooter, sectionLabel, onSectionBreak }: Props) {
   const [settings, setSettings] = useState(initialSettings)
   useLayoutEffect(() => { setSettings(initialSettings) }, [initialSettings])
   const [pageNumberOpen, setPageNumberOpen] = useState(false)
   useLayoutEffect(() => { setPageNumberOpen(false) }, [sectionLabel])
   const numberReason = pageNumberReason ?? (pageNumberFmt === undefined || pageNumberStart === undefined ? '页码格式来源状态不可判定' : undefined)
+  const [setupDialog, setSetupDialog] = useState<'margins' | 'paper' | null>(null)
+  useLayoutEffect(() => { setSetupDialog(null) }, [sectionLabel, initialSettings])
   const [customPaper, setCustomPaper] = useState(false)
   useLayoutEffect(() => { setCustomPaper(false) }, [sectionLabel])
   const paperKey = settings ? paperSizes.find(size => Math.abs(size.w - Math.min(settings.pageWidth, settings.pageHeight)) <= 2 && Math.abs(size.h - Math.max(settings.pageWidth, settings.pageHeight)) <= 2)?.key : undefined
   const isCustomPaper = customPaper || !paperKey
-  const marginPreset = settings && settings.marginTop === 1440 && settings.marginBottom === 1440 && settings.marginLeft === 2880 && settings.marginRight === 2880 ? 'wide'
-    : settings && [settings.marginRight, settings.marginBottom, settings.marginLeft].every(value => value === settings.marginTop) && [720, 1440].includes(settings.marginTop) ? settings.marginTop : 'custom'
-  const change = (values: Values) => {
-    if (!editable || !settings) return { error: '当前文档不可编辑或正在保存' }
-    setSettings(current => current ? { ...current, ...values } as SectionSettings : current)
-    return onChange(values)
+  const currentMargins = settings ? { top:settings.marginTop,right:settings.marginRight,bottom:settings.marginBottom,left:settings.marginLeft } : null
+  const lastCustom = readLastCustomMargins()
+  const usableLastCustom = lastCustom && settings && marginsFitPage(lastCustom,settings.pageWidth,settings.pageHeight) ? lastCustom : null
+  const matchingPreset = currentMargins && MARGIN_PRESETS.find(m => (m.key === 'mirrored') === (mirrorMargins === true) && ['top','right','bottom','left'].every(side => m[side as keyof PageMargins] === currentMargins[side as keyof PageMargins]))
+  const marginPreset = matchingPreset?.key ?? 'custom'
+  const [setupError, setSetupError] = useState('')
+  const change = (values: Values): SectionChangeResult => {
+    const fail = (error:string) => { setSetupError(error); return {error} }
+    if (!editable || !settings) return fail('当前文档不可编辑或正在保存')
+    const next = { ...settings, ...values } as SectionSettings
+    if (!paperSizeInRange(next.pageWidth,next.pageHeight)) return fail('纸张宽度和高度须为 144–31680 twip')
+    if (['marginTop','marginRight','marginBottom','marginLeft','pageWidth','pageHeight'].some(k => k in values) && !marginsFitPage({top:next.marginTop,right:next.marginRight,bottom:next.marginBottom,left:next.marginLeft},next.pageWidth,next.pageHeight)) return fail('页边距必须为有效整数，并至少保留一英寸正文空间')
+    if (['headerDist','footerDist'].some(k => k in values && (!Number.isSafeInteger(values[k as keyof Values]) || Number(values[k as keyof Values]) < 0 || Number(values[k as keyof Values]) > 31680))) return fail('页眉页脚距离须为 0–31680 twip')
+    try {
+      const result = onChange(values)
+      if (result?.error) return fail(result.error)
+      setSettings(next); setSetupError('')
+      return result
+    } catch(e) { return fail(e instanceof Error ? e.message : String(e)) }
+  }
+  const applyMargins = (m:PageMargins, mirror:boolean) => {
+    if (!editable || !settings) throw new Error('当前文档不可编辑或正在保存')
+    if (!marginsFitPage(m,settings.pageWidth,settings.pageHeight)) throw new Error('页边距至少需保留一英寸正文空间')
+    const values:Values = {marginTop:m.top,marginRight:m.right,marginBottom:m.bottom,marginLeft:m.left}
+    if (mirror !== (mirrorMargins === true)) {
+      if (!onMirrorMargins || mirrorMarginsReason || mirrorMargins === undefined) throw new Error(mirrorMarginsReason ?? '镜像页边距来源状态不可判定或尚未接入')
+      const result=onMirrorMargins(mirror, values)
+      if (result?.error) throw new Error(result.error)
+      setSettings({...settings,...values} as SectionSettings)
+    } else { const result=change(values); if(result?.error) throw new Error(result.error) }
   }
   const source = (id: string, label: string, reason: string) => <button type="button" className="rb-icon docx-source-command" data-source-action={id} disabled title={`${label}：${reason}`} aria-label={`${label}，${reason}`}><IconCaret size={10} /></button>
   const sectionDisabled = !editable || !settings
@@ -53,12 +82,24 @@ export function DocxLayoutSource({ pageNumberFmt, pageNumberStart, pageNumberRea
     change({ orientation, pageWidth: orientation === 'portrait' ? width : height, pageHeight: orientation === 'portrait' ? height : width })
   }
   return <div className="ribbon-content docx-source-layout">
+    {setupError && <p role="alert">{setupError}</p>}
+    {setupDialog==='margins' && settings && currentMargins ? <MarginDialog margins={currentMargins} mirror={mirrorMargins===true} pageWidth={settings.pageWidth} pageHeight={settings.pageHeight} disabledReason={sectionDisabled?'当前文档不可编辑或正在保存':undefined} mirrorReason={mirrorMarginsReason ?? (!onMirrorMargins || mirrorMargins===undefined ? '镜像页边距尚未接入' : undefined)} onApply={(m,mirror)=>{applyMargins(m,mirror);rememberCustomMargins(m)}} onClose={()=>setSetupDialog(null)}/> : null}
+    {setupDialog==='paper' && settings ? <PaperSizeDialog section={settings} multiSection={!!sectionLabel} disabledReason={sectionDisabled?'当前文档不可编辑或正在保存':undefined} documentReason={onPaperSizeAll?undefined:'整篇文档纸张设置尚未接入'} onApply={(w,h,scope)=>{
+      if(!editable)throw new Error('当前文档不可编辑或正在保存')
+      const orientation=w===h?settings.orientation:w>h?'landscape':'portrait'
+      const result=scope==='document'?onPaperSizeAll?.(Math.min(w,h),Math.max(w,h),orientation):change({pageWidth:w,pageHeight:h,orientation})
+      if(scope==='document'&&!onPaperSizeAll)throw new Error('整篇文档纸张设置尚未接入')
+      if(result?.error)throw new Error(result.error)
+    }} onClose={()=>setSetupDialog(null)}/> : null}
     {group('页面设置', <>
       <label className="layout-num"><IconMargins size={18} /><span>页边距</span><select data-source-action="layout-margins" aria-label="页边距" value={marginPreset} disabled={sectionDisabled} onChange={event => {
-        if (event.currentTarget.value === 'wide') { change({ marginTop: 1440, marginRight: 2880, marginBottom: 1440, marginLeft: 2880 }); return }
-        const value = Number(event.currentTarget.value)
-        change({ marginTop: value, marginRight: value, marginBottom: value, marginLeft: value })
-      }}><option value="1440">普通</option><option value="720">窄</option><option value="wide">宽</option><option value="custom" disabled>自定义</option></select></label>
+        const key=event.currentTarget.value
+        if(key==='custom') { setSetupDialog('margins'); return }
+        const preset=key==='lastCustom'?usableLastCustom:MARGIN_PRESETS.find(m=>m.key===key)
+        if(!preset)return
+        try { applyMargins(preset,key==='mirrored'); setSetupError('') } catch(e) { setSetupError(e instanceof Error?e.message:String(e)) }
+      }}>{usableLastCustom && <option value="lastCustom">上次自定义设置</option>}{MARGIN_PRESETS.map(m=><option key={m.key} value={m.key} disabled={!settings || !marginsFitPage(m,settings.pageWidth,settings.pageHeight) || (m.key==='mirrored' && (!onMirrorMargins || !!mirrorMarginsReason || mirrorMargins===undefined))}>{m.name}</option>)}<option value="custom">自定义</option></select></label>
+      <button type="button" data-source-action="layout-custom-margins" disabled={sectionDisabled} onClick={()=>setSetupDialog('margins')}>自定义页边距…</button>
       <label className="layout-num"><IconOrientation size={18} /><span>纸张方向</span><select data-source-action="layout-orientation" aria-label="纸张方向" value={settings?.orientation ?? 'portrait'} disabled={sectionDisabled} onChange={event => orientationChange(event.currentTarget.value as 'portrait' | 'landscape')}><option value="portrait">纵向</option><option value="landscape">横向</option></select></label>
       <label className="layout-num"><IconPageSize size={18} /><span>纸张大小</span><select data-source-action="layout-paper-size" aria-label="纸张大小" value={isCustomPaper ? 'custom' : paperKey} disabled={sectionDisabled} onChange={event => {
         if (event.currentTarget.value === 'custom') { setCustomPaper(true); return }
@@ -67,6 +108,7 @@ export function DocxLayoutSource({ pageNumberFmt, pageNumberStart, pageNumberRea
         const size = paperSizes.find(item => item.key === event.currentTarget.value)!
         change({ pageWidth: settings.orientation === 'portrait' ? size.w : size.h, pageHeight: settings.orientation === 'portrait' ? size.h : size.w })
       }}>{paperSizes.map(size => <option key={size.key} value={size.key}>{size.name}</option>)}<option value="custom">自定义</option></select></label>
+      <button type="button" data-source-action="layout-more-paper-sizes" disabled={sectionDisabled} onClick={()=>setSetupDialog('paper')}>其他纸张大小…</button>
       <label className="layout-num"><IconColumns size={18} /><span>分栏</span><select data-source-action="layout-columns" aria-label="分栏" value={settings?.columns ?? 1} disabled={sectionDisabled} onChange={event => change({ columns: Number(event.currentTarget.value) as 1 | 2 | 3 })}><option value="1">一栏</option><option value="2">两栏</option><option value="3">三栏</option></select></label>
       <label className="layout-num"><span>自定义宽度</span><input type="number" data-source-action="layout-custom-page-width" aria-label="自定义纸张宽度" value={settings?.pageWidth ?? 0} disabled={sectionDisabled || !isCustomPaper} onChange={event => change({ pageWidth: Number(event.currentTarget.value) })} /><span className="layout-unit">twip</span></label>
       <label className="layout-num"><span>自定义高度</span><input type="number" data-source-action="layout-custom-page-height" aria-label="自定义纸张高度" value={settings?.pageHeight ?? 0} disabled={sectionDisabled || !isCustomPaper} onChange={event => change({ pageHeight: Number(event.currentTarget.value) })} /><span className="layout-unit">twip</span></label>

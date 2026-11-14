@@ -41,7 +41,7 @@ export async function startNativeEditor() {
   const original = document.createElement('a')
   original.href = `${window.location.pathname.replace(/\/$/, '')}/api/file`
   original.textContent = '下载原件'
-  original.download = `report.${context.format}`
+  original.download = context.displayName || `report.${context.format}`
   original.referrerPolicy = 'no-referrer'
   root.querySelector('.toolbar-group-output')?.append(original)
   if (context.format === 'xlsx' || context.format === 'pptx') {
@@ -62,7 +62,7 @@ export async function startNativeEditor() {
   let session: ReturnType<typeof bindNativeSession> | undefined
   let wordDock: {dispose(): void} | undefined
   let pdfMutationPending = false
-  const options = { api, context: response, draft, onAssistant: response.wordReadAIEnabled || response.aiEnabled && response.editingEnabled ? () => { if (wordReader) wordReader.open('ask'); else ai?.open() } : undefined, onNoteAI: (selection:NativeAINoteSelection,instruction?:string,beforeText?:string)=>ai?.openNotes(selection,instruction,beforeText), onReviewAI: (selection: NativeAIReviewSelection, instruction?: string) => ai?.openReview(selection,instruction), onDraftChange: () => session?.update(), onMutationStateChange: (pending: boolean) => { pdfMutationPending = pending; refresh?.update() }, mutationBlocked: () => refreshing, onSelectionChange: (selection: NativeAISelection[]) => {
+  const options = { api, context: response, draft, onReviewSummary:response.wordReadAIEnabled?()=>wordReader?.openPrompt('总结文档中所有待处理的修订：先给出实际读取覆盖范围、插入/删除数量、作者和日期，再逐项说明修改与风险。只做总结，不修改正文，不接受或拒绝任何修订。'):undefined, onAIPreset:(instruction:string,selection:import('./docx-review-presets').DocxPresetSelection,scope:import('./docx-review-presets').DocxPresetScope)=>ai?.openPreset(instruction,selection,scope), onAssistant: response.wordReadAIEnabled || response.aiEnabled && response.editingEnabled ? () => { if (wordReader) wordReader.open('ask'); else ai?.open() } : undefined, onNoteAI: (selection:NativeAINoteSelection,instruction?:string,beforeText?:string)=>ai?.openNotes(selection,instruction,beforeText), onReviewAI: (selection: NativeAIReviewSelection, instruction?: string) => ai?.openReview(selection,instruction), onDraftChange: () => session?.update(), onMutationStateChange: (pending: boolean) => { pdfMutationPending = pending; refresh?.update() }, mutationBlocked: () => refreshing, onSelectionChange: (selection: NativeAISelection[]) => {
     ai?.setSelection(selection)
   }, flushForFileOperation: async () => {
     if (!session) throw new Error('编辑会话尚未就绪')
@@ -106,7 +106,7 @@ export async function startNativeEditor() {
   session = bindNativeSession(shell, { api, draft, format: context.format, view, editingEnabled: response.editingEnabled, refreshBusy: () => refreshing, onStateChange: () => refresh?.update() })
   refresh?.update()
   if (response.aiEnabled && response.editingEnabled && (context.format === 'docx' || response.pdfTextEnabled)) {
-    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update(), locked: () => refreshing, onStateChange: () => refresh?.update() })
+    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update(), locked: () => refreshing || ('mutationLocked' in view&&view.mutationLocked===true) || draft.operations.some(operation=>operation.kind==='setDocumentProtection'), onStateChange: () => refresh?.update() })
   }
   if (context.format === 'docx' && response.wordReadAIEnabled) {
     wordReader = bindNativeWordAssistant(shell.editor.parentElement ?? root, {

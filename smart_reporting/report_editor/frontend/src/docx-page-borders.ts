@@ -105,7 +105,7 @@ export function validDocxPageBorderValues(values: Record<string, unknown>): bool
     if (!isObject(side) || !keysOk(side, ['val', 'widthPt', 'spacePt', 'color', 'art', 'shadow', 'frame'])) return false
     const art = side.art === true
     if ((side.art !== undefined && !art) || typeof side.val !== 'string' || !(art ? PAGE_BORDER_ART_NAMES : PAGE_BORDER_LINE_STYLES as readonly string[]).includes(side.val)) return false
-    if (typeof side.widthPt !== 'number' || (art ? !Number.isInteger(side.widthPt) || side.widthPt < 1 || side.widthPt > 31 : !(PAGE_BORDER_WIDTHS as readonly number[]).includes(side.widthPt))) return false
+    if (typeof side.widthPt !== 'number' || (art ? !Number.isInteger(side.widthPt) || side.widthPt < 1 || side.widthPt > 31 : (!Number.isFinite(side.widthPt)||side.widthPt<0.125||side.widthPt>12||!Number.isInteger(side.widthPt*8)))) return false
     if (typeof side.spacePt !== 'number' || !Number.isInteger(side.spacePt) || side.spacePt < 0 || side.spacePt > 31) return false
     if (side.color !== undefined && (typeof side.color !== 'string' || !/^[0-9A-F]{6}$/.test(side.color) || art)) return false
     for (const flag of ['shadow', 'frame'] as const) if (side[flag] !== undefined && (side[flag] !== true || art)) return false

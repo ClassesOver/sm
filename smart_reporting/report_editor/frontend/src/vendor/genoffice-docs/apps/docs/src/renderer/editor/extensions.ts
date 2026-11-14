@@ -3860,6 +3860,8 @@ export const DocProtected = Node.create({
       diagramDisplay: { default: null as DiagramDisplay | null },
       /** self-contained OOXML fragment for editor-created content (new tables) */
       genXml: { default: null as string | null },
+      nativeObjectInsert: { default: null, rendered:false },
+      imageFormat: { default:null,rendered:false },
       /** new image awaiting embedding at save time */
       genImage: {
         default: null as { base64: string; mime: string; widthPx: number; heightPx: number } | null,

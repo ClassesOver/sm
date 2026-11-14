@@ -25,7 +25,7 @@ export function validatePictureDimensions(image: { base64: string; widthPx: numb
   if (!size || size.w !== image.widthPx || size.h !== image.heightPx) throw new Error('docx_image_dimensions_invalid')
 }
 
-/** 源替换协议另支持GIF；粘贴协议仍维持原来的PNG/JPEG白名单。 */
+/** 源图片插入/替换均保留GIF原始字节；宿主另完整校验GIF帧。 */
 export function gifPicture(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('docx_image_invalid')
   const image = value as Record<string, unknown>

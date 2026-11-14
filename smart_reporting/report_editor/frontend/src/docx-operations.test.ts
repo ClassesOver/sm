@@ -401,3 +401,25 @@ it('toggles a list on a paragraph carrying the null local cover-page marker (dro
   current.content[0] = { ...current.content[0], type: 'docListItem', attrs: { docxIndex: 0, align: 'center', kind: 'bullet', numId: 'native-bullet', ilvl: 0 } }
   expect(docxOperations(original, current, anchors)).toEqual([{ kind: 'setParagraphList', blockId: 'a', expectedObjectSha256: 'hash-a', list: 'bullet' }])
 })
+
+it('serializes and restores native GIF image payload without raster conversion',()=>{
+ const gif='R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',image={mime:'image/gif',base64:gif,widthPx:1,heightPx:1}
+ const next={type:'doc',content:[para(0,'原文'),imageNode({genImage:image,imageDataUrl:'data:image/gif;base64,'+gif,imageWidthPx:1,imageHeightPx:1}),para(1,'复杂对象')]}
+ const ops=docxOperations(base,next as DocxPmNode,anchors)
+ expect(ops[0]).toMatchObject({kind:'insertParagraphImage',image})
+ const restored=replayDocxOperations(base,ops,anchors)
+ expect(docxOperations(base,restored,anchors)).toEqual(ops)
+ expect(restored.content?.find(n=>n.attrs?.genImage)?.attrs?.imageDataUrl).toBe('data:image/gif;base64,'+gif)
+})
+
+it('preserves mixed inserted picture/paragraph order before a retained protected image',()=>{
+ const protectedImage={type:'docProtected',attrs:{docxIndex:1,blockType:'image',label:'original image'}}
+ const original={type:'doc',content:[para(0,'LEFT RIGHT'),protectedImage,para(2,'tail')]}
+ const bindings=[{docxIndex:0,blockId:'left',expectedObjectSha256:'left',editable:true},{docxIndex:1,blockId:'image',expectedObjectSha256:'image',editable:false},{docxIndex:2,blockId:'tail',expectedObjectSha256:'tail',editable:true}]
+ const current={type:'doc',content:[para(0,'LEFT '),imageNode(),para(null,'RIGHT'),protectedImage,para(2,'tail')]}
+ const operations=docxOperations(original,current,bindings)
+ expect(operations.filter(o=>o.kind.startsWith('insert'))).toEqual([expect.objectContaining({kind:'insertParagraphImage',blockId:'left',position:'after'}),expect.objectContaining({kind:'insertParagraph',blockId:'left',position:'after'})])
+ const restored=replayDocxOperations(original,operations,bindings)
+ const order=(doc:DocxPmNode)=>doc.content?.map(n=>n.attrs?.genImage?'new image':n.attrs?.blockType==='image'?'original image':n.content?.map(c=>c.text??'').join(''))
+ expect(order(restored)).toEqual(order(current))
+})

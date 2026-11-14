@@ -152,7 +152,14 @@ export function insertDocxBlankPage(editor: Editor): boolean {
   return true
 }
 /** 从固定上游 InsertTab 提取原分组、按钮和符号面板；结构操作等待写回协议。 */
-export function DocxInsertSource({ editor, editable, anchors = [], headerFooter, pageNumber, onNewComment, onBookmarks, onCrossReference }: {
+export function DocxInsertSource({ editor, editable, anchors = [], headerFooter, pageNumber, onNewComment, onBookmarks, onCrossReference, onInsertObject,onInsertChart,onInsertField,onUpdateFields,onEditField,onToggleFieldCode,onToggleAllFieldCodes }:  {
+  onEditField?:()=>void
+  onToggleFieldCode?:()=>void
+  onToggleAllFieldCodes?:()=>void
+  onUpdateFields?:()=>void
+  onInsertChart?:()=>void
+  onInsertField?:(instruction:string)=>void
+  onInsertObject?:(type:'textbox'|'shape'|'wordArt')=>void
   editor: Editor; editable: boolean; anchors?: DocxAnchor[]; onNewComment?: () => void; onBookmarks?: () => void; onCrossReference?: () => void
   headerFooter?: { prepare(): Promise<DocxPreparedHfEdges>; edit(target: DocxPreparedHfEdges['header'] | DocxPreparedHfEdges['footer']): void }
   pageNumber?: { format?: string | null; start?: number | null; reason?: string; label?: string; commit(values: SectionValues): SectionChangeResult }
@@ -333,14 +340,14 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
             <span>{t('ribbonPicture')}</span>
           </button>
           {pictureError && <p role="alert" className="table-picker-error">{pictureError}</p>}
-          <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-chart" aria-label={t("ribbonChartTip")}>
+          <button className="rb-big" disabled={!editable||!onInsertChart} title={onInsertChart?undefined:unavailable} onMouseDown={event=>event.preventDefault()} onClick={()=>onInsertChart?.()} data-action="insert-chart" aria-label={t("ribbonChartTip")}>
             <span className="rb-big-icon">
               <IconChart size={BIG}/>
             </span>
             <span>{t('ribbonChart')}</span>
           </button>
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-shapes" aria-label={t("ribbonShapesTip")}>
+            <button className="rb-big" disabled={!editable || !onInsertObject} title={onInsertObject ? undefined : unavailable} onMouseDown={event=>event.preventDefault()} onClick={()=>onInsertObject?.('shape')} data-action="insert-shapes" aria-label={t("ribbonShapesTip")}>
               <span className="rb-big-icon">
                 <IconShapes size={BIG}/>
                 <IconCaret />
@@ -356,7 +363,7 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
       <div className="ribbon-group">
         <div className="ribbon-group-items">
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-text-box" aria-label={t("ribbonTextBoxTip")}>
+            <button className="rb-big" disabled={!editable || !onInsertObject} title={onInsertObject ? undefined : unavailable} onMouseDown={event=>event.preventDefault()} onClick={()=>onInsertObject?.('textbox')} data-action="insert-text-box" aria-label={t("ribbonTextBoxTip")}>
               <span className="rb-big-icon">
                 <IconTextBox size={BIG}/>
                 <IconCaret />
@@ -365,7 +372,7 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
             </button>
           </div>
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-word-art" aria-label={t("ribbonWordArtTip")}>
+            <button className="rb-big" disabled={!editable || !onInsertObject} title={onInsertObject ? undefined : unavailable} onMouseDown={event=>event.preventDefault()} onClick={()=>onInsertObject?.('wordArt')} data-action="insert-word-art" aria-label={t("ribbonWordArtTip")}>
               <span className="rb-big-icon">
                 <IconWordArt size={BIG}/>
                 <IconCaret />
@@ -386,13 +393,14 @@ export function DocxInsertSource({ editor, editable, anchors = [], headerFooter,
             </div> : null}
           </div>
           <div className="rb-split-wrap">
-            <button className="rb-big" disabled={true} title={unavailable} aria-description={unavailable} data-action="insert-field" aria-label={t("ribbonFieldTip")}>
+            <button className="rb-big" disabled={!onInsertField&&!onToggleAllFieldCodes} title={onInsertField?undefined:unavailable} onMouseDown={event=>event.preventDefault()} onClick={()=>setDropdown(current=>current==='field'?null:'field')} data-action="insert-field" aria-label={t("ribbonFieldTip")}>
               <span className="rb-big-icon" style={{ fontSize: 15, lineHeight: 1.2 }}>
                 {'{ }'}
                 <IconCaret />
               </span>
               <span>{t('ribbonField')}</span>
             </button>
+            {dropdown==='field'&&<div className="layout-menu" role="menu" aria-label="域类型">{([['DATE','日期'],['TIME','时间'],['PAGE','页码'],['NUMPAGES','总页数'],['FILENAME','文件名']] as const).map(([value,label])=><button type="button" role="menuitem" key={value} data-field={value} disabled={!editable} onMouseDown={event=>event.preventDefault()} onClick={()=>{setDropdown(null);onInsertField?.(value)}}>{label}</button>)}<button type="button" role="menuitem" data-action="update-fields" disabled={!editable||!onUpdateFields} onClick={()=>{setDropdown(null);onUpdateFields?.()}}>更新域 (F9)</button>{([['edit-field','编辑域',onEditField],['toggle-field-code','切换所选域代码',onToggleFieldCode],['toggle-all-field-codes','切换全部域代码 (Alt+F9)',onToggleAllFieldCodes]]as const).map(([action,label,callback])=><button key={action} type="button" role="menuitem" data-action={action} disabled={!callback||(action==='edit-field'&&!editable)} onMouseDown={event=>event.preventDefault()} onClick={()=>{setDropdown(null);callback?.()}}>{label}</button>)}</div>}
           </div>
         </div>
         <div className="ribbon-group-label">{t('ribbonGroupText')}</div>

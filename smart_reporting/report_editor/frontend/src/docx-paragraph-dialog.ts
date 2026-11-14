@@ -11,7 +11,7 @@ import './docx-paragraph-dialog.css'
 function targets(editor: Editor, anchors: DocxAnchor[]) {
   const { $from, $to } = editor.state.selection
   if ($from.depth !== 1 || $to.depth !== 1) {
-    if (!$from.sameParent($to)) return []
+    if ($from.depth !== $to.depth) return []
     const paragraphDepth = $from.depth
     if (!['docParagraph', 'docHeading', 'docListItem'].includes($from.parent.type.name)) return []
     let tableDepth = -1, cellDepth = -1
@@ -19,12 +19,22 @@ function targets(editor: Editor, anchors: DocxAnchor[]) {
       if (cellDepth < 0 && ['docTableCell', 'docTableHeader'].includes($from.node(depth).type.name)) cellDepth = depth
       if ($from.node(depth).type.name === 'docTable') { tableDepth = depth; break }
     }
-    if (tableDepth < 0 || cellDepth < 0) return []
+    if (tableDepth < 0 || cellDepth < 0 || $from.node(cellDepth) !== $to.node(cellDepth) || $from.node(tableDepth) !== $to.node(tableDepth)) return []
     const tablePos = $from.before(tableDepth), row = $from.index(tableDepth), column = $from.index(tableDepth + 1), paragraphIndex = $from.index(cellDepth)
     const tableNode = editor.state.doc.nodeAt(tablePos), matches = anchors.filter(anchor => anchor.docxIndex === tableNode?.attrs.docxIndex)
     const anchor = matches[0], cell = anchor?.cells?.[row]?.[column], paragraph = cell?.paragraphs?.find(item => item.index === paragraphIndex)
     if (!tableNode || tableNode.type.name !== 'docTable' || matches.length !== 1 || !anchor?.editable || !cell?.editable || !paragraph?.editable) return []
-    return [{ node: $from.parent, pos: $from.before(paragraphDepth), anchor, tablePos, tableNode, row, column, paragraphIndex }]
+    const result = []
+    const cellNode = $from.node(cellDepth), cellStart = $from.start(cellDepth)
+    for (let index = paragraphIndex, offset = 0; index <= $to.index(cellDepth); index++) {
+      const node = cellNode.child(index)
+      const identity = cell.paragraphs?.find(item => item.index === index)
+      if (!identity?.editable || !['docParagraph', 'docHeading', 'docListItem'].includes(node.type.name)) return []
+      if (index === paragraphIndex) for (let before = 0; before < index; before++) offset += cellNode.child(before).nodeSize
+      result.push({ node, pos: cellStart + offset, anchor, tablePos, tableNode, row, column, paragraphIndex: index })
+      offset += node.nodeSize
+    }
+    return result
   }
   const result: { node: typeof $from.parent; pos: number; anchor: DocxAnchor; tablePos?: number; tableNode?: typeof $from.parent; row?: number; column?: number; paragraphIndex?: number }[] = []
   editor.state.doc.forEach((node, pos, index) => {
@@ -45,6 +55,7 @@ export function openDocxParagraphDialog(root: HTMLElement, editor: Editor, ancho
   const selected = targets(editor, anchors)
   if (!selected.length || !editor.isEditable) throw new Error(docxParagraphDialogUnavailable(editor, anchors)!)
   const doc = editor.state.doc, selection = editor.state.selection
+  const sourceIdentity = JSON.stringify(anchors)
   const tabId = `docx-paragraph-settings-${++paragraphDialogCount}`
   const modal = createModal({ root, label: '段落设置', cardClass: 'docx-settings-dialog docx-paragraph-dialog', closeLabel: '关闭段落设置', onRequestClose: () => modal.remove(), content: `
     <h2>段落</h2><div role="tablist" aria-label="段落设置页签"><button type="button" role="tab" id="${tabId}-indents-tab" aria-controls="${tabId}-indents-panel" data-tab="indents" aria-selected="true" tabindex="0">缩进和间距</button><button type="button" role="tab" id="${tabId}-pagination-tab" aria-controls="${tabId}-pagination-panel" data-tab="pagination" aria-selected="false" tabindex="-1">换行和分页</button></div>
@@ -53,7 +64,7 @@ export function openDocxParagraphDialog(root: HTMLElement, editor: Editor, ancho
     <label>大纲级别<select aria-label="大纲级别"><option value="">混合（保持原样）</option><option value="0">正文文本</option>${Array.from({ length: 9 }, (_, i) => `<option value="${i + 1}">${i + 1} 级</option>`).join('')}</select></label>
     ${[['indentLeft','左缩进'],['indentRight','右缩进'],['spaceBefore','段前间距'],['spaceAfter','段后间距']].map(([key,label]) => `<label>${label}（pt）<input type="number" step="0.05" data-field="${key}" aria-label="${label}（pt）"></label>`).join('')}
     <label>特殊缩进<select aria-label="特殊缩进类型"><option value="">混合（保持原样）</option><option value="none">无</option><option value="firstLine">首行</option><option value="hanging">悬挂</option></select></label>
-    <label>单位<select aria-label="特殊缩进单位"><option value="pt">pt</option><option value="chars">字符</option></select></label><label>缩进值<input type="number" step="0.05" aria-label="特殊缩进值"></label>
+    <label>单位<select aria-label="特殊缩进单位"><option value="">混合（保持原样）</option><option value="pt">pt</option><option value="chars">字符</option></select></label><label>缩进值<input type="number" step="0.05" aria-label="特殊缩进值"></label>
     <label>行距<select aria-label="段落行距类型"><option value="">混合（保持原样）</option><option value="single">单倍</option><option value="oneHalf">1.5 倍</option><option value="double">双倍</option><option value="atLeast">最小值</option><option value="exact">固定值</option><option value="multiple">多倍</option></select></label><label>设置值<input type="number" step="0.01" aria-label="段落行距倍数"></label>
     </div><div role="tabpanel" id="${tabId}-pagination-panel" aria-labelledby="${tabId}-pagination-tab" data-panel="pagination" hidden>${DOCX_PARAGRAPH_FLAGS.map((key,i) => `<label><input type="checkbox" data-paragraph-flag="${key}" aria-label="${flagLabels[i]}">${flagLabels[i]}</label>`).join('')}</div>
     <p>空白或混合字段保持各段原样。缩进精度 0.05 pt；段前后间距不超过 1584 pt。</p><p role="alert"></p><button type="button" data-paragraph-cancel class="${buttonClasses('secondary')}">取消</button><button type="submit" class="${buttonClasses('primary')}">确定</button></form>` })
@@ -66,8 +77,9 @@ export function openDocxParagraphDialog(root: HTMLElement, editor: Editor, ancho
   for (const input of modal.card.querySelectorAll<HTMLInputElement>('[data-field]')) { const v = common(({ node }) => Number(node.attrs[input.dataset.field!] ?? 0)); input.value = v === undefined ? '' : String(Number(v) / 20) }
   const kind = field('特殊缩进类型'), unit = field('特殊缩进单位'), by = field('特殊缩进值')
   kind.value = String(common(({ node }) => Number(node.attrs.indentFirstLineChars) > 0 || Number(node.attrs.indentFirstLine) > 0 ? 'firstLine' : Number(node.attrs.indentFirstLine) < 0 ? 'hanging' : 'none') ?? '')
-  unit.value = common(({ node }) => Number(node.attrs.indentFirstLineChars) > 0) === true ? 'chars' : 'pt'
-  const special = common(({ node }) => unit.value === 'chars' ? Number(node.attrs.indentFirstLineChars) / 100 : Math.abs(Number(node.attrs.indentFirstLine) || 0) / 20)
+  const characterUnit = common(({ node }) => Number(node.attrs.indentFirstLineChars) > 0)
+  unit.value = characterUnit === undefined ? '' : characterUnit ? 'chars' : 'pt'
+  const special = !unit.value ? undefined : common(({ node }) => unit.value === 'chars' ? Number(node.attrs.indentFirstLineChars) / 100 : Math.abs(Number(node.attrs.indentFirstLine) || 0) / 20)
   by.value = special === undefined ? '' : String(special)
   const lineKind = field('段落行距类型'), lineBy = field('段落行距倍数')
   lineKind.value = String(common(({ node }) => ['exact','atLeast'].includes(node.attrs.lineRule) ? node.attrs.lineRule : Number(node.attrs.lineSpacing ?? 1) === 1 ? 'single' : Number(node.attrs.lineSpacing) === 1.5 ? 'oneHalf' : Number(node.attrs.lineSpacing) === 2 ? 'double' : 'multiple') ?? '')
@@ -108,7 +120,7 @@ export function openDocxParagraphDialog(root: HTMLElement, editor: Editor, ancho
   modal.card.querySelector('form')!.addEventListener('submit', event => {
     event.preventDefault()
     try {
-      if (editor.isDestroyed || !editor.isEditable || editor.state.doc !== doc || !editor.state.selection.eq(selection)) throw new Error('文档或选区已变化，请重新打开段落设置')
+      if (JSON.stringify(anchors) !== sourceIdentity || editor.isDestroyed || !editor.isEditable || editor.state.doc !== doc || !editor.state.selection.eq(selection)) throw new Error('文档或选区已变化，请重新打开段落设置')
       const values: DocxParagraphProperties = {}
       const twips = (input: HTMLInputElement | HTMLSelectElement) => { const n = Number(input.value) * 20; if (!input.value.trim() || !Number.isFinite(n) || Math.abs(n - Math.round(n)) > 1e-7) throw new Error('长度须为有效数值，精度 0.05 pt'); return Math.round(n) }
       if (changed(field('段落对齐')) && field('段落对齐').value) values.align = field('段落对齐').value
@@ -138,7 +150,7 @@ export function openDocxParagraphDialog(root: HTMLElement, editor: Editor, ancho
       const tr = closeHistory(editor.state.tr)
       for (const target of selected) {
         if (target.tableNode && target.tablePos !== undefined && target.row !== undefined && target.column !== undefined && target.paragraphIndex !== undefined) {
-          const table = target.tableNode.toJSON()
+          const table = tr.doc.nodeAt(target.tablePos)!.toJSON()
           const projectedTable = projectDocxTableCellParagraphProperties(table, target.anchor, target.row, target.column, target.paragraphIndex, values, editor.schema)
           const paragraph = projectedTable.content![target.row]!.content![target.column]!.content![target.paragraphIndex]!
           tr.setNodeMarkup(target.pos, editor.schema.nodes[paragraph.type], paragraph.attrs)

@@ -1,0 +1,1360 @@
+{
+  "sourceCommit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "baseline": "command-index.json",
+  "note": "Original command-index evidence remains unchanged. These are scoped partial implementation overlays, not independent defects or a completion percentage. Browser evidence for Batch 2 covers only mirror margins and a bold centered new paragraph; Batch 3 limited selected-field/GIF corrected flow passed; the earlier wrong-order GIF artifact remains failed evidence, not a passing save. Batch 4 limited New/SaveAs browser acceptance passed against the frozen build, excluding the later filename-only refinement. Batch 5 delete/split ordinary top-level tables has focused tests, source wiring and full TypeScript/Vite/original budgets passed; limited ordinary-table browser acceptance passed; no complex-target or full shortcut matrix claim. Batch6 source-equivalent bounded insert/delete-cell dialogs and isolated editTableCells have focused tests/full build passed; limited insertRight2/shiftUp/shiftLeft browser acceptance passed; whole Word parity remains open.",
+  "entries": [
+    {
+      "id": "TXT-A01",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A02",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A03",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A04",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A05",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A06",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A07",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A08",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A09",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A10",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A11",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A12",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A13",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-A14",
+      "effectiveStatus": "partial",
+      "scope": "开关/重置与真实编号接线已补；不扩大来源编辑权限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "INS-021",
+      "effectiveStatus": "partial",
+      "scope": "五类可信行内域指令编辑、显示代码/Alt+F9及正文右键回调已接；复杂/嵌套指令、其他story与全源域种类仍受限。第一批真实域保存有效；第三批选定域更新场景已验，指令编辑与其他域/目标仍按专项范围。",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "supersededScopes": [
+        {
+          "scope": "五类可信行内域指令编辑；显示代码/Alt+F9；复杂指令与右键路由仍受限",
+          "effectiveStatus": "partial",
+          "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+        }
+      ],
+      "batch": "batch1+batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "INS-022",
+      "effectiveStatus": "partial",
+      "scope": "五类可信行内域指令编辑、显示代码/Alt+F9及正文右键回调已接；复杂/嵌套指令、其他story与全源域种类仍受限。第一批真实域保存有效；第三批选定域更新场景已验，指令编辑与其他域/目标仍按专项范围。",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "supersededScopes": [
+        {
+          "scope": "五类可信行内域指令编辑；显示代码/Alt+F9；复杂指令与右键路由仍受限",
+          "effectiveStatus": "partial",
+          "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+        }
+      ],
+      "batch": "batch1+batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-TBL-STYLE-NONE",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-STYLE-GRID",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-STYLE-BLUE-HEADER",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-STYLE-BLUE-BANDED",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-STYLE-GRAY-BANDED",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-STYLE-GREEN-HEADER",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-STYLE-CUSTOM",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-LOOK-FIRST-ROW",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-LOOK-LAST-ROW",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-LOOK-BANDED-ROWS",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-LOOK-FIRST-COLUMN",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-LOOK-LAST-COLUMN",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "OBJ-TBL-LOOK-BANDED-COLUMNS",
+      "effectiveStatus": "partial",
+      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "MAIL-PERRECORD",
+      "effectiveStatus": "partial",
+      "scope": "授权CSV单节模板输出及平面控制域；组合限制详见实施验收",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "MAIL-LABELS",
+      "effectiveStatus": "partial",
+      "scope": "授权CSV单节模板输出及平面控制域；组合限制详见实施验收",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "MAIL-ENVELOPES",
+      "effectiveStatus": "partial",
+      "scope": "授权CSV单节模板输出及平面控制域；组合限制详见实施验收",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "MAIL-CONTROL-FIELDS",
+      "effectiveStatus": "partial",
+      "scope": "授权CSV单节模板输出及平面控制域；组合限制详见实施验收",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "WV-V02",
+      "effectiveStatus": "partial",
+      "scope": "Web/阅读/滚轮/深色/单位对应真实主入口；完整视图族未关闭",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "WV-V04",
+      "effectiveStatus": "partial",
+      "scope": "Web/阅读/滚轮/深色/单位对应真实主入口；完整视图族未关闭",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "WV-V10",
+      "effectiveStatus": "partial",
+      "scope": "Web/阅读/滚轮/深色/单位对应真实主入口；完整视图族未关闭",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "WV-V11",
+      "effectiveStatus": "partial",
+      "scope": "Web/阅读/滚轮/深色/单位对应真实主入口；完整视图族未关闭",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "WV-P01",
+      "effectiveStatus": "partial",
+      "scope": "Web/阅读/滚轮/深色/单位对应真实主入口；完整视图族未关闭",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
+    },
+    {
+      "id": "TXT-T02",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "首次保存前新增顶层普通段落/标题/列表的白名单runs、段落格式、已绑定样式/编号、空段落待输入格式及Shift+Enter可写回；链接/域/图片等内联对象、图片编号及未知属性仍拒绝。此项不表示所有新段落工具栏入口已开放。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F01",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F02",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F03",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F04",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F05",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F06",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F07",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F08",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F17",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F18",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F19",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F20",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-F21",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文光标格式已改为stored marks，字号阶梯/范围已补；新增段落writer允许对应白名单runs。活动HF/文本框、普通单元格富格式与所有对话框的新段落范围仍未全等价。",
+      "batch": "batch1+batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P01",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P02",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P03",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P04",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P05",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P06",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P07",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P08",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P09",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P10",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P11",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P12",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P13",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P14",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P15",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P16",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "TXT-P17",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "新增顶层段落writer允许对齐/方向/缩进/间距/shading等白名单属性；已验证新增加粗居中段落保存。非正文、普通单元格与各独立入口/复杂来源范围仍开放，新增段落边框不在此白名单。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-004",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-005",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-006",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-007",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-008",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-009",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-013",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "LAY-014",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "适中/镜像/Office2003/最近自定义、镜像开关与标签、自定义纸张144–31680 twips和当前节/全文范围已接；边距仍须留最小正文区，复杂节/混合操作仍受门禁。真实浏览器仅验镜像修订，不代替全部预设/边界矩阵。",
+      "batch": "batch2",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json"
+    },
+    {
+      "id": "WV-C01",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文DOM右键/ContextMenu/ShiftF10及已提供原生回调已接，目标冻结/只读/IME/焦点和嵌套编辑器隔离有DOM测试；未提供功能明确禁用，不冒充底层writer全等价。范围/缺失回调见增量报告；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "WV-C02",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文DOM右键/ContextMenu/ShiftF10及已提供原生回调已接，目标冻结/只读/IME/焦点和嵌套编辑器隔离有DOM测试；未提供功能明确禁用，不冒充底层writer全等价。范围/缺失回调见增量报告；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "WV-C03",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文DOM右键/ContextMenu/ShiftF10及已提供原生回调已接，目标冻结/只读/IME/焦点和嵌套编辑器隔离有DOM测试；未提供功能明确禁用，不冒充底层writer全等价。范围/缺失回调见增量报告；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "WV-C04",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文DOM右键/ContextMenu/ShiftF10及已提供原生回调已接，目标冻结/只读/IME/焦点和嵌套编辑器隔离有DOM测试；未提供功能明确禁用，不冒充底层writer全等价。范围/缺失回调见增量报告；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "WV-C06",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文DOM右键/ContextMenu/ShiftF10及已提供原生回调已接，目标冻结/只读/IME/焦点和嵌套编辑器隔离有DOM测试；未提供功能明确禁用，不冒充底层writer全等价。范围/缺失回调见增量报告；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "WV-H01",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文DOM右键/ContextMenu/ShiftF10及已提供原生回调已接，目标冻结/只读/IME/焦点和嵌套编辑器隔离有DOM测试；未提供功能明确禁用，不冒充底层writer全等价。范围/缺失回调见增量报告；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-INSERT-ABOVE",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-INSERT-BELOW",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-INSERT-LEFT",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-INSERT-RIGHT",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-DELETE-ROW",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-DELETE-COLUMN",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-SELECT-ROW",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-SELECT-COLUMN",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-SELECT-TABLE",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-SELECT-CELL",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-MERGE-CELLS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-SPLIT-CELLS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-DISTRIBUTE-ROWS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-DISTRIBUTE-COLUMNS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-ALIGNMENT-9-OPTIONS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-DIRECTION-3-OPTIONS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-AUTOFIT-CONTENTS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-AUTOFIT-WINDOW",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-AUTOFIT-FIXED",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-TABLE-PROPERTIES",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-PICTURE-VIEW",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-CONTEXT-PICTURE-SAVE-AS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row."
+    },
+    {
+      "id": "OBJ-TBL-CONTEXT-KEYBOARD",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "正文右键已接对应原生回调，普通目标沿用原生table.reason/图片来源校验；复杂表格/对象、组合保存仍受原门禁；嵌套编辑器不接管；限定所选域/GIF流程已验，其他命令/目标组合仍待验。 第五批另接主编辑器安全顶层表格Ctrl/Meta+Shift+Enter拆分，IME/嵌套/对话框不认领；单操作/只读/脏稿/待批注锁沿用控制器，相关专项通过，构建与普通表格场景通过，完整快捷键目标矩阵仍未覆盖。",
+      "batch": "batch3",
+      "verificationLevel": "static-and-focused-tests",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "Limited selected-field update and corrected GIF/drop/split ordering plus Enter/Undo and reading/image Esc; not every command/target in this row.",
+      "additionalBatches": [
+        "batch5"
+      ],
+      "additionalEvidence": [
+        "/tmp/word-table-lifecycle-20261114/result.json"
+      ],
+      "additionalBrowserAcceptedScope": "Batch5: pending comment/row0 locks, split UndoRedo and limited ordinary-table lifecycle; does not certify full shortcut matrix."
+    },
+    {
+      "id": "WV-F01",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "授权/CSRF/来源SHA绑定New/SaveAs API、文件菜单及懒加载对话框已接；创建独立文档并提供同源打开链接。SaveAs只复制已保存修订原字节，有草稿禁用并提交前flush复核；非任意磁盘路径/加密/隐式并入草稿。displayName传递已接，冻结构建真实New首次输入保存/下载/重开及Unicode独立SaveAs重开通过，累计1次保存；后续文件名160字符窄修订仅专项/最终构建证据。",
+      "batch": "batch4",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-file-actions-20261114-run2/result.json"
+    },
+    {
+      "id": "WV-F09",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "scope": "授权/CSRF/来源SHA绑定New/SaveAs API、文件菜单及懒加载对话框已接；创建独立文档并提供同源打开链接。SaveAs只复制已保存修订原字节，有草稿禁用并提交前flush复核；非任意磁盘路径/加密/隐式并入草稿。displayName传递已接，冻结构建真实New首次输入保存/下载/重开及Unicode独立SaveAs重开通过，累计1次保存；后续文件名160字符窄修订仅专项/最终构建证据。",
+      "batch": "batch4",
+      "verificationLevel": "browser-saved-reopened-limited",
+      "browserEvidence": "/tmp/word-file-actions-20261114-run2/result.json"
+    },
+    {
+      "id": "OBJ-TBL-DELETE",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch5",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment lock and first-row split disabled",
+        "split Undo/Redo",
+        "Ribbon split and context-menu delete, save/download/reopen of both",
+        "exact rows/cell paragraph/run XML, grid/auto widths/style retained; lower alt reset",
+        "identical unaffected table, all non-document.xml ZIP parts/header/footer preserved"
+      ],
+      "scope": "可信blockId/原表SHA绑定，单操作独立保存；仅普通正文顶层矩形表格，拆分行1..rows-1，宽度校验投影不改原始XML，下表身份/替代文字重置且留空段，删唯一表格留空段。只读/保护/修订模式/脏稿/保存中/待处理批注含根回复锁；UndoRedo。合并/嵌套/批注修订标记/未知shell和混合操作仍不支持；最终构建及普通表格保存/下载/重开场景通过；不覆盖完整来源或组合矩阵。",
+      "browserEvidence": "/tmp/word-table-lifecycle-20261114/result.json"
+    },
+    {
+      "id": "OBJ-TBL-SPLIT-TABLE",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch5",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment lock and first-row split disabled",
+        "split Undo/Redo",
+        "Ribbon split and context-menu delete, save/download/reopen of both",
+        "exact rows/cell paragraph/run XML, grid/auto widths/style retained; lower alt reset",
+        "identical unaffected table, all non-document.xml ZIP parts/header/footer preserved"
+      ],
+      "scope": "可信blockId/原表SHA绑定，单操作独立保存；仅普通正文顶层矩形表格，拆分行1..rows-1，宽度校验投影不改原始XML，下表身份/替代文字重置且留空段，删唯一表格留空段。只读/保护/修订模式/脏稿/保存中/待处理批注含根回复锁；UndoRedo。合并/嵌套/批注修订标记/未知shell和混合操作仍不支持；最终构建及普通表格保存/下载/重开场景通过；不覆盖完整来源或组合矩阵。",
+      "browserEvidence": "/tmp/word-table-lifecycle-20261114/result.json"
+    },
+    {
+      "id": "OBJ-CONTEXT-DELETE-TABLE",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch5",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment lock and first-row split disabled",
+        "split Undo/Redo",
+        "Ribbon split and context-menu delete, save/download/reopen of both",
+        "exact rows/cell paragraph/run XML, grid/auto widths/style retained; lower alt reset",
+        "identical unaffected table, all non-document.xml ZIP parts/header/footer preserved"
+      ],
+      "scope": "Ribbon与正文右键共用受限控制器。可信blockId/原表SHA绑定，单操作独立保存；仅普通正文顶层矩形表格，拆分行1..rows-1，宽度校验投影不改原始XML，下表身份/替代文字重置且留空段，删唯一表格留空段。只读/保护/修订模式/脏稿/保存中/待处理批注含根回复锁；UndoRedo。合并/嵌套/批注修订标记/未知shell和混合操作仍不支持；最终构建及普通表格保存/下载/重开场景通过；不覆盖完整来源或组合矩阵。",
+      "browserEvidence": "/tmp/word-table-lifecycle-20261114/result.json"
+    },
+    {
+      "id": "OBJ-CONTEXT-SPLIT-TABLE",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch5",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment lock and first-row split disabled",
+        "split Undo/Redo",
+        "Ribbon split and context-menu delete, save/download/reopen of both",
+        "exact rows/cell paragraph/run XML, grid/auto widths/style retained; lower alt reset",
+        "identical unaffected table, all non-document.xml ZIP parts/header/footer preserved"
+      ],
+      "scope": "Ribbon与正文右键共用受限控制器。可信blockId/原表SHA绑定，单操作独立保存；仅普通正文顶层矩形表格，拆分行1..rows-1，宽度校验投影不改原始XML，下表身份/替代文字重置且留空段，删唯一表格留空段。只读/保护/修订模式/脏稿/保存中/待处理批注含根回复锁；UndoRedo。合并/嵌套/批注修订标记/未知shell和混合操作仍不支持；最终构建及普通表格保存/下载/重开场景通过；不覆盖完整来源或组合矩阵。",
+      "browserEvidence": "/tmp/word-table-lifecycle-20261114/result.json"
+    },
+    {
+      "id": "OBJ-TBL-INSERT-CELLS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch6",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment preserved, cancel/invalid-count no-op, row-count budget refusal, stale selection disabled; preSaveHTTPCount0",
+        "exact Undo/Redo",
+        "insertRight count2 revision2 -> shiftUp revision3 -> shiftLeft revision4; three actual HTTP200 save/download/reopen with source SHA chain",
+        "surviving paragraph/run XML and blank/fill inheritance, fitted grid/cell widths, shiftUp/Left text/gridAfter, identical unaffected table/body and non-target ZIP/HF preserved"
+      ],
+      "scope": "editTableCells绑定原表SHA与矩形意图、单操作保存；Insert四方向数量1..100插完整行列，Delete四模式shiftLeft/shiftUp/row/column复用源PM与fixTables。仅安全普通顶层auto/pct/fixed表，上限100行/30列/1000格。存活段落/rPr原XML保留；新增行列默认空pPr、shiftUp补空复制原首段pPr。已有gridGap/合并嵌套/批注修订/未知shell不支持；shiftLeft输出gridAfter可读回但不承诺后续非普通结构编辑。原生UI适配源选项非整份vendor复制；只读/修订/脏稿/待批注/IME过期等锁与UndoRedo。专项/构建及insertRight2→shiftUp→shiftLeft保存下载重开通过，其余模式/来源组合不据此关闭。已vendor的固定源文件保持逐字节一致；本批共享核心中的部分逻辑按源语义重写/适配，原始XML保留writer为本地定制实现，不声称全部代码直接复制。。",
+      "browserEvidence": "/tmp/word-table-cells-20261114/result.json"
+    },
+    {
+      "id": "OBJ-TBL-DELETE-CELLS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch6",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment preserved, cancel/invalid-count no-op, row-count budget refusal, stale selection disabled; preSaveHTTPCount0",
+        "exact Undo/Redo",
+        "insertRight count2 revision2 -> shiftUp revision3 -> shiftLeft revision4; three actual HTTP200 save/download/reopen with source SHA chain",
+        "surviving paragraph/run XML and blank/fill inheritance, fitted grid/cell widths, shiftUp/Left text/gridAfter, identical unaffected table/body and non-target ZIP/HF preserved"
+      ],
+      "scope": "editTableCells绑定原表SHA与矩形意图、单操作保存；Insert四方向数量1..100插完整行列，Delete四模式shiftLeft/shiftUp/row/column复用源PM与fixTables。仅安全普通顶层auto/pct/fixed表，上限100行/30列/1000格。存活段落/rPr原XML保留；新增行列默认空pPr、shiftUp补空复制原首段pPr。已有gridGap/合并嵌套/批注修订/未知shell不支持；shiftLeft输出gridAfter可读回但不承诺后续非普通结构编辑。原生UI适配源选项非整份vendor复制；只读/修订/脏稿/待批注/IME过期等锁与UndoRedo。专项/构建及insertRight2→shiftUp→shiftLeft保存下载重开通过，其余模式/来源组合不据此关闭。已vendor的固定源文件保持逐字节一致；本批共享核心中的部分逻辑按源语义重写/适配，原始XML保留writer为本地定制实现，不声称全部代码直接复制。。",
+      "browserEvidence": "/tmp/word-table-cells-20261114/result.json"
+    },
+    {
+      "id": "OBJ-CONTEXT-INSERT-CELLS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch6",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment preserved, cancel/invalid-count no-op, row-count budget refusal, stale selection disabled; preSaveHTTPCount0",
+        "exact Undo/Redo",
+        "insertRight count2 revision2 -> shiftUp revision3 -> shiftLeft revision4; three actual HTTP200 save/download/reopen with source SHA chain",
+        "surviving paragraph/run XML and blank/fill inheritance, fitted grid/cell widths, shiftUp/Left text/gridAfter, identical unaffected table/body and non-target ZIP/HF preserved"
+      ],
+      "scope": "editTableCells绑定原表SHA与矩形意图、单操作保存；Insert四方向数量1..100插完整行列，Delete四模式shiftLeft/shiftUp/row/column复用源PM与fixTables。仅安全普通顶层auto/pct/fixed表，上限100行/30列/1000格。存活段落/rPr原XML保留；新增行列默认空pPr、shiftUp补空复制原首段pPr。已有gridGap/合并嵌套/批注修订/未知shell不支持；shiftLeft输出gridAfter可读回但不承诺后续非普通结构编辑。原生UI适配源选项非整份vendor复制；只读/修订/脏稿/待批注/IME过期等锁与UndoRedo。专项/构建及insertRight2→shiftUp→shiftLeft保存下载重开通过，其余模式/来源组合不据此关闭。已vendor的固定源文件保持逐字节一致；本批共享核心中的部分逻辑按源语义重写/适配，原始XML保留writer为本地定制实现，不声称全部代码直接复制。。",
+      "browserEvidence": "/tmp/word-table-cells-20261114/result.json"
+    },
+    {
+      "id": "OBJ-CONTEXT-DELETE-CELLS",
+      "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
+      "effectiveStatus": "partial",
+      "batch": "batch6",
+      "verificationLevel": "static-focused-tests-build-and-limited-browser",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment preserved, cancel/invalid-count no-op, row-count budget refusal, stale selection disabled; preSaveHTTPCount0",
+        "exact Undo/Redo",
+        "insertRight count2 revision2 -> shiftUp revision3 -> shiftLeft revision4; three actual HTTP200 save/download/reopen with source SHA chain",
+        "surviving paragraph/run XML and blank/fill inheritance, fitted grid/cell widths, shiftUp/Left text/gridAfter, identical unaffected table/body and non-target ZIP/HF preserved"
+      ],
+      "scope": "editTableCells绑定原表SHA与矩形意图、单操作保存；Insert四方向数量1..100插完整行列，Delete四模式shiftLeft/shiftUp/row/column复用源PM与fixTables。仅安全普通顶层auto/pct/fixed表，上限100行/30列/1000格。存活段落/rPr原XML保留；新增行列默认空pPr、shiftUp补空复制原首段pPr。已有gridGap/合并嵌套/批注修订/未知shell不支持；shiftLeft输出gridAfter可读回但不承诺后续非普通结构编辑。原生UI适配源选项非整份vendor复制；只读/修订/脏稿/待批注/IME过期等锁与UndoRedo。专项/构建及insertRight2→shiftUp→shiftLeft保存下载重开通过，其余模式/来源组合不据此关闭。已vendor的固定源文件保持逐字节一致；本批共享核心中的部分逻辑按源语义重写/适配，原始XML保留writer为本地定制实现，不声称全部代码直接复制。。",
+      "browserEvidence": "/tmp/word-table-cells-20261114/result.json"
+    }
+  ],
+  "batches": [
+    {
+      "id": "batch2",
+      "scope": "Layout/new rich body paragraph",
+      "browserEvidence": "/tmp/word-remediation-layout-rich-20261114/result.json",
+      "browserAcceptedScope": [
+        "mirror margins revision2",
+        "new bold centered body paragraph revision3"
+      ],
+      "browserStatus": "passed-limited",
+      "successfulSaveReceipts": 2,
+      "businessValidation": "native_source_review_pending"
+    },
+    {
+      "id": "batch3",
+      "scope": "native document context menu + OS image file drop",
+      "browserStatus": "passed-limited",
+      "verification": "Focused async clipboard58, NativeSplit12, source-run front7/bridge7/native2, related frontend74 and mixed/boundary/tail15 passed (overlapping, do not sum); independent review no confirmed Important; full tsc+Vite496chunks/Word248347B/original budgets pass",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": [
+        "selected NUMPAGES cache update, neighboring PAGE7 preserved",
+        "corrected GIF media bytes and split paragraph text/pPr/style preserved",
+        "unrelated ZIP/HF preserved",
+        "Enter/Undo",
+        "reading image Escape keeps reading"
+      ],
+      "browserBuild": "/tmp/word-remediation-batch3-order-build",
+      "assetCount": 191,
+      "manifestSha256": "cfa8505ce257f4f75e3e8b6e45a969ca893b7ee32611f602fdb42c547f8bd54b",
+      "successfulHttpSaveCallsAcrossAttempts": 3,
+      "newSuccessfulHttpSavesCorrectedRun": 1,
+      "correctedReceipt": {
+        "revision": 2,
+        "parentRevision": 1,
+        "context": "fresh reimport of exact selected-field artifact; not global revision3"
+      },
+      "sourceSha256": "48aa97a027f9c41062ce41a75cd89aaab71a6e5d31b0f5a2032629b7b99dc1be",
+      "correctedGifSha256": "836eaf8aec440e3674ad28a40449f39c4bd8dffc5f9869cdbf8c7349994f6d2f",
+      "failedArtifact": {
+        "sha256": "cbdb812a00a118738f5b7357cc76ec55ae4137460218bedefa982a4d9ea46112",
+        "evidence": "/tmp/word-remediation-context-drop-20261114",
+        "status": "failed-file-order-validation",
+        "httpSaveSucceeded": true,
+        "countsAsAcceptancePass": false
+      },
+      "businessValidation": "native_source_review_pending"
+    },
+    {
+      "id": "batch4",
+      "scope": "New/SaveAs independent saved-revision file API + native File menu/dialog wiring",
+      "browserStatus": "passed-limited",
+      "savedRevisionOnly": true,
+      "hostSourceWiring": "docx-main.tsx + docx-file-actions.ts; limited frozen-build browser result recorded",
+      "browserEvidence": "/tmp/word-file-actions-20261114-run2/result.json",
+      "browserAcceptedScope": [
+        "New blank first typing/save/download/reopen",
+        "Unicode SaveAs independent document, same saved bytes, reopen",
+        "dirty SaveAs disabled",
+        "original source unchanged"
+      ],
+      "successfulSaveReceipts": 1,
+      "repeatedSavesDuringResume": 0,
+      "businessValidation": "native_source_review_pending",
+      "browserBuildScope": {
+        "build": "/tmp/word-remediation-batch3-build",
+        "excludes": "subsequent filename-only 160-character/validation refinement in docx-file-actions.ts"
+      },
+      "narrowRefinementVerification": "25 focused tests and final build passed; not browser-accepted by this frozen-build result",
+      "assetCount": 187
+    },
+    {
+      "id": "batch5",
+      "scope": "isolated SHA-bound deleteTable/splitTable for safe ordinary top-level rectangular tables; Ribbon/context and scoped Ctrl/Meta+Shift+Enter",
+      "effectiveStatus": "partial",
+      "build": "/tmp/word-table-lifecycle-build",
+      "buildStatus": "passed",
+      "browserEvidence": "/tmp/word-table-lifecycle-20261114/result.json",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment lock and first-row split disabled",
+        "split Undo/Redo",
+        "Ribbon split and context-menu delete, save/download/reopen of both",
+        "exact rows/cell paragraph/run XML, grid/auto widths/style retained; lower alt reset",
+        "identical unaffected table, all non-document.xml ZIP parts/header/footer preserved"
+      ],
+      "verification": "Lifecycle frontend13 + pending-comment getter11 (including one new root-reply pending lock regression) =24 passed; related48 passed; bridge9 passed; real native Python4 passed, all non-document.xml ZIP parts byte-identical. Review pending-comment gap fixed, re-review no confirmed Important. Counts overlap across scopes; do not sum as a full suite.",
+      "sourceReuse": "Exact pinned table-ops.ts + toast-bus.ts vendored; source splitTableAtSelection and PM deleteTable",
+      "limits": "One operation per save; row1..rows-1; safe auto/pct/fixed width validation projection preserves original XML; lower identity/alt reset + blank gap; only-table delete leaves blank paragraph. Merges/nesting/comments/revisions/unknown shell/mixed operations unsupported; insert/delete-cell shift/dialogs remain missing.",
+      "buildEvidence": "/tmp/word-table-lifecycle-budget.json",
+      "jsChunks": 497,
+      "wordChunkBytes": 249547,
+      "originalBudgetFailures": [],
+      "verificationLevel": "static-focused-tests-and-build",
+      "browserBuild": "/tmp/word-table-lifecycle-build",
+      "assetCount": 192,
+      "manifestSha256": "72bf08253f08d3de0bdbd3bd1b7f61e5377f3bab5ef74f93a8cd7f0f0a5d5fab",
+      "successfulHttpSaveCallsAcrossAttempts": 2,
+      "newSuccessfulHttpSavesFinalResume": 0,
+      "businessValidation": "native_source_review_pending",
+      "browserRepositoryScope": "Real FastAPI/native publication with scoped in-memory repositories; no production database",
+      "independentEvidence": "/tmp/word-table-lifecycle-20261114/independent.json",
+      "resumeReason": "Independent harness namespace-context comparison made symmetric; read-only resume from exact saved receipts/downloads, no repeated edits/saves.",
+      "artifacts": [
+        {
+          "kind": "split-r2",
+          "revision": 2,
+          "parentRevision": 1,
+          "sha256": "69bc1b3a845805d30e313dabbd60cf60f9576156a4fda8e552b2a34e0ebb1ed1"
+        },
+        {
+          "kind": "delete-r3",
+          "revision": 3,
+          "parentRevision": 2,
+          "sha256": "d7f41e6080c84f4929bb6c374ddf03db50b07cd668d32985dea63ae6747c14fe"
+        }
+      ]
+    },
+    {
+      "id": "batch6",
+      "scope": "SHA/rect-bound isolated editTableCells; Insert Cells above/below/left/right count1..100 inserts complete rows/columns; Delete Cells shiftLeft/shiftUp/row/column",
+      "effectiveStatus": "partial",
+      "buildStatus": "passed",
+      "buildEvidence": "/tmp/word-table-cells-budget.json",
+      "jsChunks": 498,
+      "wordChunkBytes": 250168,
+      "originalBudgetFailures": [],
+      "browserEvidence": "/tmp/word-table-cells-20261114/result.json",
+      "browserStatus": "passed-limited",
+      "browserAcceptedScope": [
+        "pending comment preserved, cancel/invalid-count no-op, row-count budget refusal, stale selection disabled; preSaveHTTPCount0",
+        "exact Undo/Redo",
+        "insertRight count2 revision2 -> shiftUp revision3 -> shiftLeft revision4; three actual HTTP200 save/download/reopen with source SHA chain",
+        "surviving paragraph/run XML and blank/fill inheritance, fitted grid/cell widths, shiftUp/Left text/gridAfter, identical unaffected table/body and non-target ZIP/HF preserved"
+      ],
+      "verification": "frontend adapter14/core10/lifecycle13=37 pass; bridge10 pass; real native Python12 all modes/only-table/malformed pass; related4files102 pass. Overlapping focused scopes, not full suite; no full-suite rerun. Author regression for centered-cell generator jc fixed via richParas blank pPr RED->GREEN. Root inspection/independent review no other confirmed Important.",
+      "sourceReuse": "Existing pinned AI/table-ops primitives + fixTables pure PM core; source dialog choices through native UI adapter, not full vendor dialog copy. No new vendor files/hash changes. Byte-exact copied vendor sources remain unchanged; portions of source-equivalent PM core are rewritten/adapted and source-XML writer is custom local code, not all copied.",
+      "limits": "Safe ordinary top-level auto/pct/fixed tables, max100rows/30cols/1000cells; existing gridGap/merges/nested/comments/revisions/unknown shell unsupported. shiftLeft gridAfter output readable/download/reopen does not promise further nonplain structural editing. One operation per save; survivors paragraph/rPr exact; new row/column default blank pPr copies only source visual cell fields; shiftUp blank copies original first pPr.",
+      "assetCount": 193,
+      "manifestSha256": "09792cc876047559f52759da0b0174530e865400e13e86e7226cded6433a3742",
+      "successfulHttpSaveCallsAcrossAttempts": 3,
+      "repeatedSaves": 0,
+      "businessValidation": "native_source_review_pending",
+      "browserRepositoryScope": "Real FastAPI/native publication with scoped in-memory repositories; no production database",
+      "independentEvidence": "/tmp/word-table-cells-20261114/independent.json",
+      "artifacts": [
+        {
+          "kind": "insert-r2",
+          "revision": 2,
+          "parentRevision": 1,
+          "sha256": "29a104cfd1bc0b5c2dfe93eb1e273b01b50ecd2197078986c53bdbc9434cd1ac"
+        },
+        {
+          "kind": "up-r3",
+          "revision": 3,
+          "parentRevision": 2,
+          "sha256": "57f9955b2df6807d195eb8e8be7e643c92e3f37c0dd6b8d2a64f3cdaa310124a"
+        },
+        {
+          "kind": "left-r4",
+          "revision": 4,
+          "parentRevision": 3,
+          "sha256": "8a0b45768c02d252af5e13cb34e33761afbb29143dd65bc9181ad95cf8c71d26"
+        }
+      ]
+    }
+  ],
+  "coverageGroups": [
+    {
+      "group": "context-menu",
+      "effectiveStatus": "partial",
+      "scope": "Native container and supplied handlers connected; Batch5 adds isolated source-bound delete/split ordinary top-level tables (limited browser save/download/reopen passed). Batch6 adds bounded insert/delete-cell dialogs for safe top-level sources (limited insertRight2/shiftUp/shiftLeft browser passed). List-level/indent, synonym/redaction, wrap/z-order, resolve-comment remain disabled. Existing alternate UI does not imply context callback parity.",
+      "batch": "batch3",
+      "browserStatus": "passed-limited",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "selected field/GIF split and ordering scenario only; other callbacks/targets remain scoped",
+      "additionalBatches": [
+        "batch5",
+        "batch6"
+      ],
+      "additionalBrowserEvidence": [
+        "/tmp/word-table-lifecycle-20261114/result.json",
+        "/tmp/word-table-cells-20261114/result.json"
+      ]
+    },
+    {
+      "group": "image-drop",
+      "effectiveStatus": "partial",
+      "scope": "PNG/JPEG/GIF OS files at trusted top-level body positions; empty-MIME extension fallback; ordered per-file native block image insertion. 8MB limit, no inline/table/story parity or atomic batch guarantee.",
+      "batch": "batch3",
+      "browserStatus": "passed-limited",
+      "browserEvidence": "/tmp/word-remediation-context-drop-corrected-20261114/result.json",
+      "browserAcceptedScope": "selected field/GIF split and ordering scenario only; other callbacks/targets remain scoped"
+    }
+  ],
+  "remainingPriorities": [
+    {
+      "priority": 1,
+      "family": "editing-target-scope",
+      "ids": [
+        "TXT-T04",
+        "TXT-T07",
+        "TXT-T08"
+      ],
+      "relatedIdRanges": [
+        "TXT-FD01–FD21",
+        "TXT-PD01–PD18"
+      ],
+      "remaining": "ordinary-cell rich runs, active HF/textbox Home routing, existing textbox content; new body writer does not close all dialog targets"
+    },
+    {
+      "priority": 2,
+      "family": "table-writers",
+      "ids": [
+        "OBJ-TBL-DELETE",
+        "OBJ-TBL-INSERT-CELLS",
+        "OBJ-TBL-DELETE-CELLS",
+        "OBJ-TBL-SPLIT-TABLE"
+      ],
+      "remaining": "Insert/delete-cell dialogs now partial source-derived bounded operations (Batch6 focused tests/build and limited insertRight2/shiftUp/shiftLeft browser passed). Delete/split-table Batch5 limited browser passed. Complex merged/nested/grid-gap/comment/revision/unknown-shell sources, saved shiftLeft grid gaps and mixed operations remain open; no full table parity."
+    },
+    {
+      "priority": 3,
+      "family": "existing-objects",
+      "idPrefixes": [
+        "OBJ-SHAPE-FMT-",
+        "OBJ-PIC-FMT-",
+        "OBJ-CONTEXT-OBJECT-"
+      ],
+      "ids": [
+        "OBJ-SHAPE-DRAG-RESIZE"
+      ],
+      "remaining": "saved object content/geometry, picture z-order/inline/complex targets; exclude baseline source-limited rows"
+    },
+    {
+      "priority": 4,
+      "family": "references-review-protection",
+      "relatedIdRanges": [
+        "REF-007–REF-026"
+      ],
+      "ids": [
+        "REV-PANE",
+        "REV-PROTECT-TRACKEDCHANGES",
+        "REV-PROTECT-COMMENTS",
+        "REV-PROTECT-FORMS"
+      ],
+      "remaining": "unimplemented citation/index commands, complex/story revisions and rich comments; range is lookup scope, not all missing"
+    },
+    {
+      "priority": 5,
+      "family": "files-view-keyboard",
+      "ids": [
+        "WV-F03",
+        "WV-F04",
+        "WV-F05",
+        "WV-F06",
+        "WV-F10",
+        "WV-F16",
+        "WV-F17",
+        "WV-F21",
+        "WV-F22",
+        "WV-F23",
+        "WV-V09",
+        "WV-V15",
+        "WV-N06"
+      ],
+      "relatedIdRanges": [
+        "WV-S01–S05",
+        "WV-K01–K07"
+      ],
+      "remaining": "imports/encryption/printing/recent/AI naming, multipage/split/GoTo/status/App chords; saved-revision New/SaveAs overlay does not close the whole family; Batch5 Ctrl/Meta+Shift+Enter only covers safely scoped main-editor top-level table split, not the full catalog"
+    },
+    {
+      "priority": 6,
+      "family": "AI-and-acceptance",
+      "idPrefixes": [
+        "AI-TOOL-",
+        "AI-PROTOCOL-"
+      ],
+      "remaining": "source callable tools/context/attachments and operation scope mapping; explicit authorization/adoption is policy; B3 untested command/target combinations remain open; B4 filename-only refinement has focused tests/build evidence, outside frozen-build browser acceptance; Batch5 build/limited ordinary-table browser passed; untested source/target/combination matrix remains open; Batch6 limited three-mode browser accepted; full source/target/mode combination matrix remains open"
+    }
+  ],
+  "sourceLimitedExclusions": [
+    "TXT-LD21",
+    "SRC-001",
+    "SRC-002",
+    "SRC-003",
+    "SRC-004",
+    "SRC-005",
+    "SRC-006",
+    "SRC-007",
+    "SRC-008",
+    "SRC-009",
+    "SRC-010",
+    "SRC-011",
+    "SRC-012",
+    "SRC-013",
+    "OBJ-SHAPE-FMT-FLIP-HORIZONTAL",
+    "OBJ-SHAPE-FMT-FLIP-VERTICAL",
+    "OBJ-SHAPE-SOURCE-EFFECTS",
+    "OBJ-CHART-EDIT-TYPE-CHANGE",
+    "OBJ-CHART-EDIT-ADD-DELETE-CATEGORY-SERIES",
+    "AI-HIDDEN-UI-OPS",
+    "WV-F25",
+    "WV-F26"
+  ]
+}

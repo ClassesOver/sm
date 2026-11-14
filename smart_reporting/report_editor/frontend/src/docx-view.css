@@ -1,0 +1,22 @@
+/* Display-only adaptations of GenOffice f8c17004 View styles. */
+.docx-native.docx-view-web .doc-zoom { width: 100% !important; }
+.docx-native.docx-view-web .doc-page {
+  width: auto !important; min-height: 0 !important; box-shadow: none !important;
+  padding: 24px 40px 80px !important;
+}
+.docx-native.docx-view-web .page-hf,
+.docx-native.docx-view-web .page-gap,
+.docx-native.docx-view-web .page-gap-cut { display: none !important; }
+.docx-native.docx-read-mode .docx-tools,
+.docx-native.docx-read-mode .docx-navigation-host,
+.docx-native.docx-read-mode .docx-notice { display: none !important; }
+.docx-native.docx-read-mode .editor-scroll { padding-top: 44px; }
+.docx-read-exit { position: fixed; top: 52px; right: 24px; z-index: 60; border-radius: 15px; }
+.docx-read-exit[hidden] { display: none !important; }
+/* Host paper/canvas rules otherwise override the vendored appearance variables. */
+@media screen {
+  .docx-native .editor-scroll.page-dark .doc-page {
+    background: var(--docs-paper); color: var(--docs-paper-ink);
+  }
+  .docx-native.workspace-dark .editor-scroll { background: #3d3d3d; }
+}

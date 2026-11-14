@@ -47,6 +47,7 @@ class NativeSource(NativeModel):
     format: NativeFormat
     origin: NativeOrigin
     source_file: ArtifactFile = Field(alias="sourceFile")
+    display_name: str | None = Field(default=None, alias="displayName", min_length=1, max_length=160)
     report_id: str | None = Field(default=None, alias="reportId", min_length=1)
     workflow_run_id: str | None = Field(default=None, alias="workflowRunId", min_length=1)
     revision: int | None = Field(default=None, ge=1)
@@ -58,6 +59,9 @@ class NativeSource(NativeModel):
     @model_serializer(mode="wrap")
     def serialize_source(self, handler):
         result = handler(self)
+        if self.display_name is None:
+            result.pop('displayName', None)
+            result.pop('display_name', None)
         if self.report_context_sha256 is None:
             result.pop('reportContextSha256', None)
             result.pop('report_context_sha256', None)
@@ -92,8 +96,17 @@ class NativeEditorContext(NativeModel):
     revision: int = Field(ge=1)
     scope: NativeScope
     source_file: ArtifactFile = Field(alias="sourceFile")
+    display_name: str | None = Field(default=None, alias="displayName", min_length=1, max_length=160)
     origin: NativeOrigin
     parent_revision: int | None = Field(default=None, alias="parentRevision", ge=1)
+
+    @model_serializer(mode="wrap")
+    def serialize_context(self, handler):
+        result = handler(self)
+        if self.display_name is None:
+            result.pop('displayName', None)
+            result.pop('display_name', None)
+        return result
 
     @model_validator(mode="after")
     def validate_file(self) -> NativeEditorContext:
