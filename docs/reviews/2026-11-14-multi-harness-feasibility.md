@@ -4,7 +4,7 @@
 
 ## 核查依据
 
-核查本地代码及远端 origin/code（ca091c57）的 MCP 和事件实现。reporting_mcp/tools.py 仍只有 start/get/review/cancel，adapter.py 直接依赖 ReportWorkflowController。agent_event_streams.py 是容量128的进程内事件列表，无法证明跨进程文档恢复。编辑器已有 SHA 冲突检查与修订服务，可复用但尚非协同合并。#226 已交付协程守卫，不证明外部进程停止或同步成功。
+核查本地代码及远端 origin/code（ca091c57）的 MCP 和事件实现。实际生产 MCP 在 app.py 显式装配 run_reporting_workflow（report_workflow.as_tool）及原生 continue_run/cancel_run，default_tools=False。reporting_mcp/tools.py 的 start/get/review/cancel 是旧适配层，未装配到当前生产 MCP；其 adapter.py 直接依赖 ReportWorkflowController。后续解耦须同时覆盖实际应用装配、站内 facade 和旧适配层消费者，不能以改动旧工具清单代替生产入口迁移。agent_event_streams.py 是容量128的进程内事件列表，无法证明跨进程文档恢复。编辑器已有 SHA 冲突检查与修订服务，可复用但尚非协同合并。#226 已交付协程守卫，不证明外部进程停止或同步成功。
 
 DSH 官方 Session Controller 支持 prompt、follow、历史与会话控制，live assistant stream 与持久 Session event 分开；未验证本项目实际部署版本，也未证明其原生 A2A 接入。A2A v1.0.1 支持 TaskArtifactUpdateEvent，append/lastChunk 可传产物分块，规范明确断开重连可能漏过状态更新；它不提供报告对象版本、并发合并或无损事件重放保证。
 

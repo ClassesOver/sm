@@ -13,11 +13,11 @@
 
 ## 2. 基线、已有成果与证据边界
 
-本次编辑工作区 HEAD 为 `1138887d`（#223），只提交文档。已读取远端 `ca091c57`（#227）以及 #226 精确提交 `a9b55c65`；后续实现应先核对最新主分支、适用 AGENTS.md 和未提交修改，不能直接在旧代码树接入新接口。
+原始文档编辑工作区 HEAD 为 `1138887d`（#223）；PR #228 实际基于 `ca091c5720e0a6ba4b7137abe7f6d795bc7f1dfb`（#227），只提交文档。已读取该基线以及 #226 精确提交 `a9b55c65`；后续实现应先核对最新主分支、适用 AGENTS.md 和未提交修改，不能直接在旧代码树接入新接口。
 
 - #226：Agno 3.1.12、Codex SDK/CLI 0.163.0 锁定，元数据客户端直接注入，协程级状态/租约/deadline 守卫与取消清理已交付。
 - 本轮独立导出 #226 源码，两个新增测试文件 31 passed、1 个第三方弃用 warning；复用本机依赖。不是全新依赖验证，不替代 PR 作者的117项证据。
-- 最新 MCP `tools.py` 仍以 start/get/review/cancel 驱动 `ReportWorkflowController`；需要新能力入口。
+- 当前应用 `app.py` 的 `MCPConfig` 显式发布 `report_workflow.as_tool(name="run_reporting_workflow")`，并启用原生 `continue_run`/`cancel_run`；`default_tools=False`。`reporting_mcp/tools.py` 的 start/get/review/cancel 是未装配到生产 MCP 的旧适配层。两条代码路径需分别盘点，新能力入口必须替换实际应用装配，不能仅修改旧适配层。
 - `AgentEventLog` 仍是128条进程内事件记录，不能当耐久文档日志；已有编辑器 SHA/版本冲突保护可复用，尚非协同合并。
 - 已有四格式原生编辑器、读写桥及修订保存能力；#227 不等于多 harness 同步或全格式完整验收。
 - DSH 官方提供 Session 控制/历史/follow 和实时流；实际接入版本、原生 A2A、真实取消/恢复仍需探针。
@@ -113,7 +113,7 @@ flowchart TD
 
 ### M1：共享报告能力与助手执行（对应N1）
 
-修改面：reporting_mcp/{contracts,tools,adapter,identity}.py、report_editor/{service,native_publication,workbook_api,slides_api}.py、reporting/trace/*_service.py、task_execution及应用装配。
+修改面：app.py 的 MCPConfig/应用装配、reporting/agent.py 与 workflow/controller.py 的 facade 消费者、reporting_mcp/{contracts,tools,adapter,identity}.py、report_editor/{service,native_publication,workbook_api,slides_api}.py、reporting/trace/*_service.py、task_execution及应用装配。
 
 - [ ] 将受控读取/计算、文档对象读写、静态图、导出从workflow上下文解耦；优先抽取服务层，避免复制业务算法。
 - [ ] 基于Agno已有agent/tool/session装配内置助手；自主选择工具，支持用户补充、工具失败后的有限修复。
