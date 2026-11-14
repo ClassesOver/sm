@@ -1317,7 +1317,8 @@ class TaskExecutionContextProjector:
         try:
             # 仅当计数实现就是 Agno 基础累加实现时走逐消息缓存；改写过计数的模型
             # （按阶段过滤消息、调用 provider 计数 API 等）不满足可加性，按原样整体计数。
-            if getattr(type(model), "count_tokens", None) is Model.count_tokens:
+            # 检查实际绑定方法，而非类属性，避免忽略实例级计数覆盖。
+            if getattr(model.count_tokens, "__func__", None) is Model.count_tokens:
                 return int(_additive_token_count(messages, model, tools, response_format))
             return int(model.count_tokens(messages, tools, response_format))
         except Exception as error:
