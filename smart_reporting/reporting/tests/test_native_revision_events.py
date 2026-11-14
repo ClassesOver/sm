@@ -150,7 +150,7 @@ async def test_event_replay_rechecks_complete_scope(event_repositories, field):
 
 async def test_cursor_validation_and_legacy_schema_upgrade(event_repositories, request):
     repo, _ = event_repositories
-    scope, _, doc = await opened(repo)
+    scope, source, doc = await opened(repo)
     for after, limit in [(-1, 100), (True, 100), (0, 0), (0, 1001), (0, True)]:
         with pytest.raises(ValueError):
             await repo.revision_events_after(doc.document_id, scope=scope, after=after, limit=limit)
@@ -160,13 +160,18 @@ async def test_cursor_validation_and_legacy_schema_upgrade(event_repositories, r
         return  # PostgreSQL ALTER migration is covered by the opt-in backend.
     # Model a legacy document with no event counter and no historical event rows.
     async with repo.engine.begin() as connection:
-        await connection.execute(text('DELETE FROM report_native_revision_events_v1'))
+        await connection.execute(text('DROP TABLE report_native_revision_events_v1'))
         await connection.execute(text('ALTER TABLE report_native_documents_v1 DROP COLUMN event_sequence'))
     await repo.create_schema()
     await repo.create_schema()
     page = await repo.revision_events_after(doc.document_id, scope=scope)
     assert page == {'events': [], 'nextSequence': 0, 'latestSequence': 0}
     assert (await repo.get_revision(doc.document_id, 1, scope=scope)).status == 'saved'
+    reservation = await reserve(repo, doc, scope)
+    await repo.complete_revision(reservation, **completion(reservation, source))
+    page = await repo.revision_events_after(doc.document_id, scope=scope)
+    assert page['nextSequence'] == page['latestSequence'] == 1
+    assert [(event['revision'], event['status']) for event in page['events']] == [(2, 'saved')]
 
 
 async def test_initial_event_failure_does_not_leave_document(event_repositories, monkeypatch):
@@ -205,3 +210,44 @@ async def test_postgres_concurrent_completions_have_distinct_commit_sequence(eve
     page = await repo.revision_events_after(doc.document_id, scope=scope, after=1)
     assert [event['sequence'] for event in page['events']] == [2, 3]
     assert {event['revision'] for event in page['events']} == {2, 3}
+
+
+async def test_postgres_same_completion_emits_only_one_event(postgres_repositories):
+    import asyncio
+
+    repo, other = postgres_repositories
+    scope, source, doc = await opened(repo)
+    reservation = await reserve(repo, doc, scope)
+    results = await asyncio.gather(
+        repo.complete_revision(reservation, **completion(reservation, source)),
+        other.complete_revision(reservation, **completion(reservation, source)),
+    )
+    assert results[0] == results[1]
+    page = await repo.revision_events_after(doc.document_id, scope=scope, after=1)
+    assert [event['sequence'] for event in page['events']] == [2]
+
+
+async def test_postgres_append_between_pages_is_not_skipped(postgres_repositories):
+    repo, other = postgres_repositories
+    scope, source, doc = await opened(repo)
+    first = await reserve(repo, doc, scope, request_id='page-first')
+    await repo.complete_revision(first, **completion(first, source))
+    page = await repo.revision_events_after(doc.document_id, scope=scope, limit=1)
+    second = await reserve(other, doc, scope, request_id='page-second')
+    await other.complete_revision(second, **completion(second, source))
+    resumed = await repo.revision_events_after(
+        doc.document_id, scope=scope, after=page['nextSequence'],
+    )
+    assert [event['sequence'] for event in resumed['events']] == [2, 3]
+    assert resumed['nextSequence'] == resumed['latestSequence'] == 3
+
+
+async def test_postgres_workers_serialize_fresh_schema_creation(postgres_repositories):
+    import asyncio
+
+    repo, other = postgres_repositories
+    async with repo.engine.begin() as connection:
+        await connection.run_sync(_metadata.drop_all)
+    await asyncio.gather(repo.create_schema(), other.create_schema())
+    scope, _, doc = await opened(repo)
+    assert (await other.revision_events_after(doc.document_id, scope=scope))['latestSequence'] == 1

@@ -226,11 +226,15 @@ async def test_native_four_format_durable_lifecycle(durable_database, tmp_path, 
             assert checked.json()["skippedOperations"] == []
             payload["confirmedPreviewDigest"] = checked.json()["previewDigest"]
 
-        async def registration_fault(*args, **kwargs):
-            raise RuntimeError("durable_lifecycle_registration_fault")
+        append_event = first.native._append_revision_event
 
-        # 真实编辑/产物先完成，仅注入原生修订登记故障，随后由新服务恢复。
-        monkeypatch.setattr(first.native, "complete_revision", registration_fault)
+        async def event_insert_fault(connection, revision):
+            await append_event(connection, revision)
+            raise RuntimeError("durable_lifecycle_event_insert_fault")
+
+        # Real repository transaction inserts the event and then fails: both event
+        # and revision must roll back, without blocking publication/download bytes.
+        monkeypatch.setattr(first.native, "_append_revision_event", event_insert_fault)
         saved = await client.post(base + "/save", headers=headers, json=payload)
         assert saved.status_code == 200, saved.text
         result = saved.json()
@@ -243,6 +247,11 @@ async def test_native_four_format_durable_lifecycle(durable_database, tmp_path, 
         assert set(result["artifacts"]) == {key}
         artifact = result["artifacts"][key]
         cookies = Cookies(client.cookies)
+        pending = await first.native.get_revision(imported["documentId"], 2, scope=scope)
+        assert pending.status == "reserved"
+        page = await first.native.revision_events_after(imported["documentId"], scope=scope)
+        assert [(event["revision"], event["status"]) for event in page["events"]] == [(1, "saved")]
+        assert page["latestSequence"] == 1
     await engine.dispose()
 
     # 新 engine、新仓储、新工作区 registry、新授权/编辑/下载服务与新 ASGI 应用。
@@ -293,6 +302,11 @@ async def test_native_four_format_durable_lifecycle(durable_database, tmp_path, 
         assert (await client.get(base + "/file")).content == original
         revision = await rebuilt.native.get_revision(imported["documentId"], 2, scope=scope)
         assert revision.status == "saved" and revision.validation.ok is False
+        page = await rebuilt.native.revision_events_after(imported["documentId"], scope=scope)
+        assert [(event["revision"], event["status"]) for event in page["events"]] == [
+            (1, "saved"), (2, "saved"),
+        ]
+        assert page["nextSequence"] == page["latestSequence"] == 2
         for dimension in ("database", "company_id", "user_id", "thread_id"):
             foreign = scope.model_copy(update={dimension: "foreign"})
             assert await rebuilt.native.get_document(imported["documentId"], scope=foreign) is None

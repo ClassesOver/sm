@@ -127,6 +127,12 @@ class NativeDocumentRepository:
 
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
+            # create_all's existence checks are not atomic across worker startup.
+            # Serialize this schema's DDL before checking/creating any native table.
+            await connection.execute(text(
+                "SELECT pg_advisory_xact_lock(hashtext('native_document_schema_v1'), "
+                "hashtext(current_schema()))"
+            ))
             await connection.run_sync(_metadata.create_all)
             await connection.execute(text(
                 "ALTER TABLE report_native_documents_v1 "
