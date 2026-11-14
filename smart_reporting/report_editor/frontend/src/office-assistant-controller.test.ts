@@ -84,7 +84,7 @@ describe('shared Office task control',()=>{
   const running=controller.run({},'new-request');rejectCleanup(new Error('old cancel offline'));await expect(cleanup).rejects.toThrow('old cancel offline')
   await expect(controller.run({},'third')).rejects.toThrow('office_task_busy')
   next.resolve({id:'new',status:'completed'});await running;await controller.cancel()
-  expect(cancel).toHaveBeenLastCalledWith('new')
+  expect(cancel.mock.calls.filter(([id])=>id==='old')).toHaveLength(2);expect(cancel.mock.calls.filter(([id])=>id==='new')).toHaveLength(1);expect(cancel).toHaveBeenCalledTimes(3)
  })
  it('does not wait for a hung cleanup endpoint before returning the status error',async()=>{
   const controller=new OfficeAssistantController({start:async()=>({id:'known',status:'running'}),status:async()=>{throw new Error('status error')},cancel:()=>new Promise(()=>{}),id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
@@ -132,5 +132,59 @@ describe('shared Office task control',()=>{
   rejectCleanup(new Error('late cleanup offline'));expect(await running).toBeUndefined()
   expect((await outcomes).map(result=>result.status)).toEqual(['rejected','rejected']);expect(attempts).toEqual(['late'])
   await controller.cancel();expect(attempts).toEqual(['late','late'])
+ })
+ it.each(['request','task'] as const)('active cancellation retries only the failed %s endpoint in the same generation',async failed=>{
+  const attempts:{kind:string;id:string}[]=[]
+  const cancelEndpoint=async(kind:string,id:string)=>{attempts.push({kind,id});if(kind===failed&&attempts.filter(a=>a.kind===kind).length===1)throw new Error('partial cancel offline')}
+  const controller=new OfficeAssistantController({start:async()=>({id:'known',status:'completed'}),status:async()=>({id:'unused',status:'completed'}),cancel:id=>cancelEndpoint('task',id),cancelRequest:id=>cancelEndpoint('request',id),id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  await controller.run({},'known-request');await expect(controller.cancel()).rejects.toThrow('partial cancel offline')
+  await controller.cancel()
+  expect(attempts.filter(a=>a.kind!==failed)).toEqual([{kind:failed==='request'?'task':'request',id:failed==='request'?'known':'known-request'}])
+  expect(attempts.filter(a=>a.kind===failed)).toHaveLength(2)
+  const count=attempts.length;await controller.cancel();expect(attempts).toHaveLength(count)
+ })
+ it.each(['request','task'] as const)('active cancellation retains failed old %s cleanup across a busy replacement',async failed=>{
+  const oldStatus=deferred<Job>(),newStatus=deferred<Job>(),polls:string[]=[],attempts:{kind:string;id:string}[]=[]
+  let rejectOld!:(error:Error)=>void
+  const cancelEndpoint=async(kind:string,id:string)=>{attempts.push({kind,id});if(kind===failed&&id.startsWith('old')&&attempts.filter(a=>a.kind===kind&&a.id===id).length===1)await new Promise<void>((_,reject)=>{rejectOld=reject})}
+  const controller=new OfficeAssistantController({start:async(input:{name:string})=>({id:input.name,status:'running'}),status:id=>{polls.push(id);return id==='old'?oldStatus.promise:newStatus.promise},cancel:id=>cancelEndpoint('task',id),cancelRequest:id=>cancelEndpoint('request',id),id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const old=controller.run({name:'old'},'old-request');await vi.waitFor(()=>expect(polls).toContain('old'))
+  const cancellation=controller.cancel(),failure=expect(cancellation).rejects.toThrow('old cancel offline')
+  const next=controller.run({name:'new'},'new-request');await vi.waitFor(()=>expect(polls).toContain('new'))
+  rejectOld(new Error('old cancel offline'));await failure
+  oldStatus.resolve({id:'old',status:'completed'});expect(await old).toBeUndefined()
+  await expect(controller.run({name:'third'},'third-request')).rejects.toThrow('office_task_busy')
+  await controller.cancel();newStatus.resolve({id:'new',status:'completed'});expect(await next).toBeUndefined()
+  expect(attempts.filter(a=>a.kind===failed&&a.id.startsWith('old'))).toHaveLength(2)
+  expect(attempts.filter(a=>a.kind!==failed&&a.id.startsWith('old'))).toHaveLength(1)
+  expect(attempts.filter(a=>a.id.startsWith('new'))).toEqual([{kind:'request',id:'new-request'},{kind:'task',id:'new'}])
+  const count=attempts.length;await controller.cancel();expect(attempts).toHaveLength(count)
+ })
+ it('active cancellation shares old in-flight cleanup while cancelling its replacement',async()=>{
+  const oldStatus=deferred<Job>(),newStatus=deferred<Job>(),polls:string[]=[],attempts:string[]=[]
+  let rejectOld!:(error:Error)=>void
+  const controller=new OfficeAssistantController({start:async(input:{name:string})=>({id:input.name,status:'running'}),status:id=>{polls.push(id);return id==='old'?oldStatus.promise:newStatus.promise},cancel:async id=>{attempts.push(id);if(id==='old'&&attempts.filter(id=>id==='old').length===1)await new Promise<void>((_,reject)=>{rejectOld=reject})},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const old=controller.run({name:'old'},'old-request');await vi.waitFor(()=>expect(polls).toContain('old'));const first=controller.cancel()
+  const next=controller.run({name:'new'},'new-request');await vi.waitFor(()=>expect(polls).toContain('new'))
+  await expect(controller.run({name:'third'},'third')).rejects.toThrow('office_task_busy')
+  const second=controller.cancel(),third=controller.cancel(),outcomes=Promise.allSettled([first,second,third])
+  expect(attempts).toEqual(['old','new']);rejectOld(new Error('old cancel offline'))
+  expect((await outcomes).map(r=>r.status)).toEqual(['rejected','rejected','rejected']);expect(attempts).toEqual(['old','new'])
+  oldStatus.resolve({id:'old',status:'completed'});newStatus.resolve({id:'new',status:'completed'});expect(await old).toBeUndefined();expect(await next).toBeUndefined()
+  await controller.cancel();expect(attempts).toEqual(['old','new','old'])
+ })
+ it('active cancellation shares status-error cleanup with a replacement and retains its failure',async()=>{
+  const newStatus=deferred<Job>(),attempts:{kind:string;id:string}[]=[],polls:string[]=[]
+  let rejectOld!:(error:Error)=>void
+  const controller=new OfficeAssistantController({start:async(input:{name:string})=>({id:input.name,status:'running'}),status:async id=>{polls.push(id);if(id==='old')throw new Error('status offline');return newStatus.promise},cancel:async id=>{attempts.push({kind:'task',id});if(id==='old'&&attempts.filter(a=>a.kind==='task'&&a.id==='old').length===1)await new Promise<void>((_,reject)=>{rejectOld=reject})},cancelRequest:async id=>{attempts.push({kind:'request',id})},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  await expect(controller.run({name:'old'},'old-request')).rejects.toThrow('status offline');controller.release()
+  const next=controller.run({name:'new'},'new-request');await vi.waitFor(()=>expect(polls).toContain('new'))
+  expect(attempts.filter(a=>a.id.startsWith('old'))).toEqual([{kind:'request',id:'old-request'},{kind:'task',id:'old'}])
+  await expect(controller.run({name:'third'},'third')).rejects.toThrow('office_task_busy')
+  const cancellation=controller.cancel(),failure=expect(cancellation).rejects.toThrow('old cleanup offline');rejectOld(new Error('old cleanup offline'));await failure
+  newStatus.resolve({id:'new',status:'completed'});expect(await next).toBeUndefined()
+  await controller.cancel();expect(attempts.filter(a=>a.kind==='task'&&a.id==='old')).toHaveLength(2)
+  expect(attempts.filter(a=>a.kind==='request'&&a.id==='old-request')).toHaveLength(1)
+  expect(attempts.filter(a=>a.id.startsWith('new'))).toEqual([{kind:'request',id:'new-request'},{kind:'task',id:'new'}])
  })
 })

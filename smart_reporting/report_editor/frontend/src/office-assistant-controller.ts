@@ -10,7 +10,7 @@ export interface OfficeTaskTransport<Input, Job> {
   id(job: Job): string
   running(job: Job): boolean
 }
-type LateCleanup = { requestId: string; taskId: string; pending?: Promise<void> }
+type Cleanup = { kind: 'request' | 'task'; id: string; pending?: Promise<void> }
 export class OfficeAssistantController<Input, Job> {
   private generation = 0
   private abort = new AbortController()
@@ -19,7 +19,7 @@ export class OfficeAssistantController<Input, Job> {
   private busy = false
   private accepting = false
   private terminalObserved = false
-  private readonly lateCleanups = new Set<LateCleanup>()
+  private readonly cleanups = new Map<string, Cleanup>()
   private pendingCancel: { generation: number; promise: Promise<void> } | undefined
   constructor(private readonly transport: OfficeTaskTransport<Input, Job>) {}
   get signal() { return this.abort.signal }
@@ -38,9 +38,7 @@ export class OfficeAssistantController<Input, Job> {
         // An aborted HTTP request may still have created a server-side task.
         // A late task is independent of the active run. Keep its cleanup handle
         // until cancellation succeeds, without restoring it over a replacement.
-        const cleanup = { requestId: this.transport.cancel ? '' : requestId, taskId: this.transport.cancel ? this.transport.id(job) : '' }
-        this.lateCleanups.add(cleanup)
-        await this.cleanupLate(cleanup)
+        await this.cleanup(this.transport.cancel ? '' : requestId, this.transport.cancel ? this.transport.id(job) : '')
         return undefined
       }
       this.taskId = this.transport.id(job)
@@ -57,11 +55,10 @@ export class OfficeAssistantController<Input, Job> {
       this.abort.abort()
       const failedRequest = this.requestId, failedTask = this.taskId
       // Error delivery is not held hostage by a hung cancellation endpoint.
-      // Keep the handles until cleanup succeeds; read adapters may call release()
-      // in finally, but an unobserved terminal state must remain cancellable.
-      void this.cleanup(failedRequest, failedTask).then(() => {
-        if (turn === this.generation) { this.requestId = ''; this.taskId = '' }
-      }).catch(() => {})
+      // Transfer handles to independent cleanup records before a replacement
+      // starts. A successful endpoint must not be re-enqueued from active state.
+      this.requestId = ''; this.taskId = ''
+      void this.cleanup(failedRequest, failedTask).catch(() => {})
       throw error
     } finally { if (turn === this.generation) this.busy = false }
   }
@@ -75,35 +72,39 @@ export class OfficeAssistantController<Input, Job> {
     this.requestId = ''; this.taskId = ''
     this.terminalObserved = false
     const turn = this.generation
-    const activeCleanup = this.cleanup(requestId, taskId).catch(error => {
-      // Retrying cancellation must remain possible, but never restore an old
-      // task's handles over a newer run.
-      if (turn === this.generation) { this.requestId = requestId; this.taskId = taskId }
-      throw error
-    })
-    const completion = Promise.allSettled([activeCleanup, ...[...this.lateCleanups].map(cleanup => this.cleanupLate(cleanup))]).then(results => {
-      const failure = results.find(result => result.status === 'rejected')
-      if (failure?.status === 'rejected') throw failure.reason
-    }).finally(() => {
+    const current = this.queueCleanup(requestId, taskId)
+    const completion = this.cleanupAll([...new Set([...current, ...this.cleanups.values()])]).finally(() => {
       if (this.pendingCancel?.promise === completion) this.pendingCancel = undefined
     })
     this.pendingCancel = { generation: turn, promise: completion }
     return completion
   }
-  private cleanupLate(cleanup: LateCleanup): Promise<void> {
-    if (cleanup.pending) return cleanup.pending
-    const completion = this.cleanup(cleanup.requestId, cleanup.taskId).then(() => {
-      this.lateCleanups.delete(cleanup)
-    }).finally(() => { if (cleanup.pending === completion) cleanup.pending = undefined })
-    cleanup.pending = completion
+  private queueCleanup(requestId: string, taskId: string): Cleanup[] {
+    const records: Cleanup[] = []
+    const add = (kind: Cleanup['kind'], id: string) => {
+      if (!id || !(kind === 'request' ? this.transport.cancelRequest : this.transport.cancel)) return
+      const key = `${kind}:${id}`
+      let record = this.cleanups.get(key)
+      if (!record) { record = { kind, id }; this.cleanups.set(key, record) }
+      records.push(record)
+    }
+    add('request', requestId); add('task', taskId)
+    return records
+  }
+  private cleanupRecord(record: Cleanup): Promise<void> {
+    if (record.pending) return record.pending
+    const invoke = async () => record.kind === 'request' ? this.transport.cancelRequest!(record.id) : this.transport.cancel!(record.id)
+    const completion = invoke().then(() => {
+      this.cleanups.delete(`${record.kind}:${record.id}`)
+    }).finally(() => { if (record.pending === completion) record.pending = undefined })
+    record.pending = completion
     return completion
   }
-  private async cleanup(requestId: string, taskId: string): Promise<void> {
-    const invoke = async (operation: () => Promise<unknown>) => operation()
-    const results = await Promise.allSettled([
-      ...(requestId && this.transport.cancelRequest ? [invoke(() => this.transport.cancelRequest!(requestId))] : []),
-      ...(taskId && this.transport.cancel ? [invoke(() => this.transport.cancel!(taskId))] : []),
-    ])
+  private cleanup(requestId: string, taskId: string): Promise<void> {
+    return this.cleanupAll(this.queueCleanup(requestId, taskId))
+  }
+  private async cleanupAll(records: Cleanup[]): Promise<void> {
+    const results = await Promise.allSettled(records.map(record => this.cleanupRecord(record)))
     const failure = results.find(result => result.status === 'rejected')
     if (failure?.status === 'rejected') throw failure.reason
   }
