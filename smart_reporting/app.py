@@ -125,10 +125,12 @@ from .runtime.database import check_database, create_agent_database
 from .runtime.execution import ExecutionContext, configure_execution_tracing
 from .runtime.logging import configure_application_logging, configure_file_logging
 from .runtime.settings import AgentSettings
+from .runtime.system_configuration import load_system_configuration
 from .task_execution import DEFAULT_TERMINAL_TIMEOUT
 
 install_agno_function_argument_decoder()
-settings = AgentSettings.from_environment()
+system_configuration = load_system_configuration(AgentSettings.from_environment())
+settings = system_configuration.settings
 configure_application_logging(debug=settings.debug)
 configure_file_logging(
     settings.log_file_path,
@@ -489,7 +491,21 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.state.management_auth = management_auth
     management_settings = ManagementSettings.from_environment()
     application.state.management_settings = management_settings
-    application.include_router(create_management_router(management_auth, management_settings, report_runtime=report_runtime))
+    application.include_router(create_management_router(management_auth, management_settings, report_runtime=report_runtime,
+        startup_settings=settings, system_configuration_state=system_configuration.state))
+    from .management.format_preferences import FormatPreferenceService
+    from .management.preference_approval import PreferenceApprovalService
+    from .management.preference_report_preflight import BoundPreferencePreflightService
+    from .management.preference_verification import PreferenceVerificationHandoffService
+    from .management.preference_verification_api import create_preference_verification_router
+    from .preferences.models import FormatPreferences
+
+    preferences = FormatPreferenceService(management_auth, FormatPreferences.from_delivery(settings.report_delivery_settings))
+    bound_preferences = BoundPreferencePreflightService(preferences=preferences,
+        editor=report_editor, grants=report_editor_grants)
+    preference_verification = PreferenceVerificationHandoffService(preferences=preferences, bound=bound_preferences)
+    application.state.preference_approval = PreferenceApprovalService(evidence=preference_verification.evidence)
+    application.include_router(create_preference_verification_router(preference_verification, management_settings))
     try:
         source_vault = CredentialVault()
     except Exception:

@@ -134,6 +134,16 @@ function renderDatePattern(pattern: string, serial: number): string | null {
 }
 
 function renderNumericPattern(pattern: string, value: number): string | null {
+  // 引号中的百分号是字面量：项目百分数事实已是12.5，不能再次乘100。
+  const sections = pattern.split(';')
+  const negativeSection = value < 0 && sections.length > 1
+  const selected = sections[negativeSection ? 1 : 0]!
+  const points = selected.match(/^(?:\[Red\])?(-|\()?0(?:\.(0{1,15}))?"%"(\))?$/)
+  if (points && Boolean(points[1] === '(') === Boolean(points[3])) {
+    const number = Math.abs(value).toFixed(points[2]?.length ?? 0)
+    const prefix = points[1] ?? (value < 0 && !negativeSection ? '-' : '')
+    return prefix + number + '%' + (points[3] ?? '')
+  }
   if (pattern === 'General' || pattern === '@') return null // caller renders raw
   if (pattern === '0') return String(Math.round(value))
   if (pattern === '0%') return `${Math.round(value * 100)}%`

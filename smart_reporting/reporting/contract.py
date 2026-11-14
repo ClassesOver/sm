@@ -5,11 +5,12 @@ import json
 import re
 from datetime import date
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AwareDatetime,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     PositiveInt,
@@ -61,26 +62,34 @@ _WORKBOOK_REQUEST_PATTERN = re.compile(
     r"(?:(?<![A-Za-z0-9])xlsx?(?![A-Za-z0-9])|excel|spreadsheet|workbook|工作簿|电子表格)",
     re.IGNORECASE,
 )
+_WORD_REQUEST_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:word|docx)(?![A-Za-z0-9])", re.IGNORECASE)
+_PDF_REQUEST_PATTERN = re.compile(r"(?<![A-Za-z0-9])pdf(?![A-Za-z0-9])", re.IGNORECASE)
 
 
-# 冻结交付格式的唯一取值集合；xlsx 复用 document 编排分支，仅在渲染/发布阶段分流。
-REPORT_DELIVERY_FORMATS: frozenset[str] = frozenset(("document", "pptx", "xlsx"))
+# document 仅兼容历史的 PDF/Word 双产物请求；新运行默认单独交付 PDF。
+DeliveryFormat = Annotated[
+    Literal["xlsx", "pptx", "pdf", "docx", "document"],
+    BeforeValidator(lambda value: "docx" if value == "word" else value),
+]
+REPORT_DELIVERY_FORMATS: frozenset[str] = frozenset(("xlsx", "pptx", "pdf", "docx", "document"))
 
 
-def infer_delivery_format(prompt: str) -> Literal["document", "pptx", "xlsx"]:
+def infer_delivery_format(prompt: str) -> DeliveryFormat:
     """旧调用的确定性回退；自然语言主路径使用语义规范化结果。"""
     formats = set()
     for pattern, format_name in ((_PRESENTATION_REQUEST_PATTERN, "pptx"),
-                                 (_WORKBOOK_REQUEST_PATTERN, "xlsx")):
+                                 (_WORKBOOK_REQUEST_PATTERN, "xlsx"),
+                                 (_WORD_REQUEST_PATTERN, "docx"),
+
+                                 (_PDF_REQUEST_PATTERN, "pdf")):
         for match in pattern.finditer(prompt):
             prefix = prompt[max(0, match.start() - 12):match.start()]
+            prefix = re.split(r"[，,。；;！？!?\n]", prefix)[-1]
             if not _PRESENTATION_NEGATION_PATTERN.search(prefix):
                 formats.add(format_name)
-    if formats == {"pptx"}:
-        return "pptx"
-    if formats == {"xlsx"}:
-        return "xlsx"
-    return "document"
+    if len(formats) == 1:
+        return formats.pop()
+    return "pdf"
 
 
 class StrictModel(BaseModel):
@@ -166,8 +175,8 @@ class ReportRequestEnvelope(StrictModel):
     version: Literal["1"] = "1"
     report_goal: str = Field(alias="reportGoal", min_length=1, max_length=20_000)
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
-    delivery_format: Literal["document", "pptx", "xlsx"] = Field(
-        default="document", alias="deliveryFormat"
+    delivery_format: DeliveryFormat = Field(
+        default="pdf", alias="deliveryFormat"
     )
     section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
     domains: tuple[str, ...] | None = Field(default=None, max_length=6)
@@ -181,6 +190,7 @@ class ReportRequestEnvelope(StrictModel):
         default="static", alias="visualizationMode"
     )
     file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
+    template_input: ReportFileInput | None = Field(default=None, alias="templateInput")
 
     @field_validator("knowledge_as_of", mode="before")
     @classmethod
@@ -296,9 +306,11 @@ class ReportRequestEnvelope(StrictModel):
 class ReportPromptInput(StrictModel):
     version: Literal["1"] = "1"
     prompt: str = Field(min_length=1, max_length=20_000)
-    delivery_format: Literal["document", "pptx", "xlsx"] | None = Field(
+    delivery_format: DeliveryFormat | None = Field(
         default=None, alias="deliveryFormat"
     )
+    file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
+    template_input: ReportFileInput | None = Field(default=None, alias="templateInput")
 
     @field_validator("prompt")
     @classmethod
@@ -323,7 +335,7 @@ class ReportingWorkflowInput(StrictModel):
         default=None, alias="reportGoal", min_length=1, max_length=20_000
     )
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")
-    delivery_format: Literal["document", "pptx", "xlsx"] | None = Field(
+    delivery_format: DeliveryFormat | None = Field(
         default=None, alias="deliveryFormat"
     )
     section_count: int | None = Field(default=None, alias="sectionCount", ge=1, strict=True)
@@ -337,6 +349,7 @@ class ReportingWorkflowInput(StrictModel):
     file_inputs: tuple[ReportFileInput, ...] | None = Field(
         default=None, alias="fileInputs", max_length=20
     )
+    template_input: ReportFileInput | None = Field(default=None, alias="templateInput")
 
     @field_validator("knowledge_as_of", mode="before")
     @classmethod
@@ -363,7 +376,6 @@ class ReportingWorkflowInput(StrictModel):
                     self.source_ids,
                     self.schema_input,
                     self.comparison_roles,
-                    self.file_inputs,
                 )
             ):
                 raise ValueError("prompt 输入不能混用 Envelope 字段")

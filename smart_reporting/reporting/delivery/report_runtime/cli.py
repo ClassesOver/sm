@@ -28,6 +28,8 @@ def main(arguments: list[str] | None = None) -> int:
                 payload["temporary_path"],
                 payload.get("page_layout"),
                 payload.get("word_output_path"),
+                payload.get("chart_images"),
+                payload.get("chart_image_issues"),
             )
         elif action == "validate_pdf":
             result = runtime.validate_pdf(

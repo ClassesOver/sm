@@ -65,6 +65,16 @@ class RenderProjection:
     stages: tuple[ProjectionStage, ...]
     _overview_check_json: bytes = b"null"
     _claim_support_check_json: bytes = b"null"
+    _table_captions_json: bytes = b"[]"
+    _table_caption_issues_json: bytes = b"[]"
+
+    @property
+    def table_captions(self):
+        return json.loads(self._table_captions_json)
+
+    @property
+    def table_caption_issues(self):
+        return json.loads(self._table_caption_issues_json)
 
     @property
     def claim_support_check(self):
@@ -119,6 +129,7 @@ def build_render_projection(
     trace_sources: Any = None,
     management_overview: Any = None,
     claim_support: Any = None,
+    table_captions: Any = None,
 ) -> RenderProjection:
     """Run the complete text pipeline once, for both output formats.
 
@@ -148,6 +159,7 @@ def build_render_projection(
             "traceSources": trace_sources,
             "managementOverview": overview_context,
             "claimSupport": claim_context,
+            **({'tableCaptions': table_captions} if table_captions is not None else {}),
         }
     )
     context = json.loads(context_raw)
@@ -159,6 +171,37 @@ def build_render_projection(
         markdown = transform(markdown)
         stages.append(ProjectionStage(name, before, _sha256(markdown.encode("utf-8"))))
 
+    from ....preferences.markdown_adapter import (
+        strip_navigation,
+        strip_signature,
+        strip_table_preferences,
+    )
+    from ....preferences.markdown_captions import restore_image_captions
+    from ....preferences.markdown_headings import restore_heading_levels
+    from ....preferences.markdown_references import restore_reference_markers
+
+    if strip_signature(markdown) != markdown:
+        apply('format_signature/1', strip_signature)
+    if restore_heading_levels(markdown) != markdown:
+        apply('format_heading_levels/1', restore_heading_levels)
+    if restore_reference_markers(markdown) != markdown:
+        apply('format_references/1', restore_reference_markers)
+    if strip_navigation(markdown) != markdown:
+        apply('format_navigation/1', strip_navigation)
+    if strip_table_preferences(markdown) != markdown:
+        apply('format_tables/1', strip_table_preferences)
+    if restore_image_captions(markdown) != markdown:
+        apply('format_captions/1', restore_image_captions)
+    table_caption_plan, table_caption_issues = [], []
+    if table_captions is not None:
+        from .table_captions import prepare_table_captions
+
+        def protected_table_titles(text):
+            nonlocal table_caption_plan, table_caption_issues
+            prepared, table_caption_plan, table_caption_issues = prepare_table_captions(text, context['tableCaptions'])
+            return prepared
+
+        apply('format_table_captions/1', protected_table_titles)
     apply("relocate_server_tables/3", relocate_server_tables)
     apply("compact_single_column_tables/1", compact_single_column_tables)
     claim_support_check = None
@@ -207,6 +250,8 @@ def build_render_projection(
         stages=tuple(stages),
         _overview_check_json=_json(overview_check),
         _claim_support_check_json=_json(claim_support_check),
+        _table_captions_json=_json(table_caption_plan),
+        _table_caption_issues_json=_json(table_caption_issues),
     )
 
 
@@ -220,6 +265,7 @@ def verify_render_projection(
     trace_sources: Any = None,
     management_overview: Any = None,
     claim_support: Any = None,
+    table_captions: Any = None,
 ) -> dict[str, str]:
     """Return a soft, bounded result; missing/legacy/invalid receipts never pass."""
     if not isinstance(receipt, Mapping):
@@ -239,6 +285,7 @@ def verify_render_projection(
             trace_sources=trace_sources,
             management_overview=management_overview,
             claim_support=claim_support,
+            table_captions=table_captions,
         ).receipt
         if receipt == current:
             return {

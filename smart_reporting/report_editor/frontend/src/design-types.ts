@@ -20,4 +20,4 @@ export interface ReportDesign {
 export interface DocumentContext { title: string; periodLabel: string; organizationName: string; generatedByLabel: string; generatedDate: string; watermarkText: string }
 export interface DesignDocument { design: ReportDesign; designSha256: string; documentContext: DocumentContext }
 export interface DesignTemplate { templateId: string; name: string; design: ReportDesign }
-export interface DesignPreview { previewId: string; status: 'running' | 'succeeded' | 'failed'; documentSha256?: string; designSha256?: string; pdfPath?: string; validation?: { ok: boolean; issues: { code?: string; message?: string }[] }; error?: { code: string; message?: string } }
+export interface DesignPreview { previewId: string; status: 'running' | 'succeeded' | 'failed'; documentSha256?: string; designSha256?: string; pdfPath?: string; validation?: { ok: boolean; issues: { code?: string; message?: string }[]; layoutProvenance?: unknown }; error?: { code: string; message?: string } }

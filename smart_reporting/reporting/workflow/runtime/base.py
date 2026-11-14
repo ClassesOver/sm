@@ -775,6 +775,7 @@ class _ReportWorkflowRuntimeBase:
         configuration_provider: ManagedConfigurationProvider | None = None,
         delivery_settings: ReportDeliverySettings | None = None,
         report_build_identity: BuildIdentity | None = None,
+        template_signature_reviewer: Any | None = None,
     ):
         if (download_grants is None) != (artifact_persistence is None):
             raise ValueError("下载授权和产物持久化服务必须同时配置")
@@ -782,6 +783,7 @@ class _ReportWorkflowRuntimeBase:
             raise ValueError("启用 HTTP 报表发布时必须配置公开下载基址")
         self.db = db
         self.reporting_agent_template = reporting_agent_template
+        self.template_signature_reviewer = template_signature_reviewer
         self._analysis_thinking_enabled = planner_enable_thinking
         self._analysis_thinking_budget_cap = planner_thinking_budget
         self._vision_enabled = (
@@ -861,6 +863,12 @@ class _ReportWorkflowRuntimeBase:
         self._checkpoint_persist_lock = asyncio.Lock()
         self.datasets = ReportDatasetStore(workspace_service)
         self.report_tools = WorkspaceReportService(workspace_service, data_sources=self.datasets)
+        self._initialize_planners(reporting_agent_template, planner_enable_thinking=planner_enable_thinking,
+            planner_reasoning_effort=planner_reasoning_effort, planner_thinking_budget=planner_thinking_budget)
+
+    def _initialize_planners(self, reporting_agent_template, *, planner_enable_thinking,
+        planner_reasoning_effort, planner_thinking_budget):
+        """构造阶段规划器，供启动及可信运行配置派生共用。"""
         planner_off = ReportingThinkingProfile.off()
         self._request_normalizer = self._planning_agent(
             reporting_agent_template,
@@ -878,7 +886,7 @@ class _ReportWorkflowRuntimeBase:
                 "只根据用户完整目标及补充说明的业务语义，同时决策 reportType、domains 和分析期间；不得按关键词机械匹配",
                 "按用户语义列出需分别回答的 questions，每项包含稳定ID和问题原文；不得将多个问题合并成一个完成项。displayUnit仅在用户明确指定时填写，comparisonPeriod仅表示明确的比较基期。",
                 "scenario只可从服务端提供的已登记场景候选中选择；没有候选或无法消歧时返回null，不自行创造场景编码，不推断口径ID或版本。",
-                "根据完整交付意图填写 deliveryFormat：document(PDF/Word，未指定时默认)、pptx(演示文稿)、xlsx(Excel工作簿)。提及输入文件格式不代表交付格式；否定请求不得选用。一次仅一种形式，无法唯一确定时 deliveryFormatAmbiguous=true 并通过 clarificationQuestion 确认。",
+                "根据完整交付意图填写 deliveryFormat：xlsx(Excel工作簿)、pptx(演示文稿)、pdf(PDF，未指定时默认)、docx(Word)。document仅兼容旧请求。提及输入文件格式不代表交付格式；否定请求不得选用。一次仅一种形式，无法唯一确定时 deliveryFormatAmbiguous=true 并通过 clarificationQuestion 确认。",
                 "用户明确限定一级章节数量时，将数量写入 sectionCount；章内小节不计入，未限定数量则返回null，不自行设默认数量。",
                 "reportType 表示分析的组织意图，与 domains 数量相互独立；不得根据领域多少反推报告类型",
                 "topic 表示围绕一个聚焦的管理问题、变化机制或专项主题深入分析，即使问题横跨多个领域也仍可返回多个相关 domains",
@@ -1219,16 +1227,36 @@ class _ReportWorkflowRuntimeBase:
         )
 
     def workflow(self):
+        from .run_configuration import execution_runtime
+
+        def configured(name):
+            async def execute(step_input: StepInput, run_context: RunContext) -> StepOutput:
+                scoped = await execution_runtime(self, run_context)
+                return await getattr(scoped, name)(step_input, run_context)
+            return execute
+
         async def prepare_reference_step(
             step_input: StepInput, run_context: RunContext
         ) -> StepOutput:
+            scoped = await execution_runtime(self, run_context)
+            request = (parse_reporting_workflow_input(step_input.input)
+                if isinstance(step_input.input, str)
+                else ReportingWorkflowInput.model_validate(step_input.input)).request()
+
+            async def read_registered(file):
+                return await self.workspace_service.read_limited_regular_file(
+                    self._scope(run_context)["threadId"], file.path, max_bytes=file.size
+                )
+
             analyzer = (
-                self.vision_reviewer.analyze_reference_layout
-                if self.vision_reviewer is not None
+                scoped.vision_reviewer.analyze_reference_layout
+                if scoped.vision_reviewer is not None
                 else None
             )
             return await prepare_reference_materials(
-                step_input, run_context, visual_analyzer=analyzer
+                step_input, run_context, visual_analyzer=analyzer,
+                file_inputs=request.file_inputs or (), template_input=request.template_input,
+                registered_reader=read_registered,
             )
 
         async def finalize_publication(
@@ -1295,25 +1323,25 @@ class _ReportWorkflowRuntimeBase:
         return create_reporting_workflow(
             db=self.db,
             lifecycle=self,
-            normalize_report_request=self.normalize_delivery_request,
+            normalize_report_request=configured('normalize_delivery_request'),
             prepare_reference_materials=prepare_reference_step,
-            confirm_source=self.confirm_source,
-            select_report_metrics=self.select_report_metrics,
+            confirm_source=configured('confirm_source'),
+            select_report_metrics=configured('select_report_metrics'),
             calculate_report_metrics=self.calculate_report_metrics,
-            prepare_data_profile=self.prepare_data_profile,
-            generate_outline=self.generate_outline,
-            generate_analysis_plan=self.generate_analysis_plan,
-            generate_query_candidates=self.generate_query_candidates,
+            prepare_data_profile=configured('prepare_data_profile'),
+            generate_outline=configured('generate_outline'),
+            generate_analysis_plan=configured('generate_analysis_plan'),
+            generate_query_candidates=configured('generate_query_candidates'),
             materialize_datasets=self.materialize_datasets,
-            prepare_analysis_context=self.prepare_analysis_context,
-            generate_detailed_analysis_plan=self.generate_detailed_analysis_plan,
-            run_reporting_analysis=self.run_reporting_analysis,
-            run_analysis_evidence=self.run_analysis_evidence,
-            run_report_draft=self.run_report_draft,
-            generate_narrative_outline=self.generate_narrative_outline,
+            prepare_analysis_context=configured('prepare_analysis_context'),
+            generate_detailed_analysis_plan=configured('generate_detailed_analysis_plan'),
+            run_reporting_analysis=configured('run_reporting_analysis'),
+            run_analysis_evidence=configured('run_analysis_evidence'),
+            run_report_draft=configured('run_report_draft'),
+            generate_narrative_outline=configured('generate_narrative_outline'),
             assemble_report=self.assemble_report,
             validate_report=self.validate_report,
-            generate_slide_outline=self.generate_slide_outline,
+            generate_slide_outline=configured('generate_slide_outline'),
             assemble_slides=self.assemble_slides,
             validate_slides=self.validate_slides,
             select_delivery_steps=self.select_delivery_steps,
@@ -1484,6 +1512,15 @@ class _ReportWorkflowRuntimeBase:
             raise ReportingError("report_configuration_missing", "未配置报告计算依据服务。")
         scope = self._scope(run_context)
         try:
+            from ....preferences.runtime import bind_run_preferences
+
+            snapshot = await provider.load_run_preferences(str(run_context.run_id),
+                ManagementScope(scope["database"], scope["companyId"]),
+                user_id=scope["userId"], thread_id=scope["callerThreadId"])
+            try:
+                bind_run_preferences(self._state(run_context), snapshot)
+            except ValueError as error:
+                raise ReportingError("management_configuration_snapshot_invalid", str(error)) from error
             execution = await service.load_execution_context(
                 str(run_context.run_id), ManagementScope(scope["database"], scope["companyId"]),
                 user_id=scope["userId"], thread_id=scope["callerThreadId"], vault=provider.vault,
@@ -1728,10 +1765,16 @@ class _ReportWorkflowRuntimeBase:
             identity = require_verified_reporting_identity()
             identity.require_scope(scope.database, scope.company_id, scope.user_id, scope.caller_thread_id)
             try:
-                await provider.register_run(
+                configuration_snapshot = await provider.register_run(
                     run_id, ManagementScope(scope.database, scope.company_id),
                     user_id=scope.user_id, thread_id=scope.caller_thread_id, entrypoint=identity.entrypoint,
                 )
+                from ....preferences.runtime import bind_run_preferences
+
+                try:
+                    bind_run_preferences(session_state, configuration_snapshot)
+                except ValueError as error:
+                    raise ReportingError("management_configuration_snapshot_invalid", str(error)) from error
             except ManagementError as error:
                 raise ReportingError(error.code, error.message) from error
         self._bind_workspace(scope)
@@ -1892,6 +1935,11 @@ class _ReportWorkflowRuntimeBase:
             or not isinstance(values["codingReceipts"], list)
         ):
             raise ReportingError("report_publication_invalid", "报表发布产物无效。")
+        target = values["deliveryFormat"]
+        allowed = {"pdf", "word"} if target == "document" else {"word" if target == "docx" else target}
+        for label in {"pdf", "word", "pptx", "xlsx"} - allowed:
+            for suffix in ("Path", "Size", "Sha256"):
+                values[f"{label}{suffix}"] = None
         available = 0
         for label in ("pdf", "word", "pptx", "xlsx"):
             path, size, digest = (values[f"{label}{suffix}"] for suffix in ("Path", "Size", "Sha256"))
@@ -1901,7 +1949,7 @@ class _ReportWorkflowRuntimeBase:
                 raise ReportingError("report_publication_invalid", "报表发布产物身份不完整。")
             available += 1
         if not available and not (
-            values["deliveryFormat"] in {"pptx", "xlsx"}
+            values["deliveryFormat"] in {"pptx", "xlsx", "pdf", "docx"}
             and isinstance(values["validation"], dict)
             and values["validation"].get("ok") is False
         ):
@@ -2013,4 +2061,3 @@ def _planner_candidate(content: Any) -> Any:
         return json.loads(decoded)
     except ValueError:
         return decoded
-

@@ -1,3 +1,4 @@
+import { renderEditorLayoutProvenance } from './editor-layout-provenance'
 import { createModal } from './modal'
 import { ReportEditorApiError } from './api'
 import { applyCoverPreset, clampCoverBox, coverText } from './design-geometry'
@@ -54,7 +55,7 @@ export function createDesignPanel(options: Options) {
       <div class="design-recovery" hidden><span>发现此报告的未保存设计草稿。</span><button type="button" data-design-action="recover">恢复本地草稿</button><button type="button" data-design-action="discard-recovery">忽略草稿</button></div>
       <nav class="design-tabs" aria-label="设计分类"><button type="button" data-design-tab="cover">封面</button><button type="button" data-design-tab="watermark">水印</button><button type="button" data-design-tab="typography">正文样式</button><button type="button" data-design-tab="templates">个人模板</button></nav>
       <div class="design-workspace"><section class="design-controls" aria-label="设计属性"></section><section class="design-preview-area" aria-label="即时设计预览"><div class="design-canvas-toolbar"><span>A4 · 210 × 297 mm</span><button type="button" data-design-action="undo">撤销</button><button type="button" data-design-action="redo">重做</button></div><div class="design-cover-page" aria-label="A4 封面画布"><div class="design-cover-watermark" aria-hidden="true"></div></div><div class="design-type-sample"><h1>一、经营情况分析</h1><h2>1.1 核心指标</h2><h3>指标变化与趋势</h3><p>报告正文样式预览。业务事实与来源引用保持原有内容，设计仅调整展示方式。</p><table><thead><tr><th>指标</th><th>本期</th></tr></thead><tbody><tr><td>示例指标</td><td>123.45</td></tr></tbody></table><figcaption>图 1 · 趋势说明示例</figcaption><div class="design-body-watermark" aria-hidden="true"></div></div><p class="design-preview-hint">拖动文字框移动，右下角调整大小；方向键微调，Shift 加速。即时预览供排版参考，分页以 PDF 为准。</p></section></div>
-      <footer class="design-footer"><div class="design-footer-tools"><button type="button" data-design-action="retry">立即保存 / 重试</button><button type="button" data-design-action="preview">生成 PDF 预览</button><a data-design-pdf hidden target="_blank" rel="noopener">打开 PDF 预览</a><span data-design-preview-status role="status"></span></div><label class="design-note">版本备注<input name="design.note" maxlength="200" placeholder="例如：复核后发布"></label></footer>`,
+      <footer class="design-footer"><div class="design-footer-tools"><button type="button" data-design-action="retry">立即保存 / 重试</button><button type="button" data-design-action="preview">生成 PDF 预览</button><a data-design-pdf hidden target="_blank" rel="noopener">打开 PDF 预览</a><span data-design-preview-status role="status"></span></div><div data-design-provenance></div><label class="design-note">版本备注<input name="design.note" maxlength="200" placeholder="例如：复核后发布"></label></footer>`,
   })
   const dialog = modal.overlay
   const controls = dialog.querySelector<HTMLElement>('.design-controls')!
@@ -65,6 +66,7 @@ export function createDesignPanel(options: Options) {
   const conflictBox = dialog.querySelector<HTMLElement>('.design-conflict')!
   const recovery = dialog.querySelector<HTMLElement>('.design-recovery')!
   const previewStatus = dialog.querySelector<HTMLElement>('[data-design-preview-status]')!
+  const provenanceHost = dialog.querySelector<HTMLElement>('[data-design-provenance]')!
   const pdfLink = dialog.querySelector<HTMLAnchorElement>('[data-design-pdf]')!
   const blocks = new Map<CoverRole, HTMLDivElement>()
   for (const role of roles) {
@@ -177,6 +179,7 @@ export function createDesignPanel(options: Options) {
     if (dirty()) return flush()
   }
   function reset(state: DesignDocument) {
+    provenanceHost.replaceChildren()
     window.clearTimeout(timer)
     design = copy(state.design); saved = copy(design); hash = state.designSha256; context = state.documentContext
     history = []; future = []; conflict = false; conflictBox.hidden = true; alert.hidden = true
@@ -319,6 +322,7 @@ export function createDesignPanel(options: Options) {
     applyDesignTypography(options.editor, design)
     dialog.querySelector<HTMLButtonElement>('[data-design-action="undo"]')!.disabled = !history.length
     dialog.querySelector<HTMLButtonElement>('[data-design-action="redo"]')!.disabled = !future.length
+    provenanceHost.hidden = !provenanceHost.hasChildNodes() || previewStale()
     previewStatus.dataset.state = previewStale() ? 'stale' : 'ready'
     if (previewStale() && !previewing) previewStatus.textContent = 'PDF 预览已过期，请重新生成'
   }
@@ -415,6 +419,7 @@ export function createDesignPanel(options: Options) {
   async function preview() {
     if (previewing) return
     previewing = true
+    provenanceHost.replaceChildren()
     const button = dialog.querySelector<HTMLButtonElement>('[data-design-action="preview"]')!
     button.disabled = true
     previewStatus.textContent = '正在保存并生成 PDF 预览…'
@@ -434,6 +439,7 @@ export function createDesignPanel(options: Options) {
         result = await options.client.designPreview(result.previewId)
       }
       if (result.status === 'failed') throw new Error(result.error?.message || 'PDF 预览生成失败')
+      renderEditorLayoutProvenance(provenanceHost, result.validation?.layoutProvenance)
       previewMarkdown = capturedMarkdown
       previewDesign = capturedDesign
       pdfLink.href = options.client.designPreviewUrl(result.previewId)

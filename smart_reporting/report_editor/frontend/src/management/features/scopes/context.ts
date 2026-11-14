@@ -1,12 +1,4 @@
-import { useSearchParams } from 'react-router-dom'
-export function useScope() {
-  const [params] = useSearchParams()
-  const database = params.get('database') || '',
-    companyId = params.get('companyId') || ''
-  return database && companyId ? { database, companyId } : null
-}
-export function scopeSuffix(
-  scope: { database: string; companyId: string } | null,
-) {
-  return scope ? '?' + new URLSearchParams(scope) : ''
-}
+// 所有配置属于当前应用实例，不再从URL读取或选择组织。
+const instance = { database: 'instance', companyId: 'instance' }
+export function useScope() { return instance }
+export function scopeSuffix(_scope: { database: string; companyId: string } | null) { return '' }

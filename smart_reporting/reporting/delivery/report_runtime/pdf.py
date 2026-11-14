@@ -772,7 +772,7 @@ def _apply_pdf_page_decorations(
     include_cover: bool = True,
     design: Any = None,
 ) -> None:
-    from .design import presentation_context, watermark_html, watermark_text
+    from .design import page_decoration_texts, presentation_context, watermark_html, watermark_text
     from .report_design import ReportDesign
 
     design = design or ReportDesign()
@@ -793,6 +793,7 @@ def _apply_pdf_page_decorations(
         page_count = len(reader.pages)
         first_numbered_page = 2 if include_cover else 1
         decoration_pages: list[str] = []
+        prefs = design.header_footer
         for page_number in range(1, page_count + 1):
             numbered = page_number >= first_numbered_page
             page_value, pages_value = _page_number_context(
@@ -801,30 +802,59 @@ def _apply_pdf_page_decorations(
                 physical_page_count=page_count,
                 first_numbered_page=first_numbered_page,
             ) if numbered else (1, 1)
-            values = {
-                key: html.escape(
-                    _formatted_page_text(
-                        template,
-                        title=context["title"],
-                        organization=context["organizationName"],
-                        page=page_value,
-                        pages=pages_value,
+            if prefs:
+                values = page_decoration_texts(design, context, physical_page=page_number,
+                    body_start_page=body_start_page, page=page_value, pages=pages_value,
+                    filename=context.get("filename", path.name))
+
+                def story_html(tag):
+                    if include_cover and page_number == 1:
+                        return ""
+                    kind = "header" if tag == "header" else "footer"
+                    parts = "".join(f'<span class="{side}">{html.escape(values[kind + side.title()])}</span>'
+                        for side in ("left", "center", "right"))
+                    return f"<{tag}>{parts}</{tag}>" if any(values[kind + side.title()] for side in ("left", "center", "right")) else ""
+
+                header, footer = story_html("header"), story_html("footer")
+            else:
+                values = {
+                    key: html.escape(
+                        _formatted_page_text(
+                            template,
+                            title=context["title"],
+                            organization=context["organizationName"],
+                            page=page_value,
+                            pages=pages_value,
+                        )
                     )
+                    for key, template in layout.items()
+                }
+                header = (
+                    '<header><span class="left">' + values["headerLeft"] + '</span><span class="right">' + values["headerRight"] + '</span></header>'
+                    if numbered and (values["headerLeft"] or values["headerRight"]) else ""
                 )
-                for key, template in layout.items()
-            }
-            header = (
-                '<header><span class="left">' + values["headerLeft"] + '</span><span class="right">' + values["headerRight"] + '</span></header>'
-                if numbered and (values["headerLeft"] or values["headerRight"]) else ""
-            )
-            footer = (
-                '<footer><span class="left">' + values["footerLeft"] + '</span><span class="right">' + values["footerRight"] + '</span></footer>'
-                if numbered and (values["footerLeft"] or values["footerRight"]) else ""
-            )
+                footer = (
+                    '<footer><span class="left">' + values["footerLeft"] + '</span><span class="right">' + values["footerRight"] + '</span></footer>'
+                    if numbered and (values["footerLeft"] or values["footerRight"]) else ""
+                )
             watermark = watermark_html(design, context) if numbered or design.watermark.cover else ""
             decoration_pages.append(
                 f'<section class="decoration-page">{header}{watermark}{footer}</section>'
             )
+        width, height = design.page.dimensions() if design.page else (210, 297)
+        geometry_css = (f"@page{{size:{width:g}mm {height:g}mm}}.decoration-page{{width:{width:g}mm;height:{height:g}mm}}")
+        if prefs:
+            from .report_design import FONTS
+
+            left = design.page.margins.left if design.page else 18
+            right = design.page.margins.right if design.page else 18
+            geometry_css += (f"header,footer{{left:{left:g}mm;right:{right:g}mm;grid-template-columns:repeat(3,minmax(0,1fr));"
+                f"font-family:'{FONTS[prefs.style.font]}';font-size:{prefs.style.size:g}pt;color:{prefs.style.color};"
+                f"font-weight:{700 if prefs.style.bold else 400};line-height:{prefs.style.line_height:g}}}"
+                f"header{{top:{prefs.header_distance:g}mm}}footer{{bottom:{prefs.footer_distance:g}mm;border-top:0;padding-top:0}}"
+                ".center{text-align:center;overflow-wrap:anywhere}")
+            if prefs.divider:
+                geometry_css += f"header{{border-bottom:.5pt solid {prefs.style.color}}}footer{{border-top:.5pt solid {prefs.style.color}}}"
         document = (
             "<meta charset='utf-8'><style>"
             "@page{size:A4;margin:0}html,body{margin:0}body{"
@@ -844,7 +874,7 @@ def _apply_pdf_page_decorations(
             ".watermark{position:absolute;left:25mm;right:25mm;top:122mm;text-align:center;"
             "transform:rotate(-32deg);font-size:26pt;line-height:1.15;font-weight:600;"
             "color:rgba(71,84,103,.045);overflow-wrap:anywhere}"
-            f"</style><body>{''.join(decoration_pages)}</body>"
+            f"{geometry_css}</style><body>{''.join(decoration_pages)}</body>"
         )
         HTML(string=document).write_pdf(str(overlay), pdf_variant="pdf/ua-1")
         overlay_pages = pypdf.PdfReader(str(overlay)).pages

@@ -45,17 +45,18 @@ export function AsyncState({
   empty?: string
   children?: React.ReactNode
 }) {
-  if (loading) return <Skeleton active />
+  if (loading) return <div className="management-async-state" role="status" aria-busy="true"><p>正在读取…</p><Skeleton active aria-hidden="true" /></div>
   if (error)
     return (
       <Alert
+        className="management-async-state"
         type="error"
         showIcon
         title={error instanceof Error ? error.message : '读取失败'}
         action={retry && <Button onClick={retry}>重试</Button>}
       />
     )
-  if (empty) return <Empty description={empty} />
+  if (empty) return <Empty className="management-async-state" description={empty} />
   return <>{children}</>
 }
 export function StatusTag({

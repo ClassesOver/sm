@@ -16,7 +16,7 @@ from ..runtime.settings import _report_metadata_url, database_url_from_environme
 from .auth import AdminAuthService
 from .data_sources.secrets import CredentialVault
 from .importer import ConfigurationImporter
-from .models import ManagementError, ManagementScope
+from .models import INSTANCE_SCOPE, ManagementError
 from .repository import AdminRepository
 from .scopes import ScopeService
 
@@ -24,7 +24,6 @@ from .scopes import ScopeService
 async def run(
     command: str,
     *,
-    scope: ManagementScope | None = None,
     directory: Path | None = None,
     dry_run: bool = False,
 ) -> dict | None:
@@ -38,9 +37,9 @@ async def run(
     try:
         auth = AdminAuthService(AdminRepository(engine))
         if command == "import-config":
-            if scope is None or directory is None:
+            if directory is None:
                 raise ManagementError(
-                    "management_import_invalid", "导入必须显式指定目录和组织。", 422
+                    "management_import_invalid", "导入必须显式指定配置目录。", 422
                 )
             login = await auth.login("admin", password, "host-cli")
             try:
@@ -57,7 +56,7 @@ async def run(
                     ScopeService(auth), CredentialVault(), metadata_client=metadata
                 )
                 return await importer.import_configuration(
-                    login.raw_token, scope, directory, dry_run, os.environ
+                    login.raw_token, INSTANCE_SCOPE, directory, dry_run, os.environ
                 )
             finally:
                 await auth.logout(login.raw_token)
@@ -76,8 +75,6 @@ def main() -> None:
     commands.add_parser("bootstrap-admin", help="初始化 admin，无默认密码")
     commands.add_parser("reset-admin-password", help="重置密码并撤销全部会话")
     importing = commands.add_parser("import-config", help="预检并原子导入现有文件配置")
-    importing.add_argument("--database", required=True, help="已登记的组织数据库范围")
-    importing.add_argument("--company-id", required=True, help="已登记的机构标识")
     importing.add_argument("--directory", required=True, type=Path, help="现有配置目录")
     importing.add_argument("--dry-run", action="store_true", help="完成预检并显示差异，不发布配置")
     args = parser.parse_args()
@@ -86,9 +83,6 @@ def main() -> None:
         result = asyncio.run(
             run(
                 args.command,
-                scope=ManagementScope(args.database, args.company_id)
-                if args.command == "import-config"
-                else None,
                 directory=getattr(args, "directory", None),
                 dry_run=getattr(args, "dry_run", False),
             )

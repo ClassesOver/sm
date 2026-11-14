@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
+from string import Formatter
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -94,15 +96,116 @@ class DesignOptions(DesignModel):
     sources: bool = False
 
 
+class PageMargins(DesignModel):
+    top: float = Field(20, ge=0, le=100)
+    right: float = Field(18, ge=0, le=100)
+    bottom: float = Field(22, ge=0, le=100)
+    left: float = Field(18, ge=0, le=100)
+
+
+class DocumentPage(DesignModel):
+    paper: Literal["A4", "A3", "Letter"] = "A4"
+    orientation: Literal["portrait", "landscape"] = "portrait"
+    margins: PageMargins = Field(default_factory=PageMargins)
+
+    def dimensions(self) -> tuple[float, float]:
+        width, height = {"A4": (210, 297), "A3": (297, 420), "Letter": (215.9, 279.4)}[self.paper]
+        return (height, width) if self.orientation == "landscape" else (width, height)
+
+    @model_validator(mode="after")
+    def printable_area(self):
+        width, height = self.dimensions()
+        if width - self.margins.left - self.margins.right < 20 or height - self.margins.top - self.margins.bottom < 20:
+            raise ValueError("页边距必须保留至少 20 毫米的正文区域")
+        return self
+
+
+class SignatureDesign(TextStyle):
+    align: Literal["left", "center", "right"] = "right"
+    space_before: float = Field(0, ge=0, le=144)
+    date_gap: float = Field(4, ge=0, le=72)
+    description: str = Field("", max_length=600)
+    date_format: Literal["chinese", "iso", "slash"] = "iso"
+
+
+class HeaderFooterText(DesignModel):
+    left: str = Field("", max_length=200)
+    center: str = Field("", max_length=200)
+    right: str = Field("", max_length=200)
+
+    @model_validator(mode="after")
+    def supported_fields(self):
+        for value in (self.left, self.center, self.right):
+            if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError("页眉页脚不能包含控制字符")
+            for _literal, name, spec, conversion in Formatter().parse(value):
+                if name is not None and (name not in {"title", "signer", "period", "date", "filename", "page", "pages"} or spec or conversion):
+                    raise ValueError("页眉页脚包含不支持的字段")
+        return self
+
+
+class HeaderFooterDesign(DesignModel):
+    enabled: bool = True
+    header: HeaderFooterText = Field(default_factory=HeaderFooterText)
+    footer: HeaderFooterText = Field(default_factory=HeaderFooterText)
+    style: TextStyle = Field(default_factory=lambda: TextStyle(size=9, color="#475467"))
+    header_distance: float = Field(12, ge=0, le=50)
+    footer_distance: float = Field(12, ge=0, le=50)
+    divider: bool = False
+    first_page_different: bool = True
+    odd_even_different: bool = False
+    first_header: HeaderFooterText = Field(default_factory=HeaderFooterText)
+    first_footer: HeaderFooterText = Field(default_factory=HeaderFooterText)
+    even_header: HeaderFooterText | None = None
+    even_footer: HeaderFooterText | None = None
+    page_numbers: bool = True
+    page_number_start: int = Field(1, ge=1, le=9999)
+
+
+class TableDesign(DesignModel):
+    repeat_header: bool = True
+    split_rows: bool = False
+    borders: Literal["light", "all", "none"] = "light"
+    striped: bool = True
+    caption_numbering: bool = True
+
+
+class PdfOutputDesign(DesignModel):
+    bookmarks: bool = True
+    image_quality: int = Field(90, ge=50, le=100)
+
+
+class ChartDesign(DesignModel):
+    keep_with_caption: bool = True
+    # 历史设计未声明此字段时保留原图注；格式偏好会冻结显式布尔值。
+    caption_numbering: bool | None = None
+    image_dpi: int | None = Field(None, ge=72, le=600)
+
+
 class ReportDesign(DesignModel):
     version: Literal[1] = 1
     options: DesignOptions = Field(default_factory=DesignOptions)
     cover: CoverDesign = Field(default_factory=CoverDesign)
     watermark: WatermarkDesign = Field(default_factory=WatermarkDesign)
     typography: Typography = Field(default_factory=Typography)
+    page: DocumentPage | None = None
+    signature: SignatureDesign | None = None
+    header_footer: HeaderFooterDesign | None = None
+    tables: TableDesign | None = None
+    pdf_output: PdfOutputDesign | None = None
+    charts: ChartDesign | None = None
 
     def digest(self) -> str:
-        return hashlib.sha256(json.dumps(self.model_dump(mode="json", by_alias=True), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        document = self.model_dump(mode="json", by_alias=True)
+        # 旧设计没有新增可选字段；保持其历史哈希，不让升级使旧修订失效。
+        for key in ("page", "signature", "headerFooter", "tables", "pdfOutput", "charts"):
+            if document[key] is None:
+                document.pop(key)
+        if document.get("charts", {}).get("captionNumbering") is None:
+            document.get("charts", {}).pop("captionNumbering", None)
+        if document.get("charts", {}).get("imageDpi") is None:
+            document.get("charts", {}).pop("imageDpi", None)
+        return hashlib.sha256(json.dumps(document, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def compact(self) -> dict[str, Any]:
         """按角色归一默认取差异，避免通用子模型默认值使覆盖配置丢失。"""
@@ -110,14 +213,20 @@ class ReportDesign(DesignModel):
             result: dict[str, Any] = {}
             for key, item in value.items():
                 if isinstance(item, dict):
-                    nested = differences(item, baseline[key])
+                    nested = differences(item, baseline[key]) if isinstance(baseline.get(key), dict) else item
                     if nested:
                         result[key] = nested
                 elif item != baseline[key]:
                     result[key] = item
             return result
 
-        return differences(self.model_dump(mode="json", by_alias=True), ReportDesign().model_dump(mode="json", by_alias=True))
+        document = self.model_dump(mode="json", by_alias=True)
+        if document.get("charts"):
+            if document["charts"]["captionNumbering"] is None:
+                document["charts"].pop("captionNumbering")
+            if document["charts"]["imageDpi"] is None:
+                document["charts"].pop("imageDpi")
+        return differences(document, ReportDesign().model_dump(mode="json", by_alias=True))
 
 
 def _merge_role_defaults(model: type[DesignModel], value: Any) -> Any:
@@ -135,8 +244,18 @@ def _merge_role_defaults(model: type[DesignModel], value: Any) -> Any:
     return result
 
 
-def resolve_design(state: dict[str, Any]) -> ReportDesign:
-    design = ReportDesign.model_validate(state.get("_reportDesign") or {})
+def resolve_design(state: dict[str, Any], *, format: Literal["pdf", "word"] = "pdf") -> ReportDesign:
+    document = deepcopy(state.get("_formatDesigns", {}).get(format, {}))
+
+    def merge(target, overrides):
+        for key, value in overrides.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                merge(target[key], value)
+            else:
+                target[key] = deepcopy(value)
+
+    merge(document, state.get("_reportDesign") or {})
+    design = ReportDesign.model_validate(document)
     options = state.get("_editorExportSettings")
     if isinstance(options, dict):
         design.options = DesignOptions.model_validate({**design.options.model_dump(by_alias=True), **options})

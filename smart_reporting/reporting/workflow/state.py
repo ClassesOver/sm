@@ -743,6 +743,20 @@ def apply(
             raise ReportingStateError(
                 "report_answer_review_invalid", "回答审核契约或输入身份无效。"
             ) from error
+    elif name == 'freeze_request_materials':
+        from ..contract import ReportFileInput
+
+        try:
+            files = [ReportFileInput.model_validate(item).model_dump(mode='json', by_alias=True)
+                for item in arguments.get('fileInputs', ())]
+            template = arguments.get('templateInput')
+            materials = {'fileInputs': files, 'templateInput': (
+                ReportFileInput.model_validate(template).model_dump(mode='json', by_alias=True) if template else None)}
+        except (TypeError, ValueError) as error:
+            raise ReportingStateError('report_request_materials_invalid', '参考文件或模板登记身份无效。') from error
+        previous = payload.setdefault('requestMaterials', materials)
+        if previous != materials:
+            raise ReportingStateError('report_context_restart_required', '参考文件或模板身份已冻结，必须新建运行。')
     elif name == "freeze_delivery_format":
         delivery_format = arguments.get("deliveryFormat")
         if delivery_format not in REPORT_DELIVERY_FORMATS:

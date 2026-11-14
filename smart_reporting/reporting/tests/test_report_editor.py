@@ -410,7 +410,7 @@ def test_editor_context_digest_keeps_legacy_default_metadata_compatible() -> Non
     legacy_payload = context.model_dump(mode="json", by_alias=True)
     # 旧上下文没有这些字段；默认值不得改变既有摘要。
     for field in (
-        "source", "createdAt", "note", "artifactManifest", "deliveryFormat",
+        "source", "createdAt", "note", "artifactManifest", "analysisContextFile", "deliveryFormat",
         "pptxPath", "pptxSize", "pptxSha256", "xlsxPath", "xlsxSize", "xlsxSha256",
     ):
         legacy_payload.pop(field)
@@ -1449,6 +1449,9 @@ async def test_editor_export_creates_new_revision_without_overwriting_published_
     durable = SimpleNamespace(
         state_version=4,
         payload={"reportEditorContexts": {"1": context.model_dump(mode="json", by_alias=True)}},
+        external_run_id=scope.external_run_id,
+        thread_id=scope.caller_thread_id,
+        owner_user_id=scope.user_id,
     )
 
     class StateRepository:

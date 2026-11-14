@@ -1,4 +1,4 @@
-"""管理表单使用的同组织已发布依赖选项。"""
+"""管理表单使用的已发布依赖选项。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from .api import SESSION_COOKIE, create_protected_router
 from .data_sources.repository import SourceRepository
-from .models import ManagementError, ManagementScope
+from .models import INSTANCE_SCOPE, ManagementError
 from .repository import catalog_versions
 from .scopes import ScopeService
 
@@ -41,13 +41,13 @@ def decode_cursor(value: str | None, kind: str):
 def create_version_options_router(scopes: ScopeService) -> APIRouter:
     router = create_protected_router(scopes.auth, "management-version-options")
 
-    async def options(request, database, company, limit, after, source_id):
+    async def options(request, limit, after, source_id):
         cursor = decode_cursor(after, 'catalog')
         async with scopes.repository.transaction() as connection:
             await scopes.repository.authenticate_in_transaction(
                 connection, request.cookies[SESSION_COOKIE], scopes.auth.clock())
             scope_id = await SourceRepository.scope_id(
-                connection, ManagementScope(database, company))
+                connection, INSTANCE_SCOPE)
             await SourceRepository().get_draft(connection, scope_id, source_id)
             query = select(catalog_versions).where(
                 catalog_versions.c.scope_id == scope_id,
@@ -72,11 +72,9 @@ def create_version_options_router(scopes: ScopeService) -> APIRouter:
     async def catalogs(
         request: Request,
         source_id: str,
-        database: Annotated[str, Query(alias="scopeDatabase")],
-        company: Annotated[str, Query(alias="companyId")],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         after: Annotated[str | None, Query(max_length=1024)] = None,
     ):
-        return await options(request, database, company, limit, after, source_id)
+        return await options(request, limit, after, source_id)
 
     return router

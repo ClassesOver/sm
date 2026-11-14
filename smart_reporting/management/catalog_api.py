@@ -7,24 +7,17 @@ from ..reporting.metadata import ReportingMetadataClient
 from .api import SESSION_COOKIE, create_protected_router, csrf_token
 from .catalog import CatalogService
 from .data_sources.secrets import CredentialVault
-from .models import ManagementError, ManagementScope
+from .models import ManagementError, INSTANCE_SCOPE
 from .scopes import ScopeService
 from .settings import ManagementSettings
 
-
 class CatalogSyncInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    scope_database: str = Field(alias="scopeDatabase", min_length=1, max_length=128)
-    company_id: str = Field(alias="companyId", min_length=1, max_length=128)
     expected_draft_version: int = Field(alias="expectedDraftVersion", ge=1)
-
 
 class CatalogPublishInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    scope_database: str = Field(alias="scopeDatabase", min_length=1, max_length=128)
-    company_id: str = Field(alias="companyId", min_length=1, max_length=128)
     revision: int = Field(ge=1)
-
 
 def create_catalog_router(scopes: ScopeService, vault: CredentialVault | None = None,
                           metadata_client: ReportingMetadataClient | None = None) -> APIRouter:
@@ -42,14 +35,14 @@ def create_catalog_router(scopes: ScopeService, vault: CredentialVault | None = 
     async def sync(request: Request, source_id: str, payload: CatalogSyncInput):
         csrf(request)
         return await service.synchronize(request.cookies[SESSION_COOKIE],
-                                  ManagementScope(payload.scope_database, payload.company_id),
+                                  INSTANCE_SCOPE,
                                   source_id, payload.expected_draft_version)
 
     @router.post("/management/api/v1/sources/{source_id}/catalog/publish")
     async def publish(request: Request, source_id: str, payload: CatalogPublishInput):
         csrf(request)
         return await service.publish(request.cookies[SESSION_COOKIE],
-                                     ManagementScope(payload.scope_database, payload.company_id),
+                                     INSTANCE_SCOPE,
                                      source_id, payload.revision)
 
     return router

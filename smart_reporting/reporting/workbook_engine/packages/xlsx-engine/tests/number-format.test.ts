@@ -8,6 +8,12 @@ const NEW_YEAR = 45292
 const NOON = 45292.5
 
 describe('formatNumericValue（导出显示格式化）', () => {
+  it('prints quoted percent points without multiplying raw values', () => {
+    expect(formatNumericValue(12.5, '0.000"%";-0.000"%"')).toBe('12.500%')
+    expect(formatNumericValue(-12.5, '0.0"%";(0.0"%")')).toBe('(12.5%)')
+    expect(formatNumericValue(-12.5, '0"%";[Red]-0"%"')).toBe('-13%')
+    expect(formatNumericValue(0, '0"%";-0"%"')).toBe('0%')
+  })
   it('renders builtin short date and datetime ids', () => {
     expect(formatNumericValue(NEW_YEAR, '14')).toBe('1/1/2024')
     expect(formatNumericValue(NOON, '22')).toBe('1/1/2024 12:00')

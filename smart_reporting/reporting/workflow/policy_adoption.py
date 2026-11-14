@@ -11,7 +11,7 @@ from ..models import ReportingError
 from ..semantics.models import Identity
 from ..semantics.policy_adoption import PolicyAdoptionRequestId
 from ..trace.contracts_v1 import canonical_sha256
-from .revision_execution import _source_scope, _source_state
+from .revision_execution import _source_scope, _source_state, load_revision_materials, copy_revision_materials
 from .scope import (
     REPORT_WORKFLOW_SCOPE_DEPENDENCY,
     ReportingWorkflowScope,
@@ -59,6 +59,9 @@ async def prepare_policy_adoption_execution(runtime, run_context, *, request_id)
         ManagementScope(source.database, source.company_id), user_id=source.user_id,
         thread_id=source.caller_thread_id, request_id=request_id)
     target = _target_scope(source, adoption.target_run_id)
+    materials = await load_revision_materials(runtime, source, state)
+    runtime.workspace_service.registry.resolve(target)
+    await copy_revision_materials(runtime, source, target, materials)
     reservation = await apply_editor_command(runtime.state_repository, source.run_id, ReportingCommand(
         name='reserve_report_editor_revision', commandId=target.run_id,
         payload={'minimumRevision': state.revision, 'reservationKey': target.run_id}))
@@ -67,6 +70,9 @@ async def prepare_policy_adoption_execution(runtime, run_context, *, request_id)
         registrationSha256=canonical_sha256(adoption.model_dump(mode='json', by_alias=True)),
         outputRevision=reservation.state.payload['reportEditorRevisionReservations'][target.run_id],
         requestedOutputs=basis.request_summary.requested_outputs)
+    from ...preferences.runtime import inherit_execution_preferences
+
+    await inherit_execution_preferences(runtime, source, target.run_id, 'policy_adoption')
     await runtime.state_repository.register_run(report_run_id=target.run_id, external_run_id=target.external_run_id,
         entrypoint='policy_adoption', workflow_id=registered['workflow_id'], agno_session_id=target.session_id,
         agno_run_id=target.run_id, caller_session_id=source.session_id, caller_run_id=source.run_id,
@@ -74,13 +80,13 @@ async def prepare_policy_adoption_execution(runtime, run_context, *, request_id)
         company_id=target.company_id, revision=execution.output_revision, status='pending')
     await runtime.state_repository.get_or_create(report_run_id=target.run_id, external_run_id=target.external_run_id,
         thread_id=target.caller_thread_id, owner_user_id=target.user_id, revision=execution.output_revision,
-        payload={'reportPolicyAdoptionExecution': execution.model_dump(mode='json', by_alias=True)})
+        payload={'reportPolicyAdoptionExecution': execution.model_dump(mode='json', by_alias=True), 'requestMaterials': materials})
     await require_policy_adoption_execution(runtime, run_context, execution)
     runtime.workspace_service.registry.resolve(target)
     return execution
 
 
-async def require_policy_adoption_execution(runtime, run_context, execution):
+async def require_policy_adoption_execution(runtime, run_context, execution, *, restore_only=False):
     source = _source_scope(runtime, run_context)
     parent, _ = await _source_state(runtime, source)
     adoption, basis = await _registration(runtime, source, execution.request_id)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,6 +31,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 
 from .checkpoint import payload_sha256
+from .read_guard import ReportingReadGuard
 from .state import (
     REPORTING_STATE_SCHEMA_VERSION,
     ReportingCommand,
@@ -180,6 +182,7 @@ class ReportingStateRepository:
             shared_lock = asyncio.Lock()
             setattr(db, "_agentos_reporting_state_initialize_lock", shared_lock)
         self._initialize_lock = shared_lock
+        self._read_guard = ContextVar(f'reporting_read_guard_{id(self)}', default=None)
 
     async def initialize(self) -> None:
         if self._initialized:
@@ -532,44 +535,57 @@ class ReportingStateRepository:
                 "report_state_invalid", "Reporting 运行状态数据无效。"
             ) from error
 
+    @asynccontextmanager
+    async def capture_read_dependencies(self):
+        if self._read_guard.get() is not None:
+            raise ReportingStateError('report_state_read_changed', '不能嵌套批准依赖读取。')
+        guard = ReportingReadGuard(self)
+        token = self._read_guard.set(guard)
+        try:
+            yield guard
+        finally:
+            self._read_guard.reset(token)
+            await guard.close()
+
+    async def _read_dependency_row(self, table, predicate):
+        guard = self._read_guard.get()
+        try:
+            if guard is not None:
+                guard.check_read()
+            await self.initialize()
+            async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
+                row = (await connection.execute(select(table).where(predicate))).first()
+            if guard is not None:
+                guard.observe(table, row)
+            return row
+        except Exception:
+            if guard is not None:
+                guard.fail()
+            raise
+
     async def get(self, report_run_id: str) -> ReportingRunState | None:
-        await self.initialize()
-        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
-            row = (
-                await connection.execute(
-                    select(self.states).where(self.states.c.report_run_id == report_run_id)
-                )
-            ).first()
-        return self._state_from_row(row) if row is not None else None
+        row = await self._read_dependency_row(self.states, self.states.c.report_run_id == report_run_id)
+        return self._dependency_state(row)
 
     async def get_by_external_run_id(self, external_run_id: str) -> ReportingRunState | None:
-        await self.initialize()
-        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
-            row = (
-                await connection.execute(
-                    select(self.states).where(self.states.c.external_run_id == external_run_id)
-                )
-            ).first()
-        return self._state_from_row(row) if row is not None else None
+        row = await self._read_dependency_row(self.states, self.states.c.external_run_id == external_run_id)
+        return self._dependency_state(row)
+
+    def _dependency_state(self, row):
+        try:
+            return self._state_from_row(row) if row is not None else None
+        except Exception:
+            guard = self._read_guard.get()
+            if guard is not None:
+                guard.fail()
+            raise
 
     async def get_run(self, report_run_id: str) -> dict[str, Any] | None:
-        await self.initialize()
-        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
-            row = (
-                await connection.execute(
-                    select(self.runs).where(self.runs.c.report_run_id == report_run_id)
-                )
-            ).first()
+        row = await self._read_dependency_row(self.runs, self.runs.c.report_run_id == report_run_id)
         return dict(row._mapping) if row is not None else None
 
     async def get_run_by_external(self, external_run_id: str) -> dict[str, Any] | None:
-        await self.initialize()
-        async with self.db.db_engine.connect() as connection:  # type: ignore[attr-defined]
-            row = (
-                await connection.execute(
-                    select(self.runs).where(self.runs.c.external_run_id == external_run_id)
-                )
-            ).first()
+        row = await self._read_dependency_row(self.runs, self.runs.c.external_run_id == external_run_id)
         return dict(row._mapping) if row is not None else None
 
     async def claim_workflow_thread(

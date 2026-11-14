@@ -120,9 +120,6 @@ export async function request<T>(
   return result.data
 }
 export const emptySchema = z.object({}).passthrough()
-export const identity = (scope: { database: string; companyId: string }) => ({
-  scopeDatabase: scope.database,
-  companyId: scope.companyId,
-})
-export const scopeQuery = (scope: { database: string; companyId: string }) =>
-  new URLSearchParams(identity(scope)).toString()
+// 管理接口按当前实例维护配置，不接收浏览器提供的组织身份。
+export const identity = (_scope: { database: string; companyId: string }) => ({})
+export const scopeQuery = (_scope: { database: string; companyId: string }) => ''

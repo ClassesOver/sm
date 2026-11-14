@@ -263,6 +263,11 @@ class AgentSettings:
     report_configuration_mode: Literal["database"] = "database"
     report_delivery_settings: ReportDeliverySettings = field(default_factory=ReportDeliverySettings)
     report_build_identity: BuildIdentity | None = None
+    # 仅由已核验的数据库启动加载器写入，不读取同名环境变量。
+    managed_system_revision: int | None = None
+    managed_system_hash: str | None = None
+    # 只保存清单已声明的实际部署来源键名；不含值，不进入普通设置展示。
+    deployment_keys: frozenset[str] | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_environment(
@@ -277,6 +282,11 @@ class AgentSettings:
             for key, value in dotenv_values(env_file).items():
                 if value is not None and key not in values:
                     values[key] = value
+        from ..management.configuration_catalog import CONFIGURATION_CATALOG
+
+        deployment_keys = frozenset(key for item in CONFIGURATION_CATALOG
+            for key in (item.key, *item.aliases) if key in values
+            and (item.value_type == "boolean" or values[key].strip()))
         values.setdefault("MPLCONFIGDIR", DEFAULT_MPLCONFIGDIR)
         values.setdefault(
             "REPORTING_HOST_WORKSPACE_ROOT",
@@ -338,6 +348,7 @@ class AgentSettings:
         default_standard = "platform-managed" if platform_settings else DEFAULT_MODEL_STANDARD_ID
         default_strong = "platform-managed" if platform_settings else DEFAULT_MODEL_STRONG_ID
         return cls(
+            deployment_keys=deployment_keys,
             platform_settings=platform_settings,
             env_file=env_file,
             model_fast_id=(

@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import insert, select
 
 from .auth import AdminAuthService
-from .models import AdminSessionInvalid, ManagementActor, ManagementError, ManagementScope
+from .models import INSTANCE_SCOPE, INSTANCE_SCOPE_ID, AdminSessionInvalid, ManagementActor, ManagementError, ManagementScope
 from .repository import audit_events, tenant_settings
 
 
@@ -21,8 +21,16 @@ class ScopeService:
             tenant_settings.c.database == scope.database,
             tenant_settings.c.company_id == scope.company_id,
         ))).mappings().first()
+        if row is None and scope == INSTANCE_SCOPE:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            await connection.execute(pg_insert(tenant_settings).values(
+                id=INSTANCE_SCOPE_ID, database=scope.database, company_id=scope.company_id,
+                name="应用配置", version=1, default_source_ids=[], default_knowledge_base_ids=[],
+            ).on_conflict_do_nothing(index_elements=[tenant_settings.c.id]))
+            row = (await connection.execute(select(tenant_settings).where(tenant_settings.c.id == INSTANCE_SCOPE_ID))).mappings().one()
         if row is None:
-            raise ManagementError('management_scope_not_found', '请显式选择已登记的组织。', 404)
+            raise ManagementError('management_scope_not_found', '配置记录不存在。', 404)
         return row
 
     async def actor(self, raw_session: str, scope: ManagementScope) -> ManagementActor:

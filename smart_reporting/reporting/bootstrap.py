@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import copy
 from typing import TYPE_CHECKING, Any
 
 from agno.agent import Agent
@@ -163,7 +164,7 @@ def _configuration_sources(
             "management_database_unavailable", "数据库配置模式必须使用 PostgreSQL 异步连接。", 503
         )
     repository = AdminRepository(engine)
-    return ManagedConfigurationProvider(ScopeService(AdminAuthService(repository)), vault)
+    return ManagedConfigurationProvider(ScopeService(AdminAuthService(repository)), vault, startup_settings=settings)
 
 
 def create_report_runtime(
@@ -231,9 +232,12 @@ def create_report_runtime(
         ),
     )
     configuration_provider = _configuration_sources(context, settings)
+    from .template_semantic_review import create_template_signature_reviewer
+
     runtime = ReportWorkflowRuntime(
         db=context.database,
         reporting_agent_template=reporting_agent_template,
+        template_signature_reviewer=create_template_signature_reviewer(reporting_agent_template.model),
         task_runner=task_runner,
         visualization_generator=visualization_generator,
         visualization_code_agent_factory=visualization_code_agent_factory,
@@ -286,7 +290,47 @@ def create_report_runtime(
         ),
         visualization_total_deadline_seconds=(settings.report_visualization_total_deadline_seconds),
     )
+    runtime._execution_startup_settings = settings
+    runtime._execution_runtime_factory = create_run_execution_runtime
     return reporting_agent_template, runtime
+
+
+def create_run_execution_runtime(runtime: ReportWorkflowRuntime, settings: AgentSettings) -> ReportWorkflowRuntime:
+    """仅派生本次调用的模型消费者；数据库、工作区、资源池及取消链路继续共用。"""
+    scoped = copy(runtime)
+    phase = create_reporting_phase_agent(settings, runtime.db, runtime.workspace_service,
+        runtime.task_runner.repository, state_repository=runtime.state_repository,
+        workspace_registry=runtime.workspace_registry)
+    scoped.reporting_agent_template = phase
+    from .template_semantic_review import create_template_signature_reviewer
+
+    scoped.template_signature_reviewer = create_template_signature_reviewer(phase.model)
+    scoped.visualization_generator, scoped.section_generator, scoped.section_recovery = create_reporting_text_generators(phase.model)
+    scoped.visualization_code_agent_factory = create_reporting_code_agent_factory(
+        model=phase.model, name="reporting-visualization-code-agent", task_kind="visualization",
+        role="只为冻结图表计划签发可视化脚本。", instructions=_VISUALIZATION_CODE_INSTRUCTIONS)
+    scoped.vision_reviewer = ReportVisionReviewer(settings, runtime.workspace_service) if settings.report_enable_vision else None
+    scoped._vision_enabled = settings.report_enable_vision
+    scoped._analysis_thinking_enabled = settings.report_enable_thinking
+    scoped._analysis_thinking_budget_cap = settings.report_planner_thinking_budget
+    scoped._planner_reasoning_effort = settings.report_planner_reasoning_effort
+    scoped.analysis_concurrency = settings.report_analysis_concurrency
+    scoped.section_concurrency = settings.report_section_concurrency
+    scoped.reporting_execution_mode = settings.reporting_execution_mode
+    scoped.section_whole_generation = settings.report_section_whole_generation
+    scoped.standard_supplemental_enabled = settings.report_standard_supplemental_enabled
+    scoped.visualization_section_deadline_seconds = settings.report_visualization_section_deadline_seconds
+    scoped.visualization_total_deadline_seconds = settings.report_visualization_total_deadline_seconds
+    scoped.task_runner = copy(runtime.task_runner)
+    # 路由沿用当前服务的任务策略与观测器，只替换本运行冻结的模型档位。
+    scoped.task_runner._model_router = copy(runtime.task_runner._model_router)
+    scoped.task_runner._model_router._profiles = build_model_profiles(
+        fast_model_id=settings.model_fast_id, standard_model_id=settings.model_standard_id,
+        strong_model_id=settings.model_strong_id)
+    scoped._initialize_planners(phase, planner_enable_thinking=settings.report_enable_thinking,
+        planner_reasoning_effort=settings.report_planner_reasoning_effort,
+        planner_thinking_budget=settings.report_planner_thinking_budget)
+    return scoped
 
 
 def create_reporting_text_generators(model: Any) -> tuple[Agent, Agent, Agent]:

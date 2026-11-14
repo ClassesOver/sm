@@ -51,6 +51,7 @@ def build_workbook(
     *, output_path: Path, title: str, period: str,
     sheets: tuple[dict[str, Any], ...], source_mapping: dict[str, Any] | None = None,
     images: tuple[dict[str, Any], ...] = (),
+    preferences: dict[str, Any] | None = None, generated_date: str | None = None,
 ) -> WorkbookBuildResult:
     """按冻结数值成稿，可选嵌入已核验 PNG/JPEG；坏图作为 issues 拒用。
 
@@ -65,9 +66,16 @@ def build_workbook(
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     verified_images, image_issues = _verified_images(images)
+    engine_preferences = None
+    if preferences is not None:
+        from ...preferences.workbook_adapter import prepare_workbook
+
+        sheets, engine_preferences = prepare_workbook(sheets, preferences, title=title, period=period,
+            generated_date=generated_date, filename=output_path.name)
     receipt = _invoke({
         'kind': 'create', 'output': str(output_path), 'title': title, 'period': period,
         'sheets': sheets, 'sourceMapping': source_mapping or {}, 'images': verified_images,
+        'preferences': engine_preferences,
     })
     content = output_path.read_bytes()
     if not content:

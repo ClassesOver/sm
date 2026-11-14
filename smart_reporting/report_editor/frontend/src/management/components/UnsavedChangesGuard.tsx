@@ -13,7 +13,7 @@ export function UnsavedChangesGuard({ dirty }: { dirty: boolean }) {
     return () => window.removeEventListener('beforeunload', handler)
   }, [dirty])
   return (
-    <Modal
+    <Modal rootClassName="management-overlay"
       open={blocker.state === 'blocked'}
       title="放弃未保存的修改？"
       okText="放弃修改"

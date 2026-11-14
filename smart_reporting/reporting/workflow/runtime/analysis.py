@@ -1961,7 +1961,16 @@ class RuntimeAnalysisMixin:
         if state.get("_narrative_evidence_only"):
             return
         period = self._envelope(run_context).period
+        from ....preferences.runtime import REPORT_CONFIGURATION_SNAPSHOT_KEY
+
+        configuration_snapshot = state.get(REPORT_CONFIGURATION_SNAPSHOT_KEY)
         generated_date = state.get(REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY)
+        if configuration_snapshot is not None:
+            frozen_date = configuration_snapshot["generatedDate"]
+            if generated_date is not None and generated_date != frozen_date:
+                raise ReportingError("report_document_context_invalid", "报告生成日期与可信任务快照不一致。")
+            generated_date = frozen_date
+            state[REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY] = generated_date
         if generated_date is None:
             generated_date = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
             state[REPORT_DOCUMENT_GENERATED_DATE_STATE_KEY] = generated_date
@@ -2024,6 +2033,12 @@ class RuntimeAnalysisMixin:
                 int(state.get(REPORT_OUTLINE_STATE_KEY, {}).get("revision", 1))
                 if isinstance(state.get(REPORT_OUTLINE_STATE_KEY), Mapping) else 1),
         )
+        envelope = self._envelope(run_context)
+        materials = {'fileInputs': [item.model_dump(mode='json', by_alias=True) for item in envelope.file_inputs],
+            'templateInput': envelope.template_input.model_dump(mode='json', by_alias=True) if envelope.template_input else None}
+        frozen = await self._apply_durable_command(run_context, ReportingCommand(name='freeze_request_materials',
+            commandId=f'request-materials:{payload_sha256(materials)}', payload=materials))
+        durable = frozen.state
         if durable.phase is DurableReportingPhase.FINALIZE:
             stored_checkpoint = durable.payload.get("workflowCheckpoint")
             try:
@@ -3044,6 +3059,26 @@ class RuntimeAnalysisMixin:
                 "report_checkpoint_invalid", "Completed checkpoint 缺少报告 manifest。"
             )
         result = self._workflow_result(state)
+        if state.get("report_request_context", {}).get("deliveryFormat") == "xlsx":
+            binding_stage = "load"
+            try:
+                tool_context = self._tool_context(run_context)
+                job = self.report_tools._load_job(str(result["jobId"]), tool_context)
+                job["render"] = {**job.get("render", {}), "markdown": {
+                    "path": manifest.markdown.path,
+                    "size": manifest.markdown.size,
+                    "sha256": manifest.markdown.sha256,
+                }}
+                binding_stage = "store"
+                self.report_tools._store_job(job, tool_context)
+            except Exception as error:
+                logger.warning("xlsx_markdown_job_binding_failed stage={} error_type={}",
+                    binding_stage, type(error).__name__)
+                state.setdefault("report_quality_issues", []).append({
+                    "code": "xlsx_markdown_job_binding_failed", "revision": revision,
+                    "message": "工作簿 Markdown 修订身份未能写入编辑任务；已有文件仍可下载，缺少清单时无法进行正式原生偏好验收。",
+                    "details": {"stage": binding_stage, "errorType": type(error).__name__},
+                })
         result.update(
             {
                 "markdownPath": markdown_path,

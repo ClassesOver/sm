@@ -2700,8 +2700,9 @@ export function setSlideSize(opened: OpenedPptx, cx: number, cy: number): boolea
   // layout/master scaled in sync (PowerPoint also rewrites masters on resize;
   // otherwise decorations/inherited placeholders still lay out at the old size).
   // A deliberate user action that is the exception to the never-write-masters rule.
-  for (const part of listMasterParts(archive)) {
-    const partSlide = parseMasterPart(archive, part.partPath)
+  // 先解析全部来源；版式的继承坐标不能读取已缩放写回的母版再缩放一次。
+  const masterParts = listMasterParts(archive).map(part => ({ path: part.partPath, slide: parseMasterPart(archive, part.partPath) }))
+  for (const { path, slide: partSlide } of masterParts) {
     if (!partSlide) continue
     let touched = false
     for (const el of partSlide.elements) {
@@ -2711,7 +2712,7 @@ export function setSlideSize(opened: OpenedPptx, cx: number, cy: number): boolea
       el.dirtyTransform = true
       touched = true
     }
-    if (touched) archive.entries.set(part.partPath, Buffer.from(patchSlideXml(partSlide), 'utf8'))
+    if (touched) archive.entries.set(path, Buffer.from(patchSlideXml(partSlide), 'utf8'))
   }
   deck.slides.forEach((_, i) => materializeSlide(opened, i))
   return true

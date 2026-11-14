@@ -72,6 +72,7 @@ export interface SpecParagraph {
   lineSpacingPct?: number
   spaceBeforePt?: number
   spaceAfterPt?: number
+  indentPt?: number
   bullet?: boolean
 }
 
@@ -240,6 +241,7 @@ export function parsePageSpecObject(
       const lineSpacingPct = num(pr.lineSpacingPct)
       const spaceBeforePt = num(pr.spaceBeforePt)
       const spaceAfterPt = num(pr.spaceAfterPt)
+      const indentPt = num(pr.indentPt)
       out.push({
         runs,
         ...(align === 'left' || align === 'center' || align === 'right' || align === 'justify'
@@ -253,6 +255,7 @@ export function parsePageSpecObject(
           ? { spaceAfterPt: Math.min(Math.max(spaceAfterPt, 0), 96) }
           : {}),
         ...(pr.bullet === true ? { bullet: true } : {}),
+        ...(indentPt !== undefined ? { indentPt: Math.min(Math.max(indentPt, 0), 48) } : {}),
       })
     }
     return out
@@ -514,7 +517,7 @@ function toEngineParagraphs(paragraphs: SpecParagraph[]): Paragraph[] {
       ...(p.spaceAfterPt !== undefined ? { spaceAfter: p.spaceAfterPt } : {}),
       ...(p.bullet
         ? { bullet: { type: 'char' as const, char: '•' }, marL: 228600, indent: -228600 }
-        : {}),
+        : p.indentPt !== undefined ? { indent: Math.round(p.indentPt * 12700) } : {}),
     }
   })
 }

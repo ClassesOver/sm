@@ -614,6 +614,36 @@ async def run_refresh_request(editor, expected, task_id, *, runtime):
         return completed, published
 
 
+async def read_registered_recalculation_execution(editor, context, task_id):
+    """父输入不可读时仅从同授权来源唯一登记的精确任务child识别操作。"""
+    import re
+
+    if re.fullmatch(r'recalc-[0-9a-f]{32}', task_id) is None:
+        raise ReportingError('report_editor_scope_mismatch', '交付任务身份无效。')
+    source = await editor.state_repository.get(context.workflow_run_id)
+    candidates = []
+    for child_id in source.payload.get('reportEditorRevisionReservations', {}) if source else ():
+        child = await editor.state_repository.get(child_id)
+        for key, model in (('reportPolicyAdoptionExecution', PolicyAdoptionExecution),
+                ('reportRevisionExecution', ReportRevisionExecution)):
+            raw = child.payload.get(key) if child else None
+            if not isinstance(raw, dict):
+                continue
+            matches = raw.get('requestId') == task_id if model is PolicyAdoptionExecution else (
+                raw.get('reportRevision') == 'editor-refresh-' + task_id.removeprefix('recalc-'))
+            if not matches:
+                continue
+            execution = model.model_validate(raw)
+            execution_id = execution.scope.run_id if model is PolicyAdoptionExecution else execution.execution_run_id
+            if (execution_id != child_id or execution.source_scope.as_state() != context.scope
+                    or execution.source_scope.run_id != context.workflow_run_id):
+                raise ReportingError('report_editor_scope_mismatch', '交付候选执行不属于当前授权任务。')
+            candidates.append(execution)
+    if len(candidates) != 1:
+        raise ReportingError('report_editor_recalculation_unavailable', '交付缺少当前授权任务唯一已登记执行。')
+    return candidates[0]
+
+
 async def read_refresh_delivery(editor, expected, task_id, *, runtime):
     """只恢复已登记执行的交付；完成登记失败也不能撤销已生成文件。"""
     from agno.run import RunContext

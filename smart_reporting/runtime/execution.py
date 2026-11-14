@@ -17,6 +17,7 @@ from ..task_execution import DEFAULT_TERMINAL_TIMEOUT
 from .database import AgentDatabase, create_agent_database
 from .observability import configure_tracing, flush_tracing
 from .settings import AgentSettings
+from .system_configuration import load_system_configuration
 
 
 @dataclass(frozen=True)
@@ -50,7 +51,7 @@ def create_execution_context(
     tracing_configurer: Any = configure_tracing,
 ) -> ExecutionContext:
     install_agno_function_argument_decoder()
-    current_settings = settings or AgentSettings.from_environment()
+    current_settings = settings or load_system_configuration(AgentSettings.from_environment()).settings
     database = database_factory(current_settings.database_url)
     configure_execution_tracing(
         database,

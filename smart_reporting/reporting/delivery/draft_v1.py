@@ -399,6 +399,11 @@ def _marker_lines(
         # 闭合围栏后不能跟其他文字：追加在同一行会让围栏失去闭合，后续整篇报告
         # 都被吞进代码块。标记改为独立段落。
         return f"{text.rstrip()}\n\n{markers}"
+    if markers and '|' in text.rstrip('\n').rsplit('\n', 1)[-1]:
+        tokens = MarkdownIt('commonmark').enable('table').parse(text)
+        if tokens and tokens[-1].type == 'table_close':
+            # 表格末行后的标记会被解析为多余单元格并丢弃；独立段落保留其来源身份。
+            return f"{text.rstrip()}\n\n{markers}"
     return f"{text}{markers}"
 
 
@@ -679,13 +684,18 @@ def _readable_label(text: str) -> str:
     return normalize_cjk_punctuation(normalize_cjk_wording(text)).strip() or text
 
 
-def _chart_figure_markdown(chart: ReportChartInput, file_name: str) -> str:
+def _chart_figure_markdown(chart: ReportChartInput, file_name: str, *, caption_preferences: dict | None = None) -> str:
     title = _markdown_inline_text(_readable_label(_without_internal_ids(chart.title)))
-    return (
+    image = (
         f'![{_chart_alt_text(_readable_label(_without_internal_ids(chart.alt_text)))}]({_link_destination(file_name)} "{title}")'
         + "".join(f"[[citation:{citation_id}]]" for citation_id in chart.citation_ids)
-        + f"\n\n*图表：{title}*"
     )
+    caption = f'*图表：{title}*'
+    if caption_preferences is None:
+        return image + '\n\n' + caption
+    from ...preferences.markdown_captions import image_caption_markdown
+
+    return image_caption_markdown(image, caption, visible=caption_preferences['imageCaptions'])
 
 
 def _chart_citation_block_indexes(
@@ -829,6 +839,9 @@ def assemble_report_markdown(
     server_tables: tuple[ReportServerTable, ...] = (),
     server_narrative_sections: tuple[ReportDraftSection, ...] = (),
     claim_values: Mapping[tuple[str, str], tuple[Any, str | None]] | None = None,
+    markdown_preferences: dict[str, Any] | None = None,
+    generated_date: str | None = None,
+    citation_presentations: list[dict[str, Any]] | None = None,
 ) -> RenderedReportDraft:
     section_registry = {item.code: item for item in sections}
     if len(section_registry) != len(sections):
@@ -1142,7 +1155,7 @@ def assemble_report_markdown(
                 markdown_parts.append(block_text)
                 ordered_figures = placements.get(len(units) - 1, block_figures)
                 markdown_parts.extend(
-                    _chart_figure_markdown(*normalized_charts[chart_id])
+                    _chart_figure_markdown(*normalized_charts[chart_id], caption_preferences=markdown_preferences)
                     for chart_id in ordered_figures
                 )
             else:
@@ -1151,7 +1164,7 @@ def assemble_report_markdown(
                         unit = _marker_lines(unit, block.citation_ids, ())
                     markdown_parts.append(unit)
                     markdown_parts.extend(
-                        _chart_figure_markdown(*normalized_charts[chart_id])
+                        _chart_figure_markdown(*normalized_charts[chart_id], caption_preferences=markdown_preferences)
                         for chart_id in placements.get(unit_index, ())
                     )
                 auto_fixes.append(
@@ -1199,8 +1212,17 @@ def assemble_report_markdown(
         report_path.parent.joinpath(normalized_charts[chart_id][1]).as_posix()
         for chart_id in dict.fromkeys(referenced_chart_ids)
     )
+    markdown = "\n\n".join(markdown_parts) + "\n"
+    if markdown_preferences is not None:
+        from ...preferences.markdown_adapter import append_signature
+
+        markdown = append_signature(markdown, markdown_preferences, generated_date,
+            heading_numbers=[item.model_dump(mode='json', by_alias=True) for item in heading_numbers],
+            citation_presentations=citation_presentations if citation_presentations is not None else [
+                {'citationId': citation_id, 'label': '已登记业务数据', 'coverageItems': []}
+                for citation_id in citation_ids])
     return RenderedReportDraft(
-        markdown="\n\n".join(markdown_parts) + "\n",
+        markdown=markdown,
         chartPaths=chart_paths,
         analysisIds=tuple(referenced_analysis_ids),
         sectionNumbers=tuple(item.section_number for item in sections),

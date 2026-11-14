@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from agno.run import RunContext
 from agno.workflow.types import StepInput, StepOutput
+from loguru import logger
 from pydantic import Field
 
 from ...contract import REPORT_DELIVERY_FORMATS, StrictModel
@@ -404,6 +405,22 @@ class RuntimeSlidesMixin:
         if execution is None:
             state = self._state(run_context)
             result = self._workflow_result(state)
+            binding_stage = 'load'
+            try:
+                tool_context = self._tool_context(run_context)
+                job = self.report_tools._load_job(str(result['jobId']), tool_context)
+                job['render'] = {**job.get('render', {}),
+                    'markdown': markdown_file.model_dump(mode='json', by_alias=True)}
+                binding_stage = 'store'
+                self.report_tools._store_job(job, tool_context)
+            except Exception as error:
+                logger.warning('pptx_markdown_job_binding_failed stage={} error_type={}',
+                    binding_stage, type(error).__name__)
+                state.setdefault('report_quality_issues', []).append({
+                    'code': 'pptx_markdown_job_binding_failed', 'revision': checkpoint.revision,
+                    'message': '幻灯片 Markdown 修订身份未能写入编辑任务；已有文件仍可下载，缺少清单时无法进行正式原生偏好验收。',
+                    'details': {'stage': binding_stage, 'errorType': type(error).__name__},
+                })
             handles = tuple(DatasetHandle.from_state(item) for item in result.get('datasets', ()))
             lineage = tuple(DatasetLineage.model_validate(item) for item in state[REPORT_DATASET_LINEAGE_STATE_KEY])
         else:

@@ -8,9 +8,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 
 from smart_reporting.management import cli
-from smart_reporting.management.models import ManagementScope
 from smart_reporting.management.repository import sessions, source_versions
-from smart_reporting.management.scopes import ScopeService
 from smart_reporting.reporting.data_source.starrocks import StarRocksDataSourceAdapter
 from smart_reporting.tests.management_fixtures import physical_catalog
 from smart_reporting.tests.test_management_catalog_sync import metadata_client as metadata_client
@@ -26,15 +24,9 @@ async def test_cli_import_authenticates_previews_publishes_and_revokes_own_sessi
     auth, repo, now = auth_context
     now[0] = datetime.now(UTC)
     await auth.bootstrap(OLD_PASSWORD)
-    logged_in = await auth.login("admin", OLD_PASSWORD, "127.0.0.1")
-    scope = ManagementScope("warehouse", "100")
-    await ScopeService(auth).register(logged_in.raw_token, scope, "公司")
+    await auth.login("admin", OLD_PASSWORD, "127.0.0.1")
     (tmp_path / "report-data-sources.json").write_text(
-        '{"version":"1","defaultSourceIds":["operations"],"sources":[{"id":"operations","type":"starrocks","name":"经营数仓","dsnEnv":"REPORTING_DSN","database":"warehouse","reportingProfile":"base"}]}'
-    )
-    (tmp_path / "reporting_profiles").mkdir()
-    (tmp_path / "reporting_profiles" / "base.json").write_text(
-        '{"version":"1","profileId":"base","revision":"r1"}'
+        '{"version":"1","defaultSourceIds":["operations"],"sources":[{"id":"operations","type":"starrocks","name":"经营数仓","dsnEnv":"REPORTING_DSN","database":"warehouse"}]}'
     )
     monkeypatch.setenv("AGENT_DB_URL", os.environ["REPORTING_MANAGEMENT_TEST_DB_URL"])
     monkeypatch.setenv("AGENT_MANAGEMENT_CREDENTIAL_KEYS", f"test:{Fernet.generate_key().decode()}")
@@ -53,11 +45,11 @@ async def test_cli_import_authenticates_previews_publishes_and_revokes_own_sessi
         original(self, base_url, client_factory=metadata_client.client_factory, **kwargs)
 
     monkeypatch.setattr(metadata_client.__class__, "__init__", configured)
-    preview = await cli.run("import-config", scope=scope, directory=tmp_path, dry_run=True)
+    preview = await cli.run("import-config", directory=tmp_path, dry_run=True)
     assert preview["dryRun"] is True
     async with repo.engine.connect() as connection:
         assert await connection.scalar(select(func.count()).select_from(source_versions)) == 0
-    committed = await cli.run("import-config", scope=scope, directory=tmp_path, dry_run=False)
+    committed = await cli.run("import-config", directory=tmp_path, dry_run=False)
     assert committed["createdSources"] == 1
     assert "private-secret" not in str(committed)
     async with repo.engine.connect() as connection:

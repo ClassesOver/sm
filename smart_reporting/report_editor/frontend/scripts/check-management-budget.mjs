@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { gzipSync } from 'node:zlib'
-const root = resolve('../static/management')
+const root = resolve(process.env.AGENT_MANAGEMENT_STATIC_DIR || '../static/management')
 const manifest = JSON.parse(
   readFileSync(resolve(root, '.vite/manifest.json'), 'utf8'),
 )

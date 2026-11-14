@@ -13,12 +13,13 @@ const Login = lazy(() => import('../features/auth/login'))
 const Sources = lazy(() => import('../features/sources/list'))
 const Detail = lazy(() => import('../features/sources/detail'))
 const Editor = lazy(() => import('../features/sources/editor'))
-const Organizations = lazy(() => import('../features/scopes/page'))
 const Password = lazy(() => import('../features/auth/password'))
 const ReportIssues = lazy(() => import('../features/issues/page'))
 const Policies = lazy(() => import('../features/policies/page'))
 const Metrics = lazy(() => import('../features/metrics/page'))
 const Knowledge = lazy(() => import('../features/knowledge/page'))
+const SystemConfiguration = lazy(() => import('../features/configuration/system'))
+const Preferences = lazy(() => import('../features/configuration/preferences'))
 function Boundary() {
   const { state, load } = useSession(),
     location = useLocation()
@@ -30,7 +31,11 @@ function Boundary() {
           ? '编辑数据源'
           : location.pathname.endsWith('/new')
             ? '新建数据源'
-            : location.pathname.startsWith('/knowledge')
+            : location.pathname.startsWith('/system-configuration')
+            ? '系统配置'
+          : location.pathname.startsWith('/preferences')
+            ? '偏好管理'
+          : location.pathname.startsWith('/knowledge')
               ? '业务知识'
             : location.pathname.startsWith('/metrics')
               ? '业务指标'
@@ -38,9 +43,7 @@ function Boundary() {
               ? '统计口径'
             : location.pathname.startsWith('/report-issues')
               ? '报告问题'
-              : location.pathname.startsWith('/organizations')
-              ? '组织'
-              : location.pathname.startsWith('/account')
+                : location.pathname.startsWith('/account')
                 ? '修改密码'
                 : location.pathname === '/sources'
                   ? '数据源'
@@ -106,11 +109,12 @@ export function makeRouter() {
               { path: 'sources/:sourceId', element: <Detail /> },
               { path: 'sources/:sourceId/view', element: <Detail /> },
               { path: 'sources/:sourceId/edit', element: <Editor /> },
-              { path: 'organizations', element: <Organizations /> },
               { path: 'report-issues', element: <ReportIssues /> },
               { path: 'statistical-policies', element: <Policies /> },
               { path: 'metrics', element: <Metrics /> },
               { path: 'knowledge', element: <Knowledge /> },
+              { path: 'system-configuration', element: <SystemConfiguration /> },
+              { path: 'preferences', element: <Preferences /> },
               { path: 'account/password', element: <Password /> },
             ],
           },
