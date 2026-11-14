@@ -1,4 +1,4 @@
-import { capturePdfReading } from './pdf-reading-state'
+import { capturePdfReading, pdfReadingRows } from './pdf-reading-state'
 import { afterEach, expect, it, vi } from 'vitest'
 import { bindPdfPageNavigation } from './pdf-page-navigation'
 const controllers: AbortController[] = []
@@ -75,4 +75,33 @@ it('uses the live reading anchor after wheel scrolling, not an old selected page
   const boundary = new KeyboardEvent('keydown', { key: 'PageDown', cancelable: true }); viewport.dispatchEvent(boundary)
   expect(boundary.defaultPrevented).toBe(true); expect(navigate).not.toHaveBeenCalled(); expect(viewport.scrollTop).toBe(3500)
   viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', cancelable: true })); expect(navigate).toHaveBeenLastCalledWith('reordered')
+})
+
+it('moves by a reading row in two-page spread mode, without repeatedly targeting its right page', () => {
+  const f = fixture(), abort = new AbortController(); controllers.push(abort); f.abort.abort()
+  let reading = 'a'; const navigate = vi.fn((id: string) => { reading = id })
+  bindPdfPageNavigation(f.viewport, { signal: abort.signal, available: () => true,
+    pages: () => ['a', 'b', 'c', 'd'].map(pageId => ({ pageId })), readingPage: () => reading, readingRows: () => [{ pageId: 'a' }, { pageId: 'c' }], navigate })
+  f.key('PageDown'); expect(reading).toBe('c'); expect(navigate).toHaveBeenCalledTimes(1)
+  f.key('PageDown'); expect(navigate).toHaveBeenCalledTimes(1)
+  f.key('PageUp'); expect(reading).toBe('a'); expect(navigate).toHaveBeenCalledTimes(2)
+})
+it.each([{ ids: ['a', 'b', 'c', 'd'], columns: 2 }, { ids: ['a', 'b', 'c'], columns: 2 }, { ids: ['a', 'b', 'c'], columns: 1 }])('advances between actual DOM reading rows %j', ({ ids, columns }) => {
+  const viewport = document.createElement('div'); document.body.append(viewport)
+  viewport.getBoundingClientRect = () => new DOMRect(0, 0, 600, 500)
+  ids.forEach((id, index) => {
+    const page = document.createElement('section'); page.className = 'pdf-page'; page.dataset.pageId = id; viewport.append(page)
+    page.getBoundingClientRect = () => new DOMRect(index % columns * 300, Math.floor(index / columns) * 1000 - viewport.scrollTop, 300, 1000)
+  })
+  const abort = new AbortController(); controllers.push(abort)
+  const navigate = vi.fn((id: string) => { viewport.scrollTop = Math.floor(ids.indexOf(id) / columns) * 1000 })
+  bindPdfPageNavigation(viewport, { signal: abort.signal, available: () => true, readingRows: () => pdfReadingRows(viewport, ids),
+    pages: () => ids.map(pageId => ({ pageId })),
+    readingPage: () => { const reading = capturePdfReading(viewport, ids, 1, null); return reading ? ids[reading.page - 1]! : '' }, navigate })
+  const key = (key: string) => viewport.dispatchEvent(new KeyboardEvent('keydown', { key, cancelable: true }))
+  key('PageDown'); expect(navigate).toHaveBeenLastCalledWith(ids[columns]); expect(viewport.scrollTop).toBe(1000)
+  const lastRow = Math.floor((ids.length - 1) / columns) * 1000
+  viewport.scrollTop = lastRow + 500; navigate.mockClear(); key('PageDown'); expect(navigate).not.toHaveBeenCalled(); expect(viewport.scrollTop).toBe(lastRow + 500)
+  key('Home'); expect(navigate).toHaveBeenLastCalledWith('a'); expect(viewport.scrollTop).toBe(0)
+  key('PageDown'); key('PageUp'); expect(navigate).toHaveBeenLastCalledWith('a'); expect(viewport.scrollTop).toBe(0)
 })

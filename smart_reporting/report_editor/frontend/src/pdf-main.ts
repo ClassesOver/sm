@@ -80,7 +80,7 @@ import { markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupS
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
 import { loadViewState, saveViewState, type PdfFitMode, type PdfViewState } from './genoffice-pdf-reading-state'
-import { pdfReadingKey, capturePdfReading, restorePdfReading } from './pdf-reading-state'
+import { pdfReadingKey, capturePdfReading, restorePdfReading, pdfReadingRows } from './pdf-reading-state'
 
 import { PdfAttachmentCache, humanBytes, attachmentDownloadName, type PdfAttachmentRow } from './pdf-attachments'
 
@@ -1592,6 +1592,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       && !previewing && !printing && !previewDocument && !searchRendering && !draft.saving && !draft.closed
       && pendingMutations === 0 && !mutationBlocked?.() && !staticText?.incompleteReason() && !hasUnstagedText(),
     pages: state,
+    readingRows: () => pdfReadingRows(viewport, state().map(page => page.pageId)),
     readingPage: () => {
       // Wheel scrolling does not change activeId. Read the existing DOM reading
       // anchor against the current retained/reordered page identities instead.

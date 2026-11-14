@@ -4,6 +4,7 @@ export function bindPdfPageNavigation(viewport: HTMLElement, options: {
   available(): boolean
   pages(): readonly { pageId: string }[]
   readingPage(): string
+  readingRows?(): readonly { pageId: string }[]
   navigate(pageId: string): void
 }) {
   let pointerDown = false
@@ -17,12 +18,13 @@ export function bindPdfPageNavigation(viewport: HTMLElement, options: {
       || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || pointerDown || !options.available()) return
     // A modal can be open while focus is being restored to the canvas.
     if (viewport.ownerDocument.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return
-    const pages = options.pages()
+    const paging = event.key === 'PageUp' || event.key === 'PageDown'
+    const pages = paging ? options.readingRows?.() ?? options.pages() : options.pages()
     const current = pages.findIndex(page => page.pageId === options.readingPage())
     if (current < 0) return
     let next: number
     switch (event.key) {
-      case 'PageDown': next = Math.min(current + 1, pages.length - 1); break
+      case 'PageDown': next = current + 1 < pages.length ? current + 1 : current; break
       case 'PageUp': next = Math.max(current - 1, 0); break
       case 'Home': next = 0; break
       case 'End': next = pages.length - 1; break
