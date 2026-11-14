@@ -242,6 +242,12 @@ class AgentSettings:
     native_ai_enabled: bool = False
     native_pdf_text_enabled: bool = False
     native_upload_enabled: bool = False
+    # Office 复杂场景编码任务（CodexAgent）：需在部署镜像实测沙箱写入边界后再开启。
+    office_codex_enabled: bool = False
+    # 留空时沿用 OPENAI_BASE_URL / 标准模型；端点须支持 OpenAI Responses 协议。
+    office_codex_base_url: str = ""
+    office_codex_model: str = ""
+    office_codex_timeout_seconds: int = 600
     # 编辑器 AI 改图（设计稿 docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md）：
     # 默认开启；显式关闭可隐藏入口，未配置视觉审查模型时提示不可用。
     report_editor_chart_ai_enabled: bool = True
@@ -469,6 +475,12 @@ class AgentSettings:
             native_ai_enabled=_flag(values.get("AGENT_REPORT_EDITOR_AI_ENABLED", values.get("AGENT_NATIVE_AI_ENABLED"))),
             native_pdf_text_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_TEXT_ENABLED", values.get("AGENT_NATIVE_PDF_TEXT_ENABLED"))),
             native_upload_enabled=_flag(values.get("AGENT_REPORT_EDITOR_UPLOAD_ENABLED", values.get("AGENT_NATIVE_UPLOAD_ENABLED"))),
+            office_codex_enabled=_flag(values.get("AGENT_OFFICE_CODEX_ENABLED")),
+            office_codex_base_url=values.get("AGENT_OFFICE_CODEX_BASE_URL", "").strip(),
+            office_codex_model=values.get("AGENT_OFFICE_CODEX_MODEL", "").strip(),
+            office_codex_timeout_seconds=_positive_int(
+                values, "AGENT_OFFICE_CODEX_TIMEOUT_SECONDS", 600, maximum=3600
+            ),
             report_editor_chart_ai_enabled=_flag(
                 values.get("AGENT_REPORT_EDITOR_CHART_AI_ENABLED"), default=True
             ),
