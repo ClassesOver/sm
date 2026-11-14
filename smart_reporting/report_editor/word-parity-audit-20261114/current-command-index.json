@@ -10608,12 +10608,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-STYLE-NONE",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -10800,12 +10800,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-STYLE-CUSTOM",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -10832,12 +10832,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-LOOK-FIRST-ROW",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -10864,12 +10864,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-LOOK-LAST-ROW",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -10896,12 +10896,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-LOOK-BANDED-ROWS",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -10928,12 +10928,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-LOOK-FIRST-COLUMN",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -10960,12 +10960,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-LOOK-LAST-COLUMN",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -10992,12 +10992,12 @@
       },
       "hasScopedRemediation": true,
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md",
       "remediation": {
         "id": "OBJ-TBL-LOOK-BANDED-COLUMNS",
         "effectiveStatus": "partial",
-        "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+        "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
         "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
       }
     },
@@ -21732,7 +21732,7 @@
     },
     "scopedRemediation": {
       "path": "remediation-index.json",
-      "sha256": "bffffe137ee8f77d56a4334c0245a1337893deaced627a5a596e55bbcd45bab2"
+      "sha256": "c0ebb74d6c584ef4aa481577761f965f40ba0b46b2ed1b3003fea89986f76709"
     }
   },
   "sectionStatisticsMeaning": "The preserved sections statistics describe historical baseline statuses only; they are not current completion totals.",

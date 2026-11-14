@@ -124,7 +124,7 @@
     {
       "id": "OBJ-TBL-STYLE-NONE",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {
@@ -160,43 +160,43 @@
     {
       "id": "OBJ-TBL-STYLE-CUSTOM",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {
       "id": "OBJ-TBL-LOOK-FIRST-ROW",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {
       "id": "OBJ-TBL-LOOK-LAST-ROW",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {
       "id": "OBJ-TBL-LOOK-BANDED-ROWS",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {
       "id": "OBJ-TBL-LOOK-FIRST-COLUMN",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {
       "id": "OBJ-TBL-LOOK-LAST-COLUMN",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {
       "id": "OBJ-TBL-LOOK-BANDED-COLUMNS",
       "effectiveStatus": "partial",
-      "scope": "普通可信表格样式/六look选项；复杂目标和混合保存仍受限",
+      "scope": "普通可信表格样式/六look；PR整合保留合并表格无样式、文档样式和look支持，预设及复杂目标按各自能力限制；混合保存仍受限",
       "evidence": "../NATIVE_WORD_AUDIT_REMEDIATION_20261114.md"
     },
     {

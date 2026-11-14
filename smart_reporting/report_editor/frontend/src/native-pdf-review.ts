@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import {bindOfficeAssistantPanel} from './office-assistant-panel'
 /** 按批注修改正文并回复：真实预览候选经显式采纳进入同一 NativeDraft。 */
 import type {createNativeApi, NativePDFReviewJob} from './native-api'
@@ -24,13 +25,13 @@ export function bindNativePDFReview(root: HTMLElement, options: {
   panel.append(title,help,input,start,accept,cancel,close,status,output,details);root.append(panel)
   const panelView=bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,onClose:()=>stop()})
   let generation=0,disposed=false,busy=false,accepting=false,job: NativePDFReviewJob | undefined,activeRequest: string | undefined
-  let controller: AbortController | undefined
+  const tasks = new OfficeAssistantController({start:options.api.pdfReviewStart,status:options.api.pdfReviewStatus,cancelRequest:options.api.pdfReviewCancel,id:(value: NativePDFReviewJob)=>value.editId,running:(value: NativePDFReviewJob)=>value.status==='running'})
   const editable=()=>!disposed && !options.draft.closed && !options.draft.saving && (options.canEdit?.() ?? true)
   function update() {start.disabled=busy || accepting || !editable();accept.disabled=busy || accepting || !editable() || job?.status!=='succeeded' || !job.proposal;cancel.disabled=!activeRequest}
   function stop(message='建议已取消') {
-    const turn=++generation,request=activeRequest
-    controller?.abort();activeRequest=undefined;busy=false;job=undefined;status.textContent=message;output.textContent='';details.replaceChildren();update()
-    if(request) void options.api.pdfReviewCancel(request).catch(error=>{if(turn===generation && !disposed) status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
+    const turn=++generation
+    progress.reset();activeRequest=undefined;busy=false;job=undefined;status.textContent=message;output.textContent='';details.replaceChildren();update()
+    void tasks.cancel().catch(error=>{if(turn===generation && !disposed) status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
   }
   function display(value: NativePDFReviewJob) {
     job=value;details.replaceChildren();output.textContent=value.proposal?.answer ?? ''
@@ -54,13 +55,11 @@ export function bindNativePDFReview(root: HTMLElement, options: {
     if(busy || accepting || !editable()) return
     if(activeRequest) stop('开始新的处理建议')
     const turn=++generation,operations=structuredClone(options.draft.operations),snapshot=JSON.stringify(operations)
-    const request=crypto.randomUUID();activeRequest=request;controller=new AbortController();const signal=controller.signal
+    const request=crypto.randomUUID();activeRequest=request
     busy=true;job=undefined;output.textContent='';details.replaceChildren();status.textContent='正在读取全部批注及实际草稿';update()
     try {
-      let result=await options.api.pdfReviewStart({clientRequestId:request,expectedSha256:options.draft.identity.sourceSha256,operations,instruction:input.value.trim()},signal)
-      progress.start(options.api.pdfReviewEvents,result.editId,signal,()=>turn===generation && !disposed && editable())
-      while(turn===generation && !disposed && result.status==='running') result=await options.api.pdfReviewStatus(result.editId,signal)
-      if(turn!==generation || disposed) return
+      const result=await tasks.run({clientRequestId:request,expectedSha256:options.draft.identity.sourceSha256,operations,instruction:input.value.trim()},request,(started,signal)=>progress.start(options.api.pdfReviewEvents,started.editId,signal,()=>turn===generation && !disposed && editable()))
+      if(!result || turn!==generation || disposed) return
       if(!editable() || snapshot!==JSON.stringify(options.draft.operations)) {job=undefined;status.textContent='草稿已变化或当前不可编辑，请重新生成建议';return}
       display(result)
     } catch(error) {if(turn===generation && !disposed) status.textContent=error instanceof Error ? error.message : '批注处理失败'}
@@ -71,12 +70,13 @@ export function bindNativePDFReview(root: HTMLElement, options: {
     const turn=generation,operations=structuredClone(options.draft.operations),snapshot=JSON.stringify(operations),candidate=job
     let staged=false
     const finishMutation=options.beginMutation?.()
-    accepting=true;busy=true;controller=new AbortController();update()
+    accepting=true;busy=true;update()
     try {
-      const result=await options.api.pdfReviewAccept(candidate.editId,{expectedSha256:options.draft.identity.sourceSha256,operations,snapshotSha256:candidate.snapshotSha256},controller.signal)
+      const result=await tasks.accept(signal=>options.api.pdfReviewAccept(candidate.editId,{expectedSha256:options.draft.identity.sourceSha256,operations,snapshotSha256:candidate.snapshotSha256},signal))
+      if(!result) return
       if(turn!==generation || disposed) return
       if(!editable() || snapshot!==JSON.stringify(options.draft.operations)) throw new Error('草稿已变化或当前不可编辑，请重新生成建议')
-      options.draft.setOperations(result.operations);staged=true;options.onDraftChange();job=undefined
+      options.draft.setOperations(result.operations);tasks.release();activeRequest=undefined;staged=true;options.onDraftChange();job=undefined
       await options.view.refresh()
       if(turn!==generation || disposed) return
       status.textContent='建议已进入草稿。请核对实际 PDF 预览并确认，保存后生成新修订。'

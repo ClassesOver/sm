@@ -11,7 +11,7 @@ from ..reporting.contract import SHA256_PATTERN
 from ..reporting.models import ReportingError
 from .native_ai import NativeAIService
 from .native_api import NATIVE_SESSION_COOKIE, _csrf, _error
-from .service import ReportEditorGrantService
+from .service import ReportEditorGrantService, token_hash
 
 
 class _DraftPayload(BaseModel):
@@ -82,7 +82,7 @@ def _ai_error(error: ReportingError) -> HTTPException:
         status = 409
     elif error.code in ("native_ai_job_missing",):
         status = 404
-    elif error.code in ("native_ai_disabled", "native_ai_pdf_text_disabled", "native_ai_busy", "native_ai_closed"):
+    elif error.code in ("native_word_task_unavailable", "native_ai_disabled", "native_ai_pdf_text_disabled", "native_ai_busy", "native_ai_closed"):
         status = 503
     elif error.code.startswith("native_ai_"):
         status = 422
@@ -250,6 +250,8 @@ def create_native_ai_router(
                 expected_sha256=payload.expected_sha256,
                 operations=payload.operations,
                 selection=payload.selection,
+                **({'server_session_reference': token_hash(request.cookies.get(NATIVE_SESSION_COOKIE, ''))}
+                   if getattr(ai, 'word_task_dispatcher', None) is not None and ai.word_task_dispatcher.enabled else {}),
                 **({"client_request_id": payload.client_request_id} if payload.client_request_id is not None else {}),
             )
         except ReportingError as error:
@@ -303,6 +305,8 @@ def create_native_ai_router(
                 expected_sha256=payload.expected_sha256,
                 operations=payload.operations,
                 snapshot_sha256=payload.snapshot_sha256,
+                **({'server_session_reference': token_hash(request.cookies.get(NATIVE_SESSION_COOKIE, ''))}
+                   if getattr(ai, 'word_task_dispatcher', None) is not None and ai.word_task_dispatcher.enabled else {}),
             )
         except ReportingError as error:
             raise _ai_error(error) from None

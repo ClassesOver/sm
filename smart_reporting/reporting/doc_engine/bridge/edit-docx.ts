@@ -2,7 +2,6 @@ import {tableCellOperationsAvailability,editDocxTableCellOperation} from './docx
 import {tableLifecycleAvailability,editDocxTableLifecycle} from './docx-table-lifecycle'
 import {validateNewRichParagraphOperation,buildNewRichParagraph} from './docx-new-rich-paragraph'
 import {validateDocxMirrorMarginsOperations} from './docx-mirror-margins'
-import {tableStyleAvailability,validateTableStyleOperation,verifyTableStyleResult} from './docx-table-style'
 import {validateTableTailParagraph} from './docx-table-tail-paragraph'
 import {inspectDocxPictureFormats,patchDocxPictureFormat} from './docx-picture-format'
 import {isDocxChartOperation,patchDocxChart,inspectDocxCharts} from './docx-chart'
@@ -35,6 +34,7 @@ import { tablePropertiesAvailability, editTableProperties, verifyTableProperties
 import { tableAltTextAvailability, editTableAltText, verifyTableAltTextResult } from './docx-table-alt-text.ts'
 import { tableCellWrapAvailability, editTableCellWrap, verifyTableCellWrapResult } from './docx-table-cell-wrap.ts'
 import { tableAlignmentAvailability, editTableAlignment, verifyTableAlignmentResult } from './docx-table-alignment.ts'
+import { tableStyleAvailability, editTableStyle, verifyTableStyleResult, validateTableStyleOperation } from './docx-table-style.ts'
 import { tableRowBreakAvailability, editTableRowBreaks, verifyTableRowBreakResult } from './docx-table-row-breaks.ts'
 import { editTableCellMarginOverrides, tableCellMarginOverridesAvailability, verifyTableCellMarginOverridesResult } from './docx-table-cell-margin-overrides.ts'
 import { inspectNestedTables, validateNestedCellOperation, patchNestedCellText, verifyNestedCellModel } from './docx-nested-tables.ts'
@@ -1115,6 +1115,9 @@ const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c1700
   stylesPane: { expectedStylesSha256: hash(sourceStylesXml ?? ''), editable: !revisionProtected },
   pageColor: pageColorModel,
   documentTheme,documentProtection,documentInk,storyRevisions,editableCharts,editableFields,
+  // 固定源 Table Design 文档表格样式库：styles.xml 中 table 类型样式（不含默认 TableNormal）。
+  tableStyles: [...parsed.styles.values()].filter(style => style.type === 'table' && style.styleId !== 'TableNormal').map(style => ({ styleId: style.styleId, name: style.name })),
+
   watermark: watermarkModel,
   // 全部节（文档顺序，尾节在最后）：编辑器按光标所在块定位当前节。
   sections: allSections.map((section, index) => ({ headersFooters: sectionHfModels[index], sectionId: sectionIdOf(section), expectedSectionSha256: hash(section.sectPrXml), settings: sectionSettingsOf(section),
@@ -1150,6 +1153,7 @@ const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c1700
     editable: editableParagraph(block), readOnlyReason: editableParagraph(block) ? null : 'docx_object_unsupported',
     deletable: editableParagraph(block) || coverMarkerParagraph(block),
     ...(block.type === 'table' ? { ...tableCellOperationsAvailability(block,documentProtection.contentLocked||parsed.trackRevisions===true,tableColumnWidthLimit(block)), ...tableLifecycleAvailability(block,documentProtection.contentLocked||parsed.trackRevisions===true), ...tableStyleAvailability(block,parsed), nestedTables: nestedTables.get(blockId(block))!.anchors, ...tableStructureAvailability(block), ...(parsed.protection?.enforced ? { tablePropertiesEditable: false, tablePropertiesReadOnlyReason: 'docx_table_properties_protected' } : tablePropertiesAvailability(block, tableColumnWidthLimit(block))), ...(parsed.protection?.enforced ? { tableAltTextEditable: false, tableAltTextReadOnlyReason: 'docx_table_alt_text_protected' } : tableAltTextAvailability(block)), ...(parsed.protection?.enforced ? { tableCellWrapEditable: false, tableCellWrapReadOnlyReason: 'docx_table_cell_wrap_protected' } : tableCellWrapAvailability(block, parsed)), ...(parsed.protection?.enforced ? { tableAlignmentEditable: false, tableAlignmentReadOnlyReason: 'docx_table_alignment_protected' } : tableAlignmentAvailability(block)), ...(parsed.protection?.enforced ? { rowBreakEditable: false, rowBreakReadOnlyReason: 'docx_table_row_breaks_protected' } : tableRowBreakAvailability(block)), ...cellMarginOverrides.get(blockId(block)), ...(parsed.protection?.enforced ? { tableCellMarginsEditable: false, tableCellMarginsReadOnlyReason: 'docx_table_cell_margins_protected' } : tableCellMarginsAvailability(block)), ...(parsed.protection?.enforced ? { cellAlignmentEditable: false, cellAlignmentReadOnlyReason: 'docx_table_cell_alignment_protected' } : tableCellAlignmentAvailability(block)), ...(parsed.protection?.enforced ? { cellTextDirectionEditable: false, cellTextDirectionReadOnlyReason: 'docx_table_cell_text_direction_protected' } : tableCellTextDirectionAvailability(block)), autoFitSectionId: tableColumnWidthSectionId(block), ...(parsed.protection?.enforced ? { autoFitEditable: false, autoFitReadOnlyReason: 'docx_table_autofit_protected' } : tableAutoFitAvailability(block, tableColumnWidthLimit(block))), columnWidthSectionId: tableColumnWidthSectionId(block), rowHeightSectionId: tableColumnWidthSectionId(block), ...(parsed.protection?.enforced ? { rowHeightEditable: false, rowHeightReadOnlyReason: 'docx_table_row_height_protected' } : tableRowHeightAvailability(block, tableRowHeightLimit(block))), ...(parsed.protection?.enforced ? { columnWidthEditable: false, columnWidthReadOnlyReason: 'docx_table_column_width_protected' } : tableColumnWidthAvailability(block, tableColumnWidthLimit(block))), ...(parsed.protection?.enforced ? { cellShapeEditable: false, cellShapeReadOnlyReason: 'docx_table_cell_shape_protected' } : tableCellShapeAvailability(block)), ...docxCellBordersCapability(block.originalXml!), rowCount: block.table?.rows.length ?? 0, columnCount: block.table?.rows[0]?.length ?? 0, cells: cellXmls(block).map((row, r) => row.map((xml, c) => ({
+
       cellId: cellId(block, r, c), expectedObjectSha256: hash(xml), row: r, column: c,
       text: block.table?.rows[r]?.[c]?.paras.join('\n') ?? '', editable: editableTable(block) && editableCell(xml),
       paragraphs: cellParagraphXmls(xml).map((paragraph, index) => ({ index, expectedObjectSha256: hash(paragraph), editable: !parsed.protection?.enforced && editableTable(block) && editableCell(xml) && simpleParagraphXml(paragraph) })),
@@ -1213,7 +1217,7 @@ if (request.kind === 'inspect') {
     await writeFile(request.output as string,output,{flag:'wx'});process.stdout.write(JSON.stringify({sourceSha256,sha256:hash(output),size:output.length}));process.exit(0)
   }
   const tableStyleOps=request.operations.map(object).filter(op=>op.kind==='setTableStyle')
-  if(tableStyleOps.length){
+  if(tableStyleOps.some(op=>'style' in op || (typeof op.preset==='string' && op.preset.includes('-')))){
     if(tableStyleOps.length!==1||request.operations.length!==1)fail('table_style_batch_conflict')
     const op=tableStyleOps[0],target=parsed.blocks.find(block=>blockId(block)===op.blockId)
     if(!target||target.docxIndex==null)fail('table_style_anchor_invalid')
@@ -1612,6 +1616,13 @@ if (request.kind === 'inspect') {
       if (hash(block.originalXml ?? '') !== op.expectedObjectSha256) fail('anchor_invalid')
       if (parsed.protection?.enforced) fail('table_alignment_protected')
       return { op, block, tableAlignment: editTableAlignment(block, op.alignment as Parameters<typeof editTableAlignment>[1]) }
+    }
+    if (op.kind === 'setTableStyle') {
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'styleId', 'look', 'preset'])
+      if (hash(block.originalXml ?? '') !== op.expectedObjectSha256) fail('anchor_invalid')
+      if (parsed.protection?.enforced) fail('table_style_protected')
+      const { kind: _kind, blockId: _blockId, expectedObjectSha256: _hash, ...request } = op
+      return { op, block, tableStyle: editTableStyle(block, new Set([...parsed.styles.values()].filter(style => style.type === 'table').map(style => style.styleId)), request) }
     }
     if (op.kind === 'setTableRowBreaks') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'steps'])
@@ -2013,6 +2024,7 @@ if (request.kind === 'inspect') {
   for (const item of operations) if (item.tableAltText && operations.some(other => other !== item && other.block === item.block)) fail('table_alt_text_batch_conflict')
   for (const item of operations) if (item.tableCellWrap && operations.some(other => other !== item && other.block === item.block)) fail('table_cell_wrap_batch_conflict')
   for (const item of operations) if (item.tableAlignment && operations.some(other => other !== item && other.block === item.block)) fail('table_alignment_batch_conflict')
+  for (const item of operations) if (item.tableStyle && operations.some(other => other !== item && other.block === item.block)) fail('table_style_batch_conflict')
   for (const item of operations) if (item.tableRowBreaks && operations.some(other => other !== item && other.block === item.block)) fail('table_row_breaks_batch_conflict')
   for (const item of operations) if (item.tableCellMarginOverrides && operations.some(other => other !== item && other.block === item.block)) fail('table_cell_margin_overrides_batch_conflict')
   for (const item of operations) if (item.tableCellMargins && operations.some(other => other !== item && other.block === item.block)) fail('table_cell_margins_batch_conflict')
@@ -2236,6 +2248,8 @@ if (request.kind === 'inspect') {
       state.saved = { kind: 'xml', docxIndex: item.block.docxIndex!, xml: item.tableCellWrap.xml }
     } else if (item.tableAlignment) {
       state.saved = { kind: 'xml', docxIndex: item.block.docxIndex!, xml: item.tableAlignment.xml }
+    } else if (item.tableStyle) {
+      state.saved = { kind: 'xml', docxIndex: item.block.docxIndex!, xml: item.tableStyle.xml }
     } else if (item.tableRowBreaks) {
       state.saved = { kind: 'xml', docxIndex: item.block.docxIndex!, xml: item.tableRowBreaks.xml }
     } else if (item.tableCellMarginOverrides) {
@@ -2692,6 +2706,14 @@ if (request.kind === 'inspect') {
       verifyTableAlignmentResult(reread[index], item.tableAlignment)
     }
   }
+  if (operations.some(item => item.tableStyle)) {
+    const reread = (await parseDocx(output)).blocks.filter(block => !block.hidden)
+    for (const item of operations) if (item.tableStyle) {
+      const state = states.get(blockId(item.block))!, index = finalBlocks.indexOf(state.saved)
+      if (!reread[index]) fail('table_style_write_not_applied')
+      verifyTableStyleResult(reread[index], item.tableStyle)
+    }
+  }
   if (operations.some(item => item.tableRowBreaks)) {
     const reread = (await parseDocx(output)).blocks.filter(block => !block.hidden)
     for (const item of operations) if (item.tableRowBreaks) {
@@ -2798,7 +2820,7 @@ if (request.kind === 'inspect') {
     }
   }
   // 标记补丁不触碰 metadata 或其他部件；保留段落补丁及仅 titlePg 的保存语义。
-  if ((operations.length || revisionGroups.size) && operations.every(item => item.tableProperties || item.paragraphProperties || item.tableAltText || item.tableCellWrap || item.tableAlignment || item.tableRowBreaks || item.tableCellMarginOverrides || item.tableCellMargins || item.tableCellAlignment || item.tableCellTextDirection || item.tableAutoFit || item.tableRowHeights || item.tableColumnWidths || item.tableCellShape || item.op.kind === 'setTableRepeatHeaders' || item.op.kind === 'setParagraphStyle' || item.op.kind === 'setParagraphShading' || item.op.kind === 'setCellShading' || item.op.kind === 'setTableCellBorders' || item.op.kind === 'setParagraphBorders' || item.op.kind === 'setParagraphPageBreakBefore' || item.op.kind === 'setParagraphDropCap'
+  if ((operations.length || revisionGroups.size) && operations.every(item => item.tableProperties || item.tableStyle || item.paragraphProperties || item.tableAltText || item.tableCellWrap || item.tableAlignment || item.tableRowBreaks || item.tableCellMarginOverrides || item.tableCellMargins || item.tableCellAlignment || item.tableCellTextDirection || item.tableAutoFit || item.tableRowHeights || item.tableColumnWidths || item.tableCellShape || item.op.kind === 'setTableRepeatHeaders' || item.op.kind === 'setParagraphStyle' || item.op.kind === 'setParagraphShading' || item.op.kind === 'setCellShading' || item.op.kind === 'setTableCellBorders' || item.op.kind === 'setParagraphBorders' || item.op.kind === 'setParagraphPageBreakBefore' || item.op.kind === 'setParagraphDropCap'
     || item.op.kind === 'setSectionLayout' && Object.keys(item.sectionValues ?? {}).every(key => ['titlePg', 'evenAndOddHeaders', 'pageNumberFmt', 'pageNumberStart', 'pageBorder', 'pageBorderProps'].includes(key)))) {
     const core = sourceZip.file('docProps/core.xml')
     if (core) {

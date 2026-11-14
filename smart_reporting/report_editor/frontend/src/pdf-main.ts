@@ -59,6 +59,7 @@ import { bytesSha256 } from './source-validation'
 import { type MeasureScale } from './vendor/genoffice-pdf/renderer/measure'
 import {bindPdfMeasureDialog} from './pdf-measure-dialog'
 import { PDF_DRAW_COLORS, PDF_PAPER_SIZES, PDF_PAGE_LAYOUT_ALONE_REASON, pdfLineLength, pdfMergePagesOperation, pdfRedactionOperation, pdfSplitPagesOperation, blankPdfBytes, pdfMeasurementOperation, pdfDrawingOperation, pdfImagePlacementOperation, type PdfDrawingShape, insertBlankPdfPage, setPdfPageSize, cropAllPdfPages, cropPdfPage, pdfCropFromMargins, pdfPageViewport, deletePdfPage, movePdfPage, movePdfPageTo, pdfCanPrint, pdfPageState, pdfPrintPages, pdfRectFromClient, renderPdfPrintHost, reversePdfPages, rotateAllPdfPages, stickyNoteRect, PdfPreviewReview, type PdfFormField, type PdfTextObject, type PdfModel, type PdfPageIdentity, type PdfRect } from './pdf-operations'
+import { choosePdfSignatureFieldTarget, signatureDataFromDialog, signatureDrawingForField } from './pdf-signature-field'
 import { createPdfRibbon } from './pdf-ribbon'
 import { PDF_PAGE_RIBBON_GROUPS } from './pdf-page-ribbon'
 import { PDF_HOME_READ_ONLY_COMMANDS } from './pdf-home-ribbon'
@@ -809,9 +810,28 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     unavailable:()=>disposed||!document||locked||previewing||printing||previewDocument||!response.editingEnabled||draft.closed||draft.saving||mutationBlocked?.()?'当前 PDF 正在读取、预览或保存，请稍后签名':null,
     color:()=>[...SIGN_COLOR],status:message=>{status.textContent=message},
     onConfirm(data){
+      // 固定源 openSignatureDialog(target)/placeSignatureInField：有未签署、草稿中未用过的签名字段时，先选放入位置；
+      // 选字段则按字段框缩放居中并写入字段关联（可视签名，不是证书签名）；选“拖出位置”或无字段时保持上游拖放流程不变。
+      const order=state(),used=new Set(draft.operations.flatMap(op=>op.kind==='addDrawing'&&op.signatureField?[(op.signatureField as {fieldId:string}).fieldId]:[]))
+      const fields=(model.signatureFields??[]).filter(field=>field.bindable&&field.widgets[0]&&!used.has(field.fieldId)&&order.some(page=>page.index===field.widgets[0]!.pageIndex&&!page.blank))
+      void choosePdfSignatureFieldTarget(root.ownerDocument,fields.map(field=>({fieldId:field.fieldId,label:`签名字段：${field.name}（第 ${order.findIndex(page=>page.index===field.widgets[0]!.pageIndex)+1} 页）`}))).then(target=>{
+        if(disposed)return
+        if(target===undefined){status.textContent='已取消放入签名';return}
+        const field=fields.find(item=>item.fieldId===target)
+        if(field){
+          const page=model.pages.find(item=>item.index===field.widgets[0]!.pageIndex)
+          if(!page)throw new Error('签名字段所在页面不存在')
+          const operation=signatureDrawingForField(signatureDataFromDialog(data),field,page.pageId,[...SIGN_COLOR])
+          pdfPageState(model.pages,[...draft.operations,operation])
+          return append(operation).then(()=>{status.textContent=`已将签名放入签名字段“${field.name}”；保存后写入`})
+        }
+        placeByDrag()
+      }).catch(showError)
+      function placeByDrag(){
       if(data.kind==='strokes'){pendingSignature={paths:data.paths.map(path=>[...path]),width:data.width,height:data.height};pendingImage='';pendingImageSize=undefined;pendingImageIsSignature=false}
       else{pendingSignature=undefined;pendingImage=data.image;pendingImageSize={width:data.width,height:data.height};pendingImageIsSignature=true}
       drawShape=pendingSignature?('signature' as PdfDrawingShape):'image';setMode('draw');status.textContent='请在页面上拖出签名放置区域；图片签名也可点击放置'
+      }
     }
   })
   function openSignature(){void signatures.open()}
@@ -2899,6 +2919,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       model.formDesignWidgets = sourceModel.model.formDesignWidgets ?? []
       model.existingImages=sourceModel.model.existingImages??[]
       model.staticFormFills=sourceModel.model.staticFormFills??[]
+      model.signatureFields = sourceModel.model.signatureFields ?? []
       renderFormControls(model.formFields)
       if (textEnabled) {
         for (const page of model.pages) {

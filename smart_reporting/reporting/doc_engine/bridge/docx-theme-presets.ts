@@ -169,4 +169,3 @@ export const THEME_COLOR_PRESETS: Array<{ nameKey: string; colors: ThemeColors }
     },
   },
 ]
-

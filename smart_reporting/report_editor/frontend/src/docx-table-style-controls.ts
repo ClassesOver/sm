@@ -52,7 +52,8 @@ export function createDocxTableStyleControls(options:{editor:Editor;anchors:read
   element.replaceChildren()
   const gallery=group('表格样式');gallery.className='table-style-gallery';Object.assign(gallery.style,{display:'flex',gap:'4px',flexWrap:'wrap',maxWidth:'640px'})
   function card(id:string,label:string,pressed:boolean,run:()=>void,preset?:typeof TABLE_STYLE_PRESETS[keyof typeof TABLE_STYLE_PRESETS]){
-   const control=button(label,state.reason,pressed,run),preview=document.createElement('span'),name=document.createElement('span');control.dataset.tableStyle=id;control.classList.add('table-style-card');name.textContent=label
+   const anchor=anchors.find(item=>item.docxIndex===table?.node.attrs.docxIndex),reason=state.reason??(preset&&anchor?.tableStyleState?.presetEditable===false?'当前表格含合并或无法逐格写入的单元格，内置样式暂不支持':null)
+   const control=button(label,reason,pressed,run),preview=document.createElement('span'),name=document.createElement('span');control.dataset.tableStyle=id;control.classList.add('table-style-card');name.textContent=label
    Object.assign(control.style,{display:'flex',flexDirection:'column',gap:'3px',alignItems:'center',padding:'4px',minWidth:'72px',fontSize:'11px'})
    Object.assign(preview.style,{display:'block',width:'56px',height:'30px',border:`1px solid #${preset?.borderColor??'BFC6D0'}`,borderTop:`7px solid #${preset?.headerFill??'FFFFFF'}`,background:`repeating-linear-gradient(to bottom,#${preset?.band1Fill??'FFFFFF'} 0 7px,#${preset?.band2Fill??'FFFFFF'} 7px 14px)`})
    preview.setAttribute('aria-hidden','true');control.append(preview,name);gallery.append(control)

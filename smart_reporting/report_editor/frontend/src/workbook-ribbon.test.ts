@@ -738,7 +738,6 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   expect(buttons.find(button => button.dataset.ribbonCommand === 'toggle-gridlines')?.disabled).toBe(false)
   for (const [id, reason] of [
     ['new-window', '桌面工作簿窗口'], ['arrange-all', '桌面工作簿窗口'],
- ['split-window', '拆分视口'],
     ['hide-window', '桌面工作簿窗口'], ['switch-window', '桌面工作簿窗口'],
   ]) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
@@ -748,6 +747,30 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   }
   const fit = buttons.find(button => button.dataset.ribbonCommand === 'zoom-to-selection')!
   expect(fit.disabled).toBe(false)
+})
+
+it('enables split window only to remove an existing file split pane on an editable, unprotected sheet', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let split = false, editable = true, locked = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    editable: () => editable, rotation: () => 0, hasSelection: () => true,
+    splitPane: () => ({ active: split }),
+    protection: () => ({ sheet: { protected: locked }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const button = () => document.querySelector<HTMLButtonElement>('[data-ribbon-command="split-window"]')!
+  expect(button().disabled).toBe(true)
+  expect(button().title).toContain('固定源未提供拆分窗口')
+  expect(button().getAttribute('aria-pressed')).toBe('false')
+  split = true; ribbon.refreshState()
+  expect(button().disabled).toBe(false)
+  expect(button().title).toBe('取消文件中的拆分窗格')
+  expect(button().getAttribute('aria-pressed')).toBe('true')
+  button().click(); expect(command).toHaveBeenLastCalledWith('split-window')
+  locked = true; ribbon.refreshState(); expect(button().disabled).toBe(true)
+  locked = false; editable = false; ribbon.refreshState(); expect(button().disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('keeps selection zoom available on protected and read-only sheets', () => {

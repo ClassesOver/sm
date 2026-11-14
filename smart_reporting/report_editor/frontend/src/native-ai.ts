@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import type { createNativeApi, NativeAIJob, NativeAISelection, NativeAIReviewSelection, NativeAINoteSelection } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { mountNativeAIProgress, type NativeAIProgressListener } from './native-ai-progress'
@@ -46,7 +47,7 @@ export function bindNativeAI(container: HTMLElement, options: {
   const progress = mountNativeAIProgress(panel)
   let selection: NativeAISelection[] = [], documentSelection: NativeAISelection[] = [], reviewMode=false
   let job: NativeAIJob | undefined, busy = false, accepting = false, disposed = false, generation = 0
-  let controller: AbortController | undefined
+  const tasks = new OfficeAssistantController({start:options.api.aiStart,status:options.api.aiStatus,cancel:options.api.aiCancel,cancelRequest:options.api.aiCancelRequest,id:(value: NativeAIJob)=>value.editId,running:(value: NativeAIJob)=>value.status==='running'})
   let noteBeforeText: string | undefined
   let wordTarget: string | undefined
   let presetScope: 'selection' | 'document' | undefined, presetStale=false
@@ -94,29 +95,22 @@ export function bindNativeAI(container: HTMLElement, options: {
     const target=wordTarget
     const requestId = crypto.randomUUID()
     activeRequestId = requestId
-    controller = new AbortController(); busy = true; job = undefined; update()
+    busy = true; job = undefined; update()
     details.hidden = true
     status.textContent = '正在生成并核验建议'
     try {
-      let result = await options.api.aiStart({clientRequestId:requestId, instruction, selection:selected, expectedSha256:options.draft.identity.sourceSha256, operations:options.draft.operations}, controller.signal)
-      if(disposed || turn!==generation || options.format==='docx' && target!==currentWordTarget()) {
-        void options.api.aiCancel(result.editId).catch(()=>{})
-        if(!disposed && turn===generation) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update()}
-        return
-      }
-      progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, result.editId, controller.signal, () => editable() && turn === generation)
-      while (!disposed && turn === generation) {
-        if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();break}
-        show(result)
-        if (result.status !== 'running') break
-        result = await options.api.aiStatus(result.editId, controller.signal)
-      }
+      const result = await tasks.run({clientRequestId:requestId, instruction, selection:selected, expectedSha256:options.draft.identity.sourceSha256, operations:options.draft.operations},requestId,(started,signal)=>{
+        progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal, () => editable() && turn === generation)
+        if(!disposed && turn===generation)show(started)
+      })
+      if(!result || disposed || turn!==generation)return
+      if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
+      show(result)
     } catch (error) {
       if (!disposed && turn === generation) {
         status.textContent = error instanceof Error ? error.message : '建议生成失败'
-        if (!job && activeRequestId === requestId && options.api.aiCancelRequest) {
+        if (!job && activeRequestId === requestId) {
           activeRequestId = undefined
-          void options.api.aiCancelRequest(requestId).catch(() => {})
         }
       }
     }
@@ -132,7 +126,9 @@ export function bindNativeAI(container: HTMLElement, options: {
     accepting = true; busy = true; update()
     try {
       const operations = options.draft.operations
-      const result = await options.api.aiAccept(job.editId, {expectedSha256:options.draft.identity.sourceSha256, operations, snapshotSha256:job.snapshotSha256})
+      const candidate = job
+      const result = await tasks.accept(signal => options.api.aiAccept(candidate.editId, {expectedSha256:options.draft.identity.sourceSha256, operations, snapshotSha256:candidate.snapshotSha256}, signal))
+      if (!result) return
       // 网络等待期间可能发生保存或刷新；写稿前再次核验会话锁。
       if (turn !== generation || disposed) return
       if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
@@ -141,7 +137,7 @@ export function bindNativeAI(container: HTMLElement, options: {
       options.draft.setOperations(result.operations)
       options.onDraftChange()
       await options.view.refresh()
-      job = undefined; activeRequestId = undefined
+      tasks.release(); job = undefined; activeRequestId = undefined
       status.textContent = options.format === 'pdf' ? '建议已进入草稿。保存前请核对实际 PDF 预览并确认。' : '建议已进入草稿，内容待重新核验；保存后生成新修订'
       details.hidden = true
     } catch (error) { if (turn === generation && !disposed) status.textContent = error instanceof Error ? error.message : '采纳失败' }
@@ -153,19 +149,15 @@ export function bindNativeAI(container: HTMLElement, options: {
     }
   }
   cancel.onclick = async () => {
-    ++generation; progress.stop(); controller?.abort(); busy = false
-    const id = job?.editId, requestId = activeRequestId; activeRequestId = undefined
-    job = undefined; status.textContent = '建议已取消'; update()
+    const turn=++generation; progress.stop(); busy = false
+    activeRequestId = undefined; job = undefined; status.textContent = '建议已取消'; update()
     details.hidden = true
-    if (id) try { await options.api.aiCancel(id) } catch (error) { if (!disposed) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
-    else if (requestId && options.api.aiCancelRequest) try { await options.api.aiCancelRequest(requestId) } catch (error) { if (!disposed) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
+    try { await tasks.cancel() } catch (error) { if (!disposed && turn===generation) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
   }
   function clearCandidate() {
-    const id=job?.editId, requestId=activeRequestId
     activeRequestId=undefined
-    ++generation;controller?.abort();progress.reset();busy=false;job=undefined;wordTarget=undefined;details.hidden=true
-    if(id)void options.api.aiCancel(id).catch(()=>{})
-    else if(requestId && options.api.aiCancelRequest)void options.api.aiCancelRequest(requestId).catch(()=>{})
+    ++generation;progress.reset();busy=false;job=undefined;wordTarget=undefined;details.hidden=true
+    void tasks.cancel().catch(()=>{})
   }
   function close() {
     if (disposed) return
