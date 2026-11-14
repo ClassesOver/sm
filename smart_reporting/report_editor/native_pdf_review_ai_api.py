@@ -101,7 +101,12 @@ def create_native_pdf_review_ai_router(grants, *, editor, review, allowed_origin
     ):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await review.accept(session, edit_id, **payload.model_dump())
+            return await review.accept(
+                session, edit_id, **payload.model_dump(),
+                revalidate_session=lambda: grants.lookup_session(
+                    request.cookies.get(NATIVE_SESSION_COOKIE, "")
+                ),
+            )
         except ReportingError as error:
             raise _ai_error(error) from None
 
