@@ -18,6 +18,7 @@ export class OfficeAssistantController<Input, Job> {
   private busy = false
   private accepting = false
   private terminalObserved = false
+  private pendingCancel: { generation: number; promise: Promise<void> } | undefined
   constructor(private readonly transport: OfficeTaskTransport<Input, Job>) {}
   get signal() { return this.abort.signal }
   async run(input: Input, requestId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
@@ -60,18 +61,24 @@ export class OfficeAssistantController<Input, Job> {
   }
   /** Invalidates local responses immediately, but always sends server cancellation. */
   async cancel(): Promise<void> {
+    // Close/dispose/cancel may arrive together. Share this task's in-flight
+    // cancellation instead of advancing the fence with an empty second cancel.
+    if (this.pendingCancel?.generation === this.generation) return this.pendingCancel.promise
     ++this.generation; this.abort.abort(); this.busy = false; this.accepting = false
     const requestId = this.requestId, taskId = this.taskId
     this.requestId = ''; this.taskId = ''
     this.terminalObserved = false
     const turn = this.generation
-    try { await this.cleanup(requestId, taskId) }
-    catch (error) {
+    const completion = this.cleanup(requestId, taskId).catch(error => {
       // Retrying cancellation must remain possible, but never restore an old
       // task's handles over a newer run.
       if (turn === this.generation) { this.requestId = requestId; this.taskId = taskId }
       throw error
-    }
+    }).finally(() => {
+      if (this.pendingCancel?.promise === completion) this.pendingCancel = undefined
+    })
+    this.pendingCancel = { generation: turn, promise: completion }
+    return completion
   }
   private async cleanup(requestId: string, taskId: string): Promise<void> {
     const invoke = async (operation: () => Promise<unknown>) => operation()

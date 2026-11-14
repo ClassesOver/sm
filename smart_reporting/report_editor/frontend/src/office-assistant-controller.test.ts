@@ -92,4 +92,15 @@ describe('shared Office task control',()=>{
   controller.release()
  })
 
+ it('coalesces repeated cancel while pending and retains the task on failure for retry',async()=>{
+  let rejectFirst!:(error:Error)=>void
+  const cancel=vi.fn().mockImplementationOnce(()=>new Promise((_,reject)=>{rejectFirst=reject})).mockResolvedValue(undefined)
+  const controller=new OfficeAssistantController({start:async()=>({id:'task',status:'completed'}),status:async()=>({id:'task',status:'completed'}),cancel,id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  await controller.run({},'request')
+  const first=controller.cancel(),second=controller.cancel()
+  const results=Promise.allSettled([first,second]);rejectFirst(new Error('network lost'))
+  expect((await results).map(result=>result.status)).toEqual(['rejected','rejected'])
+  await controller.cancel();expect(cancel).toHaveBeenCalledTimes(2);expect(cancel).toHaveBeenLastCalledWith('task')
+ })
+
 })
