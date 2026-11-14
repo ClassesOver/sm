@@ -82,6 +82,7 @@ import { NativeTableStructure, createDocxTableCommands } from './docx-tables'
 import { normalizeDocxAutoFitSources } from './docx-table-autofit'
 import { normalizeDocxColumnWidthSources } from './docx-table-column-width'
 import { withDocxTableAlignmentDisplayIndents } from './docx-table-alignment-baseline'
+import { safeDocxTableStyleOptions } from './docx-table-style'
 import { createDocxRibbon } from './docx-ribbon'
 import {createDocxMailMergeControls} from './docx-mail-merge-controls'
 import { docxPageColorModel, docxPageColorOperations, effectiveDocxPageColor, withDocxPageColor } from './docx-page-color'
@@ -141,6 +142,10 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   await loadDocxBundledFonts()
   const sections = readSections(parsed), section = readSectionSettings(parsed), px = (twips: number) => twips / 15
   anchors = withDocxTableAlignmentDisplayIndents(anchors, parsed.blocks, sections, pmDocOptions(parsed))
+  // 表格样式库：inspect 返回的 table 类型样式须与本地解析的 styles.xml 一致，才挂到各来源表格身份上供样式库与草稿校验使用
+  const tableStyleOptions = safeDocxTableStyleOptions((inspected.model as { tableStyles?: unknown }).tableStyles)
+  if (tableStyleOptions.some(option => parsed.styles?.get(option.styleId)?.type !== 'table')) throw new Error('Word 表格样式库与来源文件不一致')
+  anchors = anchors.map(anchor => (anchor as { type?: string }).type === 'table' ? { ...anchor, tableStyleOptions } : anchor)
   const tocSource = createDocxToc(parsed, anchors)
   const captionSource = createDocxCaption(parsed, anchors)
   const richPasteSource=createDocxRichPaste(expectedSha256,parsed.blocks)
@@ -339,7 +344,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     for (let depth = resolved.depth; depth > 1; depth--) {
       if (!['docTableCell', 'docTableHeader'].includes(resolved.node(depth).type.name)) continue
       const root = resolved.node(depth - 2), anchor = anchors.find(item => item.docxIndex === root.attrs.docxIndex)
-      if (root.type.name !== 'docTable' || (root.attrs.nativeTableProperties || root.attrs.nativeTableStructure || root.attrs.nativeTableCellShape || root.attrs.nativeTableColumnWidths || root.attrs.nativeTableRowHeights || root.attrs.nativeTableAutoFit || root.attrs.nativeTableCellTextDirection || root.attrs.nativeTableCellAlignment || root.attrs.nativeTableCellMargins || root.attrs.nativeTableCellMarginOverrides || root.attrs.nativeTableRowBreaks || root.attrs.nativeTableAlignment || root.attrs.nativeTableCellWrap || root.attrs.nativeTableAltText)) return false
+      if (root.type.name !== 'docTable' || (root.attrs.nativeTableProperties || root.attrs.nativeTableStructure || root.attrs.nativeTableCellShape || root.attrs.nativeTableColumnWidths || root.attrs.nativeTableRowHeights || root.attrs.nativeTableAutoFit || root.attrs.nativeTableCellTextDirection || root.attrs.nativeTableCellAlignment || root.attrs.nativeTableCellMargins || root.attrs.nativeTableCellMarginOverrides || root.attrs.nativeTableRowBreaks || root.attrs.nativeTableAlignment || root.attrs.nativeTableStyle || root.attrs.nativeTableCellWrap || root.attrs.nativeTableAltText)) return false
       let ordinal = 0
       for (let index = 0; index < resolved.index(depth); index++) if (resolved.node(depth).child(index).type.name === 'docNestedTable') ordinal++
       return anchor?.nestedTables?.find(item => item.row === resolved.index(depth - 2) && item.column === resolved.index(depth - 1) && item.nestedOrdinal === ordinal)?.cells[row]?.[column]?.editable === true
@@ -371,7 +376,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
         if (node.attrs.docxIndex != null) { anchor = anchors.find(item => item.docxIndex === node.attrs.docxIndex); if (anchor) break }
       }
       if (!anchor) { options.onSelectionChange?.([]); return }
-      if (editor.state.doc.content.content.some(node => node.attrs.docxIndex === anchor!.docxIndex && (node.attrs.nativeTableStructure || node.attrs.nativeTableCellShape || node.attrs.nativeTableColumnWidths || node.attrs.nativeTableRowHeights || node.attrs.nativeTableAutoFit || node.attrs.nativeTableCellTextDirection || node.attrs.nativeTableCellAlignment || node.attrs.nativeTableCellMargins || node.attrs.nativeTableCellMarginOverrides || node.attrs.nativeTableRowBreaks || node.attrs.nativeTableAlignment))) { options.onSelectionChange?.([{ blockId: anchor.blockId }]); return }
+      if (editor.state.doc.content.content.some(node => node.attrs.docxIndex === anchor!.docxIndex && (node.attrs.nativeTableStructure || node.attrs.nativeTableCellShape || node.attrs.nativeTableColumnWidths || node.attrs.nativeTableRowHeights || node.attrs.nativeTableAutoFit || node.attrs.nativeTableCellTextDirection || node.attrs.nativeTableCellAlignment || node.attrs.nativeTableCellMargins || node.attrs.nativeTableCellMarginOverrides || node.attrs.nativeTableRowBreaks || node.attrs.nativeTableAlignment || node.attrs.nativeTableStyle))) { options.onSelectionChange?.([{ blockId: anchor.blockId }]); return }
       let cellId: string | undefined
       for (let depth = $from.depth; depth > 1; depth--) if (['docTableCell', 'docTableHeader'].includes($from.node(depth).type.name)) {
         cellId = anchor.cells?.[$from.index(depth - 2)]?.[$from.index(depth - 1)]?.cellId

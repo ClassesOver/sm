@@ -96,6 +96,9 @@ export interface SheetModel {
   outlineSummaryBelow?: boolean
   outlineSummaryRight?: boolean
   freeze: { frozenRows: number; frozenColumns: number } | null
+  /// 视图▸拆分窗口：state 缺省或 split 的 pane，xSplit/ySplit 为 1/20 磅（twips）而非行列数，不得当作冻结。
+  /// 只读回报以便保留与说明；冻结写回会按 Excel 行为以冻结窗格替换它。
+  splitPane?: { xSplitTwips: number; ySplitTwips: number; topLeftCell?: string }
   /// sheetView showGridLines（OOXML 默认 true；写回经 applyPageSetups）。
   showGridlines: boolean
   /// sheetView showRowColHeaders（缺省 true；旧模型可省略）。
@@ -430,13 +433,24 @@ function parseGeometry(worksheetXml: string) {
   }
 
   const pane = worksheetXml.match(/<pane\b([^>]*?)\/?>/)?.[1]
+  // ECMA-376 §18.3.1.66：pane@state 缺省为 split；只有 frozen/frozenSplit 的 x/ySplit 是行列数。
+  const paneState = pane === undefined ? undefined : readXmlAttribute(pane, 'state') ?? 'split'
+  const paneCount = (name: string) => {
+    const value = Number(readXmlAttribute(pane ?? '', name) ?? 0)
+    return Number.isInteger(value) && value >= 0 ? value : 0
+  }
   const freeze =
-    pane === undefined
+    pane === undefined || (paneState !== 'frozen' && paneState !== 'frozenSplit')
       ? null
-      : {
-          frozenRows: Number(readXmlAttribute(pane, 'ySplit') ?? 0),
-          frozenColumns: Number(readXmlAttribute(pane, 'xSplit') ?? 0),
-        }
+      : { frozenRows: paneCount('ySplit'), frozenColumns: paneCount('xSplit') }
+  const splitTwips = (name: string) => {
+    const value = Number(readXmlAttribute(pane ?? '', name) ?? 0)
+    return Number.isFinite(value) && value > 0 ? value : 0
+  }
+  const splitTopLeft = pane === undefined ? undefined : readXmlAttribute(pane, 'topLeftCell')
+  const splitPane = pane !== undefined && paneState === 'split' && (splitTwips('xSplit') > 0 || splitTwips('ySplit') > 0)
+    ? { xSplitTwips: splitTwips('xSplit'), ySplitTwips: splitTwips('ySplit'), ...(splitTopLeft ? { topLeftCell: splitTopLeft } : {}) }
+    : undefined
   // OOXML 默认显示网格线；仅显式 showGridLines="0" 才是隐藏。
   const sheetView = worksheetXml.match(/<(?:[\w.-]+:)?sheetView\b[^>]*?(?:\/>|>[\s\S]*?<\/(?:[\w.-]+:)?sheetView>)/)?.[0]
   const showGridlines = sheetView && readXmlAttribute(sheetView, 'showGridLines') === '0' ? false : true
@@ -464,7 +478,7 @@ function parseGeometry(worksheetXml: string) {
   }
 
   return {
-    dimension, merges, columns, rows, defaultColumnWidthPx, defaultRowHeightPx, outlineSummaryBelow, outlineSummaryRight, freeze, showGridlines, showHeadings, rightToLeft, zoomScale, ...(showFormulas ? { showFormulas } : {}),
+    dimension, merges, columns, rows, defaultColumnWidthPx, defaultRowHeightPx, outlineSummaryBelow, outlineSummaryRight, freeze, ...(splitPane ? { splitPane } : {}), showGridlines, showHeadings, rightToLeft, zoomScale, ...(showFormulas ? { showFormulas } : {}),
     margins, printGridlines, printHeadings, pageSetup,
     rowBreaks: manualBreaks('rowBreaks'), colBreaks: manualBreaks('colBreaks'),
   }

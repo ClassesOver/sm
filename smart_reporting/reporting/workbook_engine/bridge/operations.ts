@@ -22,6 +22,7 @@ import { z } from 'zod'
 import { upsertPivotControl, upsertPivotControlRequestSchema, syncOwnedPivotControls, removePivotControl, removePivotControlRequestSchema } from '../packages/xlsx-engine/src/pivot-controls'
 import { appendSheetSparklines, appendSheetSparklinesOperationSchema, assertSheetSparklinesShiftable, renameSparklineSheetReferences, removeSheetSparklines, removeSheetSparklinesOperationSchema, editSheetSparklineGroup, editSheetSparklineGroupOperationSchema } from '../packages/xlsx-engine/src/sparkline-additions'
 import { applySheetMerges } from './merges'
+import { removeSheetSplitPane } from './split-pane'
 import { replaceSheetDataValidations } from '../packages/xlsx-engine/src/data-validation-write'
 import { replaceConditionalFormattingSnapshots } from '../packages/xlsx-engine/src/conditional-formatting-snapshot'
 import { replaceSheetConditionalFormatsOperationSchema } from '../packages/xlsx-engine/src/conditional-formatting-schema'
@@ -236,6 +237,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         }).strict().parse(op)
         bytes = await applySheetHyperlinks(bytes, parsed.sheetName, parsed.edits); break
       }
+      case 'removeSheetSplitPane': bytes = await removeSheetSplitPane(bytes, op); break
       case 'setThemePart': { const valid = setThemePartSchema.parse(op); bytes = await setThemePart(bytes, valid.themePath, valid.state); break }
       case 'sortRange': {
         await assertSheetThreadsStationary(bytes, op.sheetName)

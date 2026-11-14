@@ -405,3 +405,19 @@ LOCAL-SHA256 has 205 entries after integration.
 迁入固定源 `src/main/pdf-signatures.ts` 与 renderer `SignaturesDialog.tsx`。源 SHA 保留在 SOURCE-SHA256；本地读取器改动仅包括：不以可转义的原始 /ByteRange 标记过滤；列出已赋值但缺少 ByteRange 的无效字段；精确核对 ByteRange 排除区与真实 Contents；限制 detached SubFilter；签署者证书同时匹配 issuer DER 与 serial；安全整数范围；摘要/签名未通过不标记 signingTimeSigned；不可读取来源显式报告。
 
 bridge/signatures.ts 返回 basic-integrity-only，所有结果 trusted=false，绝不以服务端 TLS 根证书代替组织/用户文档信任策略。没有完整 PKI、证书用途、撤销、AATL/EUTL 或可信时间戳验证；没有新建证书签名。原生 inspect 返回数字签名清单与范围说明，不改写原件，读取失败只返回明确问题。node-forge 精确固定为源 lock 的 1.4.1；测试用独立 OpenSSL CMS 生成数据，不启用应用签名服务。
+
+## Native visual signature into an existing signature field (2026-11-14)
+
+The pinned app fits a visual signature into an unsigned AcroForm `/Sig` widget
+(`renderer/signature-field.ts` `signatureDrawingForField`, `App.tsx`
+`placeSignatureInField`) and the unchanged engine records the association with
+`setVisualSignatureMetadata` (`/GenOfficeFormField` + prefixed `/Contents`) on
+the Ink or Stamp annotation; `/V` is never written, so this is not a certificate
+signature. `bridge/signature-fields.ts` lists signature fields with their single
+widget page/rect, `signed` (`/V` present), `visuallySigned` (an annotation already
+names the field) and a `bindable` reason. `addDrawing` (ink/image only) accepts an
+optional `signatureField {fieldId, expectedFieldSha256}`: it must be bindable, on
+the widget's page, inside the widget rect (0.5pt tolerance) and bound at most once
+per batch, then passes `formFieldName` to the engine. XFA, encrypted and Perms
+sources are read-only. `bridge/signature-fields.test.ts`.
+LOCAL-SHA256 has 207 entries after the signature-field integration.

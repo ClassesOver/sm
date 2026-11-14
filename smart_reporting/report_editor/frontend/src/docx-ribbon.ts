@@ -5,6 +5,7 @@ import { openDocxFontDialog, docxFontDialogUnavailable } from './docx-font-dialo
 import { docxDefaultPageBox } from '../../../reporting/doc_engine/bridge/docx-section-settings'
 import { openDocxParagraphDialog, docxParagraphDialogUnavailable } from './docx-paragraph-dialog'
 import { fillDocxCommandIcons } from './docx-command-icons'
+import { isDocxTableStyleAction } from './docx-table-style'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { createDocxCellBorderUiState, createDocxCellBordersControls } from './docx-cell-borders-controls'
 import type { DocxTocControls } from './docx-toc'
@@ -613,7 +614,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         command.type = 'button'
         command.className = 'rb-icon docx-ribbon-command'
         const tableSelection = !!TABLE_SELECTION_ACTIONS[actionId]
-        const structure = tableSelection || !!TABLE_ACTIONS[actionId] || ['table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(actionId)
+        const structure = tableSelection || !!TABLE_ACTIONS[actionId] || isDocxTableStyleAction(actionId ?? '') || ['table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(actionId)
         const view = id === 'view' ? viewCommands : undefined
         if(id==='mailings'&&['开始邮件合并','选择收件人','插入合并域','预览结果','完成并合并'].includes(label)){
           command.textContent=label;command.dataset.action='mail-merge';command.setAttribute('aria-label',label);command.disabled=!editable;command.addEventListener('mousedown',event=>event.preventDefault());command.addEventListener('click',()=>ribbon.dispatchEvent(new CustomEvent('native-mail-merge-open',{bubbles:true})));items.append(command);continue
@@ -697,7 +698,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         }
         const reason = view ? view.reason(label) : structure && tableCommands ? (tableSelection ? tableCommands.reason(actionId) : !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(actionId)) : actionId ? tableUnavailable : migrating
         const available = view ? reason === null : structure && tableCommands ? reason === null : !actionId && id === 'view' && label === '分页预览' && !!onPaginationPreview
-        if(actionId==='table-repeat-header-rows'||actionId?.startsWith('table-autofit-')||actionId?.startsWith('table-text-direction-')||actionId?.startsWith('table-align-'))command.setAttribute('aria-pressed',String(tableCommands?.active?.(actionId)??false))
+        if(actionId?.startsWith('table-look-')||actionId?.startsWith('table-style-')&&actionId!=='table-style-custom'||actionId==='table-repeat-header-rows'||actionId?.startsWith('table-autofit-')||actionId?.startsWith('table-text-direction-')||actionId?.startsWith('table-align-'))command.setAttribute('aria-pressed',String(tableCommands?.active?.(actionId)??false))
         command.disabled = !available
         command.textContent = label
         command.title = available ? label : `${label}：${reason}`
@@ -1181,6 +1182,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       if (trigger) {
         const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : docxCellShadingUnavailable(editor, anchors)
         trigger.disabled = reason !== null; trigger.title = reason ?? '单元格底纹'
+      }
+      if (tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action^="table-style-"],[data-action^="table-look-"]')) {
+        const action = button.dataset.action!
+        if (!isDocxTableStyleAction(action)) continue
+        const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(action), label = button.textContent ?? action
+        button.disabled = reason !== null
+        if (action !== 'table-style-custom') button.setAttribute('aria-pressed', String(tableCommands.active?.(action) ?? false))
+        button.title = reason === null ? label : `${label}：${reason}`
+        button.setAttribute('aria-label', reason === null ? label : `${label}，${reason}`)
+        if (reason === null) button.removeAttribute('aria-description'); else button.setAttribute('aria-description', reason)
       }
     }
     if (active === 'tableLayout' && tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action]')) {
