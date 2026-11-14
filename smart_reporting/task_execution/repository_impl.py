@@ -1939,7 +1939,12 @@ class TaskExecutionRepository:
             )
             result = await connection.execute(
                 update(self.tasks)
-                .where(self.tasks.c.external_run_id == scope.external_run_id, *lease_conditions)
+                .where(
+                    self.tasks.c.external_run_id == scope.external_run_id,
+                    self.tasks.c.state_version == value["state_version"],
+                    self.tasks.c.status == value["status"],
+                    *lease_conditions,
+                )
                 .values(
                     status=TaskState.CANCELLED,
                     state_version=self.tasks.c.state_version + 1,
@@ -1951,8 +1956,9 @@ class TaskExecutionRepository:
                 )
             )
             if result.rowcount != 1:
-                # 租约接管与取消竞争时回滚整个事务，包括 attempt 和待处理指令。
-                raise TaskExecutionRepositoryError("task_lease_lost", "任务租约已发生变化。")
+                # 快照后状态或租约变化均不能覆盖；回滚后不再更新 attempt/指令。
+                code = "task_lease_lost" if lease is not None else "task_cas_conflict"
+                raise TaskExecutionRepositoryError(code, "任务状态或租约已发生变化。")
             await connection.execute(
                 update(self.runs)
                 .where(self.runs.c.internal_run_id == value["current_internal_run_id"])
@@ -2008,6 +2014,10 @@ class TaskExecutionRepository:
                 .where(
                     self.tasks.c.external_run_id == scope.external_run_id,
                     self.tasks.c.lease_epoch == current_epoch,
+                    self.tasks.c.state_version == value["state_version"],
+                    self.tasks.c.status.in_(
+                        [TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]
+                    ),
                 )
                 .values(
                     status=TaskState.FAILED,
