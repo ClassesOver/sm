@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Column,
     DateTime,
     ForeignKey,
@@ -53,6 +54,7 @@ _documents = Table(
     Column("source", JSONB, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("next_revision", Integer, nullable=False),
+    Column("event_sequence", BigInteger, nullable=False, server_default="0"),
 )
 _revisions = Table(
     "report_native_revisions_v1",
@@ -71,6 +73,18 @@ _revisions = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("failure_code", String(128), nullable=True),
     UniqueConstraint("document_id", "request_id"),
+)
+
+_events = Table(
+    "report_native_revision_events_v1",
+    _metadata,
+    Column("document_id", String(256), ForeignKey(_documents.c.document_id), primary_key=True),
+    Column("sequence", BigInteger, primary_key=True),
+    Column("event_id", String(32), nullable=False, unique=True),
+    Column("revision", Integer, nullable=False),
+    Column("request_id", String(256), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -113,11 +127,73 @@ class NativeDocumentRepository:
 
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
+            # create_all's existence checks are not atomic across worker startup.
+            # Serialize this schema's DDL before checking/creating any native table.
+            await connection.execute(text(
+                "SELECT pg_advisory_xact_lock(hashtext('native_document_schema_v1'), "
+                "hashtext(current_schema()))"
+            ))
             await connection.run_sync(_metadata.create_all)
+            await connection.execute(text(
+                "ALTER TABLE report_native_documents_v1 "
+                "ADD COLUMN IF NOT EXISTS event_sequence BIGINT NOT NULL DEFAULT 0"
+            ))
             await connection.execute(text(
                 "ALTER TABLE report_native_revisions_v1 "
                 "ADD COLUMN IF NOT EXISTS note VARCHAR(200) NOT NULL DEFAULT ''"
             ))
+
+    async def _append_revision_event(
+        self, connection: AsyncConnection, revision: NativeRevision,
+    ) -> None:
+        """Called with the document row locked, inside the revision transaction.
+
+        Events describe committed metadata, not token progress or a document snapshot.
+        Consumers must still reauthorize and read the revision before using its content.
+        """
+        sequence = (await connection.execute(
+            update(_documents)
+            .where(_documents.c.document_id == revision.document_id)
+            .values(event_sequence=_documents.c.event_sequence + 1)
+            .returning(_documents.c.event_sequence)
+        )).scalar_one()
+        await connection.execute(insert(_events).values(
+            document_id=revision.document_id, sequence=sequence, event_id=uuid4().hex,
+            revision=revision.revision, request_id=revision.request_id,
+            status=revision.status, created_at=datetime.now(UTC),
+        ))
+
+    async def revision_events_after(
+        self, document_id: str, *, scope: NativeScope, after: int = 0, limit: int = 100,
+    ) -> dict[str, Any]:
+        """Read a bounded durable page. nextSequence, not latestSequence, is the cursor.
+
+        Legacy documents start at sequence zero; their historical revisions are not
+        backfilled. No event retention/pruning is enabled in this first slice.
+        """
+        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("事件游标或批量大小无效")
+        async with self.engine.connect() as connection:
+            latest = (await connection.execute(
+                select(_documents.c.event_sequence).where(
+                    _documents.c.document_id == document_id, *_scope_clause(scope),
+                )
+            )).scalar_one_or_none()
+            if latest is None:
+                raise NativeRepositoryNotFound()
+            if after > latest:
+                raise NativeRepositoryConflict("事件游标超过当前文档，请重新读取修订状态")
+            # Bound by the sequence read above so concurrent commits cannot create a
+            # page whose events exceed latestSequence. The caller can resume safely.
+            rows = (await connection.execute(
+                select(_events).where(
+                    _events.c.document_id == document_id,
+                    _events.c.sequence > after, _events.c.sequence <= latest,
+                ).order_by(_events.c.sequence).limit(limit)
+            )).mappings().all()
+            events = [dict(row) for row in rows]
+            return {"events": events, "nextSequence": events[-1]["sequence"] if events else after,
+                    "latestSequence": latest}
 
     async def create_from_source(
         self, source: NativeSource, *, scope: NativeScope, request_id: str
@@ -181,6 +257,7 @@ class NativeDocumentRepository:
                     createdAt=now,
                 )
                 await self._insert_revision(connection, initial)
+                await self._append_revision_event(connection, initial)
             row = (
                 (await connection.execute(select(_documents).where(_documents.c.create_key == key)))
                 .mappings()
@@ -426,4 +503,6 @@ class NativeDocumentRepository:
                 )
                 .values(**_revision_values(updated))
             )
+            if current != updated:
+                await self._append_revision_event(connection, updated)
             return updated
