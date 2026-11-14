@@ -56,6 +56,78 @@ async def _source_state(runtime, scope):
     return state, registered
 
 
+async def load_revision_materials(runtime, scope, source):
+    """只从原运行耐久登记恢复材料；兼容旧报告已登记的分析上下文。"""
+    import json
+
+    from ..contract import ReportFileInput
+    from .checkpoint import FileIdentity
+
+    materials = source.payload.get('requestMaterials')
+    if materials is None:
+        path = f'报表/分析计划/{scope.run_id}/detailed-analysis-context.json'
+        candidate = next((item for item in source.payload.get('workflowCheckpoint', {}).get('files', ())
+            if item.get('path') == path), None)
+        materials = {'fileInputs': [], 'templateInput': None}
+        if candidate is not None:
+            try:
+                file = FileIdentity.model_validate(candidate)
+                context = json.loads(await runtime._read_identity_bytes(scope.workspace_key, file, max_bytes=file.size))
+                materials['templateInput'] = (context.get('templateInput') or {}).get('identity')
+            except Exception as error:
+                raise ReportingError('report_revision_materials_unavailable', '原运行冻结材料身份无法核验。') from error
+    try:
+        return {'fileInputs': [ReportFileInput.model_validate(item).model_dump(mode='json', by_alias=True)
+                for item in materials.get('fileInputs', ())],
+            'templateInput': ReportFileInput.model_validate(materials['templateInput']).model_dump(mode='json', by_alias=True)
+                if materials.get('templateInput') else None}
+    except (TypeError, ValueError, AttributeError) as error:
+        raise ReportingError('report_revision_materials_unavailable', '原运行冻结材料登记无效。') from error
+
+
+
+async def copy_revision_materials(runtime, source_scope, target_scope, materials):
+    """新口径工作区只复制授权的冻结材料，保留文件身份与相对位置。"""
+    from ...workspace import WorkspaceError
+    from .checkpoint import FileIdentity
+
+    for item in (*materials['fileInputs'], *((materials['templateInput'],) if materials['templateInput'] else ())):
+        file = FileIdentity.model_validate({key: item[key] for key in ('path', 'size', 'sha256')})
+        try:
+            await runtime._read_identity_bytes(target_scope.workspace_key, file, max_bytes=file.size)
+            continue
+        except (FileNotFoundError, KeyError):
+            pass
+        except WorkspaceError as error:
+            if not isinstance(error.__cause__, FileNotFoundError):
+                raise
+        raw = await runtime._read_identity_bytes(source_scope.workspace_key, file, max_bytes=file.size)
+        copied = await runtime._write_immutable_artifact(target_scope.workspace_key, file.path, raw)
+        if copied != file:
+            raise ReportingError('report_revision_materials_unavailable', '新工作区材料与授权来源身份不同。')
+        await runtime._read_identity_bytes(target_scope.workspace_key, file, max_bytes=file.size)
+
+
+
+def revision_delivery_paths(execution, child):
+    """只认可本执行固定目录或既有模板哈希目录中的目标文件。"""
+    import re
+
+    execution_id = execution.execution_run_id if isinstance(execution, ReportRevisionExecution) else execution.scope.run_id
+    root = f'报表/智能分析/{execution_id}'
+    directories = {'pdf': 'document-render', 'docx': 'document-render',
+        'pptx': 'slides', 'xlsx': 'workbook'}
+    paths = {output: [f'{root}/{directories[output]}/revision-{execution.output_revision}/report.{output}']
+        for output in execution.requested_outputs}
+    if child.payload.get('requestMaterials', {}).get('templateInput'):
+        for output in execution.requested_outputs:
+            pattern = re.escape(f'{root}/template/revision-{execution.output_revision}/') + r'[0-9a-f]{20}/report\.' + output
+            paths[output] = [item['path'] for item in child.payload.get('artifacts', ())
+                if re.fullmatch(pattern, item.get('path', ''))]
+    return paths
+
+
+
 async def prepare_revision_execution(runtime, run_context, *, report_revision):
     """实际CSV/清单验证后预留唯一交付编号，再登记独立Reporting状态，重复调用只恢复。"""
     from ...management.models import ManagementScope
@@ -79,6 +151,10 @@ async def prepare_revision_execution(runtime, run_context, *, report_revision):
     execution = ReportRevisionExecution(sourceScope=scope, executionRunId=child_id, basisId=view.basis_id,
         reportRevision=report_revision, parentReportRevision=manifest.parent_report_revision,
         planningHash=manifest.planning_hash, outputRevision=output_revision, requestedOutputs=view.request.requested_outputs)
+    from ...preferences.runtime import inherit_execution_preferences
+
+    await inherit_execution_preferences(runtime, scope, child_id, 'report_revision')
+    materials = await load_revision_materials(runtime, scope, source)
     await runtime.state_repository.register_run(report_run_id=child_id, external_run_id=child_id,
         entrypoint='report_revision', workflow_id=registered['workflow_id'], agno_session_id=child_id,
         agno_run_id=child_id, caller_session_id=scope.session_id, caller_run_id=scope.run_id,
@@ -86,12 +162,12 @@ async def prepare_revision_execution(runtime, run_context, *, report_revision):
         company_id=scope.company_id, revision=output_revision, status='pending')
     await runtime.state_repository.get_or_create(report_run_id=child_id, external_run_id=child_id,
         thread_id=scope.caller_thread_id, owner_user_id=scope.user_id, revision=output_revision,
-        payload={'reportRevisionExecution': execution.model_dump(mode='json', by_alias=True)})
+        payload={'reportRevisionExecution': execution.model_dump(mode='json', by_alias=True), 'requestMaterials': materials})
     await require_revision_execution(runtime, run_context, execution)
     return execution
 
 
-async def require_revision_execution(runtime, run_context, execution, *, report_revision=None, revision=None):
+async def require_revision_execution(runtime, run_context, execution, *, report_revision=None, revision=None, restore_only=False):
     """会话自报身份不生效；每次写产物或检查点都核对已登记执行及原授权作用域。"""
     scope = _source_scope(runtime, run_context)
     source, _ = await _source_state(runtime, scope)
@@ -444,6 +520,9 @@ async def run_revision_analysis_items(runtime, run_context, execution):
 
     await load_revision_outline(runtime, run_context, execution)
     child = await require_revision_execution(runtime, run_context, execution)
+    from .runtime.run_configuration import execution_runtime
+
+    runtime = await execution_runtime(runtime, run_context, execution=execution)
     plan = DetailedAnalysisPlan.model_validate(child.payload.get('detailedAnalysisPlan'))
     checkpoint = ReportingCheckpoint.model_validate(child.payload.get('workflowCheckpoint'))
     contexts = await prepare_revision_dataset_contexts(runtime, run_context, execution)
@@ -499,9 +578,13 @@ async def run_revision_section(runtime, run_context, execution, *, section_code)
 
     outline = await load_revision_outline(runtime, run_context, execution)
     child = await require_revision_execution(runtime, run_context, execution)
+    from .runtime.run_configuration import execution_runtime
+
+    runtime = await execution_runtime(runtime, run_context, execution=execution)
     checkpoint = ReportingCheckpoint.model_validate(child.payload.get('workflowCheckpoint'))
     section = next((item for item in outline.sections if item.code == section_code), None)
-    if (not set(execution.requested_outputs) <= {'pdf', 'docx'} or child.payload.get('deliveryFormat') != 'document'
+    if (not set(execution.requested_outputs) <= {'pdf', 'docx'}
+            or child.payload.get('deliveryFormat') != 'document'
             or section is None or checkpoint.narrative_outline_file is None or checkpoint.analysis_manifest_file is None):
         raise ReportingError('report_revision_execution_mismatch', '章节生成需要当前文档修订的完整已登记分析和提纲。')
     plan = DetailedAnalysisPlan.model_validate(child.payload.get('detailedAnalysisPlan'))
@@ -730,18 +813,28 @@ async def continue_revision_delivery(runtime, run_context, execution):
     from .checkpoint import ReportingCheckpoint
     from .query_pipeline import DatasetLineage
 
-    child = await require_revision_execution(runtime, run_context, execution)
+    child = await require_revision_execution(runtime, run_context, execution, restore_only=True)
     delivery = child.payload.get('deliveryFormat')
     root = f'报表/智能分析/{execution.execution_run_id}'
     output_root = (f'{root}/document-render' if delivery == 'document'
         else f'{root}/{"slides" if delivery == "pptx" else "workbook"}')
     final_paths = {f'{output_root}/revision-{execution.output_revision}/report.{output}'
         for output in execution.requested_outputs}
+    template = child.payload.get('requestMaterials', {}).get('templateInput')
+    if template:
+        prefix = f'{root}/template/revision-{execution.output_revision}/'
+        final_paths = {item['path'] for item in child.payload.get('artifacts', ()) if item['path'].startswith(prefix)}
+        saved = child.payload.get('result', {}).get('renderedTemplate', {})
+        final_paths.update(saved[f'{label}Path'] for label in ('pdf', 'word', 'pptx', 'xlsx') if saved.get(f'{label}Path'))
     step = StepInput(input='继续已登记的新修订交付')
     if any(item.get('path') in final_paths for item in child.payload.get('artifacts', ())):
         return await runtime.publish_report(step, run_context, execution=execution)
+    child = await require_revision_execution(runtime, run_context, execution)
     checkpoint = ReportingCheckpoint.model_validate(child.payload.get('workflowCheckpoint'))
     if checkpoint.phase != 'completed':
+        from .runtime.run_configuration import execution_runtime
+
+        runtime = await execution_runtime(runtime, run_context, execution=execution)
         if checkpoint.analysis_manifest_file is None:
             await run_revision_analysis_items(runtime, run_context, execution)
             outline = await load_revision_outline(runtime, run_context, execution)
@@ -773,7 +866,9 @@ async def continue_revision_delivery(runtime, run_context, execution):
             await assemble_revision_workbook(runtime, run_context, execution)
         else:
             raise ReportingError('report_revision_execution_mismatch', '新修订没有可信交付格式。')
-    if delivery == 'document':
+    if template:
+        rendered = await runtime._render_revision_document(run_context, execution)
+    elif delivery == 'document':
         rendered = await runtime._render_and_validate(run_context, execution=execution)
     elif delivery == 'pptx':
         rendered = (await runtime.validate_slides(step, run_context, execution=execution)).content
@@ -782,7 +877,7 @@ async def continue_revision_delivery(runtime, run_context, execution):
             await load_revision_outline(runtime, run_context, execution), execution=execution)
     else:
         raise ReportingError('report_revision_execution_mismatch', '新修订没有可信交付格式。')
-    published = await runtime.publish_report(step, run_context, execution=execution)
+    published = await runtime._publish_revision_report(run_context, execution, rendered=rendered)
     if rendered.get('validation', {}).get('ok') is False:
         # 同次执行发生的验收或登记故障不能被紧接的恢复读取抹去；下载身份仍取发布分支。
         content = dict(published.content)

@@ -39,6 +39,7 @@
 .design-cover-watermark.is-tiled, .design-body-watermark.is-tiled { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(3, 1fr); }
 .design-cover-watermark span, .design-body-watermark span { white-space: nowrap; }
 .design-footer { border-top: 1px solid #e2e8f0; padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.design-footer [data-design-provenance] { max-height: min(35dvh, 300px); overflow-y: auto; overscroll-behavior: contain; }
 .design-footer-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; }
 .design-footer [data-design-action="preview"] { background: #174a66; color: #fff; border-color: #174a66; }
 .design-footer a { color: #176c91; }

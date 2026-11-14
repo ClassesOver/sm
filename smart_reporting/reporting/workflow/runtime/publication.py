@@ -338,6 +338,11 @@ class RuntimePublicationMixin:
         state = self._state(run_context)
         result = self._workflow_result(state)
         outline = _frozen_outline(state)
+        delivery_format = state.get("report_request_context", {}).get("deliveryFormat", "document")
+        if state.get("report_template_input") or getattr(self._envelope(run_context), "template_input", None):
+            from .template_delivery import render_template_delivery
+
+            return await render_template_delivery(self, run_context, result, outline, delivery_format)
         if state.get("report_request_context", {}).get("deliveryFormat") == "xlsx":
             return await self._render_xlsx(run_context, result, outline)
         if state.get("report_request_context", {}).get("deliveryFormat") == "pptx":
@@ -645,7 +650,7 @@ class RuntimePublicationMixin:
             )
             raise
 
-    async def _render_revision_document(self, run_context: RunContext, execution) -> dict[str, Any]:
+    async def _render_revision_document(self, run_context: RunContext, execution, *, restore_only=False) -> dict[str, Any]:
         """以独立原生文档任务渲染新修订；已登记文件的恢复不依赖来源仍可读取。"""
         from datetime import datetime
         from uuid import NAMESPACE_URL, uuid5
@@ -677,6 +682,53 @@ class RuntimePublicationMixin:
             thread_id = execution.source_scope.workspace_key
             report_revision = execution.report_revision
             execution_options = {'execution': execution}
+        if durable.payload.get('requestMaterials', {}).get('templateInput'):
+            from types import SimpleNamespace
+
+            from .template_delivery import render_template_delivery
+
+            expected_delivery = 'document' if set(execution.requested_outputs) <= {'pdf', 'docx'} else execution.requested_outputs[0]
+            if (len(execution.requested_outputs) != 1 or durable.phase is not DurableReportingPhase.COMPLETED
+                    or durable.payload.get('deliveryFormat') != expected_delivery):
+                raise ReportingError('report_revision_execution_mismatch', '模板交付需要当前修订已完成的单格式装配。')
+            assembly = durable.payload.get('result', {})
+            delivery = execution.requested_outputs[0]
+            label = 'word' if delivery == 'docx' else delivery
+            result = {'revision': execution.output_revision, 'jobId': execution_run_id,
+                'artifactManifest': assembly.get('manifest'), 'markdownPath': assembly.get('markdown', {}).get('path')}
+            title = durable.payload.get('approvedOutline', {}).get('title', '新修订报告')
+            if result['markdownPath'] and not durable.payload.get('approvedOutline'):
+                try:
+                    markdown = FileIdentity.model_validate(assembly['markdown'])
+                    raw = await self._read_identity_bytes(thread_id, markdown, max_bytes=markdown.size)
+                    title = raw.decode('utf-8').splitlines()[0].lstrip('# ').strip() or title
+                except Exception as error:
+                    logger.warning('revision_template_title_unavailable error_type={}', type(error).__name__)
+            result = await render_template_delivery(self, source_context, result,
+                SimpleNamespace(title=title), delivery, execution=execution, restore_only=restore_only)
+            if not result.get(f'{label}Path'):
+                saved = assembly.get('renderedTemplate')
+                if isinstance(saved, dict) and saved.get('deliveryFormat') == delivery and saved.get('revision') == execution.output_revision:
+                    try:
+                        file = FileIdentity(path=saved[f'{label}Path'], size=saved[f'{label}Size'], sha256=saved[f'{label}Sha256'])
+                        if not file.path.startswith(f'报表/智能分析/{execution_run_id}/template/revision-{execution.output_revision}/'):
+                            raise ValueError('template revision path mismatch')
+                        await self._read_identity_bytes(thread_id, file, max_bytes=file.size)
+                        result.update({f'{label}Path': file.path, f'{label}Size': file.size, f'{label}Sha256': file.sha256})
+                    except Exception as error:
+                        logger.warning('revision_template_artifact_unavailable error_type={}', type(error).__name__)
+                return result
+            try:
+                await self._apply_durable_command(run_context, ReportingCommand(name='complete',
+                    commandId=f'revision-template-complete:{execution.output_revision}:{result[f"{label}Sha256"]}',
+                    payload={**assembly, 'renderedTemplate': dict(result)}), **execution_options)
+            except Exception as error:
+                logger.warning('revision_template_result_unavailable error_type={}', type(error).__name__)
+                issues = [*result.get('validationIssues', ()), {'code': 'document_result_checkpoint_unavailable',
+                    'message': '模板交付完成状态未确认，实际文件仍可下载。'}]
+                result.update(status='validation_failed', validation={**result.get('validation', {}), 'ok': False,
+                    'issues': issues}, validationIssues=issues)
+            return result
         if (not set(execution.requested_outputs) <= {'pdf', 'docx'}
                 or durable.payload.get('deliveryFormat') != 'document'
                 or durable.phase is not DurableReportingPhase.COMPLETED):
@@ -688,7 +740,8 @@ class RuntimePublicationMixin:
             if output in execution.requested_outputs)
         registered = {item['path']: FileIdentity.model_validate(item) for item in durable.payload.get('artifacts', ())}
         job_id = str(uuid5(NAMESPACE_URL, f'{execution_run_id}:document:{revision}'))
-        result = {'revision': revision, 'jobId': job_id, 'deliveryFormat': 'document'}
+        delivery_format = execution.requested_outputs[0] if len(execution.requested_outputs) == 1 else 'document'
+        result = {'revision': revision, 'jobId': job_id, 'deliveryFormat': delivery_format}
         restored = {label: registered[paths[label]] for label in requested if paths[label] in registered}
         if restored:
             invalid = []
@@ -707,7 +760,7 @@ class RuntimePublicationMixin:
                         paths[label], restored[label].sha256, restored[label].size)
                         if label in restored and label in requested else not saved.get(f'{label}Path') for label in paths)
                     and any(saved.get(f'{label}Path') for label in requested)):
-                return dict(saved)
+                return {**saved, 'deliveryFormat': delivery_format}
             issue = {'code': 'document_validation_receipt_unavailable',
                 'message': '文档文件已恢复，验收记录缺失或身份不一致，需复核。'}
             for label in requested:
@@ -758,6 +811,11 @@ class RuntimePublicationMixin:
         self.report_tools._store_job({'jobId': job_id, '_threadBinding': thread_binding(thread_id),
             'sources': sources}, context)
         branding = self.delivery_settings.branding
+        from ....preferences.runtime import execution_preferences
+
+        configuration = await execution_preferences(self, execution)
+        if configuration is not None:
+            await self.report_tools.bind_format_preferences(job_id, configuration['resolvedFormats'], run_context=context)
         await self.report_tools.bind_page_layout(job_id,
             self.delivery_settings.page_layout.model_dump(mode='json', by_alias=True), run_context=context)
         await self.report_tools.bind_document_context(job_id, {
@@ -765,7 +823,7 @@ class RuntimePublicationMixin:
             'periodLabel': f'[{view.request.period.start.isoformat()}, {view.request.period.end.isoformat()})',
             'organizationName': branding.organization_name, 'generatedByLabel': branding.generated_by_label,
             'watermarkText': branding.watermark_text,
-            'generatedDate': datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),
+            'generatedDate': configuration['generatedDate'] if configuration is not None else datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat(),
             'sectionNumbers': list(draft.section_numbers),
             'sections': [{'code': section.code, 'sectionNumber': section.section_number, 'title': section.title}
                 for section in outline.sections],
@@ -912,6 +970,11 @@ class RuntimePublicationMixin:
         return await registered_native_claim_presentations(self, run_context, manifest)
 
     async def _render_pptx(self, run_context: RunContext, result: dict[str, Any], outline: Any, *, execution=None) -> dict[str, Any]:
+        if execution is None and (self._state(run_context).get("report_template_input")
+                or getattr(self._envelope(run_context), "template_input", None)):
+            from .template_delivery import render_template_delivery
+
+            return await render_template_delivery(self, run_context, result, outline, "pptx")
         from ..policy_adoption import (
             PolicyAdoptionExecution,
             policy_adoption_run_context,
@@ -976,6 +1039,7 @@ class RuntimePublicationMixin:
             title = outline.title
             view = await self._metric_planning_context(run_context, report_revision=report_revision)
             period = f'[{view.request.period.start.isoformat()}, {view.request.period.end.isoformat()})'
+        result.pop('pptxNativeInput', None)
         validation: dict[str, Any] = {"ok": False, "issues": []}
         try:
             if execution is None:
@@ -1022,7 +1086,9 @@ class RuntimePublicationMixin:
             validation['claimSupport'] = []
             pages: list[dict[str, object]] = []
             chart_assets: dict[str, bytes] = {}
+            chart_identities: dict[str, FileIdentity] = {}
             presented_analyses = set()
+            presented_tables = set()
             for slide in slide_outline.slides:
                 conclusion = present_native_summary(slide.bullets[0], claim_presentations,
                     section_ids=tuple(section.code for section in outline.sections
@@ -1076,18 +1142,45 @@ class RuntimePublicationMixin:
                             "details": {"chartId": chart_id, "errorType": type(error).__name__},
                         })
                         continue
-                    chart_name = f"{chart_id}{PurePosixPath(chart.path).suffix.lower()}"
+                    chart_name = chart.path
                     chart_assets[chart_name] = data
+                    chart_identities[chart.path] = chart
                     break
+                tables = []
+                from ...delivery.pptx_tables import project_fact_slide_tables
+
+                for analysis_id in slide.evidence_ids:
+                    if analysis_id in presented_tables or analysis_id not in fact_contents:
+                        continue
+                    presented_tables.add(analysis_id)
+                    try:
+                        tables.extend(project_fact_slide_tables(analysis_id,
+                            checkpoint.deterministic_fact_files[analysis_id], fact_contents[analysis_id]))
+                    except Exception as error:
+                        logger.warning('pptx_table_projection_unavailable analysis_id={} error_type={}',
+                            analysis_id, type(error).__name__)
+                        validation['issues'].append({'code': 'pptx_table_projection_unavailable',
+                            'message': '冻结事实表无法投影，已保留该页其他证据和实际文件。',
+                            'details': {'analysisId': analysis_id, 'errorType': type(error).__name__}})
                 pages.append({
                     "title": slide.title,
                     "bullets": bullets,
                     "evidenceIds": [*slide.finding_ids, *slide.evidence_ids],
                     **({"chartPath": chart_name} if chart_name else {}),
+                    **({'tables': tables} if tables else {}),
                 })
             if not pages:
                 raise ValueError("no frozen analysis evidence")
             theme = state.get("report_request_context", {}).get("pptxTheme", "executive")
+            from ....preferences.runtime import REPORT_CONFIGURATION_SNAPSHOT_KEY, execution_preferences
+
+            configuration = (state.get(REPORT_CONFIGURATION_SNAPSHOT_KEY) if execution is None
+                else await execution_preferences(self, execution))
+            preference_options = ({'preferences': configuration['resolvedFormats']['pptx'],
+                'generated_date': configuration['generatedDate']} if configuration is not None else {})
+            if preference_options and 'pptxTheme' in state.get('report_request_context', {}):
+                # 显式任务主题优先；不改写任务冻结默认。
+                preference_options['preferences'] = {**preference_options['preferences'], 'theme': theme}
 
             def build() -> tuple[Any, bytes]:
                 # 同步构建器（Node 子进程）在工作线程执行，避免阻塞事件循环；
@@ -1095,7 +1188,9 @@ class RuntimePublicationMixin:
                 with TemporaryDirectory(prefix="report-pptx-assets-") as temporary:
                     root = Path(temporary)
                     for name, data in chart_assets.items():
-                        (root / name).write_bytes(data)
+                        asset = root / name
+                        asset.parent.mkdir(parents=True, exist_ok=True)
+                        asset.write_bytes(data)
                     local_pptx = root / "report.pptx"
                     built = build_editable_pptx(
                         output_path=local_pptx, title=title, period=str(period), theme=theme,
@@ -1103,6 +1198,7 @@ class RuntimePublicationMixin:
                             **page,
                             **({"chartPath": str(root / str(page["chartPath"]))} if page.get("chartPath") else {}),
                         } for page in pages),
+                        **preference_options,
                     )
                     return built, local_pptx.read_bytes()
 
@@ -1112,6 +1208,8 @@ class RuntimePublicationMixin:
                     {"code": "pptx_layout_audit", "message": str(item.get("message", "版式需要复核。")), "details": {"page": item.get("page")}}
                     for item in built.issues
                 )
+            if built.image_derivations:
+                validation['chartImageDpi'] = list(built.image_derivations)
             await self.workspace_service.awrite_bytes(
                 self._scope(run_context)["threadId"], pptx_path, content,
             )
@@ -1136,6 +1234,49 @@ class RuntimePublicationMixin:
                     payload={"artifact": actual},
                 ), **execution_options,
             )
+            # 最终 pages 包含解释提示、逐段分析与真正选中的静态图；不能用后续可变
+            # checkpoint 或最初 outline 证明历史修订的实际原生输入。
+            registration_stage = 'spec'
+            try:
+                binding = {'workflowRunId': str(run_context.run_id) if execution is None else target_run_id,
+                    'revision': revision,
+                    'execution': execution.model_dump(mode='json', by_alias=True) if execution is not None else None}
+                spec_data = json.dumps({'schemaVersion': 'pptx-native-input/1', 'binding': binding,
+                    'title': title, 'period': str(period), 'slides': pages, 'theme': theme,
+                    'generatedDate': preference_options.get('generated_date'),
+                    'preferences': preference_options.get('preferences'),
+                    'chartFiles': [item.model_dump(mode='json', by_alias=True) for item in chart_identities.values()]},
+                    ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()
+                spec_path = str(PurePosixPath(pptx_path).parent / f'pptx-spec-{hashlib.sha256(spec_data).hexdigest()}.json')
+                spec_identity = await self._write_immutable_artifact(self._scope(run_context)['threadId'], spec_path, spec_data)
+                registration_stage = 'receipt'
+                receipt_data = json.dumps({'schemaVersion': 'pptx-native-receipt/1', 'binding': binding,
+                    'artifact': actual, 'spec': spec_identity.model_dump(mode='json', by_alias=True),
+                    'validation': validation}, ensure_ascii=False, sort_keys=True, allow_nan=False,
+                    separators=(',', ':')).encode()
+                receipt_identity = await self._write_immutable_artifact(
+                    self._scope(run_context)['threadId'], pptx_path + '.receipt.json', receipt_data)
+                registration_stage = 'registration'
+                for file in (spec_identity, receipt_identity):
+                    await self._apply_durable_command(run_context, ReportingCommand(name='record_artifact',
+                        commandId=f'pptx-native-input:{revision}:{hashlib.sha256(file.path.encode()).hexdigest()}:{file.sha256}',
+                        payload={'artifact': file.model_dump(mode='json', by_alias=True)}), **execution_options)
+                registration_stage = 'checkpoint'
+                files = self._merge_checkpoint_files(checkpoint.files, spec_identity, receipt_identity,
+                    FileIdentity.model_validate(actual))
+                await self._persist_reporting_checkpoint(run_context, checkpoint.model_copy(update={'files': files}),
+                    **execution_options)
+                result['pptxNativeInput'] = {'binding': binding, 'artifact': actual,
+                    'spec': spec_identity.model_dump(mode='json', by_alias=True),
+                    'receipt': receipt_identity.model_dump(mode='json', by_alias=True)}
+            except Exception as error:
+                logger.warning('report_pptx_native_input_registration_failed stage={} error_type={}',
+                    registration_stage, type(error).__name__)
+                validation['issues'].append({'code': 'pptx_native_input_registration_failed',
+                    'message': 'PPTX 最终原生输入或修订身份登记未完成，实际文件仍可下载。',
+                    'details': {'stage': registration_stage, 'errorType': type(error).__name__}})
+                validation['ok'] = False
+                result.update({'status': 'validation_failed', 'validationIssues': list(validation['issues'])})
             if execution is not None:
                 await self._apply_durable_command(run_context, ReportingCommand(
                     name='complete', commandId=f'revision-pptx-complete:{revision}:{actual["sha256"]}',
@@ -1187,7 +1328,8 @@ class RuntimePublicationMixin:
             "from smart_reporting.reporting.delivery.xlsx import build_workbook\n"
             f"spec = json.loads(Path({spec_path!r}).read_text(encoding='utf-8'))\n"
             f"build_workbook(output_path=Path({output_path!r}), title=spec['title'], "
-            "period=spec['period'], sheets=tuple(spec['sheets']), source_mapping=spec['sourceMapping'])\n"
+            "period=spec['period'], sheets=tuple(spec['sheets']), source_mapping=spec['sourceMapping'], "
+            "preferences=spec.get('preferences'), generated_date=spec.get('generatedDate'))\n"
         )
         runner = ReportingCodeGenerationRunner(
             self._analysis_script_agent_factory, self.code_mode_runtime,
@@ -1365,7 +1507,22 @@ class RuntimePublicationMixin:
                 fact_documents=documents, datasets=datasets, period=period_label, claim_presentations=claim_presentations)
             validation['claimSupport'] = sources['claims']
             workbook_sources = [{**item, "datasets": {key: sources["datasets"][key] for key in item["datasetIds"] if key in sources["datasets"]}} for item in sources["cells"]]
-            spec = json.dumps({"title": outline.title, "period": period_label, "sheets": sheets, "sourceMapping": sources}, ensure_ascii=False, allow_nan=False).encode()
+            from ....preferences.runtime import REPORT_CONFIGURATION_SNAPSHOT_KEY, execution_preferences
+
+            configuration = (state.get(REPORT_CONFIGURATION_SNAPSHOT_KEY) if execution is None
+                else await execution_preferences(self, execution))
+            preference_spec = {}
+            expected_sheets = sheets
+            if configuration is not None:
+                from ....preferences.workbook_adapter import prepare_workbook
+
+                preferences = configuration['resolvedFormats']['xlsx']
+                generated_date = configuration['generatedDate']
+                expected_sheets, _ = prepare_workbook(sheets, preferences, title=outline.title,
+                    period=period_label, generated_date=generated_date, filename=PurePosixPath(path).name)
+                preference_spec = {'preferences': preferences, 'generatedDate': generated_date}
+            spec = json.dumps({"title": outline.title, "period": period_label, "sheets": sheets,
+                "sourceMapping": sources, **preference_spec}, ensure_ascii=False, allow_nan=False).encode()
             spec_path = str(PurePosixPath(path).parent / f"workbook-spec-{hashlib.sha256(spec).hexdigest()}.json")
             spec_identity = await self._write_immutable_artifact(thread_id, spec_path, spec)
             generated = await self._draft_workbook(run_context, spec_path=spec_path, output_path=path, **execution_options)
@@ -1375,9 +1532,9 @@ class RuntimePublicationMixin:
                 raise ValueError("generated workbook identity mismatch")
             content = await self.workspace_service.read_limited_regular_file(thread_id, path, max_bytes=output.size)
             inspected = await run_office_engine(inspect_workbook, content)
-            validation["issues"].extend(validate_workbook_snapshot(inspected, sheets, sources, content))
+            validation["issues"].extend(validate_workbook_snapshot(inspected, expected_sheets, sources, content))
             actual_sheets = inspected.get("sheets", inspected.get("worksheets", []))
-            if len(actual_sheets) != len(sheets):
+            if len(actual_sheets) != len(expected_sheets):
                 validation["issues"].append({"code": "xlsx_sheet_count_invalid", "message": "工作表数量与冻结工作簿计划不一致。"})
             validation.update({"ok": not validation["issues"], "sheetCount": len(actual_sheets)})
             result.update({"status": "validated" if validation["ok"] else "validation_failed", "deliveryFormat": "xlsx",
@@ -1837,20 +1994,20 @@ class RuntimePublicationMixin:
             "auditSummary": audit_summary,
         }
 
-    async def _publish_revision_report(self, run_context: RunContext, execution) -> StepOutput:
+    async def _publish_revision_report(self, run_context: RunContext, execution, *, rendered=None, restore_only=False) -> StepOutput:
         """从已登记子执行恢复发布输入；不借用原会话，也不重新渲染。"""
         from ..policy_adoption import PolicyAdoptionExecution, require_policy_adoption_execution
-        from ..revision_execution import require_revision_execution
+        from ..revision_execution import require_revision_execution, revision_delivery_paths
 
         adoption = isinstance(execution, PolicyAdoptionExecution)
         if adoption:
-            durable = await require_policy_adoption_execution(self, run_context, execution)
+            durable = await require_policy_adoption_execution(self, run_context, execution, restore_only=True)
             self.workspace_service.registry.resolve(execution.scope)
             execution_run_id = execution.scope.run_id
             report_id = execution.scope.run_id
             thread_id = execution.scope.workspace_key
         else:
-            durable = await require_revision_execution(self, run_context, execution)
+            durable = await require_revision_execution(self, run_context, execution, restore_only=True)
             execution_run_id = execution.execution_run_id
             report_id = execution.source_scope.run_id
             thread_id = execution.source_scope.workspace_key
@@ -1862,15 +2019,55 @@ class RuntimePublicationMixin:
             'docx': f'{root}/document-render/revision-{execution.output_revision}/report.docx'}
             if delivery == 'document' else {delivery: f'{root}/{"slides" if delivery == "pptx" else "workbook"}/revision-{execution.output_revision}/report.{delivery}'})
         registered = {item['path']: FileIdentity.model_validate(item) for item in durable.payload.get('artifacts', ())}
-        if not any(expected[output] in registered for output in execution.requested_outputs):
+        if restore_only and rendered is None:
+            # 显式只读模式不依赖binding存在；只回读精确已登记目标，不调用生成/查询/写检查点。
+            rendered = {'revision': execution.output_revision, 'deliveryFormat': delivery}
+            for output, paths in revision_delivery_paths(execution, durable).items():
+                identity = next((registered[path] for path in paths if path in registered), None)
+                if identity is None:
+                    continue
+                try:
+                    await self._read_identity_bytes(thread_id, identity, max_bytes=identity.size)
+                    label = 'word' if output == 'docx' else output
+                    rendered.update({f'{label}Path': identity.path, f'{label}Size': identity.size,
+                        f'{label}Sha256': identity.sha256})
+                except Exception as error:
+                    logger.warning('revision_publication_artifact_unavailable error_type={}', type(error).__name__)
+        template = durable.payload.get('requestMaterials', {}).get('templateInput')
+        if template and rendered is None:
+            rendered = await self._render_revision_document(run_context, execution, restore_only=True)
+        if rendered is None and not any(expected[output] in registered for output in execution.requested_outputs):
             raise ReportingError('report_artifact_unavailable', '本修订尚无可恢复的已登记交付文件，发布不会自动启动渲染。')
-        rendered = (await self._render_and_validate(run_context, execution=execution) if delivery == 'document'
-            else await (self._render_pptx if delivery == 'pptx' else self._render_xlsx)(
-                run_context, {'revision': execution.output_revision}, None, execution=execution))
+        if rendered is None:
+            rendered = (await self._render_and_validate(run_context, execution=execution) if delivery == 'document'
+                else await (self._render_pptx if delivery == 'pptx' else self._render_xlsx)(
+                    run_context, {'revision': execution.output_revision}, None, execution=execution))
+        else:
+            rendered = dict(rendered)
+            requested_labels = {'word' if output == 'docx' else output for output in execution.requested_outputs}
+            for label in {'pdf', 'word', 'pptx', 'xlsx'} - requested_labels:
+                for suffix in ('Path', 'Size', 'Sha256'):
+                    rendered.pop(f'{label}{suffix}', None)
+            for output in execution.requested_outputs:
+                label = 'word' if output == 'docx' else output
+                if not rendered.get(f'{label}Path'):
+                    continue
+                try:
+                    file = FileIdentity(path=rendered[f'{label}Path'], size=rendered[f'{label}Size'], sha256=rendered[f'{label}Sha256'])
+                    if (not template and file.path != expected[output]
+                            or template and not file.path.startswith(f'{root}/template/revision-{execution.output_revision}/')):
+                        raise ValueError('revision delivery path mismatch')
+                    await self._read_identity_bytes(thread_id, file, max_bytes=file.size)
+                except Exception as error:
+                    logger.warning('revision_publication_artifact_unavailable error_type={}', type(error).__name__)
+                    for suffix in ('Path', 'Size', 'Sha256'):
+                        rendered.pop(f'{label}{suffix}', None)
+            if not any(rendered.get(f'{"word" if output == "docx" else output}Path') for output in execution.requested_outputs):
+                raise ReportingError('report_artifact_unavailable', '本修订没有可读取身份的已请求报告格式。')
         issues = [{'code': 'revision_publication_review_incomplete',
             'message': '新修订业务发布核对尚未完成，已生成文件仍可下载；不表示业务验收通过。'}]
         content = {**rendered, 'reportId': report_id,
-            'revision': execution.output_revision, 'deliveryFormat': delivery,
+            'revision': execution.output_revision, 'deliveryFormat': rendered.get('deliveryFormat', delivery),
             'jobId': rendered.get('jobId', execution_run_id),
             'editorJob': {'jobId': rendered.get('jobId', execution_run_id)},
             'editorAvailable': False, 'reportTitle': '新修订报告',
@@ -1897,7 +2094,7 @@ class RuntimePublicationMixin:
                 'message': '新修订来源清单或正文身份无法核验，未提供编辑与追溯；实际文件仍可下载。'})
         if content.get('artifactManifest'):
             try:
-                if delivery == 'document':
+                if delivery == 'document' and not template:
                     job_path = f'{root}/document-render/revision-{execution.output_revision}.job.json'
                     job_file = registered[job_path]
                     saved = json.loads(await self._read_identity_bytes(thread_id, job_file))
@@ -1912,10 +2109,32 @@ class RuntimePublicationMixin:
                 else:
                     job = {'jobId': content['jobId'], 'sources': [], 'render': {
                         'markdown': manifest.markdown.model_dump(mode='json', by_alias=True)}}
+                    if template:
+                        job['render'].update({label: {'path': rendered[f'{label}Path'], 'size': rendered[f'{label}Size'],
+                            'sha256': rendered[f'{label}Sha256']} for label in ('pdf', 'word', 'pptx', 'xlsx')
+                            if rendered.get(f'{label}Path')})
+                        semantic = rendered.get('validation', {}).get('readback', {}).get('semanticSignature')
+                        if (isinstance(semantic, dict) and isinstance(semantic.get('review'), dict)
+                                and semantic.get('status') == 'resolved'
+                                and semantic.get('preparationReadback', {}).get('status') == 'passed'
+                                and semantic.get('preparationReadback', {}).get('coverage') == 'complete'):
+                            job['_templateSemanticReview'] = dict(semantic['review'])
                     if delivery == 'xlsx':
                         if not isinstance(rendered.get('workbookSources'), list):
                             raise ValueError('workbook source receipt unavailable')
                         job['workbookSources'] = rendered['workbookSources']
+                    if delivery == 'pptx':
+                        # 只读恢复未携带 renderedPptx 时，从本执行的耐久回执取登记指针；
+                        # 不从已推进的 checkpoint 猜测旧修订。消费者仍须独立核验文件身份。
+                        native = rendered.get('pptxNativeInput') or durable.payload.get('result', {}).get('renderedPptx', {}).get('pptxNativeInput')
+                        if (isinstance(native, Mapping) and native.get('binding') == {
+                                'workflowRunId': execution_run_id, 'revision': execution.output_revision,
+                                'execution': execution.model_dump(mode='json', by_alias=True)}
+                                and native.get('artifact') == {'path': rendered.get('pptxPath'),
+                                    'size': rendered.get('pptxSize'), 'sha256': rendered.get('pptxSha256')}
+                                and all(native.get(key) in durable.payload.get('artifacts', ())
+                                    for key in ('spec', 'receipt', 'artifact'))):
+                            job['pptxNativeInput'] = native
                 if adoption:
                     from ...trace.contracts_v1 import canonical_sha256
                     from ..policy_adoption_analysis import PolicyAdoptionAnalysis
@@ -2047,8 +2266,16 @@ class RuntimePublicationMixin:
         editor_job = self.report_tools._load_job(
             str(result["jobId"]), self._tool_context(run_context)
         )
+        semantic = result.get('validation', {}).get('readback', {}).get('semanticSignature')
+        if (isinstance(semantic, dict) and isinstance(semantic.get('review'), dict)
+                and semantic.get('status') == 'resolved'
+                and semantic.get('preparationReadback', {}).get('status') == 'passed'
+                and semantic.get('preparationReadback', {}).get('coverage') == 'complete'):
+            editor_job = {**editor_job, '_templateSemanticReview': dict(semantic['review'])}
         if result.get("deliveryFormat") == "xlsx":
             editor_job = {**editor_job, "workbookSources": result.get("workbookSources", [])}
+        if result.get('deliveryFormat') == 'pptx' and result.get('pptxNativeInput'):
+            editor_job = {**editor_job, 'pptxNativeInput': result['pptxNativeInput']}
         return StepOutput(
             content={
                 "status": result.get("status", "validated"),
@@ -2075,7 +2302,9 @@ class RuntimePublicationMixin:
                     if manifest_identity is not None else {}
                 ),
                 **{key: result[key] for label in ("pdf", "word", "pptx", "xlsx") for suffix in ("Path", "Size", "Sha256")
-                   if (key := f"{label}{suffix}") in result},
+                   if (key := f"{label}{suffix}") in result and label in (
+                       {"pdf", "word"} if state.get("report_request_context", {}).get("deliveryFormat", "document") == "document"
+                       else {"word" if state["report_request_context"]["deliveryFormat"] == "docx" else state["report_request_context"]["deliveryFormat"]})},
                 "validation": result.get("validation", {"ok": False, "issues": []}),
                 "validationIssues": result.get("validationIssues", []),
                 "sourceWarnings": result.get("sourceWarnings", []),

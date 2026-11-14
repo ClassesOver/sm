@@ -60,14 +60,20 @@ def physical_catalog(source_id="operations", database="warehouse"):
 
 async def publish_dependencies(scopes, raw_session, scope, source_id="operations", draft_version=1):
     from smart_reporting.management.catalog import CatalogService
+    from smart_reporting.management.repository import source_drafts
+    from sqlalchemy import select
+    async with scopes.repository.transaction() as connection:
+        scope_id = (await scopes.require_registered(connection, scope))["id"]
+        database = await connection.scalar(select(source_drafts.c.database).where(
+            source_drafts.c.scope_id == scope_id, source_drafts.c.source_id == source_id))
     catalogs = CatalogService(scopes)
     synced = await catalogs.sync(
         raw_session,
         scope,
         source_id,
         draft_version,
-        physical_catalog(source_id, scope.database),
-        metadata=business_metadata(source_id, scope.database),
+        physical_catalog(source_id, database),
+        metadata=business_metadata(source_id, database),
     )
     await catalogs.publish(raw_session, scope, source_id, synced["revision"])
 
@@ -78,17 +84,23 @@ async def confirm_table_access(scopes, vault, token, scope, source_id, expected_
     from smart_reporting.management.table_access import TableAccessService
 
     access = TableAccessService(scopes, vault)
-    catalog = physical_catalog(source_id, scope.database)
+    async with scopes.repository.transaction() as connection:
+        from smart_reporting.management.repository import source_drafts
+        from sqlalchemy import select
+        scope_id = (await scopes.require_registered(connection, scope))["id"]
+        database = await connection.scalar(select(source_drafts.c.database).where(
+            source_drafts.c.scope_id == scope_id, source_drafts.c.source_id == source_id))
+    catalog = physical_catalog(source_id, database)
 
     async def discover(config):
         return [dict(table, type="table") for table in CatalogService._payload(catalog)]
 
     async def read_selected(config, selected):
-        assert selected == [(scope.database, "orders")]
+        assert selected == [(database, "orders")]
         return catalog
 
     monkeypatch.setattr(access, "_discover", discover)
     monkeypatch.setattr(access, "_read_selected", read_selected)
     discovered = await access.discover(token, scope, source_id, expected_version)
     return await access.save(token, scope, source_id, expected_version,
-                             discovered["discoveryId"], [(scope.database, "orders")])
+                             discovered["discoveryId"], [(database, "orders")])

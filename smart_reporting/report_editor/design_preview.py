@@ -18,7 +18,10 @@ from loguru import logger
 from ..reporting.models import ReportingError
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
+from .design import editor_design_overrides, restore_format_defaults
 from .render_preparation import prepare_editor_render
+from .template_provenance import public_validation
+from .template_render import render_editor_document
 from .trace_retention import source_lifecycle_lock
 
 
@@ -77,9 +80,9 @@ class ReportDesignPreviewService:
         preview_id = uuid4().hex
         directory = f".reporting-tmp/editor-preview-{preview_id}"
         snapshot = str(PurePosixPath(source.markdown_path).with_name(f".preview-{preview_id}.md"))
-        job_state = copy.deepcopy(context.job)
-        job_state["_reportDesign"] = design.compact()
-        job_state["_editorExportSettings"] = design.options.model_dump(by_alias=True)
+        job_state = restore_format_defaults(context.job, source)
+        job_state["_reportDesign"] = editor_design_overrides(source, design)
+        job_state["_editorExportSettings"] = job_state['_reportDesign'].get('options', {})
         if not self.editor._lineage_features["exportSources"]:
             job_state["_editorExportSettings"]["sources"] = False
         if source.revision != context.revision:
@@ -117,9 +120,11 @@ class ReportDesignPreviewService:
                 export_settings=run_context.session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"],
                 public_base_url=self.editor.public_base_url or "",
             )
-            result = await asyncio.wait_for(self.editor.report_tools._render_report_pair(
-                context.job_id, snapshot, f"{directory}/report.pdf", artifact_manifest=prepared[2],
-                management_overview=prepared[5], run_context=run_context,
+            result = await asyncio.wait_for(render_editor_document(
+                self.editor, context=context, source_context=source,
+                document=SimpleNamespace(markdown=markdown, sha256=sha), snapshot_path=snapshot,
+                output_path=f"{directory}/report.pdf", formats=('pdf',), render_manifest=prepared[2],
+                management_overview=prepared[5], run_context=run_context, preview=True,
             ), timeout=self.editor.export_timeout_seconds)
             preparation_issues = prepared[4]
             if preparation_issues:
@@ -130,7 +135,11 @@ class ReportDesignPreviewService:
             identity = await self.editor.workspace.ahash_file(context.scope["threadId"], path)
             if identity.get("missing") or not identity.get("sha256"):
                 raise ReportingError("report_editor_preview_missing", "PDF 预览未生成，已保留具体渲染告警。")
-            return {"pdfPath": path, "identity": identity, "validation": result.get("validation")}
+            source_format = 'word' if (result.get('validation') or {}).get('previewSourceFormat') == 'word' else 'pdf'
+            source_identity = ({'size': result['wordSize'], 'sha256': result['wordSha256']}
+                if source_format == 'word' else identity)
+            return {"pdfPath": path, "identity": identity, "validation": result.get("validation"),
+                'sourceIdentities': {source_format: source_identity}}
         finally:
             await self.editor._delete_export_snapshot(context.scope["threadId"], snapshot)
 
@@ -148,7 +157,9 @@ class ReportDesignPreviewService:
         if job.task.cancelled() or job.task.exception():
             error = None if job.task.cancelled() else job.task.exception()
             return {"previewId": preview_id, "status": "failed", "error": {"code": getattr(error, "code", "report_editor_preview_failed"), "message": getattr(error, "message", "PDF 预览失败，请重试。")}}
-        return {"previewId": preview_id, "status": "succeeded", **job.task.result()}
+        result = job.task.result()
+        return {"previewId": preview_id, "status": "succeeded",
+            'validation': public_validation(result.get('validation'), result.get('sourceIdentities', {}))}
 
     async def pdf(self, context, preview_id):
         job = await self._job(context, preview_id)

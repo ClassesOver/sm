@@ -112,6 +112,21 @@ describe('setSlideSize', () => {
 })
 
 describe('setSlideSize scales masters in sync', () => {
+  it.each([0.5, 2])('scales inherited layout geometry only once at ratio %s', async ratio => {
+    const { parseMasterPart } = await import('../src/master-edit')
+    const { readFileSync } = await import('node:fs')
+    const opened = await openPptx(readFileSync(new URL('./fixtures/01_standard_business.pptx', import.meta.url)))
+    const path = 'ppt/slideLayouts/slideLayout1.xml'
+    const footer = parseMasterPart(opened.archive, path)!.elements.find(element => element.placeholder === 'ftr')!
+    expect(footer).toBeTruthy()
+    expect(footer.anchor.originalXml).not.toContain('<a:xfrm')
+    const before = { ...footer.transform.offset }, oldSize = { ...opened.deck.size }
+    expect(setSlideSize(opened, oldSize.cx * ratio, oldSize.cy * ratio)).toBe(true)
+    const saved = await openPptx(await savePptx(opened))
+    const after = parseMasterPart(saved.archive, path)!.elements.find(element => element.placeholder === 'ftr')!
+    expect(after.transform.offset).toEqual(Object.fromEntries(Object.entries(before).map(([key,value]) => [key, Math.round(value * ratio)])))
+  })
+
   it('when shrinking, layout/master elements scale proportionally and center, part bytes written back', async () => {
     const { listMasterParts, parseMasterPart } = await import('../src/master-edit')
     const { readFileSync } = await import('node:fs')

@@ -76,7 +76,7 @@ def _figure_image_html(image_paragraph: str) -> str:
     return f'<p class="report-figure-image">{image}</p>'
 
 
-def _prepare_figure_layout(body: str) -> str:
+def _prepare_figure_layout(body: str, *, caption_numbering: bool = False) -> str:
     """把图片及其紧邻图注包装成不可拆分的语义块。
 
     Markdown 渲染器会把图片和图注分别输出为两个段落。若只给图片设置
@@ -84,8 +84,16 @@ def _prepare_figure_layout(body: str) -> str:
     HTML 边界补上 figure/figcaption，不改变权威 Markdown 或数据内容。
     """
 
+    caption_index = 0
+
     def with_caption(match: re.Match[str]) -> str:
+        nonlocal caption_index
+
         caption = re.sub(r"^\s*<p>\s*<em>|</em>\s*</p>\s*$", "", match["caption"]).strip()
+        if caption_numbering:
+            caption_index += 1
+            # 只替换已识别图注的结构前缀，保留内联格式、来源别名及正文原文。
+            caption = f"图 {caption_index}：{caption.removeprefix('图表：')}"
         return (
             '<figure class="report-figure">'
             f"{_figure_image_html(match['image'])}"
@@ -778,7 +786,7 @@ def _document_context(value: Any) -> dict[str, Any]:
         item = value.get(key)
         if (
             not isinstance(item, str)
-            or not item.strip()
+            or (not item.strip() and key not in {'generatedByLabel', 'watermarkText'})
             or len(item) > maximum
             or any(ord(character) < 32 for character in item)
         ):
@@ -987,16 +995,17 @@ def _semantic_documents(
     trace_sources: dict[str, Any] | None = None,
     design: Any = None,
 ) -> tuple[str, str]:
-    from .design import cover_html, design_css, presentation_context
+    from .design import cover_html, design_css, presentation_context, signature_date
     from .report_design import ReportDesign
 
     design = design or ReportDesign()
     display = presentation_context(design, context)
     theme = REPORT_VISUAL_THEME
-    body = _prepare_figure_layout(body)
+    body = _prepare_figure_layout(body, caption_numbering=bool(design.charts and design.charts.caption_numbering))
     title = html.escape(display["title"])
     organization = html.escape(context["organizationName"])
-    generated_date = html.escape(context["generatedDate"])
+    generated_date = html.escape(signature_date(design, context))
+    description = "".join(f"<p>{html.escape(line)}</p>" for line in design.signature.description.splitlines()) if design.signature else ""
     toc = "".join(
         f'<p class="toc-entry toc-level-{item["level"]}"><a href="#{item["anchor"]}">'
         f'<span class="toc-title">{html.escape(format_heading_label(level=item["level"], number=item["number"], title=item["title"]))}</span>'
@@ -1014,9 +1023,8 @@ def _semantic_documents(
     )
     shared = (
         f'{cover}{toc_section}<main class="report-body">{body_title}{_paginate_pdf_tables(body)}'
-        f"{source_appendix}"
-        f'<footer class="report-signature"><p>{organization}</p><p>{generated_date}</p>'
-        "</footer></main>"
+        f'<footer class="report-signature"><p>{organization}</p><p>{generated_date}</p>{description}</footer>'
+        f"{source_appendix}</main>"
     )
     pdf_css = (
         "@page cover{size:A4;margin:20mm 18mm 22mm;}"
@@ -1100,6 +1108,7 @@ def _semantic_documents(
         "line-height:1.35;break-before:avoid;break-after:avoid;color:"
         f"{theme['muted']}"
         "}.report-figure + p{break-before:avoid;page-break-before:avoid}"
+        ".report-table-caption{text-align:center;break-after:avoid;page-break-after:avoid}"
         "p:has(+.report-figure){break-after:avoid;page-break-after:avoid}"
         "pre,code{white-space:pre-wrap;overflow-wrap:anywhere}"
         "blockquote{border-left:3px solid "
@@ -1149,7 +1158,7 @@ def _semantic_documents(
         f"{word_cover}<p>{_WORD_MARKERS['cover_end']}</p>"
         f"{word_toc}<p>{_WORD_MARKERS['toc_end']}</p>"
         f"<p>{_WORD_MARKERS['body_start']}</p>{'' if include_cover else f'<h1>{title}</h1>'}{word_body}"
-        f"{source_appendix}<p>{organization}</p><p>{generated_date}</p></body>"
+        f"<p>{organization}</p><p>{generated_date}</p>{description}{source_appendix}</body>"
     )
     return pdf_document, word_document
 

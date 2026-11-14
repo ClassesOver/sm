@@ -960,7 +960,7 @@ class ReportingWorkspaceRegistry:
         ).encode("utf-8")
         return hmac.new(self._secret, payload, hashlib.sha256).hexdigest()
 
-    def resolve(self, scope: ReportingWorkflowScope) -> ReportingWorkspaceIdentity:
+    def resolve(self, scope: ReportingWorkflowScope, *, create: bool = True) -> ReportingWorkspaceIdentity:
         fingerprint = self._fingerprint(scope)
         existing = self._entries.get(scope.workspace_key)
         if existing is not None:
@@ -972,10 +972,19 @@ class ReportingWorkspaceRegistry:
                     "report_host_workspace_scope_mismatch",
                     "Reporting Workspace 作用域不一致。",
                 )
-            return existing
-
         session_root = self.root / "sessions" / fingerprint
-        session_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not create:
+            # 留存/历史读取只能恢复原目录；逐级拒绝符号链接，不能因重启补建已回收目录。
+            try:
+                descriptor = _open_directory_parts(self.root, ("sessions", fingerprint), create=False)
+            except (OSError, WorkspaceError) as error:
+                raise ReportingError("report_host_workspace_scope_mismatch",
+                    "当前任务工作区不存在或无法安全恢复。") from error
+            os.close(descriptor)
+        if existing is not None:
+            return existing
+        if create:
+            session_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         workspace = Workspace(
             root=session_root,
             allowed=Workspace.ALL_TOOLS,

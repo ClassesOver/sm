@@ -234,6 +234,10 @@ class RuntimePlanningMixin:
                 for item in reference_materials
             ]
             prompt_payload["referenceIssues"] = reference_issues
+        if state.get("report_template_input"):
+            template = state["report_template_input"]
+            prompt_payload["templateInput"] = {key: template[key] for key in
+                ("identity", "filename", "content", "layout", "businessFactsAllowed") if key in template}
         if feedback:
             prompt_payload["supplement"] = feedback
         basis_service = getattr(self, "report_basis_service", None)
@@ -298,6 +302,10 @@ class RuntimePlanningMixin:
                     if normalized.comparison_period else {}),
                 "reportType": report_type,
                 "deliveryFormat": delivery_format,
+                **({"fileInputs": [item.model_dump(mode="json", by_alias=True) for item in request.file_inputs]}
+                    if request.file_inputs else {}),
+                **({"templateInput": request.template_input.model_dump(mode="json", by_alias=True)}
+                    if request.template_input else {}),
                 **({"sectionCount": normalized.section_count} if normalized.section_count is not None else {}),
                 **({"domains": domains} if domains else {}),
                 "period": period.model_dump(mode="json"),
@@ -348,6 +356,9 @@ class RuntimePlanningMixin:
 
     @staticmethod
     def _record_normalized_request(state: dict[str, Any], envelope: ReportRequestEnvelope) -> None:
+        from .request_materials import freeze_request_materials
+
+        freeze_request_materials(state, envelope)
         current = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
         if not isinstance(current, dict):
             raise ReportingError("report_workflow_state_invalid", "报表请求语境状态无效。")
@@ -1665,6 +1676,7 @@ class RuntimePlanningMixin:
         base_payload = {
             "reportGoal": self._envelope(run_context).report_goal,
             "deliveryFormat": self._envelope(run_context).delivery_format,
+            "templateInput": state.get("report_template_input"),
             "domains": list(self._envelope(run_context).domains or ()),
             "periodWindows": self._envelope(run_context).period_windows().public_dict(),
             "analysisSequence": [

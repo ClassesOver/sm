@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from .auth import AdminAuthService
-from .models import AdminAccount, AdminSessionInvalid, ManagementError, ManagementScope
+from .models import AdminAccount, AdminSessionInvalid, ManagementError
 from .repository import audit_events
 from .scopes import ScopeService
 from .settings import ManagementSettings
@@ -33,7 +33,7 @@ class ManagementRoute(APIRoute):
             try:
                 response = await original(request)
             except RequestValidationError as error:
-                allowed = {"name", "database", "sourceId", "dsn", "username", "password", "newPassword", "currentPassword", "companyId", "scopeDatabase", "expectedVersion", "reportingProfileVersionId", "metadataVersionId"}
+                allowed = {"name", "database", "sourceId", "dsn", "username", "password", "newPassword", "currentPassword", "expectedVersion", "reportingProfileVersionId", "metadataVersionId"}
                 fields = [{"field": str(item["loc"][-1]), "code": item["type"], "message": "请检查此字段的格式或长度。"}
                           for item in error.errors() if item.get("loc") and str(item["loc"][-1]) in allowed]
                 response = JSONResponse(
@@ -69,14 +69,8 @@ class PasswordInput(BaseModel):
     new_password: str = Field(alias="newPassword", min_length=12, max_length=128)
 
 
-class ScopeInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    database: str = Field(min_length=1, max_length=128)
-    company_id: str = Field(alias="companyId", min_length=1, max_length=128)
-    name: str = Field(min_length=1, max_length=200)
 
-
-def create_management_router(auth: AdminAuthService, settings: ManagementSettings, *, report_runtime=None) -> APIRouter:
+def create_management_router(auth: AdminAuthService, settings: ManagementSettings, *, report_runtime=None, startup_settings=None, system_configuration_state=None) -> APIRouter:
     router = APIRouter(route_class=ManagementRoute, tags=["management"])
 
     async def require_admin(request: Request) -> AdminAccount:
@@ -199,18 +193,14 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
 
     scopes = ScopeService(auth)
 
-    @protected.get("/management/api/v1/scopes")
-    async def list_scopes(request: Request, limit: Annotated[int, Query(ge=1, le=100)] = 50,
-                          after: str | None = None):
-        return await scopes.list(request.cookies[SESSION_COOKIE], limit, after)
 
-    @protected.post("/management/api/v1/scopes", status_code=201)
-    async def register_scope(request: Request, payload: ScopeInput):
-        require_csrf(request)
-        return await scopes.register(request.cookies[SESSION_COOKIE],
-                                     ManagementScope(payload.database, payload.company_id), payload.name)
 
     router.include_router(protected)
+    if startup_settings is not None:
+        from .configuration_api import create_configuration_router
+
+        router.include_router(create_configuration_router(auth, settings, startup_settings,
+            system_configuration_state=system_configuration_state))
     from .report_bases import ReportBasisService
     from .report_issue_reviews import ReportIssueReviewService
     from .report_issue_reviews_api import create_report_issue_reviews_router
@@ -228,6 +218,16 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     @router.get("/management/login", include_in_schema=False)
     async def login_page():
         return page()
+
+    @router.get("/management/favicon.svg", include_in_schema=False)
+    async def management_favicon():
+        if settings.static_dir is None:
+            raise HTTPException(status_code=404)
+        root = settings.static_dir.resolve()
+        path = (root / "favicon.svg").resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(path)
 
     @router.get("/management/assets/{asset_path:path}", include_in_schema=False)
     async def management_asset(asset_path: str):
@@ -249,7 +249,11 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     @router.get("/management/sources/{source_id}", include_in_schema=False)
     @router.get("/management/sources/{source_id}/view", include_in_schema=False)
     @router.get("/management/sources/{source_id}/edit", include_in_schema=False)
-    @router.get("/management/organizations", include_in_schema=False)
+    @router.get("/management/metrics", include_in_schema=False)
+    @router.get("/management/statistical-policies", include_in_schema=False)
+    @router.get("/management/knowledge", include_in_schema=False)
+    @router.get("/management/system-configuration", include_in_schema=False)
+    @router.get("/management/preferences", include_in_schema=False)
     @router.get("/management/report-issues", include_in_schema=False)
     @router.get("/management/account/password", include_in_schema=False)
     async def management_page(request: Request):

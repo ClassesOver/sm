@@ -126,6 +126,9 @@ def trace_body(markdown: str, *, mask_inline_code: bool = True) -> str:
 
 
 def _parse_trace_body(markdown: str, *, mask_inline_code: bool = True) -> str:
+    from ...preferences.markdown_headings import restore_heading_levels
+
+    markdown = restore_heading_levels(markdown, preserve_offsets=True)
     parser = MarkdownIt("commonmark")
     tokens = parser.parse(markdown)
     offsets = [0]
@@ -170,4 +173,10 @@ def _parse_trace_body(markdown: str, *, mask_inline_code: bool = True) -> str:
     # 未闭合注释按 Markdown 语义延伸到文档末尾；代码中的注释符已被屏蔽。
     for match in re.finditer(r"<!--(?:[\s\S]*?-->|[\s\S]*\Z)", comment_source):
         mask(match.start(), match.end())
+    # 包装和展示编号不参与事实识别；原始 citation 保持实际字节位置及绑定身份。
+    from ...preferences.markdown_references import reference_matches
+
+    for match, _label in reference_matches(''.join(characters)):
+        mask(match.start(), match.start('marker'))
+        mask(match.end('marker'), match.end())
     return "".join(characters)

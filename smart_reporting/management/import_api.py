@@ -9,18 +9,14 @@ from ..reporting.metadata import ReportingMetadataClient
 from .api import SESSION_COOKIE, create_protected_router, csrf_token
 from .data_sources.secrets import CredentialVault
 from .importer import ConfigurationImporter
-from .models import ManagementError, ManagementScope
+from .models import ManagementError, INSTANCE_SCOPE
 from .scopes import ScopeService
 from .settings import ManagementSettings
 
-
 class ImportInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    scope_database: str = Field(alias="scopeDatabase", min_length=1, max_length=128)
-    company_id: str = Field(alias="companyId", min_length=1, max_length=128)
     directory: str = Field(min_length=1, max_length=4096)
     dry_run: bool = Field(alias="dryRun", default=True)
-
 
 def create_import_router(scopes: ScopeService, vault: CredentialVault,
                          metadata_client: ReportingMetadataClient | None = None) -> APIRouter:
@@ -35,7 +31,7 @@ def create_import_router(scopes: ScopeService, vault: CredentialVault,
         if request.headers.get("x-csrf-token", "") != csrf_token(raw):
             raise ManagementError("management_csrf_invalid", "请求校验失败。", 403)
         return await importer.import_configuration(
-            raw, ManagementScope(payload.scope_database, payload.company_id),
+            raw, INSTANCE_SCOPE,
             payload.directory, payload.dry_run, os.environ,
         )
 

@@ -40,14 +40,17 @@ if TYPE_CHECKING:
 
 @functools.cache
 def _report_runtime_package() -> tuple[bytes, str]:
-    """运行时包源码在进程生命周期内固定，只打包一次。"""
+    """冻结生产源码及原有包命名空间，复用共享契约而不另造渲染版模型。"""
     from .delivery.report_runtime import runtime as report_runtime
 
-    package_root = Path(report_runtime.__file__).parent
+    package_root = Path(report_runtime.__file__).parents[3]
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for path in sorted(package_root.glob("*.py")):
-            info = zipfile.ZipInfo(f"report_runtime/{path.name}")
+        for path in sorted(package_root.rglob("*.py")):
+            relative = path.relative_to(package_root)
+            if {"tests", "node_modules", "__pycache__", "static"}.intersection(relative.parts):
+                continue
+            info = zipfile.ZipInfo(f"smart_reporting/{relative.as_posix()}")
             info.date_time = (1980, 1, 1, 0, 0, 0)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16
@@ -298,7 +301,7 @@ class WorkspaceReportService:
             " print(json.dumps({'error':'报表运行时版本不匹配'},ensure_ascii=False));"
             "raise SystemExit(1)\n"
             "sys.path.insert(0,str(package))\n"
-            "from report_runtime.cli import main\n"
+            "from smart_reporting.reporting.delivery.report_runtime.cli import main\n"
             f"payload=Path({payload_relative_path!r}).read_text(encoding='utf-8')\n"
             f"exit_code=main([{action!r}, payload])\n"
             "print(json.dumps({'__reportExitCode':exit_code},separators=(',',':')))\n"
@@ -412,6 +415,23 @@ class WorkspaceReportService:
         job["_pageLayout"] = dict(page_layout)
         self._store_job(job, run_context)
 
+    async def bind_format_preferences(
+        self, job_id: str, preferences: dict[str, Any], run_context: RunContext | None = None,
+    ) -> None:
+        """绑定任务已冻结的格式默认；不注册为模型可调用工具。"""
+        from ..preferences.document_adapter import document_design
+        from ..preferences.models import FORMATS
+
+        if not isinstance(preferences, dict) or set(preferences) != set(FORMATS):
+            raise WorkspaceError("报告格式偏好无效。")
+        job = self._load_job(job_id, run_context)
+        existing = job.get("_formatPreferences")
+        if existing is not None and existing != preferences:
+            raise WorkspaceError("报告格式偏好已经绑定且内容不同。")
+        job["_formatPreferences"] = copy.deepcopy(preferences)
+        job["_formatDesigns"] = {format: document_design(preferences[format]).compact() for format in ("pdf", "word")}
+        self._store_job(job, run_context)
+
     async def bind_document_context(
         self,
         job_id: str,
@@ -516,6 +536,12 @@ class WorkspaceReportService:
         job = self._load_job(job_id, run_context)
         job.pop("_managementOverviewProjection", None)
         job.pop("_managementOverviewProjectionFile", None)
+        job.pop("_tableCaptionManifest", None)
+        job.pop("_tableCaptionWorkflowRunId", None)
+        if artifact_manifest is not None:
+            job["_tableCaptionManifest"] = copy.deepcopy(artifact_manifest)
+            if run_context is not None:
+                job["_tableCaptionWorkflowRunId"] = run_context.run_id
         await self._job_status(job, run_context)
         relative_output = self.service.normalize_path(output_path, allow_root=False)
         output = PurePosixPath(relative_output)
@@ -548,6 +574,43 @@ class WorkspaceReportService:
         published = False
         try:
             thread_id = _thread(run_context)
+            pdf_chart_images: list[dict[str, Any]] = []
+            pdf_chart_image_issues: list[dict[str, str]] = []
+            charts = artifact_manifest.get("charts") if isinstance(artifact_manifest, dict) else None
+            if isinstance(charts, (list, tuple)):
+                seen_chart_ids: set[str] = set()
+                for chart in charts:
+                    chart_id = chart.get("chartId") if isinstance(chart, dict) else None
+                    chart_path = chart.get("path") if isinstance(chart, dict) else None
+                    size = chart.get("size") if isinstance(chart, dict) else None
+                    digest = chart.get("sha256") if isinstance(chart, dict) else None
+                    if (
+                        not isinstance(chart_id, str) or not chart_id or chart_id in seen_chart_ids
+                        or not isinstance(chart_path, str) or not isinstance(size, int)
+                        or not isinstance(digest, str)
+                    ):
+                        pdf_chart_image_issues.append({
+                            "code": "pdf_chart_image_identity_unavailable",
+                            "message": "图表图片身份无法核验，PDF 保留原图并继续生成。",
+                        })
+                        continue
+                    seen_chart_ids.add(chart_id)
+                    try:
+                        normalized_chart_path = self.service.normalize_path(chart_path, allow_root=False)
+                        identity = await self.service.ahash_file(thread_id, normalized_chart_path)
+                    except Exception as error:
+                        loguru_logger.warning("pdf_chart_image_identity_unavailable reason={}", type(error).__name__)
+                        identity = None
+                    if identity is None or identity.get("size") != size or identity.get("sha256") != digest:
+                        pdf_chart_image_issues.append({
+                            "code": "pdf_chart_image_identity_changed",
+                            "message": "图表图片在PDF生成前发生变化，保留原图并继续生成。",
+                        })
+                        continue
+                    pdf_chart_images.append({
+                        "chartId": chart_id, "path": normalized_chart_path,
+                        "size": size, "sha256": digest,
+                    })
             await self.service.aensure_directory(thread_id, output.parent.parent.as_posix())
             if await self.service.apath_exists(thread_id, final_directory_relative):
                 raise WorkspacePathConflict("报告 revision 输出目录已经存在，请使用新的 revision。")
@@ -575,6 +638,8 @@ class WorkspaceReportService:
                     "temporary_path": temporary_pdf,
                     "page_layout": job.get("_pageLayout"),
                     "word_output_path": staged_word_relative,
+                    "chart_images": pdf_chart_images,
+                    "chart_image_issues": pdf_chart_image_issues,
                 },
                 run_context,
             )
@@ -693,6 +758,8 @@ class WorkspaceReportService:
             # 逐页验收结果由本方法返回并写入 Workflow 权威状态；job 只需记录是否通过，
             # 否则最多 200 页的 pages 数组会让 durable job 再次线性越过 48 KiB。
             job["validation"] = {"ok": validation.get("ok") is True}
+            job.pop("_tableCaptionManifest", None)
+            job.pop("_tableCaptionWorkflowRunId", None)
             try:
                 self._store_job(job, run_context)
             except Exception as error:

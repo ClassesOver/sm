@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import html
+import io
 import re
 import shutil
 import subprocess
@@ -13,7 +14,24 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from .design import cover_layout_issues, presentation_context, visible_cover_text, watermark_text
+from loguru import logger as loguru_logger
+
+from .chart_image_dpi import (
+    DerivedChartImage,
+    apply_chart_derivatives,
+    chart_image_boxes,
+    derive_chart_image,
+    mark_chart_images,
+    read_pdf_chart_dpi,
+    verify_chart_image_sources,
+)
+from .design import (
+    cover_layout_issues,
+    page_decoration_texts,
+    presentation_context,
+    visible_cover_text,
+    watermark_text,
+)
 from .docx import _render_docx, _validate_docx_rendering, _validate_docx_structure
 from .markdown import (
     APPENDIX_TABLES_SENTINEL,
@@ -245,6 +263,8 @@ class ReportRuntime:
         temporary_path: str,
         page_layout: dict[str, str] | None = None,
         word_output_path: str | None = None,
+        chart_images: list[dict[str, Any]] | None = None,
+        chart_image_issues: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         try:
             from markdown_it import MarkdownIt
@@ -263,18 +283,30 @@ class ReportRuntime:
             except UnicodeDecodeError as error:
                 raise ReportFailure("Markdown 文件必须使用 UTF-8 编码") from error
 
-            design = resolve_design(state)
+            design = resolve_design(state, format="pdf")
+            word_design = resolve_design(state, format="word")
             # 导出的 PDF/Word 默认不带来源编号与附录；只有导出设置显式开启时才展示。
             include_sources = design.options.sources
             context = _document_context(state.get("_documentContext"))
             from .overview import load_overview
             from .projection import build_render_projection
+            from .table_captions import (
+                load_table_caption_input,
+                prepare_table_captions,
+                render_table_captions,
+            )
+
+            needs_table_captions = bool(prepare_table_captions(markdown, {})[2])
+            table_caption_source = (load_table_caption_input(state, self.workspace,
+                str(source.relative_to(self.workspace)), source_bytes) if needs_table_captions
+                else {'status': 'not_required', 'captions': None, 'issues': [], 'source': None})
 
             projection = build_render_projection(
                 source_bytes, context["sections"], citation_presentations=state.get("_citationPresentations"),
                 include_sources=include_sources, trace_sources=state.get("_traceSourcePresentations"),
                 management_overview=load_overview(state, self.workspace),
                 claim_support=state.get('_claimSupportProjection'),
+                table_captions=table_caption_source['captions'],
             )
             pdf_markdown, citation_presentations, trace_source_render = (
                 projection.markdown, projection.citation_presentations, projection.trace_source_render,
@@ -299,6 +331,9 @@ class ReportRuntime:
                 raise ReportFailure("Markdown 正式章节标识与已批准提纲不一致")
             _bind_heading_anchors(tokens, context["headingNumbers"])
             allowed_images = self._images(source, tokens, state)
+            verified_chart_images = verify_chart_image_sources(
+                self.workspace, chart_images or [], allowed_images,
+            )
             source_artifact = self._artifact(source)
             if source_artifact["sha256"] != projection.receipt["sourceSha256"]:
                 raise ReportFailure("Markdown 在投影期间发生变化")
@@ -308,6 +343,9 @@ class ReportRuntime:
                     _join_cjk_soft_breaks(_body_tokens(tokens)), parser.options, {}
                 )
             )
+            body = render_table_captions(body, projection.table_captions,
+                numbered=bool(design.tables and design.tables.caption_numbering))
+            body = mark_chart_images(body, self._image_sources, verified_chart_images)
             html_body = self._inline_images(
                 body.replace(f"<p>{APPENDIX_TABLES_SENTINEL}</p>", APPENDIX_TABLES_TITLE)
                 .replace(f"<p>{SUMMARY_SENTINEL}</p>", SUMMARY_TITLE)
@@ -343,17 +381,70 @@ class ReportRuntime:
                 trace_sources=(trace_source_render if include_sources else None),
                 design=design,
             )
-            render_issues: list[dict[str, str]] = []
+            context["filename"] = output.name
+            word_context = dict(context)
+            word_context["filename"] = word_output.name
+            word_preferences = state.get("_formatPreferences", {}).get("word")
+            pdf_preferences = state.get("_formatPreferences", {}).get("pdf")
+            for document_context, preferences in ((context, pdf_preferences), (word_context, word_preferences)):
+                if preferences:
+                    document_context.update(organizationName=preferences["common"]["signer"],
+                        generatedByLabel=preferences["common"]["generatedByLabel"])
+            if pdf_preferences:
+                pdf_document, _ = _semantic_documents(html_body, context=context, layout=layout,
+                    include_cover=include_cover, include_toc=include_toc,
+                    citation_presentations=(citation_presentations if include_sources else []),
+                    trace_sources=(trace_source_render if include_sources else None), design=design)
+            if word_preferences or word_design != design:
+                # Word 使用自身的排版、落款和导出开关，不借用 PDF 的解析结果。
+                word_sources = word_design.options.sources
+                word_projection = build_render_projection(source_bytes, word_context["sections"],
+                    citation_presentations=state.get("_citationPresentations"), include_sources=word_sources,
+                    trace_sources=state.get("_traceSourcePresentations"), management_overview=load_overview(state, self.workspace),
+                    claim_support=state.get('_claimSupportProjection'), table_captions=table_caption_source['captions'])
+                word_tokens = parser.parse(word_projection.markdown)
+                _bind_heading_anchors(word_tokens, word_context["headingNumbers"])
+                word_html = _strip_strong_boundaries(parser.renderer.render(
+                    _join_cjk_soft_breaks(_body_tokens(word_tokens)), parser.options, {}))
+                word_html = render_table_captions(word_html, word_projection.table_captions,
+                    numbered=bool(word_design.tables and word_design.tables.caption_numbering))
+                word_html = self._inline_images(
+                    word_html.replace(f"<p>{APPENDIX_TABLES_SENTINEL}</p>", APPENDIX_TABLES_TITLE)
+                    .replace(f"<p>{SUMMARY_SENTINEL}</p>", SUMMARY_TITLE)
+                    .replace(f"<p>{SUMMARY_END_SENTINEL}</p>", SUMMARY_END),
+                    source.parent, allowed_images, self._image_sources)
+                _, word_document = _semantic_documents(word_html, context=word_context, layout=layout,
+                    include_cover=word_design.options.cover, include_toc=word_design.options.toc,
+                    citation_presentations=(word_projection.citation_presentations if word_sources else []),
+                    trace_sources=(word_projection.trace_source_render if word_sources else None), design=word_design)
+            render_issues: list[dict[str, str]] = [
+                *table_caption_source['issues'], *projection.table_caption_issues,
+                *(chart_image_issues or []),
+            ]
+            if pdf_preferences and pdf_preferences.get('embedFonts') is False:
+                render_issues.append({'code': 'pdf_font_embedding_required',
+                    'message': 'PDF/UA 输出始终嵌入字体；旧版关闭字体嵌入设置已忽略，文件与下载继续保留。'})
             if projection.claim_support_check is not None and projection.claim_support_check['status'] != 'verified':
                 render_issues.append({'code': 'claim_support_projection_unknown', 'message': '解释与建议支持状态未能核验，已保留提示和可读报告。'})
             if projection.overview_check is not None and projection.overview_check["status"] != "verified":
                 render_issues.append({"code": "management_overview_projection_unknown", "message": "经营总览身份未获核验，已保留缺项说明和可读报告。"})
+            chart_image_dpi_evidence: list[dict[str, Any]] = []
 
             def render_pdf() -> tuple[int, int]:
                 nonlocal pdf_document
 
                 import pypdf
                 from weasyprint import HTML, URLFetcher
+
+                output_options = {'jpeg_quality': design.pdf_output.image_quality} if design.pdf_output else {}
+                target_dpi = design.charts.image_dpi if design.charts is not None else None
+                if target_dpi is None:
+                    legacy_preferences = state.get('_formatPreferences', {}).get('pdf', {})
+                    legacy_charts = legacy_preferences.get('charts') if isinstance(legacy_preferences, dict) else None
+                    target_dpi = legacy_charts.get('imageDpi') if isinstance(legacy_charts, dict) else None
+                if not isinstance(target_dpi, int) or isinstance(target_dpi, bool):
+                    target_dpi = None
+                chart_derivatives: dict[str, DerivedChartImage] = {}
 
                 file_fetcher = URLFetcher(allowed_protocols={"file"}, fail_on_errors=True)
                 # default_url_fetcher 已弃用（WeasyPrint 后续版本移除），data URI 同样交给只放行
@@ -376,7 +467,87 @@ class ReportRuntime:
                     string=pdf_document,
                     base_url=str(source.parent),
                     url_fetcher=fetch_resource,
-                ).render()
+                ).render(**output_options)
+                image_boxes = chart_image_boxes(preflight_document)
+                pdf_html_body = html_body
+                if target_dpi is not None:
+                    for image_path, chart_source in verified_chart_images.items():
+                        boxes = image_boxes.get(chart_source.chart_id, [])
+                        if not boxes:
+                            render_issues.append({
+                                'code': 'pdf_chart_image_box_unverified',
+                                'message': '图表图片显示区域无法唯一核验，PDF 保留原图并继续生成。',
+                            })
+                            continue
+                        derived = derive_chart_image(
+                            image_path, chart_source,
+                            # 同一图片可多次绘制；按最小框派生，各处仍保留自己的版面尺寸。
+                            display_width_css_px=min(box[0] for box in boxes),
+                            display_height_css_px=min(box[1] for box in boxes),
+                            target_dpi=target_dpi,
+                        )
+                        if derived is None:
+                            content = image_path.read_bytes()
+                            from PIL import Image
+                            with Image.open(io.BytesIO(content)) as image:
+                                image.load()
+                                width, height = image.size
+                            derived = DerivedChartImage(
+                                chart_id=chart_source.chart_id,
+                                source_path=chart_source.path,
+                                source_sha256=chart_source.sha256,
+                                derived_sha256=chart_source.sha256,
+                                media_type='image/png' if image_path.suffix.lower() == '.png' else 'image/jpeg',
+                                width=width, height=height, data=content,
+                            )
+                        chart_derivatives[chart_source.chart_id] = derived
+                    changed = {
+                        chart_id: item for chart_id, item in chart_derivatives.items()
+                        if item.derived_sha256 != item.source_sha256
+                    }
+                    if changed:
+                        pdf_html_body = apply_chart_derivatives(html_body, changed, image_boxes)
+                        pdf_document, _ = _semantic_documents(
+                            pdf_html_body, context=context, layout=layout,
+                            include_cover=include_cover, include_toc=include_toc,
+                            citation_presentations=(citation_presentations if include_sources else []),
+                            trace_sources=(trace_source_render if include_sources else None),
+                            design=design,
+                        )
+                        preflight_document = HTML(
+                            string=pdf_document,
+                            base_url=str(source.parent),
+                            url_fetcher=fetch_resource,
+                        ).render(**output_options)
+                        final_boxes = chart_image_boxes(preflight_document)
+                        changed_boxes = {
+                            key: {'before': image_boxes.get(key), 'after': final_boxes.get(key)}
+                            for key in changed
+                            if len(final_boxes.get(key, [])) != len(image_boxes.get(key, []))
+                            or any(abs(before - after) > 0.001 for before_box, after_box in zip(
+                                image_boxes.get(key, []), final_boxes.get(key, []), strict=False
+                            ) for before, after in zip(before_box, after_box, strict=True))
+                        }
+                        if changed_boxes:
+                            pdf_document, _ = _semantic_documents(
+                                html_body, context=context, layout=layout,
+                                include_cover=include_cover, include_toc=include_toc,
+                                citation_presentations=(citation_presentations if include_sources else []),
+                                trace_sources=(trace_source_render if include_sources else None),
+                                design=design,
+                            )
+                            pdf_html_body = html_body
+                            chart_derivatives.clear()
+                            preflight_document = HTML(
+                                string=pdf_document,
+                                base_url=str(source.parent),
+                                url_fetcher=fetch_resource,
+                            ).render(**output_options)
+                            render_issues.append({
+                                'code': 'pdf_chart_image_layout_changed',
+                                'message': '图表派生后版面尺寸发生变化，PDF 保留原图并继续生成。',
+                                'details': changed_boxes,
+                            })
                 toc_page_numbers = _toc_page_numbers(
                     preflight_document.pages, context["headingNumbers"]
                 )
@@ -386,7 +557,7 @@ class ReportRuntime:
                     final_document = preflight_document
                 else:
                     pdf_document, _ = _semantic_documents(
-                        html_body,
+                        pdf_html_body,
                         context=context,
                         layout=layout,
                         toc_page_numbers=toc_page_numbers,
@@ -400,7 +571,7 @@ class ReportRuntime:
                         string=pdf_document,
                         base_url=str(source.parent),
                         url_fetcher=fetch_resource,
-                    ).render()
+                    ).render(**output_options)
                     if (
                         _toc_page_numbers(final_document.pages, context["headingNumbers"])
                         != toc_page_numbers
@@ -424,6 +595,32 @@ class ReportRuntime:
                     include_cover=include_cover,
                     design=design,
                 )
+                if chart_derivatives:
+                    try:
+                        readback = read_pdf_chart_dpi(temporary, chart_derivatives)
+                        for chart_id, values in readback.items():
+                            expected_count = len(image_boxes.get(chart_id, []))
+                            if (
+                                not values or len(values) != expected_count
+                                or any(max(item['widthDpi'], item['heightDpi']) > target_dpi + 0.05 for item in values)
+                            ):
+                                raise ValueError('chart dpi readback mismatch')
+                            item = chart_derivatives[chart_id]
+                            chart_image_dpi_evidence.append({
+                                'chartId': chart_id,
+                                'sourcePath': item.source_path,
+                                'sourceSha256': item.source_sha256,
+                                'derivedSha256': item.derived_sha256,
+                                'targetDpi': target_dpi,
+                                'draws': values,
+                            })
+                    except Exception as error:
+                        loguru_logger.warning('pdf_chart_image_dpi_readback_unverified reason={}', type(error).__name__)
+                        chart_image_dpi_evidence.clear()
+                        render_issues.append({
+                            'code': 'pdf_chart_image_dpi_unverified',
+                            'message': 'PDF 图表有效分辨率未能独立核验，文件保留并继续交付。',
+                        })
                 pdf_size = temporary.stat().st_size
                 if pdf_size > MAX_PDF_BYTES:
                     raise ReportFailure("PDF 文件不能超过 200 MiB")
@@ -436,15 +633,19 @@ class ReportRuntime:
                 return pdf_size, page_count
 
             def render_word() -> tuple[int, dict[str, Any]]:
-                word_structure = _render_docx(
+                rendered_word_structure = _render_docx(
                     word_document,
                     source_parent=source.parent,
                     output=temporary_docx,
-                    context=context,
+                    context=word_context,
                     layout=layout,
-                    include_cover=include_cover,
-                    include_toc=include_toc,
-                    design=design,
+                    include_cover=word_design.options.cover,
+                    include_toc=word_design.options.toc,
+                    design=word_design,
+                    chart_image_dpi=(word_design.charts.image_dpi if word_design.charts is not None
+                        and word_design.charts.image_dpi is not None else
+                        (word_preferences or {}).get("charts", {}).get("imageDpi")),
+                    chart_source_sha256s={item["sha256"] for item in image_artifacts},
                 )
                 docx_size = temporary_docx.stat().st_size
                 if docx_size > MAX_DOCX_BYTES:
@@ -455,6 +656,8 @@ class ReportRuntime:
                     expected_headings=context["headingNumbers"],
                     expected_image_count=len(allowed_images),
                 )
+                if isinstance(rendered_word_structure, dict) and "chartImageDpi" in rendered_word_structure:
+                    word_structure["chartImageDpi"] = rendered_word_structure["chartImageDpi"]
                 return docx_size, word_structure
 
             completed: dict[str, tuple[Path, Path]] = {}
@@ -520,7 +723,9 @@ class ReportRuntime:
                 **artifacts,
                 "renderIssues": render_issues,
                 "projection": projection.receipt,
+                "tableCaptionSource": {key: value for key, value in table_caption_source.items() if key != 'captions'},
                 "images": image_artifacts,
+                "chartImageDpi": chart_image_dpi_evidence,
                 "pageCount": page_count,
                 "imageCount": len(allowed_images),
                 "pageLayout": layout,
@@ -532,8 +737,10 @@ class ReportRuntime:
                     "sources": include_sources,
                 },
                 "reportTitle": presentation_context(design, context)["title"],
-                "documentContext": context,
+                "documentContext": {key: value for key, value in context.items() if key != "filename"},
                 "reportDesign": design.compact(),
+                "wordReportDesign": word_design.compact(),
+                "wordDocumentContext": {key: value for key, value in word_context.items() if key != "filename"},
                 "visualTheme": deepcopy(REPORT_VISUAL_THEME),
                 "wordStructure": word_structure,
                 "citationPresentations": citation_presentations,
@@ -714,6 +921,12 @@ class ReportRuntime:
                             pages=pages_value,
                         )
                     numbered = index >= first_numbered_page
+                    preference_decorations = page_decoration_texts(design, context, physical_page=index,
+                        body_start_page=body_start_page, page=page_value, pages=pages_value,
+                        filename=Path(render["pdf"]["path"]).name) if design.header_footer and numbered else None
+                    if preference_decorations is not None:
+                        compact = "".join(page_text.split())
+                        layout_present = all("".join(value.split()) in compact for value in preference_decorations.values())
                     watermark_present = bool(design.watermark.enabled and mark_text and mark_text in page_text and (numbered or design.watermark.cover))
                     substantive_text = "".join(page_text.split())
                     if numbered:
@@ -731,6 +944,8 @@ class ReportRuntime:
                                 if value
                             ),
                         ]
+                        if preference_decorations is not None:
+                            decorations = [mark_text if design.watermark.enabled else "", *preference_decorations.values()]
                         # 页眉、页脚和水印即使存在，也不能把无正文页面伪装成非空白页。
                         for decoration in decorations:
                             if decoration:
@@ -763,7 +978,6 @@ class ReportRuntime:
                 self._validate_trace_source_visibility(render, extracted_text)
                 cover_text = extracted_pages[0]
                 toc_text = "\n".join(extracted_pages[first_numbered_page - 1 : body_start_page - 1])
-                final_text = extracted_pages[-1]
                 cover_values = visible_cover_text(design, context)
                 cover_compact = "".join(cover_text.split())
                 cover_ok = all("".join(value.split()) in cover_compact for value in cover_values)
@@ -775,10 +989,10 @@ class ReportRuntime:
                     in "".join(extracted_pages[body_start_page - 1].split())
                 )
                 toc_ok = _toc_headings_present(toc_text, context["headingNumbers"])
-                signature_ok = (
-                    context["organizationName"] in final_text
-                    and context["generatedDate"] in final_text
-                )
+                from .design import signature_date
+
+                signature_ok = any(context["organizationName"] in text
+                    and signature_date(design, context) in text for text in extracted_pages[body_start_page - 1:])
                 watermark_pages = [
                     item["page"]
                     for item in pages
@@ -793,10 +1007,10 @@ class ReportRuntime:
                 word_rendering = _validate_docx_rendering(
                     word,
                     temp_path / "word-validation",
-                    context=context,
+                    context=render.get("wordDocumentContext", context),
                     layout=layout,
-                    include_cover=include_cover,
-                    design=design,
+                    include_cover=ReportDesign.model_validate(render.get("wordReportDesign") or render.get("reportDesign") or {}).options.cover,
+                    design=ReportDesign.model_validate(render.get("wordReportDesign") or render.get("reportDesign") or {}),
                 )
             markdown_image_count = int(render.get("imageCount") or 0)
             missing_images = max(0, markdown_image_count - rendered_image_count)
@@ -874,20 +1088,32 @@ class ReportRuntime:
                 raise ReportFailure("Word 产物在验收期间发生变化，请重新验收")
             from .overview import load_overview
             from .projection import verify_render_projection
+            from .table_captions import load_table_caption_input, prepare_table_captions
 
             try:
                 source_path = _input_path(self.workspace, render["markdown"]["path"], ".md")
+                source_bytes = source_path.read_bytes()
+                caption_source = (load_table_caption_input(state, self.workspace, render['markdown']['path'], source_bytes)
+                    if prepare_table_captions(source_bytes.decode().replace('\r\n', '\n').replace('\r', '\n'), {})[2]
+                    else {'captions': None})
                 projection_check = verify_render_projection(
-                    render.get("projection"), source_path.read_bytes(), context["sections"],
+                    render.get("projection"), source_bytes, context["sections"],
                     citation_presentations=state.get("_citationPresentations"),
                     include_sources=isinstance(export_settings, dict) and export_settings.get("sources") is True,
                     trace_sources=state.get("_traceSourcePresentations"),
                     management_overview=load_overview(state, self.workspace),
                     claim_support=state.get('_claimSupportProjection'),
+                    table_captions=caption_source['captions'],
                 )
             except Exception:
                 projection_check = {"status": "unknown", "reason": "projection_source_unavailable"}
             validation["projectionCheck"] = projection_check
+            table_caption_issues = [issue for issue in render.get('renderIssues', ()) if issue.get('code') in {
+                'report_table_caption_source_unavailable', 'report_table_caption_unverified'}]
+            if table_caption_issues:
+                validation['ok'] = False
+                validation['status'] = 'validation_failed'
+                validation['issues'].extend(table_caption_issues)
             layout_issues = [issue for issue in render.get("renderIssues", ()) if issue.get("code") in {"report_cover_text_overflow", "report_cover_overlap"}]
             if layout_issues:
                 validation["ok"] = False

@@ -30,7 +30,7 @@ class NormalizedReportPrompt(_StrictModel):
     questions: tuple[ReportQuestion, ...] | None = Field(default=None, min_length=1, max_length=50)
     display_unit: str | None = Field(default=None, alias="displayUnit", min_length=1, max_length=32)
     comparison_period: ReportPeriod | None = Field(default=None, alias="comparisonPeriod")
-    delivery_format: Literal["document", "pptx", "xlsx"] | None = Field(default=None, alias="deliveryFormat")
+    delivery_format: Literal["pdf", "docx", "document", "pptx", "xlsx"] | None = Field(default=None, alias="deliveryFormat")
     delivery_format_ambiguous: bool = Field(default=False, alias="deliveryFormatAmbiguous")
     period: ReportPeriod | None = None
     report_type: Literal["comprehensive", "topic"] | None = Field(default=None, alias="reportType")

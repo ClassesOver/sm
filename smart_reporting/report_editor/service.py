@@ -43,7 +43,6 @@ from ..reporting.delivery.publishing import (
     ReportDownloadScope,
     publication_result,
 )
-from ..reporting.delivery.report_design import resolve_design
 from ..reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from ..reporting.models import ReportingError
 from ..reporting.trace.chart_subjects import freeze_chart_presentations
@@ -70,10 +69,16 @@ from .chart_edits import (
     load_chart_edit_records,
     load_table_edit_records,
 )
-from .design import ReportEditorDesignService
+from .design import (
+    ReportEditorDesignService,
+    editor_base_design,
+    editor_design_overrides,
+    restore_format_defaults,
+)
 from .design_preview import ReportDesignPreviewService
 from .native_models import EditorGrantContext
 from .render_preparation import prepare_editor_render
+from .template_provenance import public_validation
 from .trace_retention import source_lifecycle, source_lifecycle_lock
 from .trace_revisions import (
     snapshot_revision_lineage,
@@ -442,7 +447,7 @@ class ReportEditorContext(BaseModel):
     source: str = Field(default="published", pattern=r"^(published|manual)$")
     created_at: datetime | None = Field(default=None, alias="createdAt")
     note: str = Field(default="", max_length=200)
-    delivery_format: Literal["document", "pptx", "xlsx"] = Field(
+    delivery_format: Literal["document", "pdf", "docx", "pptx", "xlsx"] = Field(
         default="document", alias="deliveryFormat"
     )
     pptx_path: str | None = Field(default=None, alias="pptxPath", max_length=1024)
@@ -608,8 +613,14 @@ class ReportEditorGrantService:
     async def lookup_session(
         self, raw_session: str, *, now: datetime | None = None
     ) -> ReportEditorSession:
+        return await self.lookup_registered_session(token_hash(raw_session), now=now)
+
+    async def lookup_registered_session(
+        self, session_hash: str, *, now: datetime | None = None
+    ) -> ReportEditorSession:
+        """仅供服务端已登记交接句柄使用；HTTP不得接收浏览器提交的会话摘要。"""
         current = _utc(now or datetime.now(UTC))
-        session = await self.repository.get_session(token_hash(raw_session))
+        session = await self.repository.get_session(session_hash)
         if session is None:
             raise ReportingError("report_editor_session_invalid", "报告编辑会话无效。")
         if session.expires_at <= current:
@@ -1118,7 +1129,7 @@ class ReportEditorService:
                 raise ReportingError("report_editor_conflict", "报告草稿保存冲突，请重新载入。")
             self.design.check(await self.design._read(context, current_sha), expected_design_sha256)
             target_sha = hashlib.sha256(markdown.encode()).hexdigest()
-            await self.design.prepare_restore(context, current_sha, target_sha, resolve_design(source.job), source)
+            await self.design.prepare_restore(context, current_sha, target_sha, editor_base_design(source), source)
             if target_sha == current_sha:
                 path, _, _ = await self._read_revision_markdown(context)
                 document = ReportEditorDocument(path, markdown, target_sha, source.revision)
@@ -1200,7 +1211,7 @@ class ReportEditorService:
                     expired = True
                 return {
                     "revision": candidate.revision,
-                    "design": resolve_design(candidate.job).model_dump(mode="json", by_alias=True),
+                    "design": editor_base_design(candidate).model_dump(mode="json", by_alias=True),
                     "markdown": markdown,
                     "sha256": sha256,
                     "sources": _history_sources_for_session(
@@ -2101,7 +2112,6 @@ class ReportEditorService:
             raise RuntimeError("报告编辑导出依赖配置不完整")
         if self.public_base_url is None:
             raise RuntimeError("报告编辑导出依赖配置不完整")
-        report_tools = self.report_tools
         artifact_persistence = self.artifact_persistence
         download_grants = self.download_grants
         editor_grants = self.editor_grants
@@ -2123,6 +2133,7 @@ class ReportEditorService:
             user_id=scope.user_id,
             session_state=session_state,
         )
+        design_overrides = editor_design_overrides(source_context, report_design)
         export_settings = {
             **report_design.options.model_dump(by_alias=True),
             **{key: bool(settings[key])
@@ -2137,6 +2148,7 @@ class ReportEditorService:
             "designSha256": report_design.digest(),
             "settings": export_settings,
             "note": note,
+            "deliveryFormat": context.delivery_format,
         }
         # 编辑链接长期有效，用户可能从旧修订的链接进入。导出过一次会产生更新的
         # revision；若最新 revision 的 Markdown 与当前草稿一致（用户未再改动），
@@ -2193,9 +2205,17 @@ class ReportEditorService:
                 )
         # 新身份越过全部已登记版本；重定基后应用本次设置，并清除历史设置。
         next_revision = max(context.revision, latest_revision) + 1
-        session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_reportDesign"] = report_design.compact()
-        if export_settings:
-            session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = export_settings
+        session_state[REPORT_JOBS_STATE_KEY][context.job_id] = restore_format_defaults(
+            session_state[REPORT_JOBS_STATE_KEY][context.job_id], source_context)
+        session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_reportDesign"] = design_overrides
+        format_export_settings = {**design_overrides.get('options', {}),
+            **{key: bool(settings[key]) for key in ('cover', 'toc', 'headerFooter', 'pageNumbers', 'sources') if settings and key in settings}}
+        if not source_context.job.get('_formatDesigns'):
+            format_export_settings = export_settings
+        if not self._lineage_features['exportSources']:
+            format_export_settings['sources'] = False
+        if format_export_settings:
+            session_state[REPORT_JOBS_STATE_KEY][context.job_id]["_editorExportSettings"] = format_export_settings
         else:
             session_state[REPORT_JOBS_STATE_KEY][context.job_id].pop("_editorExportSettings", None)
         output_path = _next_pdf_path(context, revision=next_revision)
@@ -2226,11 +2246,12 @@ class ReportEditorService:
                 public_base_url=public_base_url,
             )
             try:
-                rendered = await report_tools._render_report_pair(
-                    context.job_id,
-                    snapshot_path,
-                    output_path,
-                    artifact_manifest=render_manifest,
+                from .template_render import render_editor_document
+
+                rendered = await render_editor_document(
+                    self, context=context, source_context=source_context, document=document,
+                    snapshot_path=snapshot_path, output_path=output_path,
+                    formats=_document_delivery_artifacts(context), render_manifest=render_manifest,
                     management_overview=overview_projection,
                     run_context=run_context,
                 )
@@ -2263,7 +2284,9 @@ class ReportEditorService:
                 )
             word_path = str(PurePosixPath(output_path).with_suffix(".docx"))
             artifact_identities: dict[str, dict[str, Any]] = {}
-            for label, path in (("pdf", output_path), ("word", word_path)):
+            paths = {"pdf": output_path, "word": word_path}
+            for label in _document_delivery_artifacts(context):
+                path = paths[label]
                 try:
                     identity = await self.workspace.ahash_file(scope.workspace_key, path)
                 except (OSError, WorkspaceError):
@@ -2431,6 +2454,7 @@ class ReportEditorService:
                 source="manual",
                 createdAt=datetime.now(UTC),
                 note=note,
+                deliveryFormat=context.delivery_format,
             )
             durable = await self.state_repository.get(context.workflow_run_id)
             if durable is None:
@@ -2485,10 +2509,11 @@ class ReportEditorService:
                 editor_raw_grant=raw_editor,
                 editor_expires_at=editor_expires_at,
             ),
-            "validation": {
+            "validation": public_validation({
+                **next_job['validation'],
                 "ok": validation_ok and not lineage_issues,
                 "issues": [*([] if validation_ok else validation_issues), *lineage_issues],
-            },
+            }, artifact_identities),
         }
 
     async def _persist_delivery(
@@ -2617,7 +2642,7 @@ class ReportEditorService:
             if isinstance(issue, Mapping) and issue.get("code") not in _DELIVERY_RETRYABLE_CODES
         ]
         identities: dict[str, dict[str, Any]] = {}
-        for label in ("pdf", "word"):
+        for label in _document_delivery_artifacts(context):
             registered = render.get(label)
             if not isinstance(registered, dict) or not isinstance(registered.get("path"), str):
                 continue
@@ -2676,7 +2701,9 @@ class ReportEditorService:
             )
         )
         # 与导出时一致：登记的验收不含编辑入口告警，返回给调用方的包含。
-        await self._record_delivery(context, {"ok": not issues, "issues": issues})
+        delivery_validation = public_validation({**dict(validation), "ok": not issues, "issues": issues},
+            identities, fallback=context.job.get('validation'))
+        await self._record_delivery(context, delivery_validation)
         result = publication_result(
             report_id=context.report_id,
             revision=context.revision,
@@ -2687,8 +2714,9 @@ class ReportEditorService:
             editor_expires_at=editor_expires_at,
         )
         result["validation"] = {
-            "ok": not issues and not grant_issues,
-            "issues": [*issues, *grant_issues],
+            **delivery_validation,
+            "ok": delivery_validation['ok'] and not grant_issues,
+            "issues": [*delivery_validation['issues'], *grant_issues],
         }
         return result
 
@@ -3273,14 +3301,24 @@ class ReportEditorService:
         return copied
 
     async def _delete_export_snapshot(self, thread_id: str, path: str) -> None:
-        try:
-            await complete_cleanup(self.workspace.adelete_file(thread_id, path))
-        except Exception as error:
-            logger.warning(
-                "report_editor_export_snapshot_cleanup_failed path={} error_type={}",
-                path,
-                type(error).__name__,
-            )
+        targets = [(path, False)]
+        snapshot = PurePosixPath(path)
+        if snapshot.suffix == ".md" and snapshot.name.startswith((".export-", ".preview-")):
+            targets.append((
+                str(snapshot.with_name(f".export-lineage-{snapshot.stem.split('-', 1)[1]}")),
+                True,
+            ))
+        for target, recursive in targets:
+            try:
+                await complete_cleanup(
+                    self.workspace.adelete_file(thread_id, target, recursive=recursive)
+                )
+            except Exception as error:
+                logger.warning(
+                    "report_editor_export_snapshot_cleanup_failed path={} error_type={}",
+                    target,
+                    type(error).__name__,
+                )
 
     @staticmethod
     async def _cleanup_export_revision(
@@ -3414,11 +3452,15 @@ def _lineage_unavailable_issue(error: BaseException, *, rendered: bool) -> dict[
     }
 
 
+def _document_delivery_artifacts(context: ReportEditorContext) -> tuple[str, ...]:
+    return {"document": ("pdf", "word"), "pdf": ("pdf",), "docx": ("word",)}[context.delivery_format]
+
+
 def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None) -> str:
     render = context.job.get("render")
     # Word-only revisions remain editable/re-exportable; never borrow an older PDF.
     artifact = next((
-        (label, render.get(label)) for label in ("pdf", "word")
+        (label, render.get(label)) for label in _document_delivery_artifacts(context)
         if isinstance(render, dict) and isinstance(render.get(label), dict)
         and isinstance(render[label].get("path"), str)
     ), None)
@@ -3429,6 +3471,15 @@ def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None)
         raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前产物 revision。")
     path = PurePosixPath(identity["path"])
     suffix = ".pdf" if label == "pdf" else ".docx"
+    if path.parent.name != f"revision-{context.revision}":
+        markdown = PurePosixPath(context.markdown_path)
+        if (re.fullmatch(r'[0-9a-f]{20}', path.parent.name)
+                and path.parent.parent.name == f'revision-{context.revision}'
+                and path.parent.parent.parent.name == 'template'
+                and markdown.parent.name == f'revision-{context.revision}'
+                and path.parent.parent.parent.parent == markdown.parent.parent.parent):
+            # 模板成品位于请求摘要目录；人工修订沿用正文的既有revision目录。
+            path = markdown.parent / path.name
     if path.suffix.lower() != suffix or path.parent.name != f"revision-{context.revision}":
         raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前产物 revision。")
     path = path.with_suffix(".pdf")

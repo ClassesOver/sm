@@ -57,20 +57,37 @@ def _break_before_header_unit(cell: Any) -> None:
     在单位括号前换行，与 PDF 表头的整体单位换行一致。"""
     for paragraph in cell.paragraphs:
         match = _HEADER_UNIT.match(paragraph.text)
-        if match is None or not paragraph.runs:
+        if match is None:
             continue
-        first = paragraph.runs[0]
-        for run in paragraph.runs[1:]:
-            run._r.getparent().remove(run._r)
-        first.text = match["name"]
-        first.add_break()
-        first.add_text(match["unit"])
+        # 按实际文字节点插入换行，保留超链接及既有 run/书签边界。
+        from copy import deepcopy
+
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        remaining = len(match["name"])
+        for text in paragraph._p.xpath('.//w:r/w:t | .//w:r/w:tab'):
+            if text.tag == qn('w:tab'):
+                remaining -= 1
+                continue
+            value = text.text or ''
+            if remaining > len(value):
+                remaining -= len(value)
+                continue
+            suffix = deepcopy(text)
+            suffix.text = value[remaining:]
+            text.text = value[:remaining]
+            line_break = OxmlElement('w:br')
+            text.addnext(line_break)
+            if suffix.text:
+                line_break.addnext(suffix)
+            break
 
 
 _TABLE_EDGE_ROWS = 2
 
 
-def _keep_table_together_at_edges(table: Any) -> None:
+def _keep_table_together_at_edges(table: Any, *, split_rows: bool = False) -> None:
     """与 PDF 分页一致：行不在单元格中间跨页，表名不孤悬页底，首尾各两行不单独落页。
 
     Word 以段落“与下段同页”把整行与下一行绑定：表头与前两行数据、倒数第二行与末行。
@@ -82,7 +99,9 @@ def _keep_table_together_at_edges(table: Any) -> None:
     rows = list(table.rows)
     for row in rows:
         row_properties = row._tr.get_or_add_trPr()
-        if row_properties.find(qn("w:cantSplit")) is None:
+        for existing in row_properties.findall(qn("w:cantSplit")):
+            row_properties.remove(existing)
+        if not split_rows:
             row_properties.append(OxmlElement("w:cantSplit"))
     data_rows = len(rows) - 1
     keep = set(range(min(_TABLE_EDGE_ROWS, data_rows)))  # 表头及首行数据随后续行同页
@@ -126,6 +145,8 @@ def _render_docx(
     include_cover: bool = True,
     include_toc: bool = True,
     design: ReportDesign | None = None,
+    chart_image_dpi: int | None = None,
+    chart_source_sha256s: set[str] | None = None,
 ) -> dict[str, Any]:
     pandoc = shutil.which("pandoc")
     conversion_root: Path | None = None
@@ -195,6 +216,7 @@ def _render_docx(
     from lxml import html as lxml_html
 
     caption_texts = {"".join(node.itertext()) for node in lxml_html.fromstring(html_document).xpath('//*[@class="report-figure-caption"]')}
+    table_caption_bookmarks = {node.get('data-caption-anchor') for node in lxml_html.fromstring(html_document).xpath('//*[@class="report-table-caption"]')}
     _postprocess_docx(
         output,
         context=context,
@@ -203,15 +225,29 @@ def _render_docx(
         include_toc=include_toc,
         design=design,
         caption_texts=caption_texts,
+        table_caption_bookmarks=table_caption_bookmarks,
     )
-    if include_toc:
+    if include_toc or (design and design.header_footer and design.header_footer.page_number_start != 1):
         _cache_toc_page_numbers(output, context=context, include_cover=include_cover)
-    return _validate_docx_structure(
+    structure = _validate_docx_structure(
         output,
         expected_sections=context["sections"],
         expected_headings=context["headingNumbers"],
         expected_image_count=None,
     )
+    if chart_image_dpi is not None and chart_source_sha256s:
+        from .word_image_dpi import apply_word_chart_image_dpi
+
+        try:
+            structure["chartImageDpi"] = apply_word_chart_image_dpi(
+                output, target_dpi=chart_image_dpi, chart_source_sha256s=chart_source_sha256s
+            )
+        except Exception as error:
+            logger.warning("report_word_chart_dpi_skipped error_type={}", type(error).__name__)
+            structure["chartImageDpi"] = {
+                "status": "failed", "images": [], "issues": ["chart_image_dpi_apply_failed"]
+            }
+    return structure
 
 
 def _heading_body_pages(
@@ -253,7 +289,7 @@ def _heading_body_pages(
 
 
 def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cover: bool) -> None:
-    """把目录 PAGEREF 的缓存结果写成实际页码。
+    """把目录与正文节页数字段的缓存写成实际分页结果。
 
     字段仍标记为待更新，Word 打开时会重算；不刷新字段的查看器（受保护视图、WPS 预览）
     此前会显示固定的缓存值“1”。按 LibreOffice 对同一文件的分页计算，失败时保留原缓存，不阻断导出。
@@ -291,29 +327,26 @@ def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cove
         headings = context["headingNumbers"]
         first_numbered_page = 2 if include_cover else 1
         physical = _heading_body_pages(reader, headings, first_numbered_page=first_numbered_page)
-        if not physical:
-            logger.warning("report_docx_toc_pages_skipped reason=heading_not_located")
-            return
         body_destination = reader.named_destinations.get("/ReportBodyStart")
         if body_destination is None:
             body_destination = reader.named_destinations.get("ReportBodyStart")
         body_page = reader.get_destination_page_number(body_destination) if body_destination is not None else None
-        if body_page is None or not first_numbered_page <= body_page + 1 <= physical[0]:
+        if body_page is None or not first_numbered_page - 1 <= body_page < len(reader.pages):
             logger.warning("report_docx_toc_pages_skipped reason=body_start_not_located")
             return
         body_start = body_page + 1
+        document = Document(str(path))
+        page_number = document.sections[-1]._sectPr.find(qn('w:pgNumType'))
+        page_offset = int(page_number.get(qn('w:start'), '1')) - 1 if page_number is not None else 0
         numbers = {
             item["anchor"].replace("-", "_"): str(
                 _page_number_context(
-                    page,
-                    body_start_page=body_start,
-                    physical_page_count=len(reader.pages),
+                    page, body_start_page=body_start, physical_page_count=len(reader.pages),
                     first_numbered_page=first_numbered_page,
-                )[0]
+                )[0] + page_offset
             )
-            for item, page in zip(headings, physical, strict=True)
+            for item, page in zip(headings if physical else (), physical or (), strict=True)
         }
-        document = Document(str(path))
         updated = 0
         for paragraph in document.paragraphs:
             runs = list(paragraph._p.iter(qn("w:r")))
@@ -329,6 +362,26 @@ def _cache_toc_page_numbers(path: Path, *, context: dict[str, Any], include_cove
                 if bookmark in numbers and result is not None:
                     result.text = numbers[bookmark]
                     updated += 1
+        # LibreOffice 不重算 SECTIONPAGES，按同一文件的实际分页补齐缓存。
+        # 保留原生域，Word 重新排版后仍可更新。
+        section = document.sections[-1]
+        for story in (section.header, section.footer, section.first_page_header,
+                section.first_page_footer, section.even_page_header, section.even_page_footer):
+            if story.is_linked_to_previous:
+                continue
+            for paragraph in story.paragraphs:
+                runs = list(paragraph._p.iter(qn("w:r")))
+                for index, run in enumerate(runs):
+                    instruction = run.find(qn("w:instrText"))
+                    if instruction is None or (instruction.text or "").strip() != "SECTIONPAGES":
+                        continue
+                    result = next((item.find(qn("w:t")) for item in runs[index + 1:]
+                        if item.find(qn("w:t")) is not None), None)
+                    if result is not None:
+                        result.text = str(len(reader.pages) - body_page)
+                        updated += 1
+        if not updated:
+            return
         # 缓存更新失败不得破坏已生成的原文件；替换文件与原文件在同一文件系统。
         descriptor, temporary_name = tempfile.mkstemp(prefix=".reporting-toc-", suffix=".docx", dir=path.parent)
         os.close(descriptor)
@@ -358,6 +411,7 @@ def _postprocess_docx(
     include_toc: bool = True,
     design: ReportDesign | None = None,
     caption_texts: set[str] | None = None,
+    table_caption_bookmarks: set[str] | None = None,
 ) -> None:
     try:
         from docx import Document
@@ -471,7 +525,7 @@ def _postprocess_docx(
         if child.tag in {qn("w:headerReference"), qn("w:footerReference"), qn("w:pgNumType")}:
             final_sect_pr.remove(child)
     body_page_number = OxmlElement("w:pgNumType")
-    body_page_number.set(qn("w:start"), "1")
+    body_page_number.set(qn("w:start"), str(design.header_footer.page_number_start if design.header_footer else 1))
     body_page_number.set(qn("w:fmt"), "decimal")
     final_sect_pr.append(body_page_number)
 
@@ -479,14 +533,16 @@ def _postprocess_docx(
     if len(sections) != 1 + int(include_cover) + int(include_toc):
         raise ReportFailure("Word 分节数与封面、目录导出设置不一致")
     for section in sections:
-        section.page_width = Mm(210)
-        section.page_height = Mm(297)
-        section.top_margin = Mm(20)
-        section.bottom_margin = Mm(22)
-        section.left_margin = Mm(18)
-        section.right_margin = Mm(18)
-        section.header_distance = Mm(8)
-        section.footer_distance = Mm(8)
+        page = design.page
+        width, height = page.dimensions() if page else (210, 297)
+        section.page_width = Mm(width)
+        section.page_height = Mm(height)
+        section.top_margin = Mm(page.margins.top if page else 20)
+        section.bottom_margin = Mm(page.margins.bottom if page else 22)
+        section.left_margin = Mm(page.margins.left if page else 18)
+        section.right_margin = Mm(page.margins.right if page else 18)
+        section.header_distance = Mm(design.header_footer.header_distance if design.header_footer else 8)
+        section.footer_distance = Mm(design.header_footer.footer_distance if design.header_footer else 8)
 
     for style_name, (size, color, bold, space_before) in _WORD_STYLE_HIERARCHY.items():
         style = (
@@ -507,6 +563,13 @@ def _postprocess_docx(
             style.paragraph_format.space_before = Pt(space_before)
             style.paragraph_format.space_after = Pt(space_before / 2)
             style.paragraph_format.keep_with_next = True
+    # Pandoc的原生Caption显示名可能使用大写；python-docx按内置名查找会漏掉它，
+    # 再add_style会产生重复styleId。只规范唯一已有定义的显示名，保留其继承和引用。
+    if 'Caption' not in document.styles:
+        captions = [style for style in document.styles
+            if style.style_id == 'Caption' and style.type == WD_STYLE_TYPE.PARAGRAPH]
+        if len(captions) == 1:
+            captions[0].name = 'caption'
     for names, value in (
         (("Normal", "Body Text", "First Paragraph", "Compact"), design.typography.body),
         (("Heading 1",), design.typography.h1), (("Heading 2",), design.typography.h2),
@@ -523,7 +586,7 @@ def _postprocess_docx(
             qn("w:eastAsia"), "Noto Sans CJK SC"
         )
     # 落款与正文同字号（此前继承文档默认字号，明显大于正文）。
-    apply_word_style(document.styles["Report Signature"], design.typography.body)
+    apply_word_style(document.styles["Report Signature"], design.signature or design.typography.body)
     # 来源附录的条目（pandoc 定义列表）与 PDF 一致：条目名主题色加粗，各字段缩进、行距紧凑；
     # 此前字段不缩进且段后留白不一，首个字段紧贴条目名。
     if "Definition Term" in document.styles:
@@ -601,6 +664,24 @@ def _postprocess_docx(
     toc_end_index = marker_index("toc_field_end")
     body_start_index = marker_index("body_start")
     for paragraph in paragraphs[body_start_index + 1:]:
+        starts = [node for node in paragraph._p.xpath('.//w:bookmarkStart')
+            if node.get(qn('w:name')) in (table_caption_bookmarks or set())]
+        following = paragraph._p.getnext()
+        if len(starts) == 1 and following is not None and following.tag == qn('w:tbl'):
+            start = starts[0]
+            ends = paragraph._p.xpath('.//w:bookmarkEnd[@w:id="' + start.get(qn('w:id')) + '"]')
+            if len(ends) == 1:
+                end = ends[0]
+                start.getparent().remove(start)
+                end.getparent().remove(end)
+                paragraph._p.insert(1 if paragraph._p.pPr is not None else 0, start)
+                paragraph._p.append(end)
+                paragraph.style = document.styles['Caption']
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                paragraph.paragraph_format.keep_with_next = True
+                paragraph.paragraph_format.keep_together = True
+                for run in paragraph.runs:
+                    apply_word_style(run, design.typography.caption)
         if paragraph.text.strip() == "核心结论" and any(run.bold for run in paragraph.runs):
             paragraph.style = document.styles["Heading 1"]
             for run in paragraph.runs:
@@ -610,6 +691,14 @@ def _postprocess_docx(
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for run in paragraph.runs:
                 apply_word_style(run, design.typography.caption)
+            previous = paragraph._p.getprevious()
+            if design.charts is not None and previous is not None and previous.tag == qn('w:p') and previous.xpath('.//w:drawing | .//w:pict'):
+                from docx.text.paragraph import Paragraph
+
+                keep = design.charts.keep_with_caption
+                Paragraph(previous, document._body).paragraph_format.keep_with_next = keep
+                paragraph.paragraph_format.keep_together = keep
+                paragraph.paragraph_format.keep_with_next = False
     if include_cover:
         for paragraph in paragraphs[:cover_end_index]:
             clear_paragraph(paragraph)
@@ -730,8 +819,10 @@ def _postprocess_docx(
             story._element.remove(extra._element)
         return paragraph
 
-    def add_template(paragraph: Any, left: str, right: str, *, end_bookmark: str) -> None:
+    def add_template(paragraph: Any, left: str, right: str, *, end_bookmark: str, center: str = "", page_offset: int = 0) -> None:
         usable_width = _usable_width(sections[-1])
+        if center:
+            paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width // 2, WD_TAB_ALIGNMENT.CENTER)
         paragraph.paragraph_format.tab_stops.add_tab_stop(usable_width, WD_TAB_ALIGNMENT.RIGHT)
 
         def append(value: str) -> None:
@@ -740,15 +831,23 @@ def _postprocess_docx(
                     paragraph.add_run(literal)
                 if field_name == "title":
                     paragraph.add_run(context["title"])
-                elif field_name == "organization":
+                elif field_name in {"organization", "signer"}:
                     paragraph.add_run(context["organizationName"])
-                elif field_name in _WORD_PAGE_FIELDS:
+                elif field_name in {"period", "date", "filename"}:
+                    paragraph.add_run(display_fields[field_name])
+                elif field_name in _WORD_PAGE_FIELDS and design.options.page_numbers:
                     field_run(paragraph, _WORD_PAGE_FIELDS[field_name])
-                elif field_name == "pages":
-                    field_run(paragraph, f"PAGEREF {end_bookmark} \\* Arabic")
+                elif field_name == "pages" and design.options.page_numbers:
+                    if page_offset:
+                        field_run(paragraph, 'SECTIONPAGES')
+                    else:
+                        field_run(paragraph, f"PAGEREF {end_bookmark} \\* Arabic")
 
         append(left)
         paragraph.add_run("\t")
+        if center:
+            append(center)
+            paragraph.add_run("\t")
         append(right)
         for run in paragraph.runs:
             run.font.name = "Noto Sans CJK SC"
@@ -758,6 +857,12 @@ def _postprocess_docx(
                 qn("w:eastAsia"), "Noto Sans CJK SC"
             )
 
+    from .design import header_footer_values
+
+    display_fields = header_footer_values(design, context, filename=context.get("filename", path.name)) if design.header_footer else {}
+    if design.header_footer:
+        document.settings.odd_and_even_pages_header_footer = design.header_footer.odd_even_different
+
     for index, section in enumerate(sections):
         if include_cover and index == 0:
             section.header.is_linked_to_previous = False
@@ -766,8 +871,8 @@ def _postprocess_docx(
             clear_story(section.footer)
             add_word_watermark(section.header, design, raw_context, section=index, cover=True)
             continue
-        # SECTIONPAGES 在 LibreOffice 不会可靠刷新；分节页码从 1 起，
-        # 因此该节末尾书签的页码就是总页数，且仍可随 Word 重新排版更新。
+        # 默认从 1 起时用节末书签取总页数；自定义起点使用原生节页数，
+        # 随后由实际分页填充缓存，避免把末页号码误作页数。
         end_bookmark = f"report_section_end_{index}"
         end_paragraph = markers["toc_end"] if include_toc and index == int(include_cover) else paragraphs[-1]
         start = OxmlElement("w:bookmarkStart")
@@ -779,31 +884,72 @@ def _postprocess_docx(
         end_paragraph._p.append(end)
         section.header.is_linked_to_previous = False
         section.footer.is_linked_to_previous = False
-        header_paragraph = clear_story(section.header)
-        footer_paragraph = clear_story(section.footer)
-        add_template(
-            header_paragraph,
-            layout["headerLeft"],
-            layout["headerRight"],
-            end_bookmark=end_bookmark,
-        )
-        add_template(
-            footer_paragraph,
-            layout["footerLeft"],
-            layout["footerRight"],
-            end_bookmark=end_bookmark,
-        )
+        if design.header_footer:
+            prefs = design.header_footer
+            section.different_first_page_header_footer = prefs.first_page_different
+            variants = [(section.header, prefs.header), (section.footer, prefs.footer)]
+            if prefs.first_page_different:
+                variants += [(section.first_page_header, prefs.first_header), (section.first_page_footer, prefs.first_footer)]
+            if prefs.odd_even_different:
+                variants += [(section.even_page_header, prefs.even_header or prefs.header),
+                    (section.even_page_footer, prefs.even_footer or prefs.footer)]
+            for story, template in variants:
+                story.is_linked_to_previous = False
+                paragraph = clear_story(story)
+                if not (prefs.enabled and design.options.header_footer):
+                    continue
+                add_template(paragraph, template.left, template.right, center=template.center, end_bookmark=end_bookmark,
+                    page_offset=prefs.page_number_start - 1 if index == len(sections) - 1 else 0)
+                apply_word_style(paragraph, prefs.style)
+                for run in paragraph.runs:
+                    apply_word_style(run, prefs.style)
+                if prefs.divider:
+                    borders = OxmlElement("w:pBdr")
+                    border = OxmlElement("w:bottom" if story in (section.header, section.first_page_header, section.even_page_header) else "w:top")
+                    border.set(qn("w:val"), "single")
+                    border.set(qn("w:sz"), "4")
+                    border.set(qn("w:color"), prefs.style.color[1:])
+                    borders.append(border)
+                    paragraph._p.get_or_add_pPr().append(borders)
+        else:
+            header_paragraph = clear_story(section.header)
+            footer_paragraph = clear_story(section.footer)
+            add_template(
+                header_paragraph,
+                layout["headerLeft"],
+                layout["headerRight"],
+                end_bookmark=end_bookmark,
+            )
+            add_template(
+                footer_paragraph,
+                layout["footerLeft"],
+                layout["footerRight"],
+                end_bookmark=end_bookmark,
+            )
         add_word_watermark(section.header, design, raw_context, section=index, cover=False)
 
+    table_prefs = design.tables
+    table_style = None
+    if document.tables:
+        if 'Table Grid' in document.styles:
+            table_style = document.styles['Table Grid']
+        else:
+            # Pandoc 的默认 Table 可引用缺失基类并带条件边框；用无继承的专用
+            # 原生表样式承载下面明确写入的偏好，不修改转换器/模板的原样式。
+            table_style = (document.styles['Report Preference Table'] if 'Report Preference Table' in document.styles
+                else document.styles.add_style('Report Preference Table', WD_STYLE_TYPE.TABLE))
     for table in document.tables:
-        if "Table Grid" in document.styles:
-            table.style = "Table Grid"
+        table.style = table_style
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     apply_word_style(paragraph, design.typography.table)
-                    for run in paragraph.runs:
-                        apply_word_style(run, design.typography.table)
+                    from docx.text.run import Run
+
+                    if not list(paragraph._p.iter(qn('w:r'))):
+                        paragraph.add_run()
+                    for element in paragraph._p.iter(qn('w:r')):
+                        apply_word_style(Run(element, paragraph), design.typography.table)
         table_properties = table._tbl.tblPr
         # 与 PDF 一致铺满正文宽度：pandoc 产出 auto 宽度与等宽列，表格只占约八成版心。
         for existing in table_properties.findall(qn("w:tblW")):
@@ -821,7 +967,9 @@ def _postprocess_docx(
         borders = OxmlElement("w:tblBorders")
         for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
             border = OxmlElement(f"w:{edge}")
-            border.set(qn("w:val"), "single")
+            hidden = table_prefs is not None and (table_prefs.borders == "none" or
+                table_prefs.borders == "light" and edge in ("left", "right", "insideV"))
+            border.set(qn("w:val"), "nil" if hidden else "single")
             border.set(qn("w:sz"), "4")
             border.set(qn("w:color"), str(REPORT_VISUAL_THEME["grid"]).removeprefix("#"))
             borders.append(border)
@@ -830,9 +978,12 @@ def _postprocess_docx(
         )
         if table.rows:
             row_properties = table.rows[0]._tr.get_or_add_trPr()
-            table_header = OxmlElement("w:tblHeader")
-            table_header.set(qn("w:val"), "true")
-            row_properties.append(table_header)
+            for existing in row_properties.findall(qn("w:tblHeader")):
+                row_properties.remove(existing)
+            if table_prefs is None or table_prefs.repeat_header:
+                table_header = OxmlElement("w:tblHeader")
+                table_header.set(qn("w:val"), "true")
+                row_properties.append(table_header)
             for cell in table.rows[0].cells:
                 _break_before_header_unit(cell)
                 shading = OxmlElement("w:shd")
@@ -841,7 +992,17 @@ def _postprocess_docx(
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.font.color.rgb = RGBColor.from_string(design.typography.table.color[1:])
-            _keep_table_together_at_edges(table)
+            if table_prefs is not None:
+                for index, row in enumerate(table.rows[1:], 1):
+                    for cell in row.cells:
+                        properties = cell._tc.get_or_add_tcPr()
+                        for existing in properties.findall(qn("w:shd")):
+                            properties.remove(existing)
+                        if table_prefs.striped and index % 2 == 0:
+                            shading = OxmlElement("w:shd")
+                            shading.set(qn("w:fill"), "F9FAFB")
+                            properties.append(shading)
+            _keep_table_together_at_edges(table, split_rows=bool(table_prefs and table_prefs.split_rows))
     available_width = _usable_width(sections[-1])
     maximum_height = Mm(180)
     for shape in document.inline_shapes:
@@ -852,20 +1013,36 @@ def _postprocess_docx(
             shape.width = new_width
             shape.height = new_height
 
-    signature_started = False
-    previous = None
-    for paragraph in paragraphs[body_start_index + 1 :]:
-        if paragraph.text.strip() in {context["organizationName"], context["generatedDate"]}:
+    from .design import signature_date
+
+    signature_pair = next(((index, paragraph, paragraphs[index + 1])
+        for index, paragraph in reversed(list(enumerate(paragraphs[:-1])))
+        if index > body_start_index and paragraph.text.strip() == context["organizationName"]
+        and paragraphs[index + 1].text.strip() in {context["generatedDate"], signature_date(design, context)}), None)
+    if signature_pair is not None:
+        index, signer, date_paragraph = signature_pair
+        # paragraph.text 会重建所有 run，需保留落在日期段落的节末书签。
+        bookmarks = [child for child in date_paragraph._p
+            if child.tag in {qn('w:bookmarkStart'), qn('w:bookmarkEnd')}]
+        date_paragraph.text = signature_date(design, context)
+        for bookmark in bookmarks:
+            date_paragraph._p.append(bookmark)
+        block = [signer, date_paragraph]
+        if design.signature and design.signature.description:
+            for offset, line in enumerate(design.signature.description.splitlines(), start=index + 2):
+                if offset < len(paragraphs) and paragraphs[offset].text == line:
+                    block.append(paragraphs[offset])
+        for offset, paragraph in enumerate(block):
             paragraph.style = document.styles["Report Signature"]
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            if not signature_started:
-                paragraph.paragraph_format.keep_with_next = True
-                # 与 PDF 落款一致：与上文隔开 12mm；末段随落款换页，落款不单独占一页。
-                paragraph.paragraph_format.space_before = Mm(12)
-                if previous is not None:
-                    previous.paragraph_format.keep_with_next = True
-                signature_started = True
-        previous = paragraph
+            paragraph.alignment = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER,
+                "right": WD_ALIGN_PARAGRAPH.RIGHT}[design.signature.align if design.signature else "right"]
+            paragraph.paragraph_format.keep_together = True
+            paragraph.paragraph_format.keep_with_next = offset < len(block) - 1
+            paragraph.paragraph_format.space_before = (
+                Pt(design.signature.space_before) if design.signature else Mm(12)) if offset == 0 else (
+                Pt(design.signature.date_gap) if design.signature else None)
+        if index > body_start_index + 1:
+            paragraphs[index - 1].paragraph_format.keep_with_next = True
 
     settings = document.settings._element
     for existing in settings.findall(qn("w:updateFields")):
@@ -1105,12 +1282,14 @@ def _validate_docx_rendering(
             blank_pages.append(index)
     extracted_text = "\n".join(extracted_pages)
     compact_extracted_text = "".join(extracted_text.split())
+    from .design import signature_date
+
     # 分析期间与生成标识只出现在封面；无封面导出不再要求它们。
     cover_only_text = visible_cover_text(design, raw_context) if include_cover else (context["title"],)
     required_text = (
         *cover_only_text,
         context["organizationName"],
-        context["generatedDate"],
+        signature_date(design, context),
         *(item["title"] for item in context["sections"]),
     )
     if blank_pages or any(

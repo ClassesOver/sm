@@ -3,11 +3,45 @@ from __future__ import annotations
 
 import json
 import secrets
+from copy import deepcopy
 from pathlib import PurePosixPath
 from typing import Any
 
 from ..reporting.delivery.report_design import ReportDesign, resolve_design
 from ..reporting.models import ReportingError
+
+
+def editor_base_design(context) -> ReportDesign:
+    return resolve_design(context.job, format='word' if context.delivery_format == 'docx' else 'pdf')
+
+
+def restore_format_defaults(job: dict, source) -> dict:
+    """仅继承已核验历史上下文的展示默认，不替换当前修订执行身份。"""
+    result = deepcopy(job)
+    for key in ('_formatPreferences', '_formatDesigns', '_documentContext', '_pageLayout'):
+        result.pop(key, None)
+        if key in source.job:
+            result[key] = deepcopy(source.job[key])
+    return result
+
+
+def editor_design_overrides(context, design: ReportDesign) -> dict:
+    """只把编辑器明确差异跨格式应用，保留各格式冻结默认及显式恢复值。"""
+    baseline_job = {key: value for key, value in context.job.items() if key not in ('_reportDesign', '_editorExportSettings')}
+    baseline = resolve_design(baseline_job, format='word' if context.delivery_format == 'docx' else 'pdf')
+
+    def differences(value, base):
+        result = {}
+        for key, item in value.items():
+            if isinstance(item, dict) and isinstance(base.get(key), dict):
+                nested = differences(item, base[key])
+                if nested:
+                    result[key] = nested
+            elif item != base.get(key):
+                result[key] = item
+        return result
+
+    return differences(design.model_dump(mode='json', by_alias=True), baseline.model_dump(mode='json', by_alias=True))
 
 
 class ReportEditorDesignService:
@@ -22,7 +56,7 @@ class ReportEditorDesignService:
     async def _entry(self, context, markdown_sha: str) -> dict:
         path = self.path(context)
         if not await self.editor.workspace.apath_exists(context.scope["threadId"], path):
-            return {"design": resolve_design(context.job).model_dump(mode="json", by_alias=True)}
+            return {"design": editor_base_design(context).model_dump(mode="json", by_alias=True)}
         record = json.loads(await self.editor.workspace.aread_text(context.scope["threadId"], path))
         if record.get("contextSha256") != context.digest():
             raise ReportingError("report_editor_scope_mismatch", "设计草稿与报告版本不一致。")
@@ -55,14 +89,15 @@ class ReportEditorDesignService:
     @staticmethod
     def payload(design: ReportDesign, context) -> dict[str, Any]:
         return {"design": design.model_dump(mode="json", by_alias=True), "designSha256": design.digest(),
-                "documentContext": {key: context.job.get("_documentContext", {}).get(key, "") for key in
+                "documentContext": {key: (context.job or {}).get("_documentContext", {}).get(key, "") for key in
                                     ("title", "periodLabel", "organizationName", "generatedByLabel", "generatedDate", "watermarkText")}}
 
     async def read(self, expected) -> dict[str, Any]:
         context = await self.editor._restore(expected)
         async with self.editor._draft_lock(context):
             _, _, sha = await self.editor._read_revision_markdown(context)
-            return self.payload(await self._read(context, sha), context)
+            source = await self.editor._draft_source(context, sha)
+            return self.payload(await self._read(context, sha), source)
 
     async def save(self, expected, design: ReportDesign, expected_design_sha256: str) -> dict[str, Any]:
         context = await self.editor._restore(expected)
@@ -72,7 +107,7 @@ class ReportEditorDesignService:
             self.check(current, expected_design_sha256)
             entry = await self._entry(context, sha)
             await self._write(context, {"active": design.model_dump(mode="json", by_alias=True), "source": entry.get("source")})
-            return self.payload(design, context)
+            return self.payload(design, await self.editor._draft_source(context, sha))
 
     @staticmethod
     def check(design: ReportDesign, expected_sha: str | None) -> None:

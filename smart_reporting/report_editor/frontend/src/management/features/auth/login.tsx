@@ -11,7 +11,7 @@ export function safeReturnTo(value: string | null) {
     const u = new URL(value, location.origin)
     if (
       u.origin !== location.origin ||
-      !/^\/management\/(sources(?:\/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?:\/(?:edit|view))?)?|organizations|account\/password)$/.test(
+      !/^\/management\/(sources(?:\/[A-Za-z0-9][A-Za-z0-9_.-]{0,63}(?:\/(?:edit|view))?)?|metrics|statistical-policies|knowledge|report-issues|system-configuration|preferences|account\/password)$/.test(
         u.pathname,
       )
     )
@@ -50,7 +50,7 @@ export default function Login() {
         </div>
         <h1>欢迎登录</h1>
         <Typography.Paragraph type="secondary">
-          管理机构数据源与发布配置，让每次变更有据可查。
+          管理数据源与发布配置，让每次变更有据可查。
         </Typography.Paragraph>
         {(error || state.error) && (
           <Alert

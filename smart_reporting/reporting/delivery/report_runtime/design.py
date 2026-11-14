@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from datetime import date
 from typing import Any
 
 from .report_design import FONTS, CoverBox, ReportDesign, TextStyle, cover_text
@@ -10,6 +11,41 @@ from .report_design import FONTS, CoverBox, ReportDesign, TextStyle, cover_text
 
 def presentation_context(design: ReportDesign, context: dict[str, Any]) -> dict[str, Any]:
     return {**context, "title": design.cover.title.text if design.cover.title.text is not None else context["title"]}
+
+
+def signature_date(design: ReportDesign, context: dict[str, Any]) -> str:
+    value = context["generatedDate"]
+    if design.signature is None or design.signature.date_format == "iso":
+        return value
+    parsed = date.fromisoformat(value)
+    if design.signature.date_format == "chinese":
+        return f"{parsed.year}年{parsed.month}月{parsed.day}日"
+    return parsed.strftime("%Y/%m/%d")
+
+
+def header_footer_values(design: ReportDesign, context: dict[str, Any], *, filename: str) -> dict[str, str]:
+    return {"title": context["title"], "signer": context["organizationName"],
+        "period": context.get("periodLabel", ""), "date": signature_date(design, context), "filename": filename}
+
+
+def page_decoration_texts(design: ReportDesign, context: dict[str, Any], *, physical_page: int,
+    body_start_page: int, page: int | str, pages: int | str, filename: str) -> dict[str, str]:
+    """生成与验收共用已解析装饰文本，页码来自实际分页结果。"""
+    prefs = design.header_footer
+    result = {f"{kind}{side.title()}": "" for kind in ("header", "footer") for side in ("left", "center", "right")}
+    if prefs is None or not (prefs.enabled and design.options.header_footer):
+        return result
+    header, footer = prefs.header, prefs.footer
+    if prefs.first_page_different and physical_page == body_start_page:
+        header, footer = prefs.first_header, prefs.first_footer
+    elif prefs.odd_even_different and physical_page % 2 == 0:
+        header, footer = prefs.even_header or prefs.header, prefs.even_footer or prefs.footer
+    if physical_page >= body_start_page:
+        page += prefs.page_number_start - 1
+    values = {**header_footer_values(design, context, filename=filename),
+        "page": page if design.options.page_numbers else "", "pages": pages if design.options.page_numbers else ""}
+    return {f"{kind}{side.title()}": getattr(template, side).format_map(values)
+        for kind, template in (("header", header), ("footer", footer)) for side in ("left", "center", "right")}
 
 
 def visible_cover_text(design: ReportDesign, context: dict[str, Any]) -> list[str]:
@@ -30,7 +66,7 @@ def cover_html(design: ReportDesign, context: dict[str, Any]) -> str:
     values = cover_text(design, context)
     boxes = []
     for key in ("title", "period", "signature"):
-        box = getattr(design.cover, key)
+        box = page_cover_box(design, key)
         if box.visible and values[key]:
             boxes.append(
                 f'<div class="cover-box cover-{key}" style="left:{box.x:g}mm;top:{box.y:g}mm;'
@@ -38,6 +74,16 @@ def cover_html(design: ReportDesign, context: dict[str, Any]) -> str:
                 f'{html.escape(values[key])}</div>'
             )
     return '<section class="report-cover">' + "".join(boxes) + "</section>"
+
+
+def page_cover_box(design: ReportDesign, key: str) -> CoverBox:
+    """封面编辑坐标沿用 A4 参考系，实际输出按所选纸张换算。"""
+    box = getattr(design.cover, key)
+    if design.page is None:
+        return box
+    width, height = design.page.dimensions()
+    return box.model_copy(update={"x": box.x * width / 210, "y": box.y * height / 297,
+        "width": box.width * width / 210, "height": box.height * height / 297})
 
 
 def design_css(design: ReportDesign) -> str:
@@ -49,20 +95,54 @@ def design_css(design: ReportDesign) -> str:
         f".report-body{{{text_css(typography.body)}}}",
         f".report-body p,.report-body li{{margin-top:{typography.body.space_before:g}pt;margin-bottom:{typography.body.space_after:g}pt;text-indent:{typography.body.indent:g}pt}}",
     ]
+    if design.pdf_output is not None and not design.pdf_output.bookmarks:
+        rules.append('*{bookmark-level:none!important}')
     for selector, style in (
         (".report-body h2,.report-body .report-appendix-title,.report-body .report-summary-title,.report-body .report-source-title", typography.h1),
         (".report-body h3", typography.h2), (".report-body h4", typography.h3),
         (".report-body table,.report-body th,.report-body td,.report-body td p,.report-body th p", typography.table),
-        (".report-body .report-figure-caption", typography.caption),
+        (".report-body .report-figure-caption,.report-body .report-table-caption", typography.caption),
     ):
         rules.append(f"{selector}{{{text_css(style)}}}")
+    if design.page is not None:
+        width, height = design.page.dimensions()
+        margin = design.page.margins
+        for name in ("cover", "toc", "body"):
+            margins = "0" if name == "cover" else f"{margin.top:g}mm {margin.right:g}mm {margin.bottom:g}mm {margin.left:g}mm"
+            rules.append(f"@page {name}{{size:{width:g}mm {height:g}mm;margin:{margins}}}")
+        rules.append(f".report-cover{{width:{width:g}mm;height:{height:g}mm}}")
+    if design.signature is not None:
+        style = design.signature
+        rules.append(f".report-signature{{{text_css(style)}text-align:{style.align};break-inside:avoid}}")
+        rules.append(f".report-signature p{{{text_css(style)}margin-top:0}}.report-signature p+p{{margin-top:{style.date_gap:g}pt}}")
+    if design.tables is not None:
+        tables = design.tables
+        rules.append(".report-body thead{display:" + ("table-header-group" if tables.repeat_header else "table-row-group") + "}")
+        rules.append(".report-body tr{break-inside:" + ("auto" if tables.split_rows else "avoid") + "}")
+        if tables.split_rows:
+            rules.append(".report-body .report-table-keep{break-inside:auto}")
+        if tables.borders == "none":
+            rules.append(".report-body th,.report-body td{border:0}")
+        elif tables.borders == "light":
+            rules.append(".report-body th,.report-body td{border-left:0;border-right:0}")
+        if not tables.striped:
+            rules.append(".report-body tr.report-row-even{background:transparent}")
+    if design.charts is not None and not design.charts.keep_with_caption:
+        rules.extend((
+            ".report-body .report-figure{break-inside:auto;page-break-inside:auto;break-before:auto;break-after:auto}",
+            ".report-body .report-figure-image{break-after:auto;page-break-after:auto}",
+            ".report-body .report-figure-caption{break-before:auto;page-break-before:auto;break-after:auto;page-break-after:auto}",
+            ".report-body .report-figure+p{break-before:auto;page-break-before:auto}",
+            ".report-body p:has(+.report-figure){break-after:auto;page-break-after:auto}",
+        ))
     return "".join(rules)
 
 
 def watermark_boxes(design: ReportDesign) -> list[tuple[float, float, float, float]]:
-    if design.watermark.placement == "tile":
-        return [(x, y, 75, 35) for y in (55, 135, 215) for x in (25, 110)]
-    return [(25, 122, 160, 50)]
+    boxes = ([(x, y, 75, 35) for y in (55, 135, 215) for x in (25, 110)]
+        if design.watermark.placement == "tile" else [(25, 122, 160, 50)])
+    width, height = design.page.dimensions() if design.page else (210, 297)
+    return [(x * width / 210, y * height / 297, w * width / 210, h * height / 297) for x, y, w, h in boxes]
 
 
 def watermark_text(design: ReportDesign, context: dict[str, Any]) -> str:
@@ -139,12 +219,12 @@ def add_word_cover(paragraph: Any, design: ReportDesign, context: dict[str, Any]
             '<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml">'
             '<w:pict><v:rect id="ReportCoverBackground" stroked="f" '
             f'fillcolor="{design.cover.background}" style="position:absolute;margin-left:0mm;margin-top:0mm;'
-            'width:210mm;height:297mm;z-index:-251654145;mso-position-horizontal-relative:page;'
+            f'width:{(design.page.dimensions()[0] if design.page else 210):g}mm;height:{(design.page.dimensions()[1] if design.page else 297):g}mm;z-index:-251654145;mso-position-horizontal-relative:page;'
             'mso-position-vertical-relative:page"/></w:pict></w:r>'
         ))
     values = cover_text(design, context)
     for key in ("title", "period", "signature"):
-        box = getattr(design.cover, key)
+        box = page_cover_box(design, key)
         if box.visible and values[key]:
             add_word_textbox(paragraph, identity=f"ReportCover{key.title()}", text=values[key], box=box)
 

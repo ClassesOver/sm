@@ -11,6 +11,8 @@ export const managementTheme: ThemeConfig = {
     colorTextDescription: '#5B6B7A',
     colorTextTertiary: '#5B6B7A',
     colorTextPlaceholder: '#5E6F80',
+    colorTextDisabled: '#5B6B7A',
+    colorBgContainerDisabled: '#EEF2F6',
     fontSize: 14,
     colorBorder: '#C7D7E5',
     colorBorderSecondary: '#D8E3ED',

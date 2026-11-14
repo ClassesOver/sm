@@ -1,0 +1,65 @@
+#management-root .global-settings{background:transparent;min-width:0;width:100%;max-width:908px;box-sizing:border-box;align-self:start;border-top:1px solid var(--management-border)}
+#management-root .global-settings-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;max-width:908px;background:#fff;border-bottom:1px solid var(--management-border);flex-wrap:wrap}
+#management-root .global-settings>.ant-alert{margin:12px 0;max-width:908px}
+#management-root .global-settings-layout{display:grid;grid-template-columns:188px minmax(0,1fr);align-items:start;width:100%;max-width:908px;background:#fff}
+#management-root .global-settings-directory{min-width:0;padding:20px 12px;border-right:1px solid var(--management-border);background:#f8fafc}
+#management-root .global-settings-directory .ant-menu{background:transparent;border:0;margin-top:14px}
+#management-root .global-settings-form{padding:22px 28px;width:100%;max-width:720px;min-width:0;overflow-wrap:anywhere}
+#management-root .global-settings-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:22px}
+#management-root .global-settings-section-heading h2{margin:0}
+#management-root .global-setting-field .ant-select{width:100%}
+#management-root .global-settings-form h2{font-size:17px;margin:0 0 22px}
+#management-root .global-settings-form form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}
+#management-root .global-setting-field{min-width:0}
+#management-root .global-setting-field .ant-input-number{width:100%}
+#management-root .global-settings-form .ant-input-number{width:100%}
+#management-root .global-setting-hint{display:flex;justify-content:space-between;gap:8px;color:var(--management-muted);font-size:11px;margin-top:7px;flex-wrap:wrap}
+#management-root .global-setting-hint code{overflow-wrap:anywhere;font-size:10px}
+#management-root .global-version{display:flex;align-items:center;justify-content:space-between;padding:18px 0;border-bottom:1px solid var(--management-border);gap:12px}
+#management-root .global-format-tabs>.ant-tabs-nav{margin:0}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-nav-list{width:100%}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab{flex:1;min-width:0;justify-content:center;min-height:60px;margin:0;padding:0 16px;border-radius:0;background:#f4f7fa;border-bottom:1px solid var(--management-border);transition:background-color .15s}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab-btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:60px;font-size:16px;line-height:24px;font-weight:600;color:#344054;text-shadow:none;white-space:nowrap}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab:hover{background:#e8f0f7}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab-active{background:#e9f2fb}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab-active .ant-tabs-tab-btn{color:#0b4f8a;font-weight:700;text-shadow:none}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-ink-bar{height:3px;background:#0b4f8a}
+#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab-btn:focus-visible{outline:3px solid #007ea7;outline-offset:-5px}
+@media(max-width:900px){#management-root .global-settings-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto}#management-root .global-settings-directory{min-height:0;height:auto;align-self:start;padding:8px;border-right:0;border-bottom:1px solid var(--management-border)}#management-root .global-settings-directory .ant-menu{display:flex;overflow-x:auto;min-height:0;height:auto;margin:0}.global-settings-directory .ant-menu-item{flex:none;min-width:max-content}#management-root .global-settings-form{padding:20px}#management-root .global-settings-form form{grid-template-columns:minmax(0,1fr)}#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab{padding-inline:8px}}
+
+#management-root .preference-inheritance{display:flex;align-items:center;gap:8px;min-height:28px;font-size:12px;color:var(--management-muted)}
+#management-root .preference-wide-field{grid-column:1/-1}
+#management-root .preference-style-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;margin-top:16px}
+@media(max-width:900px){#management-root .preference-style-fields{grid-template-columns:1fr}}
+
+#management-root .global-settings-notice{max-width:908px;margin:0;padding:10px 20px;background:#f0f6fc;color:#344054;font-size:13px;line-height:22px}
+#management-root .global-settings [hidden]{display:none!important}
+#management-root .global-settings-toolbar,#management-root .global-settings-layout,#management-root .global-settings-form,#management-root .global-settings-notice{box-sizing:border-box}
+@media(max-width:900px){#management-root .global-settings-directory .ant-menu-item{width:auto;margin:0;flex:0 0 auto;padding-inline:12px!important}#management-root .global-settings-directory .ant-menu{scrollbar-width:thin}}
+
+#management-root .preference-page-preview{display:block;max-width:100%;height:auto;margin:16px auto;border:1px solid #d8e3ed}
+#management-root .preference-preview-actions{margin-block:12px}
+#management-root .preference-markdown-preview{white-space:pre-wrap;overflow-wrap:anywhere;background:#f8fafc;padding:16px;line-height:1.8}
+
+#management-root .preference-story-selector{margin-bottom:18px}
+#management-root .preference-story-selector .ant-select{min-width:120px}
+#management-root .preference-typography-details{border-top:1px solid var(--management-border);margin-top:4px}
+#management-root .preference-typography-details>summary{padding-block:14px;cursor:pointer;font-weight:600;color:#344054}
+#management-root .preference-typography-details>summary:focus-visible{outline:2px solid #007ea7;outline-offset:2px}
+#management-root .preference-wide-field .ant-space-compact>.ant-select{width:130px;flex-shrink:0}
+
+#management-root .preference-workspace{max-width:908px;width:100%;min-width:0;box-sizing:border-box}
+#management-root .preference-workspace-toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 20px;background:#fff;border-bottom:1px solid var(--management-border)}
+#management-root .preference-view-switch{display:flex;gap:0}
+#management-root .preference-view-switch .ant-btn{border-radius:0}
+#management-root .preference-view-switch .ant-btn[aria-pressed=true]{color:#0b4f8a;background:#e9f2fb;border-color:#0b4f8a}
+#management-root .preference-workspace-columns{display:block}
+#management-root .preference-settings-pane{min-width:0}
+#management-root .preference-preview-pane{min-width:0;padding:20px;background:#f8fafc;border:1px solid var(--management-border);box-sizing:border-box}
+#management-root .preference-preview-pane h2{font-size:17px;margin:0 0 16px}
+#management-root .preference-preview-pane p{line-height:1.7;overflow-wrap:anywhere}
+#management-root .preference-preview-hint{color:var(--management-muted)}
+#management-root .preference-workspace[data-preference-view=settings] .preference-preview-pane,
+#management-root .preference-workspace[data-preference-view=preview] .preference-settings-pane{display:none}
+
+@media(max-width:600px){#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab{padding-inline:4px}#management-root .global-format-tabs>.ant-tabs-nav .ant-tabs-tab-btn{font-size:14px;white-space:normal;text-align:center}}

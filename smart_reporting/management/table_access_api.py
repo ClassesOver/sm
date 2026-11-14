@@ -7,21 +7,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .api import SESSION_COOKIE, create_protected_router, csrf_token
 from .catalog_api import CatalogSyncInput
-from .models import ManagementError, ManagementScope
+from .models import ManagementError, INSTANCE_SCOPE
 from .settings import ManagementSettings
 from .table_access import TableAccessService
-
 
 class TableIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid")
     database: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_$]*$")
     name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_$]*$")
 
-
 class TableAccessInput(CatalogSyncInput):
     discovery_id: str = Field(alias="discoveryId", min_length=1, max_length=36)
     selected_tables: list[TableIdentity] = Field(alias="selectedTables", max_length=200)
-
 
 def create_table_access_router(scopes, vault, metadata_client=None) -> APIRouter:
     router = create_protected_router(scopes.auth, "management-table-access")
@@ -34,15 +31,12 @@ def create_table_access_router(scopes, vault, metadata_client=None) -> APIRouter
         if request.headers.get("x-csrf-token") != csrf_token(token):
             raise ManagementError("management_csrf_invalid", "请求校验失败。", 403)
 
-    def scope(payload):
-        return ManagementScope(payload.scope_database, payload.company_id)
-
     @router.post("/management/api/v1/sources/{source_id}/table-discoveries", status_code=201)
     async def discover(request: Request, source_id: str, payload: CatalogSyncInput):
         csrf(request)
         return await service.discover(
             request.cookies[SESSION_COOKIE],
-            scope(payload),
+            INSTANCE_SCOPE,
             source_id,
             payload.expected_draft_version,
         )
@@ -51,11 +45,9 @@ def create_table_access_router(scopes, vault, metadata_client=None) -> APIRouter
     async def access(
         request: Request,
         source_id: str,
-        scope_database: Annotated[str, Query(alias="scopeDatabase", min_length=1, max_length=128)],
-        company_id: Annotated[str, Query(alias="companyId", min_length=1, max_length=128)],
     ):
         return await service.access(
-            request.cookies[SESSION_COOKIE], ManagementScope(scope_database, company_id), source_id
+            request.cookies[SESSION_COOKIE], INSTANCE_SCOPE, source_id
         )
 
     @router.put("/management/api/v1/sources/{source_id}/table-access")
@@ -63,7 +55,7 @@ def create_table_access_router(scopes, vault, metadata_client=None) -> APIRouter
         csrf(request)
         return await service.save(
             request.cookies[SESSION_COOKIE],
-            scope(payload),
+            INSTANCE_SCOPE,
             source_id,
             payload.expected_draft_version,
             payload.discovery_id,
@@ -75,8 +67,7 @@ def create_table_access_router(scopes, vault, metadata_client=None) -> APIRouter
         request: Request,
         source_id: str,
         discovery_id: str,
-        scope_database: Annotated[str, Query(alias="scopeDatabase", min_length=1, max_length=128)],
-        company_id: Annotated[str, Query(alias="companyId", min_length=1, max_length=128)],
+
         q: Annotated[str, Query(max_length=100)] = "",
         kind: Literal["all", "table", "view"] = "all",
         offset: Annotated[int, Query(ge=0)] = 0,
@@ -85,7 +76,7 @@ def create_table_access_router(scopes, vault, metadata_client=None) -> APIRouter
     ):
         return await service.tables(
             request.cookies[SESSION_COOKIE],
-            ManagementScope(scope_database, company_id),
+            INSTANCE_SCOPE,
             source_id,
             discovery_id,
             q=q,
@@ -100,14 +91,13 @@ def create_table_access_router(scopes, vault, metadata_client=None) -> APIRouter
         request: Request,
         source_id: str,
         discovery_id: str,
-        scope_database: Annotated[str, Query(alias="scopeDatabase", min_length=1, max_length=128)],
-        company_id: Annotated[str, Query(alias="companyId", min_length=1, max_length=128)],
+
         database: Annotated[str, Query(min_length=1, max_length=128)],
         table: Annotated[str, Query(min_length=1, max_length=128)],
     ):
         return await service.columns(
             request.cookies[SESSION_COOKIE],
-            ManagementScope(scope_database, company_id),
+            INSTANCE_SCOPE,
             source_id,
             discovery_id,
             database,

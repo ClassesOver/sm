@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from uuid import NAMESPACE_URL, uuid5
 
 
 class ManagementError(Exception):
@@ -47,6 +48,11 @@ class ManagementActor:
     scope: ManagementScope
     auth_version: int
     raw_session: str = field(repr=False)
+
+
+# 单实例配置的内部命名空间，不由浏览器选择或填写。
+INSTANCE_SCOPE = ManagementScope("instance", "instance")
+INSTANCE_SCOPE_ID = str(uuid5(NAMESPACE_URL, "urn:smart-reporting:management:instance"))
 
 
 def invalid_credentials() -> ManagementError:

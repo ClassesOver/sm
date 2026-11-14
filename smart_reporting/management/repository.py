@@ -26,6 +26,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from .configuration_schema import register_configuration_tables
 from .models import (
     AdminAccount,
     AdminLogin,
@@ -455,3 +456,12 @@ report_bases = semantic_tables["report_bases"]
 report_basis_receipts = semantic_tables["report_basis_receipts"]
 semantic_asset_retirements = semantic_tables["semantic_asset_retirements"]
 report_issue_reviews = semantic_tables["report_issue_reviews"]
+
+configuration_tables = register_configuration_tables(metadata)
+configuration_drafts = configuration_tables["configuration_drafts"]
+configuration_versions = configuration_tables["configuration_versions"]
+system_credentials = configuration_tables['system_credentials']
+run_configuration_snapshots = configuration_tables["run_configuration_snapshots"]
+preference_verification_handoffs = configuration_tables['preference_verification_handoffs']
+preference_verification_results = configuration_tables['preference_verification_results']
+preference_approval_receipts = configuration_tables['preference_approval_receipts']

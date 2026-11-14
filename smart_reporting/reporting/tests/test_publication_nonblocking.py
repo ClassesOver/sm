@@ -200,8 +200,8 @@ _SIGNING_CHAIN = {
     "smart_reporting/reporting/trace/native_claims.py": ("native_claim_presentations", "present_native_summary"),
     "smart_reporting/reporting/trace/claim_presentation.py": ("claim_support_projection",),
     "smart_reporting/reporting/delivery/report_runtime/claim_support.py": ("insert_claim_support",),
-    "smart_reporting/report_editor/recalculation.py": ("run_refresh_request", "read_refresh_delivery", "run_policy_adoption_request", "read_policy_adoption_delivery"),
-    "smart_reporting/reporting/workflow/revision_execution.py": ("continue_revision_delivery",),
+    "smart_reporting/report_editor/recalculation.py": ('run_refresh_request', 'read_refresh_delivery', 'run_policy_adoption_request', 'read_policy_adoption_delivery', 'read_registered_recalculation_execution'),
+    "smart_reporting/reporting/workflow/revision_execution.py": ('continue_revision_delivery', 'require_revision_execution', 'revision_delivery_paths'),
     "smart_reporting/reporting/workflow/policy_adoption_analysis.py": ("continue_policy_adoption_delivery",),
     "smart_reporting/reporting/trace/revision_impact.py": ("assess_revision_impact",),
     "smart_reporting/reporting/trace/narrative_claims.py": ("narrative_paragraphs",),
@@ -233,6 +233,17 @@ _SIGNING_CHAIN = {
     "smart_reporting/report_editor/native_pdf_protection.py": ("protect_pdf",),
     "smart_reporting/report_editor/native_pdf_convert.py": ("convert_office",),
     "smart_reporting/report_editor/native_pdf_contract.py": ("pdf_review_issues",),
+    "smart_reporting/reporting/delivery/report_runtime/table_captions.py": ('validate_table_caption_input', 'load_table_caption_input', 'prepare_table_captions', 'render_table_captions'),
+    "smart_reporting/reporting/workflow/policy_adoption.py": ('require_policy_adoption_execution',),
+    "smart_reporting/report_editor/template_render.py": ('render_editor_document', 'render_editor_template'),
+    "smart_reporting/report_editor/template_provenance.py": ('public_validation', 'build_template_provenance', '_project'),
+    "smart_reporting/reporting/workflow/runtime/template_delivery.py": ('render_template_delivery', '_semantic_history_output'),
+    "smart_reporting/reporting/workflow/runtime/template_semantics.py": ('freeze_template_review', '_freeze_template_review', 'load_frozen_template_review', 'prepare_semantic_template', 'prepare_runtime_signature'),
+    "smart_reporting/reporting/template_semantic_review.py": ('validate_frozen_review', 'review'),
+    "smart_reporting/reporting/delivery/template_signature_semantics.py": ('inspect_signature_candidates', 'bind_semantic_signature_slot'),
+    "smart_reporting/reporting/delivery/template_signature_readback.py": ('read_semantic_preparation',),
+    "smart_reporting/reporting/workflow/runtime/slides.py": ('assemble_slides',),
+    "smart_reporting/reporting/workflow/runtime/analysis.py": ('assemble_report',),
 }
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。
@@ -244,6 +255,9 @@ _CALLER_GUARDED = {
         ("_render_pptx", "_native_claim_presentations"),
         ("_render_xlsx", "_native_claim_presentations"),
     ),
+    "smart_reporting/reporting/workflow/runtime/template_semantics.py": (('_freeze_template_review', 'validate_frozen_review'), ('_freeze_template_review', 'apath_exists'), ('freeze_template_review', '_freeze_template_review'), ('prepare_semantic_template', 'validate_frozen_review'), ('prepare_semantic_template', 'bind_semantic_signature_slot'), ('prepare_runtime_signature', 'run_office_engine')),
+    "smart_reporting/report_editor/template_provenance.py": (('public_validation', '_project'),),
+    "smart_reporting/report_editor/template_render.py": (('render_editor_template', 'build_template_provenance'),),
 }
 
 

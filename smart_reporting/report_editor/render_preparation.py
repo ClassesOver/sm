@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from pathlib import PurePosixPath
 from typing import Any
 
 from loguru import logger
@@ -14,7 +15,11 @@ from ..reporting.workflow.management_overview import (
 )
 from ..reporting.workflow.registered_overview import RegisteredManagementOverview
 from ..reporting.workspace import REPORT_JOBS_STATE_KEY
-from .trace_revisions import rebuild_edited_manifest, verify_revision_lineage_files
+from .trace_revisions import (
+    rebuild_edited_manifest,
+    snapshot_revision_lineage,
+    verify_revision_lineage_files,
+)
 
 
 async def prepare_editor_render(editor, *, context, source_context, document, snapshot_path,
@@ -111,6 +116,34 @@ async def prepare_editor_render(editor, *, context, source_context, document, sn
                 trace_index = edited_index
             if table_index is not None:
                 trace_index = table_index
+            if trace_index is not None:
+                try:
+                    # 当前快照使用独立目录，避免覆盖旧索引或占用待发布 revision。
+                    snapshot = PurePosixPath(snapshot_path)
+                    lineage_directory = snapshot.with_name(
+                        f".export-lineage-{snapshot.stem.split('-', 1)[1]}"
+                    )
+                    caption_manifest, _identity = await snapshot_revision_lineage(
+                        editor.workspace,
+                        scope.workspace_key,
+                        manifest=rebuilt,
+                        index=trace_index,
+                        markdown_file=rebuilt.markdown,
+                        target_revision=next_revision,
+                        path_map={},
+                        manifest_path=str(lineage_directory / "artifact-manifest.json"),
+                    )
+                    render_manifest = caption_manifest.model_dump(mode="json", by_alias=True)
+                except Exception as error:  # noqa: BLE001 - 表题来源降级，不丢其他追溯
+                    reason = error.message if isinstance(error, ReportingError) else type(error).__name__
+                    lineage_issues.append({
+                        "code": "report_editor_table_caption_snapshot_unavailable",
+                        "message": f"当前修订表题来源快照未能核验（{reason}），保留原表题，文件仍可下载。"[:500],
+                    })
+                    logger.opt(exception=error).warning(
+                        "report_editor_table_caption_snapshot_unavailable report_id={} revision={}",
+                        context.report_id, next_revision,
+                    )
         if trace_index is not None:
             validation = await editor.trace.validate(
                 source_context,

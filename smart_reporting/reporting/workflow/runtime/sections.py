@@ -5171,6 +5171,17 @@ class RuntimeSectionsMixin:
                     citationIds=chart.citation_ids,
                 )
             )
+        from ....preferences.runtime import REPORT_CONFIGURATION_SNAPSHOT_KEY, execution_preferences
+
+        configuration = (self._state(run_context).get(REPORT_CONFIGURATION_SNAPSHOT_KEY)
+            if execution is None else await execution_preferences(self, execution))
+        markdown_options = ({'markdown_preferences': configuration['resolvedFormats']['md'],
+            'generated_date': configuration['generatedDate']} if configuration is not None else {})
+        if configuration is not None:
+            from .publication import _citation_presentations
+
+            markdown_options['citation_presentations'] = _citation_presentations(lineage=lineage,
+                requirements=(), analyses=(), snapshots=(), observed_facts=[])
         rendered = assemble_report_markdown(
             draft,
             server_narrative_sections=workbook_projections,
@@ -5195,6 +5206,7 @@ class RuntimeSectionsMixin:
                 for artifact in section_artifacts for claim in artifact.claims
                 if claim.fact_ids and claim.fact_ids[0] in fact_values
             },
+            **markdown_options,
         )
         if execution is None:
             await self.report_tools.complete_document_heading_numbers(

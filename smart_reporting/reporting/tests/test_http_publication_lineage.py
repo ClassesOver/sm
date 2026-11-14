@@ -3590,3 +3590,154 @@ async def test_measure_label_crop_review_never_blocks_applied_pdf_http_download(
         assert annotation['/AP']['/N']['/BBox'][2] > page.cropbox.right
         assert ('W' * 64).encode() in annotation['/AP']['/N'].get_data()
         assert await editor.read_file(context) == source
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('anyio_backend', ['asyncio'])
+async def test_editor_caption_snapshot_fault_keeps_actual_word_pdf_http_downloads(tmp_path, monkeypatch):
+    """登记新增渲染前索引步骤：真实导出继续，实际文件经正式HTTP链下载。"""
+    from smart_reporting.report_editor import render_preparation
+    from smart_reporting.reporting.delivery import publishing
+    from smart_reporting.reporting.tests.test_report_editor_lineage_export import (
+        test_export_revision_rebinds_registered_lineage_and_preserves_transactional_files,
+    )
+
+    faults = []
+    async def unavailable(*_args, **_kwargs):
+        faults.append('caption_snapshot')
+        raise OSError('injected current caption snapshot failure')
+    monkeypatch.setattr(render_preparation, 'snapshot_revision_lineage', unavailable)
+    artifacts = InMemoryReportArtifactRepository()
+    grants = ReportDownloadGrantService(InMemoryDownloadGrantRepository())
+    # 沿用fixture的确定token断言；登记、持久化、查验与HTTP均走正式实现。
+    monkeypatch.setattr(publishing.secrets, 'token_urlsafe', lambda *_: 'download-raw')
+    original_export = ReportEditorService.export_revision
+    captured = {}
+    async def export(editor, *args, **kwargs):
+        old_persistence, old_grants = editor.artifact_persistence, editor.download_grants
+        real_persistence = ReportArtifactPersistenceService(artifacts, editor.workspace)
+        class Persistence:
+            async def persist_available(self, **values):
+                await old_persistence.persist_available(**values)
+                return await real_persistence.persist_available(**values)
+        class Grants:
+            async def issue(self, **values):
+                await old_grants.issue(**values)
+                return await grants.issue(**values)
+        editor.artifact_persistence, editor.download_grants = Persistence(), Grants()
+        captured['result'] = await original_export(editor, *args, **kwargs)
+        return captured['result']
+    monkeypatch.setattr(ReportEditorService, 'export_revision', export)
+    await test_export_revision_rebinds_registered_lineage_and_preserves_transactional_files(tmp_path, None)
+    result = captured['result']
+    assert faults == ['caption_snapshot']
+    assert result['validation']['ok'] is False
+    assert any(item['code'] == 'report_editor_table_caption_snapshot_unavailable'
+        and item['message'] for item in result['validation']['issues'])
+    assert {record.artifact for record in artifacts.records.values()} == {'pdf', 'word'}
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='https://reports.example.com') as client:
+        for format, expected in (('pdf', b'new-pdf'), ('word', b'new-word')):
+            response = await client.get(result[format]['downloadUrl'])
+            assert response.status_code == 200
+            assert response.content == expected
+
+
+
+@pytest.mark.anyio
+async def test_runtime_caption_index_read_fault_keeps_actual_word_pdf_http_downloads(tmp_path, monkeypatch):
+    """登记渲染时新索引读取故障；复用真实工作区、发布与HTTP文件身份链。"""
+    from smart_reporting.reporting.delivery.report_runtime import table_captions
+    from smart_reporting.reporting.workspace import WorkspaceReportService
+
+    runtime, arguments, scope, _, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    workspace = runtime.workspace_service
+    root = runtime.workspace_registry.resolve(scope).root
+    report = WorkspaceReportService(workspace)
+    context = RunContext(run_id='workflow-run', session_id=scope.workspace_key, session_state={})
+    monkeypatch.setattr(report, '_load_job', lambda *_: {'jobId': 'job-1', 'sources': []})
+    monkeypatch.setattr(report, '_job_status', AsyncMock(return_value={}))
+    manifest = json.loads((root / arguments['output']['artifactManifest']['path']).read_bytes())
+    faults = []
+    def unavailable(*_args, **_kwargs):
+        faults.append('index_read')
+        raise OSError('injected table caption index read failure')
+    monkeypatch.setattr(table_captions, '_input_path', unavailable)
+    async def render(action, payload, _context):
+        if action == 'validate_pdf':
+            return {'ok': False, 'issues': payload['job']['render']['renderIssues']}
+        source = table_captions.load_table_caption_input(payload['job'], root,
+            'reports/report.md', files['reports/report.md'])
+        assert source['status'] == 'unavailable'
+        result = {'markdown': _identity('reports/report.md', files['reports/report.md'], 'text/markdown').model_dump(by_alias=True),
+            'renderIssues': source['issues']}
+        # 渲染替身仅产生确定文件；新来源读取、发布、留存和HTTP均为生产实现。
+        for kind, key, suffix in (('pdf', 'output_path', 'pdf'), ('word', 'word_output_path', 'docx')):
+            path = payload[key]
+            raw = files[f'reports/report.{suffix}']
+            await workspace.aensure_directory(scope.workspace_key, str(Path(path).parent))
+            await workspace.awrite_bytes(scope.workspace_key, path, raw)
+            result[kind] = {'path': path, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+        return {'status': 'rendered', 'render': result}
+    monkeypatch.setattr(report, '_run_report_runtime', render)
+    generated = await report._render_report_pair('job-1', 'reports/report.md', 'rendered/revision-2/report.pdf',
+        artifact_manifest=manifest, run_context=context)
+    assert faults == ['index_read']
+    assert generated['validation']['ok'] is False
+    assert any(item['code'] == 'report_table_caption_source_unavailable' and item['message']
+        for item in generated['validation']['issues'])
+    for kind in ('pdf', 'word'):
+        arguments['output'][kind + 'Path'] = generated[kind + 'Path']
+    arguments['output']['validation'] = generated['validation']
+    result = await runtime.issue_http_publication(**arguments)
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants, artifacts)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        for kind, suffix in (('pdf', 'pdf'), ('word', 'docx')):
+            response = await client.get(result[kind]['downloadUrl'])
+            assert response.status_code == 200 and response.content == files[f'reports/report.{suffix}']
+
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['readback', 'postwrite', 'image_identity'])
+async def test_editor_template_bridge_faults_keep_verified_word_http_download(tmp_path, monkeypatch, fault):
+    from smart_reporting.report_editor import template_render
+
+    from .test_editor_template_render import render_case
+
+    case = await render_case(tmp_path / 'editor-template')
+    if fault == 'readback':
+        def fail(*a, **kw):
+            raise OSError('injected editor template readback failure')
+        monkeypatch.setattr(template_render, 'read_template_document', fail)
+    elif fault == 'postwrite':
+        original_write = case.editor.workspace.awrite_bytes
+        async def write(*a, **kw):
+            await original_write(*a, **kw)
+            raise OSError('injected postwrite receipt failure')
+        monkeypatch.setattr(case.editor.workspace, 'awrite_bytes', write)
+    else:
+        await case.editor.workspace.awrite_bytes(case.context.scope['threadId'],
+            'reports/revision-1/chart.png', b'changed source image', overwrite=True)
+    result = await template_render.render_editor_template(case.editor, template_source=case.source,
+        context=case.context, source_context=case.context, document=case.document, snapshot_path=case.snapshot,
+        output_path='reports/revision-2/report.pdf', formats=('word',), render_manifest=None, run_context=case.run)
+    raw = (await case.editor.workspace.afile_bytes(case.context.scope['threadId'], result['wordPath']))[0]
+    runtime, arguments, scope, _, artifacts, *_ = await _publication_fixture(tmp_path / 'publisher')
+    await runtime.workspace_service.awrite_bytes(scope.workspace_key, result['wordPath'], raw)
+    arguments['output'].update({key: value for key, value in result.items()
+        if key in {'wordPath', 'wordSize', 'wordSha256', 'validation'}})
+    arguments['output']['deliveryFormat'] = 'docx'
+    published = await runtime.issue_http_publication(**arguments)
+    assert published['validation']['ok'] is False
+    code = {'readback': 'report_editor_template_readback_failed', 'postwrite': 'report_editor_template_generation_failed',
+        'image_identity': 'report_template_body_resource_unavailable'}[fault]
+    assert any(issue['code'] == code for issue in published['validation']['issues'])
+    app = FastAPI()
+    app.include_router(create_report_download_router(ReportDownloadHttpService(runtime.download_grants,
+        artifacts, workspace_service=runtime.workspace_service)))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
+        response = await client.get(published['word']['downloadUrl'])
+    assert response.status_code == 200 and response.content == raw

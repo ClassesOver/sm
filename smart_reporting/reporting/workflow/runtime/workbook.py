@@ -6,6 +6,7 @@ import io
 import math
 import re
 import sys
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -86,7 +87,15 @@ def workbook_dataset_rows(
                 value = None
             elif value is not None:
                 issue_code = None
-                if data_type in {"BOOL", "BOOLEAN"}:
+                if data_type == 'DATE':
+                    try:
+                        parsed = date.fromisoformat(value)
+                        if parsed.year < 1900 or value != parsed.isoformat():
+                            raise ValueError('unsupported date')
+                        value = {'value': value, 'valueType': 'date'}
+                    except ValueError:
+                        issue_code = 'xlsx_date_value_invalid'
+                elif data_type in {"BOOL", "BOOLEAN"}:
                     boolean = {"true": True, "false": False, "1": True, "0": False}
                     if value.strip().lower() in boolean:
                         value = boolean[value.strip().lower()]
@@ -196,7 +205,7 @@ def build_workbook_sheets(
     evidence_by_id = {item.analysis_id: item for item in manifest.evidence}
     metric_names = {item.code: item.name for item in getattr(manifest, "metric_definitions", ())}
     summary: dict[str, Any] = {"name": "汇总", "headerRow": 0,
-        "rows": [["主题", "分析编号", "指标", "数值", "单位", "期间", "结论"]]}
+        "rows": [["主题", "分析编号", "指标", "数值", "单位", "期间", "结论"]], "cellTypes": {}}
     sheets = [summary]
     sections = list(outline.sections)
     covered = {item for section in sections for item in section.analysis_ids}
@@ -207,6 +216,7 @@ def build_workbook_sheets(
     for section in sections:
         name = sheet_name(section.title)
         rows: list[list[Any]] = [["分析编号", "指标", "数值", "单位", "期间", "数据集", "事实编号"]]
+        cell_types: dict[str, str] = {}
         formal = any('metricContext' in fact_documents.get(key, {}) for key in section.analysis_ids)
         if formal:
             rows[0].extend(['状态', '说明'])
@@ -248,6 +258,9 @@ def build_workbook_sheets(
                     {"value": value, "formula": f"='{quoted_name}'!C{row_number}"}
                     if value is not None and not isinstance(value, str) else value,
                     unit, fact_period, ' '.join((conclusion['text'], *notes)).strip()])
+                if unit == '%' and isinstance(value, (int, float)) and not isinstance(value, bool):
+                    cell_types[f'C{row_number}'] = 'percentPoints'
+                    summary['cellTypes'][f'D{len(summary["rows"])}'] = 'percentPoints'
                 sources['claims'].append({'sheet': '汇总', 'cell': f'G{len(summary["rows"])}',
                     'analysisId': analysis_id, 'support': conclusion['support']})
                 sources["cells"].append({"sheet": name, "cell": f"C{row_number}",
@@ -262,7 +275,7 @@ def build_workbook_sheets(
                 summary["rows"].append([section.title, analysis_id, "结论", None, None, period, conclusion['text']])
                 sources['claims'].append({'sheet': '汇总', 'cell': f'G{len(summary["rows"])}',
                     'analysisId': analysis_id, 'support': conclusion['support']})
-        sheets.append({"name": name, "rows": rows, "headerRow": 0,
+        sheets.append({"name": name, "rows": rows, "headerRow": 0, "cellTypes": cell_types,
             "sectionId": section.code, "analysisIds": list(section.analysis_ids)})
     for index, (dataset_id, data) in enumerate(datasets.items(), 1):
         name = sheet_name(f"明细{index}_{dataset_id}")
