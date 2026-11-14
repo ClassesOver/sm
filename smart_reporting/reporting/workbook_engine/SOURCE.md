@@ -660,3 +660,16 @@ Targeted RED/GREEN, independent namespace review and eleven saved XLSX files are
 
 
 2026-11-13 推荐图表必要移植修复：chart-add.ensureSheetDrawing 复用本地既有 OPC relationships/resolveTablePartPath，支持固定源 xlsx-drawing-add 已支持的合法绝对与相对 drawing Target，拒绝 External、URI、网络和越根目标；不重写已有 drawing/原图。源功能参照与本地适配哈希分别保留，不称本地 chart-add 原字节同源。
+
+## 2026-11-14 split panes (View ▸ Split)
+
+The pinned GenOffice `ExcelShell.tsx` View ▸ Window group has only Freeze Panes; there is no split-window
+source to port, and Univer 0.25.1 has no split viewport. `src/workbook-read.ts` (registered in
+`UPSTREAM-PATCHES-SHA256.json`, hash updated) now honours `pane@state` (ECMA-376 default `split`): only
+`frozen`/`frozenSplit` panes yield `freeze` row/column counts; split panes, whose `xSplit`/`ySplit` are twips,
+are exposed read-only as `splitPane {xSplitTwips, ySplitTwips, topLeftCell?}` instead of being misread as a
+freeze of thousands of rows/columns. `bridge/split-pane.ts` is a local adapter: bridge operation
+`removeSheetSplitPane {sheetName, expected}` removes the first sheetView's split pane (and pane-scoped
+selections, same rule as `setFrozenPane`) only when the current pane equals `expected`, then reads back. The
+Python native whitelist and `delivery/xlsx.py` include it. Creating split panes is not implemented. Evidence:
+../../report_editor/NATIVE_XLSX_SPLIT_PANE_ACCEPTANCE.md.

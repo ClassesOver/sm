@@ -1229,6 +1229,37 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     feedback.textContent = `${target === null ? LINK_TEXT.removed : LINK_TEXT.saved}修改尚未保存。`
   }
   const linkDialog = createWorkbookLinkDialog(shell.editor, applyLink)
+  // 视图▸拆分窗口：固定源没有拆分窗口、网格没有拆分视口，只提供取消文件中已有的拆分窗格（Excel 再次点击“拆分”的行为）。
+  // 以草稿重放后字节读取的拆分窗格为来源身份，追加 removeSheetSplitPane 后由浏览器内引擎重放并回读。
+  const activeSplitPane = () => {
+    const name = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
+    return name === undefined ? undefined : currentModel?.sheets.find(sheet => sheet.name === name)?.splitPane
+  }
+  const removeSplitPane = async () => {
+    if (!editable()) throw new Error('工作簿正在加载或保存')
+    const active = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+    if (!active) throw new Error('工作簿尚未就绪')
+    if (sheetProtected(active.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
+    const sheetName = active.getSheetName()
+    await withWorkbookLocked(shell.editor, async () => {
+      await persistence
+      const before = await currentOperations()
+      const bytes = before.length ? await applyWorkbookOperations(original, before) : original
+      const expected = (await readWorkbook(bytes)).sheets.find(sheet => sheet.name === sheetName)?.splitPane
+      if (!expected) throw new Error('当前工作表没有拆分窗格')
+      const operations = [...before, { kind: 'removeSheetSplitPane', sheetName, expected } as unknown as WorkbookOperation]
+      captureGeneration++
+      try { await loadOperations(operations) }
+      catch (error) { await loadOperations(before); throw error }
+      if (nativeDraft) {
+        nativeDraft.setOperations(before as NativeOperation[])
+        nativeDraft.setOperations(operations as NativeOperation[])
+      } else draft.setOperations(operations)
+      gridChanged = false; dirty = true
+      shell.statusLabel.textContent = '有未保存修改'
+    }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
+    feedback.textContent = `已取消工作表“${sheetName}”的拆分窗格，修改尚未保存。`
+  }
   // 页面布局▸主题：状态来自当前重放字节的主题部件（含草稿中已应用的主题操作）。
   let themeSource: WorkbookThemeSource | undefined
   const applyTheme = async (kind: ThemeCommandKind, id: string) => {
@@ -1703,6 +1734,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       }
       if (command === 'zoom-in' || command === 'zoom-out' || command === 'zoom-reset') {
         runZoom(command)
+        return
+      }
+      if (command === 'split-window') {
+        void removeSplitPane().catch(error => { feedback.textContent = (error as Error).message })
         return
       }
       if (command === 'freeze-panes') {
@@ -2466,6 +2501,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       watchWindow: () => ({ ...watchWindow.state(), available: formulaBarAvailable() }),
       queries: () => ({ available: formulaBarAvailable() }),
       formulaTrace: () => ({ ...formulaTrace.state(), available: formulaBarAvailable() }),
+      splitPane: () => ({ active: !!activeSplitPane() }),
       pageBreakPreview: () => ({ ...pageBreakPreview.state(), available: !loading && !disposed }),
       theme: () => themeSource && !loading && !disposed ? {
         colorName: themeSource.colorName, fontName: themeSource.fontName, reason: themeSource.reason,
