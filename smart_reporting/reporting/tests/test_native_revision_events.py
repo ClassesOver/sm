@@ -251,3 +251,74 @@ async def test_postgres_workers_serialize_fresh_schema_creation(postgres_reposit
     await asyncio.gather(repo.create_schema(), other.create_schema())
     scope, _, doc = await opened(repo)
     assert (await other.revision_events_after(doc.document_id, scope=scope))['latestSequence'] == 1
+
+
+async def test_postgres_legacy_missing_note_and_event_counter_gets_defaults(postgres_repositories):
+    repo, other = postgres_repositories
+    scope, source, doc = await opened(repo)
+    async with repo.engine.begin() as connection:
+        await connection.execute(text('DROP TABLE report_native_revision_events_v1'))
+        await connection.execute(text('ALTER TABLE report_native_documents_v1 DROP COLUMN event_sequence'))
+        await connection.execute(text('ALTER TABLE report_native_revisions_v1 DROP COLUMN note'))
+    await repo.create_schema()
+    await other.create_schema()
+    async with other.engine.connect() as connection:
+        defaults = (await connection.execute(text(
+            "SELECT table_name, column_name, is_nullable, column_default "
+            "FROM information_schema.columns WHERE table_schema = current_schema() AND "
+            "((table_name = 'report_native_documents_v1' AND column_name = 'event_sequence') OR "
+            "(table_name = 'report_native_revisions_v1' AND column_name = 'note'))"
+        ))).mappings().all()
+    assert len(defaults) == 2
+    assert all(row['is_nullable'] == 'NO' and row['column_default'] is not None for row in defaults)
+    assert (await other.get_revision(doc.document_id, 1, scope=scope)).note == ''
+    assert await other.revision_events_after(doc.document_id, scope=scope) == {
+        'events': [], 'nextSequence': 0, 'latestSequence': 0,
+    }
+    reservation = await reserve(repo, doc, scope)
+    await other.complete_revision(reservation, **completion(reservation, source))
+    page = await repo.revision_events_after(doc.document_id, scope=scope)
+    assert [(event['revision'], event['sequence']) for event in page['events']] == [(2, 1)]
+
+
+async def test_postgres_two_workers_wait_for_schema_lock_before_fresh_ddl(postgres_repositories):
+    import asyncio
+
+    repo, other = postgres_repositories
+    async with repo.engine.begin() as connection:
+        await connection.run_sync(_metadata.drop_all)
+    workers = []
+    try:
+        # A third connection holds the exact production advisory key. Both real
+        # workers must be observed waiting in PostgreSQL before either can run DDL.
+        async with repo.engine.begin() as holder:
+            await holder.execute(text(
+                "SELECT pg_advisory_xact_lock(hashtext('native_document_schema_v1'), "
+                "hashtext(current_schema()))"
+            ))
+            workers = [asyncio.create_task(worker.create_schema()) for worker in (repo, other)]
+            async with other.engine.connect() as observer:
+                async with asyncio.timeout(10):
+                    while True:
+                        waiting = (await observer.execute(text(
+                            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                            "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+                            "AND classid::bigint = (hashtext('native_document_schema_v1')::bigint & 4294967295) "
+                            "AND objid::bigint = (hashtext(current_schema())::bigint & 4294967295) "
+                            "AND NOT granted"
+                        ))).scalar_one()
+                        if waiting == 2:
+                            break
+                        assert not any(worker.done() for worker in workers)
+                        await asyncio.sleep(0.01)
+                assert (await observer.execute(text(
+                    "SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema()"
+                ))).scalar_one() == 0
+        await asyncio.wait_for(asyncio.gather(*workers), timeout=10)
+        scope, _, doc = await opened(repo)
+        assert (await other.revision_events_after(doc.document_id, scope=scope))['latestSequence'] == 1
+    finally:
+        for worker in workers:
+            if not worker.done():
+                worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
