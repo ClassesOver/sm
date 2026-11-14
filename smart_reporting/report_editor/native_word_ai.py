@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
@@ -257,6 +258,24 @@ class NativeWordAITools:
         self._read_spans: dict[tuple[str, ...], list[tuple[int, int]]] = {}
         self.notes = NativeWordNoteTools(self)
 
+    def tool_call_budget(self) -> int:
+        """为逐对象完整分页读取与候选登记预留调用，不扩大授权范围。"""
+        if notes_mode(self.selected):
+            # read_notes分页读取整个冻结选区；保留既有100项登记余量。
+            pages = math.ceil(len(json.dumps(self.selected, ensure_ascii=False)) / 24000)
+            return max(20, pages + 105)
+        review_mode = any(item.get('selectionKind') in {'comment', 'revision'}
+                          for item in self.selected)
+        identity = 'reviewId' if review_mode else 'blockId'
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for target in self.selected:
+            groups.setdefault(target[identity], []).append(target)
+        # 单格选区可共享blockId，read_blocks会返回该块全部已授权单格。
+        pages = sum(math.ceil(len(json.dumps(targets, ensure_ascii=False)) / 24000)
+                    for targets in groups.values())
+        # 每个选区目标预留一次独立登记，以及上下文、查询和有限修复余量。
+        return max(20, pages + len(self.selected) + 5)
+
     def get_document_context(self) -> dict[str, Any]:
         """查询授权对象和可用的原生编辑操作，不泄露未选内容。"""
         if notes_mode(self.selected):
@@ -404,7 +423,7 @@ class AgnoNativeWordProposalPlanner:
                       output_schema=NativeWordAIProposal,
                       structured_outputs=capabilities.primary is StructuredOutputMode.JSON_SCHEMA,
                       use_json_mode=capabilities.primary is StructuredOutputMode.JSON_OBJECT,
-                      tool_call_limit=max(20, (len(json.dumps(selected, ensure_ascii=False)) + 23999) // 24000 + 105) if notes_mode(selected) else 20, retries=0, add_history_to_context=False,
+                      tool_call_limit=tools.tool_call_budget(), retries=0, add_history_to_context=False,
                       enable_session_summaries=False, markdown=False, telemetry=False,
                       instructions=[WORD_AI_INSTRUCTIONS])
         output = await run_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
