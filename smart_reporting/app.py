@@ -116,6 +116,7 @@ from .reporting.diagnostics import (
     create_reporting_dependency_diagnostics_router,
 )
 from .reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
+from .reporting.metadata import ReportingMetadataClient
 from .reporting.workflow.controller import ReportWorkflowController
 from .reporting.workflow.repository import REPORTING_DB_SCHEMA
 from .reporting.workflow.runtime.standard_chart_proof import configure_render_proof_signing
@@ -314,6 +315,11 @@ async def readiness(request: Request):
     )
 
 
+reporting_metadata_client = (
+    ReportingMetadataClient(settings.report_metadata_url, token=settings.report_metadata_token)
+    if settings.report_metadata_url
+    else None
+)
 reporting_agent_template, report_runtime = create_report_runtime(
     ExecutionContext(
         settings=settings,
@@ -477,7 +483,7 @@ reporting_dependency_diagnostics = ReportingDependencyDiagnostics(
         for source in (report_runtime.registry.sources.values() if report_runtime.registry is not None else ())
         if isinstance(source, StarRocksSourceConfig)
     ),
-    metadata_client=report_runtime.metadata_client,
+    metadata_client=reporting_metadata_client,
 )
 router.include_router(
     create_reporting_dependency_diagnostics_router(reporting_dependency_diagnostics)
@@ -532,13 +538,13 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.include_router(create_version_options_router(management_scopes))
     application.include_router(create_profile_router(management_scopes))
     application.include_router(create_catalog_router(
-        management_scopes, source_vault, report_runtime.metadata_client,
+        management_scopes, source_vault, reporting_metadata_client,
     ))
     if source_vault is not None:
         application.include_router(create_source_router(management_scopes, source_vault))
-        application.include_router(create_table_access_router(management_scopes, source_vault, report_runtime.metadata_client))
+        application.include_router(create_table_access_router(management_scopes, source_vault, reporting_metadata_client))
         application.include_router(create_import_router(
-            management_scopes, source_vault, report_runtime.metadata_client,
+            management_scopes, source_vault, reporting_metadata_client,
         ))
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)

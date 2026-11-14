@@ -149,7 +149,6 @@ from ...instructions import (
     HOSPITAL_REQUEST_INSTRUCTIONS,
 )
 from ...knowledge import ReportingKnowledgeIndex
-from ...metadata import ReportingMetadataClient
 from ...model_policy import (
     ReportingReasoningEffort,
     ReportingThinkingProfile,
@@ -754,7 +753,6 @@ class _ReportWorkflowRuntimeBase:
         planner_enable_thinking: bool,
         planner_reasoning_effort: ReportingReasoningEffort = "high",
         planner_thinking_budget: int = 8192,
-        metadata_client: ReportingMetadataClient | None = None,
         download_grants: ReportDownloadGrantService | None = None,
         editor_grants: Any | None = None,
         artifact_persistence: ReportArtifactPersistenceService | None = None,
@@ -814,7 +812,6 @@ class _ReportWorkflowRuntimeBase:
 
         self.report_basis_service = (ReportBasisService(configuration_provider.scope_service)
             if configuration_provider is not None else None)
-        self.metadata_client = metadata_client
         self.download_grants = download_grants
         self.editor_grants = editor_grants
         self.artifact_persistence = artifact_persistence

@@ -37,7 +37,6 @@ from .hospital_operation.professional_review import professional_stage_guidance
 from .host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from .instructions import HOSPITAL_REPORT_WRITING_INSTRUCTIONS
 from .knowledge import ReportingKnowledgeIndex
-from .metadata import ReportingMetadataClient
 from .vision import ReportVisionReviewer
 from .workflow.execution import ReportingTaskCoordinator
 from .workflow.repository import ReportingStateRepository
@@ -259,14 +258,6 @@ def create_report_runtime(
         planner_enable_thinking=settings.report_enable_thinking,
         planner_reasoning_effort=settings.report_planner_reasoning_effort,
         planner_thinking_budget=settings.report_planner_thinking_budget,
-        metadata_client=(
-            ReportingMetadataClient(
-                settings.report_metadata_url,
-                token=settings.report_metadata_token,
-            )
-            if settings.report_metadata_url
-            else None
-        ),
         download_grants=download_grants,
         editor_grants=editor_grants,
         artifact_persistence=artifact_persistence,

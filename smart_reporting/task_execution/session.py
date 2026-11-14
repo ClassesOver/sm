@@ -76,12 +76,12 @@ class TaskSession:
                 )
             except asyncio.CancelledError:
                 raise
-            except TaskExecutionRepositoryError as error:
+            except Exception as error:
                 self._lost.set()
                 logger.bind(
                     task_id=self.scope.external_run_id,
                     lease_epoch=self.lease.epoch,
                     lease_expires_at=self.lease.expires_at.isoformat(),
-                    error_code=error.code,
+                    error_code=getattr(error, "code", type(error).__name__),
                 ).opt(exception=True).warning("task_session_heartbeat_failed")
                 raise

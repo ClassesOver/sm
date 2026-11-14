@@ -3,7 +3,9 @@ name = "smart-reporting"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "agno[mcp]==3.1.2",
+    "agno[mcp,codex]==3.1.12",
+    # uv 的版本覆盖不保留 extra 依赖，显式锁定 Agno Codex SDK。
+    "openai-codex==0.163.0",
     "dill>=0.3.9,<0.4.0",
     "fastmcp>=4,<5",
     "cryptography>=45,<51",
@@ -86,6 +88,10 @@ dev = [
 ]
 
 [tool.uv]
+# dingyi-agno 0.5.4 的旧精确约束由应用统一覆盖，兼容性由定向回归验证。
+# Codex SDK 的 Version/InvalidVersion 调用已用现有 packaging 25.0 验证；
+# 避免其 >=26.2 元数据要求与 dingyi-agno <26 的约束引起无关升级。
+override-dependencies = ["agno==3.1.12", "packaging==25.0"]
 # 服务端应用只在 Linux（部署镜像）与 Windows/macOS 开发机运行；不解析 emscripten（浏览器
 # WebAssembly）分支，否则精确锁定的 statsmodels 等包在该平台无可用版本而无法生成锁文件。
 environments = ["sys_platform != 'emscripten'"]

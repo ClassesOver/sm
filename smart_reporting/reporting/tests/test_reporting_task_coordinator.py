@@ -111,7 +111,9 @@ class _Repository:
         )
         return self.task
 
-    async def cancel_and_reject(self, scope: TaskExecutionScope) -> None:
+    async def cancel_and_reject(
+        self, scope: TaskExecutionScope, *, lease: Lease | None = None
+    ) -> None:
         assert scope == self.task.scope
 
 
