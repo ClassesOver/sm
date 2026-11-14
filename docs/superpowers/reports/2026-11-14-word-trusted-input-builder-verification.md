@@ -1,4 +1,4 @@
-# Trusted Word builder verification (work in progress)
+# Trusted Word builder verification: historical local and independent cloud evidence
 Base: 0ce3aa10. No production registration/task submission/provider startup.
 TDD: first focused node failed with AssertionError trusted Word input builder missing (1 failed,0 errors). Expanded initial contract file failed15 with same expected missing-module assertion before implementation. The initial attempt importing full service failed collection due missing data_profiling; this was NOT counted as RED.
 Local command: PYTHONPATH=/tmp/sm-review-deps:/tmp/sm-receipt-deps python /tmp/run_word_builder_tests.py smart_reporting/reporting/tests/test_native_word_task_builder.py -q -o addopts=''
@@ -64,7 +64,7 @@ DeprecationWarning：imghdr将在Python3.13移除。安全负例预期产生
 `native_ai_failed ... ReportingError` WARNING，原日志保留，不称warning/error-log-free。
 使用的全新PG18容器及匿名卷均删除并核实，未访问业务库、业务凭据或实际用户文档。
 
-独立Astra实际读取三轮节点结果并核精确源树/六文件范围后，认可本限定builder可与
+独立Astra实际读取三轮云验收记录并核精确源树/六文件范围后，认可本限定builder可与
 Normal rail按独立commit组成阶段候选。实际组合仍需精确树与两侧source/hash核对及
 必要最小smoke，不能用两个来源分别通过代替组合验证。该整合不启用生产注册、调度、
 provider或Codex；builder不提供跨服务线性化撤权保证，后续tools/commit/采纳须重新授权。
