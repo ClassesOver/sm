@@ -7,6 +7,7 @@ values must never be inserted into generic task snapshots/log/result projections
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 from sqlalchemy import exists, func, select, update
@@ -166,17 +167,21 @@ class NativeWordTaskRepositoryMixin:
         never from a second model-supplied field. This repository is not itself an
         authenticated RPC surface and does not claim to prove tool read coverage.
         """
-        # Size/equality checks happen before acquiring a contested task row lock.
-        if (len(canonical_bytes(proposal)) > MAX_NATIVE_WORD_RECEIPT_BYTES
-                or len(canonical_bytes(registered_proposal)) > MAX_NATIVE_WORD_RECEIPT_BYTES):
+        # Freeze exactly the bytes validated before the first await. Caller-owned
+        # dictionaries may change while initialization/row locking is suspended.
+        proposal_bytes = canonical_bytes(proposal)
+        registered_bytes = canonical_bytes(registered_proposal)
+        if (len(proposal_bytes) > MAX_NATIVE_WORD_RECEIPT_BYTES
+                or len(registered_bytes) > MAX_NATIVE_WORD_RECEIPT_BYTES):
             raise _error('native_word_proposal_too_large')
-        if canonical_digest(proposal) != canonical_digest(registered_proposal):
+        if proposal_bytes != registered_bytes:
             raise _error('native_word_registered_proposal_mismatch')
+        proposal_snapshot = json.loads(proposal_bytes)
         await self.initialize()
         async with self.db.db_engine.begin() as connection:
             value, parsed, _payload, digest, guards = await self._word_current(connection, **fence)
             try:
-                normalized = normalize_word_proposal(parsed, proposal)
+                normalized = normalize_word_proposal(parsed, proposal_snapshot)
             except ValueError:
                 raise _error('native_word_candidate_invalid') from None
             semantic_digest = candidate_digest(digest, normalized)

@@ -1,9 +1,9 @@
 # Word binding persistence: verification ledger
 
-Status: **expected-RED internal test baseline, NOT a release candidate**.
-Known blocker: mutable caller proposal is still read after waiting for a task row lock.
-A deterministic PG regression is staged first; fix must wait for its actual assertion
-failure in disposable PG. Do not enable or publish this tree.
+Status: **minimal mutable-proposal fix staged for GREEN cloud validation**.
+The original expected-RED tree was verified in independent disposable PG18 before
+this fix. Final PG validation of the corrected tree is still pending. Do not enable
+or publish this tree, and do not treat focused local checks as a stage-complete result.
 Production is not enabled. No HTTP authentication, ticket minting, MCP registration,
 Codex/provider startup, worker environment or editor acceptance integration is added.
 
@@ -132,3 +132,24 @@ that asyncio.gather created real contention. Their real PG outcomes are still pe
 No stage-complete, all-tests-pass, production-ready or Codex-connected claim is made.
 
 Additional direct paragraph repr test produced an actual assertion RED for before/after/draft/style text; setting their repr=False made it GREEN. This does not change serialized content or resolve the pending mutable-proposal PG regression.
+
+## Mutable caller proposal TOCTOU: real PG RED, then minimal correction
+
+Root confirmed independent cloud validation of exact HEAD
+0c937cd01f9c8e8caa084d6fa8bb4c862118e2dc / tree
+c42937b39062696bfe643954f9c7e27ec6d9126e: the single node
+`test_native_word_waiting_commit_uses_registered_snapshot_not_mutated_caller_dict`
+produced **1 failed / 0 errors**, with actual text `Caller changed while waiting`
+versus expected `Synthetic replacement`. pg_blocking_pids proved that the real commit
+was blocked on the external row lock after preflight. The disposable PG container
+was cleaned. Import or fixture failures were not counted as RED.
+
+Only after that evidence, commit now canonical-serializes proposal and registration
+exactly once each before any await, bounds and compares those immutable bytes, and
+parses a private proposal snapshot from the verified bytes. The locked code uses only
+that snapshot, never the caller-owned proposal dictionary. This is the root-cause
+correction, not a later comparison of already-mutated data.
+
+Pending GREEN: rerun that exact regression and all 20 new PG cases, plus affected
+existing repository/lease tests, on a new isolated PG instance using locked project
+dependencies. No provider or production environment is authorized by this step.
