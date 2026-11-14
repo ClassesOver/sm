@@ -109,7 +109,6 @@ export function bindNativeAI(container: HTMLElement, options: {
         status.textContent = error instanceof Error ? error.message : '建议生成失败'
         if (!job && activeRequestId === requestId && options.api.aiCancelRequest) {
           activeRequestId = undefined
-          void tasks.cancel().catch(() => {})
         }
       }
     }

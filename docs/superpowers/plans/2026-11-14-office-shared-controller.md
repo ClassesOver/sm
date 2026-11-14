@@ -20,3 +20,9 @@ Legacy Word/PDF/Office read and Word/PDF/XLSX/PPTX candidate APIs are transition
 ## Verification limits
 
 This patch does not launch Codex, provision a sandbox, register a production route, deploy, or claim real-provider validation. Existing task IDs are opaque; server-side scope/lease/attempt enforcement remains on the backend. Full frontend TypeScript checking exceeded the environment heap at the default limit, and was killed at a 6 GiB heap limit; the isolated controller type check passed. No full-build success is claimed. The single full frontend suite attempt was stopped with exit 130 when /tmp was full; its partial output included 52 slides-native tests failing with ResizeObserver not defined and two slides-native-ribbon availability assertion failures, so it is not represented as a green suite.
+
+## Independent review correction
+
+The review reproduced an orphaned known task: start returned a task ID, status failed, then a read adapter's finally/release discarded the cancellation handle. The shared catch now launches cleanup with captured request/task identities without waiting on the cancellation endpoint. Handles are retained until cleanup succeeds; release only releases an observed terminal task. Failed explicit cancellation retains retry handles only while its generation is still current. Replacement runs clean captured previous handles, never the new request. The original transport/progress error remains the user-visible error.
+
+Regression evidence after the correction: 13 shared-controller tests including old/new start/status, old acceptance finally, late failed cancellation and hung cleanup; nine adapter/controller test files with 78 passing tests using the standard project Vite configuration. Strict isolated controller TypeScript checking passed again. Logs remain in the execution workspace; no full suite was repeated.
