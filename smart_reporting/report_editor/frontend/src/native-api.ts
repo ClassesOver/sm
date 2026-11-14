@@ -24,7 +24,6 @@ export interface NativeContext {
 export interface NativeContextResponse {
   threadActor?: {personId: string; author: string} | null
   contextSha256?: string
-  dataRefresh?: import('./binary-refresh').BinaryRefreshCapability
   context: NativeContext
   csrfToken: string
   capabilities: Record<string, unknown>
@@ -196,9 +195,6 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
     imagePixels: async (target: {sourceSha256: string; pageId: string; imageId: string; expectedImageSha256: string}, signal?: AbortSignal): Promise<{sourceSha256:string;imageId:string;expectedImageSha256:string;pageId:string;image:string;width:number;height:number;sha256:string}> => (await request('image-pixels', target, signal)).json(),
     imageBackground: async (target: {sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};pxWidth:number}, signal?:AbortSignal): Promise<{sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};image:string;width:number;height:number;sha256:string}> => (await request('image-background',target,signal)).json(),
-    refreshSubmit: async (payload: {requestId: string; expectedBinarySha256: string}, signal?: AbortSignal) => (await request('recalculations', payload, signal)).json(),
-    refreshStatus: async (requestId: string, signal?: AbortSignal) => (await request(`recalculations/by-request/${encodeURIComponent(requestId)}`, undefined, signal)).json(),
-    refreshDelivery: async (taskId: string, signal?: AbortSignal) => (await request(`recalculations/${encodeURIComponent(taskId)}/delivery`, undefined, signal)).json(),
     file: async (signal?: AbortSignal): Promise<ArrayBuffer> => (await request('file', undefined, signal)).arrayBuffer(),
     readModel: async <Model = Record<string, unknown>>(signal?: AbortSignal): Promise<{sourceSha256: string; model: Model}> => (await request('read-model', undefined, signal)).json(),
     preview: async <Model = Record<string, unknown>>(payload: NativePreviewRequest, signal?: AbortSignal): Promise<NativePreviewResponse<Model>> => (await request('preview', payload, signal)).json(),

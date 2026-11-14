@@ -35,7 +35,6 @@ source_modules =
     smart_reporting.report_editor.native_pdf_review_ai_tasks
     smart_reporting.report_editor.native_publication
     smart_reporting.report_editor.native_readiness
-    smart_reporting.report_editor.native_refresh
     smart_reporting.report_editor.native_repository
     smart_reporting.report_editor.native_slides_read_ai
     smart_reporting.report_editor.native_word_ai
@@ -65,7 +64,6 @@ forbidden_modules =
 allow_indirect_imports = True
 # 现存违规白名单（只减不增）：报告重跑刷新将在 P2 随“重算/刷新”入口一并下线。
 ignore_imports =
-    smart_reporting.report_editor.native_refresh -> smart_reporting.reporting.workflow.*
     smart_reporting.report_editor.office_refresh -> smart_reporting.reporting.workflow.*
 
 [importlinter:contract:office-independent-of-legacy-editors]
@@ -101,7 +99,6 @@ source_modules =
     smart_reporting.report_editor.native_pdf_review_ai_tasks
     smart_reporting.report_editor.native_publication
     smart_reporting.report_editor.native_readiness
-    smart_reporting.report_editor.native_refresh
     smart_reporting.report_editor.native_repository
     smart_reporting.report_editor.native_slides_read_ai
     smart_reporting.report_editor.native_word_ai
@@ -173,5 +170,4 @@ forbidden_modules =
 allow_indirect_imports = True
 # 现存违规白名单（只减不增）：报告重跑刷新将在 P2 随“重算/刷新”入口一并下线。
 ignore_imports =
-    smart_reporting.report_editor.native_refresh -> smart_reporting.report_editor.*
     smart_reporting.report_editor.office_refresh -> smart_reporting.report_editor.*

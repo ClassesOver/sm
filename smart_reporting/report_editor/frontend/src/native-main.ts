@@ -1,5 +1,4 @@
 import { createNativeApi, type NativeAISelection, type NativeAIReviewSelection, type NativeAINoteSelection } from './native-api'
-import { mountBinaryRefresh } from './binary-refresh'
 import { NativeDraft } from './native-draft'
 import { bindNativeSession } from './native-session'
 import { createEditorShell } from './shell'
@@ -61,31 +60,13 @@ export async function startNativeEditor() {
   let wordReader: ReturnType<typeof bindNativeWordAssistant> | undefined
   let session: ReturnType<typeof bindNativeSession> | undefined
   let wordDock: {dispose(): void} | undefined
-  let pdfMutationPending = false
-  const options = { api, context: response, draft, onAssistant: response.wordReadAIEnabled || response.aiEnabled && response.editingEnabled ? () => { if (wordReader) wordReader.open('ask'); else ai?.open() } : undefined, onNoteAI: (selection:NativeAINoteSelection,instruction?:string,beforeText?:string)=>ai?.openNotes(selection,instruction,beforeText), onReviewAI: (selection: NativeAIReviewSelection, instruction?: string) => ai?.openReview(selection,instruction), onDraftChange: () => session?.update(), onMutationStateChange: (pending: boolean) => { pdfMutationPending = pending; refresh?.update() }, mutationBlocked: () => refreshing, onSelectionChange: (selection: NativeAISelection[]) => {
+  const options = { api, context: response, draft, onAssistant: response.wordReadAIEnabled || response.aiEnabled && response.editingEnabled ? () => { if (wordReader) wordReader.open('ask'); else ai?.open() } : undefined, onNoteAI: (selection:NativeAINoteSelection,instruction?:string,beforeText?:string)=>ai?.openNotes(selection,instruction,beforeText), onReviewAI: (selection: NativeAIReviewSelection, instruction?: string) => ai?.openReview(selection,instruction), onDraftChange: () => session?.update(), onSelectionChange: (selection: NativeAISelection[]) => {
     ai?.setSelection(selection)
   }, flushForFileOperation: async () => {
     if (!session) throw new Error('编辑会话尚未就绪')
     return session.flushForFileOperation()
   } }
-  let refresh: ReturnType<typeof mountBinaryRefresh> | undefined
-  let refreshing = false
-  let loaded = false
   let view: Awaited<ReturnType<typeof import('./pdf-main')['createPdfEditorView']>> | Awaited<ReturnType<typeof import('./docx-main')['createDocxEditorView']>>
-  const viewMutationPending = () => pdfMutationPending || loaded && 'mutationPending' in view && view.mutationPending
-  if (context.origin === 'report' && (context.format === 'pdf' || context.format === 'docx')
-    && response.contextSha256 && /^[a-f0-9]{64}$/.test(response.contextSha256)) {
-    const host = root.querySelector<HTMLElement>('.report-meta')?.parentElement ?? root
-    refresh = mountBinaryRefresh(host, {route: location.pathname.replace(/\/$/, ''), reportId: context.documentId,
-      revision, format: context.format, contextSha256: response.contextSha256, sha256: context.sourceFile.sha256}, response.dataRefresh,
-      {submit: api.refreshSubmit, status: api.refreshStatus, delivery: api.refreshDelivery}, {
-        saving: () => draft.saving || session?.preparing === true || ai?.accepting === true || viewMutationPending(),
-        blocked: () => !loaded || draft.closed || draft.saving || session?.preparing === true || ai?.accepting === true || viewMutationPending(),
-        flush: () => { if (view && 'flushPendingEdits' in view) view.flushPendingEdits?.() }, dirty: () => draft.dirty,
-        save: async () => { await session?.save('save') },
-        setRefreshing: value => { refreshing = value; if (loaded) view.setSaving(value || draft.saving || session?.preparing === true); session?.update(false); ai?.update() },
-      })
-  }
   try {
     view = context.format === 'pdf'
     ? await (await import('./pdf-main')).createPdfEditorView(shell, options)
@@ -101,12 +82,9 @@ export async function startNativeEditor() {
   shell.editor.setAttribute('aria-busy', 'false')
   shell.status.setAttribute('aria-busy', 'false')
   shell.statusLabel.textContent = response.editingEnabled ? '文档已载入' : '在线编辑暂未开放，可下载原件'
-  loaded = true
-  view.setSaving(refreshing)
-  session = bindNativeSession(shell, { api, draft, format: context.format, view, editingEnabled: response.editingEnabled, refreshBusy: () => refreshing, onStateChange: () => refresh?.update() })
-  refresh?.update()
+  session = bindNativeSession(shell, { api, draft, format: context.format, view, editingEnabled: response.editingEnabled })
   if (response.aiEnabled && response.editingEnabled && (context.format === 'docx' || response.pdfTextEnabled)) {
-    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update(), locked: () => refreshing, onStateChange: () => refresh?.update() })
+    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update() })
   }
   if (context.format === 'docx' && response.wordReadAIEnabled) {
     wordReader = bindNativeWordAssistant(shell.editor.parentElement ?? root, {

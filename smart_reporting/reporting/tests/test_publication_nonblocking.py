@@ -196,7 +196,6 @@ def test_agents_nonblocking_contract_registry_points_at_existing_tests():
 # validation.issues / publicationGate.issues 后继续。新增此类 raise 未兜底即失败。
 _SIGNING_CHAIN = {
     "smart_reporting/report_editor/office_refresh.py": ("office_refresh_delivery", "selected_office_task", "require_office_reference", "restore_office_source", "registered_office_source"),
-    "smart_reporting/report_editor/native_refresh.py": ("native_refresh_delivery", "selected_task", "require_native_reference", "restore_report_source"),
     "smart_reporting/reporting/trace/reader_formulas.py": ("reader_formula", "_formal_metric_formula"),
     "smart_reporting/reporting/workflow/claim_presentation.py": ("_registered_claim_support", "registered_claim_support_projection", "registered_native_claim_presentations", "registered_document_presentations"),
     "smart_reporting/reporting/trace/native_claims.py": ("native_claim_presentations", "present_native_summary"),

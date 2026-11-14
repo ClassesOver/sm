@@ -10,7 +10,6 @@ from ..reporting.saved_revision_reference import OfficeReportSource, OfficeRevis
 from ..reporting.workflow.revision_execution import _source_state
 from ..reporting.workflow.scope import resolve_reporting_workflow_scope
 from ._file_identity import read_verified_file
-from .native_refresh import require_backend
 from .recalculation import (
     BinaryRecalculationRequest,
     RefreshDeliveryRecovery,
@@ -26,6 +25,16 @@ from .recalculation import (
     task_response,
 )
 from .service import ReportEditorContext
+
+
+def require_backend(editor):
+    runtime = editor.recalculation_runtime
+    if (not editor.recalculation_durable or runtime is None or editor.recalculation_database is None
+            or getattr(runtime, 'configuration_provider', None) is None
+            or getattr(editor.recalculation_queue_worker, 'store', None) is None):
+        raise ReportingError('report_editor_recalculation_unavailable', '正式刷新耐久后台尚未启用。')
+    editor._require_lineage_feature('panel')
+    return runtime
 
 
 class OfficeRefreshRequest(StrictModel):

@@ -29,13 +29,6 @@ from ..office.editor_grants import EDITOR_SESSION_COOKIE
 from .native import NativeEditorService, bind_native_workspace
 from .native_mail_merge import decode_mail_merge_csv
 from .native_models import NATIVE_ARTIFACT_MEDIA, NativeScope
-from .native_refresh import (
-    NativeRefreshRequest,
-    native_refresh_capability,
-    native_refresh_delivery,
-    native_refresh_status,
-    start_native_refresh,
-)
 from ..office.editor_grants import ReportEditorGrantService
 
 NATIVE_SESSION_COOKIE = "native_editor_session"
@@ -351,7 +344,6 @@ def create_native_editor_router(
             "contextSha256": context.digest(),
             "csrfToken": grants.csrf_token(request.cookies.get(NATIVE_SESSION_COOKIE, "")),
             "capabilities": session.capabilities,
-            "dataRefresh": await native_refresh_capability(editor, context),
             "aiEnabled": ai_enabled and (
                 context.format == "docx" and editor.docx_enabled
                 or context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled
@@ -365,38 +357,6 @@ def create_native_editor_router(
             "editingEnabled": editor.is_enabled(context.format),
             "pdfTextEnabled": editor.pdf_text_enabled and editor.pdf_enabled and context.format == "pdf",
         }
-
-    @router.post("/reports/v1/native/{document_id}/{revision}/api/recalculations")
-    async def native_refresh_submit(document_id: str, revision: int, request: Request, payload: NativeRefreshRequest):
-        _, context = await session_context(request, document_id, revision, write=True)
-        try:
-            return await start_native_refresh(editor, context, payload)
-        except ReportingError as error:
-            raise _error(error) from None
-
-    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/by-request/{request_id}")
-    async def native_refresh_request_status(document_id: str, revision: int, request_id: str, request: Request):
-        _, context = await session_context(request, document_id, revision)
-        try:
-            return await native_refresh_status(editor, context, request_id=request_id)
-        except ReportingError as error:
-            raise _error(error) from None
-
-    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/{task_id}")
-    async def native_refresh_task_status(document_id: str, revision: int, task_id: str, request: Request):
-        _, context = await session_context(request, document_id, revision)
-        try:
-            return await native_refresh_status(editor, context, task_id=task_id)
-        except ReportingError as error:
-            raise _error(error) from None
-
-    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/{task_id}/delivery")
-    async def native_refresh_task_delivery(document_id: str, revision: int, task_id: str, request: Request):
-        _, context = await session_context(request, document_id, revision)
-        try:
-            return await native_refresh_delivery(editor, context, task_id)
-        except ReportingError as error:
-            raise _error(error) from None
 
     @router.get("/reports/v1/native/{document_id}/{revision}/api/file")
     async def native_file(document_id: str, revision: int, request: Request):
