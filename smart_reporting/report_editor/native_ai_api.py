@@ -305,6 +305,7 @@ def create_native_ai_router(
                 expected_sha256=payload.expected_sha256,
                 operations=payload.operations,
                 snapshot_sha256=payload.snapshot_sha256,
+                revalidate_session=lambda: grants.lookup_session(request.cookies.get(NATIVE_SESSION_COOKIE, "")),
                 **({'server_session_reference': token_hash(request.cookies.get(NATIVE_SESSION_COOKIE, ''))}
                    if getattr(ai, 'word_task_dispatcher', None) is not None and ai.word_task_dispatcher.enabled else {}),
             )

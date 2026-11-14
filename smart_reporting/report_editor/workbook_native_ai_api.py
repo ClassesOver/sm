@@ -84,7 +84,7 @@ def create_native_workbook_ai_router(grants: Any, *, editor: Any, ai: NativeWork
     async def accept(document_id: str, revision: int, edit_id: str, request: Request, payload: NativeAIAcceptPayload):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await ai.accept_edit(session, edit_id, expected_sha256=payload.expected_sha256, operations=payload.operations, snapshot_sha256=payload.snapshot_sha256)
+            return await ai.accept_edit(session, edit_id, expected_sha256=payload.expected_sha256, operations=payload.operations, snapshot_sha256=payload.snapshot_sha256, revalidate_session=lambda: grants.lookup_session(request.cookies.get(NATIVE_SESSION_COOKIE, "")))
         except ReportingError as error:
             raise _ai_error(error) from None
 
